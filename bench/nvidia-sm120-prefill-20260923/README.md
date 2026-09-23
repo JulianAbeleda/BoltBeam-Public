@@ -65,15 +65,38 @@ they are a factor of four apart:
 | all fp16 matrix | 228.1 TF | 95% |
 | all INT8 matrix | 911.0 TOPS | 24% |
 
-llama.cpp's MMQ path quantises activations to Q8_1 and multiplies in integers, so the truth is near
-the bottom of that range, and prefill has room in it rather than none. Which mix ran is still not
-measured; `nsys` or `ncu` on a pp512 run would name it.
+Which mix ran is measured. One pp512 run under `nsys` (`nsys-kernel-summary.csv` here), kernel time
+by family:
+
+| Family | Share of kernel time | Instruction it issues |
+|---|---:|---|
+| `mul_mat_q` (MMQ: Q8_1 activations) | 81.4% | `IMMA`, the s8 matrix instruction |
+| `flash_attn_ext_f16` | 5.2% | `HMMA`, fp16 |
+| `quantize_mmq_q8_1` | 2.3% | none (activations to int8) |
+| `mul_mat_vec` | 1.0% | vector |
+| norm, rope, silu, copy | 10.0% | none |
+
+The instruction column is not inferred from names. The fork's prefill lifecycle audit disassembled
+these kernels and found `IMMA.16832` in the Q4_K `mul_mat_q` and `IMMA.16816` in the Q6_K one, with
+no HMMA and no dp4a ([nv-llama-prefill-lifecycle-audit](https://github.com/JulianAbeleda/tinygrad-arkey/blob/exp/docs/task_workflow/output/nv-llama-prefill-lifecycle-audit.md)).
+That audit put MMQ at 82.4% of the prompt and counted 214 Q4_K and 35 Q6_K launches; this capture
+shows 81.4% and 428 and 70, exactly double because llama-bench ran a warmup prompt first.
+
+So the INT8 line is the ceiling for 81% of the time and effectively all of the sums. At 2,835 MHz:
+
+| | Rate | Share of the 911.0 TOPS INT8 ceiling |
+|---|---:|---:|
+| Whole prompt, 7.75 TFLOP in 35.7 ms | 216.8 TOPS | 23.8% |
+| Inside the MMQ kernels only, 81.4% of that time | 266.7 TOPS | 29.3% |
+
+Prefill on this card runs its matrix kernels at under a third of the unit's measured rate. The 95%
+reading was off by a factor of four in the direction that says "nothing left".
 
 ## What this does not say
 
 - One card, one model, one runtime, one context length.
-- Which instruction mix llama.cpp actually ran is not measured, only which ones its library carries.
-  The 24% and 95% figures are the two ends, not the answer.
+- One nsys capture, one session, unpinned clock for the capture itself. The shares are stable against
+  the fork's audit from a different session, which is why they are believed.
 - The dp4a figure rules that path out for prefill but is itself low enough to be worth re-checking;
   1.9 dp4a per SM per clock is far below what the integer pipe should sustain.
 - llama.cpp only. tinygrad's pp512 on this card is recorded elsewhere at 84.0 ms against llama's

@@ -71,7 +71,7 @@
     "clock_mhz": 2932,
     "note": "rules dp4a out as the prefill path by a factor of 28"
   },
-  "open": "which instruction mix llama.cpp ran; the library carries fp16 and INT8 matrix paths and dp4a",
+  "open": "one session; attention is 5.2% of time on fp16 HMMA and is not separated out in the share",
   "matrix_peaks_at_2947mhz": {
     "fp16_mma_m16n8k16_tflops": 237.1,
     "int8_mma_m16n8k32_tops": 947.0,
@@ -90,15 +90,30 @@
   },
   "prefill_share_of_ceiling": {
     "at_clock_mhz": 2835,
-    "needs_tflop_s": 216.8,
-    "if_all_fp16": {
-      "ceiling": 228.1,
-      "share": 0.95
-    },
-    "if_all_int8": {
-      "ceiling": 911.0,
+    "int8_ceiling_tops": 911.0,
+    "whole_prompt": {
+      "tops": 216.8,
       "share": 0.238
     },
-    "note": "llama.cpp's MMQ path quantises activations to Q8_1, so the truth is near the bottom of this range; the mix that actually ran is not measured"
+    "inside_mmq_kernels": {
+      "tops": 266.7,
+      "share": 0.293
+    },
+    "note": "the INT8 line is the ceiling: 81.4% of kernel time and effectively all of the sums are on IMMA"
+  },
+  "kernel_time_by_family_pp512": {
+    "source": "nsys-kernel-summary.csv, one llama-bench pp512 run (warmup plus one measured prompt)",
+    "mul_mat_q_int8_mma": 0.814,
+    "flash_attn_fp16_mma": 0.052,
+    "quantize_q8_1": 0.023,
+    "mul_mat_vec": 0.01,
+    "other_non_matrix": 0.1,
+    "launches": {
+      "mul_mat_q_q4k": 428,
+      "mul_mat_q_q6k": 70,
+      "note": "2x the audit's 214 and 35: two prompts"
+    },
+    "instruction_evidence": "fork docs/task_workflow/output/nv-llama-prefill-lifecycle-audit.md: SASS shows IMMA.16832 (Q4_K) and IMMA.16816 (Q6_K), no HMMA, no dp4a",
+    "audit_mmq_share": 0.824
   }
 }
