@@ -11,11 +11,11 @@ GPU or the tinygrad fork are marked.
 
 Python 3.10 or newer. No dependencies.
 
-Check first, because a stock macOS ships 3.9 as `python3` and BoltBeam fails there with a
-`TypeError` from a type annotation rather than a clear message:
+A stock macOS ships 3.9 as `python3`. On an interpreter below the floor BoltBeam stops on import
+and says which one it is and where it found it, so if you see that message, name a newer one:
 
 ```
-python3 --version        # 3.10 or newer; on macOS you may need python3.12 by name
+python3.12 -m boltbeam.cli --help
 ```
 
 ```
