@@ -32,15 +32,29 @@ python3 -c "import json;print([t['target_id'] for t in json.load(open('boltbeam/
 |---|---|---|
 | `amd_gfx1100` | Radeon RX 7900 XTX | vendor sheet, plus modelled memory tiers |
 | `nvidia_sm89` | Ada, descriptor only | no speeds recorded |
-| `nvidia_sm120` | RTX 5090 | vendor sheet: 1,792 GB/s, 104.8 TFLOP/s |
+| `nvidia_sm120` | RTX 5090 | measured: 1,693.3 GB/s, 237.1 TFLOP/s on the matrix unit |
 | `apple_metal` | any Metal GPU, family row | no speeds; pass your own |
-| `apple_m3_10c` | MacBook Air M3, 10-core GPU | measured here: 89.9 GB/s, 3.152 TFLOP/s |
+| `apple_m3_10c` | MacBook Air M3, 10-core GPU | measured: 89.9 GB/s, 3.152 TFLOP/s |
 | `apple_m4_10c` | Mac mini M4, 10-core GPU | vendor sheet: 120 GB/s |
 
 A row records where each number came from, under `capabilities.fact_status` and
-`fact_sources`: `measurement`, `vendor_spec`, `hardware_scan`, or `unknown`. Nothing is
-guessed. A chip with no number for something simply has none, and the commands that need it
-say so instead of inventing one.
+`fact_sources`: `measurement`, `hardware_scan`, `derived`, `vendor_spec`, `estimate`, or
+`unknown`, each with the method and the date. Nothing is guessed. A chip with no number for
+something simply has none, and the commands that need it say so instead of inventing one.
+
+Speeds are measured, not read off the box. The RTX 5090's bus arithmetic gives 1,792 GB/s
+and a streaming read reaches 1,693.3, so 1,693.3 is the ceiling the roofline uses and 1,792
+is recorded beside it as the theoretical figure. A peak is only a fact with its clock: the
+same matrix kernel reads 237.1 TFLOP/s with the clock pinned and 214.5 at the speed the card
+picks on its own, and the row says so.
+
+Two compute numbers are not the same number. `peak_tflops` is the vector-ALU rate, and
+`matrix_tflops` is what the matrix unit actually did. The roofline prefers your own
+`--peak-tflops`, then the measured matrix rate, then the ALU rate.
+
+A row also states which machine it is, in `capabilities.match`. That is what `autoscan` reads
+to recognise the GPU in front of it, so teaching BoltBeam a new chip is an edit to
+`targets.json` and no code at all.
 
 ## 1. What is in this model
 
@@ -66,11 +80,13 @@ The default is prefill; `--context N` changes the length it assumes.
 If your chip's row has no speeds, pass them:
 
 ```
---peak-gbs 1700 --peak-tflops 255.4
+--peak-gbs 1693.3 --peak-tflops 237.1
 ```
 
-`--peak-gbs 1700` is also how you reproduce the articles on the RTX 5090: they use the
-measured 1,700 GB/s, while the registry carries the vendor sheet's 1,792.
+The write-ups on research.arkey.ai quote 1,700 GB/s and 255.4 TFLOP/s for the RTX 5090, from
+an earlier session. Re-measured on 2026-09-23 the same card gave 1,693.3 and 237.1, and the
+registry carries the new figures with their method and date. The bandwidth agrees to 0.4%.
+The matrix figure moved because the clock did.
 
 **Tokens per second** needs a memory hierarchy on the target row, which today only
 `amd_gfx1100` has:

@@ -18,18 +18,35 @@ import tokenize
 from dataclasses import dataclass
 from io import StringIO
 
+from boltbeam.target.targets import TARGETS, target_aliases
+
 _PKG = pathlib.Path(__file__).resolve().parent.parent
 
-# modules whose LOGIC must be registry-driven (not the data files, not the registries themselves)
-_DECISION_PATH = ("search/emit.py", "search/families.py", "policy/emit.py", "eval/evaluator.py")
+# modules whose LOGIC must be registry-driven (not the data files, not the registries themselves).
+# The machine scan is a decision surface too: it decides which registry row you are running on.
+_DECISION_PATH = ("search/emit.py", "search/families.py", "policy/emit.py", "eval/evaluator.py",
+                  "workflow/autoscan.py")
 _HANDOFF = ("analyze.py",)   # model/quant checked, target-name allowed (backend-specific command emission)
 
 _QUANT_TOKENS = ("Q4_K", "Q5_K", "Q6_K", "Q8_0", "F16", "BF16")
 _MODEL_TOKENS = ("qwen", "llama", "mixtral", "deepseek", "mistral")
-_TARGET_TOKENS = ("gfx1100", "amd_gfx1100", "nvidia_sm89", "nvidia_sm120", "apple_metal")
-# hardware constants are target facts too: they belong in data/targets.json or math/roofline, never
-# inline in the decision path (LN-130)
-_TARGET_NUMBER_TOKENS = ("960.0", "1792.0", "122.8", "61.4", "105.5")
+# Both target lists are read off the registry, not listed here, so a new row is covered the day it lands and
+# a re-measured number is not pinned to the figure that happened to be true when this rule was written.
+_TARGET_TOKENS = tuple(sorted(frozenset().union(*(target_aliases(name) for name in TARGETS))))
+
+
+def _target_number_tokens() -> tuple[str, ...]:
+  """Every speed the registry states, in both spellings a source file could write it.
+
+  Hardware constants are target facts: they belong in data/targets.json or math/roofline, never inline in
+  the decision path (LN-130).
+  """
+  values = [float(t.memory_bandwidth_gbs) for t in TARGETS.values() if t.memory_bandwidth_gbs]
+  values += [float(v) for t in TARGETS.values() for v in t.peak_tflops.values()]
+  return tuple(sorted({spelling for v in values for spelling in (f"{v}", f"{v:g}")}))
+
+
+_TARGET_NUMBER_TOKENS = _target_number_tokens()
 
 
 @dataclass(frozen=True)

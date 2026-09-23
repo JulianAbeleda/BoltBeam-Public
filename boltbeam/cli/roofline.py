@@ -145,10 +145,16 @@ def _resolve_peak_flops(target, dtype:str, override_tflops:float | None) -> floa
   so via `backend_status`. Reporting the absence beats both crashing on an empty `max()`
   and inventing a vendor figure — "a capability a backend lacks is stated explicitly,
   never faked".
+
+  Precedence: what the caller measured, then what the row measured on its matrix unit, then the
+  row's ALU rates. A measured figure outranks a sheet figure for the same silicon.
   """
   if override_tflops is not None:
     if override_tflops <= 0: raise SystemExit("--peak-tflops must be positive")
     return override_tflops * 1e12
+  measured = target.matrix_tflops_for(dtype)
+  if measured:
+    return measured * 1e12
   peaks = target.peak_tflops or {}
   value = peaks.get(dtype) or peaks.get("fp16") or (max(peaks.values()) if peaks else None)
   if value:

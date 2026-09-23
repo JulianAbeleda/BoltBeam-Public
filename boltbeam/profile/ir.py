@@ -45,6 +45,9 @@ class TargetProfile:
   compute_units: int | None = None              # CU/SM/cluster count used by profiler percent-of-peak reports.
   memory_bandwidth_gbs: float | None = None     # Sustained/advertised peak used by profiler roofline reports.
   peak_tflops: dict[str, float] | None = None   # dtype/primitive -> target peak TFLOP/s, e.g. fp32/fp16/int8.
+  matrix_tflops: dict[str, float] | None = None # the matrix unit's own measured rate, which is 2-3x the ALU
+                                                # rate above and belongs in its own field so the two are never
+                                                # read for each other (bringing-up-a-new-target, phase 0: "R").
   capabilities: dict[str, Any] | None = None
 
   def dot_vocabulary_backlog(self) -> tuple[str, ...]:
@@ -55,6 +58,11 @@ class TargetProfile:
     """Peak TFLOP/s for a dtype/primitive key, if the target descriptor carries it."""
     peaks = self.peak_tflops or {}
     value = peaks.get(key.lower())
+    return float(value) if value is not None else None
+
+  def matrix_tflops_for(self, key: str) -> float | None:
+    """Measured matrix-unit TFLOP/s for a dtype, if the target descriptor carries it."""
+    value = (self.matrix_tflops or {}).get(key.lower())
     return float(value) if value is not None else None
 
   @property

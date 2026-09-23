@@ -19,6 +19,7 @@ def _from_row(d:dict) -> TargetProfile:
                        compute_units=d.get("compute_units"),
                        memory_bandwidth_gbs=d.get("memory_bandwidth_gbs"),
                        peak_tflops=dict(d.get("peak_tflops", {})),
+                       matrix_tflops=dict(d.get("matrix_tflops", {})),
                        backend_status=d.get("backend_status", "complete"),
                        capabilities=dict(d.get("capabilities", {})))
 
@@ -82,6 +83,27 @@ def target_matches(declared:str | None, target_id:str | None) -> bool:
   """Whether a producer's declared target denotes `target_id`, allowing registry aliases."""
   if not declared or not target_id: return False
   return declared in target_aliases(target_id) or target_id in target_aliases(declared)
+
+
+def match_target(observed:dict) -> str | None:
+  """The registry row whose declared facts the scanned device satisfies, or None.
+
+  A row states what it is in ``capabilities.match`` (for example ``{"apple_soc": "M3", "gpu_cores": 10}``).
+  A scanner reports what the machine said and asks here; it never carries its own table of chips, so a new
+  row is a data edit and needs no scanner change. Only ``exact`` rows match: a family descriptor names a
+  backend, not a machine. Two rows claiming the same device is a registry fault, so it matches nothing
+  rather than picking a winner.
+  """
+  hits = [name for name, t in TARGETS.items() if is_exact_target(name)
+          and (rule := t.capabilities.get("match")) and all(observed.get(k) == v for k, v in rule.items())]
+  return hits[0] if len(hits) == 1 else None
+
+
+def family_target(backend:str) -> str | None:
+  """The backend's family descriptor row, for a device no exact row claims."""
+  hits = [name for name, t in TARGETS.items()
+          if target_kind(name) == "family" and t.backend.lower() == backend.lower()]
+  return hits[0] if len(hits) == 1 else None
 
 
 def target_kind(name:str | None) -> str | None:

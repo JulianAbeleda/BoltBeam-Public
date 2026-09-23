@@ -14,7 +14,8 @@ from typing import Any
 
 from boltbeam.vocab import (SCHEMA_HARDWARE_PROFILE, SCHEMA_PROVIDER_CAPABILITIES,
                             SCHEMA_RUNTIME_PROFILE, SCHEMA_SCAN_EVIDENCE)
-from boltbeam.target.targets import TARGETS, is_exact_target, target_kind
+from boltbeam.target.targets import (TARGETS, family_target, is_exact_target, match_target,
+                                     target_kind)
 from boltbeam.workflow.common import (load_manifest, read_json, run_dir, update_manifest, write_json,
                                       write_manifest)
 
@@ -25,7 +26,7 @@ _NVIDIA_QUERY = (
   "name,uuid,pci.bus_id,memory.total,compute_cap,driver_version"
 )
 
-_APPLE_M4 = re.compile(r"\bApple\s+M4\b", re.IGNORECASE)
+_APPLE_SOC = re.compile(r"\bApple\s+(M\d+(?:\s+(?:Pro|Max|Ultra))?)\b", re.IGNORECASE)
 
 
 def _run_command(argv:tuple[str, ...]) -> tuple[int, str, str]:
@@ -75,7 +76,9 @@ def _probe_nvidia(nvidia_smi:str, run_command) -> tuple[list[dict[str, Any]], st
       return [], f"nvidia-smi returned {len(row)} columns; expected 6"
     name, uuid, pci_bus_id, memory_mib_raw, compute_capability, driver_version = (v.strip() for v in row)
     memory_mib = _as_int(memory_mib_raw)
-    architecture, target_id = _nvidia_arch(compute_capability)
+    architecture, by_convention = _nvidia_arch(compute_capability)
+    # A row may claim this device outright; otherwise the vendor's own architecture name is the id.
+    target_id = match_target({"compute_capability": compute_capability}) or by_convention
     devices.append({
       "vendor": "nvidia",
       "name": name,
@@ -101,10 +104,10 @@ def _apple_gpu_cores(row:dict[str, Any]) -> int | None:
   return None
 
 
-def _apple_target_id(name:str, gpu_cores:int | None) -> str:
-  if _APPLE_M4.search(name) and gpu_cores == 10:
-    return "apple_m4_10c"
-  return "apple_metal"
+def _apple_soc(name:str) -> str | None:
+  """The SoC the display report names ("M3", "M4 Pro"), or None when the report does not say it."""
+  match = _APPLE_SOC.search(name)
+  return re.sub(r"\s+", " ", match.group(1)).title() if match else None
 
 
 def _probe_apple_metal(system_profiler:str, run_command) -> tuple[list[dict[str, Any]], str | None]:
@@ -125,11 +128,13 @@ def _probe_apple_metal(system_profiler:str, run_command) -> tuple[list[dict[str,
                  if row.get(key)), "")
     if not name or "apple" not in name.lower(): continue
     gpu_cores = _apple_gpu_cores(row)
-    target_id = _apple_target_id(name, gpu_cores)
+    soc = _apple_soc(name)
+    # The registry says which row a device is; the scan only reports what the machine said.
+    target_id = match_target({"apple_soc": soc, "gpu_cores": gpu_cores}) or family_target("Metal")
     devices.append({
       "vendor": "apple",
       "name": name,
-      "apple_soc": "M4" if _APPLE_M4.search(name) else None,
+      "apple_soc": soc,
       "gpu_cores": gpu_cores,
       "metal_support": row.get("spdisplays_metal"),
       "metal_gpu_family_support": row.get("spdisplays_mtlgpufamilysupport"),
@@ -137,7 +142,7 @@ def _probe_apple_metal(system_profiler:str, run_command) -> tuple[list[dict[str,
       "target_registered": target_id in TARGETS,
       "target_kind": target_kind(target_id),
       "fact_status": {
-        "apple_soc": "hardware_scan" if _APPLE_M4.search(name) else "unknown",
+        "apple_soc": "hardware_scan" if soc else "unknown",
         "gpu_cores": "hardware_scan" if gpu_cores is not None else "unknown",
         "metal_family": "unavailable_from_system_profiler",
         "recommended_max_working_set_size": "requires_provider_probe",

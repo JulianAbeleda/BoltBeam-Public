@@ -75,9 +75,10 @@
     },
     {
       "target_id": "nvidia_sm120", "backend": "CUDA", "wave_size": 32, "subgroup_size": 32,
-      "lds_bytes_per_cu": null, "vram_bytes": null, "vector_load_bits": 128,
-      "compute_units": 170, "memory_bandwidth_gbs": 1792.0,
+      "lds_bytes_per_cu": 102400, "vram_bytes": 33662435328, "vector_load_bits": 128,
+      "compute_units": 170, "memory_bandwidth_gbs": 1693.3,
       "peak_tflops": {"fp32": 104.8, "fp16": 104.8, "int8": 180.0},
+      "matrix_tflops": {"fp16": 237.1},
       "dot_primitives": ["mma_m16n8k16", "dp4a"],
       "dot_primitives_lowered": [],
       "dequant_primitives": [],
@@ -87,13 +88,57 @@
         "compiler_arch": "sm_120",
         "timing_collector": "tinygrad-profile-events",
         "counter_importer": "ncu-import",
+        "match": {"compute_capability": "12.0"},
         "fact_status": {
-          "memory_bandwidth_gbs": "vendor_sheet_1792; measured read 1700 GB/s (94.9%) via bw_peak_cuda.cu",
-          "compute_units": "hardware_scan: 170 SMs (21760 CUDA cores / 128 lanes)",
-          "fp32_tflops": "derived: 21760 lanes x 2 FLOP x 2.41 GHz = 104.8",
-          "fp16_tflops": "vendor_sheet_cuda_core (conservative; tensor fp16 dense sheet 419, measured mma 255.4)",
-          "int8_tflops": "session_estimate_180 (nv-prefill-decode-diagnosis-20260801)",
-          "matrix_unit": "mma.sync.m16n8k16 measured 255.4 TF = 61% of the 419 TF sheet figure"
+          "wave_size": "hardware_scan",
+          "lds_bytes_per_cu": "hardware_scan",
+          "vram_bytes": "hardware_scan",
+          "compute_units": "hardware_scan",
+          "memory_bandwidth_gbs": "measurement",
+          "matrix_tflops": "measurement",
+          "fp32_tflops": "derived",
+          "fp16_tflops": "vendor_spec",
+          "int8_tflops": "estimate"
+        },
+        "fact_sources": {
+          "hardware_scan": {
+            "kind": "hardware_scan",
+            "scope": "NVIDIA GeForce RTX 5090, driver 595.84",
+            "method": "cudaGetDeviceProperties + cudaDeviceGetAttribute, recorded in bench/nvidia-sm120-facts-20260923/scan.txt",
+            "sm_count": 170,
+            "warp_size": 32,
+            "shared_mem_per_sm_bytes": 102400,
+            "shared_mem_per_block_bytes": 49152,
+            "total_global_mem_bytes": 33662435328,
+            "max_threads_per_block": 1024,
+            "observed_at": "2026-09-23"
+          },
+          "memory_bandwidth_gbs": {
+            "kind": "measurement",
+            "scope": "NVIDIA GeForce RTX 5090, driver 595.84",
+            "method": "tinygrad-arkey extra/llm_research/microbench/bw_peak_cuda.cu read, 4 GiB, 32 passes, three runs (1693.3 / 1693.4 / 1692.7)",
+            "value_gbs": 1693.3,
+            "copy_gbs": 1493.9,
+            "theoretical_bus_gbs": 1792.1,
+            "theoretical_note": "14.001 GHz x 512 bit x 2 / 8, from the driver's own clock and bus width; the measured read reaches 94.5% of it",
+            "observed_at": "2026-09-23"
+          },
+          "matrix_tflops": {
+            "kind": "measurement",
+            "scope": "NVIDIA GeForce RTX 5090, driver 595.84, graphics clock pinned, 2947 MHz sustained",
+            "method": "tinygrad-arkey extra/llm_research/microbench/mma_peak_cuda.cu, mma.sync.aligned.m16n8k16 fp16 in and fp32 accumulate, register resident, flat at 237.0-237.1 TF for 4/8/12/16/20 accumulators",
+            "value_tflops": 237.1,
+            "dtype": "fp16",
+            "unpinned_tflops": 214.5,
+            "unpinned_clock_mhz": 2662,
+            "note": "a matrix peak is only a fact with its clock: the same kernel reads 214.5 TF at the 2662 MHz the card picks on its own",
+            "observed_at": "2026-09-23"
+          },
+          "peak_tflops": {
+            "kind": "derived",
+            "method": "fp32 = 21760 lanes x 2 FLOP x 2.41 GHz = 104.8; fp16 follows the CUDA-core sheet; int8 180 is a session estimate (nv-prefill-decode-diagnosis-20260801)",
+            "note": "these are the vector-ALU rates. The matrix unit is measured separately in matrix_tflops."
+          }
         },
         "same_type_quant_kv_flash_fastpath": false,
         "mixed_quant_kv_flash_fastpath": false,

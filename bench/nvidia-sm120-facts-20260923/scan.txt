@@ -1,0 +1,27 @@
+# nvidia_sm120 fact scan
+2026-09-23T10:48:49-04:00
+
+## driver
+{"name":"NVIDIA GeForce RTX 5090","sm_count":170,"warp_size":32,"shared_mem_per_block_bytes":49152,"shared_mem_per_sm_bytes":102400,"total_global_mem_bytes":33662435328,"clock_khz":2580000,"mem_clock_khz":14001000,"mem_bus_bits":512,"compute_capability":"12.0","max_threads_per_block":1024}
+name, driver_version, memory.total [MiB], clocks.max.sm [MHz]
+NVIDIA GeForce RTX 5090, 595.84, 32607 MiB, 3135 MHz
+
+## clock during measurement
+225 MHz
+
+## bandwidth (read, 4 GiB, 32 passes) x3
+mode=read bytes=4.000 GiB passes=32 blocks=4096  time=81.17 ms  -> 1693.3 GB/s (94.5% of 1792 GB/s sheet)
+mode=read bytes=4.000 GiB passes=32 blocks=4096  time=81.16 ms  -> 1693.4 GB/s (94.5% of 1792 GB/s sheet)
+mode=read bytes=4.000 GiB passes=32 blocks=4096  time=81.17 ms  -> 1693.2 GB/s (94.5% of 1792 GB/s sheet)
+
+## bandwidth (copy, 4 GiB, 16 passes) x3
+mode=copy bytes=4.000 GiB passes=16 blocks=4096  time=91.90 ms  -> 1495.5 GB/s (83.5% of 1792 GB/s sheet)
+mode=copy bytes=4.000 GiB passes=16 blocks=4096  time=91.83 ms  -> 1496.6 GB/s (83.5% of 1792 GB/s sheet)
+mode=copy bytes=4.000 GiB passes=16 blocks=4096  time=91.91 ms  -> 1495.3 GB/s (83.4% of 1792 GB/s sheet)
+
+## mma.sync m16n8k16 fp16->fp32, accumulator sweep
+NACC=4   blocks=2048 tpb=256 iters=400000 nacc=4  time=453.08 ms  -> 237.0 TFLOPS
+NACC=8   blocks=2048 tpb=256 iters=200000 nacc=8  time=452.94 ms  -> 237.1 TFLOPS
+NACC=12  blocks=2048 tpb=256 iters=133333 nacc=12  time=452.88 ms  -> 237.1 TFLOPS
+NACC=16  blocks=2048 tpb=256 iters=100000 nacc=16  time=452.90 ms  -> 237.1 TFLOPS
+NACC=20  blocks=2048 tpb=256 iters=80000 nacc=20  time=453.09 ms  -> 237.0 TFLOPS
