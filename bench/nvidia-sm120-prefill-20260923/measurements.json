@@ -71,7 +71,7 @@
     "clock_mhz": 2932,
     "note": "rules dp4a out as the prefill path by a factor of 28"
   },
-  "open": "one session; attention is 5.2% of time on fp16 HMMA and is not separated out in the share",
+  "open": "whether a wider token tile would raise IMMA utilisation, which is a change to llama.cpp and was not tried",
   "matrix_peaks_at_2947mhz": {
     "fp16_mma_m16n8k16_tflops": 237.1,
     "int8_mma_m16n8k32_tops": 947.0,
@@ -115,5 +115,68 @@
     },
     "instruction_evidence": "fork docs/task_workflow/output/nv-llama-prefill-lifecycle-audit.md: SASS shows IMMA.16832 (Q4_K) and IMMA.16816 (Q6_K), no HMMA, no dp4a",
     "audit_mmq_share": 0.824
+  },
+  "prefill_by_context_at_2655mhz": [
+    {
+      "context": 128,
+      "tok_s": 8000.97,
+      "stddev": 1452.48
+    },
+    {
+      "context": 256,
+      "tok_s": 11252.77,
+      "stddev": 769.05
+    },
+    {
+      "context": 512,
+      "tok_s": 13870.06,
+      "stddev": 562.84
+    },
+    {
+      "context": 1024,
+      "tok_s": 13958.65,
+      "stddev": 5.42
+    },
+    {
+      "context": 2048,
+      "tok_s": 13828.54,
+      "stddev": 3.91
+    },
+    {
+      "note": "flat within 0.3% from 512 to 2048: work per token is constant once the grid fills the machine"
+    }
+  ],
+  "mul_mat_q_pipe_utilisation": {
+    "source": "ncu-pipe-utilisation.csv and ncu-memory-and-tensor.csv, percent of peak sustained active",
+    "q4k_busiest_launch": {
+      "imma": 31.6,
+      "lsu": 40.0,
+      "l1tex": 40.0,
+      "fma": 29.6,
+      "alu": 12.1,
+      "issue_active": 49.5,
+      "dram_throughput": 7.5,
+      "l2_hit_rate": 87.9
+    },
+    "q6k": {
+      "imma": 33.3,
+      "lsu": 28.8,
+      "l1tex": 28.8,
+      "fma": 14.1,
+      "alu": 10.4,
+      "issue_active": 31.1,
+      "dram_throughput": 8.5,
+      "l2_hit_rate": 80.0
+    },
+    "finding": "not DRAM bound: DRAM idle at 7.5% and L2 catches 88%. Load-store and L1 are busiest at 40%, above the matrix pipe at 31.6%. Unpacking Q4_K, applying scales and staging operands into shared memory is proportional to the matrix work, not amortised by it.",
+    "cross_check": "IMMA at 31.6% independently confirms the 29.3% computed from wall clock",
+    "caveat": "ncu replays kernels, so durations in these CSVs are not wall-clock"
+  },
+  "tile_intensity": {
+    "token_tile": 128,
+    "q4k_ops_per_weight_byte": 455,
+    "q6k_ops_per_weight_byte": 312,
+    "int8_crossover_ops_per_byte": 559,
+    "note": "a 128-token tile sits on the memory side of the roofline even though the 512-token prompt at 1017 sits on the compute side. This predicted a DRAM bound kernel, which was wrong; the traffic is real but it lands in L2."
   }
 }

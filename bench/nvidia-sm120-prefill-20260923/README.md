@@ -109,3 +109,57 @@ llama-bench -m Qwen3-8B-Q4_K_M.gguf -p 512 -n 0 -r 10 -ngl 99
 sudo nvidia-smi -lgc <clock> ; <run> ; sudo nvidia-smi -rgc
 cuobjdump --dump-ptx libggml-cuda.so | grep -oE 'mma\.sync\.aligned\.m[0-9]+n[0-9]+k[0-9]+[a-z0-9.]*'
 ```
+
+
+## Why the matrix kernels stop at 29%
+
+The obvious guess was weight streaming. `mul_mat_q` tiles the prompt 128 tokens at a time, and one
+Q4_K weight byte carries 128 tokens x 2 ops / 0.5625 bytes = 455 ops. The INT8 crossover on this
+card is 947.0 / 1693.3 = 559 ops per byte, so a 128-token tile is on the memory side of the
+roofline even though the whole 512-token prompt, at 1,017, is on the compute side. That predicted
+a DRAM-bound kernel and a prefill rate flat in context length.
+
+Half right. Prefill is flat in context, and dramatically so:
+
+| Context | Prefill, clock pinned at 2,655 MHz |
+|---:|---:|
+| 128 | 8,001 ± 1,452 tok/s |
+| 256 | 11,252.8 ± 769.1 |
+| 512 | 13,870.1 ± 562.8 |
+| 1,024 | 13,958.7 ± 5.4 |
+| 2,048 | 13,828.5 ± 3.9 |
+
+From 512 to 2,048 the rate moves 0.3% across a fourfold context. Work per token is constant, so
+nothing amortises past the point where the grid fills the machine. The climb from 128 to 512 is
+that filling: one token-tile does not have enough blocks for 170 multiprocessors.
+
+The reason was not DRAM. `ncu` on the `mul_mat_q` launches:
+
+| | Q4_K, busiest launch | Q6_K |
+|---|---:|---:|
+| IMMA, the matrix pipe | 31.6% | 33.3% |
+| LSU, load and store | **40.0%** | 28.8% |
+| L1TEX | **40.0%** | 28.8% |
+| FMA, the float pipe | 29.6% | 14.1% |
+| ALU | 12.1% | 10.4% |
+| Issue slots active | 49.5% | 31.1% |
+| DRAM throughput | 7.5% | 8.5% |
+| L2 hit rate | 87.9% | 80.0% |
+
+DRAM is idle at 7.5% and L2 catches 88% of the traffic, so the weights are not being re-streamed
+per tile: they fit and they stay. The prediction was wrong about the mechanism while being right
+about the shape.
+
+What is busiest is load-store and L1, at 40%, above the matrix pipe at 31.6%. Nothing is
+saturated and the machine issues on half its slots. Reading a Q4_K weight is not one load: it is
+an unpack, a scale, and a staging write into shared memory before IMMA can see it, and that work
+is proportional to the matrix work rather than amortised by it. The FMA pipe at 29.6% is the
+scales.
+
+So the matrix unit is idle two thirds of the time because the kernel is busy preparing its
+operands, in L1 and shared memory rather than from DRAM. The 31.6% IMMA figure is an independent
+confirmation of the 29.3% computed from wall clock at the top of this note, by a different
+instrument.
+
+`ncu` serialises and replays kernels, so the durations in those CSVs are not wall-clock times.
+The percentages are what they are for.
