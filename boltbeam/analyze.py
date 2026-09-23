@@ -243,7 +243,8 @@ def emit_analysis_bundle(profile:ModelProfile, target:TargetProfile, model_path:
   search_json = emit_search_space(profile, target)
   policy_json = emit_seed_policy(profile, target)
   fixtures_json = emit_fixture_manifest(profile)
-  plan_json = build_measurement_plan(profile, target, model_path, resolve_tinygrad_root(tinygrad_root),
+  plan_json = build_measurement_plan(profile, target, model_path,
+                                     resolve_tinygrad_root(tinygrad_root, allow_unresolved=True),
                                      ctxs, max_context, route_flags)
 
   _write_json(out / "model_profile.json", profile_json)

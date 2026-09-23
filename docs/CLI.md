@@ -11,6 +11,13 @@ GPU or the tinygrad fork are marked.
 
 Python 3.10 or newer. No dependencies.
 
+Check first, because a stock macOS ships 3.9 as `python3` and BoltBeam fails there with a
+`TypeError` from a type annotation rather than a clear message:
+
+```
+python3 --version        # 3.10 or newer; on macOS you may need python3.12 by name
+```
+
 ```
 git clone https://github.com/JulianAbeleda/BoltBeam-Public.git
 cd BoltBeam-Public
@@ -121,7 +128,9 @@ python3 -m boltbeam.cli analyze MODEL --target apple_m3_10c --out-dir out/
 
 That writes `model_profile.json`, `search_space.json`, `route_policy.seed.json`,
 `next_measurement_plan.json`, `fixture_manifest.json`, `analysis_manifest.json`, and
-`tinygrad_commands.md`, which is the list of commands to run on the compiler side.
+`tinygrad_commands.md`, which is the list of commands to run on the compiler side. Those commands
+begin `cd $TINYGRAD_ROOT`. Set that variable, or pass `--tinygrad-root`, and they are ready to paste.
+You do not need a checkout to produce them.
 
 ## 4. A run folder, when you are doing this properly
 
@@ -150,13 +159,22 @@ python3 -m boltbeam.cli roofline trace.json --peak 1700                   # per 
 `roofline` takes a per-kernel trace and attributes the whole token: which kernels are near
 their floor, which are not, and how much time is neither.
 
+Reading a prompt has its own three, because prefill is a comparison against a baseline rather than a
+ceiling on its own:
+
+```
+python3 -m boltbeam.cli prefill-roofline --baseline before.json --candidate after.json --context 512
+python3 -m boltbeam.cli prefill-roofline-ladder --baseline before.json --candidate after.json
+python3 -m boltbeam.cli prefill-role-trace --role ffn_gate_up --quant Q4_K --shape 12288x4096
+```
+
 ## 6. The verdict, and the ledger
 
 ```
 python3 -m boltbeam.cli evaluate --profile model_profile.json --search search_space.json \
   --evidence evidence.json
 python3 -m boltbeam.cli ledger add decision.json --ledger ledger.jsonl   # one verdict, with its reason
-python3 -m boltbeam.cli ledger report --ledger ledger.jsonl              # deterministic markdown
+python3 -m boltbeam.cli ledger report ledger.jsonl                       # deterministic markdown
 python3 -m boltbeam.cli check-policy --ledger ledger.jsonl
 ```
 
@@ -184,11 +202,27 @@ GPU time. The first two run on the main processor and need no hardware.
 
 | You have | You can run |
 |---|---|
-| this repo and a model file | `inspect`, `roofline-theoretical`, `emit-search`, `vocab`, `analyze`, `load`, `boundary-plan`, `propose-semantic-dimensions`, `assess-semantic-population` |
+| this repo and a model file | `inspect`, `roofline-theoretical`, `emit-search`, `vocab`, `analyze`, `load`, `autoscan`, `boundary-plan`, `propose-semantic-dimensions`, `assess-semantic-population` |
 | a profiler trace from any vendor | `import-ncu`, `import-hw-trace`, `compare-hw-trace`, `profiler-report`, `roofline`, `evaluate`, `ledger` |
 | the tinygrad fork and a GPU | `semantic-campaign`, `search-full-kernel`, `collect-hw-trace`, `mr7-provider-run` |
 
 `python3 -m boltbeam.cli --help` lists every command; each one takes `--help` too.
+
+## What actually needs tinygrad
+
+Almost nothing. All 60 commands load and `--help` with no tinygrad anywhere on the machine, and
+BoltBeam never imports it on any path the command line reaches. Only two things want a real checkout:
+
+- `collect-hw-trace`, which drives a run and collects the trace. It runs the model, so it needs the
+  thing that runs models.
+- `mr12-static-audit`, which audits tinygrad's own source. It needs the source it is auditing.
+
+`analyze` writes commands that mention the checkout but does not read it. Without one it writes
+`$TINYGRAD_ROOT` and reports the three helper scripts as absent, which is true and says so.
+
+That is the division of labour. BoltBeam does the arithmetic and keeps the books, and it can do all of
+that on its own. A compiler runs the kernels and hands back measurements, and tinygrad is one such
+compiler. Any producer that emits the normalised artifacts in `schemas/` works in its place.
 
 ## Reading the output
 
