@@ -131,7 +131,12 @@
             "dtype": "fp16",
             "unpinned_tflops": 214.5,
             "unpinned_clock_mhz": 2662,
-            "note": "a matrix peak is only a fact with its clock: the same kernel reads 214.5 TF at the 2662 MHz the card picks on its own",
+            "note": "a matrix peak is only a fact with its clock: the same kernel reads 214.5 TF at the 2662 MHz the card picks on its own, which is the same 92% of peak",
+            "architectural_flop_per_sm_per_clock": 512,
+            "theoretical_tflops_at_measured_clock": 256.5,
+            "share_of_theoretical": 0.924,
+            "vendor_dense_tflops": 209.5,
+            "vendor_dense_note": "170 SM x 512 FLOP x 2.407 GHz reference boost. The 419 NVIDIA leads with is this figure with 2:4 sparsity, which a dense measurement must not be divided by",
             "observed_at": "2026-09-23"
           },
           "peak_tflops": {
