@@ -1,0 +1,104 @@
+{
+  "schema": "boltbeam.bench_record.v1",
+  "target_id": "nvidia_sm120",
+  "gpu": "NVIDIA GeForce RTX 5090, driver 595.84",
+  "model": "Qwen3-8B-Q4_K_M.gguf",
+  "harness": "llama.cpp llama-bench -p 512 -n 0 -r 10 -ngl 99",
+  "observed_at": "2026-09-23",
+  "prefill_by_clock": [
+    {
+      "clock_pinned_mhz": 2100,
+      "clock_sustained_mhz": 2040,
+      "tok_s": 10683.9,
+      "stddev": 555.54
+    },
+    {
+      "clock_pinned_mhz": 2400,
+      "clock_sustained_mhz": 2392,
+      "tok_s": 12121.28,
+      "stddev": 704.66
+    },
+    {
+      "clock_pinned_mhz": 2700,
+      "clock_sustained_mhz": 2662,
+      "tok_s": 13807.95,
+      "stddev": 881.16
+    },
+    {
+      "clock_pinned_mhz": 3135,
+      "clock_sustained_mhz": 2835,
+      "tok_s": 14323.15,
+      "stddev": 907.6
+    }
+  ],
+  "decode_by_clock_for_comparison": [
+    {
+      "clock_sustained_mhz": 2032,
+      "tok_s": 208.14,
+      "stddev": 1.05
+    },
+    {
+      "clock_sustained_mhz": 2340,
+      "tok_s": 231.58,
+      "stddev": 1.31
+    },
+    {
+      "clock_sustained_mhz": 2677,
+      "tok_s": 251.2,
+      "stddev": 1.47
+    },
+    {
+      "clock_sustained_mhz": 2925,
+      "tok_s": 254.15,
+      "stddev": 1.56
+    }
+  ],
+  "clock_sensitivity": {
+    "prefill_share_of_proportional": 0.87,
+    "decode_share_of_proportional": 0.5,
+    "note": "prefill is compute work at 1017 sums per byte against a ridge of 140, so it follows the clock; decode reads the weights once and two thirds of it is memory, which does not"
+  },
+  "instruction_paths_in_llama_ptx": {
+    "mma_m16n8k16_f16": 39216,
+    "mma_m16n8k32_s8": 38880,
+    "mma_m16n8k16_s8": 26688,
+    "dp4a": 13900,
+    "note": "the library ships PTX and is compiled at load, so which path runs is a runtime choice"
+  },
+  "dp4a_peak": {
+    "g_dp4a_per_s": 950.0,
+    "int8_tops": 7.6,
+    "clock_mhz": 2932,
+    "note": "rules dp4a out as the prefill path by a factor of 28"
+  },
+  "open": "which instruction mix llama.cpp ran; the library carries fp16 and INT8 matrix paths and dp4a",
+  "matrix_peaks_at_2947mhz": {
+    "fp16_mma_m16n8k16_tflops": 237.1,
+    "int8_mma_m16n8k32_tops": 947.0,
+    "ratio": 3.994,
+    "fp16_share_of_architectural": 0.924,
+    "int8_share_of_architectural": 0.923,
+    "architectural_ops_per_sm_per_clock": {
+      "fp16": 512,
+      "int8": 2048
+    },
+    "vendor_dense_at_reference_boost": {
+      "fp16_tflops": 209.5,
+      "int8_tops": 838.0
+    },
+    "note": "both probes reach the same share of a clean power-of-two rate, which is why the two numbers can be compared"
+  },
+  "prefill_share_of_ceiling": {
+    "at_clock_mhz": 2835,
+    "needs_tflop_s": 216.8,
+    "if_all_fp16": {
+      "ceiling": 228.1,
+      "share": 0.95
+    },
+    "if_all_int8": {
+      "ceiling": 911.0,
+      "share": 0.238
+    },
+    "note": "llama.cpp's MMQ path quantises activations to Q8_1, so the truth is near the bottom of this range; the mix that actually ran is not measured"
+  }
+}
