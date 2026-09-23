@@ -43,3 +43,27 @@ nvcc -O3 -arch=sm_120 -DNACC=8 mma_peak_cuda.cu -o mma_peak
 ./bw_peak read 4294967296 32
 sudo nvidia-smi -lgc 3135 && ./mma_peak ; sudo nvidia-smi -rgc
 ```
+
+## What the clock does to tokens per second
+
+Decode is mostly a memory problem, and the memory speed does not move with the graphics clock: the
+streaming read measures 1,692.7 to 1,694.3 GB/s whether the core runs at 2,662 MHz or 2,947. But about a
+third of a decoded token is not memory. It is launches, small kernels and latency, and that part is core
+clock work.
+
+llama.cpp, Qwen3-8B Q4_K_M, `llama-bench -p 0 -n 128 -r 3 -ngl 99`, graphics clock pinned:
+
+| Clock pinned | Clock sustained | Decode |
+|---:|---:|---:|
+| 2,100 MHz | 2,032 MHz | 208.14 ± 1.05 tok/s |
+| 2,400 MHz | 2,340 MHz | 231.58 ± 1.31 tok/s |
+| 2,700 MHz | 2,677 MHz | 251.20 ± 1.47 tok/s |
+| 3,135 MHz | 2,925 MHz | 254.15 ± 1.56 tok/s |
+
+208 to 254 tokens per second, a 22% spread, on one card with one model and one runtime. The only thing
+that changed was the clock.
+
+This is worth knowing before reading any decode figure as a property of the software. A run that drifts
+between 242 and 249 tokens per second has not changed; its card has settled somewhere around 2.5 to
+2.7 GHz. A decode number quoted without its clock has a few per cent of slack in it that belongs to the
+hardware, not to the kernel.
