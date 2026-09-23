@@ -126,6 +126,53 @@
       }
     },
     {
+      "target_id": "apple_m3_10c", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
+      "lds_bytes_per_cu": null, "vram_bytes": null, "vector_load_bits": 128,
+      "compute_units": null, "memory_bandwidth_gbs": 89.9, "peak_tflops": {"fp16": 3.152},
+      "dot_primitives": ["simdgroup_matrix"],
+      "dequant_primitives": [],
+      "backend_status": "descriptor_only",
+      "capabilities": {
+        "target_kind": "exact",
+        "tinygrad_device": "METAL",
+        "match": {"apple_soc": "M3", "gpu_cores": 10},
+        "fact_status": {
+          "wave_size": "hardware_family",
+          "subgroup_size": "hardware_family",
+          "gpu_cores": "hardware_scan",
+          "lds_bytes_per_cu": "unknown",
+          "vram_bytes": "not_applicable_unified_memory",
+          "memory_bandwidth_gbs": "measurement",
+          "peak_tflops": "measurement",
+          "compute_units": "unknown"
+        },
+        "fact_sources": {
+          "memory_bandwidth_gbs": {
+            "kind": "measurement",
+            "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
+            "method": "tinygrad DEV=METAL, 2 GiB clone, read and write counted as traffic, best of five",
+            "value_gbs": 89.9,
+            "vendor_spec_gbs": 100.0,
+            "vendor_url": "https://support.apple.com/en-us/118551",
+            "observed_at": "2026-09-21"
+          },
+          "peak_tflops": {
+            "kind": "measurement",
+            "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
+            "method": "tinygrad-arkey extra/llm_research/wmma_peak_metal.py, simdgroup_multiply_accumulate plateau, fp16 in and fp32 accumulate",
+            "value_tflops": 3.152,
+            "dtype": "fp16",
+            "note": "matrix unit; Apple publishes no FLOPS figure for M-series",
+            "observed_at": "2026-09-22"
+          }
+        },
+        "same_type_quant_kv_flash_fastpath": false,
+        "mixed_quant_kv_flash_fastpath": false,
+        "kv_quant_speed_residual_required": true,
+        "kv_quant_quality_gate_required": true
+      }
+    },
+    {
       "target_id": "apple_m4_10c", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
       "lds_bytes_per_cu": null, "vram_bytes": null, "vector_load_bits": 128,
       "compute_units": null, "memory_bandwidth_gbs": 120.0, "peak_tflops": {},

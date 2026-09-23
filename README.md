@@ -8,6 +8,8 @@
 
 **Turn model weights into a codegen search problem.**
 
+New here? **[docs/CLI.md](docs/CLI.md)** walks the command line end to end, from reading a model file to the ledger.
+
 BoltBeam reads a model file, works out which operations actually matter for
 speed, and emits a bounded search space plus a route policy for a downstream
 compiler to explore. It measures; it does not guess.
