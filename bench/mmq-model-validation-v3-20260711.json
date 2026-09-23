@@ -1,0 +1,60 @@
+{
+  "extrapolation_audit": {
+    "direct_envelope_ratio": 0.48163653415152463,
+    "extrapolation_is_primary": false,
+    "gated_envelope_ratio": 1.4488560036089542,
+    "reason": "direct is within the 512 training envelope yet misses wall by over two orders of magnitude; gated extrapolation is only 1.45x"
+  },
+  "falsification_reasons": [
+    "both medians miss intervals",
+    "absolute errors exceed 15%",
+    "ratio error exceeds 10%"
+  ],
+  "freeze_ids": {
+    "direct_owner_v0": "sha256:7b3ed93768c9e934daa0a71b2e4fdefe051e14545beba169c5b878016cc780e4",
+    "gated_matrix_v0": "sha256:ff63d0310cee83d74448700eb742270d56181a8ddf794256ddb380dde9473eea"
+  },
+  "individual": {
+    "direct_owner_v0": {
+      "extrapolated": false,
+      "interval_contains": false,
+      "measured_median_ms": 4.453295000000001,
+      "predicted_ms": {
+        "high": 0.019832975699459004,
+        "low": 0.01673310795869683,
+        "median": 0.018283041829077917
+      },
+      "relative_error": 0.9958944911960519,
+      "training_envelope_ratio": 0.48163653415152463
+    },
+    "gated_matrix_v0": {
+      "extrapolated": true,
+      "interval_contains": false,
+      "measured_median_ms": 15.0817915,
+      "predicted_ms": {
+        "high": 0.07670227113121086,
+        "low": 0.019982766829918883,
+        "median": 0.04834251898056487
+      },
+      "relative_error": 0.9967946434625777,
+      "training_envelope_ratio": 1.4488560036089542
+    }
+  },
+  "model_id": "sha256:42bd27a9954032df7626427961bcc78755d0d21933de2987409a8ffbda3d7c0f",
+  "pair": {
+    "measured_ratio": 3.3866589794747477,
+    "predicted_ratio": 2.6441179445139937,
+    "ratio_error": 0.2192547402797308
+  },
+  "residual": {
+    "classification": "kernel_only_vs_runner_wall_scope_mismatch",
+    "evidence": [
+      "independent SQ calibration and candidate SQ describe GPU kernel execution",
+      "bounded harness wall runner materializes output and includes Python/Tensor/readback/synchronization work",
+      "direct is inside training envelope but still misses catastrophically"
+    ],
+    "next_probe": "compile one small looped generated kernel without source unrolling; run 1/16/64/256 device iterations with preallocated buffers and GPU timestamps, plus separately time harness setup/readback"
+  },
+  "schema": "boltbeam.mmq_model_validation.v3",
+  "status": "falsified"
+}

@@ -1,0 +1,55 @@
+{
+  "falsification_reasons": [
+    "both measured medians miss frozen intervals",
+    "absolute timing error exceeds 15%",
+    "wall ratio error exceeds 10%"
+  ],
+  "freeze_ids": {
+    "direct_owner_v0": "sha256:3a93a3d9e0bbf7df7f7bfe705119b4a8f5c77bc12d96fc1e7e2e1c98efbdc5fc",
+    "gated_matrix_v0": "sha256:504bc23281ec7387e394e900968644ce6431e67585aa579098604e54a2dc6dd9"
+  },
+  "individual": {
+    "direct_owner_v0": {
+      "aggregate_wave_cycles_predicted": 1573714.6240557844,
+      "interval_contains_median": false,
+      "measured_median_ms": 4.453295000000001,
+      "predicted_ms": {
+        "high": 0.03696114005140879,
+        "low": 0.00011873763037783085,
+        "median": 0.011873763037783085
+      },
+      "relative_error": 0.9973337128939846
+    },
+    "gated_matrix_v0": {
+      "aggregate_wave_cycles_predicted": 4734038.469584012,
+      "interval_contains_median": false,
+      "measured_median_ms": 15.0817915,
+      "predicted_ms": {
+        "high": 0.08578177319483805,
+        "low": 0.0002755738720341602,
+        "median": 0.02755738720341602
+      },
+      "relative_error": 0.9981728041258616
+    }
+  },
+  "model_id": "sha256:0ca97ac5eb61a1b7eb1f67eba2d08feaf3c45f18f50cdf3308207f45a3c4061f",
+  "pair": {
+    "aggregate_ratio_error_vs_wall": 0.11175180282048222,
+    "measured_wall_ratio": 3.3866589794747477,
+    "predicted_aggregate_cycle_ratio": 3.00819373298027,
+    "predicted_wall_ratio": 2.3208638336243217,
+    "wall_ratio_error": 0.31470400542534843
+  },
+  "residual": {
+    "classification": "generated_to_holdout_wall_clock_transfer",
+    "evidence": [
+      "aggregate scheduling ratio is substantially closer than v1 static wall ratio",
+      "candidate post-holdout SQ diagnostics show a near-common aggregate cycle scale residual",
+      "generated calibration ran profile_standard while sealed holdout ran auto_nonprivileged_interleaved",
+      "SQ_WAIT_ANY remained overlapping and was not added"
+    ],
+    "next_probe": "independent long-duration generated kernels at 1K/4K/16K chain lengths under both profile_standard and auto clock policy, collecting SQ_WAVE_CYCLES and live per-window clock"
+  },
+  "schema": "boltbeam.mmq_model_validation.v2",
+  "status": "falsified"
+}

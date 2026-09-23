@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "properties": {
+    "contexts": {
+      "type": "array"
+    },
+    "model_id": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "array"
+    },
+    "phase_order": {
+      "type": "array"
+    },
+    "primitive_profile": {
+      "type": "object"
+    },
+    "priority_roles": {
+      "type": "array"
+    },
+    "provider_summary": {
+      "type": "object"
+    },
+    "route_focus": {
+      "type": "object"
+    },
+    "schema": {
+      "const": "boltbeam.measurement_plan.v1"
+    },
+    "target": {
+      "type": "object"
+    },
+    "timing_profile": {
+      "type": "object"
+    },
+    "workload": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "contexts",
+    "model_id",
+    "notes",
+    "phase_order",
+    "primitive_profile",
+    "priority_roles",
+    "provider_summary",
+    "route_focus",
+    "schema",
+    "target",
+    "timing_profile",
+    "workload"
+  ],
+  "title": "boltbeam measurement_plan contract (top-level shape, generated from a real artifact; LN-100)",
+  "type": "object"
+}

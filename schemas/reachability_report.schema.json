@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Reachability Report",
+  "type": "object",
+  "required": ["schema", "model_id", "target_id", "rows"],
+  "properties": {
+    "schema": {"const": "boltbeam.reachability_report.v1"},
+    "model_id": {"type": "string", "minLength": 1},
+    "target_id": {"type": "string", "minLength": 1},
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "role", "class", "reason", "reopen"],
+        "properties": {
+          "candidate_id": {"type": "string", "minLength": 1},
+          "role": {"type": "string"},
+          "class": {"enum": ["reachable", "emitter-blocked", "primitive-missing", "target-incomplete", "refuted-by-ledger"]},
+          "reason": {"type": "string"},
+          "reopen": {"type": "string"}
+        }
+      }
+    }
+  }
+}

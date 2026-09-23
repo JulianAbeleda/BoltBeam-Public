@@ -1,0 +1,19 @@
+{
+  "schema": "boltbeam.qwen3_14b_same_run_preparation.v1",
+  "status": "BLOCKED",
+  "reason": "role-baseline artifacts are absent or incomplete",
+  "model": "Qwen3-14B-Q4_K_M",
+  "target": "gfx1100",
+  "contexts": ["pp512", "pp1024", "pp2048", "pp4096"],
+  "required_producer_fields": [
+    "schema", "model", "target", "same_run_id", "candidate_id", "quant",
+    "role", "shape.M", "shape.N", "shape.K", "route.provenance",
+    "route.fallback", "compile.status", "correctness.status",
+    "timing.raw_samples_ms", "timing.aggregate_ms", "artifact_ref"
+  ],
+  "required_artifacts": [
+    "ffn_gate_up/Q4_K", "ffn_gate_up/Q6_K", "ffn_down/Q4_K", "ffn_down/Q6_K",
+    "attn_qo/Q4_K", "attn_qo/Q6_K", "attn_kv/Q4_K", "attn_kv/Q6_K"
+  ],
+  "next_action": "producer emits the required artifacts, then rerun tools/prepare_14b_same_run.py"
+}

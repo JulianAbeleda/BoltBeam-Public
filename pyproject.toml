@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boltbeam"
+version = "0.1.0"
+description = "Translate model weights into codegen search profiles."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "BoltBeam contributors"}]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "jsonschema>=4"]
+
+[project.scripts]
+boltbeam = "boltbeam.cli:main"
+
+[tool.setuptools.package-data]
+boltbeam = ["policy/assets/*.json", "policy/assets/*.sha256"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

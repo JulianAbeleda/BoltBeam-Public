@@ -1,0 +1,206 @@
+{
+  "schema": "boltbeam.primitive_vocab.v1",
+  "note": "Canonical codegen-primitive vocabulary for the AMD/gfx1100 substrate \u2014 the SINGLE source of truth for what the machine search can generate (lowered=true) vs the 'lower all' backlog (lowered=false). model_vocab.py cross-references a model's required primitives against this. A consistency test asserts the lowered dots here == target.dot_primitives_lowered so the two cannot drift. | value = near-term roofline leverage tier (foundational/high/med/low/generality). Per exhaustive-scope philosophy: value ORDERS the work, nothing is closed \u2014 every backlog item is eventually built (learning goal), every explored dead-end retains its precise 'reason' as an asset.",
+  "primitives": [
+    {
+      "name": "global_load",
+      "kind": "memory",
+      "lowered": true,
+      "mechanism": "native vectorizable global load",
+      "value": "foundational"
+    },
+    {
+      "name": "lds_stage",
+      "kind": "memory",
+      "lowered": true,
+      "mechanism": "LDS DEFINE_LOCAL + s_barrier (native)",
+      "value": "foundational"
+    },
+    {
+      "name": "elementwise",
+      "kind": "math",
+      "lowered": true,
+      "mechanism": "native ALU (add/mul/sub/select)",
+      "value": "foundational"
+    },
+    {
+      "name": "transcendental",
+      "kind": "math",
+      "lowered": true,
+      "mechanism": "exp2/sigmoid/sin/cos transcendental patterns",
+      "value": "foundational"
+    },
+    {
+      "name": "reduce",
+      "kind": "reduce",
+      "lowered": true,
+      "mechanism": "native reduce loop (unfused-reduce OVERHEAD is scheduling, not a missing primitive)",
+      "value": "foundational"
+    },
+    {
+      "name": "dequant_bitunpack",
+      "kind": "dequant",
+      "lowered": true,
+      "mechanism": "v_bfe/v_lshrrev/v_and \u2014 inherent Q4_K/Q6_K nibble unpack",
+      "value": "foundational"
+    },
+    {
+      "name": "dequant_convert",
+      "kind": "dequant",
+      "lowered": true,
+      "mechanism": "v_cvt_f32_ubyte \u2014 int->float convert (inherent; the decode bottleneck)",
+      "value": "foundational"
+    },
+    {
+      "name": "xlane_reduce",
+      "kind": "xlane",
+      "lowered": true,
+      "mechanism": "ds_bpermute cross-lane reduce (M5 shipped)",
+      "value": "foundational"
+    },
+    {
+      "name": "v_dot2_f32_f16",
+      "kind": "dot",
+      "lowered": true,
+      "mechanism": "pm_fdot2 / __builtin_amdgcn_fdot2",
+      "value": "low",
+      "reason": "REFUTED for 14B Q4_K decode by roofline-first (2026-07-02, docs/14b-decode-vdot2-roofline-20260702.md): decode arithmetic intensity = 14 FLOP/byte, ~11x BELOW RDNA3's ~148 FLOP/byte balance -> deeply MEMORY-bound. v_dot2 doubles f16-MAC throughput (a COMPUTE lever); doubling compute on a memory-bound streaming GEMV moves the roofline by ~0. Same wall as v_dot4/int-dot but proven a-priori by AI, not post-hoc. Every dot-instruction lever is exhausted for this workload; the frontier is fewer weight BYTES (sub-4-bit, quality-walled) or duty-cycle/attention structure, not faster arithmetic.",
+      "dot_class": "f16"
+    },
+    {
+      "name": "v_dot4_i32_i8",
+      "kind": "dot",
+      "lowered": true,
+      "mechanism": "pm_intdot / __builtin_amdgcn_sudot4 (bit-exact)",
+      "value": "high",
+      "dot_class": "int8"
+    },
+    {
+      "name": "fused_reduce_scale",
+      "kind": "reduce",
+      "lowered": false,
+      "reason": "single-load reduce(x^2)+scale kernel for RMSNorm/qk_norm (not a scheduler tweak). ~2.8% Amdahl.",
+      "value": "low"
+    },
+    {
+      "name": "vec_store_to_reg",
+      "kind": "attention",
+      "lowered": false,
+      "reason": "vectorized-V PV primitive \u2014 the flash-attention decisive-win blocker; keeps generated attention at near-parity. UOp-spec walled.",
+      "value": "high"
+    },
+    {
+      "name": "coalesced_int8x4_load",
+      "kind": "memory",
+      "lowered": false,
+      "reason": "packed int8x4 load so v_dot4 operands arrive packed -> turns the lowered int-dot into a decode win.",
+      "value": "med"
+    },
+    {
+      "name": "scheduler_fuse_elementwise_into_gemv",
+      "kind": "fusion",
+      "lowered": true,
+      "mechanism": "native scheduler fusion when the GEMV is expressed as Tensor ops (NOT a custom_kernel). DEMONSTRATED (tinygrad c96c5235c): a Tensor-level x->q8_1 quantize fuses into the int-dot GEMV -> 2 kernels (inherent block-max reduce + quantize-divide fused into the dot), bit-exact, integer-space dot (avoids the float convert). The gap is adoption: the production Q4_K GEMV uses a custom_kernel (opaque), which cannot fuse \u2014 the fix is to express it as Tensor ops so the scheduler fuses natively.",
+      "value": "high"
+    },
+    {
+      "name": "pm_intdot_tiled_match",
+      "kind": "codegen",
+      "lowered": true,
+      "value": "med",
+      "mechanism": "RESOLVED (tinygrad c9c520cd6): pm_intdot fires v_dot4 on the realistic fused int-dot GEMV shape (q4 nibble 0-15 x q8 int8), bit-exact, at GEMV scale. The fix was an EXPRESSION RULE not a matcher change: keep each dot operand provably int8-range at the matcher \u2014 nibble/quantize via vmin/vmax, and keep the shared quantized-x operand INT8-typed (its realized buffer is int8, so the load carries [-128,127]; an int32 buffer load reports full range and blocks it). 4-chunk reduce structure keeps v_dot4 firing at K=256."
+    },
+    {
+      "name": "intdot_shape_selective_routing",
+      "kind": "routing",
+      "lowered": false,
+      "reason": "route-manifest selects int-dot per-linear only where it wins (large FFN), keep G3 elsewhere.",
+      "value": "med"
+    },
+    {
+      "name": "kv_quant_attention_dequant",
+      "kind": "attention",
+      "lowered": false,
+      "reason": "q8/q4 KV-cache dequant path in the flash decode route.",
+      "value": "low"
+    },
+    {
+      "name": "v_dot8_i32_i4",
+      "kind": "dot",
+      "lowered": false,
+      "reason": "sudot8 \u2014 dots eight 4-bit values (matches Q4_K nibble width exactly); needs i4 packing vocab. Maximal dequant-dot.",
+      "value": "high",
+      "dot_class": "int4"
+    },
+    {
+      "name": "v_dot8_u32_u4",
+      "kind": "dot",
+      "lowered": false,
+      "reason": "unsigned 8x4-bit dot; needs i4 packing vocab.",
+      "value": "low",
+      "dot_class": "uint4"
+    },
+    {
+      "name": "v_dot4_u32_u8",
+      "kind": "dot",
+      "lowered": false,
+      "reason": "unsigned 4x8-bit dot (udot4).",
+      "value": "low",
+      "dot_class": "uint8"
+    },
+    {
+      "name": "v_dot2_f32_bf16",
+      "kind": "dot",
+      "lowered": false,
+      "reason": "bf16 dot; not used by qwen3 (no bf16 activations).",
+      "value": "low",
+      "dot_class": "bf16"
+    },
+    {
+      "name": "v_dot2_i32_i16",
+      "kind": "dot",
+      "lowered": false,
+      "reason": "2x int16 dot; niche.",
+      "value": "low",
+      "dot_class": "int16"
+    },
+    {
+      "name": "v_dot2_u32_u16",
+      "kind": "dot",
+      "lowered": false,
+      "reason": "2x uint16 dot; niche.",
+      "value": "low",
+      "dot_class": "uint16"
+    },
+    {
+      "name": "ssm_scan",
+      "kind": "ssm",
+      "lowered": false,
+      "reason": "selective-scan (mamba/hybrid arches, e.g. qwen3.5-27b-hybrid); not qwen3-dense.",
+      "value": "generality"
+    },
+    {
+      "name": "ssm_conv",
+      "kind": "ssm",
+      "lowered": false,
+      "reason": "short causal conv1d for SSM blocks; hybrid arches only.",
+      "value": "generality"
+    },
+    {
+      "name": "mma_m16n8k16",
+      "kind": "dot",
+      "dot_class": "f16",
+      "lowered": false,
+      "value": "high",
+      "reason": "nvidia tensor-core MMA (PTX mma.sync.aligned.m16n8k16, sm_80+; f16/bf16 in, f32 accumulate). No CUDA renderer exists in the search, so nothing generates it. Hardware presence is declared by the target, not by this entry."
+    },
+    {
+      "name": "dp4a",
+      "kind": "dot",
+      "dot_class": "int8",
+      "lowered": false,
+      "value": "med",
+      "reason": "nvidia 4-way int8 dot accumulating i32 (PTX dp4a, sm_61+). The int8-GEMV counterpart of v_dot4_i32_i8. No CUDA renderer exists in the search, so nothing generates it."
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "schema":"boltbeam.mmq_invocation_structural_audit.v7",
+  "status":"no_model_independent_calibration_missing",
+  "backbone_probe":{"schema":"tinygrad.mmq_invocation_v6.exact1246_backbone.v1","candidate_timing_used":false,"sink_uops":1246,"construction_ms":{"comparison_filler":3.234974,"candidate_arithmetic":3.4851405,"full_arithmetic_bitwise_control":3.454728},"schedule_ms":{"comparison_filler":2.4742015,"candidate_arithmetic":2.4658465,"full_arithmetic_bitwise_control":2.464499},"dependency_depth":{"comparison_filler":68,"candidate_arithmetic":40,"full_arithmetic_bitwise_control":31}},
+  "exact_candidate_dag":{"direct_owner_v0":{"uops":405,"depth":53,"edges":678,"shared_extra_edges":274,"shared_nodes":83,"max_fanout":18,"fanout_ge4":34},"gated_matrix_v0":{"uops":1246,"depth":54,"edges":3105,"shared_extra_edges":1860,"shared_nodes":128,"max_fanout":256,"fanout_ge4":81}},
+  "generated_dag_range":{"depth":[31,68],"edges":[3158,3174],"shared_extra_edges":[1913,1929],"shared_nodes":[90,115],"max_fanout":[514,528],"fanout_ge4":[85,111]},
+  "builder_path_audit":{"candidate_static_loops":{"group_loop_iterations":8,"writeback_nested_loop_iterations":256},"candidate_helper_expansions":{"q4_group_params":8,"q4_quant":8,"warp_reduce_sum":1},"generated_backbone_events":[9,14,28],"direct_process_audit_ms":{"direct_owner_v0_median":5.382784,"gated_matrix_v0_median":15.880267,"samples":30},"finding":"candidate construction path is materially slower before scheduling even though final UOp count, depth, edges and sharing overlap generated probes"},
+  "conclusion":"opcode/backbone class is rejected; existing probe varies depth and fanout only while changing builder event mix, so no independent coefficient supports invocation v7",
+  "next_probe":{"name":"fixed-size depth-sharing factorial","cells":4,"axes":{"dependency_depth":[32,64],"max_fanout":[256,512]},"controls":{"sink_uops":1246,"exact_opcode_histogram_fixed":true,"edge_count_range":[3050,3200],"shared_extra_edges_range":[1800,1950],"python_builder_event_count_fixed":true,"device_time_excluded":true,"candidate_timing_used":false},"metric":"uop_construction_ms"}
+}

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam paired Metal hybrid-replay summary",
+  "type": "object",
+  "required": ["schema", "run_id", "status", "verdict", "evidence_readiness", "expected_rows", "observed_rows", "valid_rows", "order", "required_order", "paired_statistics", "stop_reasons", "rows"],
+  "properties": {
+    "schema": {"const": "boltbeam.replay_ab_summary.v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["complete", "inconclusive"]},
+    "verdict": {"enum": ["REPLAY_WIN", "REPLAY_NEUTRAL", "REPLAY_REFUTED", "INCONCLUSIVE"]},
+    "evidence_readiness": {"type": "object", "required": ["status", "blockers", "performance_stability", "required"],
+      "properties": {"status": {"enum": ["ready", "unstable", "refuted", "inconclusive"]}}},
+    "expected_rows": {"type": "integer", "minimum": 10},
+    "observed_rows": {"type": "integer", "minimum": 0},
+    "valid_rows": {"type": "integer", "minimum": 0},
+    "order": {"type": "array", "items": {"type": "string"}},
+    "required_order": {"type": "array", "items": {"type": "string"}},
+    "paired_statistics": {"type": "object", "required": ["complete_pairs", "pairs", "median_delta_wall_ns", "median_delta_wall_percent", "median_throughput_retention", "bootstrap_ci", "strategy_dispersion", "three_percent_improvement_gate"]},
+    "stop_reasons": {"type": "array", "items": {"type": "string"}},
+    "rows": {"type": "array", "items": {"type": "string"}}
+  }
+}

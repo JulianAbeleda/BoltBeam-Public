@@ -1,0 +1,20 @@
+{
+  "schema": "boltbeam.system_fusion_sf3.v1",
+  "phase": "SF3_EXPERIMENT",
+  "date": "2026-07-01",
+  "candidate_id": "decode_silu_gate_fusion",
+  "model": "Qwen3-14B-Q4_K_M",
+  "hardware": "RX 7900 XTX / gfx1100",
+  "correctness_verdict": "CORRECTNESS_PASS",
+  "correctness_rel_rmse": 0.0,
+  "wd_baseline_ctx128": 52.3,
+  "wd_baseline_ctx512": 50.0,
+  "wd_fused_ctx128": 52.4,
+  "wd_fused_ctx512": 50.4,
+  "wd_delta_ctx128": 0.1,
+  "wd_delta_ctx512": 0.4,
+  "verdict": "SF3_LOW_AMDAHL_NO_MOVEMENT",
+  "promotion_decision": "DEFER_NOT_DEFAULT_ON",
+  "do_not_retry": false,
+  "reopen_condition": "Aggregate multi-group fusion pass (~4.9% total Amdahl across silu_gate + rmsnorm_scale + residual_adds + qk_norm_scale)"
+}

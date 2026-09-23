@@ -1,0 +1,1470 @@
+{
+  "schema": "boltbeam.candidate_manifest.v1",
+  "note": "Candidates are route-family TEMPLATES keyed on (route_family, quant, roles, architectures) \u2014 not model-era hardcodes (audit A7). `origin` = template (generic), shipped (a promoted decision also recorded in the ledger), or refuted (historical refutation kept for reproducibility). Shipped/refuted rows stay here so G3/Q6K decisions remain reproducible; the durable truth is the ledger.",
+  "candidates": [
+    {
+      "candidate_id": "decode_q4k_lanemap_gemv",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up",
+        "ffn_down",
+        "attn_qo"
+      ],
+      "route_family": "lanemap_gemv",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "shipped",
+      "required_evidence_kinds": [
+        "wd_speed",
+        "role_attribution"
+      ],
+      "rollback": {
+        "BUBBLEBEAM_FUTURESIGHT": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "description": "Generated Q4_K LaneMap GEMV (G2/G3) decode route for dense Q4_K weight roles."
+    },
+    {
+      "candidate_id": "decode_q4k_g3_anyshape",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up",
+        "ffn_down",
+        "attn_qo",
+        "attn_kv"
+      ],
+      "route_family": "lanemap_gemv",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "shipped",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_Q4K_G3_ANYSHAPE": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "description": "Structural-eligibility G3 binding ((in//256)%4==0, out%32==0) for any large dense Q4_K decode shape (generalizes across 8B/14B/32B)."
+    },
+    {
+      "candidate_id": "decode_q4k_g3_anyshape_attn_k",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "attn_kv"
+      ],
+      "route_family": "lanemap_gemv",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "shipped",
+      "required_evidence_kinds": [
+        "role_attribution",
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_ROUTE_ATTN_K": "0"
+      },
+      "refuted_axis_tags": [],
+      "description": "Route attn_k (K/V projection) through the generated GEMV primitive instead of the plain-Linear generic dequant."
+    },
+    {
+      "candidate_id": "decode_q4k_g3_generated",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up",
+        "ffn_down",
+        "attn_qo"
+      ],
+      "route_family": "q4k_g3_lanemap",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "shipped",
+      "status": "promoted",
+      "default_on": true,
+      "provenance": "machine_authored_generated",
+      "tier": "TIER_A",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "shape_rule": {
+        "cols_div": 256,
+        "cols_div_mod": 4,
+        "rows_mod": 32
+      },
+      "route_params": {
+        "BUBBLEBEAM_FUTURESIGHT": "1"
+      },
+      "rollback": {
+        "BUBBLEBEAM_FUTURESIGHT": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "evidence_refs": [
+        "bench/amd-isa-backend-g3-weight-promotion/latest.json",
+        "bench/amd-isa-backend-g3-weight-promotion/summary.md"
+      ],
+      "description": "Machine-authored generated G3 LaneMap Q4_K decode GEMV, promoted default-on. Selected per weight tensor by structural eligibility ((cols//256)%4==0 and rows%32==0) so BoltBeam owns Q4_K G3 route selection; owned warp remains one rollback flag away (BUBBLEBEAM_FUTURESIGHT=0)."
+    },
+    {
+      "candidate_id": "decode_q6k_coop_generated",
+      "workload": "decode",
+      "quant": [
+        "Q6_K"
+      ],
+      "roles": [
+        "ffn_down",
+        "attn_kv",
+        "lm_head"
+      ],
+      "route_family": "q6k_route_spec",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "shipped",
+      "status": "promoted",
+      "default_on": true,
+      "provenance": "machine_authored_generated",
+      "tier": "TIER_A",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "shape_rule": {
+        "cols_div": 256,
+        "cols_div_mod": 1,
+        "rows_mod": 4
+      },
+      "route_params": {
+        "DECODE_Q6K_GENERATED": "1"
+      },
+      "rollback": {
+        "DECODE_Q6K_GENERATED": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "evidence_refs": [
+        "bench/tg-p3-q6k-generated-coop/latest.json",
+        "bench/tg-p3-q6k-generated-coop/summary.md"
+      ],
+      "description": "Spec-driven generated Q6_K coop/partial decode GEMV (emit_q6k_gemv_kernel lowers Q6KGEMVRouteSpec). Byte-identical to the shipped hand template (TG_P3_PASS), promoted default-on; shipped q6k coop kept as rollback/oracle (DECODE_Q6K_GENERATED=0)."
+    },
+    {
+      "candidate_id": "decode_q6k_coop_shipped",
+      "workload": "decode",
+      "quant": [
+        "Q6_K"
+      ],
+      "roles": [
+        "ffn_down",
+        "attn_kv",
+        "lm_head"
+      ],
+      "route_family": "q6k_route",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "shipped",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "Q6K_PRIMITIVE": "0"
+      },
+      "refuted_axis_tags": [],
+      "description": "Shipped Q6_K coop-partial decode route (hand template). Retained as the rollback/oracle for decode_q6k_coop_generated (DECODE_Q6K_GENERATED=0); no longer the promoted default."
+    },
+    {
+      "candidate_id": "decode_q6k_direct_halfwarp_refuted",
+      "workload": "decode",
+      "quant": [
+        "Q6_K"
+      ],
+      "roles": [
+        "ffn_down",
+        "attn_kv"
+      ],
+      "route_family": "q6k_route",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "refuted",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {},
+      "refuted_axis_tags": [
+        "q6k_direct_halfwarp"
+      ],
+      "description": "Q6_K direct half-warp route: token-correct but speed-refuted (regression). Kept for reproducibility."
+    },
+    {
+      "candidate_id": "decode_attention_g5_8b_refuted",
+      "workload": "decode",
+      "quant": [
+        "fp16"
+      ],
+      "roles": [
+        "attn_qo",
+        "attn_kv"
+      ],
+      "route_family": "matmul_or_attention",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "refuted",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {},
+      "refuted_axis_tags": [
+        "g5_block_tile_8b_L_geometry",
+        "reg_scalar_reduction_accumulator_lowering"
+      ],
+      "description": "Historical generated 8B G5 block-tile attention candidate. TG-P5/TG-P8 proved it was correct and route-bound but not fast enough (87.6%/95.6% @ctx512/4096), so it is kept as a refuted record only. It is superseded by decode_flash_live_split_g4_8b_kvboth, which uses live-context split geometry, fused split-preserving combine, KV_BOTH staging, and baseline AMD reduce/upcast lowering. DECODE_FLASH_BLOCK_TILE_G5_8B now belongs to the promoted live-split route, not this old candidate."
+    },
+    {
+      "candidate_id": "decode_flash_live_split_g4_8b_kvboth",
+      "workload": "decode",
+      "quant": [
+        "fp16"
+      ],
+      "roles": [
+        "flash_attention_v_access"
+      ],
+      "route_family": "block_tile_g4_live_split_kvboth",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "shipped",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_FLASH_BLOCK_TILE_G5_8B": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "practical_roofline_band_pct": 98.0,
+        "reduces_surface": true
+      },
+      "status": "promoted",
+      "default_on": true,
+      "tier": "TIER_PRACTICAL_ROOFLINE",
+      "provenance": "machine_authored_generated",
+      "default_shape": {
+        "B": 1,
+        "Hq": 32,
+        "Hkv": 8,
+        "Hd": 128
+      },
+      "route_params": {
+        "DECODE_FLASH_BLOCK_TILE_G5_8B": "1"
+      },
+      "evidence_refs": [
+        "bench/tg-p14-amd-recovery-and-pure-attention-landing/phase1_kvboth_result.json",
+        "bench/tg-p14-amd-recovery-and-pure-attention-landing/phase2_final_result.json",
+        "bench/tg-p14-amd-recovery-and-pure-attention-landing/summary.md"
+      ],
+      "description": "PROMOTED 8B generated long-context attention. Uses live-context split geometry, split-preserving fused combine, and KV_BOTH staging. TG-P14 practical roofline closeout: worst-of-3 speed ctx512 98.5% / ctx4096 98.3% of the former owned HIP route, 48/48 deterministic prefilled token parity, route-bound, no hidden fallback. Promotion rationale: generated machine-search default is preferable to retaining a handwritten HIP default when it is inside the practical roofline band."
+    },
+    {
+      "candidate_id": "decode_attention_native_correct_not_fast",
+      "workload": "decode",
+      "quant": [],
+      "roles": [
+        "attn_qo",
+        "attn_kv"
+      ],
+      "route_family": "matmul_or_attention",
+      "architectures": [],
+      "origin": "shipped",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {},
+      "refuted_axis_tags": [],
+      "description": "Native generated decode-attention research route: correct and route-bound but low-leverage / not the active target. The retired owned AMDGCN tile flag is no longer part of this route contract."
+    },
+    {
+      "candidate_id": "decode_moe_expert_batched_gemv",
+      "workload": "decode",
+      "quant": [
+        "Q4_K",
+        "Q5_K"
+      ],
+      "roles": [
+        "moe_expert_gate_up",
+        "moe_expert_down"
+      ],
+      "route_family": "moe_expert_batched_gemv",
+      "architectures": [
+        "moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "wd_speed",
+        "role_attribution"
+      ],
+      "rollback": {
+        "DECODE_MOE_EXPERT_BATCHED_GEMV": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true,
+        "requires_knob": "active_expert_dispatch"
+      },
+      "description": "MoE template: batch the per-expert Q4_K GEMV over the active (top-k) experts instead of one Linear per expert. Applies only to moe_decoder profiles."
+    },
+    {
+      "candidate_id": "decode_ssm_projection_route",
+      "workload": "decode",
+      "quant": [],
+      "roles": [
+        "ssm_projection"
+      ],
+      "route_family": "ssm_projection",
+      "architectures": [
+        "hybrid_decoder",
+        "hybrid_moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "role_attribution",
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_SSM_PROJECTION_ROUTE": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "requires_knob": "ssm_projection"
+      },
+      "description": "Hybrid SSM/DeltaNet projection route template. Kept separate from quant-GEMV candidates because SSM projection tensors feed recurrent/scan state, not ordinary FFN weight math."
+    },
+    {
+      "candidate_id": "decode_ssm_conv_route",
+      "workload": "decode",
+      "quant": [],
+      "roles": [
+        "ssm_conv"
+      ],
+      "route_family": "ssm_conv",
+      "architectures": [
+        "hybrid_decoder",
+        "hybrid_moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "role_attribution",
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_SSM_CONV_ROUTE": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "requires_knob": "ssm_conv"
+      },
+      "description": "Hybrid SSM/DeltaNet causal convolution route template."
+    },
+    {
+      "candidate_id": "decode_ssm_state_update_route",
+      "workload": "decode",
+      "quant": [],
+      "roles": [
+        "ssm_state"
+      ],
+      "route_family": "ssm_state_update",
+      "architectures": [
+        "hybrid_decoder",
+        "hybrid_moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "role_attribution",
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_SSM_STATE_ROUTE": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "requires_knob": "ssm_state_update"
+      },
+      "description": "Hybrid SSM/DeltaNet state-parameter and state-update route template."
+    },
+    {
+      "candidate_id": "decode_ssm_scan_route",
+      "workload": "decode",
+      "quant": [],
+      "roles": [
+        "ssm_scan"
+      ],
+      "route_family": "ssm_scan",
+      "architectures": [
+        "hybrid_decoder",
+        "hybrid_moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "role_attribution",
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_SSM_SCAN_ROUTE": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "requires_knob": "ssm_scan"
+      },
+      "description": "Hybrid SSM/DeltaNet scan route template. This is the likely high-leverage architecture-specific surface for Qwen3.5-style models."
+    },
+    {
+      "candidate_id": "prefill_pipe_global",
+      "workload": "prefill",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up",
+        "ffn_down"
+      ],
+      "route_family": "lanemap_gemv",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "shipped",
+      "required_evidence_kinds": [
+        "prefill_speed"
+      ],
+      "rollback": {
+        "PREFILL_GEMM_PIPELINE": "0"
+      },
+      "refuted_axis_tags": [],
+      "description": "Global prefill pipe route (superseded by role-selective where eligible)."
+    },
+    {
+      "candidate_id": "prefill_pipe_role_selective_generated",
+      "workload": "prefill",
+      "quant": [
+        "Q4_K",
+        "Q6_K",
+        "fp16"
+      ],
+      "roles": [
+        "attn_qo",
+        "attn_kv",
+        "ffn_down",
+        "ffn_gate_up"
+      ],
+      "route_family": "prefill_gemm_schedule_spec",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "shipped",
+      "status": "promoted",
+      "default_on": true,
+      "provenance": "machine_authored_generated",
+      "tier": "TIER_A",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "shape_rule": {
+        "cols_div": 32,
+        "cols_div_mod": 1,
+        "rows_mod": 16
+      },
+      "route_params": {
+        "PREFILL_GENERATED_SCHEDULE": "1"
+      },
+      "rollback": {
+        "PREFILL_GENERATED_SCHEDULE": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true,
+        "requires_vram_fit": true
+      },
+      "evidence_refs": [
+        "bench/tg-p4-prefill-generated-schedule/latest.json",
+        "bench/tg-p4-prefill-generated-schedule/summary.md"
+      ],
+      "description": "Spec-driven generated prefill GEMM schedule (PrefillGEMMScheduleSpec lowered via emit_prefill_gemm_from_spec). Role policy: pipe for attn_qo/attn_kv/ffn_down, lds for ffn_gate_up. Byte-identical to the legacy fixed emit (TG_P4_PASS); promoted default-on with the legacy emit as rollback/oracle (PREFILL_GENERATED_SCHEDULE=0). Selection accounts for fp16 realization VRAM fit."
+    },
+    {
+      "candidate_id": "prefill_pipe_role_selective",
+      "workload": "prefill",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up",
+        "ffn_down"
+      ],
+      "route_family": "lanemap_gemv",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "shipped",
+      "required_evidence_kinds": [
+        "prefill_speed"
+      ],
+      "rollback": {
+        "PREFILL_PIPE_ROLE_SELECTIVE": "0"
+      },
+      "refuted_axis_tags": [],
+      "description": "Role-selective prefill pipe: promoted, supersedes the global pipe where eligible."
+    },
+    {
+      "candidate_id": "runtime_host_sync",
+      "workload": "decode",
+      "quant": [],
+      "roles": [],
+      "route_family": "",
+      "architectures": [],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "runtime_overhead"
+      ],
+      "rollback": {},
+      "refuted_axis_tags": [],
+      "description": "Host-sync vs GPU-work separation: diagnostic to prevent false codegen blame."
+    },
+    {
+      "candidate_id": "decode_kv_cache_q8_capacity",
+      "workload": "decode",
+      "quant": [],
+      "roles": [],
+      "route_family": "kv_cache_dtype",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder",
+        "hybrid_decoder",
+        "hybrid_moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "kv_ctx_slope"
+      ],
+      "rollback": {
+        "KV_CACHE_TYPE": "f16"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "kv_cache_policy": "capacity",
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q8_0",
+        "capacity_required": true
+      },
+      "description": "Q8_0 KV cache as a capacity/long-context route. It may shrink VRAM while losing speed; never promote as a speed route without W==D.",
+      "blocked_on": [
+        "kv_quant_attention_dequant"
+      ]
+    },
+    {
+      "candidate_id": "decode_kv_cache_q4_capacity",
+      "workload": "decode",
+      "quant": [],
+      "roles": [],
+      "route_family": "kv_cache_dtype",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder",
+        "hybrid_decoder",
+        "hybrid_moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "kv_ctx_slope"
+      ],
+      "rollback": {
+        "KV_CACHE_TYPE": "f16"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "kv_cache_policy": "capacity",
+        "cache_type_k": "q4_0",
+        "cache_type_v": "q4_0",
+        "capacity_required": true
+      },
+      "description": "Q4_0 KV cache as a capacity/long-context route. Storage savings are distinct from speed; classify via the residual slope.",
+      "blocked_on": [
+        "kv_quant_attention_dequant"
+      ]
+    },
+    {
+      "candidate_id": "decode_kv_cache_q8_speed",
+      "workload": "decode",
+      "quant": [],
+      "roles": [],
+      "route_family": "kv_cache_dtype",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder",
+        "hybrid_decoder",
+        "hybrid_moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "kv_ctx_slope"
+      ],
+      "rollback": {
+        "KV_CACHE_TYPE": "f16"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "kv_cache_policy": "speed",
+        "cache_type_k": "q8_0",
+        "cache_type_v": "q8_0"
+      },
+      "description": "Q8_0 KV cache as a speed candidate. Requires measured KV residual plus whole-decode W==D; smaller bytes alone are insufficient.",
+      "blocked_on": [
+        "kv_quant_attention_dequant"
+      ]
+    },
+    {
+      "candidate_id": "decode_kv_cache_q4_speed",
+      "workload": "decode",
+      "quant": [],
+      "roles": [],
+      "route_family": "kv_cache_dtype",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder",
+        "hybrid_decoder",
+        "hybrid_moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "kv_ctx_slope"
+      ],
+      "rollback": {
+        "KV_CACHE_TYPE": "f16"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "kv_cache_policy": "speed",
+        "cache_type_k": "q4_0",
+        "cache_type_v": "q4_0"
+      },
+      "description": "Q4_0 KV cache as a speed candidate. Current ROCm llama.cpp measurements classify it as storage-win/speed-loss.",
+      "blocked_on": [
+        "kv_quant_attention_dequant"
+      ]
+    },
+    {
+      "candidate_id": "decode_kv_cache_mixed_kv_probe",
+      "workload": "decode",
+      "quant": [],
+      "roles": [],
+      "route_family": "kv_cache_dtype",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder",
+        "hybrid_decoder",
+        "hybrid_moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "kv_ctx_slope"
+      ],
+      "rollback": {
+        "KV_CACHE_TYPE": "f16"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "kv_cache_policy": "speed",
+        "cache_type_k": "q8_0",
+        "cache_type_v": "f16"
+      },
+      "description": "Mixed K/V quantized KV probe. Must be blocked unless the target explicitly declares a mixed quantized FlashAttention fastpath.",
+      "blocked_on": [
+        "kv_quant_attention_dequant"
+      ]
+    },
+    {
+      "candidate_id": "reduce_elimination",
+      "workload": "decode",
+      "quant": [],
+      "roles": [],
+      "route_family": "",
+      "architectures": [],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "reduce_source",
+        "role_attribution"
+      ],
+      "rollback": {},
+      "refuted_axis_tags": [],
+      "description": "L1 parity lever: eliminate an unfused r_* reduce kernel once its source op is firmly resolved (~52% of 14B decode is unfused reduce/scheduling overhead \u2014 highest leverage).",
+      "blocked_on": [
+        "fused_reduce_scale"
+      ]
+    },
+    {
+      "candidate_id": "decode_q4k_split_k_kv",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "attn_kv"
+      ],
+      "route_family": "lanemap_gemv",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "refuted",
+      "required_evidence_kinds": [
+        "wd_speed",
+        "role_attribution"
+      ],
+      "rollback": {
+        "DECODE_Q4K_SPLIT_K_KV": "0"
+      },
+      "refuted_axis_tags": [
+        "split_k_kv_external_combine"
+      ],
+      "thresholds": {},
+      "description": "L2 parity lever: generated split-K G3 decode kernel for occupancy-starved KV (attn_k/attn_v 5120->1024). BUILT + token-identical but REFUTED on speed (external .sum offsets the occupancy gain). REOPEN RESOLVED: the in-kernel combine was BUILT (q4k_g3_lanemap_gemv_inkernel_combine_kernel, DECODE_Q4K_INKERNEL_COMBINE_KV, generated LDS+barrier, no external reduce, microgate rel_rmse 3e-7, token-identical) \u2014 see decode_q4k_inkernel_combine_kv. Result: still whole-model FLAT on KV (52.2->52.1, 50.1->50.1) because attn_kv is only ~3.9% of decode AND attn_k Q4_K uses the direct G3 (no external combine to remove). The in-kernel-combine CAPABILITY is proven; the wrong target is KV (low Amdahl). Its real target is the attention flash-chunk combine (12-24%)."
+    },
+    {
+      "candidate_id": "decode_q4k_inkernel_combine_kv",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "attn_kv"
+      ],
+      "route_family": "lanemap_gemv",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_Q4K_INKERNEL_COMBINE_KV": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {},
+      "description": "The unifying in-kernel-combine capability, proven on KV. Generated LDS+barrier combine (wider workgroup, per-wave lane_partition_reduce, in-kernel combine -> out[row], NO external reduce). NATIVE codegen only, no handwritten kernel; microgate rel_rmse 3e-7 vs direct G3, 14B token-identical, kernel fires. BoltBeam verdict: DIAGNOSTIC (correct but speed-equivalent, -0.1%): attn_kv is ~3.9% of decode so it can't move whole-model tok/s, and the Q4_K attn_k baseline is direct-G3 (no external combine to remove). The capability is the substrate for the attention flash-chunk combine (extra/qk_flash_decode.py, 12-24% of decode) where an external combine actually exists and Amdahl is 3-6x larger."
+    },
+    {
+      "candidate_id": "decode_q6k_ffn_down_longk",
+      "workload": "decode",
+      "quant": [
+        "Q6_K"
+      ],
+      "roles": [
+        "ffn_down"
+      ],
+      "route_family": "q6k_route",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "shipped",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_Q6K_FFN_DOWN_LONGK": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "description": "L3 parity lever \u2014 PROMOTED (default-on 2026-07-01, rollback DECODE_Q6K_FFN_DOWN_LONGK=0). The shipped Q6_K coop gate hardcoded the 8B ffn_down dims (4096/12288), so 14B/32B Q6_K ffn_down (17408->5120, 25600->5120) fell to the slower generic-partial path (~253 GB/s). Generalized the coop route structurally (in>=8192, out<100000). Token-identical (8B/14B/32B); tier-A W==D win: 14B +17% (42.9->50.2 ctx512, 44.5->52.2 ctx128), 32B +20% (22.4->26.9 ctx128), 8B unchanged (107.4, still >llama). Reduces the slow-partial surface."
+    },
+    {
+      "candidate_id": "decode_rmsnorm_reduce_fusion",
+      "workload": "decode",
+      "quant": [],
+      "roles": [],
+      "route_family": "generated_rmsnorm_reduce_scale_fusion",
+      "architectures": [],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "wd_speed",
+        "reduce_source"
+      ],
+      "rollback": {
+        "DECODE_RMSNORM_REDUCE_FUSION": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "description": "L1C DEFERRED (low-Amdahl). Fuse the RMSNorm reduce(x^2) with its scale into one generated kernel. Investigation: RMSNorm reads x TWICE (sum-of-squares + the scale multiply), so this needs a dedicated fused-LOAD kernel (load x once, wave-reduce, scale in place), not a scheduler tweak. Ceiling ~2.1-2.8% of 14B decode; poor ROI vs the L3 +17-20% win just landed, and it touches every norm (qk_norm too). Capability well-specified; reopen when a clean fused-rmsnorm UOp kernel is warranted.",
+      "blocked_on": [
+        "fused_reduce_scale"
+      ]
+    },
+    {
+      "candidate_id": "decode_attention_combine_reduce_fusion",
+      "workload": "decode",
+      "quant": [],
+      "roles": [
+        "attn_kv",
+        "attn_qo"
+      ],
+      "route_family": "generated_attention_combine_reduce",
+      "architectures": [],
+      "origin": "refuted",
+      "required_evidence_kinds": [
+        "reduce_source",
+        "role_attribution"
+      ],
+      "rollback": {
+        "DECODE_ATTN_FUSED_COMBINE": "0"
+      },
+      "refuted_axis_tags": [
+        "attention_combine_fusion_occupancy"
+      ],
+      "thresholds": {
+        "targets_reduce_class": "attention_combine"
+      },
+      "description": "REFUTED (mechanism proven, architecture refutes). Route (b) fused-flash in-kernel LSE combine (extra/qk_flash_decode_fused_combine.py, DECODE_ATTN_FUSED_COMBINE, generated UOp, no handwritten kernel) was BUILT + correct (microgate rel_rmse 2.6e-4, 14B token-identical) and REMOVES the bucket (13.57%->1.71%, reduce_eliminated=PASS) \u2014 but W==D REFUTES: -88% at ctx512 (50.2->6.2). Fusing the S-splits into Hq=40 workgroups sacrifices the flash split-parallelism (Hq*S partial workgroups) that occupancy needs; the combine's separateness IS the occupancy strategy. All reachable transforms also refuted (FLASH_L, wholecache-14B, DECODE_OUTER_B_SPLIT declines). HISTORY: Attention score/combine reduce (~12-24% of decode), the biggest removable bucket. 14B/32B attention is the GENERATED gqa_coop_vec route (flash_partial over Hq*S workgroups + flash_gmax/den/combine = 3 external reduce kernels over the S splits = the attention_combine bucket; the handwritten owned tile is 8B-only, default-off). THREE reachable search paths tried, ALL REFUTED with measurements: (1) FLASH_L knob \u2014 raising L shrinks the combine (13.57%->12.01%, reduce_eliminated=PASS) but regresses tok/s (50.2->43.5) as parallelism drops; (2) generated wholecache/score-broadcast route generalized to 14B (Hq=40,G=5) \u2014 token-correct but regresses ctx512 -9.8%; (3) flash-on@ctx128 is slower (threshold optimal). The GEMV in-kernel-combine capability (decode_q4k_inkernel_combine_kv, a plain SUM) does NOT directly apply \u2014 attention needs an in-kernel LSE (log-sum-exp online-softmax) MERGE across S splits. Reopen only with a split-preserving attention-combine mechanism: keep roughly Hq*S partial workgroups, prove correct cross-workgroup/global LSE coordination, and then pass W==D. Do not re-chase Hq-only in-workgroup fused combine; that route was the measured -88% failure."
+    },
+    {
+      "candidate_id": "decode_attention_combine_merged",
+      "workload": "decode",
+      "quant": [],
+      "roles": [
+        "attn_kv",
+        "attn_qo"
+      ],
+      "route_family": "generated_attention_combine_reduce",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "refuted",
+      "required_evidence_kinds": [
+        "wd_speed",
+        "reduce_source"
+      ],
+      "rollback": {
+        "DECODE_ATTN_COMBINE_MERGED": "0"
+      },
+      "refuted_axis_tags": [
+        "attention_combine_merge_occupancy"
+      ],
+      "thresholds": {
+        "targets_reduce_class": "attention_combine"
+      },
+      "description": "REFUTED (falsification pass 2, split-preserving merge). Merged flash_gmax+den+combine into ONE generated kernel (flash_combine_merged_kernel, DECODE_ATTN_COMBINE_MERGED, no handwritten kernel) \u2014 flash_partial (Hq*S) untouched. Correct (14B token-identical) and shrinks the bucket (13.57->11.32%, reduce_eliminated=PASS) but W==D REFUTES: ctx128 flat (52.3->52.0), ctx512 -16% (50.2->42.1). Cause: flash_combine launches Hq*Hd=5120 workgroups; merging to one per-head kernel (d-sharded) collapses that to Hq=40 \u2014 the SAME occupancy failure at the combine's Hd axis. The 3-kernel decomposition is load-bearing at BOTH the Hq*S partial AND Hq*Hd combine levels. Distinct from decode_attention_combine_reduce_fusion (Hq-only fused partial+combine, -88%). Reopen requires a cross-workgroup coordination primitive (atomics/grid-sync) that preserves both parallelism levels \u2014 currently PRIMITIVE_MISSING on AMD. See docs/attention-combine-reachability-audit-20260701.md."
+    },
+    {
+      "candidate_id": "decode_q4k_gemv_vector_load",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up",
+        "ffn_down",
+        "attn_qo",
+        "attn_kv"
+      ],
+      "route_family": "lanemap_gemv",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "refuted",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {},
+      "refuted_axis_tags": [
+        "q4k_gemv_at_bandwidth_ceiling"
+      ],
+      "thresholds": {},
+      "description": "REFUTED (at route ceiling, fresh A/B 2026-07-01). Q4_K GEMV is the dominant 14B decode bucket (~43%; ffn_gate_up alone ~27%). Tested the vector_load (uint32.vec(4), 128-bit) primitive vs the shipped generated_g3 on the 14B ffn_gate shape (17408x5120, decode): vector_load 398 GB/s ~= G3 ~405 GB/s (no gain). This is ~42% of the 960 GB/s HBM peak and matches the Q4_K dequant-GEMV access-pattern ceiling (G3 == owned hand-warp per the 2026-06-29 bandwidth-ceiling scope; topology and split-K refuted earlier). The residual gap to llama-class bandwidth is SYSTEM-level (launch/graph fragmentation + activation overhead), not a GEMV route. Do not re-chase Q4_K GEMV route variants. Reopen only via a system-fusion capability that cuts launch fragmentation, or a compute primitive that helps a compute-bound bucket (the dominant GEMVs are HBM-bound). See docs/decode-loss-stack-reachability-20260701.md."
+    },
+    {
+      "candidate_id": "decode_silu_gate_fusion",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up"
+      ],
+      "route_family": "generated_silu_gate_fusion",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_FUSE_SILU_GATE": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "status": "refuted_no_movement",
+      "do_not_retry": false,
+      "evidence_refs": [
+        "bench/system-fusion-sf3/latest.json"
+      ],
+      "description": "Fuse silu(gate) * up into one kernel by removing the intermediate .contiguous() on model.py:1017 (marked TODO). Removes 1 kernel launch per FFN layer (40 launches/step), 1 global write and 1 global read of the silu intermediate buffer (17408 f16 per layer). Expected Amdahl ~1.26% at ctx512. SF3 result: CORRECTNESS_PASS (rel_rmse=0.00e+00), W==D LOW_AMDAHL_NO_MOVEMENT: ctx128 +0.1 tok/s, ctx512 +0.4 tok/s (below 0.5 tok/s threshold). Root cause confirmed, code in repo (DECODE_FUSE_SILU_GATE=0 default). Reopen via aggregate multi-group fusion pass (~4.9% aggregate Amdahl across silu_gate + rmsnorm_scale + residual_adds + qk_norm_scale)."
+    },
+    {
+      "candidate_id": "decode_q4k_ffn_down_split_k_refuted",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_down"
+      ],
+      "route_family": "lanemap_gemv",
+      "architectures": [
+        "dense_decoder",
+        "moe_decoder"
+      ],
+      "origin": "refuted",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {},
+      "refuted_axis_tags": [
+        "ffn_down_split_k"
+      ],
+      "description": "Split-K on ffn_down: REFUTED (~7x slower). That GEMV is memory-bound, not latency-bound; 5120 row-workgroups already hide the reduction chain. Walled so the search does not re-chase it."
+    },
+    {
+      "candidate_id": "decode_bypass_kv_slice",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "flash_attention_v_access"
+      ],
+      "route_family": "emitter_blocked_kv_cache_view",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "refuted",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_BYPASS_KV_SLICE": "0"
+      },
+      "refuted_axis_tags": [
+        "kv_cache_warm",
+        "wddelta_ctx512_neg"
+      ],
+      "do_not_retry": false,
+      "evidence_refs": [
+        "bench/emitter-blocked-eb4/latest.json"
+      ],
+      "description": "Bypass V-slice materialization (E_49152_32_3, 6.69% GPU at ctx512) by passing assigned_kv flat instead of assigned_kv[1,0] to flash_partial_coop_vec. EB3 correctness PASS (rel_rmse=0.00). EB4 W==D ctx512: 50.1 \u2192 45.3 tok/s (-4.8, -9.6%). Root cause: E_49152_32_3 is BENEFICIAL_CACHE_WARM \u2014 the copy warms V into L2 before flash_partial reads it; removing it causes cold HBM reads worse than the copy cost. Reopen via decode_bypass_kv_slice_lds (LDS-staged V prefetch in flash_partial)."
+    },
+    {
+      "candidate_id": "decode_bypass_kv_slice_lds",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "flash_attention_v_access"
+      ],
+      "route_family": "emitter_blocked_kv_cache_view_lds",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_FLASH_V_LDS_STAGE": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "status": "search-space-incomplete",
+      "emitter_blocker": "block_tile_g5_variant_missing",
+      "evidence_refs": [
+        "bench/lds-staging-primitive/lds0_latest.json",
+        "docs/lds-staging-primitive-lds0-audit.md",
+        "bench/prologue-range-lds-staging/pr1_latest.json",
+        "docs/prologue-range-lds-staging-pr1-feasibility.md"
+      ],
+      "corrects": "EB5 said PRIMITIVE_MISSING (wrong). LDS0 said EMITTER_BLOCKED / prologue_range_uop (partially correct \u2014 primitives exist, pattern exists). PR1 shows the block tile kernel (qk_flash_decode.py:954) already expresses K+V LDS staging with TK=16 cooperative preload + barrier for G=4 (8B). 14B has G=5; block tile hard-rejects G!=WARPS (line 963). The gap is a G=5 block tile kernel variant, not a missing UOp primitive.",
+      "description": "LDS-staged V access for flash_partial (14B). The UOp DSL CAN express cooperative K+V LDS staging (proven by flash_block_tiled_xlane_score_pv_tile_whole_cache_kernel for G=4/8B). 14B has G=Hq/Hkv=40/8=5; the block tile requires G==WARPS==4 and raises ValueError for G=5. Per-token V staging is NOT_BENEFICIAL (flash_partial_coop_vec d=LOCAL already gives coalesced V loads). Reopen: build flash_block_tiled_g5_score_pv_kernel (WARPS=5, TK=16 K+V LDS stage, online softmax for G=5 GQA groups), gate DECODE_ATTN_BLOCK_TILE_G5=0. LDS sizing: TK=16 x Hd=128 x 2 x 2 (K+V) = 8KB per workgroup \u2014 well within 64KB budget. Upper Amdahl if successful: 6.69% (E_49152_32_3 eliminated) + V-read acceleration from LDS vs L2."
+    },
+    {
+      "candidate_id": "decode_flash_v_prologue_lds_stage",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "flash_attention_v_access"
+      ],
+      "route_family": "block_tile_g5_kv_lds_stage",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_FLASH_BLOCK_TILE_G5": "0"
+      },
+      "refuted_axis_tags": [
+        "whole_cache_path_at_partial_ctx"
+      ],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "status": "refuted",
+      "do_not_retry": false,
+      "evidence_refs": [
+        "bench/prologue-range-lds-staging/pr1_latest.json",
+        "docs/prologue-range-lds-staging-pr1-feasibility.md",
+        "docs/pr5-final-report.md",
+        "bench/g5-block-tile/latest.json",
+        "docs/g5-block-tile-result.md"
+      ],
+      "description": "G=5 block tile for 14B via flash_decode_attention_whole_cache: WARPS=G fix applied, DECODE_FLASH_BLOCK_TILE_G5=0 gate added. Correctness PASS (rel_rmse=0). W==D ctx512: 50.2 \u2192 10.0 tok/s (-80.1%). Initial diagnosis (occupancy) was wrong \u2014 see decode_flash_block_tile_g5_native_context for the sliced-KV attempt and correct root cause (per-workgroup kernel cost is the bottleneck, not grid size)."
+    },
+    {
+      "candidate_id": "decode_flash_block_tile_g5_native_context",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "flash_attention_v_access"
+      ],
+      "route_family": "block_tile_g5_kv_lds_stage_native_ctx",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "template",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_FLASH_BLOCK_TILE_G5": "0"
+      },
+      "refuted_axis_tags": [
+        "whole_cache_path_at_partial_ctx",
+        "sliced_kv_path_at_partial_ctx"
+      ],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "status": "refuted",
+      "do_not_retry": false,
+      "evidence_refs": [
+        "bench/g5-block-tile/latest.json",
+        "docs/g5-block-tile-result.md"
+      ],
+      "description": "G=5 block tile for 14B: BOTH routing strategies refuted. (1) whole_cache: 50.2 \u2192 10.0 tok/s (-80.1%) with 48 WGs. (2) sliced-KV via flash_decode_g5_block_tile (l_route=128, grid=8x4=32 WGs): 50.2 \u2192 9.5 tok/s (-81.1%). Root cause is per-workgroup kernel cost, not occupancy: block tile takes ~2090us vs flash_partial_coop_vec at 27us (78x slower per WG). Block tile reads both K and V into LDS (double BW vs baseline); cross-warp accumulation for G=5 adds overhead. 40 layers x 2090us = 83.6ms per step vs baseline ~20ms. Original diagnosis (occupancy) was wrong \u2014 sliced path has same WG count as baseline but is equally slow. Reopen only if: (a) native RDNA3 ISA achieves <100us per kernel call, or (b) profiling finds a specific tinygrad codegen pathology (scalar loads, register spilling) fixable to <50us.",
+      "compiler_pathology": {
+        "status": "CLASSIFIED",
+        "slowdown_factor": 78,
+        "baseline_workgroup_us": 27,
+        "candidate_workgroup_us": 2090,
+        "artifact_refs": [
+          "bench/g5-block-tile/compiler_pathology_v1_dynamic.json",
+          "bench/g5-block-tile/compiler_pathology_v1_ingest.json",
+          "bench/g5-block-tile/compiler_pathology_v1_normalized.json",
+          "docs/g5-block-tile-oracle-result.md"
+        ],
+        "classified_pathology": "LDS_OR_MEMORY_OVERHEAD",
+        "reopen_condition": "K-only LDS staging REOPENED and RESOLVED as GP4_PASS_TIER_A (see decode_flash_block_tile_g5_konly). Native ISA path (<100us per workgroup) remains open.",
+        "boltbeam_classification": "LDS_OR_MEMORY_OVERHEAD",
+        "time_ratio_vs_baseline": 77.4,
+        "work_adjusted_slowdown": 19.4,
+        "barrier_count": 1,
+        "lds_bytes": 8192,
+        "ruled_out": [
+          "BARRIER_FLOOD",
+          "LAYOUT_MISMATCH",
+          "REGISTER_SPILL"
+        ],
+        "oracle_date": "2026-07-01",
+        "vgpr_count": 91,
+        "sgpr_count": 25,
+        "scratch_bytes": 0,
+        "static_inst_count": 1610,
+        "math_op_count": 141,
+        "instruction_bloat_ratio": 11.42,
+        "branch_count": 3,
+        "ds_op_count": 130,
+        "global_op_count": 28,
+        "measurement_method": "llvm-objdump-17_hsaco_elf_note_msgpack"
+      }
+    },
+    {
+      "candidate_id": "decode_flash_block_tile_g5_konly",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "flash_attention_v_access"
+      ],
+      "route_family": "block_tile_g5_k_only_lds_stage",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "shipped",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "rollback": {
+        "DECODE_FLASH_BLOCK_TILE_G5": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "status": "promoted",
+      "default_on": true,
+      "tier": "TIER_A",
+      "provenance": "machine_authored_generated",
+      "default_shape": {
+        "B": 1,
+        "Hq": 40,
+        "Hkv": 8,
+        "Hd": 128
+      },
+      "route_params": {
+        "DECODE_FLASH_BLOCK_TILE_G5": "1"
+      },
+      "gp_track": "GP0-GP5",
+      "do_not_retry": false,
+      "evidence_refs": [
+        "bench/gp-track/gp4_latest.json",
+        "bench/gp-track/gp3_microgate.json",
+        "docs/gp0-purity-gate-result.md",
+        "docs/gp1-primitive-gap-analysis.md",
+        "docs/gp5-final-report.md"
+      ],
+      "description": "PROMOTED GP4_PASS_TIER_A (2026-07-01). K-only LDS staging for the G=5 block tile kernel (14B, Hq=40, Hkv=8, Hd=128). The root pathology (LDS_OR_MEMORY_OVERHEAD, 8KB K+V staging) was resolved by adding staging='K_ONLY' to flash_block_tiled_xlane_score_pv_tile_whole_cache_kernel \u2014 halves LDS usage (8192->4096 bytes), eliminates the V staging loop (~780 instructions), and reads V directly from global cache (L2-warmed by E_49152_32_3). GP0 purity gate PASS: kernel is generated UOps, no handwritten ISA. GP3 microgate PASS: rel_rmse=0.00e+00 at all tested shapes. W==D results: ctx512 +3.9 tok/s (+7.8%), ctx2048 +6.9 tok/s (+14.7%). K_ONLY is now the fixed tinygrad implementation detail for this route; BoltBeam only selects DECODE_FLASH_BLOCK_TILE_G5=1. The staging parameter remains generic over G and Hd; 32B (Hq=64, Hkv=8, G=8) is the next test target.",
+      "wd_results": {
+        "model": "Qwen3-14B-Q4_K_M",
+        "hardware": "gfx1100",
+        "date": "2026-07-01",
+        "ctx128": {
+          "baseline": 52.1,
+          "candidate": 52.2,
+          "delta": 0.1,
+          "pct": 0.2
+        },
+        "ctx512": {
+          "baseline": 49.9,
+          "candidate": 53.8,
+          "delta": 3.9,
+          "pct": 7.8
+        },
+        "ctx2048": {
+          "baseline": 46.9,
+          "candidate": 53.8,
+          "delta": 6.9,
+          "pct": 14.7
+        }
+      }
+    },
+    {
+      "candidate_id": "decode_g5_fused_combine",
+      "workload": "decode",
+      "quant": [
+        "fp16"
+      ],
+      "roles": [
+        "attn_qo",
+        "attn_kv"
+      ],
+      "route_family": "matmul_or_attention",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "template",
+      "status": "candidate",
+      "default_on": false,
+      "provenance": "machine_authored_generated",
+      "tier": "TIER_A",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "route_params": {
+        "DECODE_G5_FUSED_COMBINE": "1"
+      },
+      "rollback": {
+        "DECODE_G5_FUSED_COMBINE": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "evidence_refs": [
+        "bench/gp-track/gp4_latest.json"
+      ],
+      "description": "Machine-search fused split-preserving LSE combine (flash_fused_gmax_combine, generated UOp from TG-P9/P14.8) wired into the default g5 K-only decode route (flash_decode_g5_block_tile), replacing the 2-kernel flash_state_gmax+flash_state_combine. 14B verified 2026-07-02: prefilled token-parity 40/40 identical to the 2-kernel default; W==D +2.0% ctx512 / +1.8% ctx2048 (robust across 2 order-reversed reps, 55.1->56.2 / 55.0->56.0 tok/s); route-bound to flash_fused_gmax_combine_40_128 (2->1 combine kernel, 128x fexp reduction Hq*Hd*S->Hq*S). The required reduce/upcast accumulator lowering is now AMD baseline tinygrad behavior. Default-off pending promotion approval; no hand-written kernel (existing generated UOp routed in)."
+    },
+    {
+      "candidate_id": "decode_aggregate_elementwise_fusion",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up",
+        "attn_qo",
+        "attn_kv"
+      ],
+      "route_family": "generated_aggregate_elementwise_fusion",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "template",
+      "status": "refuted_no_movement",
+      "default_on": false,
+      "do_not_retry": true,
+      "provenance": "machine_authored_generated",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "route_params": {
+        "DECODE_AGG_SYSTEM_FUSION": "1"
+      },
+      "rollback": {
+        "DECODE_AGG_SYSTEM_FUSION": "0"
+      },
+      "refuted_axis_tags": [
+        "aggregate_elementwise_below_noise"
+      ],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "evidence_refs": [
+        "docs/14b-aggregate-fusion-closeout-20260702.md",
+        "bench/system-fusion-sf4-aggregate/latest.json (tinygrad repo, local/gitignored)"
+      ],
+      "description": "Aggregate multi-group elementwise fusion \u2014 the sanctioned reopen of decode_silu_gate_fusion across silu_gate + rmsnorm_scale + qk_norm_scale + residual_adds (~4.9% projected Amdahl). Tested 2026-07-02 as a single default-off flag (DECODE_AGG_SYSTEM_FUSION) removing the silu-gate and block-output-residual .contiguous() barriers. CORRECTNESS PASS (48/48 token-identical, real flash generate). ROUTE-BOUND: flag fired (872->832 total kernels, E_* 264->224) but ONLY silu-gate fused (E_136_32_4n1 x40 removed); the residual-add barrier removal fused NOTHING (E_40_32_4 family x40 unchanged \u2014 block output fans out into the next attn_norm reduce+scale, forcing realize), and r_* reduces unchanged (227). W==D REFUTES: ctx512 55.3->55.5, ctx2048 55.1->55.3 (+0.2 tok/s, below 0.5 threshold; decode host-sync 0%, JIT batches to ~6 programs so eager-launch removal does not cut wall time). Aggregate == the already-refuted silu fusion + inert residual change. rmsnorm/qk_norm need a dedicated fused-LOAD UOp kernel (decode_rmsnorm_reduce_fusion: 'not a scheduler tweak') \u2014 out of scope. tinygrad code REVERTED; evidence retained. No materially-different low-risk subvariant remains.",
+      "blocked_on": [
+        "cross_workgroup_atomic_float",
+        "v_dot2",
+        "vec_store_to_reg"
+      ]
+    },
+    {
+      "candidate_id": "decode_q4k_gemv_vdot2",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up",
+        "ffn_down",
+        "attn_qo",
+        "attn_kv"
+      ],
+      "route_family": "lanemap_gemv_vdot2",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "template",
+      "status": "candidate",
+      "default_on": false,
+      "provenance": "machine_authored_generated",
+      "tier": "TIER_C",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "route_params": {
+        "DECODE_Q4K_GEMV_VDOT2": "1"
+      },
+      "rollback": {
+        "DECODE_Q4K_GEMV_VDOT2": "0"
+      },
+      "refuted_axis_tags": [],
+      "thresholds": {
+        "reduces_surface": true
+      },
+      "evidence_refs": [
+        "tinygrad worktree branch vdot2-lowering commit 6562fa684",
+        "docs/14b-decode-vdot2-gemv-result-20260702.md"
+      ],
+      "description": "v_dot2_f32_f16 wired into the Q4_K G3 decode GEMV (tinygrad DECODE_Q4K_GEMV_VDOT2, default-off). Pairs consecutive dequantized nibbles into packed f16x2 and dots against x via __builtin_amdgcn_fdot2 (f32 accumulate), 32->16 fdot2/block. FIRST demonstration of v_dot2 on the weight GEMV (prior work only reached the attention score path). CORRECTNESS: dNLL +0.00013 @128tok (negligible, f16-lossy so NLL-gated not token-parity). W==D: 55.2->55.5 ctx512, 55.0->55.4 ctx2048 (+0.3-0.4 tok/s, reproducible reversed-order, below 0.5 promotion bar). KEY: halving the MAC gave only +0.6% -> the GEMV bottleneck is the dequant bit-unpack, NOT the multiply. This DEMONSTRATES the v_dot2 emitter capability (removed from blocked_knobs) and REFUTES the 'converged/primitive-missing' wall; the next codegen lever is dequant-ALU reduction. ISA PROFILE (2026-07-02): GEMV is dequant-ALU-bound \u2014 bit-unpack (v_bfe_u32 x30 + v_lshrrev x19 + v_and) + int->float convert (v_cvt_f32_ubyte0 x48) ~= 120 instr vs ~63 fp-math; the converts are inherent to Q4_K. v_dot2 lowers only 7/16 fdot2 to real v_dot2 (rest -> v_fma_mix_f16 + 16 v_pack), raising vgpr 58->87 (occupancy cost offsets the MAC win). DEQUANT-REDUCTION SUB-LEVERS REFUTED: f16-dequant adds 48 v_cvt_f16_f32 (worse); int-dot v_dot4/mmvq (Q4K_VDOT+AMORT) is -11% (49.0 vs 55.2 tok/s \u2014 x-q8_1 quant + extra kernel overhead, weight HBM read unchanged). CONCLUSION: the Q4_K decode GEMV codegen is at a genuine multi-lever-tested ceiling; the +19% roofline gap is NOT reachable via dot primitives \u2014 it needs a different quant format (cheaper dequant) or an occupancy path.",
+      "nontranslation_reason": "MAC-Amdahl-tiny + occupancy offset. Isolated GEMV: 8452->8227 us (-2.7%), decode -1.9%. The GEMV is ~24% of decode and the MAC (v_fma) is ~1/3 of the kernel; v_dot2 halves ONLY the MAC while the dequant (bitunpack 75 + int->float convert 50) is unchanged and dominates. It also raises vgpr 58->87 (packing), costing occupancy that offsets most of the small win; only 7/16 fdot2 become real v_dot2 (rest v_fma_mix_f16 + 16 v_pack). Translates, but the ceiling is small because the MAC is not the bottleneck."
+    },
+    {
+      "candidate_id": "decode_q4k_gemv_intdot_vdot4",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up"
+      ],
+      "route_family": "intdot_vdot4_gemv",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "template",
+      "status": "refuted_whole_decode_regression",
+      "default_on": false,
+      "provenance": "machine_authored_generated",
+      "tier": "TIER_B",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "route_params": {
+        "Q4K_VDOT": "1",
+        "Q4K_VDOT_AMORT": "1"
+      },
+      "rollback": {
+        "Q4K_VDOT": "0"
+      },
+      "refuted_axis_tags": [],
+      "blocked_on": [
+        "intdot_shape_selective_routing",
+        "pm_intdot_tiled_match",
+        "coalesced_int8x4_load"
+      ],
+      "evidence_refs": [
+        "docs/14b-decode-vdot2-gemv-result-20260702.md",
+        "tinygrad worktree vdot2-lowering 09d623969 (qk_vdot_time_trace.py)"
+      ],
+      "description": "Integer-dot Q4_K decode GEMV via v_dot4_i8/udot4 (x->q8_1, int q4*q8 accumulate, per-group scale). Per-kernel TRACE 2026-07-02: the primitive BEATS G3 on the large FFN gate/up GEMV (17408x5120: 7709 vs 8543 us, -10% -834us/step). NOT REFUTED - the earlier -11% whole-route number was a mis-attribution: (a) int-dot is an all-or-nothing alternate route (G3 bypasses it) so it also ran on narrow attn/KV shapes where its partial+reduce structure loses (5120_5120 +1935us, 1024_5120 +1898us), and (b) the x->q8_1 quantize+pack is un-fused (~813us bias_pack + quantize) which ~cancels the GEMV win. Blocked on TWO missing vocab items, not a physical wall: intdot_shape_selective_routing (apply per-linear only where it wins) + fused_quantize_intdot (fuse x-quant into the int-dot kernel). With both, FFN int-dot is a net decode win. This is the OPEN roofline frontier for 14B Q4_K decode.",
+      "nontranslation_reason": "PAYOFF PROVEN (tinygrad ecafa804b, T1 scoped proof): at the real FFN shape 17408x5120, the int-dot GEMV is 18.8% FASTER than the float-dequant path (same nibble unpack) \u2014 the win is CONVERT-AVOIDANCE (integer MACs, no v_cvt_f32_ubyte), and v_dot4 did not even need to fire (additional headroom). rel_rmse 0.0112 from q8 x-quant (needs an NLL gate). pm_intdot lowering + fused-quantize + the int8-buffer expression rule are all RESOLVED. Remaining = production adoption: express the real Q4_K decode GEMV (nibble+6bit-scale layout) as fused Tensor ops, wire it in, NLL-gate, W==D whole-decode. The substrate is ready and the payoff is de-risked. No handwritten kernels. ADOPTION WALL (2026-07-02): expressing the REAL Q4_K GEMV as fused Tensor ops is CORRECT (rel_rmse 0.007 vs G3) but SLOW \u2014 the scheduler materializes intermediates (naive: 5GB, 193x slower; per-group streaming restructure: 6.7x slower) and does not produce an efficient tiled/occupancy GEMV schedule. The 18.8% proof was int-dot vs FLOAT tensor-op; BOTH tensor-op GEMVs are ~2-7x slower than the hand-tuned G3 custom_kernel (0.18ms). So the int-dot win is real but only lands if the int-dot runs inside a G3-QUALITY schedule, not naive tensor ops. This is the CORE pure-machine-search gap: scheduler cannot generate a custom_kernel-quality GEMV from tensor ops. Paths: (a) searched opts (UPCAST/LOCAL) on the tensor-op GEMV; (b) put the int-dot inner-dot into the existing G3 generated-kernel structure; (c) improve the scheduler's GEMV auto-tiling. >>> SCHEDULE PATH (2026-07-02, upstream BEAM DECOUPLED): the correct GEMV is correct + convert-avoiding as fused Tensor ops but its DEFAULT schedule is occupancy_starved (2.6% of HBM peak). Upstream tinygrad BEAM 'fixing' it (1.24->0.19ms) was MISLEADING scaffolding \u2014 it is an external timing search, hangs on gfx1100 whole-model, and is not how the fast kernels work. The real evidence: G3 hits 0.18ms with opts_to_apply=() (ZERO BEAM) via STRUCTURAL efficiency. So the schedule is achievable without any search. FIX = extend BubbleBeam+Futuresight static schedule prediction (its existing anti-BEAM layout-predicate design) to the int-dot GEMV so it is fast by construction. NO upstream BEAM. >>> WHOLE-DECODE RESULT (2026-07-02, in-house Futuresight schedule, NO BEAM): BubbleBeam+Futuresight statically scheduled the int-dot GEMV to 0.19ms (== G3, no BEAM) \u2014 the mechanism WORKS (10.9 -> 82.0 tok/s). But the LEVER is a whole-decode REGRESSION: 82.0 vs 111.4 baseline. The Futuresight-scheduled int-dot GEMV only MATCHES G3 (the convert is not the bottleneck in an optimized decode GEMV), and the per-GEMV x-quantize overhead (block-max+round+pack x72, unshared) makes the route net-negative. The +18.8% convert-avoidance was vs the UNOPTIMIZED float tensor-op, NOT the hand-tuned G3. RETAINED LEARNING: int-dot doesn't beat G3 for decode; a win would need shared/cheaper x-quantize AND a GEMV that beats (not matches) G3. THE VALUE delivered = the in-house Futuresight-schedules-a-generated-kernel-to-hand-tuned-quality-without-BEAM capability, which generalizes. >>> PREFILL THEORY TESTED (2026-07-02): NOT supported. Batch sweep B=1..512: erratic (schedule-noise) and int-dot LOSES at B=128/512 (-19%,-12%). Deeper reason: real prefill uses WMMA tensor cores (16x16 f16 = ~4096 MACs/instr); v_dot4 is 4 int8 MACs/instr, structurally ~1000x less matmul throughput -> cannot beat WMMA in the compute-bound regime. So int-dot wins NEITHER regime on gfx1100: decode is occupancy-bound (convert not the limiter), prefill is tensor-core-bound (v_dot4 can't match WMMA). The int-dot 'roofline lever' is refuted for this hardware; llama.cpp's mmvq helps only where tensor cores aren't used. >>> FINAL BANKED VERDICT (2026-07-02, shape-selective + fused-quantize BUILT, Fable-cross-checked x2): the full route was built and measured on 14B (shape-selective out>=8192 routing + q8_1_fused_quant_pack_kernel one-kernel bit-exact quantize + AMORT share). dNLL +0.0005 (correct). Whole-decode W==D NEUTRAL-to-NEGATIVE: 54.4 vs 55.4 tok/s. Mechanism now MEASURED not inferred, via a SKIPQUANT graph-bypass probe: (1) the LOSS is the serial quantize->pack->GEMV prefix on the GEMV critical path (~0.42ms/tok) -- removing it from the graph makes int-dot BEAT baseline (55.7 vs 55.4); (2) int-dot's TRUE in-graph GEMV edge is only ~+0.5% (variance-checked), an order of magnitude below the eager -13% because the 14B batch-1 decode is REGIME/latency-bound: rocm-smi shows pure copy holds mclk 1249MHz/100% (829 GB/s) but whole-model decode is bursty (mclk parked ~96MHz), so both float and int GEMV hit a lower shared effective wall and the decode tax stops binding. So fused producer-epilogue int-dot tops out ~+0.3-0.5% here -- real but not worth the norm->linear boundary change + int8-activation numerical surface. BANKED. DURABLE FOOTNOTE: this is a REGIME fact not a formulation fact -- on a config where the decode holds a higher effective clock or the float tax binds harder (larger shapes, 32B/9GB+), the eager gap can survive; re-measure the eager-vs-sustained compression ratio and the decode's held mclk before reusing. NEXT LEVER = v_dot2_f32_f16 (prefix-free float drop-in, no quantize surface)."
+    },
+    {
+      "candidate_id": "decode_q4k_gemv_f16_dequant",
+      "workload": "decode",
+      "quant": [
+        "Q4_K"
+      ],
+      "roles": [
+        "ffn_gate_up"
+      ],
+      "route_family": "lanemap_gemv_f16_dequant",
+      "architectures": [
+        "dense_decoder"
+      ],
+      "origin": "refuted",
+      "status": "refuted",
+      "default_on": false,
+      "do_not_retry": true,
+      "provenance": "machine_authored_generated",
+      "required_evidence_kinds": [
+        "wd_speed"
+      ],
+      "route_params": {
+        "DECODE_Q4K_GEMV_VDOT2": "3"
+      },
+      "rollback": {
+        "DECODE_Q4K_GEMV_VDOT2": "0"
+      },
+      "refuted_axis_tags": [
+        "f16_dequant_int_source_double_convert"
+      ],
+      "evidence_refs": [
+        "tinygrad worktree vdot2-lowering 0dd793ff2"
+      ],
+      "nontranslation_reason": "HARDWARE-REFUTED (not Amdahl): dequanting in f16 is strictly WORSE (FFN GEMV +16%, 8452->9800 us). The 4-bit quant q is an INTEGER and int->f16 has no direct hardware convert \u2014 it lowers to int->f32->f16 (v_cvt_f32_ubyte0 + v_cvt_f16_f32), DOUBLING converts 48->96 vs the f32 path's 48. Packed-f16 multiply (v_mul_f16/v_fma_f16) does not compensate. General rule: never dequant an integer-sourced quant in f16.",
+      "description": "f16-native dequant for the Q4_K GEMV (DECODE_Q4K_GEMV_VDOT2=3). Refuted \u2014 see nontranslation_reason."
+    },
+    {
+      "candidate_id": "nv_decode_reduce_residual_rmsnorm_fuse",
+      "workload": "decode",
+      "quant": ["Q4_K"],
+      "roles": [],
+      "route_family": "generated_reduce_residual_rmsnorm_fusion",
+      "architectures": ["dense_decoder"],
+      "origin": "refuted",
+      "status": "refuted",
+      "default_on": false,
+      "do_not_retry": true,
+      "required_evidence_kinds": [],
+      "rollback": {},
+      "refuted_axis_tags": ["fused_reduce_scale_smem_staging"],
+      "description": "NV decode fused reduce/scale construction, measured wall-negative (refuted). The shared-memory-staged normalized fp16 activation does not recover the norm cost: the best half4 arm is +38.3% over the no-norm GEMV and only -7.6% over the already-refuted in-loop norm_once. Do not build the fused_reduce_scale emitter primitive on this axis; see tinygrad-arkey docs/task_workflow/output/nv-w1w3-norm-smem-result-20260822.md."
+    },
+    {
+      "candidate_id": "nv_decode_kv_quant_attention_dequant",
+      "workload": "decode",
+      "quant": [],
+      "roles": ["attn_kv"],
+      "route_family": "kv_quant_attention_dequant",
+      "architectures": ["dense_decoder"],
+      "origin": "template",
+      "required_evidence_kinds": [],
+      "rollback": {},
+      "refuted_axis_tags": [],
+      "blocked_on": ["kv_quant_attention_dequant"],
+      "description": "NV decode emitter wall (walled, not refuted). q8/q4 KV-cache dequant path inside the flash attention prologue. The S1 (Q to O) gap is +634 us and is dominated by the serialized K/V projections, flash attention, and norm; llama overlaps that support mass on top of the GEMV. Requires the kv_quant_attention_dequant emitter primitive before any q8/q4 KV fastpath is reachable."
+    },
+    {
+      "candidate_id": "nv_decode_mmq_intdot_shape_selective",
+      "workload": "decode",
+      "quant": ["Q4_K"],
+      "roles": ["ffn_gate_up", "ffn_down", "attn_qo"],
+      "route_family": "intdot_shape_selective_gemv",
+      "architectures": ["dense_decoder"],
+      "origin": "template",
+      "required_evidence_kinds": [],
+      "rollback": {},
+      "refuted_axis_tags": [],
+      "blocked_on": ["intdot_shape_selective_routing", "coalesced_int8x4_load", "pm_intdot_tiled_match"],
+      "description": "NV decode emitter wall (walled, not refuted). Shape-selective int-dot (dp4a) lowering for the Q/O/gate/up/down MMQ anchors. The tinygrad-arkey NV corpus measures +319.7 to +345.2 us of useful-body excess in those anchors versus llama; the int-dot knobs are the named fix but have no generated NV lowering yet. Requires intdot_shape_selective_routing, coalesced_int8x4_load, and pm_intdot_tiled_match before it is reachable."
+    }
+  ]
+}

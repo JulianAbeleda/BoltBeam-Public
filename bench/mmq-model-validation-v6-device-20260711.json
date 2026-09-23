@@ -1,0 +1,16 @@
+{
+  "schema":"boltbeam.mmq_model_validation.v6",
+  "model_id":"sha256:3746b69a68a858c3f60911f64335cfe9b899bf6957fc448546627801d8fda27a",
+  "target_metric":"kernel_device_ms",
+  "candidate_timing_used_for_fit":false,
+  "status":"falsified",
+  "individual":{
+    "direct_owner_v0":{"freeze_id":"sha256:2a359ea232bb899742143a6c3a666ff0dd1661107935ea79a0f67051b0978c42","predicted_ms":0.008304098510404829,"measured_ms":0.00896,"relative_error":0.07320329124946098,"interval_contains":true},
+    "gated_matrix_v0":{"freeze_id":"sha256:73ed7997c11fd78832ef382c832eba58338dba0d3d38784d3b26133c28d7b44c","predicted_ms":0.008625625952250512,"measured_ms":0.0158,"relative_error":0.4540743068195879,"interval_contains":false}
+  },
+  "pair":{"predicted_ratio":1.03871912663883,"measured_ratio":1.7633928571428574,"ratio_error":0.4109542167921572},
+  "hypothesis_test":{"hypothesis":"grid-dependent false-site transfer explains missing 2.039us","status":"rejected","grid_correction_ms":{"low":0.00016568667888189353,"median":0.00032152744184568347,"high":0.0004533956220099687},"missing_increment_over_grid_upper_bound":4.496617431050078},
+  "structural_audit":{"nominal_false256_grid_final_isa":{"branch_sites":1,"predicate_sites":2,"global_store_sites":65,"encoded_dwords":256},"gated_final_isa":{"branch_sites":258,"predicate_sites":547,"global_store_sites":256,"encoded_dwords":2528},"finding":"source false_sites is not a transferable final-ISA axis because the compiler collapsed branches and vectorized stores"},
+  "pmc_audit":{"usable":["SQ_BUSY_CYCLES","SQ_WAVES"],"excluded_zero_suspect":["SQ_WAVE_CYCLES","SQ_INSTS_VALU","SQ_INSTS_SALU","SQ_WAIT_ANY"]},
+  "next_probe":"generated 256-workgroup scalar branch plus b32-store grid admitted only when final ISA exactly matches 0/64/128/256 sites, with vectorization and branch collapse prohibited; GPU timestamp and SQ_BUSY only"
+}

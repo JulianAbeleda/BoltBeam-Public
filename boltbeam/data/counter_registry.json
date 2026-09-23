@@ -1,0 +1,471 @@
+{
+  "schema": "boltbeam.counter_registry.v1",
+  "note": "Initial portable counter slice for Phase P0. AMD/NVIDIA mappings are placeholders where equivalence is not yet formally established.",
+  "counters": [
+    {
+      "counter_id": "elapsed_us",
+      "unit": "us",
+      "concept": "launch",
+      "semantic_definition": "Kernel elapsed wall-clock time, measured in microseconds.",
+      "higher_is": "worse",
+      "exactness": "measured",
+      "provider_mappings": {
+        "amd": {
+          "tinygrad_native_pmc": {"metric": "wall_us"},
+          "rocprof_compute": {"metric": "duration_ns", "normalize": "ns_to_us"},
+          "rocprofv3": {"metric": "duration_ns", "normalize": "ns_to_us"}
+        },
+        "nvidia": {
+          "ncu": {"metric": "Duration"}
+        }
+      },
+      "required_raw_metrics": ["wall_us", "duration_ns"],
+      "valid_range": [0, null],
+      "normalization_notes": "Placeholder duration fields from all backends must be converted to microseconds before derived counters.",
+      "known_non_equivalences": [
+        "Backends differ on whether launch overhead and graph replay overhead are included."
+      ]
+    },
+    {
+      "counter_id": "achieved_flops",
+      "unit": "flops",
+      "concept": "tensor_core",
+      "semantic_definition": "Executed FLOPs proxy for the dispatch, normalized to a single count.",
+      "higher_is": "better",
+      "exactness": "estimated",
+      "formula": "approx_fma * 2",
+      "provider_mappings": {
+        "amd": {
+          "tinygrad_native_pmc": {"metric": "placeholder_amd_flops"},
+          "rocprof_compute": {"metric": "placeholder_amd_flops"}
+        },
+        "nvidia": {
+          "ncu": {"metric": "placeholder_ncu_flops"}
+        }
+      },
+      "required_raw_metrics": ["mfma_or_mma_instruction_count", "vector_load_bits"],
+      "valid_range": [0, null],
+      "normalization_notes": "Estimated from instruction mix; treat as a proxy unless vendor exposes exact FLOP counters.",
+      "known_non_equivalences": [
+        "Instruction mix interpretation differs by ISA width and precision mode.",
+        "Tensor-core and VALU/MFMA instruction families are not directly comparable across vendors."
+      ]
+    },
+    {
+      "counter_id": "achieved_tflops",
+      "unit": "tflops",
+      "concept": "tensor_core",
+      "semantic_definition": "Achieved throughput computed from achieved FLOPs and elapsed time.",
+      "higher_is": "better",
+      "exactness": "derived",
+      "formula": "achieved_flops / (elapsed_us * 1e6)",
+      "provider_mappings": {
+        "amd": {
+          "tinygrad_native_pmc": {"metric": "derived"},
+          "rocprof_compute": {"metric": "derived"}
+        },
+        "nvidia": {
+          "ncu": {"metric": "derived"}
+        }
+      },
+      "required_raw_metrics": ["achieved_flops", "elapsed_us"],
+      "valid_range": [0, null],
+      "normalization_notes": "Derived from achieved_flops; if either input is missing, this counter is unavailable.",
+      "known_non_equivalences": [
+        "Requires consistent FLOP counting semantics before cross-vendor comparison."
+      ]
+    },
+    {
+      "counter_id": "achieved_tflops_pct_peak",
+      "unit": "%",
+      "concept": "tensor_core",
+      "semantic_definition": "Achieved TFLOPs as a percent of the selected target peak.",
+      "higher_is": "better",
+      "exactness": "derived",
+      "formula": "100 * achieved_tflops / target_peak_tflops",
+      "provider_mappings": {
+        "amd": {
+          "tinygrad_native_pmc": {"metric": "derived"},
+          "rocprof_compute": {"metric": "derived"}
+        },
+        "nvidia": {
+          "ncu": {"metric": "derived"}
+        }
+      },
+      "required_raw_metrics": ["achieved_tflops", "target_peak_tflops"],
+      "valid_range": [0, 100],
+      "normalization_notes": "Depends on the target peak descriptor and active dtype/primitive.",
+      "known_non_equivalences": [
+        "Peak model depends on tensor-core availability, precision mode, and sustained-issue assumptions."
+      ]
+    },
+    {
+      "counter_id": "dram_bytes_read",
+      "unit": "bytes",
+      "concept": "memory",
+      "semantic_definition": "Bytes read from DRAM (global memory) attributed to the dispatch.",
+      "higher_is": "contextual",
+      "exactness": "derived",
+      "formula": "placeholder_for_read_traffic",
+      "provider_mappings": {
+        "amd": {
+          "tinygrad_native_pmc": {"metric": "placeholder_dram_bytes_read"},
+          "rocprof_compute": {"metric": "placeholder_dram_bytes_read"}
+        },
+        "nvidia": {
+          "ncu": {"metric": "dram_read_bytes"}
+        }
+      },
+      "required_raw_metrics": ["dram_read_bytes"],
+      "valid_range": [0, null],
+      "normalization_notes": "Use vendor memory-byte counters where available; otherwise estimate from source/shape.",
+      "known_non_equivalences": [
+        "Read counters are not consistently named or scoped as read-throughput across all profiler versions."
+      ]
+    },
+    {
+      "counter_id": "dram_bytes_write",
+      "unit": "bytes",
+      "concept": "memory",
+      "semantic_definition": "Bytes written to DRAM (global memory) attributed to the dispatch.",
+      "higher_is": "contextual",
+      "exactness": "derived",
+      "formula": "placeholder_for_write_traffic",
+      "provider_mappings": {
+        "amd": {
+          "tinygrad_native_pmc": {"metric": "placeholder_dram_bytes_write"},
+          "rocprof_compute": {"metric": "placeholder_dram_bytes_write"}
+        },
+        "nvidia": {
+          "ncu": {"metric": "dram_write_bytes"}
+        }
+      },
+      "required_raw_metrics": ["dram_write_bytes"],
+      "valid_range": [0, null],
+      "normalization_notes": "Use vendor memory-byte counters where available; otherwise estimate from source/shape.",
+      "known_non_equivalences": [
+        "Write counters can include allocation or memcpy overhead if scope boundaries are too wide."
+      ]
+    },
+    {
+      "counter_id": "dram_bw_gbs",
+      "unit": "GB/s",
+      "concept": "memory",
+      "semantic_definition": "Measured DRAM bandwidth from bytes over elapsed time.",
+      "higher_is": "better",
+      "exactness": "derived",
+      "formula": "(dram_bytes_read + dram_bytes_write) / (elapsed_us * 1e3)",
+      "provider_mappings": {
+        "amd": {
+          "tinygrad_native_pmc": {"metric": "derived"},
+          "rocprof_compute": {"metric": "derived"}
+        },
+        "nvidia": {
+          "ncu": {"metric": "derived"}
+        }
+      },
+      "required_raw_metrics": ["dram_bytes_read", "dram_bytes_write", "elapsed_us"],
+      "valid_range": [0, null],
+      "normalization_notes": "Formula uses decimal GB (1e9 bytes) for consistency with target peak descriptors.",
+      "known_non_equivalences": [
+        "Different tools report GB vs GiB; use explicit source unit conversion before percent-of-peak."
+      ]
+    },
+    {
+      "counter_id": "dram_bw_pct_peak",
+      "unit": "%",
+      "concept": "memory",
+      "semantic_definition": "DRAM bandwidth as a percent of target peak bandwidth.",
+      "higher_is": "better",
+      "exactness": "derived",
+      "formula": "100 * dram_bw_gbs / target_dram_gbs",
+      "provider_mappings": {
+        "amd": {
+          "tinygrad_native_pmc": {"metric": "derived"},
+          "rocprof_compute": {"metric": "derived"}
+        },
+        "nvidia": {
+          "ncu": {"metric": "derived"}
+        }
+      },
+      "required_raw_metrics": ["dram_bw_gbs", "target_dram_gbs"],
+      "valid_range": [0, 100],
+      "normalization_notes": "Depends on target descriptor and memory-clock assumptions.",
+      "known_non_equivalences": [
+        "Different vendors use different peak memory assumptions for sustained vs theoretical bandwidth."
+      ]
+    },
+    {
+      "counter_id": "l2_hit_pct",
+      "unit": "%",
+      "concept": "l2",
+      "semantic_definition": "Portion of memory accesses that hit L2 or equivalent shared cache layer.",
+      "higher_is": "better",
+      "exactness": "derived",
+      "provider_mappings": {
+        "amd": {
+          "tinygrad_native_pmc": {"metric": "placeholder_l2_hit"},
+          "rocprof_compute": {"metric": "L2ReadHit"}
+        },
+        "nvidia": {
+          "ncu": {"metric": "l2_subp0_read_hit"}
+        }
+      },
+      "required_raw_metrics": ["l2_hits", "l2_accesses"],
+      "valid_range": [0, 100],
+      "normalization_notes": "If only raw hit/access counters are available, normalize to percentage.",
+      "known_non_equivalences": [
+        "AMD and NVIDIA naming includes subtly different cache hierarchies and scope."
+      ]
+    },
+    {
+      "counter_id": "occupancy_pct",
+      "unit": "%",
+      "concept": "occupancy",
+      "semantic_definition": "Average active residency of schedulable hardware units over the dispatch.",
+      "higher_is": "better",
+      "exactness": "measured",
+      "provider_mappings": {
+        "amd": {
+          "tinygrad_native_pmc": {"metric": "achieved_occupancy"},
+          "rocprof_compute": {"metric": "wavefronts"}
+        },
+        "nvidia": {
+          "ncu": {"metric": "sm__warps_active.avg.pct_of_peak_sustained_active"}
+        }
+      },
+      "required_raw_metrics": ["active_waves", "max_waves"],
+      "valid_range": [0, 100],
+      "normalization_notes": "Prefer measured occupancy counters; do not infer from launch geometry alone.",
+      "known_non_equivalences": [
+        "AMD wavefront and NVIDIA warp occupancy are not unit-equivalent measurements."
+      ]
+    },
+    {
+      "counter_id": "waves_or_warps_active",
+      "unit": "ratio",
+      "concept": "occupancy",
+      "semantic_definition": "Active waves (AMD) or warps (NVIDIA) per scheduling slice.",
+      "higher_is": "better",
+      "exactness": "measured",
+      "provider_mappings": {
+        "amd": {"tinygrad_native_pmc": {"metric": "wavefronts_active"}},
+        "nvidia": {"ncu": {"metric": "sm__warps_active.avg"}}
+      },
+      "required_raw_metrics": ["waves_or_warps_active_raw"],
+      "valid_range": [0, null],
+      "normalization_notes": "Keep this as a raw utilization ratio not a percent to preserve source fidelity.",
+      "known_non_equivalences": [
+        "NVIDIA and AMD use different scheduling quanta (warps vs wavefronts)."
+      ]
+    },
+    {
+      "counter_id": "tensor_core_util_pct",
+      "unit": "%",
+      "concept": "tensor_core",
+      "semantic_definition": "Share of time the tensor-core/MFMA/MMA execution substrate is busy.",
+      "higher_is": "better",
+      "exactness": "measured",
+      "provider_mappings": {
+        "amd": {"tinygrad_native_pmc": {"metric": "mfma_util_pct"}},
+        "nvidia": {"ncu": {"metric": "tensor_pipe_utilization"}}
+      },
+      "required_raw_metrics": ["tensor_core_cycles", "total_cycles"],
+      "valid_range": [0, 100],
+      "normalization_notes": "Raw metrics are architecture-specific; map through this canonical concept only with explicit equivalence notes.",
+      "known_non_equivalences": [
+        "NVIDIA uses warp-level tensor throughput counters; AMD exposes MFMA/LDS-centric utilization."
+      ]
+    },
+    {
+      "counter_id": "mfma_or_mma_instruction_count",
+      "unit": "instructions",
+      "concept": "tensor_core",
+      "semantic_definition": "Number of tensor-core/MFMA/MMA instructions retired for the dispatch.",
+      "higher_is": "contextual",
+      "exactness": "measured",
+      "provider_mappings": {
+        "amd": {"tinygrad_native_pmc": {"metric": "mfma_inst_count"}},
+        "nvidia": {"ncu": {"metric": "tensor_instr_executed"}}
+      },
+      "required_raw_metrics": ["tensor_inst_retired"],
+      "valid_range": [0, null],
+      "normalization_notes": "Do not convert this to cycles or time without an explicit model and clock source.",
+      "known_non_equivalences": [
+        "AMD MFMA and NVIDIA MMA instruction taxonomies differ in width and packing."
+      ]
+    },
+    {
+      "counter_id": "valu_busy_pct",
+      "unit": "%",
+      "concept": "tensor_core",
+      "semantic_definition": "Fraction of time vector ALUs execute useful VALU/SALU work.",
+      "higher_is": "contextual",
+      "exactness": "measured",
+      "provider_mappings": {
+        "amd": {"tinygrad_native_pmc": {"metric": "valu_util_pct"}},
+        "nvidia": {"ncu": {"metric": "smsp__inst_executed_pipe_alu.sum.pct_of_peak_sustained_active"}}
+      },
+      "required_raw_metrics": ["valu_active_cycles", "elapsed_cycles"],
+      "valid_range": [0, 100],
+      "normalization_notes": "Useful for scalar/vector balance against tensor-core and memory indicators.",
+      "known_non_equivalences": [
+        "AMD and NVIDIA define VALU/MAC mix differently in their sampling taxonomy."
+      ]
+    },
+    {
+      "counter_id": "scalar_alu_busy_pct",
+      "unit": "%",
+      "concept": "scheduler",
+      "semantic_definition": "Fraction of time dominated by non-math scalar ALU work.",
+      "higher_is": "contextual",
+      "exactness": "derived",
+      "provider_mappings": {
+        "amd": {"tinygrad_native_pmc": {"metric": "placeholder_scalar_alu_busy"}},
+        "nvidia": {"ncu": {"metric": "smsp__inst_executed_pipe_ipa.sum.pct_of_peak_sustained_active"}}
+      },
+      "required_raw_metrics": ["scalar_alu_cycles", "elapsed_cycles"],
+      "valid_range": [0, 100],
+      "normalization_notes": "Proxy for compiler and unpack / index overhead.",
+      "known_non_equivalences": [
+        "Scalar ALU naming and filtering differ by compiler and ISA."
+      ]
+    },
+    {
+      "counter_id": "lds_or_shared_conflict_pct",
+      "unit": "%",
+      "concept": "lds",
+      "semantic_definition": "Share of LDS/shared-memory cycles affected by bank conflicts or throttling.",
+      "higher_is": "worse",
+      "exactness": "derived",
+      "provider_mappings": {
+        "amd": {"tinygrad_native_pmc": {"metric": "lds_conflict"}},
+        "nvidia": {"ncu": {"metric": "placeholder_shared_conflict"}}
+      },
+      "required_raw_metrics": ["lds_conflict_cycles", "elapsed_cycles"],
+      "valid_range": [0, 100],
+      "normalization_notes": "Report as percentage only; do not compare raw cycle counters across vendors.",
+      "known_non_equivalences": [
+        "AMD and NVIDIA define different shared-memory structures and conflict taxonomies."
+      ]
+    },
+    {
+      "counter_id": "scratch_or_local_spill_bytes",
+      "unit": "bytes",
+      "concept": "lds",
+      "semantic_definition": "Local scratch/spill traffic attributed to the dispatch.",
+      "higher_is": "contextual",
+      "exactness": "measured",
+      "provider_mappings": {
+        "amd": {"tinygrad_native_pmc": {"metric": "local_mem_spills"}},
+        "nvidia": {"ncu": {"metric": "l1tex__t_requests_aperture2.sum"}}
+      },
+      "required_raw_metrics": ["scratch_bytes"],
+      "valid_range": [0, null],
+      "normalization_notes": "High spill can indicate VGPR/SGPR pressure or aggressive inline behavior.",
+      "known_non_equivalences": [
+        "Local memory spill accounting differs between stack spill and LDS/shared spill implementations."
+      ]
+    },
+    {
+      "counter_id": "barrier_count",
+      "unit": "count",
+      "concept": "scheduler",
+      "semantic_definition": "Count of barrier/synchronization instructions in the dispatch.",
+      "higher_is": "contextual",
+      "exactness": "measured",
+      "provider_mappings": {
+        "amd": {"tinygrad_native_pmc": {"metric": "barrier_count"}},
+        "nvidia": {"ncu": {"metric": "bar_sync"}}
+      },
+      "required_raw_metrics": ["barrier_instructions"],
+      "valid_range": [0, null],
+      "normalization_notes": "Useful as a scheduler pathology indicator, especially for kernel shape and loop unrolling.",
+      "known_non_equivalences": [
+        "Barrier opcode taxonomies are not identical, so exact equivalence is delayed."
+      ]
+    },
+    {
+      "counter_id": "wait_or_stall_pct",
+      "unit": "%",
+      "concept": "scheduler",
+      "semantic_definition": "Portion of cycles stalled on wait / dependency or memory scheduler events.",
+      "higher_is": "worse",
+      "exactness": "derived",
+      "formula": "100 * stall_cycles / elapsed_cycles",
+      "provider_mappings": {
+        "amd": {"tinygrad_native_pmc": {"metric": "wait_stall_pct"}},
+        "nvidia": {"ncu": {"metric": "stall_pct"}}
+      },
+      "required_raw_metrics": ["stall_cycles", "elapsed_cycles"],
+      "valid_range": [0, 100],
+      "normalization_notes": "Use a narrow definition of scheduler-visible stall; memory-stall split should be captured separately when available.",
+      "known_non_equivalences": [
+        "Wait/stall semantics differ by frontend availability and ISA feature set."
+      ]
+    },
+    {
+      "counter_id": "vector_load_bits",
+      "unit": "bits",
+      "concept": "memory",
+      "semantic_definition": "Average vector load width of observed memory loads, in bits.",
+      "higher_is": "better",
+      "exactness": "proxy",
+      "provider_mappings": {
+        "amd": {"tinygrad_native_pmc": {"metric": "vector_load_bits"}},
+        "nvidia": {"ncu": {"metric": "vector_load_width_bits"}}
+      },
+      "required_raw_metrics": ["vector_load_bytes", "vector_load_instructions"],
+      "valid_range": [0, null],
+      "normalization_notes": "Report the effective width after decoding instruction classes; treat as proxy when only partial disassembly exists.",
+      "known_non_equivalences": [
+        "Vector width conventions differ for half/bfloat/INT payloads and compiler lowering."
+      ]
+    },
+    {
+      "counter_id": "l0_requests", "unit": "count", "concept": "memory",
+      "semantic_definition": "Data requests observed at the provider's normalized L0/near-cache tier.",
+      "higher_is": "contextual", "exactness": "measured",
+      "provider_mappings": {"amd": {"tinygrad_native_pmc": {"status": "unmapped_gfx11_counter"}}},
+      "required_raw_metrics": [], "valid_range": [0, null],
+      "normalization_notes": "No gfx11 raw metric is currently mapped. A request is not bytes; conversion requires target- and experiment-specific calibration.",
+      "known_non_equivalences": ["Provider request and transaction widths differ."]
+    },
+    {
+      "counter_id": "l1_requests", "unit": "count", "concept": "memory",
+      "semantic_definition": "Data requests observed at the provider's normalized L1 tier.",
+      "higher_is": "contextual", "exactness": "measured",
+      "provider_mappings": {"amd": {"tinygrad_native_pmc": {"status": "unmapped_gfx11_counter"}}},
+      "required_raw_metrics": [], "valid_range": [0, null],
+      "normalization_notes": "No gfx11 raw metric is currently mapped. A request is not bytes; conversion requires target- and experiment-specific calibration.",
+      "known_non_equivalences": ["Provider request and transaction widths differ."]
+    },
+    {
+      "counter_id": "l2_requests", "unit": "count", "concept": "l2",
+      "semantic_definition": "Data requests observed at the provider's normalized L2 tier.",
+      "higher_is": "contextual", "exactness": "measured",
+      "provider_mappings": {"amd": {"tinygrad_native_pmc": {"metric_pattern": "GL2C_EA_RDREQ_*", "status": "blocked_gfx11_pmc"}}},
+      "required_raw_metrics": ["GL2C_EA_RDREQ_*"], "valid_range": [0, null],
+      "normalization_notes": "The existing MMQ mapping is workload-scoped and is not a generic byte conversion.",
+      "known_non_equivalences": ["Requests are not hits, misses, transactions, or bytes."]
+    },
+    {
+      "counter_id": "last_level_cache_requests", "unit": "count", "concept": "memory",
+      "semantic_definition": "Data requests observed at the normalized last-level cache tier (AMD MALL/Infinity Cache alias).",
+      "higher_is": "contextual", "exactness": "measured",
+      "provider_mappings": {"amd": {"tinygrad_native_pmc": {"status": "no_distinct_mall_counter_mapped"}}},
+      "required_raw_metrics": [], "valid_range": [0, null],
+      "normalization_notes": "No distinct gfx11 MALL request counter is currently mapped. Keep canonical LLC naming in normalized output and provider aliases in mappings.",
+      "known_non_equivalences": ["Not every provider exposes a physically separate LLC."]
+    },
+    {
+      "counter_id": "dram_requests", "unit": "count", "concept": "memory",
+      "semantic_definition": "Data requests observed at the normalized device-memory tier.",
+      "higher_is": "contextual", "exactness": "measured",
+      "provider_mappings": {"amd": {"tinygrad_native_pmc": {"status": "unmapped_gfx11_counter"}}},
+      "required_raw_metrics": [], "valid_range": [0, null],
+      "normalization_notes": "No gfx11 memory-controller request metric is currently mapped. Request conversion and read/write composition require explicit calibration.",
+      "known_non_equivalences": ["Memory-controller request scopes differ by provider."]
+    }
+  ]
+}

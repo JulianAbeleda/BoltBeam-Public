@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "properties": {
+    "constraints": {
+      "type": "object"
+    },
+    "contexts": {
+      "type": "array"
+    },
+    "model_id": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "boltbeam.workload_profile.v1"
+    },
+    "target_id": {
+      "type": "string"
+    },
+    "workload": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "constraints",
+    "contexts",
+    "model_id",
+    "schema",
+    "target_id",
+    "workload"
+  ],
+  "title": "boltbeam workload_profile contract (top-level shape, generated from a real artifact; LN-100)",
+  "type": "object"
+}

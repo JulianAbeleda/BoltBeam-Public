@@ -1,0 +1,163 @@
+{
+  "schema": "boltbeam.target_registry.v1",
+  "note": "Target capability data (audit A6). Only backend_status=complete targets may promote a route. NVIDIA and Apple targets remain descriptor_only until their evaluators exist.",
+  "targets": [
+    {
+      "target_id": "amd_gfx1100", "backend": "AMD", "wave_size": 32, "subgroup_size": 32,
+      "lds_bytes_per_cu": 65536, "vram_bytes": 25769803776, "vector_load_bits": 128,
+      "compute_units": 96, "memory_bandwidth_gbs": 960.0,
+      "peak_tflops": {"fp32": 61.4, "fp16": 122.8},
+      "dot_primitives": ["v_dot2_f32_f16", "v_dot2_f32_bf16", "v_dot2_i32_i16", "v_dot2_u32_u16",
+                         "v_dot4_i32_i8", "v_dot4_u32_u8", "v_dot8_i32_i4", "v_dot8_u32_u4"],
+      "dot_primitives_lowered": ["v_dot2_f32_f16", "v_dot4_i32_i8"],
+      "note_dot_vocab": "Full gfx1100 VOP3P dot family. LOWERED: v_dot2_f32_f16 (pm_fdot2) and v_dot4_i32_i8 (pm_intdot, INTDOT_LOWERING, __builtin_amdgcn_sudot4 — bit-exact, v_dot4 in ISA, tinygrad d4cfc7f24). Backlog: v_dot8_i4 (needs i4 packing vocab) + the bf16/i16/u16 dots. NOTE v_dot4_i8 is now REACHABLE+fusable for the search; the perf win still needs coalesced int8x4 load so operands arrive packed (pack-from-scalar ALU can exceed the 4 MACs). 'Lower all' = give every entry a generated lowering.",
+      "dequant_primitives": ["q4_k", "q5_k", "q6_k", "q8_0"],
+      "backend_status": "complete",
+      "capabilities": {
+        "same_type_quant_kv_flash_fastpath": true,
+        "mixed_quant_kv_flash_fastpath": false,
+        "kv_quant_speed_residual_required": true,
+        "kv_quant_quality_gate_required": true,
+        "cross_workgroup_atomic_float": false,
+        "grid_sync": false,
+        "matrix_unit": "wmma",
+        "exposable_counters": ["sq_busy_cycles"],
+        "tier_aliases": {"gl0": "l0", "gl1": "l1", "gl2c": "l2", "mall": "last_level_cache", "Infinity Cache": "last_level_cache", "vram": "dram"},
+        "memory_hierarchy": {
+          "truth_status": "modeled",
+          "tiers": {
+            "l0": {"capacity_status": "unknown", "bandwidth_status": "unknown",
+                   "observation": {"status": "unsupported", "reason": "blocked_gfx11_pmc", "scope": "per_kernel"}},
+            "l1": {"capacity_status": "unknown", "bandwidth_status": "unknown",
+                   "observation": {"status": "unsupported", "reason": "blocked_gfx11_pmc", "scope": "per_kernel"}},
+            "l2": {"bytes": 6291456, "bandwidth_gbs": 3400.0,
+                   "capacity_status": "hardware", "bandwidth_status": "modeled",
+                   "observation": {"status": "unsupported", "reason": "blocked_gfx11_pmc", "scope": "per_kernel"}},
+            "last_level_cache": {"vendor_name": "Infinity Cache", "internal_name": "mall",
+                                 "bytes": 100663296, "bandwidth_gbs": 2400.0,
+                                 "capacity_status": "hardware", "bandwidth_status": "modeled",
+                                 "observation": {"status": "unsupported", "reason": "blocked_gfx11_pmc", "scope": "per_kernel"}},
+            "dram": {"bandwidth_gbs": 960.0, "bandwidth_status": "hardware",
+                     "observation": {"status": "unsupported", "reason": "blocked_gfx11_pmc", "scope": "per_kernel"}},
+            "lds": {"bytes": 65536, "bandwidth_gbs": 16000.0,
+                    "capacity_status": "hardware", "bandwidth_status": "modeled",
+                    "observation": {"status": "calibratable", "scope": "controlled_proxy"}}
+          },
+          "collection": {"simultaneous": false, "replay_required": true, "multiplexing": "reject_unless_corrected",
+                         "baseline_required": true, "discovery": "bounded_preflight"},
+          "calibration": "replace modeled bandwidths with mem-sweep-request + ingest-mem-sweep evidence"
+        },
+        "measurement_map": {
+          "execution_unit": {"unit": "wgp_cu", "wave": "wave32", "tool": "tinygrad_kfd_pmc"},
+          "matrix_unit": {"unit": "wmma", "counters": ["tensor_core_util_pct"], "tool": "tinygrad_kfd_pmc"},
+          "vector_unit": {"counters": ["SQ_INSTS_VALU", "SQ_INSTS_SALU"], "tool": "tinygrad_kfd_pmc"},
+          "memory_level": {"levels": ["gl0", "gl1", "gl2c", "mall", "dram"], "counters": ["GL2C_HIT", "GL2C_MISS"], "tool": "tinygrad_kfd_pmc",
+                           "mall_observation": "working_set_sweep_until_distinct_live_counter_is_available"},
+          "occupancy": {"counters": ["SQ_BUSY_CYCLES", "GRBM_GUI_ACTIVE"], "tool": "tinygrad_kfd_pmc"},
+          "bytes_moved": {"counters": ["GL2C_EA_RDREQ_*", "GL2C_EA_WRREQ_*"], "tool": "tinygrad_kfd_pmc"}
+        },
+        "counter_status": {"SQ_BUSY_CYCLES": "working", "others": "blocked_gfx11_pmc"}
+      }
+    },
+    {
+      "target_id": "nvidia_sm89", "backend": "CUDA", "wave_size": 32, "subgroup_size": 32,
+      "lds_bytes_per_cu": 102400, "vram_bytes": null, "vector_load_bits": 128,
+      "compute_units": null, "memory_bandwidth_gbs": null, "peak_tflops": {},
+      "dot_primitives": ["mma_m16n8k16", "dp4a"],
+      "dequant_primitives": [],
+      "backend_status": "descriptor_only",
+      "capabilities": {
+        "same_type_quant_kv_flash_fastpath": false,
+        "mixed_quant_kv_flash_fastpath": false,
+        "kv_quant_speed_residual_required": true,
+        "kv_quant_quality_gate_required": true
+      }
+    },
+    {
+      "target_id": "nvidia_sm120", "backend": "CUDA", "wave_size": 32, "subgroup_size": 32,
+      "lds_bytes_per_cu": null, "vram_bytes": null, "vector_load_bits": 128,
+      "compute_units": 170, "memory_bandwidth_gbs": 1792.0,
+      "peak_tflops": {"fp32": 104.8, "fp16": 104.8, "int8": 180.0},
+      "dot_primitives": ["mma_m16n8k16", "dp4a"],
+      "dot_primitives_lowered": [],
+      "dequant_primitives": [],
+      "backend_status": "descriptor_only",
+      "capabilities": {
+        "tinygrad_device": "NV",
+        "compiler_arch": "sm_120",
+        "timing_collector": "tinygrad-profile-events",
+        "counter_importer": "ncu-import",
+        "fact_status": {
+          "memory_bandwidth_gbs": "vendor_sheet_1792; measured read 1700 GB/s (94.9%) via bw_peak_cuda.cu",
+          "compute_units": "hardware_scan: 170 SMs (21760 CUDA cores / 128 lanes)",
+          "fp32_tflops": "derived: 21760 lanes x 2 FLOP x 2.41 GHz = 104.8",
+          "fp16_tflops": "vendor_sheet_cuda_core (conservative; tensor fp16 dense sheet 419, measured mma 255.4)",
+          "int8_tflops": "session_estimate_180 (nv-prefill-decode-diagnosis-20260801)",
+          "matrix_unit": "mma.sync.m16n8k16 measured 255.4 TF = 61% of the 419 TF sheet figure"
+        },
+        "same_type_quant_kv_flash_fastpath": false,
+        "mixed_quant_kv_flash_fastpath": false,
+        "kv_quant_speed_residual_required": true,
+        "kv_quant_quality_gate_required": true
+      }
+    },
+    {
+      "target_id": "apple_metal", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
+      "lds_bytes_per_cu": null, "vram_bytes": null, "vector_load_bits": 128,
+      "compute_units": null, "memory_bandwidth_gbs": null, "peak_tflops": {},
+      "dot_primitives": ["simdgroup_matrix"],
+      "dequant_primitives": [],
+      "backend_status": "descriptor_only",
+      "capabilities": {
+        "target_kind": "family",
+        "tinygrad_device": "METAL",
+        "fact_status": {
+          "wave_size": "hardware_family",
+          "subgroup_size": "hardware_family",
+          "lds_bytes_per_cu": "unknown",
+          "vram_bytes": "not_applicable_unified_memory",
+          "memory_bandwidth_gbs": "unknown",
+          "compute_units": "unknown"
+        },
+        "same_type_quant_kv_flash_fastpath": false,
+        "mixed_quant_kv_flash_fastpath": false,
+        "kv_quant_speed_residual_required": true,
+        "kv_quant_quality_gate_required": true
+      }
+    },
+    {
+      "target_id": "apple_m4_10c", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
+      "lds_bytes_per_cu": null, "vram_bytes": null, "vector_load_bits": 128,
+      "compute_units": null, "memory_bandwidth_gbs": 120.0, "peak_tflops": {},
+      "dot_primitives": ["simdgroup_matrix"],
+      "dequant_primitives": [],
+      "backend_status": "descriptor_only",
+      "capabilities": {
+        "target_kind": "exact",
+        "tinygrad_device": "METAL",
+        "match": {"apple_soc": "M4", "gpu_cores": 10},
+        "fact_status": {
+          "wave_size": "hardware_family",
+          "subgroup_size": "hardware_family",
+          "gpu_cores": "hardware_scan",
+          "lds_bytes_per_cu": "unknown",
+          "vram_bytes": "not_applicable_unified_memory",
+          "memory_bandwidth_gbs": "vendor_spec",
+          "compute_units": "unknown"
+        },
+        "fact_sources": {
+          "memory_bandwidth_gbs": {
+            "kind": "vendor_spec",
+            "url": "https://support.apple.com/en-ca/121555",
+            "scope": "Mac mini (2024), Apple M4, 10-core GPU",
+            "value_gbs": 120.0
+          }
+        },
+        "same_type_quant_kv_flash_fastpath": false,
+        "mixed_quant_kv_flash_fastpath": false,
+        "kv_quant_speed_residual_required": true,
+        "kv_quant_quality_gate_required": true
+      }
+    }
+  ]
+}

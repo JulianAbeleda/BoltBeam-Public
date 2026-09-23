@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam HW Trace",
+  "type": "object",
+  "required": ["schema", "model_id", "target_id", "workload", "rows"],
+  "properties": {
+    "schema": {"const": "boltbeam.hw_trace.v1"},
+    "model_id": {"type": "string", "minLength": 1},
+    "target_id": {"type": "string", "minLength": 1},
+    "workload": {"enum": ["decode", "prefill"]},
+    "provider_id": {"type": "string", "minLength": 1},
+    "source_schema": {"type": "string"},
+    "trace_source": {"type": "string"},
+    "contexts": {
+      "type": "array",
+      "items": {"type": "integer"}
+    },
+    "counter_vocab": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "counter_summary": {"type": "object"},
+    "aux_sources": {
+      "type": "object",
+      "additionalProperties": {"type": ["string", "number", "boolean", "null"]}
+    },
+    "metadata": {"type": "object"},
+    "resource_enrichment": {"type": "object"},
+    "source": {"type": "object"},
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scope"],
+        "properties": {
+          "scope": {"type": "string"},
+          "context": {"type": "integer"},
+          "wall_us": {"type": "number"},
+          "dispatch_id": {"type": ["string", "integer"]},
+          "program_id": {"type": ["string", "integer"]},
+          "queue_id": {"type": ["string", "integer"]},
+          "stream_id": {"type": ["string", "integer"]},
+          "graph_id": {"type": ["string", "integer"]},
+          "launch_order": {"type": "number"},
+          "start_ns": {"type": "number"},
+          "end_ns": {"type": "number"},
+          "kernel": {"type": "string"},
+          "kind": {"type": "string"},
+          "role": {"type": "string"},
+          "quant": {"type": ["string", "null"]},
+          "shape": {"type": "array", "items": {"type": "integer"}},
+          "calls": {"type": "number"},
+          "phys_bytes": {"type": "number"},
+          "counters": {"type": "object", "additionalProperties": {"type": "number"}},
+          "counter_quality": {
+            "type": "object",
+            "additionalProperties": {"enum": ["measured", "derived", "proxy", "estimated"]}
+          },
+          "evidence_quality": {"type": "object"},
+          "sources": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean", "null"]}},
+          "static_metrics": {"type": "object"},
+          "tile_oracle": {"type": "object"},
+          "resource_constraints": {"type": "object"},
+          "candidate_geometry": {"type": "object"},
+          "resources": {
+            "type": "object",
+            "properties": {
+              "workgroup": {"type": "array", "items": {"type": "integer"}},
+              "grid": {"type": "array", "items": {"type": "integer"}},
+              "global_size": {"type": "array", "items": {"type": "integer"}},
+              "local_size": {"type": "array", "items": {"type": "integer"}},
+              "workgroup_threads": {"type": "integer"},
+              "workgroup_size": {"type": "integer"},
+              "lds_bytes": {"type": "number"},
+              "scratch_bytes": {"type": "number"},
+              "vgpr": {"type": "number"},
+              "sgpr": {"type": "number"},
+              "registers": {"type": "number"},
+              "l1_hits": {"type": "number"},
+              "l1_misses": {"type": "number"}
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

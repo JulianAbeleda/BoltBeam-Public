@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BoltBeam — Run Graph</title>
+<style>
+  /* ComfyUI/litegraph vocabulary. A BoltBeam run IS a DAG, so the node editor is the data model, not a metaphor.
+     Two readings of the same graph: Plain answers "what is this / how is it going / what's needed",
+     Technical answers "what did the pipeline do". Nothing is hidden in Technical; nothing is dumbed down in
+     Plain — the same eight stages and the same missing link appear in both. */
+  :root{
+    --canvas:#1a1b26; --grid:rgba(192,202,245,.055); --grid-2:rgba(192,202,245,.10);
+    --node:#24283b; --node-hd:#1f2335; --node-br:#414868; --node-sel:#7dcfff;
+    --widget:#1a1b26; --widget-br:#3b4261;
+    --tx:#c0caf5; --tx-2:#a9b1d6; --tx-3:#565f89;
+    --t-profile:#bb9af7; --t-caps:#e0af68; --t-plan:#7aa2f7; --t-evidence:#9ece6a;
+    --t-trace:#ff9e64; --t-policy:#f7768e; --t-missing:#db4b4b;
+    --run:#9ece6a; --warn:#e0af68;
+    --ui:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *,*::before,*::after{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--canvas);color:var(--tx);font-family:var(--ui);font-size:13px;overflow:hidden;
+       -webkit-font-smoothing:antialiased}
+
+  #viewport{position:fixed;inset:0;overflow:hidden;cursor:grab;
+    background-image:radial-gradient(var(--grid-2) 1px,transparent 1px),radial-gradient(var(--grid) 1px,transparent 1px);
+    background-size:100px 100px,20px 20px}
+  #viewport.panning{cursor:grabbing}
+  #world{position:absolute;top:0;left:0;width:3200px;height:1700px;transform-origin:0 0}
+  #links{position:absolute;top:0;left:0;width:3200px;height:1700px;pointer-events:none;overflow:visible}
+
+  /* ---- node ---- */
+  .node{position:absolute;width:236px;background:var(--node);border:1px solid var(--node-br);border-radius:9px;
+        box-shadow:0 5px 18px rgba(6,8,18,.55);user-select:none;transition:box-shadow .15s ease,border-color .15s ease}
+  .node.sel{border-color:var(--node-sel);box-shadow:0 0 0 1px var(--node-sel),0 8px 26px rgba(0,0,0,.6)}
+  .node.done{border-left:3px solid var(--run)}
+  .node.part{border-left:3px solid var(--warn)}
+  .node.dead{border-left:3px solid var(--t-missing)}
+  .node.wide{width:272px}
+  body[data-mode="plain"] .node{width:262px}
+  body[data-mode="plain"] .node.wide{width:292px}
+  .nhd{display:flex;align-items:center;gap:8px;padding:8px 11px;background:var(--node-hd);
+       border-radius:8px 8px 0 0;cursor:move;border-bottom:1px solid #1a1b26}
+  .step{display:none;width:19px;height:19px;border-radius:50%;background:#292e42;color:var(--tx-2);
+        font-size:10.5px;font-weight:700;display:none;place-items:center;flex:none}
+  body[data-mode="plain"] .step{display:grid}
+  .bulb{width:8px;height:8px;border-radius:50%;flex:none;background:var(--run)}
+  .part .bulb{background:var(--warn)} .dead .bulb{background:var(--t-missing)}
+  .nttl{font-size:12.5px;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .nsub{font-size:10px;color:var(--tx-3);font-family:var(--mono)}
+  body[data-mode="plain"] .nsub{font-family:var(--ui);font-size:10.5px}
+  .nbd{padding:9px 0 11px}
+
+  .port{display:flex;align-items:center;gap:8px;height:22px;position:relative;font-size:11px;color:var(--tx-2)}
+  .port.in{padding-left:14px} .port.out{padding-right:14px;justify-content:flex-end;text-align:right}
+  .pd{position:absolute;width:10px;height:10px;border-radius:50%;border:1px solid rgba(0,0,0,.55)}
+  .port.in .pd{left:-5px} .port.out .pd{right:-5px}
+  .port.miss{color:var(--t-missing)}
+  .port.miss .pd{background:transparent!important;border:1.5px dashed var(--t-missing)}
+
+  .w{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:5px 11px;padding:5px 11px;
+     background:var(--widget);border:1px solid var(--widget-br);border-radius:14px;font-size:11px}
+  .w .lbl{color:var(--tx-3)}
+  .w .val{color:var(--tx);font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+  body[data-mode="plain"] .w .val{font-family:var(--ui)}
+  .w.good .val{color:var(--run)} .w.warn .val{color:var(--warn)} .w.bad .val{color:var(--t-missing)}
+  .w.say{display:block;color:var(--tx-2);line-height:1.55;border-radius:10px}
+  .bar{margin:8px 11px 4px;height:6px;border-radius:4px;background:var(--widget);border:1px solid var(--widget-br);overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--t-profile);width:0;transition:width 1s cubic-bezier(.2,.7,.3,1)}
+  .cap{margin:0 11px;font-size:10px;color:var(--tx-3);font-family:var(--mono)}
+  body[data-mode="plain"] .cap{font-family:var(--ui);font-size:10.5px}
+
+  /* ---- top bar + mode switch ---- */
+  .topbar{position:fixed;top:0;left:0;right:0;height:46px;display:flex;align-items:center;gap:13px;padding:0 16px;
+          background:rgba(26,27,38,.93);border-bottom:1px solid #414868;backdrop-filter:blur(10px);z-index:40}
+  .logo{font-weight:700;font-size:15px;letter-spacing:-.01em}
+  .logo span{color:var(--t-profile)}
+  .crumb{font-family:var(--mono);font-size:11.5px;color:var(--tx-3)}
+  .topbar .sp{flex:1}
+  .pill{font-size:11px;padding:4px 11px;border-radius:20px;background:#24283b;border:1px solid #414868;color:var(--tx-2)}
+  .pill.bad{color:var(--t-missing);border-color:#db4b4b}
+  .lnk{color:var(--tx-3);text-decoration:none;font-size:11.5px}
+  .lnk:hover{color:var(--tx)}
+  .tech-only{display:none} body[data-mode="tech"] .tech-only{display:inline-flex}
+  .plain-only{display:none} body[data-mode="plain"] .plain-only{display:inline-flex}
+
+  .seg{display:flex;background:#1f2335;border:1px solid #3b4261;border-radius:20px;padding:2px;gap:2px}
+  .seg button{font:inherit;font-size:11.5px;padding:4px 13px;border-radius:16px;border:0;background:none;
+              color:var(--tx-3);cursor:pointer;white-space:nowrap}
+  .seg button:hover{color:var(--tx-2)}
+  .seg button[aria-pressed="true"]{background:#292e42;color:var(--tx)}
+  .seg button:focus-visible{outline:2px solid var(--node-sel);outline-offset:1px}
+
+  /* ---- plain-mode explainer strip ---- */
+  .brief{position:fixed;top:46px;left:0;right:0;z-index:35;background:rgba(31,35,53,.96);
+         border-bottom:1px solid #414868;backdrop-filter:blur(10px);padding:15px 20px;display:none}
+  body[data-mode="plain"] .brief{display:block}
+  .brief-in{max-width:1080px;margin:0 auto;display:grid;grid-template-columns:1fr 1fr 1fr;gap:26px}
+  @media (max-width:820px){.brief-in{grid-template-columns:1fr;gap:12px}}
+  .bq{font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--tx-3);margin-bottom:5px;font-weight:600}
+  .ba{font-size:13px;color:var(--tx);line-height:1.55}
+  .ba b{color:var(--run);font-weight:600}
+  .ba b.warn{color:var(--warn)}
+
+  /* ---- legend ---- */
+  .legend{position:fixed;left:14px;bottom:14px;z-index:30;background:rgba(36,40,59,.95);border:1px solid #414868;
+          border-radius:9px;padding:11px 13px;font-size:10.5px;color:var(--tx-2);backdrop-filter:blur(8px);
+          box-shadow:0 6px 22px rgba(0,0,0,.5);max-width:250px}
+  .legend h4{margin:0 0 8px;font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--tx-3);font-weight:600}
+  .lrow{display:flex;align-items:center;gap:7px;padding:2px 0}
+  .sw{width:9px;height:9px;border-radius:50%;flex:none}
+  .hint{margin-top:9px;padding-top:8px;border-top:1px solid #414868;color:var(--tx-3);line-height:1.6}
+
+  /* ---- inspector ---- */
+  .insp{position:fixed;right:0;top:46px;bottom:0;width:334px;background:#1f2335;border-left:1px solid #414868;
+        z-index:38;display:flex;flex-direction:column;transform:translateX(100%);
+        transition:transform .24s cubic-bezier(.2,.7,.3,1)}
+  .insp.open{transform:none}
+  .ihd{padding:14px 16px;border-bottom:1px solid #414868;display:flex;align-items:center;gap:10px}
+  .ihd h3{margin:0;font-size:13.5px;font-weight:600}
+  .ihd .x{margin-left:auto;background:none;border:0;color:var(--tx-3);font-size:18px;cursor:pointer;line-height:1;padding:0 3px}
+  .ihd .x:hover{color:var(--tx)}
+  .ibd{padding:15px 16px;overflow-y:auto;display:flex;flex-direction:column;gap:15px}
+  .sect h5{margin:0 0 7px;font-size:9.5px;letter-spacing:.13em;text-transform:uppercase;color:var(--tx-3);font-weight:600}
+  .kv{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px solid #3b4261;font-size:11.5px}
+  .kv:last-child{border-bottom:0}
+  .kv .k{color:var(--tx-3)} .kv .v{font-family:var(--mono);color:var(--tx);text-align:right;word-break:break-word}
+  .chain{list-style:none;margin:0;padding:0}
+  .chain li{position:relative;padding:7px 0 7px 18px;border-left:1px solid #414868;font-size:11.5px;color:var(--tx-2)}
+  .chain li:last-child{border-left-color:transparent}
+  .chain li::before{content:"";position:absolute;left:-4px;top:14px;width:7px;height:7px;border-radius:50%;background:var(--t-evidence)}
+  .chain li.miss{color:var(--t-missing)} .chain li.miss::before{background:var(--t-missing)}
+  .chain .f{color:var(--t-plan);font-family:var(--mono);font-size:11px}
+  .note{font-size:12.5px;color:var(--tx-2);line-height:1.75;margin:0}
+  .note code{background:#292e42;padding:1px 5px;border-radius:3px;font-family:var(--mono);font-size:10.5px}
+  .callout{background:#292e42;border-left:2px solid var(--warn);border-radius:0 7px 7px 0;padding:10px 13px;
+           font-size:12.5px;color:var(--tx-2);line-height:1.7}
+  .callout b{color:var(--tx)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style></head><body data-mode="plain">
+
+<div class="topbar">
+  <div class="logo">Bolt<span>Beam</span></div>
+  <div class="seg" role="group" aria-label="Detail level">
+    <button id="mPlain" type="button" aria-pressed="true">Plain</button>
+    <button id="mTech" type="button" aria-pressed="false">Technical</button>
+  </div>
+  <div class="crumb tech-only">runs/qwen14b-samerun-20260721</div>
+  <span class="pill tech-only">qwen3-14b · Q4_K</span>
+  <span class="pill tech-only">amd_gfx1100</span>
+  <span class="pill tech-only">pp512</span>
+  <span class="pill plain-only">14-billion-parameter model</span>
+  <span class="pill plain-only">one graphics card</span>
+  <div class="sp"></div>
+  <span class="pill bad tech-only">output blocked</span>
+  <span class="pill bad plain-only">can't finish yet</span>
+  <a class="lnk" href="index.html">← index</a>
+</div>
+
+<div class="brief">
+  <div class="brief-in">
+    <div><div class="bq">What this is</div>
+      <div class="ba">An attempt to make a large AI model run faster on one graphics card, without changing
+        a single one of its answers.</div></div>
+    <div><div class="bq">How it's going</div>
+      <div class="ba">It now runs <b>5× faster</b> than where it started, and reached <b>89%</b> of the
+        speed of the best existing tool.</div></div>
+    <div><div class="bq">What's needed</div>
+      <div class="ba"><b class="warn">Two measurements are missing.</b> Until they're taken, the speed-up
+        can't be shipped — the last step refuses to sign off.</div></div>
+  </div>
+</div>
+
+<div id="viewport"><div id="world"><svg id="links"></svg></div></div>
+
+<div class="legend">
+  <h4 id="legTtl">What the colours mean</h4>
+  <div id="legBody"></div>
+  <div class="hint" id="legHint">Drag a box to move it. Drag the background to pan. Click a box to see inside.</div>
+</div>
+
+<aside class="insp" id="insp">
+  <div class="ihd"><h3 id="ittl">Step</h3><button class="x" id="ix" type="button" aria-label="Close">×</button></div>
+  <div class="ibd" id="ibd"></div>
+</aside>
+
+<script>
+const T = { profile:'--t-profile', caps:'--t-caps', plan:'--t-plan',
+            evidence:'--t-evidence', trace:'--t-trace', policy:'--t-policy' };
+
+/* Each node carries both readings. Ports are [technicalName, plainName, type]. */
+const NODES = [
+  { id:'load', step:1, x:60, y:150, state:'done',
+    tech:{ title:'Load GGUF', sub:'boltbeam load',
+      outs:[['model_profile','model facts',T.profile]],
+      widgets:[['model','qwen3-14b-q4_k_m'],['format','gguf'],['target','amd_gfx1100'],['roles','443']],
+      insp:{ status:'complete',
+        artifacts:[['model_profile.json','443 tensor roles'],['weight_inventory.json','q4_k / q6_k mix'],
+                   ['workload_profile.json','prefill · ctx 512']],
+        note:'Reads shape/quant/role facts only. The model is never executed here.' } },
+    plain:{ title:'Read the model', sub:'open the file, take notes',
+      outs:[['model_profile','model facts',T.profile]],
+      widgets:[['what it is','a 14-billion-parameter AI model'],['size on disk','about 9 GB'],
+               ['parts counted','443']],
+      insp:{ status:'done',
+        does:'Opens the model file and writes down its shape — how many layers, how big each part is, how the numbers inside were compressed.',
+        why:'Nothing downstream can plan a speed-up without knowing what it is speeding up. This step never runs the model, so it is fast and safe.',
+        result:'Found 443 distinct parts to reason about.' } } },
+
+  { id:'scan', step:2, x:60, y:390, state:'done',
+    tech:{ title:'Autoscan', sub:'boltbeam autoscan',
+      outs:[['capabilities','machine facts',T.caps]],
+      widgets:[['providers','2'],['tinygrad','ok'],['llama.cpp','ok']],
+      insp:{ status:'complete', artifacts:[['provider_capabilities.json','tinygrad, llama.cpp']],
+        note:'Cheap machine + provider facts. Nothing is measured yet.' } },
+    plain:{ title:'Check the machine', sub:'what hardware is here?',
+      outs:[['capabilities','machine facts',T.caps]],
+      widgets:[['graphics card','one AMD card'],['tools available','2 of 2'],['cost','a few seconds']],
+      insp:{ status:'done',
+        does:'Looks at what hardware and software is actually installed on this computer.',
+        why:'A speed-up that only works on someone else’s machine is not a speed-up. This step pins down what we are allowed to assume.',
+        result:'Both tools we can compare against are present and working.' } } },
+
+  { id:'analyze', step:3, x:400, y:246, state:'done', wide:true,
+    tech:{ title:'Analyze', sub:'boltbeam analyze',
+      ins:[['model_profile','model facts',T.profile],['capabilities','machine facts',T.caps]],
+      outs:[['search_space','things to try',T.plan],['measurement_plan','what to measure',T.plan]],
+      widgets:[['candidates','148'],['authorised','126'],['priority roles','9']],
+      bar:85, cap:'85% of the search space authorised',
+      insp:{ status:'complete',
+        artifacts:[['search_space.json','148 candidates'],['measurement_plan.json','2 phases'],
+                   ['analysis_report.json','status: policy_seeded']],
+        note:'22 candidates are unauthorised because 2 primitives have no probe evidence. Fail-closed by design.' } },
+    plain:{ title:'Plan what to try', sub:'draw up the shortlist',
+      ins:[['model_profile','model facts',T.profile],['capabilities','machine facts',T.caps]],
+      outs:[['search_space','things to try',T.plan],['measurement_plan','what to measure',T.plan]],
+      widgets:[['ideas generated','148'],['allowed to try','126'],['on hold','22','warn']],
+      bar:85, cap:'85% of the ideas are cleared to test',
+      insp:{ status:'done',
+        does:'Turns the two sets of notes into a shortlist of things worth trying, plus a list of measurements needed to judge them.',
+        why:'22 ideas are held back, not rejected. They depend on a test that has not been run yet, so the system refuses to guess.',
+        result:'126 ideas cleared. 22 waiting on the missing tests.',
+        callout:'This is the design rule throughout: when evidence is missing, the tool stops rather than assuming. Nothing is quietly skipped.' } } },
+
+  { id:'probe', step:4, x:770, y:120, state:'part',
+    tech:{ title:'Probe Runner', sub:'ingest-probe',
+      ins:[['measurement_plan','what to measure',T.plan]],
+      outs:[['probe_evidence','test results',T.evidence]],
+      widgets:[['primitives','4 / 6','warn'],['dot_int8_packed','missing','bad'],['reduce_composite','missing','bad']],
+      insp:{ status:'partial', artifacts:[['probe_evidence.json','4 of 6 primitives classified']],
+        note:'Until both primitives land, `output` refuses to package a route policy.' } },
+    plain:{ title:'Test the building blocks', sub:'2 of 6 tests not run',
+      ins:[['measurement_plan','what to measure',T.plan]],
+      outs:[['probe_evidence','test results',T.evidence]],
+      widgets:[['tests finished','4 of 6','warn'],['still needed','2','bad']],
+      insp:{ status:'unfinished — 2 tests missing',
+        does:'Runs small isolated tests on the basic operations the model relies on, to see which ones this graphics card is good at.',
+        why:'Two of the six tests were never run. That is the reason 22 ideas are on hold and the final step will not sign off.',
+        result:'4 of 6 done.',
+        callout:'This is one of the two things blocking the whole run. Someone needs to run these two tests.' } } },
+
+  { id:'timing', step:5, x:770, y:390, state:'part',
+    tech:{ title:'Timing Trace', sub:'ingest-timing',
+      ins:[['measurement_plan','what to measure',T.plan]],
+      outs:[['hw_trace','timing data',T.trace]],
+      widgets:[['kernels','214'],['wall','1462 µs'],['PMC counters','absent','warn']],
+      insp:{ status:'partial',
+        artifacts:[['hw_trace.json','214 kernel rows'],['timing_profile.json','dominant: gemv_codegen_capped']],
+        note:'rocprofv3 is blind to DEV=AMD. Counters must come through the audit tracer.' } },
+    plain:{ title:'Time the real run', sub:'stopwatch on every piece',
+      ins:[['measurement_plan','what to measure',T.plan]],
+      outs:[['hw_trace','timing data',T.trace]],
+      widgets:[['pieces timed','214'],['total time','1.5 thousandths of a second'],
+               ['detailed sensors','not available','warn']],
+      insp:{ status:'partial — coarse timings only',
+        does:'Runs the model for real and times every individual piece of work the graphics card does.',
+        why:'We have the stopwatch numbers but not the detailed sensors, so we can see WHICH piece is slow but not yet WHY.',
+        result:'214 pieces timed. The slowest is the part that reads the model’s memory.',
+        callout:'This is the second blocker. The usual profiling tool cannot see this setup, so the readings have to come through a custom tracer.' } } },
+
+  { id:'roof', step:6, x:1110, y:390, state:'done',
+    tech:{ title:'Roofline', sub:'prefill-roofline',
+      ins:[['hw_trace','timing data',T.trace]],
+      widgets:[['measured','1948 tok/s','good'],['llama.cpp','2188 tok/s'],['ceiling','4210 tok/s']],
+      bar:46, cap:'46% of ceiling · 89% of llama',
+      insp:{ status:'complete', artifacts:[['roofline.json','duty 46%'],['roofline.md','per-role ladder']],
+        note:'Instruction mix ≈ 1.0, so the residual is not codegen quality — it is a uniform ~55% in-kernel stall.' } },
+    plain:{ title:'Compare to the speed limit', sub:'how close to the maximum?',
+      ins:[['hw_trace','timing data',T.trace]],
+      widgets:[['our speed','1,948 /sec','good'],['best existing tool','2,188 /sec'],
+               ['physical limit','4,210 /sec']],
+      bar:46, cap:'46% of the physical limit · 89% of the best tool',
+      insp:{ status:'done',
+        does:'Compares our speed against two reference points: the best existing tool, and the absolute limit set by physics.',
+        why:'Being at 46% of the limit sounds poor, but the limit is unreachable in practice. Being at 89% of the best real tool is the number that matters.',
+        result:'5× faster than where this started. Still 11% behind the leading tool.',
+        callout:'The remaining gap is NOT sloppy code. The instructions being run are already near-optimal — the card is simply idle about half the time, waiting.' } } },
+
+  { id:'ledger', step:7, x:1110, y:120, state:'done',
+    tech:{ title:'Route Ledger', sub:'16 decisions',
+      ins:[['probe_evidence','test results',T.evidence],['hw_trace','timing data',T.trace]],
+      outs:[['route_policy','the recipe',T.policy]],
+      widgets:[['promoted','3','good'],['refuted','11'],['blocked','2','warn']],
+      insp:{ status:'complete', ledger:true,
+        note:'Every promoted route carries a full evidence chain. Click through below.' } },
+    plain:{ title:'The decisions log', sub:'what was kept, what was thrown out',
+      ins:[['probe_evidence','test results',T.evidence],['hw_trace','timing data',T.trace]],
+      outs:[['route_policy','the recipe',T.policy]],
+      widgets:[['kept','3','good'],['ruled out','11'],['undecided','2','warn']],
+      insp:{ status:'done', ledger:true, plainLedger:true,
+        does:'The permanent record. Every idea that was tried ends up here as kept, ruled out, or still undecided — with the evidence that settled it.',
+        why:'This is what stops the same dead end being retried in six months. A rejection is only allowed if it also records what would reopen it.',
+        result:'3 kept, 11 ruled out, 2 still waiting on evidence.' } } },
+
+  { id:'out', step:8, x:1450, y:262, state:'dead',
+    tech:{ title:'Output', sub:'boltbeam output',
+      ins:[['route_policy','the recipe',T.policy],['probe_evidence','test results',null]],
+      widgets:[['report.html','ready','good'],['route_policy.json','blocked','bad']],
+      insp:{ status:'blocked',
+        note:'Two of six primitives have no evidence, so the search space is only partially authorised and no route policy can be packaged. report.html still renders — it reports the blockage rather than hiding it.' } },
+    plain:{ title:'Package the result', sub:'blocked — waiting on tests',
+      ins:[['route_policy','the recipe',T.policy],['probe_evidence','test results',null]],
+      widgets:[['readable report','ready','good'],['shippable speed-up','blocked','bad']],
+      insp:{ status:'blocked',
+        does:'Bundles everything into a result someone else can use: a readable report, and the actual recipe for the speed-up.',
+        why:'The report is ready and honest about what is missing. The recipe is not — signing off on a speed-up while two tests are unrun would be a guess dressed up as a result.',
+        result:'Report: ready. Speed-up: blocked.',
+        callout:'The dashed red line coming into this box is the missing evidence. That single link is the reason the whole run cannot finish.' } } },
+];
+
+const LINKS = [
+  ['load','model_profile','analyze','model_profile',T.profile],
+  ['scan','capabilities','analyze','capabilities',T.caps],
+  ['analyze','measurement_plan','probe','measurement_plan',T.plan],
+  ['analyze','measurement_plan','timing','measurement_plan',T.plan],
+  ['probe','probe_evidence','ledger','probe_evidence',T.evidence],
+  ['timing','hw_trace','ledger','hw_trace',T.trace],
+  ['timing','hw_trace','roof','hw_trace',T.trace],
+  ['ledger','route_policy','out','route_policy',T.policy],
+  ['probe','probe_evidence','out','probe_evidence',null],  // null = never produced → dashed red
+];
+
+const LEDGER = [
+  { name:'packed-wmma-prefill', plain:'The big win: a smarter way to multiply',
+    status:'promoted', plainStatus:'kept', color:'var(--run)', speed:'5.04×',
+    chain:[['route_ledger.json #7','promoted 2026-07-24 · guard-governed default for 8B/14B'],
+           ['candidate_decision.json','CONFIRMED · 4 of 4 gates · nll parity Δ 0.0003'],
+           ['normalized_evidence.json','4 traces, 2 providers, same-run paired'],
+           ['hw_trace.json','214 rows · 1462 µs → 290 µs']],
+    plainChain:[['Decision','Kept on 24 July. It is now the default for this model size.'],
+                ['Proof it is correct','The model gives the same answers as before, to 4 decimal places.'],
+                ['Proof it is faster','Measured 4 separate times, on 2 different tools, in the same run.'],
+                ['Result','5 times faster than the starting point.']] },
+  { name:'rotating-pv-accumulator', plain:'A promising idea that turned out slower',
+    status:'refuted', plainStatus:'ruled out', color:'var(--t-missing)', speed:'—',
+    chain:[['route_ledger.json #12','refuted 2026-07-23 · retired from search space'],
+           ['candidate_decision.json','REFUTED · gate 2 of 4 failed'],
+           ['normalized_evidence.json','3 traces, 1 provider, no counter coverage']],
+    plainChain:[['Decision','Ruled out on 23 July.'],
+                ['Why','It was slower in every single test, at every size tried.'],
+                ['Kept on record','So nobody spends a week rediscovering this in six months.']] },
+  { name:'kv-tile-32', plain:'Probably a win — but nobody has measured it',
+    status:'blocked', plainStatus:'undecided', color:'var(--warn)', speed:'1.31× est',
+    chain:[['route_ledger.json #15','blocked · awaiting evidence'],
+           ['next_measurement_plan.json','needs PMC coverage on attn_pv_rescale'],
+           [null,'chain ends here — no evidence file exists yet']],
+    plainChain:[['Status','Undecided.'],
+                ['Expected','About 30% faster, based on the model of how the card behaves.'],
+                [null,'This is a PREDICTION, not a measurement. It is deliberately not counted as a win.']] },
+];
+
+/* ---------- rendering ---------- */
+const world = document.getElementById('world'), svg = document.getElementById('links'), els = {};
+let mode = localStorage.getItem('bb-mode') || 'plain';
+
+function view(n) { return n[mode === 'plain' ? 'plain' : 'tech']; }
+
+function build() {
+  for (const n of NODES) {
+    const v = view(n);
+    let d = els[n.id];
+    if (!d) {
+      d = document.createElement('div');
+      d.dataset.id = n.id;
+      world.appendChild(d);
+      d.style.left = n.x + 'px'; d.style.top = n.y + 'px';
+      els[n.id] = d;
+    }
+    d.className = 'node ' + n.state + (n.wide ? ' wide' : '') + (d.classList.contains('sel') ? ' sel' : '');
+    let h = `<div class="nhd"><i class="step">${n.step}</i><i class="bulb"></i>
+             <span class="nttl">${v.title}</span><span class="nsub">${v.sub}</span></div><div class="nbd">`;
+    for (const [tn, pn, type] of (v.ins || []))
+      h += `<div class="port in ${type ? '' : 'miss'}" data-p="${tn}">
+              <i class="pd" style="background:${type ? `var(${type})` : 'transparent'}"></i>${mode === 'plain' ? pn : tn}</div>`;
+    for (const [tn, pn, type] of (v.outs || []))
+      h += `<div class="port out" data-p="${tn}">${mode === 'plain' ? pn : tn}
+              <i class="pd" style="background:var(${type})"></i></div>`;
+    for (const [k, val, cls] of (v.widgets || []))
+      h += `<div class="w ${cls || ''}"><span class="lbl">${k}</span><span class="val">${val}</span></div>`;
+    if (v.bar !== undefined) h += `<div class="bar"><i data-w="${v.bar}"></i></div><div class="cap">${v.cap}</div>`;
+    d.innerHTML = h + '</div>';
+  }
+  drawLinks();
+  requestAnimationFrame(() => setTimeout(() =>
+    document.querySelectorAll('.bar i').forEach(i => i.style.width = i.dataset.w + '%'), 150));
+  renderLegend();
+}
+
+function portCenter(nodeId, portName, side) {
+  const node = els[nodeId];
+  const p = node.querySelector(`.port.${side}[data-p="${portName}"]`);
+  const nb = node.getBoundingClientRect(), pb = (p || node).getBoundingClientRect();
+  return [side === 'out' ? node.offsetLeft + node.offsetWidth : node.offsetLeft,
+          node.offsetTop + (pb.top - nb.top) + pb.height / 2];
+}
+function drawLinks() {
+  let out = '';
+  for (const [a, ap, b, bp, type] of LINKS) {
+    const [x1, y1] = portCenter(a, ap, 'out'), [x2, y2] = portCenter(b, bp, 'in');
+    const dx = Math.max(48, Math.abs(x2 - x1) * 0.5);
+    const color = type ? `var(${type})` : 'var(--t-missing)';
+    out += `<path d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" fill="none"
+             stroke="${color}" stroke-width="2.2" opacity="${type ? .85 : .95}"
+             ${type ? '' : 'stroke-dasharray="7 6"'}/>`;
+    if (type) out += `<circle cx="${x2}" cy="${y2}" r="3" fill="${color}"/>`;
+  }
+  svg.innerHTML = out;
+}
+
+const LEG_TECH = [['--t-profile','model_profile'],['--t-caps','capabilities'],['--t-plan','measurement_plan'],
+                  ['--t-evidence','probe_evidence'],['--t-trace','hw_trace'],['--t-policy','route_policy']];
+const LEG_PLAIN = [['--run','finished'],['--warn','unfinished — something is missing'],
+                   ['--t-missing','stuck — cannot finish']];
+function renderLegend() {
+  const t = document.getElementById('legTtl'), b = document.getElementById('legBody'),
+        hint = document.getElementById('legHint');
+  if (mode === 'plain') {
+    t.textContent = 'What the colours mean';
+    b.innerHTML = LEG_PLAIN.map(([c, l]) => `<div class="lrow"><i class="sw" style="background:var(${c})"></i>${l}</div>`).join('')
+      + `<div class="lrow"><i class="sw" style="border:1.5px dashed var(--t-missing)"></i>a result that was never produced</div>`;
+    hint.textContent = 'Read left to right, 1 to 8. Click any box to see what that step does.';
+  } else {
+    t.textContent = 'Link types';
+    b.innerHTML = LEG_TECH.map(([c, l]) => `<div class="lrow"><i class="sw" style="background:var(${c})"></i>${l}</div>`).join('')
+      + `<div class="lrow"><i class="sw" style="border:1.5px dashed var(--t-missing)"></i>missing evidence</div>`;
+    hint.textContent = 'Drag nodes. Drag canvas to pan. Click a node for its artifacts.';
+  }
+}
+
+/* ---------- inspector ---------- */
+const insp = document.getElementById('insp'), ibd = document.getElementById('ibd'), ittl = document.getElementById('ittl');
+document.getElementById('ix').addEventListener('click', () => insp.classList.remove('open'));
+let openId = 'ledger';
+
+function openNode(id) {
+  openId = id;
+  const n = NODES.find(x => x.id === id), v = view(n), i = v.insp;
+  ittl.textContent = (mode === 'plain' ? `${n.step}. ` : '') + v.title;
+  let h = '';
+
+  if (mode === 'plain') {
+    h += `<div class="sect"><h5>Status</h5><p class="note">${i.status}</p></div>`;
+    h += `<div class="sect"><h5>What this step does</h5><p class="note">${i.does}</p></div>`;
+    h += `<div class="sect"><h5>Why it matters</h5><p class="note">${i.why}</p></div>`;
+    if (i.result) h += `<div class="sect"><h5>Result</h5><p class="note">${i.result}</p></div>`;
+    if (i.plainLedger) {
+      h += '<div class="sect"><h5>The decisions</h5>';
+      for (const e of LEDGER) {
+        h += `<div style="margin-bottom:14px">
+                <div class="kv" style="border:0;padding-bottom:3px">
+                  <span class="k" style="color:${e.color}">${e.plainStatus}</span><span class="v">${e.speed}</span></div>
+                <div style="font-size:12.5px;margin-bottom:6px;color:var(--tx)">${e.plain}</div><ul class="chain">`;
+        for (const [k, d] of e.plainChain)
+          h += `<li class="${k ? '' : 'miss'}">${k ? `<b style="color:var(--tx-2);font-weight:600">${k}</b><br>` : ''}${d}</li>`;
+        h += '</ul></div>';
+      }
+      h += '</div>';
+    }
+    if (i.callout) h += `<div class="callout">${i.callout}</div>`;
+  } else {
+    h += `<div class="sect"><h5>Stage</h5>
+            <div class="kv"><span class="k">command</span><span class="v">${v.sub}</span></div>
+            <div class="kv"><span class="k">status</span><span class="v">${i.status}</span></div></div>`;
+    if (i.artifacts) {
+      h += '<div class="sect"><h5>Artifacts</h5>';
+      for (const [f, d] of i.artifacts)
+        h += `<div class="kv"><span class="k">${f}</span><span class="v" style="color:var(--tx-2)">${d}</span></div>`;
+      h += '</div>';
+    }
+    if (i.ledger) {
+      h += '<div class="sect"><h5>Decisions</h5>';
+      for (const e of LEDGER) {
+        h += `<div style="margin-bottom:12px">
+                <div class="kv" style="border:0;padding-bottom:2px">
+                  <span class="k" style="color:${e.color}">${e.status}</span><span class="v">${e.speed}</span></div>
+                <div style="font-size:12px;margin-bottom:5px">${e.name}</div><ul class="chain">`;
+        for (const [f, d] of e.chain)
+          h += `<li class="${f ? '' : 'miss'}">${f ? `<span class="f">${f}</span><br>` : ''}${d}</li>`;
+        h += '</ul></div>';
+      }
+      h += '</div>';
+    }
+    h += `<div class="sect"><h5>Note</h5><p class="note">${i.note}</p></div>`;
+  }
+  ibd.innerHTML = h;
+  ibd.scrollTop = 0;
+  insp.classList.add('open');
+}
+
+/* ---------- mode switch ---------- */
+function setMode(m) {
+  mode = m;
+  localStorage.setItem('bb-mode', m);
+  document.body.dataset.mode = m;
+  document.getElementById('mPlain').setAttribute('aria-pressed', m === 'plain');
+  document.getElementById('mTech').setAttribute('aria-pressed', m === 'tech');
+  build();
+  els[openId].classList.add('sel');
+  if (insp.classList.contains('open')) openNode(openId);
+}
+document.getElementById('mPlain').addEventListener('click', () => setMode('plain'));
+document.getElementById('mTech').addEventListener('click', () => setMode('tech'));
+
+/* ---------- drag + pan ---------- */
+let drag = null, pan = null, ox = 0, oy = 0;
+const vp = document.getElementById('viewport');
+world.addEventListener('pointerdown', e => {
+  const hd = e.target.closest('.nhd'); if (!hd) return;
+  const node = hd.closest('.node');
+  drag = { node, dx: e.clientX - node.offsetLeft, dy: e.clientY - node.offsetTop };
+  document.querySelectorAll('.node.sel').forEach(n => n.classList.remove('sel'));
+  node.classList.add('sel'); node.style.zIndex = 10;
+  hd.setPointerCapture(e.pointerId); e.preventDefault();
+});
+vp.addEventListener('pointerdown', e => {
+  if (e.target.closest('.node')) return;
+  pan = { x: e.clientX - ox, y: e.clientY - oy }; vp.classList.add('panning');
+});
+window.addEventListener('pointermove', e => {
+  if (drag) {
+    drag.node.style.left = (e.clientX - drag.dx) + 'px';
+    drag.node.style.top = (e.clientY - drag.dy) + 'px';
+    drawLinks();
+  } else if (pan) {
+    ox = e.clientX - pan.x; oy = e.clientY - pan.y;
+    world.style.transform = `translate(${ox}px, ${oy}px)`;
+    vp.style.backgroundPosition = `${ox}px ${oy}px, ${ox}px ${oy}px`;
+  }
+});
+window.addEventListener('pointerup', () => { drag = null; pan = null; vp.classList.remove('panning'); });
+world.addEventListener('click', e => {
+  const node = e.target.closest('.node'); if (!node) return;
+  document.querySelectorAll('.node.sel').forEach(n => n.classList.remove('sel'));
+  node.classList.add('sel');
+  openNode(node.dataset.id);
+});
+
+/* ---------- go ---------- */
+setMode(mode);
+openNode('out');
+els.out.classList.add('sel');
+</script>
+</body></html>

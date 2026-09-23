@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Profiler Report",
+  "type": "object",
+  "required": ["schema", "model_id", "target_id", "target_known", "provider_id", "workload", "top_kernels", "overall", "notes"],
+  "properties": {
+    "schema": {"const": "boltbeam.profiler_report.v1"},
+    "model_id": {"type": "string", "minLength": 1},
+    "target_id": {"type": ["string", "null"]},
+    "target_known": {"type": "boolean"},
+    "provider_id": {"type": ["string", "null"]},
+    "workload": {"enum": ["decode", "prefill"]},
+    "whole_step": {
+      "type": ["object", "null"],
+      "properties": {
+        "wall_us": {"type": ["number", "null"]},
+        "tok_s": {"type": ["number", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "top_kernels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["dispatch", "program", "time", "work_done", "bytes_moved", "speed_of_light", "occupancy", "vector_unit", "matrix_unit", "memory_level", "missing_evidence", "classification"],
+        "properties": {
+          "dispatch": {"type": "object"},
+          "program": {"type": "object"},
+          "time": {"type": "object"},
+          "work_done": {"type": "object"},
+          "bytes_moved": {"type": "object"},
+          "speed_of_light": {"type": "object"},
+          "occupancy": {"type": "object"},
+          "vector_unit": {"type": "object"},
+          "matrix_unit": {"type": "object"},
+          "memory_level": {"type": "object"},
+          "missing_evidence": {"type": "array", "items": {"type": "object"}},
+          "classification": {"type": "object"},
+          "cooperative_tile_oracle": {"type": "object"},
+          "operand_paths": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["operand_id", "semantic_role", "scope", "declared_strategy", "classified_strategy", "truth_status", "confidence", "static_evidence_summary", "dynamic_serving_tiers", "missing_evidence"],
+              "properties": {
+                "operand_id": {"type": "string", "minLength": 1},
+                "semantic_role": {"type": "string", "minLength": 1},
+                "scope": {"type": "string", "minLength": 1},
+                "declared_strategy": {"enum": ["register_resident", "lds_staged", "cache_streamed", "reloaded", "unknown"]},
+                "classified_strategy": {"enum": ["register_resident", "lds_staged", "cache_streamed", "reloaded", "unknown"]},
+                "truth_status": {"enum": ["measured", "derived", "modeled", "assumed", "imported", "unknown"]},
+                "confidence": {"enum": ["high", "medium", "low", "unknown"]},
+                "static_evidence_summary": {"type": "object"},
+                "dynamic_serving_tiers": {"type": "array", "items": {"type": "object"}},
+                "missing_evidence": {"type": "array", "items": {"type": "string"}}
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "candidate_geometry_recommendations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "applies_to_kernel", "route_family", "action", "constraints", "reject_if", "evidence"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "applies_to_kernel": {"type": ["string", "null"]},
+          "route_family": {"type": "string", "minLength": 1},
+          "action": {"type": "string", "minLength": 1},
+          "constraints": {"type": "object"},
+          "reject_if": {"type": "array", "items": {"type": "string"}},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    },
+    "overall": {"type": "object"},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

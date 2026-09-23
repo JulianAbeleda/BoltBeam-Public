@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "properties": {
+    "analysis_id": {
+      "type": "string"
+    },
+    "candidates": {
+      "type": "array"
+    },
+    "comparability": {
+      "type": "object"
+    },
+    "conclusions": {
+      "type": "array"
+    },
+    "contrasts": {
+      "type": "array"
+    },
+    "eligibility": {
+      "type": "object"
+    },
+    "evidence_refs": {
+      "type": "array"
+    },
+    "hypotheses": {
+      "type": "array"
+    },
+    "question": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "boltbeam.kernel_analysis.v1"
+    },
+    "unknowns": {
+      "type": "array"
+    }
+  },
+  "required": [
+    "analysis_id",
+    "candidates",
+    "comparability",
+    "conclusions",
+    "contrasts",
+    "eligibility",
+    "evidence_refs",
+    "hypotheses",
+    "question",
+    "schema",
+    "unknowns"
+  ],
+  "title": "boltbeam kernel_analysis contract (top-level shape, generated from a real artifact; LN-100)",
+  "type": "object"
+}

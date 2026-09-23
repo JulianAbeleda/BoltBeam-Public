@@ -1,0 +1,14 @@
+{
+  "schema":"boltbeam.mmq_invocation_validation.v8",
+  "model_id":"sha256:9be0e6c2d721ca253846fe3cac1efc3ade76f83aa10893922638b0b59f37fcba",
+  "objective":"host_invocation_ms",
+  "device_time_excluded":true,
+  "status":"operational_total_validated_with_minor_phase_scope_gaps",
+  "composition":{"shared_candidate_operand_fixed_applied_once":true,"gated_writeback_effect":"WB256 main plus candidate-shaped-by-WB interaction","shared_deep_operand_not_multiplied_by_stores":true},
+  "individual":{
+    "direct_owner_v0":{"freeze_id":"sha256:6fb0dbfa752a1dcbd374dc346dce625681ae674640310e5965bb18587e29ad71","predicted_host_ms":6.578877864115759,"interval_ms":{"low":3.994905950900961,"high":12.389682865555715},"measured_host_ms":6.707317,"relative_error":0.019149107740731645,"interval_contains":true,"uop_construction":{"predicted_ms":2.559296554784739,"measured_ms":2.7760585,"relative_error":0.07808262873972618}},
+    "gated_matrix_v0":{"freeze_id":"sha256:168706a506b9f1faf2f503a73db1d7e9ca14f3b8cba75e2de997631ea357f6a6","predicted_host_ms":18.295211454784738,"interval_ms":{"low":6.769387011774841,"high":30.639836372794633},"measured_host_ms":17.071917,"relative_error":0.07165536563847721,"interval_contains":true,"uop_construction":{"predicted_ms":12.859406054784738,"measured_ms":11.746811,"relative_error":0.09471464679092387}}
+  },
+  "formal_primary_gates":{"both_total_intervals_contain":true,"both_total_errors_below_15pct":true,"both_uop_construction_errors_below_15pct":true},
+  "remaining_phase_scope_gaps":{"warmed_compile_cache_lookup":"generated warmed compile_linear cache scope remains higher than candidate lowering/cache phase","numpy_views":"sub-2us phase has high relative error but negligible operational contribution","uncertainty":"empirical difference bounds are wide because independent 30-sample cells include rare multi-millisecond host outliers"}
+}

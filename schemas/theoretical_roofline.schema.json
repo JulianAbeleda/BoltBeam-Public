@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "properties": {
+    "assumptions": {
+      "type": "array"
+    },
+    "context": {
+      "type": "integer"
+    },
+    "peak_bandwidth_bytes_s": {
+      "type": "number"
+    },
+    "peak_flops": {
+      "type": "number"
+    },
+    "ridge_intensity": {
+      "type": "number"
+    },
+    "roles": {
+      "type": "array"
+    },
+    "schema": {
+      "const": "boltbeam.theoretical_roofline.v1"
+    },
+    "truth_status": {
+      "type": "string"
+    },
+    "whole": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "assumptions",
+    "context",
+    "peak_bandwidth_bytes_s",
+    "peak_flops",
+    "ridge_intensity",
+    "roles",
+    "schema",
+    "truth_status",
+    "whole"
+  ],
+  "title": "boltbeam theoretical_roofline contract (top-level shape, generated from a real artifact; LN-100)",
+  "type": "object"
+}

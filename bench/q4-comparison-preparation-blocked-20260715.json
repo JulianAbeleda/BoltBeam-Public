@@ -1,0 +1,14 @@
+{
+  "schema": "boltbeam.q4_comparison_preparation.v1",
+  "status": "BLOCKED",
+  "reason": "no uniquely promoted Q4 geometry compiles",
+  "route_identity": "q4_generated_geometry",
+  "fallback": false,
+  "contexts": ["pp512", "pp1024", "pp2048", "pp4096"],
+  "throughput_unit": "tok/s",
+  "compile_failure": {
+    "source": "/home/ubuntu/q4k-auto-containment.log",
+    "exact_log": "/tmp/comgr-18068-0-8e95ef/input/<null>:184:81: error: expression is not assignable\n1 error generated when compiling for gfx1100.\nRuntimeError: compile failed\ntinygrad.device.CompileError: compile failed"
+  },
+  "next_action": "promote exactly one Q4 geometry after compile; rerun tools/prepare_q4_comparison.py"
+}

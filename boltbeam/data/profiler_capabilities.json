@@ -1,0 +1,230 @@
+{
+  "schema": "boltbeam.profiler_capabilities.v1",
+  "collectors": [
+    {
+      "provider_id": "tinygrad",
+      "provider_support": ["tinygrad"],
+      "collector_id": "tinygrad-profile-events",
+      "tool": "tinygrad-profile-events",
+      "tool_version": "1.0",
+      "operation": "capture",
+      "selection_priority": 200,
+      "target_support": ["amd_gfx1100", "nvidia_sm89", "nvidia_sm120"],
+      "supported_scopes": ["whole_step", "kernel", "role"],
+      "requires_replay": true,
+      "requires_root_or_privilege": false,
+      "supports_dispatch_timing": true,
+      "supports_kernel_resources": true,
+      "supports_dynamic_counters": false,
+      "supports_memory_copy": false,
+      "supports_allocations": false,
+      "supports_source_correlation": true,
+      "supports_disassembly": false,
+      "supports_thread_trace": false,
+      "supported_metrics": ["wall_us", "role", "shape", "launch_count", "calls", "resources", "sources"],
+      "unsupported_metrics": ["dynamic_hardware_counters", "occupancy", "memory_copy_timing", "allocation_bytes"],
+      "known_blind_spots": [
+        "kernel-name-only CSV cannot safely distinguish repeated dispatches with identical names."
+      ],
+      "calibration_notes": [
+        "Derived counters unavailable without additional counter-backed pass."
+      ]
+    },
+    {
+      "provider_id": "tinygrad",
+      "provider_support": ["tinygrad"],
+      "collector_id": "tinygrad-native-pmc",
+      "tool": "tinygrad-native-pmc",
+      "tool_version": "1.0",
+      "operation": "capture",
+      "selection_priority": 150,
+      "target_support": ["amd_gfx1100"],
+      "supported_scopes": ["kernel"],
+      "requires_replay": false,
+      "requires_root_or_privilege": false,
+      "supports_dispatch_timing": true,
+      "supports_kernel_resources": true,
+      "supports_dynamic_counters": true,
+      "supports_memory_copy": true,
+      "supports_allocations": true,
+      "supports_source_correlation": true,
+      "supports_disassembly": false,
+      "supports_thread_trace": false,
+      "supported_metrics": [
+        "wall_us",
+        "dram_bw_gbs",
+        "occupancy_pct",
+        "tensor_core_util_pct",
+        "valu_busy_pct",
+        "wait_or_stall_pct",
+        "vector_load_bits",
+        "mfma_or_mma_instruction_count",
+        "lds_or_shared_conflict_pct"
+      ],
+      "unsupported_metrics": [
+        "source_source_map",
+        "binary_level_scheduler_stalls",
+        "graph_trace_stability"
+      ],
+      "known_blind_spots": [
+        "tinygrad graph-captured GEMMs currently bypass eager PMC emission."
+      ],
+      "calibration_notes": [
+        "PMC counters need per-target calibration for percentage conversion."
+      ]
+    },
+    {
+      "provider_id": "tinygrad",
+      "provider_support": ["llama.cpp", "tinygrad"],
+      "collector_id": "rocprofv3",
+      "tool": "rocprofv3",
+      "tool_version": "1.0",
+      "operation": "capture",
+      "selection_priority": 100,
+      "target_support": ["amd_gfx1100"],
+      "supported_scopes": ["whole_step", "kernel", "memory_copy", "allocation"],
+      "requires_replay": true,
+      "requires_root_or_privilege": false,
+      "supports_dispatch_timing": true,
+      "supports_kernel_resources": true,
+      "supports_dynamic_counters": true,
+      "supports_memory_copy": true,
+      "supports_allocations": true,
+      "supports_source_correlation": false,
+      "supports_disassembly": false,
+      "supports_thread_trace": false,
+      "supported_metrics": [
+        "wall_us",
+        "memory_copy_rows",
+        "allocation_rows",
+        "dispatch_timing",
+        "resources",
+        "raw_counters"
+      ],
+      "unsupported_metrics": ["source_disassembly", "graph_capture_event_correspondence"],
+      "known_blind_spots": [
+        "tinygrad DEV=AMD + rocprofv3 backend CSV sees zero kernels because KFD direct submission bypasses ROCr/HIP."
+      ],
+      "calibration_notes": [
+        "Kernel timing aggregation is CSV-dependent and should be treated as a best-effort normalization."
+      ]
+    },
+    {
+      "provider_id": "nvidia",
+      "provider_support": ["external", "llama.cpp", "tinygrad"],
+      "collector_id": "ncu-import",
+      "tool": "ncu-import",
+      "tool_version": "1.0",
+      "operation": "import",
+      "selection_priority": 100,
+      "target_support": ["nvidia_sm89", "nvidia_sm120"],
+      "supported_scopes": ["kernel"],
+      "requires_replay": true,
+      "requires_root_or_privilege": true,
+      "supports_dispatch_timing": true,
+      "supports_kernel_resources": true,
+      "supports_dynamic_counters": true,
+      "supports_memory_copy": true,
+      "supports_allocations": true,
+      "supports_source_correlation": true,
+      "supports_disassembly": false,
+      "supports_thread_trace": false,
+      "supported_metrics": [
+        "wall_us",
+        "occupancy_pct",
+        "dram_bw_gbs",
+        "tensor_core_util_pct",
+        "achieved_tflops_pct_peak"
+      ],
+      "unsupported_metrics": [
+        "allocation_lifecycle_rows",
+        "amd_specific_source_maps"
+      ],
+      "known_blind_spots": [],
+      "calibration_notes": [
+        "Nsight Compute profiles need offline export compatibility checks per toolchain version."
+      ]
+    },
+    {
+      "provider_id": "amd",
+      "provider_support": ["external", "llama.cpp", "tinygrad"],
+      "collector_id": "rocm-compute-import",
+      "tool": "rocm-compute-import",
+      "tool_version": "1.0",
+      "operation": "import",
+      "selection_priority": 100,
+      "target_support": ["amd_gfx1100"],
+      "supported_scopes": ["kernel", "memory_copy", "allocation"],
+      "requires_replay": true,
+      "requires_root_or_privilege": false,
+      "supports_dispatch_timing": true,
+      "supports_kernel_resources": true,
+      "supports_dynamic_counters": true,
+      "supports_memory_copy": true,
+      "supports_allocations": true,
+      "supports_source_correlation": false,
+      "supports_disassembly": false,
+      "supports_thread_trace": false,
+      "supported_metrics": [
+        "wall_us",
+        "occupancy_pct",
+        "memory_copy_rows",
+        "allocation_rows",
+        "dispatch_timing",
+        "l2_hit_pct"
+      ],
+      "unsupported_metrics": [
+        "source_disassembly",
+        "source_map_to_dispatch_id"
+      ],
+      "known_blind_spots": [
+        "kernel-name-only CSV cannot safely distinguish repeated dispatches with identical names."
+      ],
+      "calibration_notes": [
+        "Profiles from rocprof-compute should be cross-checked against rocprofv3 for metric parity."
+      ]
+    },
+    {
+      "provider_id": "apple",
+      "provider_support": ["llama.cpp", "tinygrad"],
+      "collector_id": "metal-system-trace",
+      "tool": "xctrace",
+      "tool_version": "16+",
+      "operation": "capture",
+      "selection_priority": 200,
+      "target_support": ["apple_metal", "apple_m4_10c"],
+      "supported_scopes": ["whole_step", "command_buffer"],
+      "requires_replay": true,
+      "requires_root_or_privilege": false,
+      "supports_dispatch_timing": false,
+      "supports_kernel_resources": false,
+      "supports_dynamic_counters": false,
+      "supports_memory_copy": false,
+      "supports_allocations": false,
+      "supports_source_correlation": false,
+      "supports_disassembly": false,
+      "supports_thread_trace": false,
+      "supported_metrics": [
+        "wall_us",
+        "tok_s",
+        "command_buffer_timing",
+        "cpu_to_gpu_latency",
+        "encoder_count"
+      ],
+      "unsupported_metrics": [
+        "per_dispatch_timing",
+        "kernel_resources",
+        "dynamic_hardware_counters",
+        "physical_bytes"
+      ],
+      "known_blind_spots": [
+        "Metal System Trace exposes command-buffer intervals but does not export per-dispatch shader duration in this capture mode.",
+        "Runtime stdout remains the authority for measured token throughput and fixed-depth workload identity."
+      ],
+      "calibration_notes": [
+        "Use the same trace template, fixed-depth protocol, target, and model hash for every provider in a comparison.",
+        "Command-buffer rows are diagnostic attribution and must not be summed across overlapping concurrent buffers."
+      ]
+    }
+  ]
+}

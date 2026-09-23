@@ -1,0 +1,62 @@
+{
+  "schema": "boltbeam.full_kernel_emit.v1",
+  "rows": [{
+    "match": {
+      "profile": "qwen3_8b_q4k_m_gfx1100",
+      "architecture_class": "dense_decoder",
+      "hidden_size": 4096,
+      "ffn_size": 12288,
+      "role": {"name": "ffn_gate_up", "rows": 12288, "cols": 4096, "quant": "Q4_K"},
+      "target_id": "amd_gfx1100",
+      "backend": "AMD",
+      "wave_size": 32
+    },
+    "search_row": {
+      "id": "prefill_8b_ffn_gate_up_m512_single_buffer_v1",
+      "phase": "prefill",
+      "model": "qwen3_8b",
+      "op_scope": "ffn_gate_up",
+      "backend": "AMD",
+      "search_space": "lds_blocking",
+      "objective": "tok_s",
+      "constraints": {"exact_required": true, "dnll_epsilon": 0.0, "max_storage_mb": null,
+                      "ctx_range": [512, 512], "no_remote_execution": true},
+      "full_kernel_candidate": {
+        "schema_version": "boltbeam.full_kernel_candidate.v1",
+        "workload": {
+          "profile": "qwen3_8b_q4k_m_gfx1100", "role": "ffn_gate_up",
+          "shape": {"m": 512, "n": 12288, "k": 4096},
+          "dtypes": {"a": "fp16", "b": "fp16", "c": "fp16", "accumulator": "fp32"},
+          "layout": {"a": "row_major", "b": "transposed_row_major", "c": "row_major"},
+          "target": {"backend": "AMD", "arch": "gfx1100", "wave_size": 32}
+        },
+        "schedule": {
+          "tile": {"m": 128, "n": 128, "k": 32}, "waves": {"m": 4, "n": 2}, "threads": 256,
+          "lane_ownership": "rdna3_wmma_f32_16x16x16_f16_lds2_static",
+          "cooperative_load": {
+            "a": {"lane_mapping": "cooperative_row_stride_64_b128", "vector_width": 8, "alignment": 16},
+            "b": {"lane_mapping": "cooperative_row_stride_64_b128", "vector_width": 8, "alignment": 16}
+          },
+          "lds": {"windows": {"a": [0, 10240], "b": [10240, 20480]},
+                  "strides": {"a": 80, "b": 80}, "padding": 16, "banks": 32,
+                  "store_vector_width": 8, "load_vector_width": 8},
+          "pipeline": {"buffer_count": 1, "stage_count": 1,
+                       "epoch_graph": [{"epoch": "body", "slot": 0, "produce": ["a", "b"],
+                                        "wait": ["global", "lds"], "barrier": "before_fragment_load",
+                                        "consume": ["a", "b"]}]},
+          "wmma": {"instruction_family": "wmma_f32_16x16x16_f16",
+                   "fragment_layout": "rdna3_wmma_f32_16x16x16_f16_lds2_static",
+                   "accumulator_ownership": "wmma_accum_wm_x_wn_8_vgprs"},
+          "dependency_policy": {"waitcnt": {"vm": 0, "lgkm": 0},
+                                "barriers": ["before_fragment_load", "after_wmma_before_slot_reuse"]},
+          "residency": {"preload": ["a", "b"], "resident": ["accumulator"], "reuse": {"a": 4, "b": 2}},
+          "epilogue": {"lane_mapping": "wmma_accumulator_scalar_b16", "vector_width": 1},
+          "numerical_mode": "ieee_fp16_acc_fp32"
+        },
+        "static_constraints": {"max_lds_bytes": 65536, "max_vgpr_per_thread": 256, "allow_spill": false},
+        "applicability": {"exact_shape": true, "profiles": ["qwen3_8b_q4k_m_gfx1100"],
+                          "roles": ["ffn_gate_up"], "targets": ["AMD:gfx1100:wave32"]}
+      }
+    }
+  }]
+}

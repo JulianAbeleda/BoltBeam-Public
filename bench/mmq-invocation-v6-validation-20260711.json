@@ -1,0 +1,15 @@
+{
+  "schema":"boltbeam.mmq_invocation_validation.v6",
+  "model_id":"sha256:bcecd5556d019d8a328922bb3863ffb3b8d000b1774158cbae63f2caf3197da0",
+  "objective":"host_invocation_ms",
+  "device_time_excluded":true,
+  "uncertainty_policy":"pooled empirical 2.5/50/97.5 percentiles over 90 admitted samples after null CMPLT result",
+  "status":"falsified",
+  "individual":{
+    "direct_owner_v0":{"freeze_id":"sha256:0b34fd8d8f749acf0e85e9f6896d5d246e771beae55a9d2a0071a32ab791e246","predicted_host_ms":5.8421273641157585,"interval_ms":{"low":5.783720937675802,"high":5.900533790555715},"measured_host_ms":6.707317,"relative_error":0.12899191075719862,"interval_contains":false},
+    "gated_matrix_v0":{"freeze_id":"sha256:0c99d76ebd02d2b843391234d747ea70ea78927da73a098495750f57310a2f67","predicted_host_ms":8.8837479,"interval_ms":{"low":8.702772074999999,"high":8.99746745},"measured_host_ms":17.071917,"relative_error":0.4796279820245143,"interval_contains":false,"phase_predictions_ms":{"uop_construction":3.4479425,"schedule_creation":2.4370765,"warmed_compile_cache_lookup":0.06889}}
+  },
+  "scaffolding_result":{"sink_uops":1247,"candidate_sink_uops":1246,"core_delta":{"STORE":255,"INDEX":255,"AND":256,"CMPNE":64},"cmplt_levels":[0,128,256],"finding":"non-monotonic low-R2 response; no standalone CMPLT penalty admitted"},
+  "combined_operational_prediction":{"direct_owner_v0":{"host_ms":5.8421273641157585,"kernel_v7_ms":0.008568144275380508,"total_ms":5.850695508391139,"measured_total_ms":6.716277},"gated_matrix_v0":{"host_ms":8.8837479,"kernel_v7_ms":0.015530067261145834,"total_ms":8.899277967261146,"measured_total_ms":17.087716999999998}},
+  "residual":{"classification":"candidate_UOp_construction_backbone_and_dependency_topology_missing","evidence":"schedule transfers within 2.3%, while construction is 3.448ms versus11.747ms at matched total UOps/core ownership; opcode counts and total volume are insufficient","next_probe":"three host-only exact-1246-UOp cells holding STORE/INDEX/AND/CMPNE core fixed: comparison filler, candidate arithmetic backbone, full candidate arithmetic/bitwise/control backbone; record exact histogram, dependency depth and Python construction events; no device/candidate timing"}
+}

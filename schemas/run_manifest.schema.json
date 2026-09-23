@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "properties": {
+    "artifacts": {
+      "type": "array"
+    },
+    "latest_stage": {
+      "type": "string"
+    },
+    "model_format": {
+      "type": "string"
+    },
+    "model_id": {
+      "type": "string"
+    },
+    "model_path": {
+      "type": "string"
+    },
+    "schema": {
+      "const": "boltbeam.run_manifest.v1"
+    },
+    "stages": {
+      "type": "object"
+    },
+    "target_id": {
+      "type": "string"
+    },
+    "target_source": {
+      "type": "string"
+    },
+    "workload": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "artifacts",
+    "latest_stage",
+    "model_format",
+    "model_id",
+    "model_path",
+    "schema",
+    "stages",
+    "target_id",
+    "target_source",
+    "workload"
+  ],
+  "title": "boltbeam run_manifest contract (top-level shape, generated from a real artifact; LN-100)",
+  "type": "object"
+}

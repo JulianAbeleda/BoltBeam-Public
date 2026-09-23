@@ -1,0 +1,16 @@
+{
+  "schema": "boltbeam.qwen3_14b_same_run_measurement.v1",
+  "status": "BLOCKED",
+  "same_run_id": "14b-clean-20260715",
+  "role_artifacts": [],
+  "rows": [],
+  "errors": [
+    "role artifact missing: ffn_gate_up",
+    "role artifact missing: ffn_down",
+    "role artifact missing: attn_qo",
+    "role artifact missing: attn_kv",
+    "tinygrad: artifact must be a contract object",
+    "llama: artifact must be a contract object"
+  ],
+  "median_gap_tok_s": null
+}

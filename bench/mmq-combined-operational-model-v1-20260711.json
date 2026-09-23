@@ -1,0 +1,12 @@
+{
+  "schema":"boltbeam.mmq_combined_operational_model.v1",
+  "status":"validated",
+  "components":{"kernel_device":"validated model v7; independent exact-final-ISA calibration","host_invocation":"validated operational-total model v8; independent builder operand interaction","scope_rule":"kernel_device_ms and host_invocation_ms remain separately modeled and are added exactly once"},
+  "predictions":{
+    "direct_owner_v0":{"host_ms":6.578877864115759,"kernel_ms":0.008568144275380508,"invocation_total_ms":6.587446008391139,"measured_total_ms":6.716277,"relative_error":0.019181905631477168},
+    "gated_matrix_v0":{"host_ms":18.295211454784738,"kernel_ms":0.015530067261145834,"invocation_total_ms":18.310741522045884,"measured_total_ms":17.087717,"relative_error":0.07157331327794594}
+  },
+  "pair":{"predicted_ratio":2.7796419885220343,"measured_ratio":2.544224575609374,"ratio_error":0.09253012299681705},
+  "formal_gates":{"individual_error_below_15pct":true,"ratio_error_below_10pct":true},
+  "knowledge_audit":{"known":["exact candidate ISA and resources","device kernel duration from v7","host attempted group/quant/reduce/equality/index/store events","candidate-shaped operand fixed cost","writeback-count by operand-topology interaction","schedule, transfer, allocation and readback phase baselines"],"remaining_unknowns":["tight tail model for rare host timing outliers","candidate-scope warm cache lookup transfer","sub-2us numpy view variability","cross-shape and cross-system transfer beyond bound 16x16x256/live-gfx1100 snapshot"]}
+}

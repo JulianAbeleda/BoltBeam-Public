@@ -1,0 +1,37 @@
+{
+  "schema": "boltbeam.metal_graph_admission_summary.v1",
+  "date": "2026-07-30",
+  "status": "complete",
+  "tinygrad_revision": "f30fedcb18d46dfcaf8a9f0dd4a817c65a4a6563",
+  "model_sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+  "target": {"id": "apple_m4_10c", "backend": "Metal"},
+  "capture": {"phase": "decode", "route": "sdpa", "fixed_depth": 128, "jit": "rollout_jit"},
+  "counts": {
+    "logical_calls": 803,
+    "graph_members": 726,
+    "graph_batches": 24,
+    "direct_calls": 77,
+    "offset_width_rejections": 67,
+    "singleton_graph_elisions": 10,
+    "unknown": 0,
+    "constructor_failures": 0
+  },
+  "direct_program_name_families": {"r": 45, "E": 32},
+  "offset_rejection_name_families": {"r": 40, "E": 27},
+  "offset_evidence": {
+    "limit": 4294967295,
+    "minimum_rejected_offset": 4303883584,
+    "maximum_rejected_offset": 4999471936,
+    "first_rejected_call_index": 668,
+    "last_rejected_call_index": 794,
+    "unique_rejected_offsets": 67,
+    "run_local_base_count": 1
+  },
+  "semantic_metadata": {"calls_with_metadata": 0, "calls_without_metadata": 803},
+  "authority": {
+    "decode_sha256": "219f776ef0ce68935430ade7ea7824e2a3f4c016434a064f68573ea1818bf159",
+    "census_sha256": "7b54729062883367a8044dcce2811bae3d319add2a04bf42c03609f1fb0af8a8"
+  },
+  "verdict": "uint32 ICB offset rejection fully explains 67 direct calls and strands the other 10 as singletons; replay performance impact remains unmeasured",
+  "next_gate": "MR2 safe replay design followed by MR3/MR4 grouping-only A/B; MR5 semantic metadata before role ranking"
+}

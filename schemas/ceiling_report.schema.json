@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Ceiling Report",
+  "type": "object",
+  "required": ["schema", "bytes_read", "memcpy_peak_bandwidth", "dequant_achievable_bandwidth", "floor_ms", "ceiling_tok_s", "amdahl_projected_gain", "confidence"],
+  "properties": {
+    "schema": {"const": "boltbeam.ceiling_report.v1"},
+    "bytes_read": {"type": "number", "exclusiveMinimum": 0},
+    "memcpy_peak_bandwidth": {"type": "number", "exclusiveMinimum": 0},
+    "dequant_achievable_bandwidth": {"type": "number", "exclusiveMinimum": 0},
+    "floor_ms": {"type": "number", "exclusiveMinimum": 0},
+    "ceiling_tok_s": {"type": "number", "exclusiveMinimum": 0},
+    "role_share_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+    "role_speedup": {"type": "number", "exclusiveMinimum": 0},
+    "amdahl_projected_gain": {"type": "number", "minimum": 1},
+    "assumptions": {"type": "array", "items": {"type": "string"}},
+    "confidence": {"enum": ["measured", "derived", "imported", "assumed"]}
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Flash Decode Candidate",
+  "type": "object",
+  "required": ["schema_version", "descriptor", "target", "provenance"],
+  "properties": {
+    "schema_version": {"const": "boltbeam.flash_decode_candidate.v1"},
+    "descriptor": {
+      "type": "object",
+      "required": ["tile", "combine"],
+      "properties": {
+        "tile": {
+          "type": "object",
+          "required": ["Hq", "Hd", "Hkv", "MAXC", "split_count"],
+          "properties": {
+            "Hq": {"type": "integer", "minimum": 1},
+            "Hd": {"type": "integer", "minimum": 1},
+            "Hkv": {"type": "integer", "minimum": 1},
+            "MAXC": {"type": "integer", "minimum": 1},
+            "split_count": {"type": "integer", "minimum": 1},
+            "staging": {"enum": ["KV_BOTH", "K_ONLY"]},
+            "quant": {"type": "boolean"},
+            "rope": {"type": "boolean"},
+            "token_block": {"type": "integer", "minimum": 1},
+            "lane_width": {"type": "integer", "minimum": 1},
+            "score_group_width": {"type": ["integer", "null"], "minimum": 1},
+            "warps": {"type": ["integer", "null"], "minimum": 1},
+            "query_group_size": {"type": ["integer", "null"], "minimum": 1},
+            "stage_width": {"type": "integer", "minimum": 1},
+            "reduce_structure": {"enum": ["staged", "inline"]},
+            "dot_pair_width": {"type": "integer", "minimum": 1}
+          },
+          "additionalProperties": false
+        },
+        "combine": {
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "required": ["stride", "output_fp16", "lane_width"],
+              "properties": {
+                "stride": {"type": ["integer", "null"], "minimum": 1},
+                "output_fp16": {"type": "boolean"},
+                "lane_width": {"type": ["integer", "null"], "minimum": 1}
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": ["target_id", "backend", "arch", "subgroup_size", "resolved_target_hash"],
+      "properties": {
+        "target_id": {"type": "string", "minLength": 1},
+        "backend": {"type": "string", "minLength": 1},
+        "arch": {"type": "string", "minLength": 1},
+        "subgroup_size": {"type": "integer", "minimum": 1},
+        "resolved_target_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["generator_id", "generator_revision", "schema_revision"],
+      "properties": {
+        "generator_id": {"type": "string", "minLength": 1},
+        "generator_revision": {"type": "string", "minLength": 1},
+        "schema_revision": {"const": "boltbeam.flash_decode_candidate.v1"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

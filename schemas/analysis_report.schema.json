@@ -1,0 +1,58 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "properties": {
+    "architecture_class": {
+      "type": "string"
+    },
+    "blocked_roles": {
+      "type": "array"
+    },
+    "complete": {
+      "type": "boolean"
+    },
+    "measurement_phase_count": {
+      "type": "integer"
+    },
+    "model_id": {
+      "type": "string"
+    },
+    "next_artifact": {
+      "type": "string"
+    },
+    "quant_gemv_regimes": {
+      "type": "array"
+    },
+    "role_count": {
+      "type": "integer"
+    },
+    "schema": {
+      "const": "boltbeam.analysis_report.v1"
+    },
+    "selected_routes": {
+      "type": "array"
+    },
+    "status": {
+      "type": "string"
+    },
+    "timing": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "architecture_class",
+    "blocked_roles",
+    "complete",
+    "measurement_phase_count",
+    "model_id",
+    "next_artifact",
+    "quant_gemv_regimes",
+    "role_count",
+    "schema",
+    "selected_routes",
+    "status",
+    "timing"
+  ],
+  "title": "boltbeam analysis_report contract (top-level shape, generated from a real artifact; LN-100)",
+  "type": "object"
+}

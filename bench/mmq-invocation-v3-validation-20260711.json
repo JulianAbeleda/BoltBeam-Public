@@ -1,0 +1,14 @@
+{
+  "schema":"boltbeam.mmq_invocation_validation.v3",
+  "model_id":"sha256:23427f5d40b906270f2de55d1c6617c583770a13d4d0a7bd0cf11b32affd6fc9",
+  "objective":"host_invocation_ms",
+  "device_time_excluded":true,
+  "status":"falsified",
+  "individual":{
+    "direct_owner_v0":{"freeze_id":"sha256:8d26a3dcd629ffb674f61096d22ca3e430c3ec88b175ba0ea8f91375441280fa","base_uops":405,"base_axis_extrapolated":false,"predicted_host_ms":5.8421273641157585,"interval_ms":{"low":5.783720937675802,"high":5.900533790555715},"measured_host_ms":6.707317,"relative_error":0.12899191075719862,"interval_contains":false},
+    "gated_matrix_v0":{"freeze_id":"sha256:52ab17136ff8f1f561d4d8b335fb54cb2ad1b755e2d393a3bedc2d02d1941aca","base_uops":1246,"base_axis_extrapolated":true,"total_uops_covered_but_base_axis_not":true,"predicted_host_ms":22.558054895408294,"interval_ms":{"low":19.771594083219785,"high":25.344515707596802},"measured_host_ms":17.071917,"relative_error":0.32135453185534435,"interval_contains":false}
+  },
+  "extrapolation_policy":"100% uncertainty on the entire out-of-domain base and base-by-site interaction segment, plus maximum in-fit residual",
+  "minimal_extension":{"raw_artifact":"/tmp/mmq-invocation-v3-base-extension.json","sha256":"2b2a05bad8ebb3b826b99c0c5d67da2bde270e5c1c6c988613efbdba65a44584","device_time_excluded":true,"candidate_ids":[],"sites":0,"points":[{"requested_base_uops":1024,"achieved_base_uops":1023,"uop_construction_ms":4.28532,"schedule_creation_ms":1.9833555},{"requested_base_uops":1280,"achieved_base_uops":1279,"uop_construction_ms":5.3588845,"schedule_creation_ms":2.4098025}],"repeated_anchor":{"requested_base_uops":768,"achieved_base_uops":767,"uop_construction_ms":3.25102,"schedule_creation_ms":1.5850365}},
+  "residual":{"classification":"gated_false_site_topology_does_not_transfer_from_generated_interaction_axis","evidence":"high-base sites=0 extension confirms approximately linear base cost near 1246, while v3 remains 5.486ms high; remaining overprediction comes from adding the generated false-site and interaction terms at gated topology","next_probe":"small host-only topology probe at base 1024 and 1280 with sites 0 and one bounded 255-site candidate-shaped generated topology per base; exact sink-UOp/source identity required; no candidate IDs or device execution"}
+}

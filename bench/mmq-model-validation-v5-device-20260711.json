@@ -1,0 +1,18 @@
+{
+  "schema": "boltbeam.mmq_model_validation.v5",
+  "model_id": "sha256:91cce75834d812a24a1410d02387e3227d3a4aec4f711988479eab1b057bdb00",
+  "target_metric": "kernel_device_ms",
+  "candidate_timing_used_for_fit": false,
+  "status": "falsified",
+  "individual": {
+    "gated_matrix_v0": {"freeze_id": "sha256:cdce2f7b6aee3de69645a25815c49a90ed3b264bb160f60f5eff1ed797291358", "predicted_ms": 0.013369397618288693, "measured_ms": 0.0158, "relative_error": 0.1538355937791967, "interval_contains": false},
+    "direct_owner_v0": {"freeze_id": "sha256:13003d957c71479580f51f3f9109c3242b38de32f1be4eda23223575b0e65381", "predicted_ms": 0.008568144275380508, "measured_ms": 0.00896, "relative_error": 0.04373389783699694, "interval_contains": true}
+  },
+  "pair": {"predicted_ratio": 1.5603609356467054, "measured_ratio": 1.7633928571428574, "ratio_error": 0.11513708965857733},
+  "falsification_reasons": ["gated median outside interval", "gated absolute error exceeds 15%", "pair ratio error exceeds 10%"],
+  "residual": {
+    "classification": "false_site_transfer_changes_between_single_workgroup_probe_and_256_wave_grid",
+    "missing_gated_minus_direct_ms": 0.0020387466570918177,
+    "next_probe": "generated false-site grid sweep at 1/32/96/256 workgroups with GPU timestamps, matched resources and fixed false-site counts; measure instruction-front-end/grid scaling without candidate binaries"
+  }
+}

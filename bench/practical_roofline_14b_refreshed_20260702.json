@@ -1,0 +1,131 @@
+{
+ "schema": "boltbeam.practical_roofline_refreshed.v1",
+ "date": "2026-07-02",
+ "model_id": "qwen3-14b",
+ "target_id": "amd_gfx1100",
+ "workload": "decode",
+ "scope": "14B practical roofline refreshed after Phase-2 loss-stack re-measure under promoted G5 K-only defaults",
+ "provenance": {
+  "tinygrad_commit": "4b406bdbc",
+  "boltbeam_commit": "b0832e5",
+  "wall_wd_authority": "bench/gp-track/gp4_latest.json",
+  "attribution_authority": "PROFILE=1 role attribution (this pass)",
+  "contexts_measured": [
+   512,
+   2048
+  ],
+  "route_bound": true
+ },
+ "current_actual": {
+  "ctx512_tok_s": 53.8,
+  "ctx2048_tok_s": 53.8,
+  "note": "ctx512 == ctx2048 == 53.8, so P_c is uniform across the two protected contexts"
+ },
+ "formula": {
+  "definition": "P_c=100*cand/ceiling; G_c=100-P_c; A_c=max(0,G_c-max(2.0,spread_pct_c))",
+  "spread_pct": null,
+  "spread_floor_used": 2.0,
+  "spread_note": "no W==D spread measured this pass; used the 2.0pp closeout floor (matches the original audit)"
+ },
+ "ceilings": [
+  {
+   "basis": "llama_parity_floor",
+   "ceiling_tok_s": 66.0,
+   "P": 81.52,
+   "G": 18.48,
+   "A": 16.48,
+   "tok_s_gap": 12.2,
+   "speedup_needed": 1.227,
+   "classification": "HEADROOM_REMAINS"
+  },
+  {
+   "basis": "illustrative_75pct_peak_target",
+   "ceiling_tok_s": 80.0,
+   "P": 67.25,
+   "G": 32.75,
+   "A": 30.75,
+   "tok_s_gap": 26.2,
+   "speedup_needed": 1.487,
+   "classification": "HEADROOM_REMAINS"
+  },
+  {
+   "basis": "illustrative_raw_roofline_peak",
+   "ceiling_tok_s": 107.0,
+   "P": 50.28,
+   "G": 49.72,
+   "A": 47.72,
+   "tok_s_gap": 53.2,
+   "speedup_needed": 1.989,
+   "classification": "HEADROOM_REMAINS"
+  },
+  {
+   "basis": "best_known_tinygrad_current_default_after_refresh",
+   "ceiling_tok_s": 53.8,
+   "P": 100.0,
+   "G": 0.0,
+   "A": 0.0,
+   "tok_s_gap": 0.0,
+   "speedup_needed": 1.0,
+   "classification": "AT_CURRENT_DEFAULT (self-reference: confirms G5 K-only is the current promoted floor)"
+  }
+ ],
+ "reduced": {
+  "P_worst_pct": 81.52,
+  "G_worst_pp": 18.48,
+  "A_worst_pp": 16.48,
+  "ceiling_basis": "llama_parity_floor (66 tok/s)"
+ },
+ "amdahl_on_refreshed_reachable_levers": [
+  {
+   "lever": "aggregate reachable elementwise",
+   "share_pct": 4.9,
+   "ideal_tok_s": 56.6,
+   "ideal_delta": 2.8,
+   "practical_expectation": "LIKELY BELOW NOISE -- SF3 measured silu_gate alone at +0.4 (<0.5 threshold); the Q4_K GEMV HBM-bound dominance means launch-reduction may not move wall-time. Aggregate untested."
+  },
+  {
+   "lever": "TG-P14.8 fused split-preserving combine wired into 14B",
+   "share_pct_targeted": 13.6,
+   "ideal_tok_s": 62.3,
+   "ideal_delta": 8.5,
+   "practical_expectation": "MODEST -- 8B precedent was a ~2% W==D gain (near-tie); combine is partly off critical-path. Expected ~+1-2 tok/s for 14B, unmeasured."
+  },
+  {
+   "lever": "new cross-workgroup LSE / atomics combine primitive",
+   "share_pct_targeted": 13.6,
+   "ideal_tok_s": 62.3,
+   "ideal_delta": 8.5,
+   "practical_expectation": "PRIMITIVE_MISSING (no atomic-float/grid-sync UOp on AMD); HIGH risk; would change the combine ceiling but requires a genuinely-new capability"
+  },
+  {
+   "lever": "whole attention (tile+combine, 27%)",
+   "share_pct_targeted": 27.0,
+   "ideal_tok_s": 73.7,
+   "ideal_delta": 19.9,
+   "practical_expectation": "would clear parity, but needs BOTH a combine coordination primitive AND vectorized-PV/v_dot2 lowering -- all primitive-missing/emitter-blocked"
+  }
+ ],
+ "verdict": "HEADROOM_REMAINS",
+ "action": "headroom-remains: roofline headroom is real, but the ONLY reachable-now route lever (4.9% aggregate elementwise) is likely below W==D noise per SF3, and every large bucket (Q4_K 40.6 route-ceiling, Q6_K 11 route-ceiling, attention combine 13.6 refuted/primitive-missing, attention PV 16.9 compute-primitive-gap) is route-ceiling or primitive-missing. The one safe experiment that can either win or confirm route-level closeout is the aggregate system-fusion pass.",
+ "iteration_1_fused_combine": {
+  "change": "wired machine-search fused split-preserving combine into default g5 route (DECODE_G5_FUSED_COMBINE, default-off)",
+  "wd": {
+   "ctx512_pct_gain": 2.0,
+   "ctx2048_pct_gain": 1.82,
+   "tok_s_2k": 55.1,
+   "tok_s_fused": 56.2,
+   "reps": 2,
+   "order_reversed_stable": true
+  },
+  "correctness": "prefilled token-parity 40/40 identical (deterministic)",
+  "route_bound": "flash_fused_gmax_combine_40_128 (2->1 kernel)",
+  "boltbeam_verdict": "tier C diagnostic (sub-threshold +1.9%); correctness+route+determinism pass",
+  "roofline_effect_on_gp4_authority": {
+   "tok_s_before": 53.8,
+   "tok_s_after_est": 54.9,
+   "P_llama66_before": 81.5,
+   "P_llama66_after_est": 83.2
+  },
+  "promotion_status": "default-off; recommend flip pending approval (needs REDUCE_ACC_UPCAST_FIX default-on too, verified bit-identical on 8B default path TG-P14.6, unverified 14B non-attention)"
+ }
+}

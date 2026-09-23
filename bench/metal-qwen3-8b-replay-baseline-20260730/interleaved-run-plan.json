@@ -1,0 +1,10 @@
+{
+  "schema": "boltbeam.interleaved_fixed_depth_plan.v1",
+  "status": "complete",
+  "workload": {"phase": "decode", "fixed_depth": 128, "decode_tokens": 1, "warmups_per_runtime": 1, "samples_per_runtime": 5},
+  "identity": {"model": "Qwen3-8B-Q4_K_M.gguf", "model_sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785", "target_id": "apple_m4_10c", "tinygrad_revision": "8139f6725c2e96f66a76515ad6ae5dc50354243c", "tinygrad_tree": "05b2bf7e1391433bcca4b758e546d03a86481553", "boltbeam_revision": "9b0e7e9cf33eed1813e3abbf31e4a2b942f09fa0", "llama_revision": "4f0e43da6f8f6e9390d88409610098ec2d2dc5c7"},
+  "order": ["tinygrad-01", "llama-01", "tinygrad-02", "llama-02", "tinygrad-03", "llama-03", "tinygrad-04", "llama-04", "tinygrad-05", "llama-05"],
+  "validity": {"require_matching_model_hash": true, "require_fixed_depth": 128, "require_one_token": true, "thermal_status": "record_or_inconclusive", "cache_state": "cold_process_per_runtime_row", "summary": "median,min,max,dispersion per runtime; fewer than five valid samples is inconclusive"},
+  "historical_trace": "../metal-qwen3-8b-trace-20260729",
+  "result": "baseline-summary.json"
+}

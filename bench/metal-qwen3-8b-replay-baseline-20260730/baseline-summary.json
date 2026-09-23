@@ -1,0 +1,45 @@
+{
+  "schema": "boltbeam.metal_replay_baseline.v1",
+  "status": "complete",
+  "date": "2026-07-30",
+  "model": {
+    "id": "Qwen3-8B-Q4_K_M",
+    "sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785"
+  },
+  "workload": {"phase": "decode", "fixed_depth": 128, "decode_tokens": 1, "samples_per_runtime": 5},
+  "target": {"id": "apple_m4_10c", "backend": "Metal"},
+  "tinygrad": {
+    "revision": "8139f6725c2e96f66a76515ad6ae5dc50354243c",
+    "tree": "05b2bf7e1391433bcca4b758e546d03a86481553",
+    "runtime_type": "MetalDevice",
+    "wall_ms": [89.18733299651649, 89.02600000146776, 87.8356250032084, 88.2571249967441, 88.81487499456853],
+    "tok_s": [11.212354562043675, 11.232673600785311, 11.384902196158707, 11.330529971794245, 11.259375189810884],
+    "median_wall_ms": 88.81487499456853,
+    "median_tok_s": 11.259375189810884,
+    "range_percent_of_median_tok_s": 1.532479655453514,
+    "generated_token_sha256": "e2df3a607b2e942c63c19887f3a220fee4cfa787c955b93e38524e7d1e68b245",
+    "route": "sdpa",
+    "authority_glob": "runs/tinygrad-0[1-5]/authority.json"
+  },
+  "llama_cpp": {
+    "revision": "4f0e43da6f8f6e9390d88409610098ec2d2dc5c7",
+    "wall_ms": [49.239250, 50.314917, 50.232333, 49.662875, 49.646000],
+    "tok_s": [20.309001, 19.874822, 19.907497, 20.135765, 20.142610],
+    "median_wall_ms": 49.662875,
+    "median_tok_s": 20.135765,
+    "range_percent_of_median_tok_s": 2.1562577831038294,
+    "authority": "llama-samples.json"
+  },
+  "candidate_vs_baseline": {
+    "tok_s_ratio": 0.5591729536876738,
+    "wall_ratio": 1.7883554867608555
+  },
+  "validity": {
+    "serial_execution": true,
+    "model_hash_match": true,
+    "tinygrad_compute_device_match": true,
+    "tinygrad_output_identity_stable": true,
+    "invalid_attempts_excluded": ["runs/invalid-overlap-tinygrad-01", "runs/invalid-dirty-mr1"]
+  },
+  "verdict": "stable_matched_gap; proceed_to_graph_admission_census"
+}

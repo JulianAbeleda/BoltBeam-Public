@@ -1,0 +1,94 @@
+{
+  "schema": "boltbeam.metal_search_followup.v1",
+  "status": "REFUTED_WHOLE_MODEL",
+  "scope": "fixed_decode_depth_128",
+  "model": {
+    "id": "Qwen3-8B-Q4_K_M",
+    "path": "/Users/julianabeleda/models/Qwen3-8B-Q4_K_M.gguf",
+    "sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785"
+  },
+  "target": {
+    "target_id": "apple_m4_10c",
+    "backend": "METAL",
+    "architecture": "Apple9",
+    "resolved_target_hash": "aec439b24f5e71ff508d4e203c770f537e7306d95172505e0f0e4fc02b7f2172"
+  },
+  "search": {
+    "request": "ffn-gate-up-search-request.json",
+    "result": "ffn-gate-up-search-result.json",
+    "status": "COMPLETE",
+    "candidate_count": 13,
+    "measured_correct": 12,
+    "blocked": 0,
+    "rejected_unsupported": 1,
+    "selected_candidate_hash": "b5fe0ed6d02fd63f9e29cc695d3217c00d2f5d045d0571e8f699066a27208fc3",
+    "selected_plan": [
+      {
+        "op": "LOCAL",
+        "axis": 0,
+        "arg": 128
+      }
+    ],
+    "selected_median_ns": 885749
+  },
+  "measurements": {
+    "tinygrad_exp_generic": {
+      "tok_s_samples": [
+        11.29,
+        11.2,
+        11.34
+      ],
+      "mean_tok_s": 11.276666666666666,
+      "median_tok_s": 11.29
+    },
+    "tinygrad_exp_selected_plan": {
+      "tok_s_samples": [
+        10.6176227628921,
+        10.658017017954197,
+        10.660043226475283
+      ],
+      "mean_tok_s": 10.645227669107193,
+      "median_tok_s": 10.658017017954197,
+      "warmstart_stats": {
+        "match": 4,
+        "apply": 2,
+        "error": 2,
+        "error_scope": "symbolic prefill token dimension not divisible by 128; generic fallback used"
+      }
+    },
+    "tinygrad_upstream_control": {
+      "tok_s_samples": [
+        4.819086502222907,
+        4.773362737146093,
+        4.801322291841289
+      ],
+      "mean_tok_s": 4.797923200454224
+    },
+    "llama_cpp": {
+      "tok_s_samples": [
+        20.4855,
+        20.3406,
+        20.2002
+      ],
+      "mean_tok_s": 20.3421
+    }
+  },
+  "decision": {
+    "selected_plan_delta_pct": -5.59951815748867,
+    "verdict": "REFUTE",
+    "runtime_binding": "NOT_INSTALLED",
+    "reason": "The isolated-role winner regressed matched whole-model decode, so no catalog, route, or runtime binding is authorized.",
+    "reopen_conditions": [
+      "bind an actual model-graph role identity rather than only a representative shape",
+      "show stable finalists under randomized/interleaved measurement",
+      "pass correctness and route-on/route-off whole-model A/B",
+      "beat the generic EXP route by the policy threshold"
+    ]
+  },
+  "evidence_boundaries": [
+    "The provider uses deterministic packed fixtures through ordinary tinygrad graphs; it does not load the model tensor bytes.",
+    "The microkernel result is diagnostic and cannot be attributed to whole-model speed without the matched A/B.",
+    "The aggregate streaming proxy is not workload-comparable and is not a practical model roof."
+  ]
+}
+

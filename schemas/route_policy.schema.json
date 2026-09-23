@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": true,
+  "properties": {
+    "architecture_class": {
+      "type": "string"
+    },
+    "authorized": {
+      "type": "boolean"
+    },
+    "model_id": {
+      "type": "string"
+    },
+    "promotion_required": {
+      "type": "array"
+    },
+    "routes": {
+      "type": "array"
+    },
+    "schema": {
+      "const": "boltbeam.route_policy.v1"
+    },
+    "target": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "architecture_class",
+    "authorized",
+    "model_id",
+    "promotion_required",
+    "routes",
+    "schema",
+    "target"
+  ],
+  "title": "boltbeam route_policy contract (top-level shape, generated from a real artifact; LN-100)",
+  "type": "object"
+}

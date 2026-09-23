@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Counter Registry",
+  "type": "object",
+  "required": ["schema", "counters"],
+  "properties": {
+    "schema": {"const": "boltbeam.counter_registry.v1"},
+    "schema_version": {"type": "string"},
+    "note": {"type": "string"},
+    "counters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["counter_id", "unit", "concept", "semantic_definition", "higher_is",
+                      "exactness", "provider_mappings", "required_raw_metrics"],
+        "properties": {
+          "counter_id": {"type": "string", "minLength": 1},
+          "unit": {"enum": ["%", "bytes", "KB", "GB/s", "cycles", "instructions", "ratio",
+                             "us", "flops", "tflops", "bits", "count"]},
+          "concept": {
+            "enum": [
+              "memory",
+              "tensor_core",
+              "occupancy",
+              "l2",
+              "lds",
+              "scheduler",
+              "launch"
+            ]
+          },
+          "semantic_definition": {"type": "string", "minLength": 1},
+          "higher_is": {"enum": ["better", "worse", "contextual"]},
+          "exactness": {"enum": ["measured", "derived", "proxy", "estimated"]},
+          "formula": {"type": "string"},
+          "provider_mappings": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          "required_raw_metrics": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          },
+          "valid_range": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {"type": ["number", "null"]}
+          },
+          "normalization_notes": {"type": "string"},
+          "known_non_equivalences": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  }
+}

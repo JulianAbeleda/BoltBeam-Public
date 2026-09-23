@@ -1,0 +1,36 @@
+{
+  "schema": "boltbeam.quant_registry.v1",
+  "note": "Quant BEHAVIOR as data (audit A3). gguf.py still decodes the raw GGML type-id -> name for any GGUF; this registry adds the capability facts BoltBeam can reason about. A quant absent here is unsupported_quant (search-space-incomplete), never silently omitted.",
+  "quants": [
+    {
+      "name": "Q4_K", "ggml_type": 12, "block_elems": 256, "block_bytes": 144, "packed_word_bits": 32,
+      "dequant_family": "k_quant", "route_families": ["lanemap_gemv"],
+      "refuted_routes": [], "pending_routes": ["split_k"]
+    },
+    {
+      "name": "Q5_K", "ggml_type": 13, "block_elems": 256, "block_bytes": 176, "packed_word_bits": 32,
+      "dequant_family": "k_quant", "route_families": ["lanemap_gemv"],
+      "refuted_routes": [], "pending_routes": []
+    },
+    {
+      "name": "Q6_K", "ggml_type": 14, "block_elems": 256, "block_bytes": 210, "packed_word_bits": 32,
+      "dequant_family": "k_quant", "route_families": ["q6k_route"],
+      "refuted_routes": ["q6k_direct_halfwarp"], "pending_routes": []
+    },
+    {
+      "name": "Q8_0", "ggml_type": 8, "block_elems": 32, "block_bytes": 34, "packed_word_bits": 8,
+      "dequant_family": "legacy_scale", "route_families": [],
+      "refuted_routes": [], "pending_routes": ["q8_0_gemv"]
+    },
+    {
+      "name": "F16", "ggml_type": 1, "block_elems": 1, "block_bytes": 2, "packed_word_bits": 16,
+      "dequant_family": "float_passthrough", "route_families": ["matmul_or_attention"],
+      "refuted_routes": [], "pending_routes": []
+    },
+    {
+      "name": "BF16", "ggml_type": 30, "block_elems": 1, "block_bytes": 2, "packed_word_bits": 16,
+      "dequant_family": "float_passthrough", "route_families": ["matmul_or_attention"],
+      "refuted_routes": [], "pending_routes": []
+    }
+  ]
+}

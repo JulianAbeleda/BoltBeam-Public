@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Model Profile",
+  "type": "object",
+  "required": ["schema", "model_id", "source", "roles"],
+  "properties": {
+    "schema": {"const": "boltbeam.model_profile.v1"},
+    "model_id": {"type": "string"},
+    "source": {"type": "string"},
+    "architecture": {"type": ["string", "null"]},
+    "hidden_size": {"type": ["integer", "null"]},
+    "ffn_size": {"type": ["integer", "null"]},
+    "vocab_size": {"type": ["integer", "null"]},
+    "layer_count": {"type": ["integer", "null"]},
+    "roles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "rows", "cols", "quant"],
+        "properties": {
+          "role": {"type": "string"},
+          "tensor_name": {"type": "string"},
+          "rows": {"type": "integer"},
+          "cols": {"type": "integer"},
+          "quant": {"type": "string"},
+          "ggml_type": {"type": "integer"},
+          "count": {"type": "integer"}
+        }
+      }
+    }
+  }
+}
+

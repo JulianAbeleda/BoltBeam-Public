@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Timing Trace",
+  "type": "object",
+  "required": ["schema", "model_id", "target_id", "workload", "rows"],
+  "properties": {
+    "schema": {"const": "boltbeam.timing_trace.v1"},
+    "model_id": {"type": "string", "minLength": 1},
+    "target_id": {"type": "string", "minLength": 1},
+    "workload": {"enum": ["decode", "prefill"]},
+    "provider_id": {"type": "string", "minLength": 1},
+    "timing_source": {"type": "string"},
+    "source_path": {"type": ["string", "null"]},
+    "peak_gbs": {"type": "number"},
+    "contexts": {
+      "type": "array",
+      "items": {"type": "integer"}
+    },
+    "aux_sources": {
+      "type": "object",
+      "additionalProperties": {"type": ["string", "number", "boolean", "null"]}
+    },
+    "transfer_summary": {"type": "object"},
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "scope": {"type": "string"},
+          "context": {"type": "integer"},
+          "wall_us": {"type": "number"},
+          "kernel": {"type": "string"},
+          "kind": {"type": "string"},
+          "role": {"type": "string"},
+          "quant": {"type": ["string", "null"]},
+          "shape": {"type": "array", "items": {"type": "integer"}},
+          "calls": {"type": "number"},
+          "phys_bytes": {"type": "number"},
+          "bytes_source": {"type": "string"},
+          "tok_s": {"type": "number"},
+          "gbs": {"type": "number"},
+          "time_source": {"type": "string"},
+          "launch_count": {"type": "number"},
+          "candidate_id": {"type": "string"},
+          "candidate_us": {"type": "number"},
+          "baseline_us": {"type": "number"},
+          "spread_pct": {"type": "number"},
+          "token_match": {"type": "boolean"},
+          "route_bound": {"type": "boolean"},
+          "dispatch_id": {"type": ["string", "integer"]},
+          "program_id": {"type": ["string", "integer"]},
+          "queue_id": {"type": ["string", "integer"]},
+          "stream_id": {"type": ["string", "integer"]},
+          "graph_id": {"type": ["string", "integer"]},
+          "launch_order": {"type": "number"},
+          "start_ns": {"type": "number"},
+          "end_ns": {"type": "number"},
+          "counters": {"type": "object", "additionalProperties": {"type": "number"}},
+          "counter_quality": {"type": "object", "additionalProperties": {"enum": ["measured", "derived", "proxy", "estimated"]}},
+          "evidence_quality": {"type": "object"},
+          "sources": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean", "null"]}},
+          "static_metrics": {"type": "object"},
+          "resources": {
+            "type": "object",
+            "properties": {
+              "workgroup": {"type": "array", "items": {"type": "integer"}},
+              "grid": {"type": "array", "items": {"type": "integer"}},
+              "global_size": {"type": "array", "items": {"type": "integer"}},
+              "local_size": {"type": "array", "items": {"type": "integer"}},
+              "workgroup_threads": {"type": "integer"},
+              "workgroup_size": {"type": "integer"},
+              "lds_bytes": {"type": "number"},
+              "scratch_bytes": {"type": "number"},
+              "vgpr": {"type": "number"},
+              "sgpr": {"type": "number"},
+              "registers": {"type": "number"}
+            },
+            "additionalProperties": true
+          }
+        },
+        "required": ["scope"]
+      }
+    }
+  }
+}

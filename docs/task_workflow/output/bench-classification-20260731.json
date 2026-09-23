@@ -1,0 +1,492 @@
+{
+  "schema": "bench_classification.v1",
+  "generated_by": "tools/classify_bench.py",
+  "total_files": 96,
+  "counts": {
+    "verdict": 36,
+    "measurement": 55,
+    "unreadable": 5
+  },
+  "rows": [
+    {
+      "path": "bench/14b-promotion-report-20260715.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'BLOCKED'"
+    },
+    {
+      "path": "bench/14b-same-run-measurement-blocked-20260715.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'BLOCKED'"
+    },
+    {
+      "path": "bench/14b-same-run-preparation-blocked-20260715.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'BLOCKED'"
+    },
+    {
+      "path": "bench/artifact-cache-inventory-20260702.json",
+      "classification": "verdict",
+      "reason": "top-level 'verdict' key = 'C0_PASS_CACHE_INVENTORY_PINNED'"
+    },
+    {
+      "path": "bench/derived_practical_roofline_14b_20260702.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'date', 'model_id', 'target_id', 'workload', 'purpose', 'inputs', 'route_bucket_current_ms_per_token', 'derived_ceilings', 'cross_model_consistency', 'conclusion']"
+    },
+    {
+      "path": "bench/fused-route-promotion-blocked-20260715.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'BLOCKED'"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-20260729/README.md",
+      "classification": "unreadable",
+      "reason": "not valid JSON: Expecting value: line 1 column 1 (char 0) \u2014 first non-blank bytes are '# Apple M4 Metal Qwen3-8B evidence\\\\n\\\\nThis', i.e. this is prose/Markdown, not a JSON artifact"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-20260729/decode-roofline-input.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['gguf', 'raw_bandwidth_gbs', 'practical_streaming', 'measurements']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-20260729/decode-roofline.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'raw_hardware', 'practical_streaming', 'workload_placement']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-20260729/ffn-gate-up-search-request.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'request_id', 'run_id', 'timestamp', 'candidate_space_status', 'requested_boltbeam_revision', 'requested_provider_revision', 'require_control', 'execution', 'target', 'resolved_target', 'candidate_space', 'workloads', 'budget', 'objective']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-20260729/ffn-gate-up-search-result.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'COMPLETE'"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-20260729/whole-model-ab-refutation.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'REFUTED_WHOLE_MODEL'"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/README.md",
+      "classification": "unreadable",
+      "reason": "not valid JSON: Expecting value: line 1 column 1 (char 0) \u2014 first non-blank bytes are '# Metal Qwen3-8B fixed-depth-128 replay ', i.e. this is prose/Markdown, not a JSON artifact"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/baseline-summary.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'complete'"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/commands.md",
+      "classification": "unreadable",
+      "reason": "not valid JSON: Expecting value: line 1 column 1 (char 0) \u2014 first non-blank bytes are '# Commands\\\\n\\\\nAll commands run from their ', i.e. this is prose/Markdown, not a JSON artifact"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/interleaved-run-plan.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'complete'"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/llama-samples.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'provider_id', 'revision', 'model_sha256', 'target_id', 'depth', 'decode_tokens', 'samples', 'median_wall_ms', 'median_tok_s', 'range_percent_of_median_tok_s']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/invalid-dirty-mr1/tinygrad-01/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/invalid-dirty-mr1/tinygrad-02/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/invalid-dirty-mr1/tinygrad-03/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/invalid-dirty-mr1/tinygrad-04/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/invalid-dirty-mr1/tinygrad-05/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/invalid-overlap-tinygrad-01/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/tinygrad-01/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/tinygrad-02/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/tinygrad-03/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/tinygrad-04/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/tinygrad-05/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/runs/tinygrad-smoke/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-baseline-20260730/smoke-evidence.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'resolved_and_excluded_from_final_authority'"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-census-20260730/README.md",
+      "classification": "unreadable",
+      "reason": "not valid JSON: Expecting value: line 1 column 1 (char 0) \u2014 first non-blank bytes are '# Qwen3-8B Metal graph-admission census\\\\n', i.e. this is prose/Markdown, not a JSON artifact"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-census-20260730/authority.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['artifact_version', 'ckpts', 'created_unix_ns', 'device', 'hardware', 'max_context', 'median_host_sync_pct', 'method', 'model', 'model_id', 'model_identity', 'nmeas', 'reps', 'rows', 'runtime_settings', 'schema', 'tool', 'workload']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-census-20260730/graph-admission-census.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['batch_boundary_histogram', 'batches', 'capture', 'constructor_failures', 'counts', 'reason_histogram', 'records', 'schema']"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-replay-census-20260730/summary.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'complete'"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-trace-20260729/README.md",
+      "classification": "unreadable",
+      "reason": "not valid JSON: Expecting value: line 1 column 1 (char 0) \u2014 first non-blank bytes are '# Qwen3-8B Metal cross-runtime trace\\\\n\\\\nTh', i.e. this is prose/Markdown, not a JSON artifact"
+    },
+    {
+      "path": "bench/metal-qwen3-8b-trace-20260729/evidence-summary.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'date', 'model', 'workload', 'target', 'collector', 'baseline', 'candidate', 'candidate_vs_baseline', 'conclusion']"
+    },
+    {
+      "path": "bench/mmq-combined-operational-model-v1-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'validated'"
+    },
+    {
+      "path": "bench/mmq-cycle-calibration-v4-fit-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'system_snapshot_id', 'calibration_id', 'model_version', 'source_artifacts', 'fit', 'prediction_readiness', 'global_load_proxy', 'frozen_predictions', 'next_required_evidence']"
+    },
+    {
+      "path": "bench/mmq-harness-objective-separation-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'descriptive_only_insufficient_independent_calibration'"
+    },
+    {
+      "path": "bench/mmq-invocation-prediction-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-prediction-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v2-prediction-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v2-prediction-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v2-validation-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-invocation-v3-prediction-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v3-prediction-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v3-validation-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-invocation-v4-prediction-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v4-prediction-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v4-validation-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-invocation-v5-prediction-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v5-prediction-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v5-validation-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-invocation-v6-prediction-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v6-prediction-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v6-validation-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-invocation-v7-builder-event-audit-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'no_model_event_calibration_required'"
+    },
+    {
+      "path": "bench/mmq-invocation-v7-prediction-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v7-prediction-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v7-structural-audit-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'no_model_independent_calibration_missing'"
+    },
+    {
+      "path": "bench/mmq-invocation-v7-validation-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-invocation-v8-prediction-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v8-prediction-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_invocation_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-invocation-v8-validation-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'operational_total_validated_with_minor_phase_scope_gaps'"
+    },
+    {
+      "path": "bench/mmq-invocation-validation-v1-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-model-validation-v2-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-model-validation-v3-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-model-validation-v3-device-scope-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-model-validation-v4-device-scope-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-model-validation-v5-20260711.json",
+      "classification": "verdict",
+      "reason": "filename convention match ('validation'); no top-level status/verdict key found in content"
+    },
+    {
+      "path": "bench/mmq-model-validation-v5-device-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-model-validation-v6-device-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'falsified'"
+    },
+    {
+      "path": "bench/mmq-model-validation-v7-device-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'validated'"
+    },
+    {
+      "path": "bench/mmq-prediction-v2-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-prediction-v2-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-prediction-v3-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-prediction-v3-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-prediction-v4-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'model_id', 'candidate_id', 'binary_sha256', 'target_metric', 'milliseconds', 'per_wave_cycles', 'training_envelope_ratio', 'extrapolated', 'resident_batches_applied_to_time', 'candidate_timing_used', 'constructed_after_metric_scope_correction', 'prediction_id']"
+    },
+    {
+      "path": "bench/mmq-prediction-v4-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'model_id', 'candidate_id', 'binary_sha256', 'target_metric', 'milliseconds', 'per_wave_cycles', 'training_envelope_ratio', 'extrapolated', 'resident_batches_applied_to_time', 'candidate_timing_used', 'constructed_after_metric_scope_correction', 'prediction_id']"
+    },
+    {
+      "path": "bench/mmq-prediction-v5-device-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_device_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-prediction-v5-device-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_device_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-prediction-v5-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['experiment_id', 'freeze_id', 'frozen_at', 'frozen_before_measurement', 'prediction', 'schema', 'static_evidence_ids', 'timing_inputs_allowed']"
+    },
+    {
+      "path": "bench/mmq-prediction-v5-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['experiment_id', 'freeze_id', 'frozen_at', 'frozen_before_measurement', 'prediction', 'schema', 'static_evidence_ids', 'timing_inputs_allowed']"
+    },
+    {
+      "path": "bench/mmq-prediction-v6-device-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_device_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-prediction-v6-device-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_device_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-prediction-v7-device-direct_owner_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_device_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-prediction-v7-device-gated_matrix_v0-20260711.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['freeze_id', 'frozen_before_device_holdout_read', 'prediction', 'schema']"
+    },
+    {
+      "path": "bench/mmq-sq-residual-v5-20260711.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'diagnostic_only_post_falsification'"
+    },
+    {
+      "path": "bench/practical-roofline-14b-20260702.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'date', 'model_id', 'target_id', 'workload', 'scope', 'current_actual', 'formula', 'ceilings', 'already_exhausted', 'frontiers', 'recommended_action']"
+    },
+    {
+      "path": "bench/practical_roofline_14b_refreshed_20260702.json",
+      "classification": "verdict",
+      "reason": "top-level 'verdict' key = 'HEADROOM_REMAINS'"
+    },
+    {
+      "path": "bench/q4-comparison-preparation-blocked-20260715.json",
+      "classification": "verdict",
+      "reason": "top-level 'status' key = 'BLOCKED'"
+    },
+    {
+      "path": "bench/refreshed_loss_stack_14b_20260702.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'date', 'model_id', 'model_path', 'target_id', 'workload', 'scope', 'provenance', 'authorities', 'current_actual_tok_s', 'buckets', 'explicit_classification', 'freshness_conclusion', 'limitations']"
+    },
+    {
+      "path": "bench/system-fusion-sf0/latest.json",
+      "classification": "verdict",
+      "reason": "top-level 'verdict' key = 'SF0_PASS_FRAGMENTATION_RESOLVED'"
+    },
+    {
+      "path": "bench/system-fusion-sf1/latest.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'phase', 'date', 'model_id', 'selected_candidate', 'fragments', 'reachable_now_total_pct', 'emitter_blocked_pct', 'low_amdahl_pct', 'not_fuseable_pct', 'selection_rationale']"
+    },
+    {
+      "path": "bench/system-fusion-sf3/latest.json",
+      "classification": "verdict",
+      "reason": "top-level 'verdict' key = 'SF3_LOW_AMDAHL_NO_MOVEMENT'"
+    },
+    {
+      "path": "bench/tinygrad-boundary-plan-20260702.json",
+      "classification": "measurement",
+      "reason": "no top-level status/verdict key and no verdict filename pattern; top-level keys=['schema', 'source_repo', 'source_head', 'counts', 'port_kinds', 'principle', 'items']"
+    }
+  ]
+}

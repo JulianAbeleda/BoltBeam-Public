@@ -1,0 +1,11 @@
+{
+  "schema": "boltbeam.mmq_model_revalidation.v3",
+  "target_metric": "kernel_device_ms",
+  "candidate_timing_used_for_refit": false,
+  "status": "falsified",
+  "individual": {
+    "gated_matrix_v0": {"predicted_ms": 0.04834251898056487, "measured_ms": 0.0158, "relative_error": 2.059653100035751},
+    "direct_owner_v0": {"predicted_ms": 0.018283041829077917, "measured_ms": 0.00896, "relative_error": 1.0405180612810176}
+  },
+  "finding": "v3 resident-batch multiplication serializes work that overlaps across compute units"
+}

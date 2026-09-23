@@ -1,0 +1,15 @@
+{
+  "schema":"boltbeam.mmq_invocation_validation.v7",
+  "model_id":"sha256:ea0eaa8d06a5704eeeeea86e257b46672e498df4d61d17b21d0bb52ed6ecf0b4",
+  "objective":"host_invocation_ms",
+  "device_time_excluded":true,
+  "uncertainty_policy":"empirical 2.5/50/97.5 percentiles of exact measured factorial cells",
+  "status":"falsified",
+  "individual":{
+    "direct_owner_v0":{"freeze_id":"sha256:2344872fb967b1b7c9d27bd281d9ca1fc28379b4d41e36af784a5ddb7270c31b","event_cell":"q8.r1.w1","predicted_host_ms":5.02739180933102,"interval_ms":{"low":4.990693575900961,"high":5.098889442761079},"measured_host_ms":6.707317,"relative_error":0.25046157661386514,"interval_contains":false,"predicted_uop_construction_ms":1.0078105,"measured_uop_construction_ms":2.7760585},
+    "gated_matrix_v0":{"freeze_id":"sha256:d420ff9d8ee79640ef720d3e082e24c98db80624c1c9e289efecf7034269ff65","event_cell":"q8.r1.w256","predicted_host_ms":10.980158399999999,"interval_ms":{"low":10.790866225,"high":11.3002532},"measured_host_ms":17.071917,"relative_error":0.35682920670244583,"interval_contains":false,"predicted_uop_construction_ms":5.544353,"measured_uop_construction_ms":11.746811}
+  },
+  "gated_channel_decomposition_ms":{"canonicalization":0.5740195,"eq":1.604563,"group":0.021726,"quant":0.2330235,"reduce":0.1282215,"residual":0.240337,"store":2.699036,"total":5.544353},
+  "operand_topology_audit":{"probe_eq":{"lhs":"new int CONST","rhs":"new int CONST","arg":"unique index"},"candidate_eq":{"lhs":"shared gidx SPECIAL","rhs":"small repeated constants mi/ni","attempts":520,"canonical_result_cmpne_nodes":66},"probe_store":{"output":"new 1D placeholder per attempt","index":"single modulo index","value":"new scalar CONST"},"candidate_store":{"output":"shared 2D output","index":"two-dimensional mi/ni INDEX construction","value":"shared deep warp-reduced arithmetic UOp","attempts":259},"finding":"event counts transfer partially, but operand construction, hashing and persistent-canonicalization hit patterns are not equivalent"},
+  "residual":{"classification":"writeback_event_operand_complexity_and_canonicalization_interaction_missing","next_probe":"2x2 host-only factorial: writeback iterations1/256 x simple const-1D versus candidate-shaped shared-special/2D-index/deep-value operands; fixed final1246-UOp identity; explicit eq operand, eq call, index operand, store call, hash/canonicalization and total channels; calibrated timers and untimed call crosscheck"}
+}

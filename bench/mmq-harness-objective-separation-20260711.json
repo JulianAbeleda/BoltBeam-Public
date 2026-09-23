@@ -1,0 +1,12 @@
+{
+  "schema": "boltbeam.mmq_harness_objective.v1",
+  "objective": "invocation_wall_ms",
+  "excluded_from_kernel_model": true,
+  "status": "descriptive_only_insufficient_independent_calibration",
+  "metrics": {
+    "gated_matrix_v0": {"compile_ms": 1302.8457459295169, "setup_ms": 161.2230889732018, "readback_ms": 0.07093354361131787, "invocation_internal_candidate_ms": 17.852723540272564},
+    "direct_owner_v0": {"compile_ms": 40.286561008542776, "setup_ms": 16.29607693757862, "readback_ms": 0.07007695967331529, "invocation_internal_candidate_ms": 6.833371997345239}
+  },
+  "scope": "setup, source compilation, synchronization and readback are separate objectives and are never kernel-device timing inputs",
+  "next_training_artifact": "independent generated source-size and tensor-materialization factorial grid"
+}

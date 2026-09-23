@@ -1,0 +1,11 @@
+{
+  "schema": "boltbeam.fused_route_promotion.v1",
+  "status": "BLOCKED",
+  "candidates": ["q4", "q6"],
+  "contexts": ["pp512", "pp1024", "pp2048", "pp4096"],
+  "errors": [
+    "q4: candidate row is absent or not an object",
+    "q6: candidate row is absent or not an object"
+  ],
+  "next_action": "producer supplies one-program, correctness, WMMA/resource, route, same-run role, and four-context timing evidence"
+}

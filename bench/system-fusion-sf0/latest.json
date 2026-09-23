@@ -1,0 +1,38 @@
+{
+  "schema": "boltbeam.system_fusion_sf0.v2",
+  "phase": "SF0_FRAGMENTATION_AUDIT",
+  "date": "2026-07-01",
+  "model_id": "Qwen3-14B-Q4_K_M",
+  "hardware": "RX 7900 XTX / gfx1100",
+  "verdict": "SF0_PASS_FRAGMENTATION_RESOLVED",
+  "other_pct_ctx128": 5.90,
+  "other_pct_ctx512": 12.76,
+  "unknown_pct_ctx128": 0.15,
+  "unknown_pct_ctx512": 0.00,
+  "unknown_ceiling": 10.0,
+  "ctx512_bucket_summary": {
+    "q4k_gemv": 43.20,
+    "reduce_partial": 19.05,
+    "other_elementwise": 12.76,
+    "q6k_gemv": 11.64,
+    "attention": 9.84,
+    "lm_head": 3.51
+  },
+  "ctx512_other_fragments": [
+    {"kernel": "E_49152_32_3", "pct": 6.69, "class": "attention_elementwise", "producer": "r_40_28start_pos2B129_16_8", "consumer": "E_1920_32_3"},
+    {"kernel": "E_5_2_2_16_4_4n1", "pct": 1.46, "class": "qk_norm_scale", "producer": "r_8_16_8", "consumer": "r_8_8_16_2_4n1"},
+    {"kernel": "E_1920_32_3", "pct": 0.75, "class": "attention_elementwise", "producer": "E_49152_32_3", "consumer": "flash_max_40"},
+    {"kernel": "E_136_32_4", "pct": 0.67, "class": "silu_gate_activation", "producer": "q4k_g3_lanemap_gemv_17408_5120", "consumer": "E_136_32_4n1"},
+    {"kernel": "E_40_32_4", "pct": 0.64, "class": "rmsnorm_scale_pre_attn", "producer": "r_16_320", "consumer": "q4k_g3_lanemap_gemv_5120_5120"},
+    {"kernel": "E_40_32_4n2", "pct": 0.64, "class": "rmsnorm_scale_pre_ffn", "producer": "r_16_320n1", "consumer": "q4k_g3_lanemap_gemv_17408_5120"},
+    {"kernel": "E_136_32_4n1", "pct": 0.59, "class": "gate_up_multiply", "producer": "E_136_32_4", "consumer": "q6k_coop_partial_5120_17408"},
+    {"kernel": "E_40_32_4n1", "pct": 0.59, "class": "residual_add_post_attn", "producer": "flash_combine_40_128", "consumer": "q4k_g3_lanemap_gemv_5120_5120"},
+    {"kernel": "E_40_32_4n3", "pct": 0.31, "class": "residual_add_post_ffn", "producer": "q4k_g3_lanemap_gemv_5120_17408", "consumer": "r_16_320"},
+    {"kernel": "E_20_4_2_8_16_2_4_4", "pct": 0.14, "class": "attention_elementwise_init"},
+    {"kernel": "TracingKey_AMD_TINY", "pct": 0.15, "class": "graph_boundary"},
+    {"kernel": "E_1187_32_4", "pct": 0.07, "class": "lm_head_elementwise"},
+    {"kernel": "E_2n7", "pct": 0.05, "class": "graph_boundary"},
+    {"kernel": "E_40_32_4n4", "pct": 0.01, "class": "hidden_elementwise_one_off"}
+  ],
+  "root_cause_note": "E_136_32_4 and E_136_32_4n1 (silu_gate pair) are split because model.py:1017 has .silu().contiguous() forcing intermediate materialization. Known issue: comment at line 1010 says TODO: remove the need for this contiguous."
+}

@@ -1,0 +1,76 @@
+{
+  "freeze_ids": {
+    "direct_owner_v0": "sha256:8e3efa031547a92474f573aba9399bd262e19e16ce3ca1a00fa133d060de1a87",
+    "gated_matrix_v0": "sha256:d518b0b7a53209d35a13a456564c2c2cb1298b71a4a5647ec2f56f187bf718be"
+  },
+  "holdout": "/tmp/mmq-interleaved-clock-probe.json",
+  "holdout_samples": {
+    "direct_owner_v0": 20,
+    "gated_matrix_v0": 20
+  },
+  "individual": {
+    "direct_owner_v0": {
+      "metrics": {
+        "interval_ms": {
+          "high": 0.13591199999999992,
+          "low": 0.016812562620423913,
+          "median": 0.022334166666666672
+        },
+        "measured_median_ms": 4.453295000000001,
+        "predicted_median_ms": 0.022334166666666672,
+        "relative_error": 0.9949847996446076
+      },
+      "reasons": [
+        "measured median outside 95% interval",
+        "absolute timing error exceeds threshold"
+      ],
+      "schema": "boltbeam.mmq_model_validation.v1",
+      "status": "falsified"
+    },
+    "gated_matrix_v0": {
+      "metrics": {
+        "interval_ms": {
+          "high": 0.7229030400000017,
+          "low": 0.07416184971098261,
+          "median": 0.12120000000000004
+        },
+        "measured_median_ms": 15.0817915,
+        "predicted_median_ms": 0.12120000000000004,
+        "relative_error": 0.991963819417607
+      },
+      "reasons": [
+        "measured median outside 95% interval",
+        "absolute timing error exceeds threshold"
+      ],
+      "schema": "boltbeam.mmq_model_validation.v1",
+      "status": "falsified"
+    }
+  },
+  "pair": {
+    "metrics": {
+      "measured_ratio": 3.3866589794747477,
+      "predicted_ratio": 5.426663184209545,
+      "ratio_error": 0.6023648135517886
+    },
+    "reasons": [
+      "measured median outside 95% interval",
+      "absolute timing error exceeds threshold",
+      "measured median outside 95% interval",
+      "absolute timing error exceeds threshold",
+      "pair ratio error exceeds threshold"
+    ],
+    "schema": "boltbeam.mmq_model_validation.v1",
+    "status": "falsified"
+  },
+  "residual": {
+    "classification": "wave_scheduling_and_effective_clock_model_missing",
+    "evidence": [
+      "predicted intervals miss both medians by orders of magnitude",
+      "predicted ordering is correct but ratio is too high",
+      "occupancy residency was used as parallel issue capacity",
+      "v4 calibration clock was unknown"
+    ],
+    "next_probe": "generated grid/residency sweep with SQ_WAVES, SQ_WAVE_CYCLES, SQ_BUSY_CYCLES and live per-window clock; fit effective waves issued per CU rather than resident workgroups"
+  },
+  "schema": "boltbeam.mmq_frozen_holdout_result.v1"
+}

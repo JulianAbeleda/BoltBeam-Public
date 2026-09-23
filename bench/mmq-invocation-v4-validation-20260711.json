@@ -1,0 +1,14 @@
+{
+  "schema":"boltbeam.mmq_invocation_validation.v4",
+  "model_id":"sha256:f8db7e6d308e8ea3be1ab67175c56f1eaeb51a1c7145e402693ac51198ca1335",
+  "objective":"host_invocation_ms",
+  "device_time_excluded":true,
+  "uncertainty_policy":"bounded interpolation of per-cell min/max sample envelopes; zero residual degrees of freedom explicitly provide no regression uncertainty",
+  "status":"falsified",
+  "individual":{
+    "direct_owner_v0":{"freeze_id":"sha256:de4d81b09ab73c665d7095c7743e0eaf249515a2042c04e1f8be1ec4bc56b47f","topology_contrast_applied":false,"predicted_host_ms":5.8421273641157585,"interval_ms":{"low":5.783720937675802,"high":5.900533790555715},"measured_host_ms":6.707317,"relative_error":0.12899191075719862,"interval_contains":false},
+    "gated_matrix_v0":{"freeze_id":"sha256:1af5c789e123fec4a362292884600d66faf4860d260f592c5c13f077a5e52789","bounded_interpolation":true,"predicted_host_ms":26.561192288671876,"interval_ms":{"low":26.20729415390625,"high":26.93108886484375},"measured_host_ms":17.071917,"relative_error":0.5558412267744669,"interval_contains":false,"phase_predictions_ms":{"uop_construction":19.338232251953126,"schedule_creation":4.22375450390625,"warmed_compile_cache_lookup":0.0693666328125}}
+  },
+  "exact_uop_topology_comparison":{"direct_owner":{"total":405,"store":4,"index":39,"and":34,"cmpne":2},"gated_matrix":{"total":1246,"store":259,"index":294,"and":290,"cmpne":66},"generated_base1023_sites255":{"total":2110,"store":256,"index":382,"and":510,"cmpne":68},"delta_gated_minus_direct":{"store":255,"index":255,"and":256,"cmpne":64},"delta_generated_sites":{"store":255,"index":255,"and":510,"cmpne":66},"finding":"generated ownership predicate adds two AND UOps per site while exact candidate delta is approximately one; it also double-counts base topology, producing about 2333 UOps at gated interpolation versus candidate total 1246"},
+  "residual":{"classification":"ownership_predicate_AND_fanin_and_total_UOp_identity_mismatch","next_probe":"three generated host-only cells at exact 405-UOp base: zero sites, 255 sites with one AND per site, 255 sites with two ANDs per site; admit exact STORE/INDEX/CMPNE/AND counts; measure UOp construction and scheduling only; no device or candidate timing"}
+}

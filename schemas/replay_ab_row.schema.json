@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam paired Metal hybrid-replay row",
+  "type": "object",
+  "required": ["schema", "run_id", "row_id", "order_index", "pair_index", "arm", "started_at", "ended_at", "status", "invalidation_reasons", "identity", "before"],
+  "properties": {
+    "schema": {"const": "boltbeam.replay_ab_row.v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "row_id": {"type": "string", "pattern": "^(control|hybrid)-[0-9]{2}$"},
+    "order_index": {"type": "integer", "minimum": 0},
+    "pair_index": {"type": "integer", "minimum": 1},
+    "arm": {"enum": ["control", "hybrid"]},
+    "status": {"enum": ["valid", "invalidated", "blocked"]},
+    "invalidation_reasons": {"type": "array", "items": {"type": "string"}},
+    "identity": {"type": "object", "required": ["model", "repositories", "target", "hardware", "toolchain", "executables"]},
+    "measurement": {"type": "object"},
+    "output_identity": {"type": "object"},
+    "graph_reconciliation": {"type": "object"},
+    "pair_reconciliation": {"type": ["object", "null"]},
+    "evidence": {
+      "type": "object",
+      "required": ["profiler", "memory", "compiled", "gates", "raw"],
+      "properties": {
+        "profiler": {"type": "object", "required": ["measurement_binding_status", "selected_gpu_union_us", "selected_command_buffer_count", "command_buffer_count"]},
+        "memory": {"type": ["object", "null"]},
+        "compiled": {"type": "object", "required": ["identities", "record_count"]},
+        "gates": {"type": "object", "required": ["profiler", "memory", "compiled"]},
+        "raw": {"type": "object"}
+      }
+    },
+    "raw": {"type": "object"},
+    "before": {"type": "object"},
+    "after": {"type": "object"}
+  }
+}

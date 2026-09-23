@@ -1,0 +1,14 @@
+{
+  "schema":"boltbeam.mmq_invocation_validation.v5",
+  "model_id":"sha256:c343bf6021223fed59206b7ac04708ec1670c7f55f56c60555959b1e8c18108b",
+  "objective":"host_invocation_ms",
+  "device_time_excluded":true,
+  "status":"falsified",
+  "individual":{
+    "direct_owner_v0":{"freeze_id":"sha256:aac62a7d2d68e9a6e017d453470b6300e9c1cec2265d6d687d0794a635ce413f","predicted_host_ms":5.8421273641157585,"interval_ms":{"low":5.783720937675802,"high":5.900533790555715},"measured_host_ms":6.707317,"relative_error":0.12899191075719862,"interval_contains":false},
+    "gated_matrix_v0":{"freeze_id":"sha256:f83cd55a265f67f6458568444db1d7bb398ac086f2d8a44b7308bf05348d5fe2","predicted_host_ms":12.686731364115758,"interval_ms":{"low":8.361421748132008,"high":17.045393123329518},"measured_host_ms":17.071917,"relative_error":0.2568654496085145,"interval_contains":false}
+  },
+  "grouped_contrast":{"exact_target_delta":{"STORE":255,"INDEX":255,"AND":256,"CMPNE":64},"host_delta_ms":{"uop_construction":4.5833475,"schedule_creation":2.259839,"warmed_compile_cache_lookup":0.0014175},"generated_total_uops":1878,"candidate_total_uops":1246,"unmatched_uops":632,"uncertainty":"symmetric cost of all 632 unmatched UOps at the larger observed phase cost per UOp"},
+  "full_histogram_residual":{"generated_minus_gated":{"ADD":131,"CMPLT":256,"CONST":340,"FLOORMOD":43,"INDEX":11,"total_uops":632},"generated_missing_or_lower":{"AND":-34,"MUL":-29,"STORE":-3,"candidate_only_examples":["SHR","WHERE","SHL","OR","XOR","CUSTOMI","AFTER","RANGE","END","BITCAST","BARRIER"]},"finding":"four-op delta closure is insufficient because grouped CMPLT/CONST/ADD scaffolding changes host graph identity and total UOps"},
+  "residual":{"classification":"grouped_predicate_scaffolding_and_full_histogram_mismatch","next_probe":"three host-only generated cells holding STORE255/INDEX255/AND256/CMPNE64 fixed while varying CMPLT scaffolding 0/128/256; exact full histogram admission and candidate total-UOp target 1246; time construction/schedule/cache only"}
+}

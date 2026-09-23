@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Search Space",
+  "type": "object",
+  "required": ["schema", "model_id", "target", "roles"],
+  "properties": {
+    "schema": {"const": "boltbeam.search_space.v1"},
+    "model_id": {"type": "string"},
+    "target": {"type": "object"},
+    "roles": {"type": "array"}
+  }
+}
+

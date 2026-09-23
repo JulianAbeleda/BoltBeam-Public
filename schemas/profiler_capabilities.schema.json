@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Profiler Capabilities",
+  "type": "object",
+  "required": [
+    "schema",
+    "collectors"
+  ],
+  "properties": {
+    "schema": {"const": "boltbeam.profiler_capabilities.v1"},
+    "collectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "provider_id",
+          "provider_support",
+          "collector_id",
+          "tool",
+          "tool_version",
+          "operation",
+          "selection_priority",
+          "target_support",
+          "supported_scopes",
+          "requires_replay",
+          "requires_root_or_privilege",
+          "supports_dispatch_timing",
+          "supports_kernel_resources",
+          "supports_dynamic_counters",
+          "supports_memory_copy",
+          "supports_allocations",
+          "supports_source_correlation",
+          "supports_disassembly",
+          "supports_thread_trace",
+          "supported_metrics",
+          "unsupported_metrics",
+          "known_blind_spots",
+          "calibration_notes"
+        ],
+        "properties": {
+          "provider_id": {"type": "string", "minLength": 1},
+          "provider_support": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          },
+          "collector_id": {"type": "string", "minLength": 1},
+          "tool": {"type": "string", "minLength": 1},
+          "tool_version": {"type": "string", "minLength": 1},
+          "operation": {"enum": ["capture", "import"]},
+          "selection_priority": {"type": "integer"},
+          "target_support": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1}
+          },
+          "supported_scopes": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "uniqueItems": true
+          },
+          "requires_replay": {"type": "boolean"},
+          "requires_root_or_privilege": {"type": "boolean"},
+          "supports_dispatch_timing": {"type": "boolean"},
+          "supports_kernel_resources": {"type": "boolean"},
+          "supports_dynamic_counters": {"type": "boolean"},
+          "supports_memory_copy": {"type": "boolean"},
+          "supports_allocations": {"type": "boolean"},
+          "supports_source_correlation": {"type": "boolean"},
+          "supports_disassembly": {"type": "boolean"},
+          "supports_thread_trace": {"type": "boolean"},
+          "supported_metrics": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "unsupported_metrics": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "known_blind_spots": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "calibration_notes": {
+            "type": "array",
+            "items": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Route Ledger Summary",
+  "description": "Derived collapsed view of a route ledger: the latest entry per candidate_id. Produced by LedgerStore.summary().",
+  "type": "object",
+  "required": ["schema", "count", "candidates"],
+  "properties": {
+    "schema": {"const": "boltbeam.route_ledger_summary.v1"},
+    "count": {"type": "integer", "minimum": 0},
+    "candidates": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["schema", "candidate_id", "status", "scope"],
+        "properties": {
+          "schema": {"const": "boltbeam.route_ledger_entry.v1"},
+          "candidate_id": {"type": "string", "minLength": 1},
+          "status": {"enum": ["promoted", "refuted", "deferred", "search-space-incomplete", "candidate"]},
+          "scope": {"type": "object"},
+          "evidence": {"type": "array"},
+          "reopen_condition": {"type": "string"},
+          "do_not_retry": {"type": "boolean"},
+          "imported": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

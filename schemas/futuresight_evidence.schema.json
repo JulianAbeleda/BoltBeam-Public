@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FutureSight static evidence (semantic-campaign --futuresight-evidence)",
+  "description": "Accepted by bind_futuresight_evidence and run_semantic_search_campaign. assess-semantic-population always writes all five fields.",
+  "type": "object",
+  "required": ["assessments", "rejections"],
+  "additionalProperties": false,
+  "properties": {
+    "assessment_version": {"const": "bubblebeam.futuresight.static.v1"},
+    "population_hash": {"$ref": "#/$defs/sha256"},
+    "assessments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["candidate_hash", "static_score", "static_reason"],
+        "additionalProperties": false,
+        "properties": {
+          "candidate_hash": {"$ref": "#/$defs/sha256"},
+          "static_score": {"type": "integer"},
+          "static_reason": {"type": "string"}
+        }
+      }
+    },
+    "rejections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "anyOf": [{"required": ["candidate_hash"]}, {"required": ["row_hash"]}],
+        "properties": {
+          "candidate_hash": {"$ref": "#/$defs/sha256"},
+          "row_hash": {"$ref": "#/$defs/sha256"},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "rejected_coupled_rows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["row_hash", "row", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "row_hash": {"$ref": "#/$defs/sha256"},
+          "row": {"type": "object"},
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

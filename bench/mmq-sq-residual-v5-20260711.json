@@ -1,0 +1,36 @@
+{
+  "classification": "static_issue_and_wave_scheduling_model_missing",
+  "direct": {
+    "binary_sha256": "3810864792e79b1304dc78dd31c40026c5274f356028476257ae00c54b0acb69",
+    "busy_cycles_median": 374360,
+    "candidate_id": "mmq.wb.direct_owner.m16.n16.k256.v1",
+    "cycles_per_wave": 7754.27734375,
+    "sample_count": 3,
+    "wave_cycles_median": 1985095,
+    "waves_median": 256
+  },
+  "gated": {
+    "binary_sha256": "4797f09f8961d75db4bff10a71e1c003b458c75c7cd7ec6d27e02476ec23ae43",
+    "busy_cycles_median": 1115704,
+    "candidate_id": "mmq.wb.gated_matrix.m16.n16.k256.v1",
+    "cycles_per_wave": 23181.1328125,
+    "sample_count": 3,
+    "wave_cycles_median": 5934370,
+    "waves_median": 256
+  },
+  "may_fit_model": false,
+  "next_training_artifact": "independent generated-microbenchmark SQ grid-tail/resource calibration",
+  "ratios": {
+    "measured_wall": 3.3866589794747477,
+    "predicted": 5.426663184209545,
+    "sq_busy_cycles": 2.9802970402820814,
+    "sq_wave_cycles": 2.989463980313285
+  },
+  "reason": "SQ cycle ratios track wall ordering better than the frozen static prediction, but candidate SQ is holdout evidence",
+  "schema": "boltbeam.mmq_sq_residual.v1",
+  "status": "diagnostic_only_post_falsification",
+  "wall_ns_per_sq_wave_cycle": {
+    "direct": 2.2433661865049284,
+    "gated": 2.541430935381515
+  }
+}

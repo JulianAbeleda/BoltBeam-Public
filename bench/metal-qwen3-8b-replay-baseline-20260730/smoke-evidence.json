@@ -1,0 +1,8 @@
+{
+  "schema": "boltbeam.interleaved_fixed_depth_smoke.v1",
+  "status": "resolved_and_excluded_from_final_authority",
+  "date": "2026-07-30",
+  "llama": {"status": "valid_adapter_smoke", "command": ["/Users/julianabeleda/env/llama.cpp/build/bin/llama-bench", "-m", "/Users/julianabeleda/models/Qwen3-8B-Q4_K_M.gguf", "-p", "0", "-n", "1", "-d", "128", "-ngl", "99", "-r", "1", "-o", "json"], "model_sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785", "depth": 128, "avg_ns": 49953333, "avg_ts": 20.018684, "gpu": "Apple M4", "build_commit": "4f0e43d"},
+  "tinygrad": {"status": "valid_fixed_depth_authority_smoke", "artifact": "runs/tinygrad-smoke/authority.json", "device": {"tinygrad_device": "METAL", "runtime_type": "MetalDevice"}, "fixed_depth": 128, "decode_tokens": 1, "tok_s_W": 11.217275268765587, "programs_per_token_by_route": {"sdpa": 803}, "note": "The earlier 'opened device PYTHON' line is GGUF/path-buffer backend output; the authority artifact is decisive for compute binding."},
+  "resolution": "baseline-summary.json contains five clean-process fixed-depth samples per runtime"
+}

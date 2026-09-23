@@ -1,0 +1,365 @@
+{
+  "schema": "boltbeam.artifact_cache_inventory.v1",
+  "verdict": "C0_PASS_CACHE_INVENTORY_PINNED",
+  "total_artifacts": 39,
+  "class_counts": {
+    "A_static": 29,
+    "B_correctness": 3,
+    "C_speed": 7
+  },
+  "need_wrapping": 36,
+  "unclassified": [],
+  "rows": [
+    {
+      "path": "bench/qk-search-spaces/decode_attention_gfx1100_v1.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/decode_attention_loop_search_space.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/decode_attention_online_softmax_pv_tile_v1.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/decode_attention_tile_combine_a3_4.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/decode_ffn_gemv_gfx1100_v1.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/default_route_manifest.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/manual_oracle_not_search_generated.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/owned_delta_taxonomy.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/pms_r3_candidate_generator_check.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": false,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/profiles/_schema.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": false,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/profiles/qwen3_8b_q4_k_m_gfx1100.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/profiles/qwen3_8b_q4_k_m_gfx1100.regen.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": false,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/profiles/qwen3_8b_q5_k_m_gfx1100.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/quant_semantics.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": false,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/refuted_axes.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/search_profiles.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/targets/amd_gfx1100.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": false,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/targets/apple_metal_m3.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": false,
+      "has_correctness_evidence": false,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/targets/nvidia_sm89.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": false,
+      "has_correctness_evidence": false,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-search-spaces/topology_grammar_v1.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-lanemap-template-ir/latest.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": false,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-lanemap-template-audit/latest.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": false,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-topology-author/latest.json",
+      "class": "A_static",
+      "has_cache_meta": true,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": false,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-quant-semantics-audit/latest.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": false,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-profile-opener/latest.json",
+      "class": "A_static",
+      "has_cache_meta": true,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": false,
+      "needs_wrapping": false,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-profile-opener/qwen3_8b_q4_k_m_gfx1100/latest.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-profile-opener/qwen3_8b_q5_k_m_gfx1100/latest.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-target-features/latest.json",
+      "class": "A_static",
+      "has_cache_meta": true,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": false,
+      "needs_wrapping": false,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-template-candidate-gate/latest.json",
+      "class": "C_speed",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C3"
+    },
+    {
+      "path": "bench/qk-new-profile-search/qwen3_8b_q6k_ffn_down_gfx1100/latest.json",
+      "class": "A_static",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C2"
+    },
+    {
+      "path": "bench/qk-candidate-evaluator/decode_q4k_g3_generated/latest.json",
+      "class": "C_speed",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C3"
+    },
+    {
+      "path": "bench/qk-candidate-evaluator/decode_q4k_g3_generated/ledger_update.json",
+      "class": "C_speed",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C3"
+    },
+    {
+      "path": "bench/qk-candidate-evaluator/decode_q4k_g3_generated/route_attribution.json",
+      "class": "B_correctness",
+      "has_cache_meta": false,
+      "has_speed_evidence": false,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C3"
+    },
+    {
+      "path": "bench/qk-candidate-evaluator/decode_q6k_direct_refuted/latest.json",
+      "class": "C_speed",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C3"
+    },
+    {
+      "path": "bench/qk-candidate-evaluator/decode_q6k_direct_refuted/ledger_update.json",
+      "class": "C_speed",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C3"
+    },
+    {
+      "path": "bench/qk-candidate-evaluator/decode_q6k_direct_refuted/route_attribution.json",
+      "class": "B_correctness",
+      "has_cache_meta": false,
+      "has_speed_evidence": false,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C3"
+    },
+    {
+      "path": "bench/qk-candidate-evaluator/prefill_pipe_role_selective_default/latest.json",
+      "class": "C_speed",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C3"
+    },
+    {
+      "path": "bench/qk-candidate-evaluator/prefill_pipe_role_selective_default/ledger_update.json",
+      "class": "C_speed",
+      "has_cache_meta": false,
+      "has_speed_evidence": true,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C3"
+    },
+    {
+      "path": "bench/qk-candidate-evaluator/prefill_pipe_role_selective_default/route_attribution.json",
+      "class": "B_correctness",
+      "has_cache_meta": false,
+      "has_speed_evidence": false,
+      "has_correctness_evidence": true,
+      "needs_wrapping": true,
+      "wrap_phase": "C3"
+    }
+  ]
+}
