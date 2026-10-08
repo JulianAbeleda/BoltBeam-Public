@@ -21,7 +21,7 @@ import html
 from typing import Any
 
 # canonical pipeline order. The keys are the `stage=` values workflow/*.py pass to update_manifest; the label
-# is what a human calls the step. A stage absent from run_manifest["stages"] renders as not-run, never hidden.
+# is the stage's short id. A stage absent from run_manifest["stages"] renders as not-run, never hidden.
 STAGES: tuple[tuple[str, str, str], ...] = (
   ("load",          "load",        "model / weight / workload facts"),
   ("autoscan",      "autoscan",    "machine + provider capabilities"),
@@ -32,8 +32,36 @@ STAGES: tuple[tuple[str, str, str], ...] = (
   ("output",        "output",      "policy / report / provider plan"),
 )
 
-# timing buckets that mean "this kernel is fine" — used only to pick a severity colour, never to drop a row.
-_HEALTHY_BUCKETS = frozenset({"at_speed_of_light", "memory_bound_ok", "fused_ok", "timing_ok"})
+# Plain words, the same ones boltbeam-tui prints (tui/internal/ui/render.go: plainStage, plainNeed, plainStatus,
+# plainBucket, plainRegime, plainRoute). The page shows the plain word first and the record's id small beside it.
+# tests/test_report_html.py checks these tables against render.go, so the two screens cannot drift apart.
+PLAIN_STAGE = {"load": "Read the model", "autoscan": "Check the machine", "analyze": "Plan what to try",
+               "runner_plan": "Prepare the handoff", "ingest_probe": "Test the building blocks",
+               "ingest_timing": "Time the real run", "output": "Package the result"}
+PLAIN_STATUS = {"not_analyzed": "not planned yet", "needs_measurement": "needs measuring", "policy_seeded": "plan ready"}
+PLAIN_NEED = {"probe_evidence": "the building-block tests", "timing_trace": "a timing trace"}
+PLAIN_ROUTE = {"promoted": "kept", "refuted": "ruled out", "blocked": "undecided", "unmeasured": "not measured yet",
+               "candidate": "to try"}
+PLAIN_BUCKET = {"at_peak": "at the speed limit", "gemv_codegen_capped": "reads memory slower than it could",
+                "latency_bound": "waiting on memory", "elementwise_dilution": "small kernel, dead time",
+                "activation_bound": "real activation work", "timing_inconclusive": "not clear yet"}
+PLAIN_REGIME = {"streaming_bound": "reads memory at full speed", "occupancy_starved": "not enough work in flight",
+                "dequant_bound": "slowed by unpacking the numbers", "metadata_bound": "slowed by the scale tables",
+                "latency_bound": "waiting on memory", "compute_bound": "limited by the sums",
+                "inconclusive": "not clear yet"}
+
+# Severity of every word the classifiers emit, so the colour follows the meaning. Sources:
+# roofline/roofline_trace.py (kernel buckets), trace/timing.py (role, candidate and dominant buckets),
+# quantization/quant_gemv.py (regimes), trace/schedule_trace.py (fused_ok). A word not listed gets no colour.
+SEVERITY = {
+  "at_peak": "ok", "streaming_bound": "ok", "timing_win": "ok", "fused_ok": "ok", "promoted": "ok",
+  "compute_bound": "ok", "activation_bound": "ok",
+  "latency_bound": "warn", "elementwise_dilution": "warn", "timing_flat": "warn", "timing_inconclusive": "warn",
+  "inconclusive": "warn", "mixed": "warn", "route_not_bound": "warn", "unmeasured": "warn", "blocked": "warn",
+  "gemv_codegen_capped": "bad", "occupancy_starved": "bad", "dequant_bound": "bad", "metadata_bound": "bad",
+  "timing_loss": "bad", "correctness_failed": "bad", "refuted": "bad",
+  # timing_hot / timing_observed say how big a role is, not whether it is healthy: no colour.
+}
 
 _CSS = """
 /* Tokyo Night, matching the BoltBeam run graph: dark canvas, panel cards, typed accent colours.
@@ -72,10 +100,9 @@ background-size:100px 100px,20px 20px;background-attachment:fixed}
 .meta b{color:var(--tx-2);font-weight:500;font-family:var(--mono)}
 .card,.rail{background:var(--node);border:1px solid var(--node-br);border-radius:9px;
 box-shadow:0 4px 16px rgba(6,8,18,.32);overflow:hidden}
-.rail{display:flex;overflow-x:auto}
-.stage{flex:1 1 0;min-width:150px;padding:12px 15px;border-right:1px solid var(--node-br);
-display:flex;flex-direction:column;gap:3px}
-.stage:last-child{border-right:0}
+.rail{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.stage{padding:10px 14px;border-right:1px solid var(--node-br);border-bottom:1px solid var(--node-br);
+display:flex;flex-direction:column;gap:2px;margin:0 -1px -1px 0;min-width:0}
 .stage-top{display:flex;align-items:center;gap:8px}
 .stage-name{font-size:12.5px;font-weight:600}
 .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--run)}
@@ -89,14 +116,19 @@ display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .card-bd{padding:14px 15px}
 .card.flag{border-left:3px solid var(--warn)}
 .cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+.cols.one{grid-template-columns:minmax(0,1fr)}
 @media (max-width:920px){.cols{grid-template-columns:1fr}.meta{margin-left:0}}
-.tscroll{overflow-x:auto}
+.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tscroll table{min-width:640px}
+.tscroll table.wide{min-width:900px}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 thead th{font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);
 text-align:right;padding:10px 12px 8px;border-bottom:1px solid var(--node-br);white-space:nowrap}
 thead th:first-child,tbody td:first-child{text-align:left}
 tbody td{padding:8px 12px;border-bottom:1px solid color-mix(in srgb,var(--node-br) 55%,transparent);
-text-align:right;font-size:12px;color:var(--tx-2);font-family:var(--mono)}
+text-align:right;font-size:12px;color:var(--tx-2);font-family:var(--mono);white-space:nowrap;vertical-align:middle}
+th.l,td.l{text-align:left!important}
+td.wrap{white-space:normal;min-width:280px;font-family:var(--ui)}
 tbody tr:last-child td{border-bottom:0}
 tbody td:first-child{color:var(--tx)}
 tbody tr:hover td{background:var(--node-hd)}
@@ -118,7 +150,24 @@ code{background:var(--widget);border:1px solid var(--widget-br);padding:1px 6px;
 color:var(--tx);font-family:var(--mono);font-size:11px}
 .chips{display:flex;flex-wrap:wrap;gap:7px}
 .chip{font-size:10.5px;padding:3px 10px;border-radius:14px;background:var(--widget);color:var(--tx-2);
-border:1px solid var(--widget-br);font-family:var(--mono)}
+border:1px solid var(--widget-br);font-family:var(--mono);text-decoration:none}
+a.chip:hover{border-color:var(--plan);color:var(--tx)}
+.chip.on{color:var(--run);border-color:color-mix(in srgb,var(--run) 45%,transparent)}
+a{color:var(--plan)}
+.id{font-family:var(--mono);font-size:10px;color:var(--tx-3)}
+.lbl{font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);margin:0 0 6px}
+.lbl .id{letter-spacing:0;text-transform:none;font-weight:400}
+.compact .card-bd{padding:9px 15px}
+.compact .empty{padding:9px 15px}
+.head-bd{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:18px;padding:18px 20px;align-items:start}
+.head-model{font-size:22px;font-weight:700;letter-spacing:-.01em;word-break:break-word}
+.head-chip{color:var(--tx-2);font-family:var(--mono);font-size:12px}
+.big{font-size:30px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+.big.dim{font-size:18px;color:var(--warn)}
+.big-u{color:var(--tx-2);font-size:12px}
+.big-n{color:var(--tx-3);font-size:11px;margin-top:4px}
+.head{border-left:3px solid var(--profile)}
+@media (max-width:640px){.head-bd{grid-template-columns:1fr 1fr}.head-who{grid-column:1/-1}body{padding:16px 16px 48px}}
 details{border-bottom:1px solid var(--node-br)}
 details:last-child{border-bottom:0}
 summary{padding:11px 15px;cursor:pointer;display:flex;gap:11px;align-items:center;flex-wrap:wrap}
@@ -163,15 +212,30 @@ def _shape_str(shape:Any) -> str:
 
 
 def _bucket_class(bucket:Any) -> str:
-  if not bucket: return ""
-  if str(bucket) in _HEALTHY_BUCKETS: return "t-ok"
-  return "t-warn" if "latency" in str(bucket) or "dilution" in str(bucket) else "t-bad"
+  sev = SEVERITY.get(str(bucket)) if bucket else None
+  return f"t-{sev}" if sev else ""
 
 
-def _card(title:str, source:str, body:str, *, flag:bool = False) -> str:
-  """A titled panel. `source` names the artifact the body was read from — no section without a citation."""
-  cls = "card flag" if flag else "card"
-  return (f'<section class="{cls}"><div class="card-hd"><h2 class="card-ttl">{_e(title)}</h2>'
+def _named(table:dict[str, str], key:Any, *, tag:bool = False) -> str:
+  """The plain word with the record's id small and muted beside it (the TUI's `named`)."""
+  key_s = "" if key is None else str(key)
+  plain = table.get(key_s)
+  if tag:
+    text = _e(plain or key_s or "unknown")
+    inner = f'<span class="tag {_bucket_class(key_s)}">{text}</span>'
+    return inner + (f' <span class="id">{_e(key_s)}</span>' if plain else "")
+  return f'{_e(plain)} <span class="id">{_e(key_s)}</span>' if plain else _e(key_s or "unknown")
+
+
+def _ms(us:Any) -> str:
+  """Every time on the page is milliseconds. Artifacts store microseconds; this is the one conversion."""
+  return _num(us / 1000.0, "{:.2f}") if isinstance(us, (int, float)) and not isinstance(us, bool) else "—"
+
+
+def _card(title:str, source:str, body:str, *, flag:bool = False, cls:str = "") -> str:
+  """A titled panel. `source` names the artifact the body was read from: no section without a citation."""
+  classes = " ".join(c for c in ("card", "flag" if flag else "", cls) if c)
+  return (f'<section class="{classes}"><div class="card-hd"><h2 class="card-ttl">{title}</h2>'
           f'<span class="card-sub">{_e(source)}</span></div>{body}</section>')
 
 
@@ -183,19 +247,58 @@ def _bar_cell(pct:Any) -> str:
 def _rail(manifest:dict[str, Any]) -> str:
   stages = manifest.get("stages", {}) or {}
   cells = []
-  for key, label, note in STAGES:
+  for i, (key, label, note) in enumerate(STAGES):
     entry = stages.get(key)
     if entry:
       count = len(entry.get("artifacts", []) or [])
-      detail = f"{count} artifact{'' if count == 1 else 's'}"
-      cls = "stage"
+      detail, cls = f"{count} file{'' if count == 1 else 's'}", "stage"
     else:
       detail, cls = "not run", "stage s-none"
-    cells.append(f'<div class="{cls}"><div class="stage-top"><i class="dot"></i>'
-                 f'<span class="stage-name">{_e(label)}</span></div>'
-                 f'<div class="stage-note">{_e(detail)}</div>'
-                 f'<div class="stage-note">{_e(note)}</div></div>')
+    cells.append(f'<div class="{cls}" title="{_e(note)}"><div class="stage-top"><i class="dot"></i>'
+                 f'<span class="stage-name">{i + 1}. {_e(PLAIN_STAGE.get(key, label))}</span></div>'
+                 f'<div class="stage-note">{_e(label)} · {_e(detail)}</div></div>')
   return '<nav class="rail" aria-label="Pipeline stages">' + "".join(cells) + "</nav>"
+
+
+def _headline(manifest:dict[str, Any], results:dict[str, Any] | None) -> str:
+  """The answer first: model, chip, speed limit, measured speed. Numbers come from `screen.results`, the same
+  facts the TUI's Speed limit and Result steps print. Nothing is computed here."""
+  results = results or {}
+  model = manifest.get("model_id") or "unknown model"
+  chip = manifest.get("target_id") or "unknown chip"
+  ceil = results.get("ceiling") or {}
+  limit = ceil.get("tok_s") if ceil.get("status") == "modeled" else None
+  timing = results.get("timing") or {}
+  measured = timing.get("tok_s")
+  if isinstance(limit, (int, float)):
+    limit_html = (f'<div class="big">{limit:.1f}</div><div class="big-u">tokens per second</div>'
+                  f'<div class="big-n">memory {_num(ceil.get("peak_bandwidth_gbs"))} GB/s · context '
+                  f'{_e(ceil.get("context"))}</div>')
+  else:
+    limit_html = (f'<div class="big dim">none</div><div class="big-n">{_e(ceil.get("reason") or "not computed for this page")}'
+                  '</div>')
+  if isinstance(measured, (int, float)):
+    pct = f" · {measured / limit * 100:.0f}% of the limit" if isinstance(limit, (int, float)) and limit else ""
+    meas_html = (f'<div class="big">{measured:.1f}</div><div class="big-u">tokens per second{pct}</div>'
+                 f'<div class="big-n">timing trace · context {_e(timing.get("context"))}</div>')
+  else:
+    blocked = results.get("blocked") or []
+    if blocked:
+      missing = "Needs " + " and ".join(
+        f'{_e(PLAIN_NEED.get(b.get("need"), b.get("need")))} (<a href="{_e(b.get("request"))}">{_e(b.get("request"))}</a>)'
+        for b in blocked) + "."
+    elif not results:
+      missing = "Results were not read for this page."
+    elif results.get("measured"):
+      missing = "Needs a timing trace."
+    else:
+      missing = "Needs a plan: run <code>boltbeam analyze</code>."
+    meas_html = f'<div class="big dim">not measured yet</div><div class="big-n">{missing}</div>'
+  body = (f'<div class="head-bd"><div class="head-who"><div class="head-model">{_e(model)}</div>'
+          f'<div class="head-chip">on {_e(chip)} · {_e(manifest.get("workload") or "unknown workload")}</div></div>'
+          f'<div class="head-num"><div class="lbl">Speed limit</div>{limit_html}</div>'
+          f'<div class="head-num"><div class="lbl">Measured</div>{meas_html}</div></div>')
+  return f'<section class="card head" aria-label="Answer">{body}</section>'
 
 
 def next_step(report:dict[str, Any], plan:dict[str, Any]) -> str:
@@ -229,91 +332,105 @@ def _kernel_table(timing:dict[str, Any]) -> str:
   kernels, context = roofline_kernels(timing)
   if not kernels:
     rows = [r for r in timing.get("role_timing", []) or [] if isinstance(r, dict)]
-    if not rows: return _card("Hot kernels", "timing_profile.json",
-                              '<p class="empty">No timing profile ingested. Absent, not zero.</p>')
+    if not rows: return ""
     rows.sort(key=lambda r: (-(r.get("pct_step") or 0.0), str(r.get("role") or "")))
     body = "".join(
       f'<tr><td class="name" title="{_e(r.get("role"))}">{_e(r.get("role") or "unknown")}</td>'
-      f'<td>{_e(_shape_str(r.get("shape")))}</td><td>{_num(r.get("wall_us"))}</td>'
+      f'<td>{_e(_shape_str(r.get("shape")))}</td><td>{_ms(r.get("wall_us"))}</td>'
       f'{_bar_cell(r.get("pct_step"))}'
-      f'<td style="text-align:left"><span class="tag {_bucket_class(r.get("classification"))}">'
-      f'{_e(r.get("classification") or "unclassified")}</span></td></tr>' for r in rows[:12])
-    table = ('<div class="tscroll"><table><thead><tr><th>role</th><th>shape</th><th>wall µs</th>'
-             '<th>% step</th><th style="text-align:left">classification</th></tr></thead>'
+      f'<td class="l">{_named(PLAIN_BUCKET, r.get("classification") or "unclassified", tag=True)}</td></tr>'
+      for r in rows[:12])
+    table = ('<div class="tscroll"><table><thead><tr><th>role</th><th>shape</th><th>wall ms</th>'
+             '<th>% step</th><th class="l">classification</th></tr></thead>'
              f'<tbody>{body}</tbody></table></div>')
     return _card("Hot roles", "timing_profile.json · role_timing", table)
 
   body = "".join(
     f'<tr><td class="name" title="{_e(k.get("name"))}">{_e(k.get("name") or "unnamed")}</td>'
-    f'<td>{_e(k.get("kind") or "—")}</td><td>{_num(k.get("us"))}</td>'
+    f'<td>{_e(k.get("kind") or "—")}</td><td>{_ms(k.get("us"))}</td>'
     f'{_bar_cell(k.get("pct_step"))}<td>{_num(k.get("phys_util_pct"))}</td>'
-    f'<td>{_num(k.get("loss_us"))}</td>'
-    f'<td style="text-align:left"><span class="tag {_bucket_class(k.get("bucket"))}">'
-    f'{_e(k.get("bucket") or "unclassified")}</span></td></tr>' for k in kernels[:12])
+    f'<td>{_ms(k.get("loss_us"))}</td>'
+    f'<td class="l">{_named(PLAIN_BUCKET, k.get("bucket") or "unclassified", tag=True)}</td></tr>'
+    for k in kernels[:12])
   more = ""
   if len(kernels) > 12:
-    more = f'<p class="empty">… {len(kernels) - 12} more kernels in <code>timing_profile.json</code></p>'
-  table = ('<div class="tscroll"><table><thead><tr><th>kernel</th><th>kind</th><th>µs</th><th>% step</th>'
-           '<th>% peak</th><th>loss µs</th><th style="text-align:left">bucket</th></tr></thead>'
+    more = f'<p class="empty">{len(kernels) - 12} more kernels in <code>timing_profile.json</code>.</p>'
+  table = ('<div class="tscroll"><table><thead><tr><th>kernel</th><th>kind</th><th>ms</th><th>% step</th>'
+           '<th>% peak</th><th>loss ms</th><th class="l">bucket</th></tr></thead>'
            f'<tbody>{body}</tbody></table></div>{more}')
   ctx = f"timing_profile.json · context {context}" if context is not None else "timing_profile.json"
   return _card("Hot kernels", ctx, table)
 
 
 def _timing_card(timing:dict[str, Any]) -> str:
-  if not timing:
-    return _card("Timing verdict", "timing_profile.json",
-                 '<p class="empty">No timing trace ingested — no timing claim can be made.</p>', flag=True)
   bucket = timing.get("dominant_timing_bucket") or "timing_inconclusive"
   actions = [a for a in timing.get("next_actions", []) or []][:4]
   items = "".join(f"<li>{_e(a)}</li>" for a in actions) or '<li class="empty">no recorded next action</li>'
   counts = (f'<div class="chips"><span class="chip">role rows {len(timing.get("role_timing", []) or [])}</span>'
             f'<span class="chip">candidate rows {len(timing.get("candidate_timing", []) or [])}</span></div>')
-  body = (f'<div class="card-bd"><p style="margin:0 0 12px"><span class="tag {_bucket_class(bucket)}">'
-          f'{_e(bucket)}</span></p><ul>{items}</ul><div style="margin-top:12px">{counts}</div></div>')
+  body = (f'<div class="card-bd"><p style="margin:0 0 12px">Most time lost to '
+          f'{_named(PLAIN_BUCKET, bucket, tag=True)}</p><ul>{items}</ul><div style="margin-top:12px">{counts}</div></div>')
   return _card("Timing verdict", "timing_profile.json", body)
 
 
 def _regime_card(primitive:dict[str, Any]) -> str:
   regimes = [r for r in primitive.get("quant_gemv_regimes", []) or [] if isinstance(r, dict)]
-  if not regimes:
-    return _card("Quant GEMV regimes", "primitive_profile.json",
-                 '<p class="empty">No primitive probe evidence ingested.</p>', flag=True)
+  if not regimes: return ""
   regimes = sorted(regimes, key=lambda r: (str(r.get("role") or ""), str(r.get("quant") or "")))
   body = "".join(
     f'<tr><td>{_e(r.get("role") or "unknown")}</td><td>{_e(r.get("quant") or "unknown")}</td>'
     f'<td>{_e(_shape_str(r.get("shape")))}</td>'
-    f'<td style="text-align:left"><span class="tag {_bucket_class(r.get("classification"))}">'
-    f'{_e(r.get("classification") or "unknown")}</span></td>'
-    f'<td style="text-align:left">{_e(r.get("visible_bottleneck") or "unknown")}</td>'
-    f'<td style="text-align:left">{_e(r.get("next_action") or "collect more evidence")}</td></tr>'
+    f'<td class="l">{_named(PLAIN_REGIME, r.get("classification") or "unknown", tag=True)}</td>'
+    f'<td class="l">{_e(r.get("visible_bottleneck") or "unknown")}</td>'
+    f'<td class="l wrap">{_e(r.get("next_action") or "collect more evidence")}</td></tr>'
     for r in regimes[:12])
-  table = ('<div class="tscroll"><table><thead><tr><th>role</th><th>quant</th><th>shape</th>'
-           '<th style="text-align:left">regime</th><th style="text-align:left">bottleneck</th>'
-           f'<th style="text-align:left">next action</th></tr></thead><tbody>{body}</tbody></table></div>')
-  return _card("Quant GEMV regimes", "primitive_profile.json", table)
+  table = ('<div class="tscroll"><table class="wide"><thead><tr><th>role</th><th>quant</th><th>shape</th>'
+           '<th class="l">regime</th><th class="l">bottleneck</th>'
+           f'<th class="l">next action</th></tr></thead><tbody>{body}</tbody></table></div>')
+  return _card("Building blocks (quant GEMV regimes)", "primitive_profile.json", table)
 
 
-def _blocked_card(plan:dict[str, Any], primitive:dict[str, Any], timing:dict[str, Any],
-                  runner:dict[str, Any]) -> str:
+def _not_measured_card(primitive:dict[str, Any], timing:dict[str, Any]) -> str:
+  """One compact card for every measured section that has no data yet, instead of one empty card each."""
+  missing = []
+  if not timing: missing.append(("Timing verdict and hot kernels", "timing_profile.json", "a timing trace"))
+  if not primitive: missing.append(("Building blocks", "primitive_profile.json", "the building-block tests"))
+  if not missing: return ""
+  items = "".join(f'<li>{_e(what)}: needs {_e(need)} <span class="id">{_e(src)}</span></li>'
+                  for what, src, need in missing)
+  return _card("Not measured yet", " · ".join(src for _, src, _ in missing),
+               f'<div class="card-bd"><ul>{items}</ul></div>', cls="compact")
+
+
+def _blocked_card(report:dict[str, Any], plan:dict[str, Any], policy:dict[str, Any], primitive:dict[str, Any],
+                  timing:dict[str, Any], runner:dict[str, Any]) -> str:
   """Absence as a first-class panel. A run that is missing evidence should say so above the fold."""
   needs = []
   if plan.get("primitive_profile", {}).get("status") == "requested" or not primitive:
-    needs.append("Primitive probe evidence (<code>probe_evidence.json</code>). Until it lands the search space "
-                 "is only partially authorised and no route may be promoted on primitive grounds.")
+    needs.append("The building-block tests (<code>probe_evidence.json</code>). Until they land no route may be "
+                 "promoted on primitive grounds.")
   if plan.get("timing_profile", {}).get("status") == "requested" or not timing:
-    needs.append("A timing trace (<code>hw_trace.json</code> → <code>timing_trace.json</code>). Without it every "
-                 "speed claim below is a prediction, not a measurement.")
+    needs.append("A timing trace (<code>hw_trace.json</code> to <code>timing_trace.json</code>). Without it every "
+                 "speed on this page is a prediction, not a measurement.")
   if runner:
     missing = []
     if not primitive: missing.append("probe_evidence")
     if not timing: missing.append("timing_trace")
     if missing:
-      needs.append("Runner bundle returned no " + _e(", ".join(missing)) +
-                   ". The handoff was prepared but the provider-side executor has not written back.")
+      needs.append("The handoff returned no " + _e(", ".join(missing)) +
+                   ". The bundle was prepared but the provider has not written back.")
+  # needs_measurement means no route is selected yet (workflow/analyze.py), even when the probe and the trace are
+  # in: the route candidates themselves (plan phase M3, `wd_speed`) are still unmeasured.
+  if report.get("status") == "needs_measurement":
+    routes = [r for r in policy.get("routes", []) or [] if isinstance(r, dict)]
+    open_routes = [r for r in routes if not r.get("selected_route")]
+    count = f"{len(open_routes)} of {len(routes)} roles have" if routes else "No role has"
+    needs.append(f"Route measurements. {count} no measured route yet (<code>route_policy.json</code>). Measure the "
+                 "route candidates from <code>measurement_plan.json</code> (phase M3), then re-run "
+                 "<code>boltbeam analyze</code>.")
   if not needs:
     return _card("Blocked on", "measurement_plan.json",
-                 '<div class="card-bd"><p style="margin:0;color:var(--ink-2)">Nothing outstanding — every '
+                 '<div class="card-bd"><p style="margin:0;color:var(--tx-2)">Nothing outstanding. Every '
                  'requested measurement has been ingested and classified.</p></div>')
   items = "".join(f'<div class="need"><span class="need-k">{i + 1:02d}</span>'
                   f'<span class="need-b">{n}</span></div>' for i, n in enumerate(needs))
@@ -325,7 +442,7 @@ def _routes_card(policy:dict[str, Any]) -> str:
   rows = [r for r in policy.get("routes", []) or [] if isinstance(r, dict) and r.get("selected_route")]
   if not rows:
     return _card("Selected routes", "route_policy.json",
-                 '<p class="empty">No route selected. Nothing to roll back.</p>')
+                 '<p class="empty">No route selected. Nothing to roll back.</p>', cls="compact")
   rows = sorted(rows, key=lambda r: (str(r.get("selected_route")), str(r.get("role") or "")))
   blocks = []
   for row in rows:
@@ -337,8 +454,7 @@ def _routes_card(policy:dict[str, Any]) -> str:
       f'<details><summary><span class="rb-name">{_e(row.get("selected_route"))}</span>'
       f'<span class="tag">{_e(row.get("role") or "unknown")}</span>'
       f'<span class="tag">{_e(row.get("quant") or "unknown")}</span>'
-      f'<span class="tag {"t-ok" if row.get("status") == "promoted" else ""}">'
-      f'{_e(row.get("status") or "unknown")}</span>'
+      f'{_named(PLAIN_ROUTE, row.get("status") or "unknown", tag=True)}'
       f'<span class="card-sub">{_e(cite)}</span></summary>'
       f'<pre>{_e(cmd)}</pre></details>')
   return _card("Selected routes", "route_policy.json · rollback commands", "".join(blocks))
@@ -347,51 +463,59 @@ def _routes_card(policy:dict[str, Any]) -> str:
 def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:dict[str, Any],
                     plan:dict[str, Any], policy:dict[str, Any], providers:dict[str, Any],
                     primitive:dict[str, Any], timing:dict[str, Any], runner:dict[str, Any],
-                    source_run:str = "") -> str:
+                    source_run:str = "", results:dict[str, Any] | None = None) -> str:
   """Render one staged run directory as a standalone HTML document.
 
-  Every argument is the parsed contents of a run artifact, or `{}` when that artifact does not exist. Missing
-  inputs are rendered as missing — this function never invents a value to fill a panel.
+  Every argument is the parsed contents of a run artifact, or `{}` when that artifact does not exist. `results`
+  is `workflow.screen.results` for the run (speed limit and measured tokens/s); without it the headline says the
+  numbers were not read. Missing inputs are rendered as missing: this function never invents a value.
   """
   model_id = manifest.get("model_id") or profile.get("model_id") or "unknown"
-  provider_names = [str(p.get("provider") if isinstance(p, dict) else p)
-                    for p in providers.get("providers", []) or []]
+  provider_names = sorted(str((p.get("provider_id") or p.get("provider")) if isinstance(p, dict) else p)
+                          for p in providers.get("providers", []) or [])
+  ready = {str(p.get("provider_id")) for p in providers.get("providers", []) or []
+           if isinstance(p, dict) and p.get("status") not in (None, "missing")}
 
   meta = "".join(f"<div>{_e(label)} <b>{_e(value)}</b></div>" for label, value in (
-    ("target", manifest.get("target_id") or "unknown"),
     ("format", manifest.get("model_format") or "unknown"),
-    ("workload", manifest.get("workload") or "unknown"),
     ("arch", profile.get("architecture_class") or "unknown"),
-    ("stage", manifest.get("latest_stage") or "unknown"),
+    ("last stage", manifest.get("latest_stage") or "unknown"),
   ))
 
-  artifacts = "".join(f'<span class="chip">{_e(a)}</span>' for a in manifest.get("artifacts", []) or [])
-  providers_html = ("".join(f'<span class="chip">{_e(p)}</span>' for p in sorted(provider_names))
+  artifacts = "".join(f'<a class="chip" href="{_e(a)}">{_e(a)}</a>' for a in manifest.get("artifacts", []) or [])
+  providers_html = ("".join(f'<span class="chip{" on" if p in ready else ""}">{_e(p)}</span>' for p in provider_names)
                     or '<span class="chip">none recorded</span>')
 
+  status = report.get("status") or "not_analyzed"
   status_card = _card("Where this run stands", "run_manifest.json · analysis_report.json",
-    f'<div class="card-bd"><p style="margin:0 0 10px;color:var(--ink-2)">Analysis status '
-    f'<span class="tag">{_e(report.get("status") or "not_analyzed")}</span></p>'
-    f'<p style="margin:0 0 12px;color:var(--ink-2)"><b style="color:var(--ink)">Next step.</b> '
+    f'<div class="card-bd"><p style="margin:0 0 10px;color:var(--tx-2)">Status '
+    f'{_named(PLAIN_STATUS, status)}</p>'
+    f'<p style="margin:0 0 12px;color:var(--tx-2)"><b style="color:var(--tx)">Next step.</b> '
     f'{next_step(report, plan)}</p>'
+    f'<div class="lbl">Providers <span class="id">provider_capabilities.json</span></div>'
     f'<div class="chips">{providers_html}</div></div>')
+
+  measured = ""
+  if timing: measured += f'<div class="cols one">{_timing_card(timing)}</div>'
+  measured += _regime_card(primitive) + (_kernel_table(timing) if timing else "")
 
   return (
     "<!doctype html>\n"
     '<html lang="en"><head><meta charset="utf-8">'
     '<meta name="viewport" content="width=device-width,initial-scale=1">'
-    f"<title>BoltBeam — {_e(model_id)}</title><style>{_CSS}</style></head><body><div class=\"wrap\">"
+    f"<title>BoltBeam {_e(model_id)}</title><style>{_CSS}</style></head><body><div class=\"wrap\">"
     f'<header class="mast"><div class="mark">Bolt<span>Beam</span></div>'
     f'<div class="run-id">{_e(source_run or model_id)}</div>'
     f'<div class="meta">{meta}</div>'
-    '<button id="theme" class="chip" type="button" style="cursor:pointer;border:1px solid var(--rule);'
-    'font:inherit;font-size:11px">theme</button></header>'
+    '<button id="theme" class="chip" type="button" style="cursor:pointer;font:inherit;font-size:11px">'
+    'theme</button></header>'
+    f"{_headline(manifest, results)}"
     f"{_rail(manifest)}"
-    f'<div class="cols">{status_card}{_blocked_card(plan, primitive, timing, runner)}</div>'
-    f'<div class="cols">{_timing_card(timing)}{_regime_card(primitive)}</div>'
-    f"{_kernel_table(timing)}"
+    f'<div class="cols">{status_card}{_blocked_card(report, plan, policy, primitive, timing, runner)}</div>'
+    f"{_not_measured_card(primitive, timing)}"
+    f"{measured}"
     f"{_routes_card(policy)}"
-    f'{_card("Artifacts in this run", "run_manifest.json", f"<div class=\'card-bd\'><div class=\'chips\'>{artifacts}</div></div>")}'
-    '<p class="foot">Generated by <code>boltbeam output</code>. Deterministic — no timestamps, stable ordering;'
-    '<br>every panel cites the artifact it was read from.</p>'
+    f'{_card("Files in this run", "run_manifest.json", f"<div class=\'card-bd\'><div class=\'chips\'>{artifacts}</div></div>")}'
+    '<p class="foot">Generated by <code>boltbeam output</code>. Deterministic: no timestamps, stable ordering.'
+    '<br>Every panel names the file it was read from. Times are milliseconds.</p>'
     f"</div><script>{_JS}</script></body></html>\n")

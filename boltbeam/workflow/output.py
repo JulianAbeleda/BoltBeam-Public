@@ -186,8 +186,11 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   # report.html renders the same staged facts as summary.md, standalone and self-contained (no server, no CDN).
   # It renders from `final`, not the pre-update manifest, so the pipeline rail shows the output stage as run and
   # a second `boltbeam output` over an unchanged run reproduces the file byte for byte.
+  # The headline reads the speed limit and measured tokens/s from screen.results: the same function the TUI reads,
+  # so the page and the TUI cannot disagree. Imported here because screen imports this module.
+  from boltbeam.workflow.screen import results as screen_results
   (out / "report.html").write_text(
     render_run_html(manifest=final, profile=profile, report=report, plan=plan, policy=policy,
                     providers=providers, primitive=primitive, timing=timing, runner=runner,
-                    source_run=str(out)), encoding="utf-8")
+                    source_run=str(out), results=screen_results(out)), encoding="utf-8")
   return final
