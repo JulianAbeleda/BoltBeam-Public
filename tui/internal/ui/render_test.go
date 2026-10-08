@@ -276,12 +276,22 @@ func TestMeasureStatusWording(t *testing.T) {
 func TestDeleteAsksTwice(t *testing.T) {
 	s := loadSample(t)
 	f := facts(program(s, &s.measured, nil, nil, 80, 24))
-	last := func(f Facts) action { a := measureActions(f); return a[len(a)-1] }
-	if a := last(f); a.do != "delete" || a.arg != f.Run.ID || !strings.HasPrefix(a.label, "Delete run ") {
-		t.Fatalf("the last Measure action is %+v, want Delete run %s", a, f.Run.ID)
+	row := func(f Facts) string {
+		for _, a := range measureActions(f) {
+			if a.do == "run" && a.arg == f.Run.ID {
+				return ansi.Strip(a.label)
+			}
+		}
+		return ""
+	}
+	if got := row(f); !strings.HasPrefix(got, "Open run "+f.Run.ID) {
+		t.Fatalf("the run row is %q", got)
 	}
 	f.Confirm = f.Run.ID
-	if !strings.Contains(ansi.Strip(last(f).label), "Press enter again") {
-		t.Fatalf("the confirm label is %q", last(f).label)
+	if got := row(f); !strings.HasPrefix(got, "Press d again to delete run "+f.Run.ID) {
+		t.Fatalf("the confirm row is %q", got)
+	}
+	if !strings.Contains(ansi.Strip(footer(true, true)), "d delete run") {
+		t.Fatal("the footer does not name d on a run row")
 	}
 }

@@ -25,7 +25,7 @@ var plainStatus = map[string]string{
 }
 
 var plainRoute = map[string]string{
-	"promoted": "kept", "refuted": "ruled out", "blocked": "undecided", "unmeasured": "not measured yet", "candidate": "to try",
+	"promoted": "kept", "refuted": "ruled out", "blocked": "undecided", "unmeasured": "default kernel, none compared yet", "candidate": "to try",
 }
 
 var routeMark = map[string]string{"promoted": "kept", "refuted": "fail", "blocked": "crossed", "unmeasured": "wait"}
@@ -138,6 +138,15 @@ func table(rows [][]string) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// runStatus is a run's plain status. A run holding both measurements reads "measured": analyze keeps saying
+// needs_measurement until per-role kernel choices are compared, which is a later step than measuring the speed.
+func runStatus(status string, measured bool) string {
+	if measured {
+		return "measured"
+	}
+	return word(plainStatus, status)
 }
 
 func measuredMarks(m seam.Measured) string {
@@ -319,7 +328,7 @@ func measureBody(f Facts, width int) string {
 	case r == nil:
 		return stMuted.Render("No run yet. Plan and measure plans the run, then measures on this GPU when this machine can.")
 	default:
-		fmt.Fprintf(&b, "%s on %s · %s\n", r.ModelID, r.TargetID, named(plainStatus, r.Status))
+		fmt.Fprintf(&b, "%s on %s · %s\n", r.ModelID, r.TargetID, runStatus(r.Status, r.Results.Measured))
 		events := seam.StageEvents(f.Tail)
 		n := 0
 		for _, st := range r.Stages {
@@ -378,7 +387,7 @@ func resultBody(f Facts, width int) string {
 		fmt.Fprintf(&b, "%s %s (%s)\n", stInfo.Render(glyphWait+" still needed:"), word(plainNeed, n.Need), n.Request)
 	}
 	if len(res.Routes) > 0 {
-		rows := [][]string{{" ", "ROLE", "QUANT", "WHAT WON"}}
+		rows := [][]string{{" ", "ROLE", "QUANT", "KERNEL CHOICE"}}
 		for _, rt := range res.Routes {
 			won := word(plainRoute, rt.Status)
 			if rt.SelectedRoute != nil {

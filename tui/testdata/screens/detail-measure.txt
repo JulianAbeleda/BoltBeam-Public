@@ -1,6 +1,6 @@
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ 4  Measure · qwen3-8b-apple_m3_10c-001                                       │
-│ Qwen3-8B on apple_m3_10c · needs measuring  needs_measurement                │
+│ Qwen3-8B on apple_m3_10c · needs measuring                                   │
 │ ✓ 1. Read the model             4 files                                      │
 │ ✓ 2. Check the machine          4 files                                      │
 │ ● 3. Plan what to try           running                                      │
@@ -16,6 +16,6 @@
 │ What next                                                                    │
 │ ██████░░░░░░░░░░░░░░  2 of 7 · Plan what to try…                             │
 │ ▸ Stop the run (x)                                                           │
-│   Open run qwen3-8b-apple_m3_10c-002  needs measuring  probe ✓ · timing ✓    │
+│   Open run qwen3-8b-apple_m3_10c-002  measured  probe ✓ · timing ✓           │
 │   Open run qwen3-8b-apple_m3_10c-001  needs measuring  probe ⏸ · timing ⏸  … │
 ╰──────────────────────────────────────────────────────────────────────────────╯

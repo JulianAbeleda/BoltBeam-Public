@@ -5,11 +5,11 @@
 │ ██████████████████░░ 90% of the limit                                        │
 │ Where the time goes: small kernel, dead time  elementwise_dilution           │
 │                                                                              │
-│    ROLE                        QUANT  WHAT WON                               │
-│ ⏸  attention keys and values   Q4_K   not measured yet                       │
-│ ⏸  attention keys and values   Q6_K   not measured yet                       │
-│ ⏸  attention query and output  Q4_K   not measured yet                       │
-│ ⏸  feed-forward out            Q4_K   not measured yet                       │
+│    ROLE                        QUANT  KERNEL CHOICE                          │
+│ ⏸  attention keys and values   Q4_K   default kernel, none compared yet      │
+│ ⏸  attention keys and values   Q6_K   default kernel, none compared yet      │
+│ ⏸  attention query and output  Q4_K   default kernel, none compared yet      │
+│ ⏸  feed-forward out            Q4_K   default kernel, none compared yet      │
 │ …                                                                            │
 │ enter: open the full report, measure again                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯

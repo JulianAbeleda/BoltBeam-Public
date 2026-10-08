@@ -27,6 +27,7 @@ var (
 	keyEnter = key.NewBinding(key.WithKeys("enter"))
 	keyBack  = key.NewBinding(key.WithKeys("esc"))
 	keyStop  = key.NewBinding(key.WithKeys("x"))
+	keyDel   = key.NewBinding(key.WithKeys("d"))
 	keyQuit  = key.NewBinding(key.WithKeys("q", "ctrl+c"))
 )
 
@@ -447,8 +448,19 @@ func (m Model) actions() []action {
 	return nil
 }
 
+// runRow is the run id under the row cursor when an open step shows a run row, else "".
+func (m Model) runRow() string {
+	if !m.open {
+		return ""
+	}
+	if acts := m.actions(); m.row < len(acts) && acts[m.row].do == "run" {
+		return acts[m.row].arg
+	}
+	return ""
+}
+
 func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
-	if !key.Matches(msg, keyEnter) {
+	if !key.Matches(msg, keyDel) {
 		m.f.Confirm = "" // any other key cancels a pending delete
 	}
 	if m.f.Editing {
@@ -470,6 +482,12 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 	if m.open {
 		DetailView(m.f, m.cursor, m.row, m.width, m.height-3, &m.view) // size the scroll before keys move it
+	}
+	if key.Matches(msg, keyDel) {
+		if id := m.runRow(); id != "" {
+			return m.do(action{"", "delete", id})
+		}
+		return m, nil
 	}
 	switch {
 	case key.Matches(msg, keyQuit):
@@ -573,9 +591,12 @@ func (m Model) mood() string {
 	return faceIdle
 }
 
-func footer(open bool) string {
+func footer(open, onRun bool) string {
 	pairs := [][2]string{{"↑↓", "step"}, {"enter", "open"}, {"q", "quit"}}
-	if open {
+	switch {
+	case onRun:
+		pairs = [][2]string{{"↑↓", "move"}, {"enter", "open run"}, {"d", "delete run"}, {"esc", "back"}, {"q", "quit"}}
+	case open:
 		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"esc", "back"}, {"x", "stop"}, {"q", "quit"}}
 	}
 	parts := []string{}
@@ -603,5 +624,5 @@ func (m Model) View() string {
 			body += strings.Repeat("\n", pad)
 		}
 	}
-	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.open)
+	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.open, m.runRow() != "")
 }

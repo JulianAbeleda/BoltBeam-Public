@@ -275,19 +275,15 @@ func measureActions(f Facts) []action {
 	if f.Runs != nil {
 		for i := len(f.Runs.Runs) - 1; i >= 0; i-- {
 			r := f.Runs.Runs[i]
-			label := fmt.Sprintf("Open run %s  %s  %s", r.ID, word(plainStatus, r.Status), measuredMarks(r.Measured))
+			label := fmt.Sprintf("Open run %s  %s  %s", r.ID, runStatus(r.Status, r.Measured.Probe && r.Measured.Timing), measuredMarks(r.Measured))
+			if f.Confirm == r.ID {
+				label = stBad.Render("Press d again to delete run " + r.ID + " and its report · any other key keeps it")
+			}
 			if f.Run != nil && r.ID == f.Run.ID {
 				label += stMuted.Render("  shown")
 			}
 			out = append(out, action{label, "run", r.ID})
 		}
-	}
-	if f.Run != nil && !f.alive() {
-		label := "Delete run " + f.Run.ID
-		if f.Confirm == f.Run.ID {
-			label = stBad.Render("Press enter again to delete " + f.Run.ID + " and its report")
-		}
-		out = append(out, action{label, "delete", f.Run.ID})
 	}
 	return out
 }

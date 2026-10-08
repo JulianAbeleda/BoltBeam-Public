@@ -40,7 +40,7 @@ PLAIN_STAGE = {"load": "Read the model", "autoscan": "Check the machine", "analy
                "ingest_timing": "Time the real run", "output": "Package the result"}
 PLAIN_STATUS = {"not_analyzed": "not planned yet", "needs_measurement": "needs measuring", "policy_seeded": "plan ready"}
 PLAIN_NEED = {"probe_evidence": "the building-block tests", "timing_trace": "a timing trace"}
-PLAIN_ROUTE = {"promoted": "kept", "refuted": "ruled out", "blocked": "undecided", "unmeasured": "not measured yet",
+PLAIN_ROUTE = {"promoted": "kept", "refuted": "ruled out", "blocked": "undecided", "unmeasured": "default kernel, none compared yet",
                "candidate": "to try"}
 PLAIN_BUCKET = {"at_peak": "at the speed limit", "gemv_codegen_capped": "reads memory slower than it could",
                 "latency_bound": "waiting on memory", "elementwise_dilution": "small kernel, dead time",
