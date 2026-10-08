@@ -220,7 +220,7 @@ func measureLine(f Facts) (string, string) {
 		now := ""
 		for key, state := range seam.StageEvents(f.Tail) {
 			if state == "running" {
-				now = " · " + word(plainStage, key) + "…"
+				now = " · " + stageWord(key) + "…"
 			}
 		}
 		if total == 0 {
@@ -229,7 +229,10 @@ func measureLine(f Facts) (string, string) {
 		return "run", fmt.Sprintf("%s  %d of %d%s", bar(float64(done)/float64(total), 20), done, total, now)
 	}
 	if key := f.failedStage(); key != "" {
-		return "fail", "stopped: " + word(plainStage, key) + " failed"
+		return "fail", "stopped: " + stageWord(key) + " failed"
+	}
+	if f.Run != nil && f.Run.Measure != nil && f.Run.Measure.Status == "failed" {
+		return "fail", "measuring failed: " + deref(f.Run.Measure.Reason)
 	}
 	switch {
 	case f.Run == nil && f.Path == "":
@@ -242,6 +245,8 @@ func measureLine(f Facts) (string, string) {
 			last = word(plainStage, *f.Run.LatestStage)
 		}
 		return "crossed", "stopped after " + last
+	case len(f.Run.Blocked) > 0 && f.Run.Measure != nil && f.Run.Measure.Status == "skipped":
+		return "wait", "planned · not measured here: " + deref(f.Run.Measure.Reason) + " · enter for what to run"
 	case len(f.Run.Blocked) == 1:
 		n := f.Run.Blocked[0]
 		return "wait", fmt.Sprintf("planned · needs %s (%s)", word(plainNeed, n.Need), n.Request)

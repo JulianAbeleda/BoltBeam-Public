@@ -49,6 +49,21 @@ var plainRole = map[string]string{
 
 var plainLimit = map[string]string{"memory": "reading weights", "compute": "doing sums"}
 
+// plainMeasureStage words the pipeline's measuring stages. They are not report stages (report/html.py STAGES), so
+// they live apart from plainStage, which tests/test_report_html.py pins to the report's own table.
+var plainMeasureStage = map[string]string{
+	"measure": "Can this Mac measure", "measure_probe": "Test blocks on the GPU",
+	"measure_timing": "Time the real decode",
+}
+
+// stageWord is the plain word for any pipeline stage key.
+func stageWord(key string) string {
+	if plain, ok := plainMeasureStage[key]; ok {
+		return plain
+	}
+	return word(plainStage, key)
+}
+
 var plainNeed = map[string]string{"probe_evidence": "the building-block tests", "timing_trace": "a timing trace"}
 
 // word is the plain word for a record key, or the key itself when no plain word exists.
@@ -272,6 +287,29 @@ func stageState(st seam.Stage, events map[string]string, alive bool, blocked []s
 	return "open", "not run"
 }
 
+// measureRows are the measuring stages under "Plan what to try". measure_status.json is the record once it exists;
+// the live log fills in while the job runs or when it stopped before writing one. Each row is mark, key, detail.
+func measureRows(ms *seam.MeasureStatus, events map[string]string, alive bool) [][3]string {
+	rows := [][3]string{}
+	for _, key := range []string{"measure", "measure_probe", "measure_timing"} {
+		switch {
+		case ms != nil && !alive && key == "measure" && ms.Status == "skipped":
+			rows = append(rows, [3]string{"crossed", key, "not here: " + deref(ms.Reason)})
+		case ms != nil && !alive && key != "measure" && ms.Status == "measured":
+			rows = append(rows, [3]string{"pass", key, "done"})
+		case ms != nil && !alive && key == "measure_probe" && ms.Status == "failed":
+			rows = append(rows, [3]string{"fail", key, deref(ms.Reason)})
+		case events[key] == "running" && alive:
+			rows = append(rows, [3]string{"run", key, "running"})
+		case events[key] == "failed":
+			rows = append(rows, [3]string{"fail", key, "failed; see the log below"})
+		case events[key] == "done" && (ms == nil || alive):
+			rows = append(rows, [3]string{"pass", key, "done"})
+		}
+	}
+	return rows
+}
+
 func measureBody(f Facts, width int) string {
 	r := f.Run
 	var b strings.Builder
@@ -279,13 +317,24 @@ func measureBody(f Facts, width int) string {
 	case (r == nil || r.Stages == nil) && f.alive():
 		b.WriteString(stMuted.Render("The run folder appears when the first stage finishes.") + "\n")
 	case r == nil:
-		return stMuted.Render("No run yet. Plan and measure runs the stages that need no GPU.")
+		return stMuted.Render("No run yet. Plan and measure plans the run, then measures on this GPU when this machine can.")
 	default:
 		fmt.Fprintf(&b, "%s on %s · %s\n", r.ModelID, r.TargetID, named(plainStatus, r.Status))
 		events := seam.StageEvents(f.Tail)
-		for i, st := range r.Stages {
+		n := 0
+		for _, st := range r.Stages {
 			state, detail := stageState(st, events, f.alive(), r.Blocked)
-			fmt.Fprintf(&b, "%s %d. %-26s %s\n", mark(state), i+1, plainStage[st.Key], stMuted.Render(detail))
+			n++
+			fmt.Fprintf(&b, "%s %d. %-26s %s\n", mark(state), n, plainStage[st.Key], stMuted.Render(detail))
+			if st.Key == "analyze" {
+				for _, row := range measureRows(r.Measure, events, f.alive()) {
+					n++
+					fmt.Fprintf(&b, "%s %d. %-26s %s\n", mark(row[0]), n, stageWord(row[1]), stMuted.Render(row[2]))
+				}
+			}
+		}
+		if ms := r.Measure; ms != nil && ms.Status != "measured" && ms.Command != nil {
+			fmt.Fprintf(&b, "%s %s\n", stInfo.Render("to measure"), *ms.Command)
 		}
 		fmt.Fprintf(&b, "%s %s\n", stInfo.Render("next"), r.NextStep)
 	}

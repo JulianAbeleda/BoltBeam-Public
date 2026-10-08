@@ -222,6 +222,7 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 		fs.StringVar(&p.ID, "id", "", "profile/model id override")
 		fs.StringVar(&p.Probe, "probe", "", "probe_evidence.v1 JSON to ingest")
 		fs.StringVar(&p.Timing, "timing", "", "timing_trace.v1 JSON to ingest")
+		fs.StringVar(&p.Measure, "measure", "auto", "auto: measure here when this machine can; none: plan only")
 		runID := fs.String("run", "", "run folder name (default: <model>-<chip>-NNN)")
 		if fs.Parse(args[1:]) != nil || p.Target == "" {
 			fmt.Fprintln(errOut, "start needs MODEL and --target")

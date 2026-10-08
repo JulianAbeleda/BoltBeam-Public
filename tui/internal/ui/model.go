@@ -253,7 +253,7 @@ func (m Model) startRun() tea.Cmd {
 		if abs, err := filepath.Abs(path); err == nil { // the pipeline runs in the checkout, not here
 			path = abs
 		}
-		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: "decode"})
+		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: "decode", Measure: "auto"})
 		if _, err := m.store.Start(id, m.client.Repo, argv); err != nil {
 			return noteMsg("Start failed: " + err.Error())
 		}

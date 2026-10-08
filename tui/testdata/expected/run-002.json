@@ -28,6 +28,7 @@
   "id": "qwen3-8b-apple_m3_10c-002",
   "kind": "run",
   "latest_stage": "output",
+  "measure": null,
   "measured": {
     "probe": true,
     "timing": true

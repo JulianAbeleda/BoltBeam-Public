@@ -15,6 +15,7 @@
       ],
       "id": "qwen3-8b-apple_m3_10c-001",
       "latest_stage": "output",
+      "measure": null,
       "measured": {
         "probe": false,
         "timing": false
@@ -105,6 +106,7 @@
       "blocked": [],
       "id": "qwen3-8b-apple_m3_10c-002",
       "latest_stage": "output",
+      "measure": null,
       "measured": {
         "probe": true,
         "timing": true

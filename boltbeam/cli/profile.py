@@ -193,6 +193,19 @@ def cmd_collect_hw_trace(args) -> int:
   _write(trace, str(out))
   return 0
 
+def _register_metal_measure(sub) -> None:
+  from boltbeam.collectors.metal_native import add_arguments
+  p = sub.add_parser("metal-measure", help="measure a run on this Mac's GPU with BoltBeam's own Metal kernels: "
+                                           "probe_evidence.json and timing_trace.json, no Xcode needed")
+  add_arguments(p)
+  p.set_defaults(fn=cmd_metal_measure)
+
+
+def cmd_metal_measure(args) -> int:
+  from boltbeam.collectors.metal_native import run_cli
+  return run_cli(args)
+
+
 def _register_compare_hw_trace(sub) -> None:
   p = sub.add_parser("compare-hw-trace", help="compare two boltbeam.hw_trace.v1 files, including timing and normalized counters")
   p.add_argument("--baseline", required=True, help="baseline boltbeam.hw_trace.v1 JSON, usually llama.cpp")
@@ -316,6 +329,7 @@ def register(sub) -> None:
   _register_import_hw_trace(sub)
   _register_import_ncu(sub)
   _register_collect_hw_trace(sub)
+  _register_metal_measure(sub)
   _register_compare_hw_trace(sub)
   _register_compare_substrate(sub)
   _register_profiler_report(sub)

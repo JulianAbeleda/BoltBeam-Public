@@ -11,8 +11,12 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     runs     --root DIR                        one summary per run folder under DIR
     run      --run DIR                         the stages, what is blocked, the next step, the results
     results  --run DIR                         what won per role, the timing against the ceiling, the regimes
-    pipeline MODEL --run DIR --target T        load, autoscan, analyze, [ingest-probe, ingest-timing], output;
-                                               `pipeline steps: N` first, then one text line per stage, for tailing
+    pipeline MODEL --run DIR --target T        load, autoscan, analyze, [measure], [ingest-probe, ingest-timing], output;
+                                               `pipeline steps: N` first, then one text line per stage, for tailing.
+                                               --measure auto runs the target's BoltBeam collector here when this
+                                               machine can (Metal: boltbeam/collectors/metal_native.py) and writes
+                                               measure_status.json either way: measured, skipped or failed, with
+                                               the reason and the command to run instead.
 
 Nothing here computes a new kind of fact. The ceiling is `model_roofline` exactly as `roofline-theoretical`
 calls it, with tokens/s read off the floor (one token at context 1 for decode; the context's tokens for
@@ -46,6 +50,10 @@ SCHEMA = "boltbeam.tui.v1"
 # what a run still needs, read off measurement_plan.json: (plan block, the evidence it asks for, its request file)
 NEEDS = (("primitive_profile", "probe_evidence", "probe_request.json"),
          ("timing_profile", "timing_trace", "trace_request.json"))
+
+
+MEASURE_STATUS = "measure_status.json"
+SCHEMA_MEASURE_STATUS = "boltbeam.measure_status.v1"
 
 
 class Refused(Exception):
@@ -148,6 +156,7 @@ def summary(run:pathlib.Path) -> dict[str, Any]:
     "stages": stage_rows(manifest), "blocked": blocked(plan),
     "measured": {"probe": (run / "primitive_profile.json").exists(), "timing": (run / "timing_profile.json").exists()},
     "report": "report.html" if (run / "report.html").exists() else None,
+    "measure": _optional(run, MEASURE_STATUS) or None,
   }
 
 
@@ -236,6 +245,55 @@ def show(run:pathlib.Path) -> dict[str, Any]:
 
 # --- the pipeline --------------------------------------------------------------------------------------------
 
+def _write_measure_status(run:str | pathlib.Path, status:str, *, collector:str | None = None, reason:str | None = None,
+                          command:str | None = None) -> None:
+  from boltbeam.workflow.common import run_dir, update_manifest, write_json
+  out = run_dir(run)
+  write_json(out / MEASURE_STATUS, {"schema": SCHEMA_MEASURE_STATUS, "status": status, "collector": collector,
+                                    "reason": reason, "command": command})
+  update_manifest(out, stage="measure", artifacts=[MEASURE_STATUS])
+
+
+def measure_plan(target_id:str, model:str, run:str) -> dict[str, Any]:
+  """Which BoltBeam collector measures this target on this machine, or why none can. Decided before the run starts,
+  so the step count is right from the first line."""
+  from boltbeam.profiler.capabilities import resolve_profiler_capability
+  try:
+    cap = resolve_profiler_capability("boltbeam", target_id)
+  except ValueError:
+    return {"collector": None, "reason": f"BoltBeam has no collector of its own for {target_id}",
+            "command": f"on a machine with {target_id}: boltbeam collect-hw-trace --provider llama --run {run}, "
+                       "then pipeline --timing <run>/timing_trace.json"}
+  from boltbeam.collectors.metal_native import CannotMeasure, preflight
+  try:
+    preflight(target_id, model, run=run)
+  except CannotMeasure as exc:
+    return {"collector": cap.collector_id, "reason": exc.reason, "command": exc.command}
+  return {"collector": cap.collector_id, "reason": None, "command": None}
+
+
+def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
+  if plan["reason"]:
+    return [("measure", lambda: _write_measure_status(args.run, "skipped", collector=plan["collector"],
+                                                       reason=plan["reason"], command=plan["command"]))]
+  from boltbeam.collectors import metal_native
+  run = pathlib.Path(args.run)
+  args.probe, args.timing = str(run / "probe_evidence.json"), str(run / "timing_trace.json")
+
+  def guarded(only:str):
+    def step():
+      try:
+        metal_native.measure(metal_native.run_dir(args.run), only=only)
+      except Exception as exc:  # the reason must outlive the log: a reopened screen reads it from the run
+        _write_measure_status(args.run, "failed", collector=plan["collector"], reason=f"{only}: {exc}",
+                              command=f"python -m boltbeam.collectors.metal_native --run {args.run}")
+        raise
+      if only == "timing":
+        _write_measure_status(args.run, "measured", collector=plan["collector"])
+    return step
+  return [("measure_probe", guarded("probe")), ("measure_timing", guarded("timing"))]
+
+
 def pipeline(args, out=sys.stdout) -> int:
   """Run the stages in order and say so, one line each. The run folder keeps whatever landed before a failure."""
   def say(text:str) -> None:
@@ -247,6 +305,8 @@ def pipeline(args, out=sys.stdout) -> int:
     ("autoscan", lambda: autoscan_run(args.run, providers=())),
     ("analyze", lambda: analyze_run(args.run)),
   ]
+  if getattr(args, "measure", "none") == "auto" and not (args.probe or args.timing):
+    steps += _measure_steps(args, measure_plan(args.target, str(pathlib.Path(args.model).expanduser().resolve()), args.run))
   if args.probe:
     steps.append(("ingest_probe", lambda: ingest_probe_run(args.run, args.probe)))
   if args.timing:
@@ -313,6 +373,8 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--ctxs", default="128,512")
   p.add_argument("--probe", default=None, help="boltbeam.probe_evidence.v1 JSON to ingest after analyze")
   p.add_argument("--timing", default=None, help="boltbeam.timing_trace.v1 JSON to ingest after analyze")
+  p.add_argument("--measure", default="none", choices=["none", "auto"],
+                 help="auto: measure with the target's BoltBeam collector when this machine can, then ingest")
   args = parser.parse_args(argv)
   if args.command == "pipeline":
     return pipeline(args)

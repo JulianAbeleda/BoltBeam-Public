@@ -242,3 +242,32 @@ func detail(f Facts, i int) string {
 	v := viewport.New(0, 0)
 	return DetailView(f, i, 0, 80, 21, &v)
 }
+
+// The measure status from the run (measure_status.json) is what step 4 says when it did not measure: the reason,
+// never a silent "planned". While the job runs, the live log wins; once it ends, the record wins.
+func TestMeasureStatusWording(t *testing.T) {
+	reason, command := "this Mac is apple_m3_10c, not apple_m4_10c", "boltbeam metal-measure --run R"
+	out := "output"
+	run := &seam.Run{Summary: seam.Summary{ID: "m-001", LatestStage: &out,
+		Stages:  []seam.Stage{{Key: "output", Done: true}},
+		Blocked: []seam.Need{{Need: "probe_evidence"}, {Need: "timing_trace"}},
+		Measure: &seam.MeasureStatus{Status: "skipped", Reason: &reason, Command: &command}}}
+	f := Facts{Path: "m.gguf", Run: run}
+	if mk, text := measureLine(f); mk != "wait" || !strings.Contains(text, "not measured here: "+reason) {
+		t.Fatalf("skipped: %s %q", mk, text)
+	}
+	run.Measure.Status = "failed"
+	if mk, text := measureLine(f); mk != "fail" || !strings.Contains(text, reason) {
+		t.Fatalf("failed: %s %q", mk, text)
+	}
+	run.Measure.Status = "skipped"
+	done := map[string]string{"measure": "done"}
+	if rows := measureRows(run.Measure, done, false); len(rows) != 1 || rows[0][0] != "crossed" {
+		t.Fatalf("a finished skip must show crossed, not the log's done: %v", rows)
+	}
+	running := map[string]string{"measure_probe": "done", "measure_timing": "running"}
+	rows := measureRows(nil, running, true)
+	if len(rows) != 2 || rows[0][0] != "pass" || rows[1][0] != "run" || stageWord(rows[1][1]) != "Time the real decode" {
+		t.Fatalf("live rows: %v", rows)
+	}
+}

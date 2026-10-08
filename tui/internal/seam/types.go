@@ -131,18 +131,28 @@ type Measured struct {
 	Timing bool `json:"timing"`
 }
 
+// MeasureStatus is measure_status.json: whether the pipeline measured on this machine, and if not, why and what
+// to run instead. Python writes it; the screen only shows it.
+type MeasureStatus struct {
+	Status    string  `json:"status"` // measured | skipped | failed
+	Collector *string `json:"collector"`
+	Reason    *string `json:"reason"`
+	Command   *string `json:"command"`
+}
+
 type Summary struct {
-	ID          string   `json:"id"`
-	ModelID     string   `json:"model_id"`
-	ModelFormat string   `json:"model_format"`
-	TargetID    string   `json:"target_id"`
-	Workload    string   `json:"workload"`
-	LatestStage *string  `json:"latest_stage"`
-	Status      string   `json:"status"` // not_analyzed | needs_measurement | policy_seeded | ...
-	Stages      []Stage  `json:"stages"`
-	Blocked     []Need   `json:"blocked"`
-	Measured    Measured `json:"measured"`
-	Report      *string  `json:"report"`
+	ID          string         `json:"id"`
+	ModelID     string         `json:"model_id"`
+	ModelFormat string         `json:"model_format"`
+	TargetID    string         `json:"target_id"`
+	Workload    string         `json:"workload"`
+	LatestStage *string        `json:"latest_stage"`
+	Status      string         `json:"status"` // not_analyzed | needs_measurement | policy_seeded | ...
+	Stages      []Stage        `json:"stages"`
+	Blocked     []Need         `json:"blocked"`
+	Measured    Measured       `json:"measured"`
+	Report      *string        `json:"report"`
+	Measure     *MeasureStatus `json:"measure"`
 }
 
 type Runs struct {

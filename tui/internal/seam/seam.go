@@ -163,14 +163,15 @@ func (c Client) Results(id string) (*Results, []byte, int, error) {
 }
 
 // Pipeline is what `start` runs: the seam's own pipeline command, which runs the stages in order and prints a
-// line per stage. Probe and timing are optional evidence files to ingest after analyze.
+// line per stage. Probe and timing are optional evidence files to ingest after analyze. Measure "auto" asks the
+// pipeline to measure with the chip's own BoltBeam collector when this machine can (Python decides).
 type Pipeline struct {
-	Model, RunDir, Target, Workload, ID, Probe, Timing string
+	Model, RunDir, Target, Workload, ID, Probe, Timing, Measure string
 }
 
 func (c Client) PipelineArgv(p Pipeline) []string {
 	argv := []string{c.Python, "-m", "boltbeam.workflow.screen", "pipeline", p.Model, "--run", p.RunDir, "--target", p.Target}
-	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing} {
+	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure} {
 		if value != "" {
 			argv = append(argv, flag, value)
 		}

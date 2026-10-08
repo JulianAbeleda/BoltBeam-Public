@@ -225,6 +225,67 @@
         "Use the same trace template, fixed-depth protocol, target, and model hash for every provider in a comparison.",
         "Command-buffer rows are diagnostic attribution and must not be summed across overlapping concurrent buffers."
       ]
+    },
+    {
+      "provider_id": "boltbeam",
+      "provider_support": [
+        "boltbeam"
+      ],
+      "collector_id": "metal-native",
+      "tool": "Metal.framework via ctypes + llama-bench",
+      "tool_version": "macOS Metal 3+",
+      "operation": "capture",
+      "selection_priority": 100,
+      "target_support": [
+        "apple_metal",
+        "apple_m3_10c",
+        "apple_m4_10c"
+      ],
+      "supported_scopes": [
+        "whole_step",
+        "candidate",
+        "probe"
+      ],
+      "requires_replay": false,
+      "requires_root_or_privilege": false,
+      "supports_dispatch_timing": true,
+      "supports_kernel_resources": false,
+      "supports_dynamic_counters": false,
+      "supports_memory_copy": false,
+      "supports_allocations": false,
+      "supports_source_correlation": false,
+      "supports_disassembly": false,
+      "supports_thread_trace": false,
+      "supported_metrics": [
+        "candidate_us",
+        "spread_pct",
+        "achieved_gbs",
+        "lds_bytes",
+        "tok_s",
+        "wall_us",
+        "correctness"
+      ],
+      "unsupported_metrics": [
+        "registers",
+        "scratch_bytes",
+        "occupancy_pct",
+        "memory_latency_ns",
+        "active_waves",
+        "in_flight_groups",
+        "instruction_histogram",
+        "vector_load_bits",
+        "per_kernel_timing_of_llama_cpp"
+      ],
+      "known_blind_spots": [
+        "Dispatch timing covers BoltBeam's own kernels only; llama.cpp's per-kernel time needs Instruments.",
+        "The command-buffer GPU interval includes a fixed start cost, reported as dispatch_floor_us and not subtracted.",
+        "Hardware counters, registers and the compiled ISA are not exposed by Metal without Instruments; those probe fields stay absent."
+      ],
+      "calibration_notes": [
+        "Every timed probe sample follows a 64 MiB flush, so weights come from DRAM.",
+        "Each probe output is checked against a pure-Python dequantize-and-dot reference before timing.",
+        "Whole-step tokens per second is llama-bench decode at the requested depth; nothing else stands in for it."
+      ]
     }
   ]
 }
