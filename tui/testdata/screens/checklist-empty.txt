@@ -1,24 +1,24 @@
 ⚡ BoltBeam                                                             (˘ω˘) zz
 ╭──────────────────────────────────────────────────────────────────────────────╮
+│ 1  Model                                                                     │
+│ Nothing read yet. The model is never executed; only its shape is read.       │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│ enter: pick or type the model file                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
 │ ▸ ○ 1  Model        pick a model file                                        │
 │   ✓ 2  Chip         amd_gfx1100 · memory 960.0 GB/s                          │
 │   ○ 3  Speed limit  needs step 1                                             │
 │   ○ 4  Measure      needs step 1                                             │
 │   ○ 5  Result       needs step 4                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────╮
-│ 1  Model                                                                     │
-│ Nothing read yet. The model is never executed; only its shape is read.       │
-│ enter: pick or type the model file                                           │
-╰──────────────────────────────────────────────────────────────────────────────╯
-
-
-
-
-
-
-
-
-
 
  ↑↓ step · enter open · q quit

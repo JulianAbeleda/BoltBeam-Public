@@ -1,10 +1,6 @@
 ⚡ BoltBeam                                                              (≧◡≦)⚡
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ 5  Result · qwen3-8b-apple_m3_10c-002                                        │
-│ 17.3 tokens per second · 90% of the limit                                    │
-│   Open the full report (report.html)                                         │
-│ ▸ Measure again                                                              │
-│                                                                              │
 │ ⚡ 17.3 tokens per second measured. The limit is 19.2.                       │
 │ ██████████████████░░ 90% of the limit                                        │
 │ Where the time goes: small kernel, dead time  elementwise_dilution           │
@@ -17,8 +13,12 @@
 │ ⏸  feed-forward out            Q6_K   not measured yet                       │
 │ ⏸  feed-forward in             Q4_K   not measured yet                       │
 │ ⏸  vocabulary output           Q6_K   not measured yet                       │
-│                                                                              │
-│    KERNEL                  µs     OF STEP      OF PEAK                       │
-│ ✓  gemv_q4k_ffn_gate_up    23900  ██░░░░  41%  ██████  95%                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ 17.3 tokens per second · 90% of the limit                                    │
+│   Open the full report (report.html)                                         │
+│ ▸ Measure again                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ move · enter pick · esc back · x stop · q quit

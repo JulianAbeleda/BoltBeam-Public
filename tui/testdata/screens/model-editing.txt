@@ -1,24 +1,24 @@
 ⚡ BoltBeam                                                             (˘ω˘) zz
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ 1  Model                                                                     │
+│ Nothing read yet. The model is never executed; only its shape is read.       │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
 │ pick a model file                                                            │
 │ ▸ /models/Q▏                                                                 │
-│                                                                              │
-│ Nothing read yet. The model is never executed; only its shape is read.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
 
  ↑↓ move · enter pick · esc back · x stop · q quit

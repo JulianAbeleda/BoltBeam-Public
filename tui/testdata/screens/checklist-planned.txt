@@ -1,12 +1,5 @@
 ⚡ BoltBeam                                                               (•-•)⏸
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│   ✓ 1  Model        Qwen3-8B.gguf · 36 layers · F32, Q4_K, Q6_K              │
-│   ✓ 2  Chip         apple_m3_10c · this Mac · memory 89.9 GB/s               │
-│   ✓ 3  Speed limit  up to 19.2 tokens per second                             │
-│ ▸ ⏸ 4  Measure      planned · needs building-block tests and a timing trace  │
-│   ○ 5  Result       nothing measured yet · enter opens report.html           │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────╮
 │ 4  Measure · qwen3-8b-apple_m3_10c-001                                       │
 │ Qwen3-8B on apple_m3_10c · needs measuring  needs_measurement                │
 │ ✓ 1. Read the model             4 files                                      │
@@ -19,6 +12,13 @@
 │ next Run an external timing trace from trace_request.json, ingest boltbeam.… │
 │ No process was started for this run from this machine.                       │
 │ enter: start, stop, earlier runs, the full log                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   ✓ 1  Model        Qwen3-8B.gguf · 36 layers · F32, Q4_K, Q6_K              │
+│   ✓ 2  Chip         apple_m3_10c · this Mac · memory 89.9 GB/s               │
+│   ✓ 3  Speed limit  up to 19.2 tokens per second                             │
+│ ▸ ⏸ 4  Measure      planned · needs building-block tests and a timing trace  │
+│   ○ 5  Result       nothing measured yet · enter opens report.html           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ step · enter open · q quit

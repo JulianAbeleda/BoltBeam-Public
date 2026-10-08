@@ -1,13 +1,11 @@
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ 3  Speed limit · apple_m3_10c                                                │
-│ up to 19.2 tokens per second                                                 │
-│                                                                              │
 │ ⚡ 19.2 tokens per second, at best.                                          │
 │ Each token reads 4.68 GB of weights.                                         │
 │ The memory moves 89.9 GB/s, so one token takes at least 52.0 ms.             │
 │ What limits it: reading weights  memory                                      │
 │ A prompt of 512 tokens: 2459 ms at best, 208 tokens per second.              │
-│ memory speed from measurement · compute from measurement · this is arithmet… │
+│ memory speed from measurement · compute from measurement · this is arithmeti │
 │                                                                              │
 │ One token, per role                                                          │
 │ ROLE                                 QUANT  SHARE           FLOOR ms         │
@@ -16,21 +14,8 @@
 │ attention query and output  attn_qo  Q4_K   █░░░░░░░░░ 15%  7.57             │
 │ vocabulary output  lm_head           Q6_K   █░░░░░░░░░ 11%  5.68             │
 │ feed-forward out  ffn_down           Q4_K   █░░░░░░░░░ 11%  5.68             │
-│ attention keys and values  attn_kv   Q4_K   ░░░░░░░░░░  3%  1.42             │
-│ attention keys and values  attn_kv   Q6_K   ░░░░░░░░░░  1%  0.69             │
-│                                                                              │
-│ A prompt of 512 tokens, per role                                             │
-│ ROLE                                 QUANT  SHARE           FLOOR ms         │
-│ feed-forward in  ffn_gate_up         Q4_K   █████░░░░░ 48%  1177.30          │
-│ attention query and output  attn_qo  Q4_K   ██░░░░░░░░ 16%  392.43           │
-│ feed-forward out  ffn_down           Q4_K   █░░░░░░░░░ 12%  294.33           │
-│ feed-forward out  ffn_down           Q6_K   █░░░░░░░░░ 12%  294.33           │
-│ vocabulary output  lm_head           Q6_K   █░░░░░░░░░  8%  202.18           │
-│ attention keys and values  attn_kv   Q4_K   ░░░░░░░░░░  3%  73.58            │
-│ attention keys and values  attn_kv   Q6_K   ░░░░░░░░░░  1%  24.53            │
-│                                                                              │
-│ Assumptions                                                                  │
-│ prefill GEMM y=x@W^T; weights streamed once per layer; fp16 activations    … │
-│ peak flops at the matrix-engine dtype; no cache reuse credit beyond a singl… │
-│ modeled ceiling — a measured A/B overrides it and calibrates the error     … │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ up to 19.2 tokens per second                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯

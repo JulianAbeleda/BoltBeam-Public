@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"flag"
+	"github.com/charmbracelet/bubbles/viewport"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,11 +124,11 @@ func TestScreensPlain(t *testing.T) {
 		"checklist-measured.txt":  measured.View(),
 		"open-result-80x24.txt":   opened.View(),
 		"model-editing.txt":       editing.View(),
-		"detail-model.txt":        DetailView(facts(measured), 0, 0, 80),
-		"detail-chip.txt":         DetailView(facts(measured), 1, 0, 80),
-		"detail-limit.txt":        DetailView(facts(measured), 2, 0, 80),
-		"detail-measure.txt":      DetailView(facts(measuring), 3, 0, 80),
-		"detail-result.txt":       DetailView(facts(measured), 4, 0, 80),
+		"detail-model.txt":        detail(facts(measured), 0),
+		"detail-chip.txt":         detail(facts(measured), 1),
+		"detail-limit.txt":        detail(facts(measured), 2),
+		"detail-measure.txt":      detail(facts(measuring), 3),
+		"detail-result.txt":       detail(facts(measured), 4),
 	} {
 		golden(t, name, got)
 	}
@@ -142,7 +143,7 @@ func TestScreensStyled(t *testing.T) {
 	measured := program(s, &s.measured, nil, nil, 80, 24)
 	golden(t, "styled/checklist-measured.ansi", measured.View())
 	golden(t, "styled/checklist-measuring.ansi", program(s, &s.planned, s.job, s.tail, 80, 24).View())
-	golden(t, "styled/detail-result.ansi", DetailView(facts(measured), 4, 0, 80))
+	golden(t, "styled/detail-result.ansi", detail(facts(measured), 4))
 }
 
 // Every frame fits 80x24: 24 lines, none wider than 80 cells.
@@ -234,4 +235,10 @@ func TestKeys(t *testing.T) {
 	if RunStem("/models/Qwen3-8B.gguf", "apple_m3_10c") != "qwen3-8b-apple_m3_10c" {
 		t.Fatalf("stem %q", RunStem("/models/Qwen3-8B.gguf", "apple_m3_10c"))
 	}
+}
+
+// detail renders the open view the way the 80x24 screen does: 21 rows under the header, note and footer.
+func detail(f Facts, i int) string {
+	v := viewport.New(0, 0)
+	return DetailView(f, i, 0, 80, 21, &v)
 }
