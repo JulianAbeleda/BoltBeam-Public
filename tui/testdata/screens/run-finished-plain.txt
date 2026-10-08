@@ -1,0 +1,23 @@
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Runs                                                                                             │
+│ RUN                        LAST STAGE          STATUS           MEASURED                         │
+│ qwen3-8b-apple_m3_10c-001  Package the result  needs measuring  ⏸ probe  ⏸ timing                │
+│ qwen3-8b-apple_m3_10c-002  Package the result  needs measuring  ✓ probe  ✓ timing  ◂             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ qwen3-8b-apple_m3_10c-002                                                                        │
+│ Qwen3-8B on apple_m3_10c (decode) · needs measuring                                              │
+│ ✓ 1. Read the model             4 artifacts                                                      │
+│ ✓ 2. Check the machine          4 artifacts                                                      │
+│ ✓ 3. Plan what to try           7 artifacts                                                      │
+│ ○ 4. Prepare the handoff        not run                                                          │
+│ ✓ 5. Test the building blocks   1 artifacts                                                      │
+│ ✓ 6. Time the real run          2 artifacts                                                      │
+│ ✓ 7. Package the result         5 artifacts                                                      │
+│ next Run or translate measurement_plan.json through a provider adapter, then ingest normalized … │
+│ press 4 for the results, o to open report.html                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Output                                                                                           │
+│ No process was started for this run from this machine.                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

@@ -1,0 +1,277 @@
+{
+  "artifacts": [
+    "run_manifest.json",
+    "model_profile.json",
+    "weight_inventory.json",
+    "workload_profile.json",
+    "hardware_profile.json",
+    "runtime_profile.json",
+    "provider_capabilities.json",
+    "scan_evidence.json",
+    "search_space.json",
+    "route_policy.json",
+    "fixture_manifest.json",
+    "measurement_plan.json",
+    "analysis_report.json",
+    "probe_request.json",
+    "trace_request.json",
+    "output_manifest.json",
+    "summary.md",
+    "rollback.md",
+    "provider_plan.json",
+    "report.html"
+  ],
+  "blocked": [
+    {
+      "need": "probe_evidence",
+      "request": "probe_request.json"
+    },
+    {
+      "need": "timing_trace",
+      "request": "trace_request.json"
+    }
+  ],
+  "id": "qwen3-8b-apple_m3_10c-001",
+  "kind": "run",
+  "latest_stage": "output",
+  "measured": {
+    "probe": false,
+    "timing": false
+  },
+  "model": {
+    "architecture": "qwen3",
+    "architecture_class": "dense_decoder",
+    "ffn_size": 12288,
+    "hidden_size": 4096,
+    "layer_count": 36,
+    "quant_types": [
+      "F32",
+      "Q4_K",
+      "Q6_K"
+    ],
+    "role_count": 7,
+    "vocab_size": 151936
+  },
+  "model_format": "gguf",
+  "model_id": "Qwen3-8B",
+  "model_path": "/models/Qwen3-8B.gguf",
+  "next_step": "Run an external timing trace from trace_request.json, ingest boltbeam.timing_trace.v1, then re-run boltbeam analyze.",
+  "report": "report.html",
+  "results": {
+    "blocked": [
+      {
+        "need": "probe_evidence",
+        "request": "probe_request.json"
+      },
+      {
+        "need": "timing_trace",
+        "request": "trace_request.json"
+      }
+    ],
+    "ceiling": {
+      "context": 1,
+      "floor_ms": 52.01670264738599,
+      "peak_bandwidth_gbs": 89.9,
+      "status": "modeled",
+      "tok_s": 19.224594199652778
+    },
+    "id": "qwen3-8b-apple_m3_10c-001",
+    "kind": "results",
+    "measured": false,
+    "model_id": "Qwen3-8B",
+    "regimes": [],
+    "report": "report.html",
+    "routes": [
+      {
+        "candidates": [
+          "lanemap_gemv"
+        ],
+        "evidence_refs": [],
+        "quant": "Q4_K",
+        "role": "attn_kv",
+        "selected_route": null,
+        "shape": [
+          1024,
+          4096
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "q6k_route"
+        ],
+        "evidence_refs": [],
+        "quant": "Q6_K",
+        "role": "attn_kv",
+        "selected_route": null,
+        "shape": [
+          1024,
+          4096
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "lanemap_gemv"
+        ],
+        "evidence_refs": [],
+        "quant": "Q4_K",
+        "role": "attn_qo",
+        "selected_route": null,
+        "shape": [
+          4096,
+          4096
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "lanemap_gemv"
+        ],
+        "evidence_refs": [],
+        "quant": "Q4_K",
+        "role": "ffn_down",
+        "selected_route": null,
+        "shape": [
+          4096,
+          12288
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "q6k_route"
+        ],
+        "evidence_refs": [],
+        "quant": "Q6_K",
+        "role": "ffn_down",
+        "selected_route": null,
+        "shape": [
+          4096,
+          12288
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "lanemap_gemv"
+        ],
+        "evidence_refs": [],
+        "quant": "Q4_K",
+        "role": "ffn_gate_up",
+        "selected_route": null,
+        "shape": [
+          12288,
+          4096
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "q6k_route"
+        ],
+        "evidence_refs": [],
+        "quant": "Q6_K",
+        "role": "lm_head",
+        "selected_route": null,
+        "shape": [
+          151936,
+          4096
+        ],
+        "status": "unmeasured"
+      }
+    ],
+    "schema": "boltbeam.tui.v1",
+    "target_id": "apple_m3_10c",
+    "timing": {
+      "context": null,
+      "dominant_bucket": null,
+      "kernels": [],
+      "next_actions": [],
+      "roles": [],
+      "status": "absent",
+      "tok_s": null,
+      "total_us": null
+    },
+    "workload": "decode"
+  },
+  "schema": "boltbeam.tui.v1",
+  "stages": [
+    {
+      "artifacts": [
+        "run_manifest.json",
+        "model_profile.json",
+        "weight_inventory.json",
+        "workload_profile.json"
+      ],
+      "done": true,
+      "key": "load",
+      "label": "load",
+      "note": "model / weight / workload facts"
+    },
+    {
+      "artifacts": [
+        "hardware_profile.json",
+        "runtime_profile.json",
+        "provider_capabilities.json",
+        "scan_evidence.json"
+      ],
+      "done": true,
+      "key": "autoscan",
+      "label": "autoscan",
+      "note": "machine + provider capabilities"
+    },
+    {
+      "artifacts": [
+        "search_space.json",
+        "route_policy.json",
+        "fixture_manifest.json",
+        "measurement_plan.json",
+        "analysis_report.json",
+        "probe_request.json",
+        "trace_request.json"
+      ],
+      "done": true,
+      "key": "analyze",
+      "label": "analyze",
+      "note": "search space + measurement plan"
+    },
+    {
+      "artifacts": [],
+      "done": false,
+      "key": "runner_plan",
+      "label": "runner-plan",
+      "note": "audit-tracer handoff bundle"
+    },
+    {
+      "artifacts": [],
+      "done": false,
+      "key": "ingest_probe",
+      "label": "probe",
+      "note": "primitive evidence classified"
+    },
+    {
+      "artifacts": [],
+      "done": false,
+      "key": "ingest_timing",
+      "label": "timing",
+      "note": "timing trace classified"
+    },
+    {
+      "artifacts": [
+        "output_manifest.json",
+        "summary.md",
+        "rollback.md",
+        "provider_plan.json",
+        "report.html"
+      ],
+      "done": true,
+      "key": "output",
+      "label": "output",
+      "note": "policy / report / provider plan"
+    }
+  ],
+  "status": "needs_measurement",
+  "target_id": "apple_m3_10c",
+  "workload": "decode"
+}

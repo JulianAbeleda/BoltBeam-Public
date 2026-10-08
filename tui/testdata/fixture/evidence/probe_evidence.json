@@ -1,0 +1,96 @@
+{
+  "model_id": "Qwen3-8B",
+  "notes": [
+    "synthetic fixture for the TUI contract; plausible for an M3, not a measurement"
+  ],
+  "probes": [
+    {
+      "bytes": {
+        "activation_bytes": 80.0,
+        "metadata_bytes": 20.0,
+        "physical_weight_bytes": 900.0
+      },
+      "isa": {
+        "instruction_histogram": {
+          "fma": 1000,
+          "global_load": 1000
+        },
+        "vector_load_bits": 128
+      },
+      "kind": "quant_gemv",
+      "latency_concurrency": {
+        "active_waves": 128.0,
+        "in_flight_groups": 64.0,
+        "memory_latency_ns": 300.0,
+        "occupancy_pct": 80.0
+      },
+      "probe_id": "quant_gemv:ffn_gate_up:Q4_K:12288x4096:n72:e0",
+      "quant": "Q4_K",
+      "resources": {
+        "lds_bytes": 0,
+        "registers": 64,
+        "scratch_bytes": 0
+      },
+      "role": "ffn_gate_up",
+      "shape": [
+        12288,
+        4096
+      ],
+      "throughput": {
+        "achieved_gbs": 85.4,
+        "compute_util_pct": 20.0,
+        "target_gbs": 89.9
+      },
+      "timing": {
+        "candidate_us": 100.0,
+        "spread_pct": 1.5
+      }
+    },
+    {
+      "bytes": {
+        "activation_bytes": 80.0,
+        "metadata_bytes": 20.0,
+        "physical_weight_bytes": 900.0
+      },
+      "isa": {
+        "instruction_histogram": {
+          "fma": 1000,
+          "global_load": 1000
+        },
+        "vector_load_bits": 128
+      },
+      "kind": "quant_gemv",
+      "latency_concurrency": {
+        "active_waves": 128.0,
+        "in_flight_groups": 12.0,
+        "memory_latency_ns": 300.0,
+        "occupancy_pct": 35.0
+      },
+      "probe_id": "quant_gemv:attn_kv:Q4_K:1024x4096:n54:e0",
+      "quant": "Q4_K",
+      "resources": {
+        "lds_bytes": 0,
+        "registers": 64,
+        "scratch_bytes": 0
+      },
+      "role": "attn_kv",
+      "shape": [
+        1024,
+        4096
+      ],
+      "throughput": {
+        "achieved_gbs": 60.0,
+        "compute_util_pct": 20.0,
+        "target_gbs": 89.9
+      },
+      "timing": {
+        "candidate_us": 100.0,
+        "spread_pct": 1.5
+      }
+    }
+  ],
+  "provider_id": "fixture",
+  "schema": "boltbeam.probe_evidence.v1",
+  "target_id": "apple_m3_10c",
+  "workload": "decode"
+}

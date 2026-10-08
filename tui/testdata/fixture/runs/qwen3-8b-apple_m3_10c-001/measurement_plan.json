@@ -1,0 +1,402 @@
+{
+  "contexts": [
+    128,
+    512
+  ],
+  "model_id": "Qwen3-8B",
+  "notes": [
+    "This plan is provider-neutral. Provider adapters may translate phases into concrete commands.",
+    "Output may remain a measurement request until enough normalized evidence exists to promote a route."
+  ],
+  "phase_order": [
+    {
+      "id": "M0_validate_profile",
+      "purpose": "Confirm role, shape, quant, and architecture facts before route measurement.",
+      "required_evidence": [
+        "profile_validation"
+      ]
+    },
+    {
+      "id": "M1_probe_primitives",
+      "purpose": "Measure provider/hardware primitives only where model facts expose route headroom.",
+      "request_artifact": "probe_request.json",
+      "required_evidence": [
+        "probe_evidence",
+        "runtime_overhead"
+      ]
+    },
+    {
+      "id": "M2_trace_timing",
+      "purpose": "Trace whole-step, per-role, per-kernel, and candidate timing before exploiting route families.",
+      "request_artifact": "trace_request.json",
+      "required_evidence": [
+        "timing_trace"
+      ]
+    },
+    {
+      "id": "M3_measure_candidates",
+      "purpose": "Measure prioritized route families against correctness, route binding, speed, memory, and rollback gates.",
+      "required_evidence": [
+        "wd_speed"
+      ]
+    },
+    {
+      "id": "M4_decide",
+      "purpose": "Promote, refute, defer, or request more evidence through the provider-neutral evaluator.",
+      "required_evidence": [
+        "candidate_decision"
+      ]
+    }
+  ],
+  "primitive_profile": {
+    "artifact": null,
+    "probe_request": "probe_request.json",
+    "quant_gemv_regime_count": 0,
+    "status": "requested"
+  },
+  "priority_roles": [
+    {
+      "count": 54,
+      "probe_id": null,
+      "quant": "Q4_K",
+      "quant_gemv_regime": null,
+      "role": "attn_kv",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        1024,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_k.weight",
+      "timing_classification": null,
+      "timing_context": null,
+      "timing_pct_step": null,
+      "timing_wall_us": null,
+      "visible_bottleneck": null
+    },
+    {
+      "count": 18,
+      "probe_id": null,
+      "quant": "Q6_K",
+      "quant_gemv_regime": null,
+      "role": "attn_kv",
+      "route_families": [
+        "q6k_route"
+      ],
+      "shape": [
+        1024,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_v.weight",
+      "timing_classification": null,
+      "timing_context": null,
+      "timing_pct_step": null,
+      "timing_wall_us": null,
+      "visible_bottleneck": null
+    },
+    {
+      "count": 72,
+      "probe_id": null,
+      "quant": "Q4_K",
+      "quant_gemv_regime": null,
+      "role": "attn_qo",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        4096,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_output.weight",
+      "timing_classification": null,
+      "timing_context": null,
+      "timing_pct_step": null,
+      "timing_wall_us": null,
+      "visible_bottleneck": null
+    },
+    {
+      "count": 18,
+      "probe_id": null,
+      "quant": "Q6_K",
+      "quant_gemv_regime": null,
+      "role": "ffn_down",
+      "route_families": [
+        "q6k_route"
+      ],
+      "shape": [
+        4096,
+        12288
+      ],
+      "tensor_name": "blk.0.ffn_down.weight",
+      "timing_classification": null,
+      "timing_context": null,
+      "timing_pct_step": null,
+      "timing_wall_us": null,
+      "visible_bottleneck": null
+    },
+    {
+      "count": 18,
+      "probe_id": null,
+      "quant": "Q4_K",
+      "quant_gemv_regime": null,
+      "role": "ffn_down",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        4096,
+        12288
+      ],
+      "tensor_name": "blk.4.ffn_down.weight",
+      "timing_classification": null,
+      "timing_context": null,
+      "timing_pct_step": null,
+      "timing_wall_us": null,
+      "visible_bottleneck": null
+    },
+    {
+      "count": 72,
+      "probe_id": null,
+      "quant": "Q4_K",
+      "quant_gemv_regime": null,
+      "role": "ffn_gate_up",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        12288,
+        4096
+      ],
+      "tensor_name": "blk.0.ffn_gate.weight",
+      "timing_classification": null,
+      "timing_context": null,
+      "timing_pct_step": null,
+      "timing_wall_us": null,
+      "visible_bottleneck": null
+    },
+    {
+      "count": 1,
+      "probe_id": null,
+      "quant": "Q6_K",
+      "quant_gemv_regime": null,
+      "role": "lm_head",
+      "route_families": [
+        "q6k_route"
+      ],
+      "shape": [
+        151936,
+        4096
+      ],
+      "tensor_name": "output.weight",
+      "timing_classification": null,
+      "timing_context": null,
+      "timing_pct_step": null,
+      "timing_wall_us": null,
+      "visible_bottleneck": null
+    }
+  ],
+  "provider_summary": {
+    "providers": [
+      {
+        "capabilities": {
+          "adapter": "not_configured",
+          "can_autoscan": false,
+          "can_measure": false
+        },
+        "provider_id": "triton",
+        "status": "missing"
+      },
+      {
+        "capabilities": {
+          "adapter": "not_configured",
+          "can_autoscan": false,
+          "can_measure": false
+        },
+        "provider_id": "cutlass",
+        "status": "missing"
+      },
+      {
+        "capabilities": {
+          "adapter": "not_configured",
+          "can_autoscan": false,
+          "can_measure": false
+        },
+        "provider_id": "ck",
+        "status": "missing"
+      },
+      {
+        "capabilities": {
+          "adapter": "not_configured",
+          "can_autoscan": false,
+          "can_measure": false
+        },
+        "provider_id": "tinygrad",
+        "status": "missing"
+      },
+      {
+        "capabilities": {
+          "adapter": "not_configured",
+          "can_autoscan": false,
+          "can_measure": false
+        },
+        "provider_id": "iree",
+        "status": "missing"
+      },
+      {
+        "capabilities": {
+          "adapter": "normalized_evidence_json",
+          "can_autoscan": false,
+          "can_measure": true
+        },
+        "provider_id": "external",
+        "status": "available"
+      }
+    ],
+    "status": "scanned"
+  },
+  "route_focus": {
+    "by_route_family": {
+      "lanemap_gemv": [
+        {
+          "quant": "Q4_K",
+          "role": "attn_kv",
+          "shape": [
+            1024,
+            4096
+          ],
+          "status": "candidate"
+        },
+        {
+          "quant": "Q4_K",
+          "role": "attn_qo",
+          "shape": [
+            4096,
+            4096
+          ],
+          "status": "candidate"
+        },
+        {
+          "quant": "Q4_K",
+          "role": "ffn_down",
+          "shape": [
+            4096,
+            12288
+          ],
+          "status": "candidate"
+        },
+        {
+          "quant": "Q4_K",
+          "role": "ffn_gate_up",
+          "shape": [
+            12288,
+            4096
+          ],
+          "status": "candidate"
+        }
+      ],
+      "q6k_route": [
+        {
+          "quant": "Q6_K",
+          "role": "attn_kv",
+          "shape": [
+            1024,
+            4096
+          ],
+          "status": "candidate"
+        },
+        {
+          "quant": "Q6_K",
+          "role": "ffn_down",
+          "shape": [
+            4096,
+            12288
+          ],
+          "status": "candidate"
+        },
+        {
+          "quant": "Q6_K",
+          "role": "lm_head",
+          "shape": [
+            151936,
+            4096
+          ],
+          "status": "candidate"
+        }
+      ]
+    }
+  },
+  "schema": "boltbeam.measurement_plan.v1",
+  "target": {
+    "backend": "Metal",
+    "backend_status": "descriptor_only",
+    "capabilities": {
+      "fact_sources": {
+        "memory_bandwidth_gbs": {
+          "kind": "measurement",
+          "method": "tinygrad DEV=METAL, 2 GiB clone, read and write counted as traffic, best of five",
+          "observed_at": "2026-09-21",
+          "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
+          "value_gbs": 89.9,
+          "vendor_spec_gbs": 100.0,
+          "vendor_url": "https://support.apple.com/en-us/118551"
+        },
+        "peak_tflops": {
+          "dtype": "fp16",
+          "kind": "measurement",
+          "method": "tinygrad-arkey extra/llm_research/wmma_peak_metal.py, simdgroup_multiply_accumulate plateau, fp16 in and fp32 accumulate",
+          "note": "matrix unit; Apple publishes no FLOPS figure for M-series",
+          "observed_at": "2026-09-22",
+          "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
+          "value_tflops": 3.152
+        }
+      },
+      "fact_status": {
+        "compute_units": "unknown",
+        "gpu_cores": "hardware_scan",
+        "lds_bytes_per_cu": "unknown",
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "measurement",
+        "subgroup_size": "hardware_family",
+        "vram_bytes": "not_applicable_unified_memory",
+        "wave_size": "hardware_family"
+      },
+      "kv_quant_quality_gate_required": true,
+      "kv_quant_speed_residual_required": true,
+      "match": {
+        "apple_soc": "M3",
+        "gpu_cores": 10
+      },
+      "mixed_quant_kv_flash_fastpath": false,
+      "same_type_quant_kv_flash_fastpath": false,
+      "target_kind": "exact",
+      "tinygrad_device": "METAL"
+    },
+    "compute_units": null,
+    "dequant_primitives": [],
+    "dot_primitives": [
+      "simdgroup_matrix"
+    ],
+    "dot_primitives_lowered": [],
+    "lds_bytes_per_cu": null,
+    "matrix_tflops": {},
+    "memory_bandwidth_gbs": 89.9,
+    "peak_tflops": {
+      "fp16": 3.152
+    },
+    "subgroup_size": 32,
+    "target_id": "apple_m3_10c",
+    "vector_load_bits": 128,
+    "vram_bytes": null,
+    "wave_size": 32
+  },
+  "timing_profile": {
+    "artifact": null,
+    "context_count": 0,
+    "dominant_timing_bucket": null,
+    "role_timing_count": 0,
+    "status": "requested",
+    "trace_request": "trace_request.json"
+  },
+  "workload": "decode"
+}

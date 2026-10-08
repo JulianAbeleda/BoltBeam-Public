@@ -211,6 +211,13 @@ BubbleBeam works out which values are legal from the chip's declared facts. Futu
 rejects what cannot fit or cannot fill the chip and orders the rest. Only what survives costs
 GPU time. The first two run on the main processor and need no hardware.
 
+## On a screen, or as JSON for an agent
+
+`tui/` holds `boltbeam-tui`, a Go program over the same commands: the model's roles, the speed limit for a
+chip, the run stages with live status, and the results with measured speed against the limit. `boltbeam-tui
+--json <command>` prints the same facts as one JSON object for an agent. Both read through one seam,
+`python3 -m boltbeam.workflow.screen`, which is the only Python this adds. See [`tui/README.md`](../tui/README.md).
+
 ## What needs what
 
 | You have | You can run |

@@ -1,0 +1,141 @@
+{
+  "measurement_plan": {
+    "artifact": "measurement_plan.json",
+    "phase_order": [
+      {
+        "id": "M0_validate_profile",
+        "purpose": "Confirm role, shape, quant, and architecture facts before route measurement.",
+        "required_evidence": [
+          "profile_validation"
+        ]
+      },
+      {
+        "id": "M1_probe_primitives",
+        "purpose": "Measure provider/hardware primitives only where model facts expose route headroom.",
+        "request_artifact": "probe_request.json",
+        "required_evidence": [
+          "probe_evidence",
+          "runtime_overhead"
+        ]
+      },
+      {
+        "id": "M2_trace_timing",
+        "purpose": "Trace whole-step, per-role, per-kernel, and candidate timing before exploiting route families.",
+        "request_artifact": "trace_request.json",
+        "required_evidence": [
+          "timing_trace"
+        ]
+      },
+      {
+        "id": "M3_measure_candidates",
+        "purpose": "Measure prioritized route families against correctness, route binding, speed, memory, and rollback gates.",
+        "required_evidence": [
+          "wd_speed"
+        ]
+      },
+      {
+        "id": "M4_decide",
+        "purpose": "Promote, refute, defer, or request more evidence through the provider-neutral evaluator.",
+        "required_evidence": [
+          "candidate_decision"
+        ]
+      }
+    ],
+    "provider_neutral": true
+  },
+  "model_id": "Qwen3-8B",
+  "primitive_profile": {
+    "artifact": "primitive_profile.json",
+    "quant_gemv_regime_count": 2
+  },
+  "providers": [
+    {
+      "capabilities": {
+        "adapter": "not_configured",
+        "can_autoscan": false,
+        "can_measure": false
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "triton",
+      "python_module_available": false,
+      "status": "missing"
+    },
+    {
+      "capabilities": {
+        "adapter": "not_configured",
+        "can_autoscan": false,
+        "can_measure": false
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "cutlass",
+      "python_module_available": false,
+      "status": "missing"
+    },
+    {
+      "capabilities": {
+        "adapter": "not_configured",
+        "can_autoscan": false,
+        "can_measure": false
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "ck",
+      "python_module_available": false,
+      "status": "missing"
+    },
+    {
+      "capabilities": {
+        "adapter": "not_configured",
+        "can_autoscan": false,
+        "can_measure": false
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "tinygrad",
+      "python_module_available": false,
+      "status": "missing"
+    },
+    {
+      "capabilities": {
+        "adapter": "not_configured",
+        "can_autoscan": false,
+        "can_measure": false
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "iree",
+      "python_module_available": false,
+      "status": "missing"
+    },
+    {
+      "capabilities": {
+        "adapter": "normalized_evidence_json",
+        "can_autoscan": false,
+        "can_measure": true
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "external",
+      "python_module_available": false,
+      "status": "available"
+    }
+  ],
+  "runner_plan": {
+    "artifact": null,
+    "bundle": {},
+    "missing_outputs": [],
+    "purpose": null,
+    "runtime_boundary": {},
+    "status": null
+  },
+  "schema": "boltbeam.provider_plan.v1",
+  "target_id": "apple_m3_10c",
+  "timing_profile": {
+    "artifact": "timing_profile.json",
+    "candidate_timing_count": 1,
+    "dominant_timing_bucket": "elementwise_dilution",
+    "role_timing_count": 7
+  }
+}

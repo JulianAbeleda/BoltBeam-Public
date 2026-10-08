@@ -1,0 +1,119 @@
+{
+  "architecture": "qwen3",
+  "architecture_class": "dense_decoder",
+  "complete": true,
+  "ffn_size": 12288,
+  "hidden_size": 4096,
+  "layer_count": 36,
+  "metadata": {
+    "architecture_signals": {
+      "arch": "qwen3",
+      "expert_count": null,
+      "expert_used_count": null,
+      "has_3d_tensors": false,
+      "has_attention": true,
+      "has_decoder_tensors": false,
+      "has_dense_ffn": true,
+      "has_encoder_tensors": false,
+      "has_expert_stacks": false,
+      "has_router": false,
+      "has_ssm": false
+    },
+    "attention": {
+      "head_count": 32,
+      "head_count_kv": 8,
+      "head_dim": 128
+    },
+    "format_family": "gguf",
+    "gguf_architecture": "qwen3",
+    "quant_types": [
+      "F32",
+      "Q4_K",
+      "Q6_K"
+    ],
+    "tensor_count": 399
+  },
+  "model_id": "Qwen3-8B",
+  "roles": [
+    {
+      "cols": 4096,
+      "count": 54,
+      "ggml_type": 12,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "role": "attn_kv",
+      "role_class": "attention_k",
+      "rows": 1024,
+      "tensor_name": "blk.0.attn_k.weight"
+    },
+    {
+      "cols": 4096,
+      "count": 18,
+      "ggml_type": 14,
+      "n_expert": 0,
+      "quant": "Q6_K",
+      "role": "attn_kv",
+      "role_class": "attention_v",
+      "rows": 1024,
+      "tensor_name": "blk.0.attn_v.weight"
+    },
+    {
+      "cols": 4096,
+      "count": 72,
+      "ggml_type": 12,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "role": "attn_qo",
+      "role_class": "attention_o",
+      "rows": 4096,
+      "tensor_name": "blk.0.attn_output.weight"
+    },
+    {
+      "cols": 12288,
+      "count": 18,
+      "ggml_type": 12,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "role": "ffn_down",
+      "role_class": "ffn_down",
+      "rows": 4096,
+      "tensor_name": "blk.4.ffn_down.weight"
+    },
+    {
+      "cols": 12288,
+      "count": 18,
+      "ggml_type": 14,
+      "n_expert": 0,
+      "quant": "Q6_K",
+      "role": "ffn_down",
+      "role_class": "ffn_down",
+      "rows": 4096,
+      "tensor_name": "blk.0.ffn_down.weight"
+    },
+    {
+      "cols": 4096,
+      "count": 72,
+      "ggml_type": 12,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "role_class": "ffn_gate",
+      "rows": 12288,
+      "tensor_name": "blk.0.ffn_gate.weight"
+    },
+    {
+      "cols": 4096,
+      "count": 1,
+      "ggml_type": 14,
+      "n_expert": 0,
+      "quant": "Q6_K",
+      "role": "lm_head",
+      "role_class": "lm_head",
+      "rows": 151936,
+      "tensor_name": "output.weight"
+    }
+  ],
+  "schema": "boltbeam.model_profile.v1",
+  "source": "/models/Qwen3-8B.gguf",
+  "vocab_size": 151936
+}

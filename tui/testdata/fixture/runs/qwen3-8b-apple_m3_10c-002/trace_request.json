@@ -1,0 +1,175 @@
+{
+  "collector_requirements": {
+    "optional_levels": [
+      "command_buffer",
+      "dispatch",
+      "kernel_resources",
+      "dynamic_counters"
+    ],
+    "required_levels": [
+      "whole_step"
+    ],
+    "scope_rule": "missing optional levels remain unavailable; they are never inferred from another level"
+  },
+  "contexts": [
+    128,
+    512
+  ],
+  "execution": {
+    "context_mode": "fixed_decode_depth",
+    "contexts": [
+      128,
+      512
+    ],
+    "samples": 1,
+    "warmups": 1
+  },
+  "model_id": "Qwen3-8B",
+  "notes": [
+    "External runners should return boltbeam.timing_trace.v1.",
+    "Use physical packed bytes for roofline fields; logical/dequantized bytes are not comparable to HBM peak.",
+    "Timing rows may be whole_step, kernel, role, or candidate scope."
+  ],
+  "priority_roles": [
+    {
+      "count": 54,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "role": "attn_kv",
+      "role_class": "attention_k",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        1024,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_k.weight"
+    },
+    {
+      "count": 18,
+      "n_expert": 0,
+      "quant": "Q6_K",
+      "role": "attn_kv",
+      "role_class": "attention_v",
+      "route_families": [
+        "q6k_route"
+      ],
+      "shape": [
+        1024,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_v.weight"
+    },
+    {
+      "count": 72,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "role": "attn_qo",
+      "role_class": "attention_o",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        4096,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_output.weight"
+    },
+    {
+      "count": 18,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "role": "ffn_down",
+      "role_class": "ffn_down",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        4096,
+        12288
+      ],
+      "tensor_name": "blk.4.ffn_down.weight"
+    },
+    {
+      "count": 18,
+      "n_expert": 0,
+      "quant": "Q6_K",
+      "role": "ffn_down",
+      "role_class": "ffn_down",
+      "route_families": [
+        "q6k_route"
+      ],
+      "shape": [
+        4096,
+        12288
+      ],
+      "tensor_name": "blk.0.ffn_down.weight"
+    },
+    {
+      "count": 72,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "role_class": "ffn_gate",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        12288,
+        4096
+      ],
+      "tensor_name": "blk.0.ffn_gate.weight"
+    },
+    {
+      "count": 1,
+      "n_expert": 0,
+      "quant": "Q6_K",
+      "role": "lm_head",
+      "role_class": "lm_head",
+      "route_families": [
+        "q6k_route"
+      ],
+      "shape": [
+        151936,
+        4096
+      ],
+      "tensor_name": "output.weight"
+    }
+  ],
+  "provider_neutral": true,
+  "requested_metrics": {
+    "candidate": [
+      "candidate_id",
+      "candidate_us",
+      "baseline_us",
+      "spread_pct",
+      "token_match",
+      "route_bound"
+    ],
+    "kernel": [
+      "kernel",
+      "kind",
+      "wall_us",
+      "phys_bytes",
+      "gbs"
+    ],
+    "role": [
+      "role",
+      "quant",
+      "shape",
+      "wall_us",
+      "phys_bytes"
+    ],
+    "whole_step": [
+      "wall_us",
+      "tok_s",
+      "total_bytes",
+      "launch_count",
+      "host_sync_pct"
+    ]
+  },
+  "schema": "boltbeam.trace_request.v1",
+  "target_id": "apple_m3_10c",
+  "workload": "decode"
+}

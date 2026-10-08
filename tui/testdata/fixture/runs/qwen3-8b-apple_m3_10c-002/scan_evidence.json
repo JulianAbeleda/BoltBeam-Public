@@ -1,0 +1,33 @@
+{
+  "kind": "cheap_autoscan",
+  "measurement_status": "no_benchmarks_run",
+  "observations": [
+    {
+      "key": "cpu.logical_count",
+      "value": 8
+    },
+    {
+      "key": "system.memory_bytes",
+      "value": null
+    },
+    {
+      "key": "gpu.status",
+      "value": "detected"
+    },
+    {
+      "key": "gpu.target_id",
+      "value": "apple_m3_10c"
+    },
+    {
+      "key": "gpu.selected_target_id",
+      "value": "apple_m3_10c"
+    },
+    {
+      "key": "provider.available",
+      "value": [
+        "external"
+      ]
+    }
+  ],
+  "schema": "boltbeam.scan_evidence.v1"
+}

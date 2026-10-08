@@ -1,0 +1,29 @@
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Runs                                                                                             │
+│ RUN                        LAST STAGE          STATUS           MEASURED                         │
+│ qwen3-8b-apple_m3_10c-001  Package the result  needs measuring  ⏸ probe  ⏸ timing  ◂             │
+│ qwen3-8b-apple_m3_10c-002  Package the result  needs measuring  ✓ probe  ✓ timing                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ qwen3-8b-apple_m3_10c-001                                                                        │
+│ Qwen3-8B on apple_m3_10c (decode) · needs measuring                                              │
+│ ✓ 1. Read the model             4 artifacts                                                      │
+│ ✓ 2. Check the machine          4 artifacts                                                      │
+│ ● 3. Plan what to try           running ⠋                                                        │
+│ ○ 4. Prepare the handoff        not run                                                          │
+│ ⏸ 5. Test the building blocks   waiting for the building-block tests (probe_request.json)        │
+│ ⏸ 6. Time the real run          waiting for a timing trace (trace_request.json)                  │
+│ ✓ 7. Package the result         5 artifacts                                                      │
+│ next Run an external timing trace from trace_request.json, ingest boltbeam.timing_trace.v1, the… │
+│ press 4 for the results, o to open report.html                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Output                                                                                           │
+│ ● running ⠋   pid 4242 · started 2026-10-08T10:00:00Z                                            │
+│ === 2026-10-08T10:00:00Z start python3 -m boltbeam.workflow.screen pipeline                      │
+│ stage load: start                                                                                │
+│ stage load: done                                                                                 │
+│ stage autoscan: start                                                                            │
+│ stage autoscan: done                                                                             │
+│ stage analyze: start                                                                             │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

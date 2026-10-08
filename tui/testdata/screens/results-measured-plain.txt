@@ -1,0 +1,39 @@
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Results: qwen3-8b-apple_m3_10c-002                                                                                   │
+│ ⚡ 17.3 tokens per second measured. The limit is 19.2.                                                               │
+│ ██████████████████░░ 90% of the limit                                                                                │
+│ ⚠ where the time goes: small kernel, dead time                                                                       │
+│ press o to open report.html                                                                                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ What won per role                                                                                                    │
+│    ROLE                        QUANT  STATUS            ROUTE                                                        │
+│ ⏸  attention keys and values   Q4_K   not measured yet  none yet                                                     │
+│ ⏸  attention keys and values   Q6_K   not measured yet  none yet                                                     │
+│ ⏸  attention query and output  Q4_K   not measured yet  none yet                                                     │
+│ ⏸  feed-forward out            Q4_K   not measured yet  none yet                                                     │
+│ ⏸  feed-forward out            Q6_K   not measured yet  none yet                                                     │
+│ ⏸  feed-forward in             Q4_K   not measured yet  none yet                                                     │
+│ ⏸  vocabulary output           Q6_K   not measured yet  none yet                                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Timing against the speed limit                                                                                       │
+│    KERNEL                  µs     OF STEP        OF PEAK        VERDICT                                              │
+│ ✓  gemv_q4k_ffn_gate_up    23900  ███░░░░░  41%  ████████  95%  at the speed limit                                   │
+│ ✓  gemv_q6k_ffn_down       8700   █░░░░░░░  15%  ████████  95%  at the speed limit                                   │
+│ ✓  gemv_q4k_attn_output    8000   █░░░░░░░  14%  ████████  94%  at the speed limit                                   │
+│ ✓  gemv_q6k_lm_head        6400   █░░░░░░░  11%  ███████░  89%  at the speed limit                                   │
+│ ✓  gemv_q4k_ffn_down       6000   █░░░░░░░  10%  ████████  94%  at the speed limit                                   │
+│ ⚠  gemv_q4k_attn_kv        1900   ░░░░░░░░   3%  ██████░░  75%  reads memory slower than it could                    │
+│ ⚠  gemv_q6k_attn_v         1000   ░░░░░░░░   2%  ██████░░  69%  reads memory slower than it could                    │
+│ ⚠  flash_attention_decode  900    ░░░░░░░░   2%  ██░░░░░░  23%  waiting on memory                                    │
+│ ○  rms_norm                500    ░░░░░░░░   1%  ░░░░░░░░   0%  small kernel, dead time                              │
+│ ○  rope                    300    ░░░░░░░░   0%  ░░░░░░░░   0%  small kernel, dead time                              │
+│ ○  silu_mul                300    ░░░░░░░░   0%  ░░░░░░░░   0%  small kernel, dead time                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Building blocks                                                                                                      │
+│ ROLE                       QUANT  WHAT THE TEST SAW           BOTTLENECK              NEXT                         … │
+│ feed-forward in            Q4_K   reads memory at full speed  weight_load             preserve wide coalesced packe… │
+│ attention keys and values  Q4_K   not enough work in flight   insufficient_residency  increase independent tiles/sp… │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

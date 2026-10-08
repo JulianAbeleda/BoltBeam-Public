@@ -1,0 +1,84 @@
+{
+  "artifacts": [
+    "run_manifest.json",
+    "model_profile.json",
+    "weight_inventory.json",
+    "workload_profile.json",
+    "hardware_profile.json",
+    "runtime_profile.json",
+    "provider_capabilities.json",
+    "scan_evidence.json",
+    "search_space.json",
+    "route_policy.json",
+    "fixture_manifest.json",
+    "measurement_plan.json",
+    "analysis_report.json",
+    "probe_request.json",
+    "trace_request.json",
+    "primitive_profile.json",
+    "timing_trace.json",
+    "timing_profile.json",
+    "output_manifest.json",
+    "summary.md",
+    "rollback.md",
+    "provider_plan.json",
+    "report.html"
+  ],
+  "latest_stage": "output",
+  "model_format": "gguf",
+  "model_id": "Qwen3-8B",
+  "model_path": "/models/Qwen3-8B.gguf",
+  "schema": "boltbeam.run_manifest.v1",
+  "stages": {
+    "analyze": {
+      "artifacts": [
+        "search_space.json",
+        "route_policy.json",
+        "fixture_manifest.json",
+        "measurement_plan.json",
+        "analysis_report.json",
+        "probe_request.json",
+        "trace_request.json"
+      ]
+    },
+    "autoscan": {
+      "artifacts": [
+        "hardware_profile.json",
+        "runtime_profile.json",
+        "provider_capabilities.json",
+        "scan_evidence.json"
+      ]
+    },
+    "ingest_probe": {
+      "artifacts": [
+        "primitive_profile.json"
+      ]
+    },
+    "ingest_timing": {
+      "artifacts": [
+        "timing_trace.json",
+        "timing_profile.json"
+      ]
+    },
+    "load": {
+      "artifacts": [
+        "run_manifest.json",
+        "model_profile.json",
+        "weight_inventory.json",
+        "workload_profile.json"
+      ]
+    },
+    "output": {
+      "artifacts": [
+        "output_manifest.json",
+        "summary.md",
+        "rollback.md",
+        "provider_plan.json",
+        "report.html"
+      ]
+    }
+  },
+  "target_id": "apple_m3_10c",
+  "target_source": "user",
+  "workload": "decode"
+}

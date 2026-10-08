@@ -1,0 +1,15 @@
+{
+  "graph_capture": {
+    "status": "not_measured"
+  },
+  "host_sync": {
+    "status": "not_measured"
+  },
+  "launch_overhead": {
+    "status": "not_measured"
+  },
+  "notes": [
+    "Runtime overhead is provider/workload-specific and should be supplied as normalized evidence."
+  ],
+  "schema": "boltbeam.runtime_profile.v1"
+}

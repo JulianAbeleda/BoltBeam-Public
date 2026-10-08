@@ -22,7 +22,7 @@ from typing import Any
 
 # canonical pipeline order. The keys are the `stage=` values workflow/*.py pass to update_manifest; the label
 # is what a human calls the step. A stage absent from run_manifest["stages"] renders as not-run, never hidden.
-_STAGES: tuple[tuple[str, str, str], ...] = (
+STAGES: tuple[tuple[str, str, str], ...] = (
   ("load",          "load",        "model / weight / workload facts"),
   ("autoscan",      "autoscan",    "machine + provider capabilities"),
   ("analyze",       "analyze",     "search space + measurement plan"),
@@ -183,7 +183,7 @@ def _bar_cell(pct:Any) -> str:
 def _rail(manifest:dict[str, Any]) -> str:
   stages = manifest.get("stages", {}) or {}
   cells = []
-  for key, label, note in _STAGES:
+  for key, label, note in STAGES:
     entry = stages.get(key)
     if entry:
       count = len(entry.get("artifacts", []) or [])
@@ -198,7 +198,7 @@ def _rail(manifest:dict[str, Any]) -> str:
   return '<nav class="rail" aria-label="Pipeline stages">' + "".join(cells) + "</nav>"
 
 
-def _next_step(report:dict[str, Any], plan:dict[str, Any]) -> str:
+def next_step(report:dict[str, Any], plan:dict[str, Any]) -> str:
   """Same decision ladder as workflow/output.py::_summary_md, so the two reports never disagree."""
   if plan.get("timing_profile", {}).get("status") == "requested":
     return ("Run an external timing trace from <code>trace_request.json</code>, ingest "
@@ -215,7 +215,7 @@ def _next_step(report:dict[str, Any], plan:dict[str, Any]) -> str:
   return "Run <code>boltbeam analyze --run &lt;run&gt;</code> to build the search and measurement plan."
 
 
-def _roofline_kernels(timing:dict[str, Any]) -> tuple[list[dict[str, Any]], Any]:
+def roofline_kernels(timing:dict[str, Any]) -> tuple[list[dict[str, Any]], Any]:
   """Hottest per-kernel rows from the widest context summary, plus that context. Deterministic tie-break."""
   summaries = [s for s in timing.get("context_summaries", []) or [] if isinstance(s, dict)]
   if not summaries: return [], None
@@ -226,7 +226,7 @@ def _roofline_kernels(timing:dict[str, Any]) -> tuple[list[dict[str, Any]], Any]
 
 
 def _kernel_table(timing:dict[str, Any]) -> str:
-  kernels, context = _roofline_kernels(timing)
+  kernels, context = roofline_kernels(timing)
   if not kernels:
     rows = [r for r in timing.get("role_timing", []) or [] if isinstance(r, dict)]
     if not rows: return _card("Hot kernels", "timing_profile.json",
@@ -373,7 +373,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
     f'<div class="card-bd"><p style="margin:0 0 10px;color:var(--ink-2)">Analysis status '
     f'<span class="tag">{_e(report.get("status") or "not_analyzed")}</span></p>'
     f'<p style="margin:0 0 12px;color:var(--ink-2)"><b style="color:var(--ink)">Next step.</b> '
-    f'{_next_step(report, plan)}</p>'
+    f'{next_step(report, plan)}</p>'
     f'<div class="chips">{providers_html}</div></div>')
 
   return (

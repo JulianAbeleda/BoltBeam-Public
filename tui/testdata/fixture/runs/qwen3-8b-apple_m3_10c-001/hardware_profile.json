@@ -1,0 +1,82 @@
+{
+  "cpu": {
+    "logical_count": 8,
+    "machine": "arm64",
+    "processor": "arm"
+  },
+  "gpu": {
+    "apple_soc": "M3",
+    "devices": [
+      {
+        "apple_soc": "M3",
+        "fact_status": {
+          "apple_soc": "hardware_scan",
+          "gpu_cores": "hardware_scan",
+          "max_threadgroup_memory_length": "requires_provider_probe",
+          "max_threads_per_threadgroup": "requires_provider_probe",
+          "metal_family": "unavailable_from_system_profiler",
+          "recommended_max_working_set_size": "requires_provider_probe"
+        },
+        "gpu_cores": 10,
+        "metal_gpu_family_support": "spdisplays_metal4",
+        "metal_support": null,
+        "name": "Apple M3",
+        "target_id": "apple_m3_10c",
+        "target_kind": "exact",
+        "target_registered": true,
+        "vendor": "apple"
+      }
+    ],
+    "fact_status": {
+      "apple_soc": "hardware_scan",
+      "gpu_cores": "hardware_scan",
+      "max_threadgroup_memory_length": "requires_provider_probe",
+      "max_threads_per_threadgroup": "requires_provider_probe",
+      "metal_family": "unavailable_from_system_profiler",
+      "recommended_max_working_set_size": "requires_provider_probe"
+    },
+    "gpu_cores": 10,
+    "metal_gpu_family_support": "spdisplays_metal4",
+    "metal_support": null,
+    "name": "Apple M3",
+    "notes": [
+      "Primary GPU is the first Apple device returned by system_profiler.",
+      "Dynamic Metal limits require the tinygrad provider fact adapter."
+    ],
+    "status": "detected",
+    "target_id": "apple_m3_10c",
+    "target_kind": "exact",
+    "target_registered": true,
+    "target_resolution": {
+      "detected_target_id": "apple_m3_10c",
+      "detected_target_kind": "exact",
+      "previous_target_id": "apple_m3_10c",
+      "previous_target_source": "user",
+      "selected_target_id": "apple_m3_10c",
+      "status": "explicit_target_preserved"
+    },
+    "tool_paths": {
+      "hipcc": null,
+      "nvcc": null,
+      "nvidia-smi": null,
+      "rocm-smi": null,
+      "rocminfo": null,
+      "system_profiler": "/usr/sbin/system_profiler"
+    },
+    "tools_present": {
+      "hipcc": false,
+      "nvcc": false,
+      "nvidia-smi": false,
+      "rocm-smi": false,
+      "rocminfo": false,
+      "system_profiler": true
+    },
+    "vendor": "apple"
+  },
+  "schema": "boltbeam.hardware_profile.v1",
+  "system": {
+    "memory_bytes": null,
+    "platform": "macOS-26.5.2-arm64-arm-64bit",
+    "python": "3.12.13"
+  }
+}

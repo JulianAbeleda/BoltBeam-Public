@@ -1,0 +1,20 @@
+{
+  "architecture_class": "dense_decoder",
+  "blocked_roles": [],
+  "complete": true,
+  "measurement_phase_count": 5,
+  "model_id": "Qwen3-8B",
+  "next_artifact": "measurement_plan.json",
+  "quant_gemv_regimes": [],
+  "role_count": 7,
+  "schema": "boltbeam.analysis_report.v1",
+  "selected_routes": [],
+  "status": "needs_measurement",
+  "timing": {
+    "candidate_timing_count": 0,
+    "context_count": 0,
+    "dominant_timing_bucket": null,
+    "role_timing_count": 0,
+    "status": "not_ingested"
+  }
+}

@@ -1,0 +1,340 @@
+{
+  "blocked": [],
+  "ceiling": {
+    "context": 1,
+    "floor_ms": 52.01670264738599,
+    "peak_bandwidth_gbs": 89.9,
+    "status": "modeled",
+    "tok_s": 19.224594199652778
+  },
+  "id": "qwen3-8b-apple_m3_10c-002",
+  "kind": "results",
+  "measured": true,
+  "model_id": "Qwen3-8B",
+  "regimes": [
+    {
+      "classification": "streaming_bound",
+      "next_action": "preserve wide coalesced packed loads; only compression or layout that keeps load-bound behavior can help",
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "shape": [
+        12288,
+        4096
+      ],
+      "visible_bottleneck": "weight_load"
+    },
+    {
+      "classification": "occupancy_starved",
+      "next_action": "increase independent tiles/splits or reduce resource pressure",
+      "quant": "Q4_K",
+      "role": "attn_kv",
+      "shape": [
+        1024,
+        4096
+      ],
+      "visible_bottleneck": "insufficient_residency"
+    }
+  ],
+  "report": "report.html",
+  "routes": [
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "attn_kv",
+      "selected_route": null,
+      "shape": [
+        1024,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "q6k_route"
+      ],
+      "evidence_refs": [],
+      "quant": "Q6_K",
+      "role": "attn_kv",
+      "selected_route": null,
+      "shape": [
+        1024,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "attn_qo",
+      "selected_route": null,
+      "shape": [
+        4096,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "ffn_down",
+      "selected_route": null,
+      "shape": [
+        4096,
+        12288
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "q6k_route"
+      ],
+      "evidence_refs": [],
+      "quant": "Q6_K",
+      "role": "ffn_down",
+      "selected_route": null,
+      "shape": [
+        4096,
+        12288
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "selected_route": null,
+      "shape": [
+        12288,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "q6k_route"
+      ],
+      "evidence_refs": [],
+      "quant": "Q6_K",
+      "role": "lm_head",
+      "selected_route": null,
+      "shape": [
+        151936,
+        4096
+      ],
+      "status": "unmeasured"
+    }
+  ],
+  "schema": "boltbeam.tui.v1",
+  "target_id": "apple_m3_10c",
+  "timing": {
+    "context": 128,
+    "dominant_bucket": "elementwise_dilution",
+    "kernels": [
+      {
+        "bucket": "at_peak",
+        "kind": "gemv",
+        "loss_us": 1225.6,
+        "name": "gemv_q4k_ffn_gate_up",
+        "pct_step": 41.3,
+        "phys_util_pct": 94.9,
+        "us": 23900.0
+      },
+      {
+        "bucket": "at_peak",
+        "kind": "gemv",
+        "loss_us": 433.3,
+        "name": "gemv_q6k_ffn_down",
+        "pct_step": 15.0,
+        "phys_util_pct": 95.0,
+        "us": 8700.0
+      },
+      {
+        "bucket": "at_peak",
+        "kind": "gemv",
+        "loss_us": 441.9,
+        "name": "gemv_q4k_attn_output",
+        "pct_step": 13.8,
+        "phys_util_pct": 94.5,
+        "us": 8000.0
+      },
+      {
+        "bucket": "at_peak",
+        "kind": "gemv",
+        "loss_us": 721.4,
+        "name": "gemv_q6k_lm_head",
+        "pct_step": 11.1,
+        "phys_util_pct": 88.7,
+        "us": 6400.0
+      },
+      {
+        "bucket": "at_peak",
+        "kind": "gemv",
+        "loss_us": 331.4,
+        "name": "gemv_q4k_ffn_down",
+        "pct_step": 10.4,
+        "phys_util_pct": 94.5,
+        "us": 6000.0
+      },
+      {
+        "bucket": "gemv_codegen_capped",
+        "kind": "gemv",
+        "loss_us": 482.8,
+        "name": "gemv_q4k_attn_kv",
+        "pct_step": 3.3,
+        "phys_util_pct": 74.6,
+        "us": 1900.0
+      },
+      {
+        "bucket": "gemv_codegen_capped",
+        "kind": "gemv",
+        "loss_us": 311.1,
+        "name": "gemv_q6k_attn_v",
+        "pct_step": 1.7,
+        "phys_util_pct": 68.9,
+        "us": 1000.0
+      },
+      {
+        "bucket": "latency_bound",
+        "kind": "attention",
+        "loss_us": 690.1,
+        "name": "flash_attention_decode",
+        "pct_step": 1.6,
+        "phys_util_pct": 23.3,
+        "us": 900.0
+      },
+      {
+        "bucket": "elementwise_dilution",
+        "kind": "elementwise",
+        "loss_us": 500.0,
+        "name": "rms_norm",
+        "pct_step": 0.9,
+        "phys_util_pct": 0.0,
+        "us": 500.0
+      },
+      {
+        "bucket": "elementwise_dilution",
+        "kind": "elementwise",
+        "loss_us": 300.0,
+        "name": "rope",
+        "pct_step": 0.5,
+        "phys_util_pct": 0.0,
+        "us": 300.0
+      },
+      {
+        "bucket": "elementwise_dilution",
+        "kind": "elementwise",
+        "loss_us": 300.0,
+        "name": "silu_mul",
+        "pct_step": 0.5,
+        "phys_util_pct": 0.0,
+        "us": 300.0
+      }
+    ],
+    "next_actions": [
+      "look for launch-bound elementwise/reduce work that can fold into neighboring kernels",
+      "candidate timing contains a measurable win; require correctness and route-bound evidence before promotion"
+    ],
+    "roles": [
+      {
+        "classification": "timing_hot",
+        "context": 128,
+        "pct_step": 41.278065630397236,
+        "quant": "Q4_K",
+        "role": "ffn_gate_up",
+        "shape": [
+          12288,
+          4096
+        ],
+        "wall_us": 23900.0
+      },
+      {
+        "classification": "timing_hot",
+        "context": 128,
+        "pct_step": 15.025906735751295,
+        "quant": "Q6_K",
+        "role": "ffn_down",
+        "shape": [
+          4096,
+          12288
+        ],
+        "wall_us": 8700.0
+      },
+      {
+        "classification": "timing_hot",
+        "context": 128,
+        "pct_step": 13.81692573402418,
+        "quant": "Q4_K",
+        "role": "attn_qo",
+        "shape": [
+          4096,
+          4096
+        ],
+        "wall_us": 8000.0
+      },
+      {
+        "classification": "timing_hot",
+        "context": 128,
+        "pct_step": 11.053540587219343,
+        "quant": "Q6_K",
+        "role": "lm_head",
+        "shape": [
+          151936,
+          4096
+        ],
+        "wall_us": 6400.0
+      },
+      {
+        "classification": "timing_hot",
+        "context": 128,
+        "pct_step": 10.362694300518134,
+        "quant": "Q4_K",
+        "role": "ffn_down",
+        "shape": [
+          4096,
+          12288
+        ],
+        "wall_us": 6000.0
+      },
+      {
+        "classification": "timing_observed",
+        "context": 128,
+        "pct_step": 3.2815198618307426,
+        "quant": "Q4_K",
+        "role": "attn_kv",
+        "shape": [
+          1024,
+          4096
+        ],
+        "wall_us": 1900.0
+      },
+      {
+        "classification": "timing_observed",
+        "context": 128,
+        "pct_step": 1.7271157167530224,
+        "quant": "Q6_K",
+        "role": "attn_kv",
+        "shape": [
+          1024,
+          4096
+        ],
+        "wall_us": 1000.0
+      }
+    ],
+    "status": "classified",
+    "tok_s": 17.27,
+    "total_us": 57900.0
+  },
+  "workload": "decode"
+}

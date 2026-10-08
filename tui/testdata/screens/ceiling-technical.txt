@@ -1,0 +1,35 @@
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Speed limit: Qwen3-8B on apple_m3_10c                                                                                │
+│ ⚡ 19.2 tokens per second, at best.                                                                                  │
+│ decode: 4.68 GB per token at context 1, floor 52.02 ms, regime memory · ridge 35.1 FLOP/byte                         │
+│ prefill: context 512, 7.62 GB, floor 2459 ms, 208 tok/s, regime compute                                              │
+│ memory 89.9 GB/s (measurement) · compute 3.152 TFLOP/s (measurement) · truth_status modeled                          │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Per role, one token                                                                                                  │
+│ ROLE         QUANT  SHARE           BYTES    FLOOR ms  LIMIT                                                         │
+│ ffn_gate_up  Q4_K   ████░░░░░░ 44%  2.04 GB  22.70     memory                                                        │
+│ ffn_down     Q6_K   ██░░░░░░░░ 16%  0.74 GB  8.27      memory                                                        │
+│ attn_qo      Q4_K   █░░░░░░░░░ 15%  0.68 GB  7.57      memory                                                        │
+│ lm_head      Q6_K   █░░░░░░░░░ 11%  0.51 GB  5.68      memory                                                        │
+│ ffn_down     Q4_K   █░░░░░░░░░ 11%  0.51 GB  5.68      memory                                                        │
+│ attn_kv      Q4_K   ░░░░░░░░░░  3%  0.13 GB  1.42      memory                                                        │
+│ attn_kv      Q6_K   ░░░░░░░░░░  1%  0.06 GB  0.69      memory                                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Per role, prefill at 512                                                                                             │
+│ ROLE         QUANT  SHARE           BYTES    FLOOR ms  LIMIT                                                         │
+│ ffn_gate_up  Q4_K   █████░░░░░ 48%  3.25 GB  1177.30   compute                                                       │
+│ attn_qo      Q4_K   ██░░░░░░░░ 16%  1.28 GB  392.43    compute                                                       │
+│ ffn_down     Q4_K   █░░░░░░░░░ 12%  0.81 GB  294.33    compute                                                       │
+│ ffn_down     Q6_K   █░░░░░░░░░ 12%  1.05 GB  294.33    compute                                                       │
+│ lm_head      Q6_K   █░░░░░░░░░  8%  0.67 GB  202.18    compute                                                       │
+│ attn_kv      Q4_K   ░░░░░░░░░░  3%  0.41 GB  73.58     compute                                                       │
+│ attn_kv      Q6_K   ░░░░░░░░░░  1%  0.16 GB  24.53     compute                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Assumptions                                                                                                          │
+│ prefill GEMM y=x@W^T; weights streamed once per layer; fp16 activations                                              │
+│ peak flops at the matrix-engine dtype; no cache reuse credit beyond a single weight stream                           │
+│ modeled ceiling — a measured A/B overrides it and calibrates the error                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

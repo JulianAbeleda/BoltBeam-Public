@@ -1,0 +1,80 @@
+{
+  "notes": [
+    "Providers are evidence producers. BoltBeam core consumes normalized artifacts, not provider internals."
+  ],
+  "providers": [
+    {
+      "capabilities": {
+        "adapter": "not_configured",
+        "can_autoscan": false,
+        "can_measure": false
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "triton",
+      "python_module_available": false,
+      "status": "missing"
+    },
+    {
+      "capabilities": {
+        "adapter": "not_configured",
+        "can_autoscan": false,
+        "can_measure": false
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "cutlass",
+      "python_module_available": false,
+      "status": "missing"
+    },
+    {
+      "capabilities": {
+        "adapter": "not_configured",
+        "can_autoscan": false,
+        "can_measure": false
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "ck",
+      "python_module_available": false,
+      "status": "missing"
+    },
+    {
+      "capabilities": {
+        "adapter": "not_configured",
+        "can_autoscan": false,
+        "can_measure": false
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "tinygrad",
+      "python_module_available": false,
+      "status": "missing"
+    },
+    {
+      "capabilities": {
+        "adapter": "not_configured",
+        "can_autoscan": false,
+        "can_measure": false
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "iree",
+      "python_module_available": false,
+      "status": "missing"
+    },
+    {
+      "capabilities": {
+        "adapter": "normalized_evidence_json",
+        "can_autoscan": false,
+        "can_measure": true
+      },
+      "configured_path": null,
+      "path_exists": false,
+      "provider_id": "external",
+      "python_module_available": false,
+      "status": "available"
+    }
+  ],
+  "schema": "boltbeam.provider_capabilities.v1"
+}

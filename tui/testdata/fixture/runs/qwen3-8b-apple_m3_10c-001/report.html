@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BoltBeam — Qwen3-8B</title><style>
+/* Tokyo Night, matching the BoltBeam run graph: dark canvas, panel cards, typed accent colours.
+   Light mode maps onto Tokyo Night Day rather than inverting the dark palette.
+   Type is a system UI/mono stack — no @font-face, so this file issues no external requests. */
+:root{--ui:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+--canvas:#1a1b26;--grid:rgba(192,202,245,.055);--grid-2:rgba(192,202,245,.10);
+--node:#24283b;--node-hd:#1f2335;--node-br:#414868;--widget:#1a1b26;--widget-br:#3b4261;
+--tx:#c0caf5;--tx-2:#a9b1d6;--tx-3:#565f89;
+--profile:#bb9af7;--plan:#7aa2f7;--evidence:#9ece6a;--trace:#ff9e64;--policy:#f7768e;
+--run:#9ece6a;--warn:#e0af68;--bad:#db4b4b}
+@media (prefers-color-scheme:light){:root{--canvas:#e1e2e7;--grid:rgba(55,96,191,.09);--grid-2:rgba(55,96,191,.14);
+--node:#e9e9ec;--node-hd:#d5d6db;--node-br:#a8aecb;--widget:#d5d6db;--widget-br:#c4c8da;
+--tx:#3760bf;--tx-2:#6172b0;--tx-3:#848cb5;--profile:#9854f1;--plan:#2e7de9;--evidence:#587539;
+--trace:#b15c00;--policy:#f52a65;--run:#587539;--warn:#8c6c3e;--bad:#c64343}}
+:root[data-theme=light]{--canvas:#e1e2e7;--grid:rgba(55,96,191,.09);--grid-2:rgba(55,96,191,.14);--node:#e9e9ec;
+--node-hd:#d5d6db;--node-br:#a8aecb;--widget:#d5d6db;--widget-br:#c4c8da;--tx:#3760bf;--tx-2:#6172b0;
+--tx-3:#848cb5;--profile:#9854f1;--plan:#2e7de9;--evidence:#587539;--trace:#b15c00;--policy:#f52a65;
+--run:#587539;--warn:#8c6c3e;--bad:#c64343}
+:root[data-theme=dark]{--canvas:#1a1b26;--grid:rgba(192,202,245,.055);--grid-2:rgba(192,202,245,.10);
+--node:#24283b;--node-hd:#1f2335;--node-br:#414868;--widget:#1a1b26;--widget-br:#3b4261;--tx:#e9e9e9;
+--tx-2:#a8a8a8;--tx-3:#767676;--profile:#b39ddb;--plan:#64b5f6;--evidence:#81c784;--trace:#ff8a65;
+--policy:#f06292;--run:#7ec86a;--warn:#e0a33e;--bad:#e5534b}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--canvas);color:var(--tx);font-family:var(--ui);font-size:13px;
+line-height:1.6;-webkit-font-smoothing:antialiased;padding:30px 20px 64px;
+background-image:radial-gradient(var(--grid-2) 1px,transparent 1px),radial-gradient(var(--grid) 1px,transparent 1px);
+background-size:100px 100px,20px 20px;background-attachment:fixed}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
+.mast{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:2px 2px 6px}
+.mark{font-weight:700;font-size:17px;letter-spacing:-.01em}
+.mark span{color:var(--profile)}
+.run-id{color:var(--tx-3);font-family:var(--mono);font-size:11.5px;word-break:break-all}
+.meta{color:var(--tx-3);font-size:11.5px;display:flex;gap:16px;flex-wrap:wrap;margin-left:auto}
+.meta b{color:var(--tx-2);font-weight:500;font-family:var(--mono)}
+.card,.rail{background:var(--node);border:1px solid var(--node-br);border-radius:9px;
+box-shadow:0 4px 16px rgba(6,8,18,.32);overflow:hidden}
+.rail{display:flex;overflow-x:auto}
+.stage{flex:1 1 0;min-width:150px;padding:12px 15px;border-right:1px solid var(--node-br);
+display:flex;flex-direction:column;gap:3px}
+.stage:last-child{border-right:0}
+.stage-top{display:flex;align-items:center;gap:8px}
+.stage-name{font-size:12.5px;font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--run)}
+.stage-note{font-size:10.5px;color:var(--tx-3);padding-left:16px;font-family:var(--mono)}
+.s-none .dot{background:transparent;border:1.5px solid var(--tx-3)}
+.s-none .stage-name,.s-none .stage-note{color:var(--tx-3)}
+.card-hd{padding:10px 15px;border-bottom:1px solid var(--node-br);background:var(--node-hd);
+display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.card-ttl{margin:0;font-size:12.5px;font-weight:600}
+.card-sub{font-size:10.5px;color:var(--tx-3);margin-left:auto;font-family:var(--mono)}
+.card-bd{padding:14px 15px}
+.card.flag{border-left:3px solid var(--warn)}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+@media (max-width:920px){.cols{grid-template-columns:1fr}.meta{margin-left:0}}
+.tscroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+thead th{font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);
+text-align:right;padding:10px 12px 8px;border-bottom:1px solid var(--node-br);white-space:nowrap}
+thead th:first-child,tbody td:first-child{text-align:left}
+tbody td{padding:8px 12px;border-bottom:1px solid color-mix(in srgb,var(--node-br) 55%,transparent);
+text-align:right;font-size:12px;color:var(--tx-2);font-family:var(--mono)}
+tbody tr:last-child td{border-bottom:0}
+tbody td:first-child{color:var(--tx)}
+tbody tr:hover td{background:var(--node-hd)}
+.name{max-width:32ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pct{position:relative}
+.pct i{position:absolute;left:6px;right:6px;bottom:2px;height:2px;background:var(--widget-br);border-radius:2px}
+.pct i b{position:absolute;left:0;top:0;bottom:0;background:var(--plan);border-radius:2px}
+.tag{font-size:10.5px;padding:2px 9px;border-radius:14px;white-space:nowrap;color:var(--tx-2);
+background:var(--widget);border:1px solid var(--widget-br);font-family:var(--mono)}
+.t-bad{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+.t-warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.t-ok{color:var(--run);border-color:color-mix(in srgb,var(--run) 45%,transparent)}
+ul{margin:0;padding-left:17px;color:var(--tx-2)}
+li{padding:3px 0}
+.need{display:grid;grid-template-columns:26px 1fr;gap:12px;align-items:start;padding:5px 0}
+.need-k{color:var(--warn);font-family:var(--mono);font-size:11.5px}
+.need-b{color:var(--tx-2);font-size:12.5px;line-height:1.7}
+code{background:var(--widget);border:1px solid var(--widget-br);padding:1px 6px;border-radius:4px;
+color:var(--tx);font-family:var(--mono);font-size:11px}
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chip{font-size:10.5px;padding:3px 10px;border-radius:14px;background:var(--widget);color:var(--tx-2);
+border:1px solid var(--widget-br);font-family:var(--mono)}
+details{border-bottom:1px solid var(--node-br)}
+details:last-child{border-bottom:0}
+summary{padding:11px 15px;cursor:pointer;display:flex;gap:11px;align-items:center;flex-wrap:wrap}
+summary:hover{background:var(--widget)}
+summary:focus-visible{outline:2px solid var(--plan);outline-offset:-2px}
+summary .rb-name{font-size:13px;font-weight:600;color:var(--tx)}
+pre{margin:0 15px 14px 32px;padding:11px 13px;background:var(--widget);border:1px solid var(--widget-br);
+border-radius:7px;overflow-x:auto;font-size:11px;color:var(--tx-2);font-family:var(--mono)}
+.empty{color:var(--tx-3);font-size:12px;padding:15px}
+.foot{color:var(--tx-3);font-size:11px;text-align:center;padding-top:10px;line-height:1.85}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style></head><body><div class="wrap"><header class="mast"><div class="mark">Bolt<span>Beam</span></div><div class="run-id">tui/testdata/fixture/runs/qwen3-8b-apple_m3_10c-001</div><div class="meta"><div>target <b>apple_m3_10c</b></div><div>format <b>gguf</b></div><div>workload <b>decode</b></div><div>arch <b>dense_decoder</b></div><div>stage <b>output</b></div></div><button id="theme" class="chip" type="button" style="cursor:pointer;border:1px solid var(--rule);font:inherit;font-size:11px">theme</button></header><nav class="rail" aria-label="Pipeline stages"><div class="stage"><div class="stage-top"><i class="dot"></i><span class="stage-name">load</span></div><div class="stage-note">4 artifacts</div><div class="stage-note">model / weight / workload facts</div></div><div class="stage"><div class="stage-top"><i class="dot"></i><span class="stage-name">autoscan</span></div><div class="stage-note">4 artifacts</div><div class="stage-note">machine + provider capabilities</div></div><div class="stage"><div class="stage-top"><i class="dot"></i><span class="stage-name">analyze</span></div><div class="stage-note">7 artifacts</div><div class="stage-note">search space + measurement plan</div></div><div class="stage s-none"><div class="stage-top"><i class="dot"></i><span class="stage-name">runner-plan</span></div><div class="stage-note">not run</div><div class="stage-note">audit-tracer handoff bundle</div></div><div class="stage s-none"><div class="stage-top"><i class="dot"></i><span class="stage-name">probe</span></div><div class="stage-note">not run</div><div class="stage-note">primitive evidence classified</div></div><div class="stage s-none"><div class="stage-top"><i class="dot"></i><span class="stage-name">timing</span></div><div class="stage-note">not run</div><div class="stage-note">timing trace classified</div></div><div class="stage"><div class="stage-top"><i class="dot"></i><span class="stage-name">output</span></div><div class="stage-note">5 artifacts</div><div class="stage-note">policy / report / provider plan</div></div></nav><div class="cols"><section class="card"><div class="card-hd"><h2 class="card-ttl">Where this run stands</h2><span class="card-sub">run_manifest.json · analysis_report.json</span></div><div class="card-bd"><p style="margin:0 0 10px;color:var(--ink-2)">Analysis status <span class="tag">needs_measurement</span></p><p style="margin:0 0 12px;color:var(--ink-2)"><b style="color:var(--ink)">Next step.</b> Run an external timing trace from <code>trace_request.json</code>, ingest <code>boltbeam.timing_trace.v1</code>, then re-run <code>boltbeam analyze</code>.</p><div class="chips"><span class="chip">None</span><span class="chip">None</span><span class="chip">None</span><span class="chip">None</span><span class="chip">None</span><span class="chip">None</span></div></div></section><section class="card flag"><div class="card-hd"><h2 class="card-ttl">Blocked on</h2><span class="card-sub">measurement_plan.json · 2 items</span></div><div class="card-bd"><div class="need"><span class="need-k">01</span><span class="need-b">Primitive probe evidence (<code>probe_evidence.json</code>). Until it lands the search space is only partially authorised and no route may be promoted on primitive grounds.</span></div><div class="need"><span class="need-k">02</span><span class="need-b">A timing trace (<code>hw_trace.json</code> → <code>timing_trace.json</code>). Without it every speed claim below is a prediction, not a measurement.</span></div></div></section></div><div class="cols"><section class="card flag"><div class="card-hd"><h2 class="card-ttl">Timing verdict</h2><span class="card-sub">timing_profile.json</span></div><p class="empty">No timing trace ingested — no timing claim can be made.</p></section><section class="card flag"><div class="card-hd"><h2 class="card-ttl">Quant GEMV regimes</h2><span class="card-sub">primitive_profile.json</span></div><p class="empty">No primitive probe evidence ingested.</p></section></div><section class="card"><div class="card-hd"><h2 class="card-ttl">Hot kernels</h2><span class="card-sub">timing_profile.json</span></div><p class="empty">No timing profile ingested. Absent, not zero.</p></section><section class="card"><div class="card-hd"><h2 class="card-ttl">Selected routes</h2><span class="card-sub">route_policy.json</span></div><p class="empty">No route selected. Nothing to roll back.</p></section><section class="card"><div class="card-hd"><h2 class="card-ttl">Artifacts in this run</h2><span class="card-sub">run_manifest.json</span></div><div class='card-bd'><div class='chips'><span class="chip">run_manifest.json</span><span class="chip">model_profile.json</span><span class="chip">weight_inventory.json</span><span class="chip">workload_profile.json</span><span class="chip">hardware_profile.json</span><span class="chip">runtime_profile.json</span><span class="chip">provider_capabilities.json</span><span class="chip">scan_evidence.json</span><span class="chip">search_space.json</span><span class="chip">route_policy.json</span><span class="chip">fixture_manifest.json</span><span class="chip">measurement_plan.json</span><span class="chip">analysis_report.json</span><span class="chip">probe_request.json</span><span class="chip">trace_request.json</span><span class="chip">output_manifest.json</span><span class="chip">summary.md</span><span class="chip">rollback.md</span><span class="chip">provider_plan.json</span><span class="chip">report.html</span></div></div></section><p class="foot">Generated by <code>boltbeam output</code>. Deterministic — no timestamps, stable ordering;<br>every panel cites the artifact it was read from.</p></div><script>
+(function(){
+  var r=document.documentElement,b=document.getElementById('theme');
+  if(!b)return;
+  b.addEventListener('click',function(){
+    var dark=r.getAttribute('data-theme')==='dark'||(!r.getAttribute('data-theme')&&
+      window.matchMedia('(prefers-color-scheme:dark)').matches);
+    r.setAttribute('data-theme',dark?'light':'dark');
+  });
+})();
+</script></body></html>

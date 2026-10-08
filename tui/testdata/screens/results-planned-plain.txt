@@ -1,0 +1,25 @@
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Results: qwen3-8b-apple_m3_10c-001                                                               │
+│ ⚡ 19.2 tokens per second at best; nothing measured yet.                                         │
+│ ⏸ still needed: the building-block tests (probe_request.json); a timing trace (trace_request.js… │
+│ press o to open report.html                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ What won per role                                                                                │
+│    ROLE                        QUANT  STATUS            ROUTE                                    │
+│ ⏸  attention keys and values   Q4_K   not measured yet  none yet                                 │
+│ ⏸  attention keys and values   Q6_K   not measured yet  none yet                                 │
+│ ⏸  attention query and output  Q4_K   not measured yet  none yet                                 │
+│ ⏸  feed-forward out            Q4_K   not measured yet  none yet                                 │
+│ ⏸  feed-forward out            Q6_K   not measured yet  none yet                                 │
+│ ⏸  feed-forward in             Q4_K   not measured yet  none yet                                 │
+│ ⏸  vocabulary output           Q6_K   not measured yet  none yet                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Timing against the speed limit                                                                   │
+│ No timing trace ingested. Every speed here is a prediction, not a measurement.                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Building blocks                                                                                  │
+│ No building-block tests ingested.                                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

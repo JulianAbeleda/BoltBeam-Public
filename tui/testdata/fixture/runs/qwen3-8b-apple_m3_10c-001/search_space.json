@@ -1,0 +1,324 @@
+{
+  "architecture_class": "dense_decoder",
+  "complete": true,
+  "model_id": "Qwen3-8B",
+  "notes": [
+    "This is a candidate space, not a promotion decision.",
+    "Downstream evaluators must measure correctness, speed, memory, and rollback.",
+    "Route families are derived from the quant capability registry; unknown quants are marked search-space-incomplete, never silently omitted."
+  ],
+  "roles": [
+    {
+      "count": 54,
+      "quant": "Q4_K",
+      "role": "attn_kv",
+      "route_families": [
+        {
+          "family": "lanemap_gemv",
+          "knobs": {
+            "block_groups": [
+              1,
+              2,
+              4,
+              8,
+              16,
+              32
+            ],
+            "reduction": [
+              "cross_lane",
+              "partials_plus_reduce"
+            ],
+            "words_per_group": [
+              1,
+              2,
+              4,
+              8,
+              16,
+              32
+            ]
+          },
+          "status": "candidate"
+        }
+      ],
+      "shape": [
+        1024,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_k.weight"
+    },
+    {
+      "count": 18,
+      "quant": "Q6_K",
+      "role": "attn_kv",
+      "route_families": [
+        {
+          "family": "q6k_route",
+          "knobs": {
+            "k_pos_grouping": [
+              16,
+              32
+            ],
+            "reduction": [
+              "coop_partial",
+              "direct",
+              "hybrid"
+            ],
+            "row_grouping": [
+              1,
+              2,
+              4
+            ]
+          },
+          "status": "candidate"
+        }
+      ],
+      "shape": [
+        1024,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_v.weight"
+    },
+    {
+      "count": 72,
+      "quant": "Q4_K",
+      "role": "attn_qo",
+      "route_families": [
+        {
+          "family": "lanemap_gemv",
+          "knobs": {
+            "block_groups": [
+              1,
+              2,
+              4,
+              8,
+              16,
+              32
+            ],
+            "reduction": [
+              "cross_lane",
+              "partials_plus_reduce"
+            ],
+            "words_per_group": [
+              1,
+              2,
+              4,
+              8,
+              16,
+              32
+            ]
+          },
+          "status": "candidate"
+        }
+      ],
+      "shape": [
+        4096,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_output.weight"
+    },
+    {
+      "count": 18,
+      "quant": "Q4_K",
+      "role": "ffn_down",
+      "route_families": [
+        {
+          "family": "lanemap_gemv",
+          "knobs": {
+            "block_groups": [
+              1,
+              2,
+              4,
+              8,
+              16,
+              32
+            ],
+            "reduction": [
+              "cross_lane",
+              "partials_plus_reduce"
+            ],
+            "words_per_group": [
+              1,
+              2,
+              4,
+              8,
+              16,
+              32
+            ]
+          },
+          "status": "candidate"
+        }
+      ],
+      "shape": [
+        4096,
+        12288
+      ],
+      "tensor_name": "blk.4.ffn_down.weight"
+    },
+    {
+      "count": 18,
+      "quant": "Q6_K",
+      "role": "ffn_down",
+      "route_families": [
+        {
+          "family": "q6k_route",
+          "knobs": {
+            "k_pos_grouping": [
+              16,
+              32
+            ],
+            "reduction": [
+              "coop_partial",
+              "direct",
+              "hybrid"
+            ],
+            "row_grouping": [
+              1,
+              2,
+              4
+            ]
+          },
+          "status": "candidate"
+        }
+      ],
+      "shape": [
+        4096,
+        12288
+      ],
+      "tensor_name": "blk.0.ffn_down.weight"
+    },
+    {
+      "count": 72,
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "route_families": [
+        {
+          "family": "lanemap_gemv",
+          "knobs": {
+            "block_groups": [
+              1,
+              2,
+              4,
+              8,
+              16,
+              32
+            ],
+            "reduction": [
+              "cross_lane",
+              "partials_plus_reduce"
+            ],
+            "words_per_group": [
+              1,
+              2,
+              4,
+              8,
+              16,
+              32
+            ]
+          },
+          "status": "candidate"
+        }
+      ],
+      "shape": [
+        12288,
+        4096
+      ],
+      "tensor_name": "blk.0.ffn_gate.weight"
+    },
+    {
+      "count": 1,
+      "quant": "Q6_K",
+      "role": "lm_head",
+      "route_families": [
+        {
+          "family": "q6k_route",
+          "knobs": {
+            "k_pos_grouping": [
+              16,
+              32
+            ],
+            "reduction": [
+              "coop_partial",
+              "direct",
+              "hybrid"
+            ],
+            "row_grouping": [
+              1,
+              2,
+              4
+            ]
+          },
+          "status": "candidate"
+        }
+      ],
+      "shape": [
+        151936,
+        4096
+      ],
+      "tensor_name": "output.weight"
+    }
+  ],
+  "schema": "boltbeam.search_space.v1",
+  "target": {
+    "backend": "Metal",
+    "backend_status": "descriptor_only",
+    "capabilities": {
+      "fact_sources": {
+        "memory_bandwidth_gbs": {
+          "kind": "measurement",
+          "method": "tinygrad DEV=METAL, 2 GiB clone, read and write counted as traffic, best of five",
+          "observed_at": "2026-09-21",
+          "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
+          "value_gbs": 89.9,
+          "vendor_spec_gbs": 100.0,
+          "vendor_url": "https://support.apple.com/en-us/118551"
+        },
+        "peak_tflops": {
+          "dtype": "fp16",
+          "kind": "measurement",
+          "method": "tinygrad-arkey extra/llm_research/wmma_peak_metal.py, simdgroup_multiply_accumulate plateau, fp16 in and fp32 accumulate",
+          "note": "matrix unit; Apple publishes no FLOPS figure for M-series",
+          "observed_at": "2026-09-22",
+          "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
+          "value_tflops": 3.152
+        }
+      },
+      "fact_status": {
+        "compute_units": "unknown",
+        "gpu_cores": "hardware_scan",
+        "lds_bytes_per_cu": "unknown",
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "measurement",
+        "subgroup_size": "hardware_family",
+        "vram_bytes": "not_applicable_unified_memory",
+        "wave_size": "hardware_family"
+      },
+      "kv_quant_quality_gate_required": true,
+      "kv_quant_speed_residual_required": true,
+      "match": {
+        "apple_soc": "M3",
+        "gpu_cores": 10
+      },
+      "mixed_quant_kv_flash_fastpath": false,
+      "same_type_quant_kv_flash_fastpath": false,
+      "target_kind": "exact",
+      "tinygrad_device": "METAL"
+    },
+    "compute_units": null,
+    "dequant_primitives": [],
+    "dot_primitives": [
+      "simdgroup_matrix"
+    ],
+    "dot_primitives_lowered": [],
+    "lds_bytes_per_cu": null,
+    "matrix_tflops": {},
+    "memory_bandwidth_gbs": 89.9,
+    "peak_tflops": {
+      "fp16": 3.152
+    },
+    "subgroup_size": 32,
+    "target_id": "apple_m3_10c",
+    "vector_load_bits": 128,
+    "vram_bytes": null,
+    "wave_size": 32
+  }
+}

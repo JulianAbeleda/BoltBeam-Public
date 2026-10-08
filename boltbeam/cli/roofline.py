@@ -137,7 +137,7 @@ def _register_roofline_theoretical(sub) -> None:
 
 
 
-def _resolve_peak_flops(target, dtype:str, override_tflops:float | None) -> float:
+def resolve_peak_flops(target, dtype:str, override_tflops:float | None) -> float:
   """Compute ceiling in FLOP/s, or a stated refusal.
 
   A target whose registry row carries no `peak_tflops` has no compute ceiling to place a
@@ -174,7 +174,7 @@ def cmd_roofline_theoretical(args) -> int:
   execution = _load_json(args.execution_profile) if args.execution_profile else {}
   if execution.get("model_id") not in (None, profile.model_id):
     raise ValueError(f"execution profile model_id={execution.get('model_id')!r} does not match {profile.model_id!r}")
-  peak_flops = _resolve_peak_flops(target, args.dtype, args.peak_tflops)
+  peak_flops = resolve_peak_flops(target, args.dtype, args.peak_tflops)
   bw = target.memory_bandwidth_gbs or args.peak_gbs
   if args.throughput:
     tiers = (calibrated_memory_tiers(target, _load_json(args.memory_profile), dram_gbs=bw)

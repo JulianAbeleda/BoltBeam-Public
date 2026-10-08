@@ -1,0 +1,183 @@
+{
+  "contexts": [
+    128
+  ],
+  "model_id": "Qwen3-8B",
+  "notes": [
+    "synthetic fixture for the TUI contract; plausible for an M3, not a measurement"
+  ],
+  "peak_gbs": 89.9,
+  "provider_id": "fixture",
+  "rows": [
+    {
+      "context": 128,
+      "host_sync_pct": 1.0,
+      "launch_count": 400,
+      "scope": "whole_step",
+      "tok_s": 17.27,
+      "total_bytes": 4689407616,
+      "wall_us": 57900.0
+    },
+    {
+      "context": 128,
+      "gbs": 85.29,
+      "kernel": "gemv_q4k_ffn_gate_up",
+      "kind": "gemv",
+      "phys_bytes": 2038431744,
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "scope": "kernel",
+      "shape": [
+        12288,
+        4096
+      ],
+      "wall_us": 23900.0
+    },
+    {
+      "context": 128,
+      "gbs": 85.423,
+      "kernel": "gemv_q6k_ffn_down",
+      "kind": "gemv",
+      "phys_bytes": 743178240,
+      "quant": "Q6_K",
+      "role": "ffn_down",
+      "scope": "kernel",
+      "shape": [
+        4096,
+        12288
+      ],
+      "wall_us": 8700.0
+    },
+    {
+      "context": 128,
+      "gbs": 84.935,
+      "kernel": "gemv_q4k_attn_output",
+      "kind": "gemv",
+      "phys_bytes": 679477248,
+      "quant": "Q4_K",
+      "role": "attn_qo",
+      "scope": "kernel",
+      "shape": [
+        4096,
+        4096
+      ],
+      "wall_us": 8000.0
+    },
+    {
+      "context": 128,
+      "gbs": 79.766,
+      "kernel": "gemv_q6k_lm_head",
+      "kind": "gemv",
+      "phys_bytes": 510504960,
+      "quant": "Q6_K",
+      "role": "lm_head",
+      "scope": "kernel",
+      "shape": [
+        151936,
+        4096
+      ],
+      "wall_us": 6400.0
+    },
+    {
+      "context": 128,
+      "gbs": 84.935,
+      "kernel": "gemv_q4k_ffn_down",
+      "kind": "gemv",
+      "phys_bytes": 509607936,
+      "quant": "Q4_K",
+      "role": "ffn_down",
+      "scope": "kernel",
+      "shape": [
+        4096,
+        12288
+      ],
+      "wall_us": 6000.0
+    },
+    {
+      "context": 128,
+      "gbs": 67.054,
+      "kernel": "gemv_q4k_attn_kv",
+      "kind": "gemv",
+      "phys_bytes": 127401984,
+      "quant": "Q4_K",
+      "role": "attn_kv",
+      "scope": "kernel",
+      "shape": [
+        1024,
+        4096
+      ],
+      "wall_us": 1900.0
+    },
+    {
+      "context": 128,
+      "gbs": 61.932,
+      "kernel": "gemv_q6k_attn_v",
+      "kind": "gemv",
+      "phys_bytes": 61931520,
+      "quant": "Q6_K",
+      "role": "attn_kv",
+      "scope": "kernel",
+      "shape": [
+        1024,
+        4096
+      ],
+      "wall_us": 1000.0
+    },
+    {
+      "context": 128,
+      "gbs": 20.972,
+      "kernel": "flash_attention_decode",
+      "kind": "attention",
+      "phys_bytes": 18874368,
+      "scope": "kernel",
+      "wall_us": 900.0
+    },
+    {
+      "context": 128,
+      "gbs": 0.0,
+      "kernel": "rms_norm",
+      "kind": "elementwise",
+      "phys_bytes": 0,
+      "scope": "kernel",
+      "wall_us": 500.0
+    },
+    {
+      "context": 128,
+      "gbs": 0.0,
+      "kernel": "rope",
+      "kind": "elementwise",
+      "phys_bytes": 0,
+      "scope": "kernel",
+      "wall_us": 300.0
+    },
+    {
+      "context": 128,
+      "gbs": 0.0,
+      "kernel": "silu_mul",
+      "kind": "elementwise",
+      "phys_bytes": 0,
+      "scope": "kernel",
+      "wall_us": 300.0
+    },
+    {
+      "baseline_us": 23900.0,
+      "candidate_id": "decode_q4k_lanemap_gate_up",
+      "candidate_us": 22100.0,
+      "context": 128,
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "route_bound": true,
+      "scope": "candidate",
+      "shape": [
+        12288,
+        4096
+      ],
+      "spread_pct": 1.0,
+      "token_match": true
+    }
+  ],
+  "schema": "boltbeam.timing_trace.v1",
+  "target_id": "apple_m3_10c",
+  "timing_source": "synthetic fixture, not a measurement",
+  "workload": "decode"
+}

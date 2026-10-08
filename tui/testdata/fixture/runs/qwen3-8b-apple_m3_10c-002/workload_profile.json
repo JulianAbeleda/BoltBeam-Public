@@ -1,0 +1,15 @@
+{
+  "constraints": {
+    "correctness_required": true,
+    "provider_neutral": true,
+    "rollback_required_for_promotion": true
+  },
+  "contexts": [
+    128,
+    512
+  ],
+  "model_id": "Qwen3-8B",
+  "schema": "boltbeam.workload_profile.v1",
+  "target_id": "apple_m3_10c",
+  "workload": "decode"
+}

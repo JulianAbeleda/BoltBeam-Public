@@ -1,0 +1,356 @@
+{
+  "candidate_timing": [
+    {
+      "baseline_us": 23900.0,
+      "candidate_id": "decode_q4k_lanemap_gate_up",
+      "candidate_us": 22100.0,
+      "classification": "timing_win",
+      "context": 128,
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "route_bound": true,
+      "shape": [
+        12288,
+        4096
+      ],
+      "speedup_pct": 7.531380753138075,
+      "spread_pct": 1.0,
+      "token_match": true
+    }
+  ],
+  "context_summaries": [
+    {
+      "context": 128,
+      "dominant_timing_bucket": "elementwise_dilution",
+      "host_sync_pct": 1.0,
+      "kernel_count": 11,
+      "launch_count": 400.0,
+      "roofline": {
+        "caveat": "timing_source is not jit/profile -> eager per-kernel times inflate elementwise_dilution (launch-bound tiny kernels batch-hide in a graph run). Treat dilution as an upper bound; gemv_codegen_capped is JIT-persistent. Use a PROFILE=1 producer for accurate reclaimable-us.",
+        "dominant_bucket": "elementwise_dilution",
+        "dominant_fix": "tiny elementwise/reduce kernels at near-zero bandwidth -> pure launch/latency dead time; fuse into the producer/consumer GEMV epilogue/prologue to reclaim it (fully reclaimable).",
+        "kernels": [
+          {
+            "bucket": "at_peak",
+            "kind": "gemv",
+            "loss_us": 1225.6,
+            "name": "gemv_q4k_ffn_gate_up",
+            "pct_step": 41.3,
+            "phys_util_pct": 94.9,
+            "us": 23900.0
+          },
+          {
+            "bucket": "at_peak",
+            "kind": "gemv",
+            "loss_us": 721.4,
+            "name": "gemv_q6k_lm_head",
+            "pct_step": 11.1,
+            "phys_util_pct": 88.7,
+            "us": 6400.0
+          },
+          {
+            "bucket": "latency_bound",
+            "kind": "attention",
+            "loss_us": 690.1,
+            "name": "flash_attention_decode",
+            "pct_step": 1.6,
+            "phys_util_pct": 23.3,
+            "us": 900.0
+          },
+          {
+            "bucket": "elementwise_dilution",
+            "kind": "elementwise",
+            "loss_us": 500.0,
+            "name": "rms_norm",
+            "pct_step": 0.9,
+            "phys_util_pct": 0.0,
+            "us": 500.0
+          },
+          {
+            "bucket": "gemv_codegen_capped",
+            "kind": "gemv",
+            "loss_us": 482.8,
+            "name": "gemv_q4k_attn_kv",
+            "pct_step": 3.3,
+            "phys_util_pct": 74.6,
+            "us": 1900.0
+          },
+          {
+            "bucket": "at_peak",
+            "kind": "gemv",
+            "loss_us": 441.9,
+            "name": "gemv_q4k_attn_output",
+            "pct_step": 13.8,
+            "phys_util_pct": 94.5,
+            "us": 8000.0
+          },
+          {
+            "bucket": "at_peak",
+            "kind": "gemv",
+            "loss_us": 433.3,
+            "name": "gemv_q6k_ffn_down",
+            "pct_step": 15.0,
+            "phys_util_pct": 95.0,
+            "us": 8700.0
+          },
+          {
+            "bucket": "at_peak",
+            "kind": "gemv",
+            "loss_us": 331.4,
+            "name": "gemv_q4k_ffn_down",
+            "pct_step": 10.4,
+            "phys_util_pct": 94.5,
+            "us": 6000.0
+          },
+          {
+            "bucket": "gemv_codegen_capped",
+            "kind": "gemv",
+            "loss_us": 311.1,
+            "name": "gemv_q6k_attn_v",
+            "pct_step": 1.7,
+            "phys_util_pct": 68.9,
+            "us": 1000.0
+          },
+          {
+            "bucket": "elementwise_dilution",
+            "kind": "elementwise",
+            "loss_us": 300.0,
+            "name": "rope",
+            "pct_step": 0.5,
+            "phys_util_pct": 0.0,
+            "us": 300.0
+          },
+          {
+            "bucket": "elementwise_dilution",
+            "kind": "elementwise",
+            "loss_us": 300.0,
+            "name": "silu_mul",
+            "pct_step": 0.5,
+            "phys_util_pct": 0.0,
+            "us": 300.0
+          }
+        ],
+        "label": "Qwen3-8B:decode:128",
+        "loss_by_bucket_us": {
+          "activation_bound": 0.0,
+          "at_peak": 3153.5,
+          "elementwise_dilution": 1100.0,
+          "gemv_codegen_capped": 794.0,
+          "latency_bound": 690.1
+        },
+        "peak_gbs": 89.9,
+        "ranked_levers": [
+          {
+            "bucket": "elementwise_dilution",
+            "fix": "tiny elementwise/reduce kernels at near-zero bandwidth -> pure launch/latency dead time; fuse into the producer/consumer GEMV epilogue/prologue to reclaim it (fully reclaimable).",
+            "reclaimable_us": 1100.0
+          },
+          {
+            "bucket": "gemv_codegen_capped",
+            "fix": "dominant weight-read GEMVs run below peak -> codegen lever: better tiling / dot lowering (v_dot2), coalesced packed loads. This is the main roofline gap.",
+            "reclaimable_us": 794.0
+          },
+          {
+            "bucket": "latency_bound",
+            "fix": "attention reduce/softmax is inherently latency-bound, near its own ceiling -> NOT a bandwidth lever; do not chase here.",
+            "reclaimable_us": 690.1
+          }
+        ],
+        "schema": "boltbeam.roofline_report.v1",
+        "timing_source": "synthetic fixture, not a measurement",
+        "whole_model": {
+          "eff_GBps": 81.0,
+          "headroom_x": 1.11,
+          "ideal_us": 52162.5,
+          "pct_of_peak": 90.1,
+          "total_GB": 4.689,
+          "total_us": 57900.0
+        }
+      },
+      "schedule": {
+        "diagnosis": "fused_ok",
+        "dominant": {
+          "bw_util_pct": 94.9,
+          "gbs": 85.29,
+          "kind": "gemv",
+          "name": "gemv_q4k_ffn_gate_up",
+          "share_pct": 41.3,
+          "us": 23900.0
+        },
+        "fix": "the dominant kernel is near the bandwidth ceiling; little schedule headroom left",
+        "fusion_failures": [
+          {
+            "bw_util_pct": 23.3,
+            "gbs": 20.972,
+            "kind": "attention",
+            "name": "flash_attention_decode",
+            "us": 900.0
+          },
+          {
+            "bw_util_pct": 0.0,
+            "gbs": 0.0,
+            "kind": "elementwise",
+            "name": "rms_norm",
+            "us": 500.0
+          },
+          {
+            "bw_util_pct": 0.0,
+            "gbs": 0.0,
+            "kind": "elementwise",
+            "name": "rope",
+            "us": 300.0
+          },
+          {
+            "bw_util_pct": 0.0,
+            "gbs": 0.0,
+            "kind": "elementwise",
+            "name": "silu_mul",
+            "us": 300.0
+          }
+        ],
+        "label": "Qwen3-8B:128",
+        "schema": "boltbeam.schedule_report.v1",
+        "total_us": 57900.0
+      },
+      "tok_s": 17.27,
+      "total_bytes": 4689407616.0,
+      "total_us": 57900.0
+    }
+  ],
+  "contexts": [
+    128
+  ],
+  "dominant_timing_bucket": "elementwise_dilution",
+  "model_id": "Qwen3-8B",
+  "next_actions": [
+    "look for launch-bound elementwise/reduce work that can fold into neighboring kernels",
+    "candidate timing contains a measurable win; require correctness and route-bound evidence before promotion"
+  ],
+  "provider_id": "fixture",
+  "request_role_count": 7,
+  "role_timing": [
+    {
+      "classification": "timing_hot",
+      "context": 128,
+      "kernels": [
+        "gemv_q4k_ffn_gate_up"
+      ],
+      "pct_step": 41.278065630397236,
+      "phys_bytes": 2038431744.0,
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "shape": [
+        12288,
+        4096
+      ],
+      "wall_us": 23900.0
+    },
+    {
+      "classification": "timing_hot",
+      "context": 128,
+      "kernels": [
+        "gemv_q6k_ffn_down"
+      ],
+      "pct_step": 15.025906735751295,
+      "phys_bytes": 743178240.0,
+      "quant": "Q6_K",
+      "role": "ffn_down",
+      "shape": [
+        4096,
+        12288
+      ],
+      "wall_us": 8700.0
+    },
+    {
+      "classification": "timing_hot",
+      "context": 128,
+      "kernels": [
+        "gemv_q4k_attn_output"
+      ],
+      "pct_step": 13.81692573402418,
+      "phys_bytes": 679477248.0,
+      "quant": "Q4_K",
+      "role": "attn_qo",
+      "shape": [
+        4096,
+        4096
+      ],
+      "wall_us": 8000.0
+    },
+    {
+      "classification": "timing_hot",
+      "context": 128,
+      "kernels": [
+        "gemv_q6k_lm_head"
+      ],
+      "pct_step": 11.053540587219343,
+      "phys_bytes": 510504960.0,
+      "quant": "Q6_K",
+      "role": "lm_head",
+      "shape": [
+        151936,
+        4096
+      ],
+      "wall_us": 6400.0
+    },
+    {
+      "classification": "timing_hot",
+      "context": 128,
+      "kernels": [
+        "gemv_q4k_ffn_down"
+      ],
+      "pct_step": 10.362694300518134,
+      "phys_bytes": 509607936.0,
+      "quant": "Q4_K",
+      "role": "ffn_down",
+      "shape": [
+        4096,
+        12288
+      ],
+      "wall_us": 6000.0
+    },
+    {
+      "classification": "timing_observed",
+      "context": 128,
+      "kernels": [
+        "gemv_q4k_attn_kv"
+      ],
+      "pct_step": 3.2815198618307426,
+      "phys_bytes": 127401984.0,
+      "quant": "Q4_K",
+      "role": "attn_kv",
+      "shape": [
+        1024,
+        4096
+      ],
+      "wall_us": 1900.0
+    },
+    {
+      "classification": "timing_observed",
+      "context": 128,
+      "kernels": [
+        "gemv_q6k_attn_v"
+      ],
+      "pct_step": 1.7271157167530224,
+      "phys_bytes": 61931520.0,
+      "quant": "Q6_K",
+      "role": "attn_kv",
+      "shape": [
+        1024,
+        4096
+      ],
+      "wall_us": 1000.0
+    }
+  ],
+  "schema": "boltbeam.timing_profile.v1",
+  "source": {
+    "fingerprint": "sha256:09e52812bc10414854165861a7a6191ea50c33ba3b9cf253ea2b53de858cf553",
+    "path": "tui/testdata/fixture/evidence/timing_trace.json",
+    "schema": "boltbeam.timing_trace.v1"
+  },
+  "status": "classified",
+  "target_id": "apple_m3_10c",
+  "timing_row_count": 13,
+  "timing_source": "synthetic fixture, not a measurement",
+  "workload": "decode"
+}

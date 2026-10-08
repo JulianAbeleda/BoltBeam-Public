@@ -1,0 +1,390 @@
+{
+  "contexts": [
+    128,
+    512
+  ],
+  "model_id": "Qwen3-8B",
+  "notes": [
+    "External runners should return boltbeam.probe_evidence.v1.",
+    "Full ISA/resource evidence is preferred; missing non-identity fields classify as inconclusive."
+  ],
+  "probes": [
+    {
+      "count": 54,
+      "dequant_family": "k_quant",
+      "kind": "quant_gemv",
+      "n_expert": 0,
+      "probe_id": "quant_gemv:attn_kv:Q4_K:1024x4096:n54:e0",
+      "quant": "Q4_K",
+      "required_metrics": {
+        "bytes": [
+          "physical_weight_bytes",
+          "metadata_bytes",
+          "activation_bytes"
+        ],
+        "isa": [
+          "instruction_histogram",
+          "vector_load_bits"
+        ],
+        "latency_concurrency": [
+          "memory_latency_ns",
+          "active_waves",
+          "in_flight_groups",
+          "occupancy_pct"
+        ],
+        "resources": [
+          "registers",
+          "lds_bytes",
+          "scratch_bytes"
+        ],
+        "throughput": [
+          "achieved_gbs",
+          "target_gbs"
+        ],
+        "timing": [
+          "candidate_us",
+          "spread_pct"
+        ]
+      },
+      "role": "attn_kv",
+      "role_class": "attention_k",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        1024,
+        4096
+      ],
+      "target_vector_load_bits": 128,
+      "tensor_name": "blk.0.attn_k.weight"
+    },
+    {
+      "count": 18,
+      "dequant_family": "k_quant",
+      "kind": "quant_gemv",
+      "n_expert": 0,
+      "probe_id": "quant_gemv:attn_kv:Q6_K:1024x4096:n18:e0",
+      "quant": "Q6_K",
+      "required_metrics": {
+        "bytes": [
+          "physical_weight_bytes",
+          "metadata_bytes",
+          "activation_bytes"
+        ],
+        "isa": [
+          "instruction_histogram",
+          "vector_load_bits"
+        ],
+        "latency_concurrency": [
+          "memory_latency_ns",
+          "active_waves",
+          "in_flight_groups",
+          "occupancy_pct"
+        ],
+        "resources": [
+          "registers",
+          "lds_bytes",
+          "scratch_bytes"
+        ],
+        "throughput": [
+          "achieved_gbs",
+          "target_gbs"
+        ],
+        "timing": [
+          "candidate_us",
+          "spread_pct"
+        ]
+      },
+      "role": "attn_kv",
+      "role_class": "attention_v",
+      "route_families": [
+        "q6k_route"
+      ],
+      "shape": [
+        1024,
+        4096
+      ],
+      "target_vector_load_bits": 128,
+      "tensor_name": "blk.0.attn_v.weight"
+    },
+    {
+      "count": 72,
+      "dequant_family": "k_quant",
+      "kind": "quant_gemv",
+      "n_expert": 0,
+      "probe_id": "quant_gemv:attn_qo:Q4_K:4096x4096:n72:e0",
+      "quant": "Q4_K",
+      "required_metrics": {
+        "bytes": [
+          "physical_weight_bytes",
+          "metadata_bytes",
+          "activation_bytes"
+        ],
+        "isa": [
+          "instruction_histogram",
+          "vector_load_bits"
+        ],
+        "latency_concurrency": [
+          "memory_latency_ns",
+          "active_waves",
+          "in_flight_groups",
+          "occupancy_pct"
+        ],
+        "resources": [
+          "registers",
+          "lds_bytes",
+          "scratch_bytes"
+        ],
+        "throughput": [
+          "achieved_gbs",
+          "target_gbs"
+        ],
+        "timing": [
+          "candidate_us",
+          "spread_pct"
+        ]
+      },
+      "role": "attn_qo",
+      "role_class": "attention_o",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        4096,
+        4096
+      ],
+      "target_vector_load_bits": 128,
+      "tensor_name": "blk.0.attn_output.weight"
+    },
+    {
+      "count": 18,
+      "dequant_family": "k_quant",
+      "kind": "quant_gemv",
+      "n_expert": 0,
+      "probe_id": "quant_gemv:ffn_down:Q4_K:4096x12288:n18:e0",
+      "quant": "Q4_K",
+      "required_metrics": {
+        "bytes": [
+          "physical_weight_bytes",
+          "metadata_bytes",
+          "activation_bytes"
+        ],
+        "isa": [
+          "instruction_histogram",
+          "vector_load_bits"
+        ],
+        "latency_concurrency": [
+          "memory_latency_ns",
+          "active_waves",
+          "in_flight_groups",
+          "occupancy_pct"
+        ],
+        "resources": [
+          "registers",
+          "lds_bytes",
+          "scratch_bytes"
+        ],
+        "throughput": [
+          "achieved_gbs",
+          "target_gbs"
+        ],
+        "timing": [
+          "candidate_us",
+          "spread_pct"
+        ]
+      },
+      "role": "ffn_down",
+      "role_class": "ffn_down",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        4096,
+        12288
+      ],
+      "target_vector_load_bits": 128,
+      "tensor_name": "blk.4.ffn_down.weight"
+    },
+    {
+      "count": 18,
+      "dequant_family": "k_quant",
+      "kind": "quant_gemv",
+      "n_expert": 0,
+      "probe_id": "quant_gemv:ffn_down:Q6_K:4096x12288:n18:e0",
+      "quant": "Q6_K",
+      "required_metrics": {
+        "bytes": [
+          "physical_weight_bytes",
+          "metadata_bytes",
+          "activation_bytes"
+        ],
+        "isa": [
+          "instruction_histogram",
+          "vector_load_bits"
+        ],
+        "latency_concurrency": [
+          "memory_latency_ns",
+          "active_waves",
+          "in_flight_groups",
+          "occupancy_pct"
+        ],
+        "resources": [
+          "registers",
+          "lds_bytes",
+          "scratch_bytes"
+        ],
+        "throughput": [
+          "achieved_gbs",
+          "target_gbs"
+        ],
+        "timing": [
+          "candidate_us",
+          "spread_pct"
+        ]
+      },
+      "role": "ffn_down",
+      "role_class": "ffn_down",
+      "route_families": [
+        "q6k_route"
+      ],
+      "shape": [
+        4096,
+        12288
+      ],
+      "target_vector_load_bits": 128,
+      "tensor_name": "blk.0.ffn_down.weight"
+    },
+    {
+      "count": 72,
+      "dequant_family": "k_quant",
+      "kind": "quant_gemv",
+      "n_expert": 0,
+      "probe_id": "quant_gemv:ffn_gate_up:Q4_K:12288x4096:n72:e0",
+      "quant": "Q4_K",
+      "required_metrics": {
+        "bytes": [
+          "physical_weight_bytes",
+          "metadata_bytes",
+          "activation_bytes"
+        ],
+        "isa": [
+          "instruction_histogram",
+          "vector_load_bits"
+        ],
+        "latency_concurrency": [
+          "memory_latency_ns",
+          "active_waves",
+          "in_flight_groups",
+          "occupancy_pct"
+        ],
+        "resources": [
+          "registers",
+          "lds_bytes",
+          "scratch_bytes"
+        ],
+        "throughput": [
+          "achieved_gbs",
+          "target_gbs"
+        ],
+        "timing": [
+          "candidate_us",
+          "spread_pct"
+        ]
+      },
+      "role": "ffn_gate_up",
+      "role_class": "ffn_gate",
+      "route_families": [
+        "lanemap_gemv"
+      ],
+      "shape": [
+        12288,
+        4096
+      ],
+      "target_vector_load_bits": 128,
+      "tensor_name": "blk.0.ffn_gate.weight"
+    },
+    {
+      "count": 1,
+      "dequant_family": "k_quant",
+      "kind": "quant_gemv",
+      "n_expert": 0,
+      "probe_id": "quant_gemv:lm_head:Q6_K:151936x4096:n1:e0",
+      "quant": "Q6_K",
+      "required_metrics": {
+        "bytes": [
+          "physical_weight_bytes",
+          "metadata_bytes",
+          "activation_bytes"
+        ],
+        "isa": [
+          "instruction_histogram",
+          "vector_load_bits"
+        ],
+        "latency_concurrency": [
+          "memory_latency_ns",
+          "active_waves",
+          "in_flight_groups",
+          "occupancy_pct"
+        ],
+        "resources": [
+          "registers",
+          "lds_bytes",
+          "scratch_bytes"
+        ],
+        "throughput": [
+          "achieved_gbs",
+          "target_gbs"
+        ],
+        "timing": [
+          "candidate_us",
+          "spread_pct"
+        ]
+      },
+      "role": "lm_head",
+      "role_class": "lm_head",
+      "route_families": [
+        "q6k_route"
+      ],
+      "shape": [
+        151936,
+        4096
+      ],
+      "target_vector_load_bits": 128,
+      "tensor_name": "output.weight"
+    }
+  ],
+  "provider_neutral": true,
+  "required_metrics": {
+    "bytes": [
+      "physical_weight_bytes",
+      "metadata_bytes",
+      "activation_bytes"
+    ],
+    "isa": [
+      "instruction_histogram",
+      "vector_load_bits"
+    ],
+    "latency_concurrency": [
+      "memory_latency_ns",
+      "active_waves",
+      "in_flight_groups",
+      "occupancy_pct"
+    ],
+    "resources": [
+      "registers",
+      "lds_bytes",
+      "scratch_bytes"
+    ],
+    "throughput": [
+      "achieved_gbs",
+      "target_gbs"
+    ],
+    "timing": [
+      "candidate_us",
+      "spread_pct"
+    ]
+  },
+  "schema": "boltbeam.probe_request.v1",
+  "target_id": "apple_m3_10c",
+  "workload": "decode"
+}

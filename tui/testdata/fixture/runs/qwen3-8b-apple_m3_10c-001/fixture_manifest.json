@@ -1,0 +1,77 @@
+{
+  "fixtures": [
+    {
+      "id": "attn_kv_1024x4096_Q4_K",
+      "purpose": "codegen_shape_probe",
+      "quant": "Q4_K",
+      "role": "attn_kv",
+      "shape": [
+        1024,
+        4096
+      ]
+    },
+    {
+      "id": "attn_kv_1024x4096_Q6_K",
+      "purpose": "codegen_shape_probe",
+      "quant": "Q6_K",
+      "role": "attn_kv",
+      "shape": [
+        1024,
+        4096
+      ]
+    },
+    {
+      "id": "attn_qo_4096x4096_Q4_K",
+      "purpose": "codegen_shape_probe",
+      "quant": "Q4_K",
+      "role": "attn_qo",
+      "shape": [
+        4096,
+        4096
+      ]
+    },
+    {
+      "id": "ffn_down_4096x12288_Q4_K",
+      "purpose": "codegen_shape_probe",
+      "quant": "Q4_K",
+      "role": "ffn_down",
+      "shape": [
+        4096,
+        12288
+      ]
+    },
+    {
+      "id": "ffn_down_4096x12288_Q6_K",
+      "purpose": "codegen_shape_probe",
+      "quant": "Q6_K",
+      "role": "ffn_down",
+      "shape": [
+        4096,
+        12288
+      ]
+    },
+    {
+      "id": "ffn_gate_up_12288x4096_Q4_K",
+      "purpose": "codegen_shape_probe",
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "shape": [
+        12288,
+        4096
+      ]
+    },
+    {
+      "id": "lm_head_151936x4096_Q6_K",
+      "purpose": "codegen_shape_probe",
+      "quant": "Q6_K",
+      "role": "lm_head",
+      "shape": [
+        151936,
+        4096
+      ]
+    }
+  ],
+  "model_id": "Qwen3-8B",
+  "schema": "boltbeam.fixture_manifest.v1",
+  "warning": "Synthetic fixtures are proving grounds; real model gates are still required."
+}

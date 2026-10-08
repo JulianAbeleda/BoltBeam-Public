@@ -1,0 +1,18 @@
+{
+  "artifacts": [
+    "output_manifest.json",
+    "summary.md",
+    "rollback.md",
+    "provider_plan.json",
+    "report.html"
+  ],
+  "includes_final_policy": true,
+  "includes_measurement_request": true,
+  "includes_primitive_profile": true,
+  "includes_runner_plan": false,
+  "includes_timing_profile": true,
+  "model_id": "Qwen3-8B",
+  "schema": "boltbeam.output_manifest.v1",
+  "source_run": "tui/testdata/fixture/runs/qwen3-8b-apple_m3_10c-002",
+  "target_id": "apple_m3_10c"
+}

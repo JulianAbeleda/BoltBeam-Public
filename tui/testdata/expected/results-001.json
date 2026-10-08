@@ -1,0 +1,138 @@
+{
+  "blocked": [
+    {
+      "need": "probe_evidence",
+      "request": "probe_request.json"
+    },
+    {
+      "need": "timing_trace",
+      "request": "trace_request.json"
+    }
+  ],
+  "ceiling": {
+    "context": 1,
+    "floor_ms": 52.01670264738599,
+    "peak_bandwidth_gbs": 89.9,
+    "status": "modeled",
+    "tok_s": 19.224594199652778
+  },
+  "id": "qwen3-8b-apple_m3_10c-001",
+  "kind": "results",
+  "measured": false,
+  "model_id": "Qwen3-8B",
+  "regimes": [],
+  "report": "report.html",
+  "routes": [
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "attn_kv",
+      "selected_route": null,
+      "shape": [
+        1024,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "q6k_route"
+      ],
+      "evidence_refs": [],
+      "quant": "Q6_K",
+      "role": "attn_kv",
+      "selected_route": null,
+      "shape": [
+        1024,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "attn_qo",
+      "selected_route": null,
+      "shape": [
+        4096,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "ffn_down",
+      "selected_route": null,
+      "shape": [
+        4096,
+        12288
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "q6k_route"
+      ],
+      "evidence_refs": [],
+      "quant": "Q6_K",
+      "role": "ffn_down",
+      "selected_route": null,
+      "shape": [
+        4096,
+        12288
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "selected_route": null,
+      "shape": [
+        12288,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "q6k_route"
+      ],
+      "evidence_refs": [],
+      "quant": "Q6_K",
+      "role": "lm_head",
+      "selected_route": null,
+      "shape": [
+        151936,
+        4096
+      ],
+      "status": "unmeasured"
+    }
+  ],
+  "schema": "boltbeam.tui.v1",
+  "target_id": "apple_m3_10c",
+  "timing": {
+    "context": null,
+    "dominant_bucket": null,
+    "kernels": [],
+    "next_actions": [],
+    "roles": [],
+    "status": "absent",
+    "tok_s": null,
+    "total_us": null
+  },
+  "workload": "decode"
+}

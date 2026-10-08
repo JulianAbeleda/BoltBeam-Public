@@ -1,0 +1,102 @@
+{
+  "kind": "targets",
+  "schema": "boltbeam.tui.v1",
+  "targets": [
+    {
+      "backend": "AMD",
+      "backend_status": "complete",
+      "fact_status": {
+        "memory_bandwidth_gbs": "unknown",
+        "peak_tflops": "unknown"
+      },
+      "has_ceiling": true,
+      "id": "amd_gfx1100",
+      "matrix_tflops": {},
+      "memory_bandwidth_gbs": 960.0,
+      "peak_tflops": {
+        "fp16": 122.8,
+        "fp32": 61.4
+      },
+      "scope": null
+    },
+    {
+      "backend": "CUDA",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "unknown",
+        "peak_tflops": "unknown"
+      },
+      "has_ceiling": false,
+      "id": "nvidia_sm89",
+      "matrix_tflops": {},
+      "memory_bandwidth_gbs": null,
+      "peak_tflops": {},
+      "scope": null
+    },
+    {
+      "backend": "CUDA",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "unknown"
+      },
+      "has_ceiling": true,
+      "id": "nvidia_sm120",
+      "matrix_tflops": {
+        "fp16": 237.1,
+        "int8": 947.0
+      },
+      "memory_bandwidth_gbs": 1693.3,
+      "peak_tflops": {
+        "fp16": 104.8,
+        "fp32": 104.8,
+        "int8": 180.0
+      },
+      "scope": "NVIDIA GeForce RTX 5090, driver 595.84"
+    },
+    {
+      "backend": "Metal",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "unknown",
+        "peak_tflops": "unknown"
+      },
+      "has_ceiling": false,
+      "id": "apple_metal",
+      "matrix_tflops": {},
+      "memory_bandwidth_gbs": null,
+      "peak_tflops": {},
+      "scope": null
+    },
+    {
+      "backend": "Metal",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "measurement"
+      },
+      "has_ceiling": true,
+      "id": "apple_m3_10c",
+      "matrix_tflops": {},
+      "memory_bandwidth_gbs": 89.9,
+      "peak_tflops": {
+        "fp16": 3.152
+      },
+      "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU"
+    },
+    {
+      "backend": "Metal",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "vendor_spec",
+        "peak_tflops": "unknown"
+      },
+      "has_ceiling": false,
+      "id": "apple_m4_10c",
+      "matrix_tflops": {},
+      "memory_bandwidth_gbs": 120.0,
+      "peak_tflops": {},
+      "scope": "Mac mini (2024), Apple M4, 10-core GPU"
+    }
+  ]
+}

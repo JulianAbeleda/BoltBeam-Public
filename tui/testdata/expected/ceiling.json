@@ -1,0 +1,230 @@
+{
+  "assumptions": [
+    "prefill GEMM y=x@W^T; weights streamed once per layer; fp16 activations",
+    "peak flops at the matrix-engine dtype; no cache reuse credit beyond a single weight stream",
+    "modeled ceiling \u2014 a measured A/B overrides it and calibrates the error"
+  ],
+  "decode": {
+    "bytes_moved": 4676301568.0,
+    "context": 1,
+    "floor_ms": 52.01670264738599,
+    "regime": "memory",
+    "roles": [
+      {
+        "bytes_moved": 2040791040.0,
+        "floor_ms": 22.700678976640713,
+        "quant": "Q4_K",
+        "regime": "memory",
+        "role": "ffn_gate_up",
+        "shape": {
+          "k": 4096,
+          "m": 1,
+          "n": 12288
+        },
+        "share": 0.43641134138250676
+      },
+      {
+        "bytes_moved": 743768064.0,
+        "floor_ms": 8.27328213570634,
+        "quant": "Q6_K",
+        "regime": "memory",
+        "role": "ffn_down",
+        "shape": {
+          "k": 12288,
+          "m": 1,
+          "n": 4096
+        },
+        "share": 0.15905049175819103
+      },
+      {
+        "bytes_moved": 680656896.0,
+        "floor_ms": 7.571266918798667,
+        "quant": "Q4_K",
+        "regime": "memory",
+        "role": "attn_qo",
+        "shape": {
+          "k": 4096,
+          "m": 1,
+          "n": 4096
+        },
+        "share": 0.1455545340911598
+      },
+      {
+        "bytes_moved": 510817024.0,
+        "floor_ms": 5.682058109010011,
+        "quant": "Q6_K",
+        "regime": "memory",
+        "role": "lm_head",
+        "shape": {
+          "k": 4096,
+          "m": 1,
+          "n": 151936
+        },
+        "share": 0.10923526136456388
+      },
+      {
+        "bytes_moved": 510197760.0,
+        "floor_ms": 5.675169744160178,
+        "quant": "Q4_K",
+        "regime": "memory",
+        "role": "ffn_down",
+        "shape": {
+          "k": 12288,
+          "m": 1,
+          "n": 4096
+        },
+        "share": 0.10910283534562669
+      },
+      {
+        "bytes_moved": 127954944.0,
+        "floor_ms": 1.4233030478309234,
+        "quant": "Q4_K",
+        "regime": "memory",
+        "role": "attn_kv",
+        "shape": {
+          "k": 4096,
+          "m": 1,
+          "n": 1024
+        },
+        "share": 0.027362423517678487
+      },
+      {
+        "bytes_moved": 62115840.0,
+        "floor_ms": 0.6909437152391547,
+        "quant": "Q6_K",
+        "regime": "memory",
+        "role": "attn_kv",
+        "shape": {
+          "k": 4096,
+          "m": 1,
+          "n": 1024
+        },
+        "share": 0.01328311254027319
+      }
+    ],
+    "tok_s": 19.224594199652778
+  },
+  "kind": "ceiling",
+  "model_id": "Qwen3-8B",
+  "peak_bandwidth_gbs": 89.9,
+  "peak_tflops": 3.152,
+  "prefill": {
+    "bytes_moved": 7623716864.0,
+    "context": 512,
+    "floor_ms": 2458.6711975634516,
+    "regime": "compute",
+    "roles": [
+      {
+        "bytes_moved": 3246391296.0,
+        "floor_ms": 1177.3006801218273,
+        "quant": "Q4_K",
+        "regime": "compute",
+        "role": "ffn_gate_up",
+        "shape": {
+          "k": 4096,
+          "m": 512,
+          "n": 12288
+        },
+        "share": 0.47883616210599245
+      },
+      {
+        "bytes_moved": 1283457024.0,
+        "floor_ms": 392.43356004060917,
+        "quant": "Q4_K",
+        "regime": "compute",
+        "role": "attn_qo",
+        "shape": {
+          "k": 4096,
+          "m": 512,
+          "n": 4096
+        },
+        "share": 0.15961205403533085
+      },
+      {
+        "bytes_moved": 811597824.0,
+        "floor_ms": 294.32517003045683,
+        "quant": "Q4_K",
+        "regime": "compute",
+        "role": "ffn_down",
+        "shape": {
+          "k": 12288,
+          "m": 512,
+          "n": 4096
+        },
+        "share": 0.11970904052649811
+      },
+      {
+        "bytes_moved": 1045168128.0,
+        "floor_ms": 294.32517003045683,
+        "quant": "Q6_K",
+        "regime": "compute",
+        "role": "ffn_down",
+        "shape": {
+          "k": 12288,
+          "m": 512,
+          "n": 4096
+        },
+        "share": 0.11970904052649811
+      },
+      {
+        "bytes_moved": 670281728.0,
+        "floor_ms": 202.17822732994924,
+        "quant": "Q6_K",
+        "regime": "compute",
+        "role": "lm_head",
+        "shape": {
+          "k": 4096,
+          "m": 512,
+          "n": 151936
+        },
+        "share": 0.08223068929684796
+      },
+      {
+        "bytes_moved": 410517504.0,
+        "floor_ms": 73.58129250761421,
+        "quant": "Q4_K",
+        "regime": "compute",
+        "role": "attn_kv",
+        "shape": {
+          "k": 4096,
+          "m": 512,
+          "n": 1024
+        },
+        "share": 0.029927260131624528
+      },
+      {
+        "bytes_moved": 156303360.0,
+        "floor_ms": 24.527097502538073,
+        "quant": "Q6_K",
+        "regime": "compute",
+        "role": "attn_kv",
+        "shape": {
+          "k": 4096,
+          "m": 512,
+          "n": 1024
+        },
+        "share": 0.009975753377208178
+      }
+    ],
+    "tok_s": 208.24256635348112
+  },
+  "ridge_intensity": 35.061179087875416,
+  "schema": "boltbeam.tui.v1",
+  "target": {
+    "backend": "Metal",
+    "backend_status": "descriptor_only",
+    "fact_status": {
+      "memory_bandwidth_gbs": "measurement",
+      "peak_tflops": "measurement"
+    },
+    "has_ceiling": true,
+    "id": "apple_m3_10c",
+    "matrix_tflops": {},
+    "memory_bandwidth_gbs": 89.9,
+    "peak_tflops": {
+      "fp16": 3.152
+    },
+    "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU"
+  },
+  "truth_status": "modeled"
+}

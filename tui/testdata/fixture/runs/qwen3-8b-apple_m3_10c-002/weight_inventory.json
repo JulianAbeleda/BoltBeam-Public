@@ -1,0 +1,116 @@
+{
+  "architecture_class": "dense_decoder",
+  "model_id": "Qwen3-8B",
+  "role_count": 7,
+  "roles": [
+    {
+      "count": 54,
+      "elements": 226492416,
+      "estimated_weight_bytes": 127401984,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "quant_known": true,
+      "role": "attn_kv",
+      "role_class": "attention_k",
+      "shape": [
+        1024,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_k.weight"
+    },
+    {
+      "count": 18,
+      "elements": 75497472,
+      "estimated_weight_bytes": 61931520,
+      "n_expert": 0,
+      "quant": "Q6_K",
+      "quant_known": true,
+      "role": "attn_kv",
+      "role_class": "attention_v",
+      "shape": [
+        1024,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_v.weight"
+    },
+    {
+      "count": 72,
+      "elements": 1207959552,
+      "estimated_weight_bytes": 679477248,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "quant_known": true,
+      "role": "attn_qo",
+      "role_class": "attention_o",
+      "shape": [
+        4096,
+        4096
+      ],
+      "tensor_name": "blk.0.attn_output.weight"
+    },
+    {
+      "count": 18,
+      "elements": 905969664,
+      "estimated_weight_bytes": 509607936,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "quant_known": true,
+      "role": "ffn_down",
+      "role_class": "ffn_down",
+      "shape": [
+        4096,
+        12288
+      ],
+      "tensor_name": "blk.4.ffn_down.weight"
+    },
+    {
+      "count": 18,
+      "elements": 905969664,
+      "estimated_weight_bytes": 743178240,
+      "n_expert": 0,
+      "quant": "Q6_K",
+      "quant_known": true,
+      "role": "ffn_down",
+      "role_class": "ffn_down",
+      "shape": [
+        4096,
+        12288
+      ],
+      "tensor_name": "blk.0.ffn_down.weight"
+    },
+    {
+      "count": 72,
+      "elements": 3623878656,
+      "estimated_weight_bytes": 2038431744,
+      "n_expert": 0,
+      "quant": "Q4_K",
+      "quant_known": true,
+      "role": "ffn_gate_up",
+      "role_class": "ffn_gate",
+      "shape": [
+        12288,
+        4096
+      ],
+      "tensor_name": "blk.0.ffn_gate.weight"
+    },
+    {
+      "count": 1,
+      "elements": 622329856,
+      "estimated_weight_bytes": 510504960,
+      "n_expert": 0,
+      "quant": "Q6_K",
+      "quant_known": true,
+      "role": "lm_head",
+      "role_class": "lm_head",
+      "shape": [
+        151936,
+        4096
+      ],
+      "tensor_name": "output.weight"
+    }
+  ],
+  "schema": "boltbeam.weight_inventory.v1",
+  "source": "/models/Qwen3-8B.gguf",
+  "total_known_weight_bytes": 4670533632,
+  "unknown_quant_roles": []
+}
