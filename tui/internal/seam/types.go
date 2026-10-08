@@ -26,6 +26,15 @@ type Targets struct {
 	Targets []Target `json:"targets"`
 }
 
+// Detected is `screen detect`: autoscan's GPU probe cut to what a screen shows.
+type Detected struct {
+	Status     string  `json:"status"`
+	Name       *string `json:"name"`
+	TargetID   *string `json:"target_id"`
+	TargetKind *string `json:"target_kind"`
+	Registered bool    `json:"registered"`
+}
+
 // Role is one row of the model profile: one (role, shape, quant) with how many tensors share it.
 type Role struct {
 	Role       string `json:"role"`

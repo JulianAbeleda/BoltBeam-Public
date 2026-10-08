@@ -19,7 +19,6 @@ var (
 	butter = lipgloss.AdaptiveColor{Light: "#B7791F", Dark: "#F6D37A"}
 	coral  = lipgloss.AdaptiveColor{Light: "#D1443E", Dark: "#FF9A8B"}
 	muted  = lipgloss.AdaptiveColor{Light: "#8A8798", Dark: "#8C889C"}
-	shadow = lipgloss.AdaptiveColor{Light: "#F1EEF9", Dark: "#2B2740"}
 )
 
 var (
@@ -31,8 +30,6 @@ var (
 	stAccent = lipgloss.NewStyle().Foreground(pink)
 	stHeader = lipgloss.NewStyle().Foreground(purple).Bold(true)
 	stCursor = lipgloss.NewStyle().Foreground(pink).Bold(true)
-	stTabOn  = lipgloss.NewStyle().Foreground(pink).Background(shadow).Bold(true).Padding(0, 1)
-	stTabOff = lipgloss.NewStyle().Foreground(muted).Padding(0, 1)
 	stBox    = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(purple).Padding(0, 1)
 	stBoxDim = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(muted).Padding(0, 1)
 )
@@ -131,8 +128,11 @@ func box(title, body string, width int, dim bool) string {
 	}
 	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
 	for i, line := range lines {
-		lines[i] = ansi.Truncate(line, inner, "…")
+		lines[i] = truncate(line, inner)
 	}
 	content := gradient(title) + "\n" + strings.Join(lines, "\n")
 	return style.Width(width - 2).Render(content)
 }
+
+// truncate cuts a styled line to width cells with "…"; the screen never wraps.
+func truncate(line string, width int) string { return ansi.Truncate(line, width, "…") }

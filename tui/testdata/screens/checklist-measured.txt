@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                              (≧◡≦)⚡
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   ✓ 1  Model        Qwen3-8B.gguf · 36 layers · F32, Q4_K, Q6_K              │
+│   ✓ 2  Chip         apple_m3_10c · this Mac · memory 89.9 GB/s               │
+│   ✓ 3  Speed limit  up to 19.2 tokens per second                             │
+│   ✓ 4  Measure      run 002 · probe ✓ · timing ✓                             │
+│ ▸ ✓ 5  Result       17.3 tokens per second · 90% of the limit                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 5  Result · qwen3-8b-apple_m3_10c-002                                        │
+│ ⚡ 17.3 tokens per second measured. The limit is 19.2.                       │
+│ ██████████████████░░ 90% of the limit                                        │
+│ Where the time goes: small kernel, dead time  elementwise_dilution           │
+│                                                                              │
+│    ROLE                        QUANT  WHAT WON                               │
+│ ⏸  attention keys and values   Q4_K   not measured yet                       │
+│ ⏸  attention keys and values   Q6_K   not measured yet                       │
+│ ⏸  attention query and output  Q4_K   not measured yet                       │
+│ ⏸  feed-forward out            Q4_K   not measured yet                       │
+│ …                                                                            │
+│ enter: open the full report, measure again                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ step · enter open · q quit

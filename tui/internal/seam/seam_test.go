@@ -180,3 +180,14 @@ func TestLiveSeamMatchesPinnedContract(t *testing.T) {
 		t.Fatal("a descriptor-only chip has no ceiling and must say so")
 	}
 }
+
+func TestPipelineProgress(t *testing.T) {
+	lines := []string{"=== start", "pipeline steps: 4", "stage load: start", "stage load: done", "stage autoscan: start",
+		"stage autoscan: done", "stage analyze: start"}
+	if done, total := PipelineProgress(lines); done != 2 || total != 4 {
+		t.Fatalf("got %d of %d", done, total)
+	}
+	if done, total := PipelineProgress([]string{"stage load: done"}); done != 1 || total != 0 {
+		t.Fatalf("a log without the count line has total 0, got %d of %d", done, total)
+	}
+}

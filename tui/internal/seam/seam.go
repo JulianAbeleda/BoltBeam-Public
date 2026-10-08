@@ -111,6 +111,13 @@ func (c Client) Targets() (*Targets, []byte, error) {
 	return &t, raw, err
 }
 
+// Detect is the chip this machine is, as autoscan's GPU probe reads it; TargetID is nil when no probe answered.
+func (c Client) Detect() (*Detected, error) {
+	var d Detected
+	_, _, err := c.decode(&d, nil, "boltbeam.workflow.screen", "detect")
+	return &d, err
+}
+
 // Inspect is `boltbeam inspect MODEL`: the model profile, read without a GPU.
 func (c Client) Inspect(model string) (*Profile, []byte, error) {
 	var p Profile
@@ -210,4 +217,18 @@ func StageEvents(lines []string) map[string]string {
 		}
 	}
 	return state
+}
+
+// PipelineProgress counts the stages the pipeline finished out of the total its first line announced
+// ("pipeline steps: N"). Total is 0 when the log does not carry that line.
+func PipelineProgress(lines []string) (done, total int) {
+	for _, line := range lines {
+		if n, ok := strings.CutPrefix(line, "pipeline steps: "); ok {
+			total, _ = strconv.Atoi(n)
+			done = 0
+		} else if strings.HasPrefix(line, "stage ") && strings.HasSuffix(line, ": done") {
+			done++
+		}
+	}
+	return done, total
 }

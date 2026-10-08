@@ -6,12 +6,13 @@ JSON object on stdout and exits 0, or prints `{"kind": "error", "error": ...}` a
 when the run holds no measurement yet; the facts are still printed, so a screen can say what is missing.
 
     targets                                    the registered chips and which of them carry a ceiling
+    detect                                     the chip this machine is, as autoscan reads it (target_id or null)
     ceiling  MODEL | --profile P  --target T   the roofline: the best tokens/s this chip allows for this model
     runs     --root DIR                        one summary per run folder under DIR
     run      --run DIR                         the stages, what is blocked, the next step, the results
     results  --run DIR                         what won per role, the timing against the ceiling, the regimes
     pipeline MODEL --run DIR --target T        load, autoscan, analyze, [ingest-probe, ingest-timing], output;
-                                               one text line per stage, for tailing
+                                               `pipeline steps: N` first, then one text line per stage, for tailing
 
 Nothing here computes a new kind of fact. The ceiling is `model_roofline` exactly as `roofline-theoretical`
 calls it, with tokens/s read off the floor (one token at context 1 for decode; the context's tokens for
@@ -38,6 +39,7 @@ from boltbeam.profile.loaders import profile_from_model
 from boltbeam.report.html import STAGES, next_step, roofline_kernels
 from boltbeam.target.targets import get_target, load_target_registry
 from boltbeam.workflow import analyze_run, autoscan_run, ingest_probe_run, ingest_timing_run, load_run, output_run
+from boltbeam.workflow.autoscan import _hardware_profile
 from boltbeam.workflow.common import load_manifest, read_json
 
 SCHEMA = "boltbeam.tui.v1"
@@ -77,6 +79,15 @@ def target_facts(target) -> dict[str, Any]:
 
 def targets() -> dict[str, Any]:
   return {"schema": SCHEMA, "kind": "targets", "targets": [target_facts(t) for t in load_target_registry().values()]}
+
+
+def detect(profile:dict[str, Any] | None = None) -> dict[str, Any]:
+  """The chip this machine is: autoscan's own GPU probe, cut to what a screen shows. No probe, no guess: null."""
+  gpu = (profile or _hardware_profile())["gpu"]
+  target_id = gpu.get("target_id")
+  return {"schema": SCHEMA, "kind": "detect", "status": gpu.get("status"), "name": gpu.get("name"),
+          "target_id": target_id, "target_kind": gpu.get("target_kind"),
+          "registered": bool(target_id) and target_id in {t["id"] for t in targets()["targets"]}}
 
 
 def _roles(report:dict[str, Any]) -> list[dict[str, Any]]:
@@ -243,6 +254,7 @@ def pipeline(args, out=sys.stdout) -> int:
   if args.probe or args.timing:
     steps.append(("analyze", lambda: analyze_run(args.run)))  # the plan and the report read the new evidence
   steps.append(("output", lambda: output_run(args.run)))
+  say(f"pipeline steps: {len(steps)}")  # a screen draws n of N from this line
   for key, step in steps:
     say(f"stage {key}: start")
     try:
@@ -277,6 +289,7 @@ def main(argv:list[str] | None = None) -> int:
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
   sub = parser.add_subparsers(dest="command", required=True)
   sub.add_parser("targets")
+  sub.add_parser("detect")
   p = sub.add_parser("ceiling")
   p.add_argument("model", nargs="?")
   p.add_argument("--profile", help="a model_profile.json instead of the model file")
@@ -307,6 +320,8 @@ def main(argv:list[str] | None = None) -> int:
   try:
     if args.command == "targets":
       out = targets()
+    elif args.command == "detect":
+      out = detect()
     elif args.command == "ceiling":
       out = ceiling(_profile_arg(args), _target_arg(args.target), context=args.context, dtype=args.dtype,
                     peak_gbs=args.peak_gbs, peak_tflops=args.peak_tflops)

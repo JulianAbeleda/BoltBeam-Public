@@ -1,0 +1,14 @@
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 2  Chip · apple_m3_10c                                                       │
+│ apple_m3_10c · this Mac · memory 89.9 GB/s                                   │
+│ ▸   amd_gfx1100              ✓ speed limit                                   │
+│     nvidia_sm89              ⚠ no speed limit                                │
+│     nvidia_sm120             ✓ speed limit                                   │
+│     apple_metal              ⚠ no speed limit                                │
+│   ● apple_m3_10c   this Mac  ✓ speed limit                                   │
+│     apple_m4_10c             ⚠ no speed limit                                │
+│                                                                              │
+│ MacBook Air (13-inch, M3, 2024), 10-core GPU                                 │
+│ memory 89.9 GB/s · fp16 3.152 TFLOP/s                                        │
+│ Metal · descriptor_only · memory speed from measurement                      │
+╰──────────────────────────────────────────────────────────────────────────────╯

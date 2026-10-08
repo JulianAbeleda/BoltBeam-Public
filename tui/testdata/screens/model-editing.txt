@@ -1,10 +1,24 @@
+⚡ BoltBeam                                                             (˘ω˘) zz
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ Model                                                                        │
-│ model ▸ /models/Qwen3-8▏                                                     │
-│ chip   ◂ apple_m3_10c ▸  MacBook Air (13-inch, M3, 2024), 10-core GPU  ✓ ha… │
-│ e edit the path · [ ] pick the chip · enter read the model · s start a run   │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────╮
-│ Roles                                                                        │
+│ 1  Model                                                                     │
+│ pick a model file                                                            │
+│ ▸ /models/Q▏                                                                 │
+│                                                                              │
 │ Nothing read yet. The model is never executed; only its shape is read.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+
+ ↑↓ move · enter pick · esc back · x stop · q quit

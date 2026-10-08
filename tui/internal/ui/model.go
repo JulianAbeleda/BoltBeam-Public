@@ -1,14 +1,14 @@
 package ui
 
 import (
-	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -20,74 +20,44 @@ import (
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
 
-type screen int
-
-const (
-	screenModel screen = iota
-	screenCeiling
-	screenRun
-	screenResults
+// Five keys. Everything else is a row inside a step's full view.
+var (
+	keyUp    = key.NewBinding(key.WithKeys("up", "k"))
+	keyDown  = key.NewBinding(key.WithKeys("down", "j"))
+	keyEnter = key.NewBinding(key.WithKeys("enter"))
+	keyBack  = key.NewBinding(key.WithKeys("esc"))
+	keyStop  = key.NewBinding(key.WithKeys("x"))
+	keyQuit  = key.NewBinding(key.WithKeys("q", "ctrl+c"))
 )
 
-var tabs = []string{"Model", "Ceiling", "Run", "Results"}
-
-type keyMap struct{ Tabs, Move, Open, Back, Edit, Chip, Start, Stop, Report, Mode, Refresh, Quit key.Binding }
-
-var keys = keyMap{
-	Tabs:    key.NewBinding(key.WithKeys("1", "2", "3", "4"), key.WithHelp("1-4", "screens")),
-	Move:    key.NewBinding(key.WithKeys("j", "k", "up", "down"), key.WithHelp("j/k", "move")),
-	Open:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "read/open")),
-	Back:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
-	Edit:    key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit path")),
-	Chip:    key.NewBinding(key.WithKeys("[", "]"), key.WithHelp("[ ]", "chip")),
-	Start:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "start")),
-	Stop:    key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "stop")),
-	Report:  key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open report")),
-	Mode:    key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "plain/technical")),
-	Refresh: key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-	Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-}
-
-func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Tabs, k.Move, k.Open, k.Edit, k.Chip, k.Start, k.Stop, k.Report, k.Mode, k.Refresh, k.Quit}
-}
-func (k keyMap) FullHelp() [][]key.Binding { return [][]key.Binding{k.ShortHelp()} }
-
-// Model holds the seam data each screen renders. Every load is a tea.Cmd that calls the seam off the UI thread.
+// Model is the checklist: seam facts, the step cursor, and whether that step's full view is open.
 type Model struct {
-	client     seam.Client
-	store      jobs.Store
-	screen     screen
-	technical  bool
-	cursor     int
-	width      int
-	height     int
-	modelPath  string
-	wantTarget string
-	context    int
-	input      textinput.Model
-	editing    bool
-	targets    *seam.Targets
-	target     int
-	profile    *seam.Profile
-	ceiling    *seam.Ceiling
-	reading    bool
-	ceilBusy   bool
-	runs       *seam.Runs
-	run        *seam.Run
-	jobID      string
-	job        *jobs.Job
-	tail       []string
-	note       string
-	view       viewport.Model
-	spin       spinner.Model
-	help       help.Model
+	client   seam.Client
+	store    jobs.Store
+	f        Facts
+	context  int
+	wantChip string
+	chipSet  bool // the user picked a chip; detection no longer moves it
+	runSet   bool // the user picked a run; the checklist no longer follows the newest one
+	cursor   int
+	moved    bool // the user moved; the cursor no longer follows the first open step
+	open     bool
+	row      int
+	ticking  bool
+	width    int
+	height   int
+	input    textinput.Model
+	note     string
+	view     viewport.Model
+	spin     spinner.Model
 }
 
 type targetsMsg struct {
 	targets *seam.Targets
 	err     error
 }
+type detectMsg struct{ id string }
+type filesMsg []string
 type profileMsg struct {
 	profile *seam.Profile
 	err     error
@@ -108,21 +78,18 @@ type jobMsg struct {
 	job  *jobs.Job
 	tail []string
 }
+type startedMsg string
 type noteMsg string
 type tickMsg time.Time
 
 // New builds the model; modelPath and target may be empty, context is the prefill length for the ceiling.
 func New(client seam.Client, store jobs.Store, modelPath, target string, context int) Model {
-	s := spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(stAccent))
-	h := help.New()
-	h.Styles.ShortKey, h.Styles.ShortDesc, h.Styles.ShortSeparator = stAccent, stMuted, stMuted
 	in := textinput.New()
 	in.Prompt = ""
 	in.SetValue(modelPath)
-	m := Model{client: client, store: store, modelPath: modelPath, context: context, input: in, width: 100, height: 30,
-		view: viewport.New(100, 25), spin: s, help: h}
-	m.wantTarget = target
-	return m
+	return Model{client: client, store: store, f: Facts{Path: modelPath, Reading: modelPath != ""}, context: context,
+		wantChip: target, chipSet: target != "", input: in, width: 80, height: 24, view: viewport.New(80, 21),
+		spin: spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(stAccent))}
 }
 
 // Start runs the program on the terminal.
@@ -132,8 +99,8 @@ func Start(client seam.Client, store jobs.Store, modelPath, target string, conte
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.loadTargets(), m.loadRuns(), m.spin.Tick}
-	if m.modelPath != "" {
+	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.loadRuns(), m.findFiles(), m.spin.Tick}
+	if m.f.Path != "" {
 		cmds = append(cmds, m.inspect())
 	}
 	return tea.Batch(cmds...)
@@ -141,6 +108,43 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) loadTargets() tea.Cmd {
 	return func() tea.Msg { t, _, err := m.client.Targets(); return targetsMsg{t, err} }
+}
+
+func (m Model) detect() tea.Cmd {
+	return func() tea.Msg {
+		d, err := m.client.Detect()
+		if err != nil || d.TargetID == nil {
+			return detectMsg{""}
+		}
+		return detectMsg{*d.TargetID}
+	}
+}
+
+// findFiles lists model files to pick from: the folder of the current path and ~/models. Names only; the
+// model itself is read by Python.
+func (m Model) findFiles() tea.Cmd {
+	dirs := []string{}
+	if m.f.Path != "" {
+		dirs = append(dirs, filepath.Dir(m.f.Path))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, "models"))
+	}
+	return func() tea.Msg {
+		seen, out := map[string]bool{}, []string{}
+		for _, dir := range dirs {
+			for _, ext := range []string{"*.gguf", "*.safetensors"} {
+				found, _ := filepath.Glob(filepath.Join(dir, ext))
+				for _, p := range found {
+					if !seen[p] && len(out) < 10 {
+						seen[p] = true
+						out = append(out, p)
+					}
+				}
+			}
+		}
+		return filesMsg(out)
+	}
 }
 
 func (m Model) loadRuns() tea.Cmd {
@@ -163,12 +167,12 @@ func (m Model) loadJob(id string) tea.Cmd {
 }
 
 func (m Model) inspect() tea.Cmd {
-	path := m.modelPath
+	path := m.f.Path
 	return func() tea.Msg { p, _, err := m.client.Inspect(path); return profileMsg{p, err} }
 }
 
 func (m Model) loadCeiling() tea.Cmd {
-	path, target, context := m.modelPath, m.targetID(), m.context
+	path, target, context := m.f.Path, m.targetID(), m.context
 	return func() tea.Msg { c, _, err := m.client.Ceiling(path, target, context); return ceilingMsg{c, err} }
 }
 
@@ -177,13 +181,17 @@ func tick() tea.Cmd {
 }
 
 func (m Model) targetID() string {
-	if m.targets == nil || len(m.targets.Targets) == 0 {
-		return ""
+	if t := m.f.target(); t != nil {
+		return t.ID
 	}
-	if m.target < 0 || m.target >= len(m.targets.Targets) {
-		return m.targets.Targets[0].ID
+	return ""
+}
+
+func (m Model) runID() string {
+	if m.f.Run != nil {
+		return m.f.Run.ID
 	}
-	return m.targets.Targets[m.target].ID
+	return ""
 }
 
 // RunStem is the run folder prefix: the model file's base name, lower case, plus the chip.
@@ -200,11 +208,42 @@ func RunStem(modelPath, target string) string {
 	return strings.Trim(b.String(), "-") + "-" + target
 }
 
+// newestRun is the run the checklist is about when the user picked none: the newest for this model and chip,
+// or the newest of all when no model is set.
+func (m Model) newestRun() string {
+	if m.f.Runs == nil {
+		return ""
+	}
+	stem := RunStem(m.f.Path, m.targetID()) + "-"
+	for i := len(m.f.Runs.Runs) - 1; i >= 0; i-- {
+		if id := m.f.Runs.Runs[i].ID; m.f.Path == "" || strings.HasPrefix(id, stem) {
+			return id
+		}
+	}
+	return ""
+}
+
+// follow reloads the run the checklist is about when it changed under the model, the chip or the runs list.
+func (m *Model) follow() tea.Cmd {
+	if m.runSet {
+		return nil
+	}
+	id := m.newestRun()
+	if id == m.runID() {
+		return nil
+	}
+	m.f.Run, m.f.Job, m.f.Tail = nil, nil, nil
+	if id == "" {
+		return nil
+	}
+	return m.loadRun(id)
+}
+
 func (m Model) startRun() tea.Cmd {
-	path, target, runs := m.modelPath, m.targetID(), m.runs
+	path, target, runs := m.f.Path, m.targetID(), m.f.Runs
 	return func() tea.Msg {
 		if path == "" || target == "" {
-			return noteMsg("Pick a model (press 1, then e) and a chip first.")
+			return noteMsg("Pick a model in step 1 and a chip in step 2 first.")
 		}
 		id := seam.NextName(runs, RunStem(path, target))
 		dir, err := m.client.RunDir(id)
@@ -222,13 +261,11 @@ func (m Model) startRun() tea.Cmd {
 	}
 }
 
-type startedMsg string
-
 func (m Model) stopRun() tea.Cmd {
-	id := m.jobID
+	id, alive := m.runID(), m.f.alive()
 	return func() tea.Msg {
-		if id == "" {
-			return noteMsg("No run was started from here.")
+		if !alive {
+			return noteMsg("No run is going from here.")
 		}
 		if _, err := m.store.Stop(id); err != nil {
 			return noteMsg("Stop failed: " + err.Error())
@@ -239,11 +276,8 @@ func (m Model) stopRun() tea.Cmd {
 
 // openReport hands report.html to the desktop. This is the one place the TUI runs something other than Python.
 func (m Model) openReport() tea.Cmd {
-	run := m.run
+	run := m.f.Run
 	return func() tea.Msg {
-		if run == nil || run.Report == nil {
-			return noteMsg("No report.html yet: the output stage has not run.")
-		}
 		dir, err := m.client.RunDir(run.ID)
 		if err != nil {
 			return noteMsg(err.Error())
@@ -259,257 +293,283 @@ func (m Model) openReport() tea.Cmd {
 	}
 }
 
-func (m Model) rows() int {
-	if m.screen == screenRun && m.runs != nil {
-		return len(m.runs.Runs)
+func (m *Model) pickChip(id string) {
+	if m.f.Targets == nil {
+		return
 	}
-	return 0
+	for i, t := range m.f.Targets.Targets {
+		if t.ID == id {
+			m.f.Target = i
+			return
+		}
+	}
+	for i, t := range m.f.Targets.Targets {
+		if t.HasCeiling {
+			m.f.Target = i
+			return
+		}
+	}
+}
+
+// chipChanged reloads what depends on the chip: the speed limit and the run.
+func (m *Model) chipChanged() tea.Cmd {
+	m.f.Ceiling, m.f.CeilErr = nil, ""
+	cmds := []tea.Cmd{m.follow()}
+	if m.f.Profile != nil {
+		m.f.CeilBusy = true
+		cmds = append(cmds, m.loadCeiling())
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if !next.moved {
+		next.cursor = firstOpen(next.f)
+	}
+	return next, cmd
+}
+
+func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.view.Width, m.view.Height = msg.Width, msg.Height-4
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
+		m.f.Spin = m.spin.View()
 		return m, cmd
 	case targetsMsg:
-		m.targets = msg.targets
+		m.f.Targets = msg.targets
 		if msg.err != nil {
 			m.note = "The chip list could not be read: " + msg.err.Error()
-		} else {
-			m.pickTarget(m.wantTarget)
-		}
-	case profileMsg:
-		m.reading = false
-		m.profile = msg.profile
-		if msg.err != nil {
-			m.note = "The model could not be read: " + msg.err.Error()
 			return m, nil
 		}
-		m.ceilBusy = true
-		return m, m.loadCeiling()
-	case ceilingMsg:
-		m.ceilBusy = false
-		m.ceiling = msg.ceiling
+		m.pickChip(m.wantChip)
+		return m, m.chipChanged()
+	case detectMsg:
+		m.f.ThisMac = msg.id
+		if !m.chipSet && msg.id != "" {
+			m.wantChip = msg.id
+			if m.f.Targets != nil {
+				m.pickChip(msg.id)
+				return m, m.chipChanged()
+			}
+		}
+	case filesMsg:
+		m.f.Files = msg
+	case profileMsg:
+		m.f.Reading = false
 		if msg.err != nil {
-			m.ceiling = nil
-			m.note = "No speed limit: " + msg.err.Error()
+			m.f.Profile, m.f.ModelErr = nil, msg.err.Error()
+			return m, nil
+		}
+		m.f.Profile, m.f.ModelErr = msg.profile, ""
+		return m, m.chipChanged()
+	case ceilingMsg:
+		m.f.CeilBusy = false
+		m.f.Ceiling, m.f.CeilErr = msg.ceiling, ""
+		if msg.err != nil {
+			m.f.Ceiling, m.f.CeilErr = nil, msg.err.Error()
 		}
 	case runsMsg:
-		m.runs = msg.runs
+		m.f.Runs = msg.runs
 		if msg.err != nil {
 			m.note = "The runs folder could not be read: " + msg.err.Error()
 		}
+		return m, m.follow()
 	case runMsg:
 		if msg.err != nil {
-			m.note = "The run could not be read: " + msg.err.Error()
+			if !m.f.alive() { // a live run has no folder until its first stage lands
+				m.note = "The run could not be read: " + msg.err.Error()
+			}
 			return m, nil
 		}
-		m.run = msg.run
-		if m.jobID == "" || m.jobID != msg.run.ID {
-			m.jobID = msg.run.ID
-			return m, m.loadJob(m.jobID)
+		changed := m.runID() != msg.run.ID
+		m.f.Run = msg.run
+		if changed {
+			return m, m.loadJob(msg.run.ID)
 		}
 	case jobMsg:
-		m.job, m.tail = msg.job, msg.tail
+		m.f.Job, m.f.Tail = msg.job, msg.tail
+		if m.f.alive() && !m.ticking {
+			m.ticking = true
+			return m, tick()
+		}
 	case startedMsg:
-		m.jobID = string(msg)
-		m.screen, m.note = screenRun, "Started "+m.jobID+". Each stage reports below as it finishes."
-		return m, tea.Batch(m.loadRuns(), m.loadJob(m.jobID), tick())
+		id := string(msg)
+		m.runSet, m.ticking = true, true
+		m.f.Run = &seam.Run{Summary: seam.Summary{ID: id}}
+		m.f.Job, m.f.Tail = &jobs.Job{ID: id, Alive: true}, nil
+		m.note = "Started " + id + "."
+		return m, tea.Batch(m.loadJob(id), tick())
 	case noteMsg:
 		m.note = string(msg)
 	case tickMsg:
-		if m.job != nil && m.job.Alive {
-			cmds := []tea.Cmd{m.loadJob(m.jobID), m.loadRuns(), tick()}
-			if m.jobID != "" {
-				cmds = append(cmds, m.loadRun(m.jobID))
-			}
-			return m, tea.Batch(cmds...)
+		id := m.runID()
+		if m.f.alive() {
+			return m, tea.Batch(m.loadJob(id), m.loadRuns(), m.loadRun(id), tick())
 		}
-		return m, tea.Batch(m.loadJob(m.jobID), m.loadRuns(), m.loadRun(m.jobID))
+		m.ticking = false
+		return m, tea.Batch(m.loadRuns(), m.loadRun(id))
 	case tea.KeyMsg:
 		return m.key(msg)
 	}
 	return m, nil
 }
 
-func (m *Model) pickTarget(id string) {
-	if m.targets == nil {
-		return
+func (m Model) actions() []action {
+	if a := steps[m.cursor].actions; a != nil {
+		return a(m.f)
 	}
-	for i, t := range m.targets.Targets {
-		if t.ID == id {
-			m.target = i
-			return
-		}
-	}
-	for i, t := range m.targets.Targets {
-		if t.HasCeiling && id == "" {
-			m.target = i
-			return
-		}
-	}
+	return nil
 }
 
-func (m Model) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.editing {
+func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.f.Editing {
 		switch msg.Type {
 		case tea.KeyEnter:
-			m.editing, m.modelPath, m.reading, m.ceiling = false, strings.TrimSpace(m.input.Value()), true, nil
+			m.f.Editing, m.f.Path = false, strings.TrimSpace(m.input.Value())
 			m.input.Blur()
-			return m, m.inspect()
+			return m.readModel()
 		case tea.KeyEsc:
-			m.editing = false
+			m.f.Editing = false
 			m.input.Blur()
-			m.input.SetValue(m.modelPath)
+			m.input.SetValue(m.f.Path)
 			return m, nil
 		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
+		m.f.Input = m.input.Value()
 		return m, cmd
 	}
-	scrolls := m.screen != screenRun
+	if m.open {
+		m.view.Width, m.view.Height = m.width, m.height-3
+		m.view.SetContent(DetailView(m.f, m.cursor, m.row, m.width))
+	}
 	switch {
-	case key.Matches(msg, keys.Quit):
+	case key.Matches(msg, keyQuit):
 		return m, tea.Quit
-	case key.Matches(msg, keys.Tabs):
-		m.screen = map[string]screen{"1": screenModel, "2": screenCeiling, "3": screenRun, "4": screenResults}[msg.String()]
-		m.view.GotoTop()
-		if m.screen == screenRun {
-			return m, tea.Batch(m.loadRuns(), m.loadJob(m.jobID))
-		}
-	case key.Matches(msg, keys.Move):
-		down := msg.String() == "j" || msg.String() == "down"
-		switch {
-		case scrolls && down:
-			m.view.LineDown(1)
-		case scrolls:
-			m.view.LineUp(1)
-		case down && m.cursor+1 < m.rows():
-			m.cursor++
-		case !down && m.cursor > 0:
-			m.cursor--
-		}
-	case key.Matches(msg, keys.Open):
-		switch m.screen {
-		case screenModel:
-			if m.modelPath == "" {
-				m.editing = true
-				return m, m.input.Focus()
-			}
-			m.reading, m.ceiling = true, nil
-			return m, m.inspect()
-		case screenCeiling:
-			if m.modelPath != "" {
-				m.ceilBusy = true
-				return m, m.loadCeiling()
-			}
-		case screenRun:
-			if m.runs != nil && m.cursor < len(m.runs.Runs) {
-				m.jobID = ""
-				return m, m.loadRun(m.runs.Runs[m.cursor].ID)
-			}
-		}
-	case key.Matches(msg, keys.Edit):
-		if m.screen == screenModel {
-			m.editing = true
-			m.input.SetValue(m.modelPath)
-			return m, m.input.Focus()
-		}
-	case key.Matches(msg, keys.Chip):
-		if m.targets != nil && len(m.targets.Targets) > 0 {
-			n := len(m.targets.Targets)
-			if msg.String() == "]" {
-				m.target = (m.target + 1) % n
-			} else {
-				m.target = (m.target + n - 1) % n
-			}
-			m.ceiling = nil
-			if m.profile != nil && m.modelPath != "" {
-				m.ceilBusy = true
-				return m, m.loadCeiling()
-			}
-		}
-	case key.Matches(msg, keys.Mode):
-		m.technical = !m.technical
-	case key.Matches(msg, keys.Refresh):
-		cmds := []tea.Cmd{m.loadTargets(), m.loadRuns()}
-		if m.run != nil {
-			cmds = append(cmds, m.loadRun(m.run.ID), m.loadJob(m.run.ID))
-		}
-		return m, tea.Batch(cmds...)
-	case key.Matches(msg, keys.Start):
-		return m, m.startRun()
-	case key.Matches(msg, keys.Stop):
+	case key.Matches(msg, keyStop):
 		return m, m.stopRun()
-	case key.Matches(msg, keys.Report):
+	case key.Matches(msg, keyBack):
+		m.open = false
+	case key.Matches(msg, keyDown):
+		switch {
+		case !m.open:
+			m.moved, m.cursor = true, min(m.cursor+1, len(steps)-1)
+		case m.row < len(m.actions())-1:
+			m.row++
+		default:
+			m.view.LineDown(1)
+		}
+	case key.Matches(msg, keyUp):
+		switch {
+		case !m.open:
+			m.moved, m.cursor = true, max(m.cursor-1, 0)
+		case m.view.YOffset > 0:
+			m.view.LineUp(1)
+		case m.row > 0:
+			m.row--
+		}
+	case key.Matches(msg, keyEnter):
+		if !m.open {
+			m.moved, m.open, m.row = true, true, 0
+			if m.cursor == 1 { // the chip list opens on the chip in use
+				m.row = m.f.Target
+			}
+			m.view.GotoTop()
+			return m, nil
+		}
+		if acts := m.actions(); m.row < len(acts) {
+			return m.do(acts[m.row])
+		}
+	}
+	return m, nil
+}
+
+func (m Model) readModel() (Model, tea.Cmd) {
+	m.f.Reading, m.f.Profile, m.f.ModelErr, m.f.Ceiling, m.f.CeilErr = true, nil, "", nil, ""
+	m.input.SetValue(m.f.Path)
+	return m, tea.Batch(m.inspect(), m.follow())
+}
+
+// do runs one action row of the open step.
+func (m Model) do(a action) (Model, tea.Cmd) {
+	switch a.do {
+	case "edit":
+		m.f.Editing, m.f.Input = true, m.f.Path
+		m.input.SetValue(m.f.Path)
+		return m, m.input.Focus()
+	case "file":
+		m.f.Path = a.arg
+		return m.readModel()
+	case "chip":
+		m.f.Target, _ = strconv.Atoi(a.arg)
+		m.chipSet = true
+		return m, m.chipChanged()
+	case "start":
+		return m, m.startRun()
+	case "stop":
+		return m, m.stopRun()
+	case "run":
+		m.runSet = true
+		return m, m.loadRun(a.arg)
+	case "report":
 		return m, m.openReport()
 	}
 	return m, nil
 }
 
-// mood picks the mascot's face from what the screen shows.
+// mood picks the mascot's face from the facts on screen.
 func (m Model) mood() string {
-	if m.reading || m.ceilBusy || (m.job != nil && m.job.Alive) {
+	f := m.f
+	switch {
+	case f.Reading || f.CeilBusy || f.alive():
 		return faceBusy
-	}
-	if m.run != nil && (m.screen == screenRun || m.screen == screenResults) {
-		for _, st := range m.run.Stages {
-			if seam.StageEvents(m.tail)[st.Key] == "failed" {
-				return faceWorried
-			}
-		}
-		switch {
-		case m.run.Results.Measured:
-			return faceHappy
-		case len(m.run.Blocked) > 0:
-			return faceWaiting
-		}
-		return faceIdle
-	}
-	if m.profile == nil && (m.runs == nil || len(m.runs.Runs) == 0) {
+	case f.failedStage() != "":
+		return faceWorried
+	case f.Run != nil && f.Run.Results.Measured:
+		return faceHappy
+	case f.Run != nil && len(f.Run.Blocked) > 0:
+		return faceWaiting
+	case f.Profile == nil && (f.Runs == nil || len(f.Runs.Runs) == 0):
 		return faceSleep
 	}
 	return faceIdle
 }
 
-func (m Model) body() string {
-	switch m.screen {
-	case screenModel:
-		return ModelView(ModelScreen{Path: m.modelPath, Input: m.input.Value(), Editing: m.editing, Targets: m.targets,
-			Target: m.target, Profile: m.profile, Busy: m.reading}, m.technical, m.width)
-	case screenCeiling:
-		return CeilingView(m.ceiling, m.ceilBusy, m.technical, m.width)
-	case screenRun:
-		return RunView(RunScreen{Runs: m.runs, Cursor: m.cursor, Run: m.run, Job: m.job, Tail: m.tail, Spin: m.spin.View()}, m.technical, m.width)
+func footer(open bool) string {
+	pairs := [][2]string{{"↑↓", "step"}, {"enter", "open"}, {"q", "quit"}}
+	if open {
+		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"esc", "back"}, {"x", "stop"}, {"q", "quit"}}
 	}
-	return ResultsView(m.run, m.technical, m.width)
+	parts := []string{}
+	for _, p := range pairs {
+		parts = append(parts, stAccent.Render(p[0])+" "+stMuted.Render(p[1]))
+	}
+	return " " + strings.Join(parts, stMuted.Render(" · "))
 }
 
 func (m Model) View() string {
-	parts := []string{stAccent.Render(glyphBolt) + " " + gradient("BoltBeam")}
-	for i, t := range tabs {
-		if i == int(m.screen) {
-			parts = append(parts, stTabOn.Render(t))
-		} else {
-			parts = append(parts, stTabOff.Render(t))
+	left := stAccent.Render(glyphBolt) + " " + gradient("BoltBeam")
+	right := stAccent.Render(m.mood())
+	if m.f.Reading || m.f.CeilBusy || m.f.alive() {
+		right = m.spin.View() + " " + right
+	}
+	header := left + strings.Repeat(" ", max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
+	room := m.height - 3
+	var body string
+	if m.open {
+		view := m.view
+		view.Width, view.Height = m.width, room
+		view.SetContent(DetailView(m.f, m.cursor, m.row, m.width))
+		body = view.View()
+	} else {
+		body = ChecklistView(m.f, m.cursor, m.width, room)
+		if pad := room - lipgloss.Height(body); pad > 0 {
+			body += strings.Repeat("\n", pad)
 		}
 	}
-	busy := ""
-	if m.reading || m.ceilBusy || (m.job != nil && m.job.Alive) {
-		busy = m.spin.View() + " "
-	}
-	header := strings.Join(parts, "") + "  " + busy + stAccent.Render(m.mood()) + "  " + mode(m.technical)
-	view := m.view
-	view.Width, view.Height = m.width, m.height-4
-	view.SetContent(m.body())
-	note := m.note
-	if note == "" {
-		note = stMuted.Render("Keys below. Press t for the technical words.")
-	}
-	m.help.Width = m.width
-	return fmt.Sprintf("%s\n%s\n%s\n%s", header, view.View(), lipgloss.NewStyle().Width(m.width).Render(note), m.help.View(keys))
+	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.open)
 }

@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                            ⠋ (•̀ᴗ•́)⚡
+╭──────────────────────────────────────────────────────────────────────────────╮
+│   ✓ 1  Model        Qwen3-8B.gguf · 36 layers · F32, Q4_K, Q6_K              │
+│   ✓ 2  Chip         apple_m3_10c · this Mac · memory 89.9 GB/s               │
+│   ✓ 3  Speed limit  up to 19.2 tokens per second                             │
+│ ▸ ● 4  Measure      ██████░░░░░░░░░░░░░░  2 of 7 · Plan what to try…         │
+│   ○ 5  Result       needs step 4                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ 4  Measure · qwen3-8b-apple_m3_10c-001                                       │
+│ Qwen3-8B on apple_m3_10c · needs measuring  needs_measurement                │
+│ ✓ 1. Read the model             4 files                                      │
+│ ✓ 2. Check the machine          4 files                                      │
+│ ● 3. Plan what to try           running                                      │
+│ ○ 4. Prepare the handoff        not run                                      │
+│ ⏸ 5. Test the building blocks   needs the building-block tests (probe_reque… │
+│ ⏸ 6. Time the real run          needs a timing trace (trace_request.json)    │
+│ ✓ 7. Package the result         5 files                                      │
+│ next Run an external timing trace from trace_request.json, ingest boltbeam.… │
+│ …                                                                            │
+│ x stop · enter: start, stop, earlier runs, the full log                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ step · enter open · q quit

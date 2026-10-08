@@ -15,7 +15,7 @@ folder and its expected JSON, pinned by a test on each side.
 ```bash
 cd tui && go build -o boltbeam-tui .           # Go 1.26
 export BOLTBEAM_MODEL=~/models/Qwen3-8B.gguf    # optional: the screens open with it
-export BOLTBEAM_TARGET=apple_m3_10c             # optional: the chip (default: the first with a speed limit)
+export BOLTBEAM_TARGET=apple_m3_10c             # optional: the chip (default: this machine, from detect)
 export BOLTBEAM_RUNS=/path/to/runs              # the folder that holds <run>/ folders (default: <repo>/runs)
 ./boltbeam-tui
 ```
@@ -26,9 +26,8 @@ walking up from the working directory or the binary; `--repo` or `BOLTBEAM_REPO`
 any screen: `inspect` reads the file's shape, the ceiling is arithmetic, and the pipeline runs the no-GPU
 stages. Measurements come from an external runner as `probe_evidence.v1` and `timing_trace.v1` files.
 
-Keys: `1` model, `2` ceiling, `3` run, `4` results, `e` edit the model path, `[` `]` pick the chip, `enter` read
-the model / open a run, `s` start a run for the model and chip on screen 1, `x` stop it, `o` open `report.html`,
-`j`/`k` move or scroll, `t` plain or technical wording, `r` refresh, `q` quit. The footer lists them.
+Keys: `↑` `↓` (or `j` `k`) move, `enter` opens a step or picks a row inside it, `esc` goes back, `x` stops the
+run started here, `q` quits. Five keys. Everything else is a row inside a step.
 
 The look: a Charm-style palette (pink, purple, cyan, mint) as lipgloss adaptive tokens in
 [`internal/ui/theme.go`](internal/ui/theme.go), rounded boxes with gradient titles, glyphs for every outcome
@@ -40,28 +39,28 @@ the state: `(˘ω˘) zz` with nothing read, `(•ᴗ•)` idle, `(•̀ᴗ•́)
 Colours degrade through lipgloss to the terminal's profile and disappear under `NO_COLOR`; the layout fits
 80x24 (long cells are cut with `…`).
 
-Screens:
+One screen, a checklist. The top box is the path as five steps, each with a mark and one line of result. The
+bottom box is the chosen step's summary. `enter` opens the step's full view (scrollable; its rows first). The
+cursor starts on the first step that is not done. Every mark is computed from seam facts, so reopening the
+screen mid run lands on the same marks.
 
-1. **Model.** A GGUF or safetensors path and a chip. `enter` runs `boltbeam inspect`: the architecture class
-   and the role census (one row per role, shape and quant, with how many tensors share it). Plain mode names
-   the roles (`feed-forward in`); technical mode shows the role class and the first tensor.
-2. **Ceiling.** The roofline for this model on this chip, from `roofline-theoretical`'s own arithmetic: the
-   best tokens per second for decode (one token: bytes read divided by the memory's speed) and for a prompt
-   (the prefill context against the compute peak), which limit applies, where each speed came from
-   (`measurement`, `vendor_spec`, `unknown`), and a per-role table with each role's share of the token. A chip
-   with no measured speed gets a refusal, not a number.
-3. **Run.** The runs folder, then the opened run's stages `load → autoscan → analyze → runner-plan → probe →
-   timing → output` as a numbered list (BoltBeam's plain names: *Read the model*, *Check the machine*, *Plan
-   what to try*, *Test the building blocks*, *Time the real run*, *Package the result*). Done comes from
-   `run_manifest.json`; running and failed come from the pipeline's own log lines; a probe or timing stage with
-   an open request shows `⏸` and the request file. Below it, the tail of the process this machine started.
-4. **Results.** Measured tokens/s against the ceiling as a bar, where the time goes (the dominant timing
-   bucket), what is still needed, then what won per role (the route policy: kept / ruled out / undecided / not
-   measured yet, with evidence refs in technical mode), the hot kernels with their share of the step and of
-   the memory peak as bars, and the building-block regimes. `o` opens `report.html`, the same facts as a page.
+| # | Step | Done when | The line says |
+|---|---|---|---|
+| 1 | Model | `inspect` read the file | file name, layers, quants |
+| 2 | Chip | the chip has a speed limit | id, `this Mac` when `detect` names it, memory GB/s |
+| 3 | Speed limit | `ceiling` answered | `up to N tokens per second` |
+| 4 | Measure | the run's `output` stage is done | a bar `n of N` while it runs; `planned · needs a timing trace` after |
+| 5 | Result | `results.measured` | `M tokens per second · P% of the limit` |
 
-Plain mode uses BoltBeam's plain vocabulary from `gui/README.md` and `gui/run-graph.html`; technical mode uses
-the artifacts' own names (`gemv_codegen_capped`, `occupancy_starved`).
+Full views: **Model** has a "type a path" row and the model files found next to the current one and in
+`~/models`, then the role census. **Chip** lists every chip to pick from. **Speed limit** has the roofline per
+role for one token and for a prompt, and the assumptions. **Measure** has "Plan and measure" (or "Stop the
+run"), the earlier runs to open, the stages, and the log. **Result** has "Open the full report" and "Measure
+again", then what won per role, the kernels against the peak, and the building blocks.
+
+Main lines use plain words only (BoltBeam's vocabulary from `gui/README.md`). Full views show the plain word
+with the record's own name beside it, muted (`small kernel, dead time  elementwise_dilution`). There is no
+technical mode.
 
 ## Agent mode: the JSON contract
 
@@ -114,12 +113,15 @@ manifest when it finishes, so the run folder keeps what landed. A new run always
 `boltbeam/workflow/screen.py` is the one Python-side addition. It computes no new kind of fact:
 
 - `targets` reads `boltbeam/data/targets.json` through the registry, with each speed's `fact_status`;
+- `detect` is autoscan's own GPU probe cut to `{status, name, target_id, target_kind, registered}`; `target_id`
+  is null when no probe answered (the screen then says nothing about "this Mac");
 - `ceiling` is `model_roofline` as `roofline-theoretical` calls it (same peak precedence: a measured matrix rate
   before the ALU sheet rate), at context 1 for decode and the given context for prefill, with tokens/s read off
   the floor; a descriptor-only chip gets the same refusal `roofline-theoretical` prints;
 - `runs`, `run` and `results` read the run artifacts and reuse the report's stage table, next-step ladder and
   hot-kernel pick (`report/html.py`), so the screen, `summary.md` and `report.html` never disagree;
-- `pipeline` calls the workflow's own stage functions in order.
+- `pipeline` calls the workflow's own stage functions in order and prints `pipeline steps: N` first, so a
+  screen can draw `n of N`.
 
 Three private names in `report/html.py` and `cli/roofline.py` became public for that reuse (`STAGES`,
 `next_step`, `roofline_kernels`, `resolve_peak_flops`); nothing else outside `tui/` changed.
@@ -137,7 +139,8 @@ measurements still requested), run `002` also ingested a probe evidence file and
 `testdata/fixture/evidence/` (synthetic, plausible for an M3 at 89.9 GB/s, labelled as not a measurement).
 Both were produced by the pipeline from `Qwen3-8B.gguf` on this chip; the model path was rewritten to
 `/models/Qwen3-8B.gguf`. `testdata/expected/*.json` is the seam's output on it; both test suites compare
-against those files. `testdata/screens/*.txt` are the rendered screens under `NO_COLOR`, `styled/*.ansi` the
+against those files. `testdata/screens/*.txt` are the rendered screens under `NO_COLOR` (the checklist in four states, the five
+full views, a full view at 80x24, the path being typed), `styled/*.ansi` the
 same with true colour (`go test ./internal/ui -update` rewrites them). The live Go test skips when no
 interpreter imports `boltbeam`.
 

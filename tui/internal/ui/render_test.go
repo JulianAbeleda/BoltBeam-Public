@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -68,63 +69,65 @@ func loadSample(t *testing.T) sample {
 	load(t, "run-002", &s.measured)
 	s.job = &jobs.Job{ID: "qwen3-8b-apple_m3_10c-001", PID: 4242, Alive: true, LogPath: "/home/u/.local/state/boltbeam-tui/qwen3-8b-apple_m3_10c-001.log",
 		StartedAt: "2026-10-08T10:00:00Z", Argv: []string{"python3", "-m", "boltbeam.workflow.screen", "pipeline"}}
-	s.tail = []string{"=== 2026-10-08T10:00:00Z start python3 -m boltbeam.workflow.screen pipeline",
+	s.tail = []string{"=== 2026-10-08T10:00:00Z start python3 -m boltbeam.workflow.screen pipeline", "pipeline steps: 7",
 		"stage load: start", "stage load: done", "stage autoscan: start", "stage autoscan: done", "stage analyze: start"}
 	return s
 }
 
-func m3(s sample) int {
-	for i, tg := range s.targets.Targets {
-		if tg.ID == "apple_m3_10c" {
-			return i
-		}
+func press(m tea.Model, k string) tea.Model {
+	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
+	switch k {
+	case "enter":
+		msg = tea.KeyMsg{Type: tea.KeyEnter}
+	case "esc":
+		msg = tea.KeyMsg{Type: tea.KeyEsc}
 	}
-	return 0
+	next, _ := m.Update(msg)
+	return next
 }
 
-// program renders the whole frame: open the run screen, move to the second row, open it, toggle the mode, resize.
-func program(s sample, technical bool, width, height int) string {
-	m := New(seam.Client{}, jobs.Store{}, "/models/Qwen3-8B.gguf", "apple_m3_10c", 512)
-	next, _ := m.Update(targetsMsg{&s.targets, nil})
-	next, _ = next.Update(runsMsg{&s.runs, nil})
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	next, _ = next.Update(runMsg{&s.measured, nil})
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")})
-	if technical {
-		next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+// program feeds the model the seam's answers in the order they arrive on a real start, then sizes it.
+func program(s sample, run *seam.Run, job *jobs.Job, tail []string, width, height int) tea.Model {
+	var m tea.Model = New(seam.Client{}, jobs.Store{}, "/models/Qwen3-8B.gguf", "", 512)
+	for _, msg := range []tea.Msg{targetsMsg{&s.targets, nil}, detectMsg{"apple_m3_10c"}, profileMsg{&s.profile, nil},
+		ceilingMsg{&s.ceiling, nil}, runsMsg{&s.runs, nil}, tea.WindowSizeMsg{Width: width, Height: height}} {
+		m, _ = m.Update(msg)
 	}
-	next, _ = next.Update(tea.WindowSizeMsg{Width: width, Height: height})
-	return next.View()
+	if run != nil {
+		m, _ = m.Update(runMsg{run, nil})
+	}
+	if job != nil {
+		m, _ = m.Update(jobMsg{job, tail})
+	}
+	return m
 }
+
+func facts(m tea.Model) Facts { return m.(Model).f }
 
 // The plain goldens are what NO_COLOR shows: lipgloss strips every colour under the Ascii profile.
 func TestScreensPlain(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
-	model := ModelScreen{Path: "/models/Qwen3-8B.gguf", Targets: &s.targets, Target: m3(s), Profile: &s.profile}
-	empty := ModelScreen{Targets: &s.targets, Target: m3(s)}
-	editing := ModelScreen{Path: "/models/Qwen3-8B.gguf", Input: "/models/Qwen3-8", Editing: true, Targets: &s.targets, Target: m3(s)}
-	running := RunScreen{Runs: &s.runs, Cursor: 0, Run: &s.planned, Job: s.job, Tail: s.tail, Spin: "⠋"}
-	finished := RunScreen{Runs: &s.runs, Cursor: 1, Run: &s.measured}
+	empty := New(seam.Client{}, jobs.Store{}, "", "", 512)
+	emptyM, _ := empty.Update(targetsMsg{&s.targets, nil})
+	emptyM, _ = emptyM.Update(runsMsg{&seam.Runs{Root: "/home/u/runs"}, nil})
+	planned := program(s, &s.planned, nil, nil, 80, 24)
+	measuring := program(s, &s.planned, s.job, s.tail, 80, 24)
+	measured := program(s, &s.measured, nil, nil, 80, 24)
+	editing := press(press(press(press(empty, "enter"), "enter"), "/models/Q"), "")
+	opened := press(press(measured, "enter"), "j")
 	for name, got := range map[string]string{
-		"model-plain.txt":                ModelView(model, false, 100),
-		"model-technical.txt":            ModelView(model, true, 140),
-		"model-empty.txt":                ModelView(empty, false, 80),
-		"model-editing.txt":              ModelView(editing, false, 80),
-		"ceiling-plain.txt":              CeilingView(&s.ceiling, false, false, 100),
-		"ceiling-technical.txt":          CeilingView(&s.ceiling, false, true, 120),
-		"ceiling-none.txt":               CeilingView(nil, false, false, 80),
-		"run-running-plain.txt":          RunView(running, false, 100),
-		"run-running-technical.txt":      RunView(running, true, 140),
-		"run-finished-plain.txt":         RunView(finished, false, 100),
-		"run-none.txt":                   RunView(RunScreen{Runs: &seam.Runs{Root: "/home/u/runs"}}, false, 80),
-		"results-measured-plain.txt":     ResultsView(&s.measured, false, 120),
-		"results-measured-technical.txt": ResultsView(&s.measured, true, 140),
-		"results-planned-plain.txt":      ResultsView(&s.planned, false, 100),
-		"results-none.txt":               ResultsView(nil, false, 80),
-		"program-results-technical.txt":  program(s, true, 120, 60),
-		"program-results-80x24.txt":      program(s, false, 80, 24),
+		"checklist-empty.txt":     emptyM.View(),
+		"checklist-planned.txt":   planned.View(),
+		"checklist-measuring.txt": measuring.View(),
+		"checklist-measured.txt":  measured.View(),
+		"open-result-80x24.txt":   opened.View(),
+		"model-editing.txt":       editing.View(),
+		"detail-model.txt":        DetailView(facts(measured), 0, 0, 80),
+		"detail-chip.txt":         DetailView(facts(measured), 1, 0, 80),
+		"detail-limit.txt":        DetailView(facts(measured), 2, 0, 80),
+		"detail-measure.txt":      DetailView(facts(measuring), 3, 0, 80),
+		"detail-result.txt":       DetailView(facts(measured), 4, 0, 80),
 	} {
 		golden(t, name, got)
 	}
@@ -136,55 +139,97 @@ func TestScreensStyled(t *testing.T) {
 	lipgloss.SetHasDarkBackground(true)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
-	golden(t, "styled/ceiling-plain.ansi", CeilingView(&s.ceiling, false, false, 100))
-	golden(t, "styled/results-measured-plain.ansi", ResultsView(&s.measured, false, 120))
-	golden(t, "styled/program-results-80x24.ansi", program(s, false, 80, 24))
-	golden(t, "styled/run-running-plain.ansi", RunView(RunScreen{Runs: &s.runs, Run: &s.planned, Job: s.job, Tail: s.tail, Spin: "⠋"}, false, 100))
+	measured := program(s, &s.measured, nil, nil, 80, 24)
+	golden(t, "styled/checklist-measured.ansi", measured.View())
+	golden(t, "styled/checklist-measuring.ansi", program(s, &s.planned, s.job, s.tail, 80, 24).View())
+	golden(t, "styled/detail-result.ansi", DetailView(facts(measured), 4, 0, 80))
 }
 
-func TestModelNavigation(t *testing.T) {
+// Every frame fits 80x24: 24 lines, none wider than 80 cells.
+func TestFramesFit80x24(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
-	m := New(seam.Client{}, jobs.Store{}, "", "", 512)
-	if m.mood() != faceSleep {
-		t.Fatalf("nothing read and no runs sleeps, got %q", m.mood())
+	for _, m := range []tea.Model{program(s, &s.planned, nil, nil, 80, 24), program(s, &s.planned, s.job, s.tail, 80, 24),
+		press(press(program(s, &s.measured, nil, nil, 80, 24), "enter"), "j")} {
+		lines := strings.Split(m.View(), "\n")
+		if len(lines) != 24 {
+			t.Fatalf("%d lines", len(lines))
+		}
+		for _, l := range lines {
+			if w := lipgloss.Width(l); w > 80 {
+				t.Fatalf("line is %d wide: %q", w, l)
+			}
+		}
 	}
-	next, _ := m.Update(targetsMsg{&s.targets, nil})
-	if next.(Model).targetID() != "amd_gfx1100" {
-		t.Fatalf("with no chip asked for, the first chip with a speed limit is picked, got %q", next.(Model).targetID())
+}
+
+func TestStepStates(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	s := loadSample(t)
+	marks := func(m tea.Model) string {
+		out := ""
+		for _, st := range steps {
+			mk, _ := st.line(facts(m))
+			out += mk + " "
+		}
+		return out
 	}
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("]")})
-	next, _ = next.Update(runsMsg{&s.runs, nil})
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
-	next, _ = next.Update(runMsg{&s.measured, nil})
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
-	got := next.(Model)
-	if got.screen != screenRun || !got.technical || got.jobID != "qwen3-8b-apple_m3_10c-002" || got.mood() != faceHappy || got.targetID() != "nvidia_sm89" {
-		t.Fatalf("model state wrong: screen %d technical %t job %q mood %q chip %q", got.screen, got.technical, got.jobID, got.mood(), got.targetID())
+	for name, c := range map[string]struct {
+		m      tea.Model
+		marks  string
+		cursor int
+	}{
+		"planned":   {program(s, &s.planned, nil, nil, 80, 24), "pass pass pass wait open ", 3},
+		"measuring": {program(s, &s.planned, s.job, s.tail, 80, 24), "pass pass pass run open ", 3},
+		"measured":  {program(s, &s.measured, nil, nil, 80, 24), "pass pass pass pass pass ", 4},
+		"failed":    {program(s, &s.planned, &jobs.Job{}, []string{"stage analyze: failed: boom"}, 80, 24), "pass pass pass fail open ", 3},
+	} {
+		if got := marks(c.m); got != c.marks || c.m.(Model).cursor != c.cursor {
+			t.Errorf("%s: marks %q cursor %d", name, got, c.m.(Model).cursor)
+		}
 	}
-	next, _ = next.Update(runMsg{&s.planned, nil})
-	if next.(Model).mood() != faceWaiting {
-		t.Fatal("a run blocked on evidence waits")
+	none := New(seam.Client{}, jobs.Store{}, "", "", 512)
+	if marks(none) != "open open open open open " || none.mood() != faceSleep {
+		t.Fatalf("nothing read: %q %q", marks(none), none.mood())
 	}
-	next, _ = next.Update(jobMsg{s.job, s.tail})
-	if next.(Model).mood() != faceBusy {
-		t.Fatal("a live pipeline is busy")
+}
+
+func TestKeys(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	s := loadSample(t)
+	m := program(s, &s.measured, nil, nil, 80, 24)
+	if got := m.(Model); got.targetID() != "apple_m3_10c" || got.mood() != faceHappy {
+		t.Fatalf("the detected chip is picked when none is asked for: %q, mood %q", got.targetID(), got.mood())
 	}
-	next, _ = next.Update(jobMsg{&jobs.Job{Alive: false}, []string{"stage analyze: failed: boom"}})
-	if next.(Model).mood() != faceWorried {
-		t.Fatal("a failed stage worries")
+	m = press(press(press(m, "k"), "k"), "k") // to step 2
+	if m.(Model).cursor != 1 {
+		t.Fatalf("cursor %d", m.(Model).cursor)
 	}
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	if next.(Model).screen != screenRun || next.(Model).editing {
-		t.Fatal("e edits only on the model screen")
+	m = press(m, "enter")
+	if !m.(Model).open {
+		t.Fatal("enter opens the step")
 	}
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/m")})
-	next, _ = next.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	if next.(Model).editing || next.(Model).modelPath != "" {
-		t.Fatal("esc cancels the edit")
+	if m.(Model).row != m.(Model).f.Target {
+		t.Fatal("the chip list opens on the chip in use")
+	}
+	m = press(press(m, "k"), "enter") // the chip above it
+	if got := m.(Model); got.targetID() != "apple_metal" || got.f.Ceiling != nil || !got.chipSet {
+		t.Fatalf("enter on a chip row picks it and drops the old speed limit: %q", got.targetID())
+	}
+	m = press(m, "esc")
+	if m.(Model).open || m.(Model).cursor != 1 {
+		t.Fatal("esc goes back to the list, on the same step")
+	}
+	m = press(press(press(press(press(m, "k"), "enter"), "enter"), "/m"), "esc")
+	if got := m.(Model); got.f.Editing || got.f.Path != "/models/Qwen3-8B.gguf" {
+		t.Fatalf("esc cancels the edit: %q", got.f.Path)
+	}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if note, ok := cmd().(noteMsg); !ok || !strings.Contains(string(note), "No run is going") {
+		t.Fatalf("x with no live run says so, got %v", note)
+	}
+	if _, cmd = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
+		t.Fatal("q quits")
 	}
 	if RunStem("/models/Qwen3-8B.gguf", "apple_m3_10c") != "qwen3-8b-apple_m3_10c" {
 		t.Fatalf("stem %q", RunStem("/models/Qwen3-8B.gguf", "apple_m3_10c"))
