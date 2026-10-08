@@ -16,6 +16,7 @@ from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
 
 
 _WHOLE_PREFILL_RE = re.compile(r"^\s*WHOLE-PREFILL@(?P<context>\d+):\s*(?P<tok_s>[0-9]+(?:\.[0-9]+)?)\s+tok/s\s*$", re.MULTILINE)
+_GPU_DEVICE_PREFIXES = ("AMD", "NV", "HIP", "CUDA")
 
 
 def reconcile_authority_wall(trace:dict[str, Any], stdout:str, *, context:int) -> dict[str, Any]:
@@ -86,15 +87,6 @@ def _graph_delta_us(graph:Any, entry:Any) -> float | None:
     return None
 
 
-def _decode_rsrc1_counts(rsrc1:int) -> dict[str, int]:
-  vgpr_gran = rsrc1 & 0x3f
-  sgpr_gran = (rsrc1 >> 6) & 0xf
-  return {
-    "vgpr": (vgpr_gran + 1) * 8 - 7,
-    "sgpr": (sgpr_gran + 1) * 16,
-  }
-
-
 def _program_resources_from_lib(lib:bytes | None) -> dict[str, Any]:
   if not lib:
     return {}
@@ -117,40 +109,45 @@ def _program_resources_from_lib(lib:bytes | None) -> dict[str, Any]:
       "rsrc2": rsrc2,
       "rsrc3": rsrc3,
     }
-    resources.update(_decode_rsrc1_counts(rsrc1))
+    # RSRC encodes architecture/wave-dependent allocation granules, not exact
+    # compiler register counts. Exact VGPR/SGPR counts require ELF-note evidence.
     return resources
   except Exception:
     return {}
 
 
-def _program_rows(events:list[Any]) -> dict[Any, dict[str, Any]]:
-  rows = {}
+def _program_rows(events:list[Any]) -> list[dict[str, Any]]:
+  rows = []
   for event in events:
     if _event_type(event) != "ProfileProgramEvent":
       continue
-    tag = getattr(event, "tag", None)
     lib = getattr(event, "lib", None)
-    resources = _program_resources_from_lib(lib)
-    rows[tag] = {
-      "device": getattr(event, "device", None),
+    resources = _program_resources_from_lib(lib) if str(getattr(event, "device", "")).startswith("AMD") else {}
+    row = {
+      "device": str(getattr(event, "device", None)),
       "kernel": _short_name(_name(getattr(event, "name", ""))),
-      "base": getattr(event, "base", None),
-      "tag": tag,
+      "tag": getattr(event, "tag", None),
     }
     if resources:
-      rows[tag]["resources"] = resources
+      row["resources"] = resources
     if lib:
-      rows[tag]["sources"] = {"lib_sha256": "sha256:" + sha256_hex(lib)}
+      row["sources"] = {"lib_sha256": "sha256:" + sha256_hex(lib)}
+    rows.append(row)
   return rows
 
 
-def _launch_resources(events:list[Any], programs:dict[Any, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-  by_kernel: dict[str, dict[str, Any]] = {}
+def _unique_mapping(rows:list[dict[str, Any]]) -> dict[str, Any] | None:
+  """Return enrichment only when every matching observation agrees."""
+  return rows[0] if rows and all(row == rows[0] for row in rows[1:]) else None
+
+
+def _launch_resources(events:list[Any]) -> dict[tuple[str, Any], list[dict[str, Any]]]:
+  by_tag: dict[tuple[str, Any], list[dict[str, Any]]] = {}
   for event in events:
     if _event_type(event) != "ProfilePointEvent" or getattr(event, "name", None) != "launch":
       continue
-    prog = programs.get(getattr(event, "key", None))
-    if not prog or not prog.get("kernel"):
+    tag = getattr(event, "key", None)
+    if tag is None:
       continue
     arg = getattr(event, "arg", None) or {}
     try:
@@ -165,8 +162,10 @@ def _launch_resources(events:list[Any], programs:dict[Any, dict[str, Any]]) -> d
     for x in local_size:
       threads *= x
     res["workgroup_threads"] = threads
-    by_kernel[str(prog["kernel"])] = res
-  return by_kernel
+    key = (str(getattr(event, "device", None)), tag)
+    if res not in by_tag.setdefault(key, []):
+      by_tag[key].append(res)
+  return by_tag
 
 
 def _freeze(value:Any) -> Any:
@@ -179,35 +178,91 @@ def _freeze(value:Any) -> Any:
 
 def _range_key(row:dict[str, Any]) -> tuple[Any, ...]:
   return (
-    row.get("context"), row.get("kernel"), row.get("kind"), row.get("role"), row.get("quant"),
-    tuple(row.get("shape") or ()), _freeze(row.get("resources")),
+    row.get("context"), row.get("device"), row.get("kernel"), row.get("kind"), row.get("role"), row.get("quant"),
+    tuple(row.get("shape") or ()), _freeze(row.get("resources")), _freeze(row.get("sources")),
   )
+
+
+def _census_program_info(census:dict[str, Any] | None) -> dict[tuple[str, str | None], dict[str, Any]]:
+  """Join captured semantics by name and, when available, compiled binary identity."""
+  if census is None:
+    return {}
+  grouped: dict[str, list[dict[str, Any]]] = {}
+  for programs in census.get("capture", {}).get("program_evidence_by_jit", {}).values():
+    for program in programs:
+      grouped.setdefault(_short_name(program["program_name"]), []).append(program)
+  result = {}
+  for name, programs in grouped.items():
+    binaries = {p["binary_sha256"] for p in programs if p.get("binary_sha256")}
+    for binary in [None, *sorted(binaries)]:
+      matches = [p for p in programs if binary is None or p.get("binary_sha256") in (None, "", binary)]
+      identities = [identity for p in matches for identity in p.get("semantic_identities", [])]
+      info: dict[str, Any] = {"binary_sha256_candidates": sorted(binaries)}
+      if identities:
+        roles = sorted({str(x["role"]) for x in identities if x.get("role")})
+        quants = {x.get("source_quant_storage") for x in identities}
+        shapes = {(x.get("logical_m"), x.get("logical_n"), x.get("logical_k")) for x in identities}
+        info.update(role=roles[0] if len(roles) == 1 and all(x.get("role") for x in identities) else "mixed",
+                    semantic_roles=roles, role_source="captured_program_semantics",
+                    quant=next(iter(quants)) if len(quants) == 1 else None, shape=None)
+        if len(shapes) == 1 and all(isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in next(iter(shapes))):
+          info["shape"] = list(next(iter(shapes)))
+      result[(name, binary)] = info
+  return result
 
 
 def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "amd_gfx1100",
                           workload:str = "prefill", context:int | None = None,
+                          decode_tokens:int | None = None,
+                          program_census:dict[str, Any] | None = None,
                           provider_id:str = "tinygrad/profile-events", peak_gbs:float = DEFAULT_PEAK_MEM_GBS,
                           weight_inventory:str | pathlib.Path | None = None,
                           source_path:str | pathlib.Path | None = None) -> dict[str, Any]:
+  """Normalize device events; the caller must bound a decode capture to its measured window.
+
+  ``context`` describes KV depth, while ``decode_tokens`` counts generated tokens.
+  The initial whole-step duration is a sum of device intervals, not elapsed wall time.
+  Captured census semantics are joined by kernel name and known binary digest;
+  a known mismatch is rejected. Unresolved same-name binaries and launch variants
+  omit ambiguous enrichment. AMD descriptor allocation bits are retained raw;
+  exact register counts require separately joined compiler metadata.
+  """
   if not model_id:
     raise ValueError("model_id is required; pass --model-id or --run")
+  if decode_tokens is not None and (workload != "decode" or isinstance(decode_tokens, bool)
+                                    or not isinstance(decode_tokens, int) or decode_tokens < 1):
+    raise ValueError("decode_tokens must be a positive integer for a decode workload")
   shape_index = _shape_index(weight_inventory)
+  census_info = _census_program_info(program_census)
   programs = _program_rows(events)
-  programs_by_kernel = {str(v["kernel"]): v for v in programs.values() if v.get("kernel")}
-  launch_by_kernel = _launch_resources(events, programs)
+  programs_by_kernel: dict[tuple[str, str], list[dict[str, Any]]] = {}
+  for program in programs:
+    programs_by_kernel.setdefault((program["device"], program["kernel"]), []).append(program)
+  launch_by_tag = _launch_resources(events)
   grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
   raw_events = 0
   range_kernel_events = 0
   graph_entry_events = 0
 
-  def add_kernel(kernel:str, delta_us:float | None, *, device:Any = None) -> None:
+  def add_kernel(kernel:str, delta_us:float | None, *, device:Any = None, tag:Any = None) -> None:
     nonlocal raw_events
     if delta_us is None:
       return
-    if device is not None and not str(device).startswith("AMD"):
+    if device is not None and not str(device).startswith(_GPU_DEVICE_PREFIXES):
       return
     raw_events += 1
     info = classify_tinygrad_kernel(kernel, shape_index=shape_index)
+    candidates = programs_by_kernel.get((str(device), kernel), [])
+    if tag is not None:
+      candidates = [p for p in candidates if p["tag"] == tag]
+    prog = _unique_mapping([{k: p[k] for k in ("sources", "resources") if k in p} for p in candidates])
+    binary = (prog or {}).get("sources", {}).get("lib_sha256", "").removeprefix("sha256:")
+    captured = census_info.get((kernel, None), {})
+    known_binaries = {p["sources"]["lib_sha256"].removeprefix("sha256:") for p in candidates if p.get("sources", {}).get("lib_sha256")}
+    if captured.get("binary_sha256_candidates") and known_binaries.difference(captured["binary_sha256_candidates"]):
+      raise ValueError(f"profile/census binary mismatch for {kernel}")
+    captured = census_info.get((kernel, binary), captured)
+    info.update(captured)
     row = {
       "scope": "kernel",
       "kernel": kernel,
@@ -226,11 +281,21 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
       row["quant"] = info["quant"]
     if info.get("shape"):
       row["shape"] = info["shape"]
-    prog = programs_by_kernel.get(kernel)
+    for key in ("semantic_roles", "role_source"):
+      if key in info:
+        row[key] = info[key]
     if prog and prog.get("resources"):
       row["resources"] = dict(prog["resources"])
-    if kernel in launch_by_kernel:
-      row.setdefault("resources", {}).update(launch_by_kernel[kernel])
+    # Range and graph timing do not necessarily carry launch identity. Never attach the
+    # last observed geometry to every same-name dispatch when variants were captured.
+    launches = [launch_by_tag.get((p["device"], p["tag"]), []) for p in candidates]
+    launch = _unique_mapping([r for rs in launches for r in rs]) if launches and all(launches) else None
+    if launch:
+      row.setdefault("resources", {}).update(launch)
+    if candidates and prog is None:
+      row["program_identity"] = "ambiguous_name"
+    if any(launches) and launch is None:
+      row["launch_identity"] = "ambiguous_or_missing"
     if prog and prog.get("sources"):
       row["sources"] = dict(prog["sources"])
     key = _range_key(row)
@@ -247,14 +312,16 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
     typ = _event_type(event)
     if typ == "ProfileRangeEvent":
       raw_name = getattr(event, "name", "")
-      # Device-copy/profile scopes can be attributed to AMD while carrying a TracingKey object. They are not kernels
+      # Device-copy/profile scopes can carry a TracingKey object. They are not kernels
       # and can dwarf actual device time, so accept only concrete program names from range events.
-      if isinstance(raw_name, str) and str(getattr(event, "device", "")).startswith("AMD"):
+      if isinstance(raw_name, str) and str(getattr(event, "device", "")).startswith(_GPU_DEVICE_PREFIXES):
         range_events.append(event)
         range_kernel_events += 1
     elif typ == "ProfileGraphEvent":
       for entry in getattr(event, "ents", []):
-        if str(getattr(entry, "device", "")).startswith("AMD"):
+        if (str(getattr(entry, "device", "")).startswith(_GPU_DEVICE_PREFIXES)
+            and isinstance(getattr(entry, "name", None), str)
+            and (getattr(entry, "metadata", None) or {}).get("graph_kind", "program") == "program"):
           graph_entries.append((event, entry))
           graph_entry_events += 1
 
@@ -273,10 +340,7 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
     for event in range_events:
       raw_name = getattr(event, "name", "")
       kernel = _short_name(raw_name)
-      prog = programs.get(getattr(event, "tag", None))
-      if prog and prog.get("kernel"):
-        kernel = prog["kernel"]
-      add_kernel(kernel, _range_delta_us(event), device=getattr(event, "device", None))
+      add_kernel(kernel, _range_delta_us(event), device=getattr(event, "device", None), tag=getattr(event, "tag", None))
 
   rows = list(grouped.values())
   rows.sort(key=lambda r: float(r.get("wall_us", 0.0)), reverse=True)
@@ -295,9 +359,13 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
   }
   if context is not None:
     whole["context"] = context
-    if total_us > 0:
-      whole["tok_s"] = 1_000_000.0 * context / total_us
-      whole["tok_s_source"] = "tinygrad_profile_event_sum"
+  measured_tokens = decode_tokens if workload == "decode" else context
+  if measured_tokens is not None and total_us > 0:
+    whole["tok_s"] = 1_000_000.0 * measured_tokens / total_us
+    whole["tok_s_source"] = "tinygrad_profile_event_sum"
+  if workload == "decode":
+    whole["decode_tokens"] = decode_tokens
+    whole["measurement_scope"] = "summed_profile_device_intervals"
   if total_bytes is not None:
     whole["total_bytes"] = total_bytes
   if bytes_source:
@@ -337,8 +405,8 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
     },
     "notes": [
       "Generated from tinygrad PROFILE profile.pkl events without an external backend profiler.",
-      "Kernel rows are aggregated by kernel/role/shape; exact hardware counters require a lower-level sampler.",
-      "Exact tensor role attribution is shape-derived from BoltBeam weight inventory where possible.",
+      "Kernel rows are aggregated by device/kernel/role/shape; exact hardware counters require a lower-level sampler.",
+      "Captured program semantics take precedence over kernel-name and weight-inventory shape attribution when supplied.",
     ],
     "rows": [whole] + rows,
   }
@@ -347,6 +415,8 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
 def timing_trace_from_tinygrad_profile_events(path:str | pathlib.Path, *, model_id:str,
                                               target_id:str = "amd_gfx1100", workload:str = "prefill",
                                               context:int | None = None,
+                                              decode_tokens:int | None = None,
+                                              program_census:dict[str, Any] | None = None,
                                               provider_id:str = "tinygrad/profile-events",
                                               peak_gbs:float = DEFAULT_PEAK_MEM_GBS,
                                               tinygrad_root:str | pathlib.Path | None = None,
@@ -359,6 +429,8 @@ def timing_trace_from_tinygrad_profile_events(path:str | pathlib.Path, *, model_
     target_id=target_id,
     workload=workload,
     context=context,
+    decode_tokens=decode_tokens,
+    program_census=program_census,
     provider_id=provider_id,
     peak_gbs=peak_gbs,
     weight_inventory=weight_inventory,

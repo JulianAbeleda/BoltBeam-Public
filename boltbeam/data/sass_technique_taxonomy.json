@@ -1,0 +1,16 @@
+{
+  "schema": "boltbeam.sass_technique_taxonomy.v1",
+  "note": "SASS opcode (without modifiers) -> the strategy technique it evidences, and the lowering fact that says whether our compiler can emit it (null when it is not a strategy choice). An opcode a reference kernel executes that is not listed here is an UNKNOWN TECHNIQUE: understanding it is a data change here plus a test. Deliberately absent until understood: TMA (UTMALDG/UTMASTG/UBLKCP), warpgroup MMA (HGMMA/UTCHMMA/UTCQMMA), SETMAXNREG, cluster/DSMEM ops.",
+  "techniques": {
+    "tensor_core_mma":        {"lowering_fact": null, "opcodes": ["HMMA", "IMMA", "QMMA", "OMMA"]},
+    "matrix_fragment_load":   {"lowering_fact": "matrix_fragments", "opcodes": ["LDSM"]},
+    "async_global_to_shared": {"lowering_fact": "async_copy", "opcodes": ["LDGSTS", "LDGDEPBAR", "DEPBAR"]},
+    "shared_scalar_access":   {"lowering_fact": null, "opcodes": ["LDS", "STS", "ATOMS"]},
+    "global_access":          {"lowering_fact": null, "opcodes": ["LDG", "STG", "RED", "ATOMG", "ATOM", "LD", "ST", "CCTL"]},
+    "constant_access":        {"lowering_fact": null, "opcodes": ["LDC", "LDCU", "ULDC"]},
+    "barrier":                {"lowering_fact": null, "opcodes": ["BAR", "MEMBAR", "WARPSYNC", "BSSY", "BSYNC", "NANOSLEEP", "ERRBAR", "FENCE"]},
+    "warp_shuffle":           {"lowering_fact": null, "opcodes": ["SHFL", "VOTE", "VOTEU", "MATCH", "REDUX"]},
+    "epilogue_math":          {"lowering_fact": null, "opcodes": ["FFMA", "FADD", "FMUL", "FMNMX", "F2FP", "F2F", "HSETP2", "HMNMX2", "HADD2", "HMUL2", "HFMA2", "FSETP", "FSEL", "MUFU", "I2F", "F2I", "FRND"]},
+    "integer_address_control": {"lowering_fact": null, "opcodes": ["IADD3", "IADD", "IMAD", "IMUL", "LEA", "LEA_HI", "ISETP", "LOP3", "SHF", "SEL", "MOV", "PRMT", "IABS", "IMNMX", "VIMNMX", "VIADD", "VIADDMNMX", "BMSK", "FLO", "POPC", "SGXT", "R2P", "P2R", "PLOP3", "CS2R", "S2R", "S2UR", "R2UR", "NOP", "BRA", "BRX", "EXIT", "RET", "CALL", "YIELD", "UIADD3", "UIMAD", "UMOV", "USEL", "UISETP", "ULEA", "ULOP3", "USHF", "UPRMT", "UPLOP3", "USGXT", "UFLO", "UPOPC", "UBMSK", "UBREV", "UVIADD"]}
+  }
+}

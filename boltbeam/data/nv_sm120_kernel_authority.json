@@ -42,6 +42,7 @@
     {"route_policy": null, "route_id": "decode_q4k_g3_generated", "phase": "decode", "components": ["q4_g3_gemv"], "choke_point": "kernel_program", "state": "exact"},
     {"route_policy": null, "route_id": "decode_q6k_coop_generated", "phase": "decode", "components": ["q6_gemv", "q6_vocab_reduce"], "choke_point": "kernel_program", "state": "exact"},
     {"route_policy": null, "route_id": "decode_q4k_k_four_warp", "phase": "decode", "components": ["q4_k_four_warp"], "choke_point": "kernel_program", "state": "exact"},
-    {"route_policy": null, "route_id": "q6_ffn_down_streamk_destination.v1", "phase": "prefill", "components": ["packed_q6_q8_streamk_main.v1", "q6_destination_major_fixup.v1"], "choke_point": "boltbeam_kernel_provider", "state": "exact"}
+    {"route_policy": null, "route_id": "q6_ffn_down_streamk_destination.v1", "phase": "prefill", "components": ["packed_q6_q8_streamk_main.v1", "q6_destination_major_fixup.v1"], "choke_point": "boltbeam_kernel_provider", "state": "exact"},
+    {"route_policy": null, "route_id": "dense_bf16_decode_async_ring", "phase": "decode", "components": ["dense_bf16.attn_kv.m64", "dense_bf16.attn_kv.m128", "dense_bf16.attn_kv.m256", "dense_bf16.attn_o.m64", "dense_bf16.attn_o.m128", "dense_bf16.attn_o.m256", "dense_bf16.attn_q.m64", "dense_bf16.attn_q.m128", "dense_bf16.attn_q.m256", "dense_bf16.ffn_down.m64", "dense_bf16.ffn_down.m128", "dense_bf16.ffn_down.m256", "dense_bf16.ffn_up.m64", "dense_bf16.ffn_up.m128", "dense_bf16.ffn_up.m256", "dense_bf16.output.m64", "dense_bf16.output.m128", "dense_bf16.output.m256", "dense_bf16.ssm_in.m64", "dense_bf16.ssm_in.m128", "dense_bf16.ssm_in.m256", "dense_bf16.ssm_out.m64", "dense_bf16.ssm_out.m256"], "choke_point": "kernel_program", "state": "template"}
   ]
 }

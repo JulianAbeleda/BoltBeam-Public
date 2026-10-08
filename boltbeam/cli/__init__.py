@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 
-from boltbeam.cli import analysis, search, profile, roofline, workflow
+from boltbeam.cli import analysis, gemm, ncu, search, profile, roofline, workflow, lifecycle
 
-_MODULES = (analysis, search, profile, roofline, workflow)
+_MODULES = (analysis, search, profile, roofline, workflow, gemm, ncu, lifecycle)
 
 
 def main(argv:list[str] | None=None) -> int:

@@ -113,6 +113,34 @@
             "max_threads_per_block": 1024,
             "observed_at": "2026-09-23"
           },
+          "occupancy_scan": {
+            "kind": "hardware_scan",
+            "scope": "NVIDIA GeForce RTX 5090, CUDA driver API 13.2",
+            "method": "cuDeviceGetAttribute on device 0 (no context): MAX_SHARED_MEMORY_PER_BLOCK_OPTIN, RESERVED_SHARED_MEMORY_PER_BLOCK, MAX_REGISTERS_PER_MULTIPROCESSOR, MAX_THREADS_PER_MULTIPROCESSOR, MAX_BLOCKS_PER_MULTIPROCESSOR, L2_CACHE_SIZE",
+            "shared_mem_per_block_optin_bytes": 101376,
+            "reserved_shared_mem_per_block_bytes": 1024,
+            "registers_per_sm": 65536,
+            "max_threads_per_sm": 1536,
+            "max_blocks_per_sm": 24,
+            "l2_cache_bytes": 100663296,
+            "max_registers_per_thread": 255,
+            "max_registers_per_thread_source": "vendor_spec: PTX ISA, at most 255 32-bit registers per thread on every sm_50+ target",
+            "observed_at": "2026-09-26"
+          },
+          "sm_architecture": {
+            "kind": "vendor_spec",
+            "method": "CUDA C++ Programming Guide, compute capability 12.0: an SM is four processing blocks (sub-partitions), each with its own warp scheduler and tensor core",
+            "sm_subpartitions": 4
+          },
+          "sm_stream_gbs": {"kind": "measurement", "scope": "NVIDIA GeForce RTX 5090, CUDA driver API 13.2", "method": "tinygrad-arkey extra/llm_research/microbench/bw_peak_cuda.cu read over 1 GiB, 8 passes, 256 threads/block: 8 blocks 319.6 GB/s, 16 blocks 650.9 GB/s, 32 blocks 1242.9 GB/s (about 40 GB/s per block, linear up to the DRAM roof at about 48 blocks)", "value_gbs": 40.0, "observed_at": "2026-09-26"},
+          "gemm_cost_calibration": {"kind": "fit", "schema": "boltbeam.gemm_cost_calibration.v1", "terms": ["mem_us", "mma_issue_kslots", "iter_sync", "waves", "reduce_us", "reduce_launch", "latency_iters"], "coefficients": {"mem_us": 0.09498, "mma_issue_kslots": 9.748181, "iter_sync": 0.195102, "waves": 0.0, "reduce_us": 1.350729, "reduce_launch": 5.4445, "latency_iters": 0.025237}, "method": "boltbeam.search.gemm_calibration.calibrate: non-negative least squares on relative error over measured cp.async-ring dense bf16 candidates (tinygrad dense_bf16_geometry_search.py, rotated weights, caches cleared per candidate); the model is clamped below by each config's own roofline", "data": "tinygrad-arkey docs/task_workflow/evidence/nv-dense-bf16-candidate-20260925/search-r3-ring-climb.jsonl + search-r5-principled-grid.jsonl + docs/nemotron-vllm-parity/bench/scan-20260926/climb/*.jsonl (3884 candidates, 35 shapes)", "validation": {"held_out_by_shape": {"shapes": 35, "points": 3884, "median_spearman": 0.584, "top1_regret_mean": 1.147, "top1_regret_max": 2.103, "top5_regret_mean": 1.032, "top5_regret_max": 1.353}, "uncalibrated_roofline": {"shapes": 35, "points": 3884, "median_spearman": 0.097, "top1_regret_mean": 1.27, "top1_regret_max": 2.737, "top5_regret_mean": 1.147, "top5_regret_max": 1.721}}, "observed_at": "2026-09-26"},
+          "l2_bandwidth_gbs": {
+            "kind": "measurement",
+            "scope": "NVIDIA GeForce RTX 5090, CUDA driver API 13.2",
+            "method": "tinygrad-arkey extra/llm_research/microbench/bw_peak_cuda.cu read over a 32 MiB (L2-resident) buffer, 2000 passes, 4096 blocks, two runs (5810.8 / 5811.8); the same binary reads 1692.6 GB/s over 4 GiB, reproducing memory_bandwidth_gbs",
+            "value_gbs": 5811.8,
+            "observed_at": "2026-09-26"
+          },
           "memory_bandwidth_gbs": {
             "kind": "measurement",
             "scope": "NVIDIA GeForce RTX 5090, driver 595.84",

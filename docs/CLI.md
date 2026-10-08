@@ -168,6 +168,19 @@ python3 -m boltbeam.cli prefill-roofline-ladder --baseline before.json --candida
 python3 -m boltbeam.cli prefill-role-trace --role ffn_gate_up --quant Q4_K --shape 12288x4096
 ```
 
+Against a reference runtime, per workload (ours = tinygrad HCQ graph profile, vLLM = nsys sqlite):
+
+```
+python3 -m boltbeam.cli lifecycle-compare --out lc.json --markdown lc.md        # default Nemotron-H 4B manifest
+python3 -m boltbeam.cli lifecycle-compare --manifest m.json --workloads decode_b64
+```
+
+It splits each workload's wall gap into GEMM-role deltas, non-GEMM category deltas and a lifecycle delta
+(wall minus kernel sum, plus launch counts). A side with no trace is reported as `missing` together with
+the command that would produce it (`boltbeam.lifecycle_comparison.v1`). The default manifest reads its
+roots from the environment: `TINYGRAD_ROOT`, `VLLM_BENCH_ROOT`, `GPU_RUN`, `LIFECYCLE_TRACES_DIR`,
+`KERNEL_AUDIT_DIR`; a root that is not set is written as its `$VARIABLE` (`--print-manifest` shows them).
+
 ## 6. The verdict, and the ledger
 
 ```

@@ -45,7 +45,11 @@ class TinygradRocprofCapture:
 
 def tinygrad_authority_command(cfg:TinygradRocprofCapture) -> list[str]:
   """Build the bounded command shared by profile-events and rocprof collectors."""
-  cmd = [cfg.python, "extra/qk/bench.py", "--model", cfg.model]
+  root = getattr(cfg, "tinygrad_root", None)
+  entry = "extra/qk/bench.py"
+  if root is not None and (pathlib.Path(root) / "extra/llm_research/bench.py").is_file():
+    entry = "extra/llm_research/bench.py"
+  cmd = [cfg.python, entry, "--model", cfg.model]
   if cfg.workload == "prefill":
     # Roofline attribution must observe the same production authority as the
     # prefill_whole_synced benchmark.  ``smoke`` is a quick reduced profile

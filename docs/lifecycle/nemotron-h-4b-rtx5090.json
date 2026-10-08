@@ -1,0 +1,1856 @@
+{
+  "definitions": {
+    "categories": "non-GEMM kernels by the segment they sit in",
+    "graph_launches_per_step": "graph launches per step (vLLM cudaGraphLaunch; ours HCQ graph executions)",
+    "identity": "wall_delta = sum(role deltas) + sum(category deltas) + lifecycle delta",
+    "kernel_launches_per_step": "kernels executed per step (graph-replayed nodes included)",
+    "kernel_sum_ms_per_step": "sum of kernel durations per step (overlapping kernels count twice)",
+    "lifecycle_ms_per_step": "wall - kernel_sum (launch gaps, host sync, scheduling; negative => overlap)",
+    "roles": "GEMM ops by role, positional over the layer pattern, helpers (split-K reduce, hi/lo split/sum) included",
+    "wall_ms_per_step": "GPU-timeline step period (decode: mean interval between step anchors; prefill: first kernel start .. last kernel end)"
+  },
+  "layer_pattern": "M-M-M-MM-M-M*-M-M*-M-M-M*-M-M-MM*-MMM-M-M-",
+  "model": "NVIDIA-Nemotron-3-Nano-4B-BF16 (RTX 5090)",
+  "notes": [
+    "ours = tinygrad-self-training exp (DEV=NV, HCQ graph profile, PROFILE=1), vLLM 0.30 (nsys, cuda-graph-trace=node); ours traces 2026-09-26 via bench/spec/ours_prof.py / ours_pf_prof.py (host wall/step printed in each meta).",
+    "vLLM B=32 trace was produced 2026-09-26 with VLLM_CACHE_ROOT pointed at a fresh dir (the default cache holds a root-owned flashinfer autotune file that makes the engine fail at warmup).",
+    "ours relu2 is fused into ffn_down's input prep (counted in ffn_down); vLLM's relu2 kernel is mlp_act.",
+    "norm_residual includes the kernels before the first GEMM of a step (embedding, first norm); sampling_bookkeeping = everything after the output GEMM (sampler, vLLM input prep and mamba align copies).",
+    "ours decode steps carry the amortized state flush (state_flush) that runs every ~16 steps."
+  ],
+  "schema": "boltbeam.lifecycle_comparison.v1",
+  "workloads": [
+    {
+      "batch": 8,
+      "comparison": {
+        "category_deltas": {
+          "attention": {
+            "delta_ms": 0.3996,
+            "ours_ms": 0.485,
+            "vllm_ms": 0.0854
+          },
+          "mamba": {
+            "delta_ms": 0.7026,
+            "ours_ms": 1.2257,
+            "vllm_ms": 0.5231
+          },
+          "mlp_act": {
+            "delta_ms": -0.0095,
+            "ours_ms": 0.0,
+            "vllm_ms": 0.0095
+          },
+          "norm_residual": {
+            "delta_ms": 0.1269,
+            "ours_ms": 0.199,
+            "vllm_ms": 0.0721
+          },
+          "sampling_bookkeeping": {
+            "delta_ms": 0.004,
+            "ours_ms": 0.2046,
+            "vllm_ms": 0.2006
+          },
+          "state_flush": {
+            "delta_ms": 0.0366,
+            "ours_ms": 0.0366,
+            "vllm_ms": 0.0
+          }
+        },
+        "gemm_delta_ms": -0.0641,
+        "kernel_sum_delta_ms": 1.1961,
+        "lifecycle": {
+          "delta_ms": 0.318,
+          "graph_launch_delta": 4.094,
+          "launch_delta": 430.95,
+          "ours_ms": 0.4117,
+          "vllm_ms": 0.0937
+        },
+        "non_gemm_delta_ms": 1.2602,
+        "ranked_deltas": [
+          {
+            "delta_ms": 0.7026,
+            "term": "category:mamba"
+          },
+          {
+            "delta_ms": 0.3996,
+            "term": "category:attention"
+          },
+          {
+            "delta_ms": -0.3608,
+            "term": "role:ffn_down"
+          },
+          {
+            "delta_ms": 0.318,
+            "term": "lifecycle"
+          },
+          {
+            "delta_ms": 0.1332,
+            "term": "role:ssm_in"
+          },
+          {
+            "delta_ms": 0.1269,
+            "term": "category:norm_residual"
+          },
+          {
+            "delta_ms": 0.1175,
+            "term": "role:attn_qkv"
+          },
+          {
+            "delta_ms": 0.1118,
+            "term": "role:ffn_up"
+          },
+          {
+            "delta_ms": -0.0711,
+            "term": "role:ssm_out"
+          },
+          {
+            "delta_ms": 0.0368,
+            "term": "role:output"
+          },
+          {
+            "delta_ms": 0.0366,
+            "term": "category:state_flush"
+          },
+          {
+            "delta_ms": -0.0315,
+            "term": "role:attn_o"
+          },
+          {
+            "delta_ms": -0.0095,
+            "term": "category:mlp_act"
+          },
+          {
+            "delta_ms": 0.004,
+            "term": "category:sampling_bookkeeping"
+          }
+        ],
+        "role_deltas": {
+          "attn_o": {
+            "delta_ms": -0.0315,
+            "ours_ms": 0.1185,
+            "vllm_ms": 0.15
+          },
+          "attn_qkv": {
+            "delta_ms": 0.1175,
+            "ours_ms": 0.2479,
+            "vllm_ms": 0.1304
+          },
+          "ffn_down": {
+            "delta_ms": -0.3608,
+            "ours_ms": 1.0182,
+            "vllm_ms": 1.379
+          },
+          "ffn_up": {
+            "delta_ms": 0.1118,
+            "ours_ms": 1.012,
+            "vllm_ms": 0.9002
+          },
+          "output": {
+            "delta_ms": 0.0368,
+            "ours_ms": 0.5261,
+            "vllm_ms": 0.4893
+          },
+          "ssm_in": {
+            "delta_ms": 0.1332,
+            "ours_ms": 1.6493,
+            "vllm_ms": 1.5161
+          },
+          "ssm_out": {
+            "delta_ms": -0.0711,
+            "ours_ms": 0.8872,
+            "vllm_ms": 0.9583
+          }
+        },
+        "share_of_wall_gap": {
+          "kernels": 0.79,
+          "lifecycle": 0.21
+        },
+        "status": "ok",
+        "wall_delta_ms": 1.514
+      },
+      "id": "decode_b8",
+      "kind": "decode",
+      "ours": {
+        "attention_layout": "q_k_v",
+        "attribution": {
+          "forwards_per_step": [
+            1
+          ],
+          "gemm_ops_per_forward_expected": 93,
+          "gemm_ops_per_step": [
+            93
+          ],
+          "steps": 64,
+          "steps_role_assignment_ok": 64
+        },
+        "busy_union_ms_per_step": 7.6,
+        "categories": {
+          "attention": {
+            "kernels": 96.0,
+            "ms": 0.485
+          },
+          "mamba": {
+            "kernels": 422.0,
+            "ms": 1.2257
+          },
+          "norm_residual": {
+            "kernels": 109.0,
+            "ms": 0.199
+          },
+          "sampling_bookkeeping": {
+            "kernels": 15.45,
+            "ms": 0.2046
+          },
+          "state_flush": {
+            "kernels": 1.5,
+            "ms": 0.0366
+          }
+        },
+        "graph_launches_per_step": 5.094,
+        "host_wall_ms_per_step": 7.8154,
+        "kernel_launches_per_step": 736.95,
+        "kernel_sum_ms_per_step": 7.6101,
+        "lifecycle_ms_per_step": 0.4117,
+        "roles": {
+          "attn_k": {
+            "kernels": 4.0,
+            "ms": 0.0663
+          },
+          "attn_o": {
+            "kernels": 4.0,
+            "ms": 0.1185
+          },
+          "attn_q": {
+            "kernels": 4.0,
+            "ms": 0.0667
+          },
+          "attn_v": {
+            "kernels": 4.0,
+            "ms": 0.1149
+          },
+          "ffn_down": {
+            "kernels": 17.0,
+            "ms": 1.0182
+          },
+          "ffn_up": {
+            "kernels": 17.0,
+            "ms": 1.012
+          },
+          "output": {
+            "kernels": 1.0,
+            "ms": 0.5261
+          },
+          "ssm_in": {
+            "kernels": 21.0,
+            "ms": 1.6493
+          },
+          "ssm_out": {
+            "kernels": 21.0,
+            "ms": 0.8872
+          }
+        },
+        "side": "ours",
+        "source": {
+          "jsonl": "$LIFECYCLE_TRACES_DIR/ours_b8_p200.jsonl",
+          "meta": "$LIFECYCLE_TRACES_DIR/ours_b8_p200_meta.json"
+        },
+        "status": "ok",
+        "steps": 64,
+        "wall_ms_per_step": 8.0218,
+        "wall_ms_per_step_median": 7.7428
+      },
+      "prompt_len": {
+        "ours": 200,
+        "vllm": 200
+      },
+      "vllm": {
+        "attention_layout": "fused_qkv",
+        "attribution": {
+          "forwards_per_step": [
+            1
+          ],
+          "gemm_ops_per_forward_expected": 85,
+          "gemm_ops_per_step": [
+            85
+          ],
+          "steps": 185,
+          "steps_role_assignment_ok": 185
+        },
+        "busy_union_ms_per_step": 6.414,
+        "categories": {
+          "attention": {
+            "kernels": 20.0,
+            "ms": 0.0854
+          },
+          "mamba": {
+            "kernels": 63.0,
+            "ms": 0.5231
+          },
+          "mlp_act": {
+            "kernels": 17.0,
+            "ms": 0.0095
+          },
+          "norm_residual": {
+            "kernels": 44.0,
+            "ms": 0.0721
+          },
+          "sampling_bookkeeping": {
+            "kernels": 77.0,
+            "ms": 0.2006
+          }
+        },
+        "category_detail": {
+          "attention/attention": {
+            "kernels": 12.0,
+            "ms": 0.073
+          },
+          "attention/other(elementwise/copy)": {
+            "kernels": 8.0,
+            "ms": 0.0123
+          },
+          "mamba/gated_rmsnorm(+silu gate)": {
+            "kernels": 21.0,
+            "ms": 0.029
+          },
+          "mamba/mamba_conv": {
+            "kernels": 21.0,
+            "ms": 0.0393
+          },
+          "mamba/ssm_state_update": {
+            "kernels": 21.0,
+            "ms": 0.4547
+          },
+          "mlp_act/relu2": {
+            "kernels": 17.0,
+            "ms": 0.0095
+          },
+          "norm_residual/norm/fused": {
+            "kernels": 43.0,
+            "ms": 0.071
+          },
+          "norm_residual/sampling/reduce": {
+            "kernels": 1.0,
+            "ms": 0.0012
+          },
+          "sampling_bookkeeping/mamba_align_bookkeeping": {
+            "kernels": 3.0,
+            "ms": 0.0081
+          },
+          "sampling_bookkeeping/other(elementwise/copy)": {
+            "kernels": 49.0,
+            "ms": 0.0447
+          },
+          "sampling_bookkeeping/sampling/reduce": {
+            "kernels": 25.0,
+            "ms": 0.1479
+          }
+        },
+        "graph_launches_per_step": 1.0,
+        "in_graph_kernels_per_step": 227.0,
+        "kernel_launches_per_step": 306.0,
+        "kernel_sum_ms_per_step": 6.414,
+        "lifecycle_ms_per_step": 0.0937,
+        "roles": {
+          "attn_o": {
+            "kernels": 4.0,
+            "ms": 0.15
+          },
+          "attn_qkv": {
+            "kernels": 4.0,
+            "ms": 0.1304
+          },
+          "ffn_down": {
+            "kernels": 17.0,
+            "ms": 1.379
+          },
+          "ffn_up": {
+            "kernels": 17.0,
+            "ms": 0.9002
+          },
+          "output": {
+            "kernels": 1.0,
+            "ms": 0.4893
+          },
+          "ssm_in": {
+            "kernels": 21.0,
+            "ms": 1.5161
+          },
+          "ssm_out": {
+            "kernels": 21.0,
+            "ms": 0.9583
+          }
+        },
+        "side": "vllm",
+        "source": {
+          "sqlite": "$VLLM_BENCH_ROOT/runs/prof_default.1.sqlite"
+        },
+        "status": "ok",
+        "steps": 185,
+        "wall_ms_per_step": 6.5078,
+        "wall_ms_per_step_median": 6.4957
+      },
+      "warnings": []
+    },
+    {
+      "batch": 32,
+      "comparison": {
+        "category_deltas": {
+          "attention": {
+            "delta_ms": 0.4049,
+            "ours_ms": 0.5849,
+            "vllm_ms": 0.18
+          },
+          "mamba": {
+            "delta_ms": 0.2588,
+            "ours_ms": 3.2688,
+            "vllm_ms": 3.01
+          },
+          "mlp_act": {
+            "delta_ms": -0.0122,
+            "ours_ms": 0.0,
+            "vllm_ms": 0.0122
+          },
+          "norm_residual": {
+            "delta_ms": 0.6855,
+            "ours_ms": 0.7694,
+            "vllm_ms": 0.0839
+          },
+          "sampling_bookkeeping": {
+            "delta_ms": 0.359,
+            "ours_ms": 0.7107,
+            "vllm_ms": 0.3517
+          },
+          "state_flush": {
+            "delta_ms": 0.1601,
+            "ours_ms": 0.1601,
+            "vllm_ms": 0.0
+          }
+        },
+        "gemm_delta_ms": 0.7513,
+        "kernel_sum_delta_ms": 2.6073,
+        "lifecycle": {
+          "delta_ms": 0.2715,
+          "graph_launch_delta": 4.094,
+          "launch_delta": 514.95,
+          "ours_ms": 0.4307,
+          "vllm_ms": 0.1592
+        },
+        "non_gemm_delta_ms": 1.856,
+        "ranked_deltas": [
+          {
+            "delta_ms": 0.6855,
+            "term": "category:norm_residual"
+          },
+          {
+            "delta_ms": 0.4049,
+            "term": "category:attention"
+          },
+          {
+            "delta_ms": 0.359,
+            "term": "category:sampling_bookkeeping"
+          },
+          {
+            "delta_ms": 0.2715,
+            "term": "lifecycle"
+          },
+          {
+            "delta_ms": 0.2588,
+            "term": "category:mamba"
+          },
+          {
+            "delta_ms": 0.2246,
+            "term": "role:ffn_down"
+          },
+          {
+            "delta_ms": 0.1775,
+            "term": "role:ffn_up"
+          },
+          {
+            "delta_ms": 0.1601,
+            "term": "category:state_flush"
+          },
+          {
+            "delta_ms": 0.1501,
+            "term": "role:ssm_out"
+          },
+          {
+            "delta_ms": 0.1068,
+            "term": "role:ssm_in"
+          },
+          {
+            "delta_ms": 0.0696,
+            "term": "role:attn_qkv"
+          },
+          {
+            "delta_ms": 0.0322,
+            "term": "role:attn_o"
+          },
+          {
+            "delta_ms": -0.0122,
+            "term": "category:mlp_act"
+          },
+          {
+            "delta_ms": -0.0095,
+            "term": "role:output"
+          }
+        ],
+        "role_deltas": {
+          "attn_o": {
+            "delta_ms": 0.0322,
+            "ours_ms": 0.1326,
+            "vllm_ms": 0.1004
+          },
+          "attn_qkv": {
+            "delta_ms": 0.0696,
+            "ours_ms": 0.2026,
+            "vllm_ms": 0.133
+          },
+          "ffn_down": {
+            "delta_ms": 0.2246,
+            "ours_ms": 1.1509,
+            "vllm_ms": 0.9263
+          },
+          "ffn_up": {
+            "delta_ms": 0.1775,
+            "ours_ms": 1.2037,
+            "vllm_ms": 1.0262
+          },
+          "output": {
+            "delta_ms": -0.0095,
+            "ours_ms": 0.5235,
+            "vllm_ms": 0.533
+          },
+          "ssm_in": {
+            "delta_ms": 0.1068,
+            "ours_ms": 1.6624,
+            "vllm_ms": 1.5556
+          },
+          "ssm_out": {
+            "delta_ms": 0.1501,
+            "ours_ms": 0.8921,
+            "vllm_ms": 0.742
+          }
+        },
+        "share_of_wall_gap": {
+          "kernels": 0.9057,
+          "lifecycle": 0.0943
+        },
+        "status": "ok",
+        "wall_delta_ms": 2.8789
+      },
+      "id": "decode_b32",
+      "kind": "decode",
+      "ours": {
+        "attention_layout": "q_k_v",
+        "attribution": {
+          "forwards_per_step": [
+            1
+          ],
+          "gemm_ops_per_forward_expected": 93,
+          "gemm_ops_per_step": [
+            93
+          ],
+          "steps": 64,
+          "steps_role_assignment_ok": 64
+        },
+        "busy_union_ms_per_step": 11.2057,
+        "categories": {
+          "attention": {
+            "kernels": 84.0,
+            "ms": 0.5849
+          },
+          "mamba": {
+            "kernels": 422.0,
+            "ms": 3.2688
+          },
+          "norm_residual": {
+            "kernels": 193.0,
+            "ms": 0.7694
+          },
+          "sampling_bookkeeping": {
+            "kernels": 13.45,
+            "ms": 0.7107
+          },
+          "state_flush": {
+            "kernels": 1.5,
+            "ms": 0.1601
+          }
+        },
+        "graph_launches_per_step": 5.094,
+        "host_wall_ms_per_step": 11.4539,
+        "kernel_launches_per_step": 866.95,
+        "kernel_sum_ms_per_step": 11.2616,
+        "lifecycle_ms_per_step": 0.4307,
+        "roles": {
+          "attn_k": {
+            "kernels": 4.0,
+            "ms": 0.0554
+          },
+          "attn_o": {
+            "kernels": 8.0,
+            "ms": 0.1326
+          },
+          "attn_q": {
+            "kernels": 4.0,
+            "ms": 0.0391
+          },
+          "attn_v": {
+            "kernels": 4.0,
+            "ms": 0.1081
+          },
+          "ffn_down": {
+            "kernels": 34.0,
+            "ms": 1.1509
+          },
+          "ffn_up": {
+            "kernels": 34.0,
+            "ms": 1.2037
+          },
+          "output": {
+            "kernels": 2.0,
+            "ms": 0.5235
+          },
+          "ssm_in": {
+            "kernels": 42.0,
+            "ms": 1.6624
+          },
+          "ssm_out": {
+            "kernels": 21.0,
+            "ms": 0.8921
+          }
+        },
+        "side": "ours",
+        "source": {
+          "jsonl": "$LIFECYCLE_TRACES_DIR/ours_b32_p200.jsonl",
+          "meta": "$LIFECYCLE_TRACES_DIR/ours_b32_p200_meta.json"
+        },
+        "status": "ok",
+        "steps": 64,
+        "wall_ms_per_step": 11.6923,
+        "wall_ms_per_step_median": 11.1059
+      },
+      "prompt_len": {
+        "ours": 200,
+        "vllm": 200
+      },
+      "vllm": {
+        "attention_layout": "fused_qkv",
+        "attribution": {
+          "forwards_per_step": [
+            1
+          ],
+          "gemm_ops_per_forward_expected": 85,
+          "gemm_ops_per_step": [
+            85
+          ],
+          "steps": 196,
+          "steps_role_assignment_ok": 196
+        },
+        "busy_union_ms_per_step": 8.6543,
+        "categories": {
+          "attention": {
+            "kernels": 20.0,
+            "ms": 0.18
+          },
+          "mamba": {
+            "kernels": 63.0,
+            "ms": 3.01
+          },
+          "mlp_act": {
+            "kernels": 17.0,
+            "ms": 0.0122
+          },
+          "norm_residual": {
+            "kernels": 44.0,
+            "ms": 0.0839
+          },
+          "sampling_bookkeeping": {
+            "kernels": 77.0,
+            "ms": 0.3517
+          }
+        },
+        "category_detail": {
+          "attention/attention": {
+            "kernels": 12.0,
+            "ms": 0.1671
+          },
+          "attention/other(elementwise/copy)": {
+            "kernels": 8.0,
+            "ms": 0.0129
+          },
+          "mamba/gated_rmsnorm(+silu gate)": {
+            "kernels": 21.0,
+            "ms": 0.0355
+          },
+          "mamba/mamba_conv": {
+            "kernels": 21.0,
+            "ms": 0.0705
+          },
+          "mamba/ssm_state_update": {
+            "kernels": 21.0,
+            "ms": 2.904
+          },
+          "mlp_act/relu2": {
+            "kernels": 17.0,
+            "ms": 0.0122
+          },
+          "norm_residual/norm/fused": {
+            "kernels": 43.0,
+            "ms": 0.0827
+          },
+          "norm_residual/sampling/reduce": {
+            "kernels": 1.0,
+            "ms": 0.0012
+          },
+          "sampling_bookkeeping/mamba_align_bookkeeping": {
+            "kernels": 3.0,
+            "ms": 0.023
+          },
+          "sampling_bookkeeping/other(elementwise/copy)": {
+            "kernels": 49.0,
+            "ms": 0.0431
+          },
+          "sampling_bookkeeping/sampling/reduce": {
+            "kernels": 25.0,
+            "ms": 0.2856
+          }
+        },
+        "graph_launches_per_step": 1.0,
+        "in_graph_kernels_per_step": 273.0,
+        "kernel_launches_per_step": 352.0,
+        "kernel_sum_ms_per_step": 8.6543,
+        "lifecycle_ms_per_step": 0.1592,
+        "roles": {
+          "attn_o": {
+            "kernels": 8.0,
+            "ms": 0.1004
+          },
+          "attn_qkv": {
+            "kernels": 8.0,
+            "ms": 0.133
+          },
+          "ffn_down": {
+            "kernels": 34.0,
+            "ms": 0.9263
+          },
+          "ffn_up": {
+            "kernels": 17.0,
+            "ms": 1.0262
+          },
+          "output": {
+            "kernels": 1.0,
+            "ms": 0.533
+          },
+          "ssm_in": {
+            "kernels": 21.0,
+            "ms": 1.5556
+          },
+          "ssm_out": {
+            "kernels": 42.0,
+            "ms": 0.742
+          }
+        },
+        "side": "vllm",
+        "source": {
+          "sqlite": "$LIFECYCLE_TRACES_DIR/prof_b32_p200.1.sqlite"
+        },
+        "status": "ok",
+        "steps": 196,
+        "wall_ms_per_step": 8.8134,
+        "wall_ms_per_step_median": 8.8119
+      },
+      "warnings": []
+    },
+    {
+      "batch": 64,
+      "comparison": {
+        "category_deltas": {
+          "attention": {
+            "delta_ms": 0.7696,
+            "ours_ms": 1.7058,
+            "vllm_ms": 0.9362
+          },
+          "mamba": {
+            "delta_ms": -0.4956,
+            "ours_ms": 6.1665,
+            "vllm_ms": 6.6621
+          },
+          "mlp_act": {
+            "delta_ms": -0.018,
+            "ours_ms": 0.0,
+            "vllm_ms": 0.018
+          },
+          "norm_residual": {
+            "delta_ms": 0.5768,
+            "ours_ms": 0.655,
+            "vllm_ms": 0.0782
+          },
+          "sampling_bookkeeping": {
+            "delta_ms": 0.8308,
+            "ours_ms": 1.1445,
+            "vllm_ms": 0.3137
+          },
+          "state_flush": {
+            "delta_ms": 0.3247,
+            "ours_ms": 0.3247,
+            "vllm_ms": 0.0
+          }
+        },
+        "gemm_delta_ms": 3.3089,
+        "kernel_sum_delta_ms": 5.2973,
+        "lifecycle": {
+          "delta_ms": 0.3403,
+          "graph_launch_delta": 4.094,
+          "launch_delta": 468.95,
+          "ours_ms": 0.4423,
+          "vllm_ms": 0.102
+        },
+        "non_gemm_delta_ms": 1.9884,
+        "ranked_deltas": [
+          {
+            "delta_ms": 0.9902,
+            "term": "role:ssm_in"
+          },
+          {
+            "delta_ms": 0.8308,
+            "term": "category:sampling_bookkeeping"
+          },
+          {
+            "delta_ms": 0.791,
+            "term": "role:ssm_out"
+          },
+          {
+            "delta_ms": 0.7696,
+            "term": "category:attention"
+          },
+          {
+            "delta_ms": 0.6955,
+            "term": "role:ffn_up"
+          },
+          {
+            "delta_ms": 0.5768,
+            "term": "category:norm_residual"
+          },
+          {
+            "delta_ms": 0.5178,
+            "term": "role:ffn_down"
+          },
+          {
+            "delta_ms": -0.4956,
+            "term": "category:mamba"
+          },
+          {
+            "delta_ms": 0.3403,
+            "term": "lifecycle"
+          },
+          {
+            "delta_ms": 0.3247,
+            "term": "category:state_flush"
+          },
+          {
+            "delta_ms": 0.1176,
+            "term": "role:attn_qkv"
+          },
+          {
+            "delta_ms": 0.1008,
+            "term": "role:attn_o"
+          },
+          {
+            "delta_ms": 0.096,
+            "term": "role:output"
+          },
+          {
+            "delta_ms": -0.018,
+            "term": "category:mlp_act"
+          }
+        ],
+        "role_deltas": {
+          "attn_o": {
+            "delta_ms": 0.1008,
+            "ours_ms": 0.2005,
+            "vllm_ms": 0.0997
+          },
+          "attn_qkv": {
+            "delta_ms": 0.1176,
+            "ours_ms": 0.2538,
+            "vllm_ms": 0.1362
+          },
+          "ffn_down": {
+            "delta_ms": 0.5178,
+            "ours_ms": 1.452,
+            "vllm_ms": 0.9342
+          },
+          "ffn_up": {
+            "delta_ms": 0.6955,
+            "ours_ms": 1.6451,
+            "vllm_ms": 0.9496
+          },
+          "output": {
+            "delta_ms": 0.096,
+            "ours_ms": 0.6321,
+            "vllm_ms": 0.5361
+          },
+          "ssm_in": {
+            "delta_ms": 0.9902,
+            "ours_ms": 2.5497,
+            "vllm_ms": 1.5595
+          },
+          "ssm_out": {
+            "delta_ms": 0.791,
+            "ours_ms": 1.5519,
+            "vllm_ms": 0.7609
+          }
+        },
+        "share_of_wall_gap": {
+          "kernels": 0.9397,
+          "lifecycle": 0.0604
+        },
+        "status": "ok",
+        "wall_delta_ms": 5.6375
+      },
+      "id": "decode_b64",
+      "kind": "decode",
+      "ours": {
+        "attention_layout": "q_k_v",
+        "attribution": {
+          "forwards_per_step": [
+            1
+          ],
+          "gemm_ops_per_forward_expected": 93,
+          "gemm_ops_per_step": [
+            93
+          ],
+          "steps": 64,
+          "steps_role_assignment_ok": 64
+        },
+        "busy_union_ms_per_step": 18.1786,
+        "categories": {
+          "attention": {
+            "kernels": 76.33,
+            "ms": 1.7058
+          },
+          "mamba": {
+            "kernels": 401.0,
+            "ms": 6.1665
+          },
+          "norm_residual": {
+            "kernels": 151.0,
+            "ms": 0.655
+          },
+          "sampling_bookkeeping": {
+            "kernels": 13.45,
+            "ms": 1.1445
+          },
+          "state_flush": {
+            "kernels": 1.5,
+            "ms": 0.3247
+          }
+        },
+        "graph_launches_per_step": 5.094,
+        "host_wall_ms_per_step": 18.4867,
+        "kernel_launches_per_step": 820.95,
+        "kernel_sum_ms_per_step": 18.2817,
+        "lifecycle_ms_per_step": 0.4423,
+        "roles": {
+          "attn_k": {
+            "kernels": 4.66,
+            "ms": 0.0673
+          },
+          "attn_o": {
+            "kernels": 12.0,
+            "ms": 0.2005
+          },
+          "attn_q": {
+            "kernels": 4.0,
+            "ms": 0.0476
+          },
+          "attn_v": {
+            "kernels": 7.02,
+            "ms": 0.1389
+          },
+          "ffn_down": {
+            "kernels": 51.0,
+            "ms": 1.452
+          },
+          "ffn_up": {
+            "kernels": 34.0,
+            "ms": 1.6451
+          },
+          "output": {
+            "kernels": 2.0,
+            "ms": 0.6321
+          },
+          "ssm_in": {
+            "kernels": 21.0,
+            "ms": 2.5497
+          },
+          "ssm_out": {
+            "kernels": 42.0,
+            "ms": 1.5519
+          }
+        },
+        "side": "ours",
+        "source": {
+          "jsonl": "$LIFECYCLE_TRACES_DIR/ours_b64_p2000.jsonl",
+          "meta": "$LIFECYCLE_TRACES_DIR/ours_b64_p2000_meta.json"
+        },
+        "status": "ok",
+        "steps": 64,
+        "wall_ms_per_step": 18.7239,
+        "wall_ms_per_step_median": 17.6532
+      },
+      "prompt_len": {
+        "ours": 2000,
+        "vllm": 2000
+      },
+      "vllm": {
+        "attention_layout": "fused_qkv",
+        "attribution": {
+          "forwards_per_step": [
+            1
+          ],
+          "gemm_ops_per_forward_expected": 85,
+          "gemm_ops_per_step": [
+            85
+          ],
+          "steps": 213,
+          "steps_role_assignment_ok": 213
+        },
+        "busy_union_ms_per_step": 12.9844,
+        "categories": {
+          "attention": {
+            "kernels": 20.0,
+            "ms": 0.9362
+          },
+          "mamba": {
+            "kernels": 63.0,
+            "ms": 6.6621
+          },
+          "mlp_act": {
+            "kernels": 17.0,
+            "ms": 0.018
+          },
+          "norm_residual": {
+            "kernels": 44.0,
+            "ms": 0.0782
+          },
+          "sampling_bookkeeping": {
+            "kernels": 77.0,
+            "ms": 0.3137
+          }
+        },
+        "category_detail": {
+          "attention/attention": {
+            "kernels": 8.0,
+            "ms": 0.9198
+          },
+          "attention/other(elementwise/copy)": {
+            "kernels": 12.0,
+            "ms": 0.0165
+          },
+          "mamba/gated_rmsnorm(+silu gate)": {
+            "kernels": 21.0,
+            "ms": 0.0408
+          },
+          "mamba/mamba_conv": {
+            "kernels": 21.0,
+            "ms": 0.1149
+          },
+          "mamba/ssm_state_update": {
+            "kernels": 21.0,
+            "ms": 6.5064
+          },
+          "mlp_act/relu2": {
+            "kernels": 17.0,
+            "ms": 0.018
+          },
+          "norm_residual/norm/fused": {
+            "kernels": 43.0,
+            "ms": 0.077
+          },
+          "norm_residual/sampling/reduce": {
+            "kernels": 1.0,
+            "ms": 0.0012
+          },
+          "sampling_bookkeeping/mamba_align_bookkeeping": {
+            "kernels": 3.0,
+            "ms": 0.0433
+          },
+          "sampling_bookkeeping/other(elementwise/copy)": {
+            "kernels": 49.0,
+            "ms": 0.0434
+          },
+          "sampling_bookkeeping/sampling/reduce": {
+            "kernels": 25.0,
+            "ms": 0.2269
+          }
+        },
+        "graph_launches_per_step": 1.0,
+        "in_graph_kernels_per_step": 273.0,
+        "kernel_launches_per_step": 352.0,
+        "kernel_sum_ms_per_step": 12.9844,
+        "lifecycle_ms_per_step": 0.102,
+        "roles": {
+          "attn_o": {
+            "kernels": 8.0,
+            "ms": 0.0997
+          },
+          "attn_qkv": {
+            "kernels": 8.0,
+            "ms": 0.1362
+          },
+          "ffn_down": {
+            "kernels": 34.0,
+            "ms": 0.9342
+          },
+          "ffn_up": {
+            "kernels": 17.0,
+            "ms": 0.9496
+          },
+          "output": {
+            "kernels": 1.0,
+            "ms": 0.5361
+          },
+          "ssm_in": {
+            "kernels": 21.0,
+            "ms": 1.5595
+          },
+          "ssm_out": {
+            "kernels": 42.0,
+            "ms": 0.7609
+          }
+        },
+        "side": "vllm",
+        "source": {
+          "sqlite": "$VLLM_BENCH_ROOT/runs/prof_spec64.1.sqlite"
+        },
+        "status": "ok",
+        "steps": 213,
+        "wall_ms_per_step": 13.0864,
+        "wall_ms_per_step_median": 13.1001
+      },
+      "warnings": []
+    },
+    {
+      "batch": 128,
+      "comparison": {
+        "category_deltas": {
+          "attention": {
+            "delta_ms": 1.068,
+            "ours_ms": 2.7003,
+            "vllm_ms": 1.6323
+          },
+          "mamba": {
+            "delta_ms": -1.5203,
+            "ours_ms": 12.1448,
+            "vllm_ms": 13.6651
+          },
+          "mlp_act": {
+            "delta_ms": -0.0316,
+            "ours_ms": 0.0,
+            "vllm_ms": 0.0316
+          },
+          "norm_residual": {
+            "delta_ms": 0.8019,
+            "ours_ms": 0.8938,
+            "vllm_ms": 0.0919
+          },
+          "sampling_bookkeeping": {
+            "delta_ms": 1.9043,
+            "ours_ms": 2.3388,
+            "vllm_ms": 0.4345
+          },
+          "state_flush": {
+            "delta_ms": 0.503,
+            "ours_ms": 0.503,
+            "vllm_ms": 0.0
+          }
+        },
+        "gemm_delta_ms": 6.9261,
+        "kernel_sum_delta_ms": 9.6514,
+        "lifecycle": {
+          "delta_ms": 0.5567,
+          "graph_launch_delta": 4.094,
+          "launch_delta": 468.95,
+          "ours_ms": 0.7157,
+          "vllm_ms": 0.159
+        },
+        "non_gemm_delta_ms": 2.7253,
+        "ranked_deltas": [
+          {
+            "delta_ms": 2.5138,
+            "term": "role:ssm_in"
+          },
+          {
+            "delta_ms": 1.9043,
+            "term": "category:sampling_bookkeeping"
+          },
+          {
+            "delta_ms": -1.5203,
+            "term": "category:mamba"
+          },
+          {
+            "delta_ms": 1.3888,
+            "term": "role:ffn_up"
+          },
+          {
+            "delta_ms": 1.2021,
+            "term": "role:ffn_down"
+          },
+          {
+            "delta_ms": 1.068,
+            "term": "category:attention"
+          },
+          {
+            "delta_ms": 0.9003,
+            "term": "role:ssm_out"
+          },
+          {
+            "delta_ms": 0.8019,
+            "term": "category:norm_residual"
+          },
+          {
+            "delta_ms": 0.6579,
+            "term": "role:output"
+          },
+          {
+            "delta_ms": 0.5567,
+            "term": "lifecycle"
+          },
+          {
+            "delta_ms": 0.503,
+            "term": "category:state_flush"
+          },
+          {
+            "delta_ms": 0.1407,
+            "term": "role:attn_o"
+          },
+          {
+            "delta_ms": 0.1225,
+            "term": "role:attn_qkv"
+          },
+          {
+            "delta_ms": -0.0316,
+            "term": "category:mlp_act"
+          }
+        ],
+        "role_deltas": {
+          "attn_o": {
+            "delta_ms": 0.1407,
+            "ours_ms": 0.2499,
+            "vllm_ms": 0.1092
+          },
+          "attn_qkv": {
+            "delta_ms": 0.1225,
+            "ours_ms": 0.321,
+            "vllm_ms": 0.1985
+          },
+          "ffn_down": {
+            "delta_ms": 1.2021,
+            "ours_ms": 2.2895,
+            "vllm_ms": 1.0874
+          },
+          "ffn_up": {
+            "delta_ms": 1.3888,
+            "ours_ms": 2.5302,
+            "vllm_ms": 1.1414
+          },
+          "output": {
+            "delta_ms": 0.6579,
+            "ours_ms": 1.2227,
+            "vllm_ms": 0.5648
+          },
+          "ssm_in": {
+            "delta_ms": 2.5138,
+            "ours_ms": 4.3681,
+            "vllm_ms": 1.8543
+          },
+          "ssm_out": {
+            "delta_ms": 0.9003,
+            "ours_ms": 1.8445,
+            "vllm_ms": 0.9442
+          }
+        },
+        "share_of_wall_gap": {
+          "kernels": 0.9455,
+          "lifecycle": 0.0545
+        },
+        "status": "ok",
+        "wall_delta_ms": 10.2081
+      },
+      "id": "decode_b128",
+      "kind": "decode",
+      "ours": {
+        "attention_layout": "q_k_v",
+        "attribution": {
+          "forwards_per_step": [
+            1
+          ],
+          "gemm_ops_per_forward_expected": 93,
+          "gemm_ops_per_step": [
+            93
+          ],
+          "steps": 64,
+          "steps_role_assignment_ok": 64
+        },
+        "busy_union_ms_per_step": 31.3891,
+        "categories": {
+          "attention": {
+            "kernels": 76.0,
+            "ms": 2.7003
+          },
+          "mamba": {
+            "kernels": 380.0,
+            "ms": 12.1448
+          },
+          "norm_residual": {
+            "kernels": 193.0,
+            "ms": 0.8938
+          },
+          "sampling_bookkeeping": {
+            "kernels": 13.45,
+            "ms": 2.3388
+          },
+          "state_flush": {
+            "kernels": 1.5,
+            "ms": 0.503
+          }
+        },
+        "graph_launches_per_step": 5.094,
+        "host_wall_ms_per_step": 31.8649,
+        "kernel_launches_per_step": 816.95,
+        "kernel_sum_ms_per_step": 31.4067,
+        "lifecycle_ms_per_step": 0.7157,
+        "roles": {
+          "attn_k": {
+            "kernels": 4.0,
+            "ms": 0.0884
+          },
+          "attn_o": {
+            "kernels": 8.0,
+            "ms": 0.2499
+          },
+          "attn_q": {
+            "kernels": 4.0,
+            "ms": 0.0619
+          },
+          "attn_v": {
+            "kernels": 4.0,
+            "ms": 0.1707
+          },
+          "ffn_down": {
+            "kernels": 34.0,
+            "ms": 2.2895
+          },
+          "ffn_up": {
+            "kernels": 34.0,
+            "ms": 2.5302
+          },
+          "output": {
+            "kernels": 2.0,
+            "ms": 1.2227
+          },
+          "ssm_in": {
+            "kernels": 42.0,
+            "ms": 4.3681
+          },
+          "ssm_out": {
+            "kernels": 21.0,
+            "ms": 1.8445
+          }
+        },
+        "side": "ours",
+        "source": {
+          "jsonl": "$LIFECYCLE_TRACES_DIR/ours_b128_p2000.jsonl",
+          "meta": "$LIFECYCLE_TRACES_DIR/ours_b128_p2000_meta.json"
+        },
+        "status": "ok",
+        "steps": 64,
+        "wall_ms_per_step": 32.1224,
+        "wall_ms_per_step_median": 30.2492
+      },
+      "prompt_len": {
+        "ours": 2000,
+        "vllm": 2000
+      },
+      "vllm": {
+        "attention_layout": "fused_qkv",
+        "attribution": {
+          "forwards_per_step": [
+            1
+          ],
+          "gemm_ops_per_forward_expected": 85,
+          "gemm_ops_per_step": [
+            85
+          ],
+          "steps": 219,
+          "steps_role_assignment_ok": 219
+        },
+        "busy_union_ms_per_step": 21.7553,
+        "categories": {
+          "attention": {
+            "kernels": 20.0,
+            "ms": 1.6323
+          },
+          "mamba": {
+            "kernels": 63.0,
+            "ms": 13.6651
+          },
+          "mlp_act": {
+            "kernels": 17.0,
+            "ms": 0.0316
+          },
+          "norm_residual": {
+            "kernels": 44.0,
+            "ms": 0.0919
+          },
+          "sampling_bookkeeping": {
+            "kernels": 77.0,
+            "ms": 0.4345
+          }
+        },
+        "category_detail": {
+          "attention/attention": {
+            "kernels": 8.0,
+            "ms": 1.6118
+          },
+          "attention/other(elementwise/copy)": {
+            "kernels": 12.0,
+            "ms": 0.0206
+          },
+          "mamba/gated_rmsnorm(+silu gate)": {
+            "kernels": 21.0,
+            "ms": 0.061
+          },
+          "mamba/mamba_conv": {
+            "kernels": 21.0,
+            "ms": 0.1654
+          },
+          "mamba/ssm_state_update": {
+            "kernels": 21.0,
+            "ms": 13.4388
+          },
+          "mlp_act/relu2": {
+            "kernels": 17.0,
+            "ms": 0.0316
+          },
+          "norm_residual/norm/fused": {
+            "kernels": 43.0,
+            "ms": 0.0906
+          },
+          "norm_residual/sampling/reduce": {
+            "kernels": 1.0,
+            "ms": 0.0013
+          },
+          "sampling_bookkeeping/mamba_align_bookkeeping": {
+            "kernels": 3.0,
+            "ms": 0.0842
+          },
+          "sampling_bookkeeping/other(elementwise/copy)": {
+            "kernels": 49.0,
+            "ms": 0.046
+          },
+          "sampling_bookkeeping/sampling/reduce": {
+            "kernels": 25.0,
+            "ms": 0.3044
+          }
+        },
+        "graph_launches_per_step": 1.0,
+        "in_graph_kernels_per_step": 269.0,
+        "kernel_launches_per_step": 348.0,
+        "kernel_sum_ms_per_step": 21.7553,
+        "lifecycle_ms_per_step": 0.159,
+        "roles": {
+          "attn_o": {
+            "kernels": 8.0,
+            "ms": 0.1092
+          },
+          "attn_qkv": {
+            "kernels": 4.0,
+            "ms": 0.1985
+          },
+          "ffn_down": {
+            "kernels": 34.0,
+            "ms": 1.0874
+          },
+          "ffn_up": {
+            "kernels": 17.0,
+            "ms": 1.1414
+          },
+          "output": {
+            "kernels": 1.0,
+            "ms": 0.5648
+          },
+          "ssm_in": {
+            "kernels": 21.0,
+            "ms": 1.8543
+          },
+          "ssm_out": {
+            "kernels": 42.0,
+            "ms": 0.9442
+          }
+        },
+        "side": "vllm",
+        "source": {
+          "sqlite": "$VLLM_BENCH_ROOT/runs/prof_default.3.sqlite"
+        },
+        "status": "ok",
+        "steps": 219,
+        "wall_ms_per_step": 21.9143,
+        "wall_ms_per_step_median": 21.9129
+      },
+      "warnings": []
+    },
+    {
+      "batch": 1,
+      "comparison": {
+        "category_deltas": {
+          "attention": {
+            "delta_ms": 47.2494,
+            "ours_ms": 71.0028,
+            "vllm_ms": 23.7534
+          },
+          "mamba": {
+            "delta_ms": 338.9912,
+            "ours_ms": 376.3615,
+            "vllm_ms": 37.3703
+          },
+          "mlp_act": {
+            "delta_ms": -4.3104,
+            "ours_ms": 0.0,
+            "vllm_ms": 4.3104
+          },
+          "norm_residual": {
+            "delta_ms": 22.4323,
+            "ours_ms": 27.0315,
+            "vllm_ms": 4.5992
+          },
+          "sampling_bookkeeping": {
+            "delta_ms": -0.3536,
+            "ours_ms": 0.0,
+            "vllm_ms": 0.3536
+          }
+        },
+        "gemm_delta_ms": 868.1548,
+        "kernel_sum_delta_ms": 1272.1635,
+        "lifecycle": {
+          "delta_ms": -2.8502,
+          "graph_launch_delta": 753.0,
+          "launch_delta": 13968.0,
+          "ours_ms": 4.1442,
+          "vllm_ms": 6.9944
+        },
+        "non_gemm_delta_ms": 404.0087,
+        "ranked_deltas": [
+          {
+            "delta_ms": 338.9912,
+            "term": "category:mamba"
+          },
+          {
+            "delta_ms": 338.8619,
+            "term": "role:ssm_in"
+          },
+          {
+            "delta_ms": 187.2285,
+            "term": "role:ssm_out"
+          },
+          {
+            "delta_ms": 151.7858,
+            "term": "role:ffn_up"
+          },
+          {
+            "delta_ms": 145.4815,
+            "term": "role:ffn_down"
+          },
+          {
+            "delta_ms": 47.2494,
+            "term": "category:attention"
+          },
+          {
+            "delta_ms": 23.0017,
+            "term": "role:attn_qkv"
+          },
+          {
+            "delta_ms": 22.8565,
+            "term": "role:attn_o"
+          },
+          {
+            "delta_ms": 22.4323,
+            "term": "category:norm_residual"
+          },
+          {
+            "delta_ms": -4.3104,
+            "term": "category:mlp_act"
+          },
+          {
+            "delta_ms": -2.8502,
+            "term": "lifecycle"
+          },
+          {
+            "delta_ms": -1.0611,
+            "term": "role:output"
+          },
+          {
+            "delta_ms": -0.3536,
+            "term": "category:sampling_bookkeeping"
+          }
+        ],
+        "role_deltas": {
+          "attn_o": {
+            "delta_ms": 22.8565,
+            "ours_ms": 29.267,
+            "vllm_ms": 6.4105
+          },
+          "attn_qkv": {
+            "delta_ms": 23.0017,
+            "ours_ms": 31.6598,
+            "vllm_ms": 8.6581
+          },
+          "ffn_down": {
+            "delta_ms": 145.4815,
+            "ours_ms": 210.6798,
+            "vllm_ms": 65.1983
+          },
+          "ffn_up": {
+            "delta_ms": 151.7858,
+            "ours_ms": 213.6425,
+            "vllm_ms": 61.8567
+          },
+          "output": {
+            "delta_ms": -1.0611,
+            "ours_ms": 0.0,
+            "vllm_ms": 1.0611
+          },
+          "ssm_in": {
+            "delta_ms": 338.8619,
+            "ours_ms": 446.348,
+            "vllm_ms": 107.4861
+          },
+          "ssm_out": {
+            "delta_ms": 187.2285,
+            "ours_ms": 235.8063,
+            "vllm_ms": 48.5778
+          }
+        },
+        "share_of_wall_gap": {
+          "kernels": 1.0022,
+          "lifecycle": -0.0022
+        },
+        "status": "ok",
+        "wall_delta_ms": 1269.3132
+      },
+      "id": "prefill_10k",
+      "kind": "prefill",
+      "ours": {
+        "attention_layout": "q_kv(merged k+v)",
+        "attribution": {
+          "forwards_per_step": [
+            10
+          ],
+          "gemm_ops_per_forward_expected": 89,
+          "gemm_ops_per_step": [
+            880
+          ],
+          "steps": 1,
+          "steps_role_assignment_ok": 1
+        },
+        "busy_union_ms_per_step": 1620.8405,
+        "categories": {
+          "attention": {
+            "kernels": 580.0,
+            "ms": 71.0028
+          },
+          "mamba": {
+            "kernels": 2520.0,
+            "ms": 376.3615
+          },
+          "norm_residual": {
+            "kernels": 3668.0,
+            "ms": 27.0315
+          }
+        },
+        "gpu_span_ms_unreliable": 3661.329,
+        "graph_launches_per_step": 753.0,
+        "kernel_launches_per_step": 14980.0,
+        "kernel_sum_ms_per_step": 1641.799,
+        "lifecycle_ms_per_step": 4.1442,
+        "roles": {
+          "attn_kv": {
+            "kernels": 1080.0,
+            "ms": 16.4555
+          },
+          "attn_o": {
+            "kernels": 300.0,
+            "ms": 29.267
+          },
+          "attn_q": {
+            "kernels": 160.0,
+            "ms": 15.2043
+          },
+          "ffn_down": {
+            "kernels": 1870.0,
+            "ms": 210.6798
+          },
+          "ffn_up": {
+            "kernels": 1020.0,
+            "ms": 213.6425
+          },
+          "ssm_in": {
+            "kernels": 2102.0,
+            "ms": 446.348
+          },
+          "ssm_out": {
+            "kernels": 1680.0,
+            "ms": 235.8063
+          }
+        },
+        "side": "ours",
+        "source": {
+          "jsonl": "$LIFECYCLE_TRACES_DIR/ourspf_10000.jsonl",
+          "meta": "$LIFECYCLE_TRACES_DIR/ourspf_10000_meta.json"
+        },
+        "status": "ok",
+        "steps": 1,
+        "wall_ms_per_step": 1645.9432,
+        "wall_ms_per_step_median": 1645.9432,
+        "wall_source": "host (synchronized perf_counter around the last rep; HCQ replay timestamps are not comparable across graph launches)"
+      },
+      "prompt_len": {
+        "ours": 10000,
+        "vllm": 10000
+      },
+      "vllm": {
+        "attention_layout": "fused_qkv",
+        "attribution": {
+          "forwards_per_step": [
+            2
+          ],
+          "gemm_ops_per_forward_expected": 85,
+          "gemm_ops_per_step": [
+            170
+          ],
+          "steps": 1,
+          "steps_role_assignment_ok": 1
+        },
+        "busy_union_ms_per_step": 369.6355,
+        "categories": {
+          "attention": {
+            "kernels": 16.0,
+            "ms": 23.7534
+          },
+          "mamba": {
+            "kernels": 546.0,
+            "ms": 37.3703
+          },
+          "mlp_act": {
+            "kernels": 34.0,
+            "ms": 4.3104
+          },
+          "norm_residual": {
+            "kernels": 143.0,
+            "ms": 4.5992
+          },
+          "sampling_bookkeeping": {
+            "kernels": 103.0,
+            "ms": 0.3536
+          }
+        },
+        "category_detail": {
+          "attention/attention": {
+            "kernels": 16.0,
+            "ms": 23.7534
+          },
+          "mamba/gated_rmsnorm(+silu gate)": {
+            "kernels": 42.0,
+            "ms": 5.3082
+          },
+          "mamba/mamba_conv": {
+            "kernels": 42.0,
+            "ms": 4.9303
+          },
+          "mamba/mamba_ssd_prefill": {
+            "kernels": 210.0,
+            "ms": 26.0598
+          },
+          "mamba/other(elementwise/copy)": {
+            "kernels": 252.0,
+            "ms": 1.0719
+          },
+          "mlp_act/relu2": {
+            "kernels": 34.0,
+            "ms": 4.3104
+          },
+          "norm_residual/norm/fused": {
+            "kernels": 85.0,
+            "ms": 4.4496
+          },
+          "norm_residual/other(elementwise/copy)": {
+            "kernels": 56.0,
+            "ms": 0.1456
+          },
+          "norm_residual/sampling/reduce": {
+            "kernels": 2.0,
+            "ms": 0.004
+          },
+          "sampling_bookkeeping/norm/fused": {
+            "kernels": 1.0,
+            "ms": 0.0144
+          },
+          "sampling_bookkeeping/other(elementwise/copy)": {
+            "kernels": 66.0,
+            "ms": 0.0773
+          },
+          "sampling_bookkeeping/sampling/reduce": {
+            "kernels": 36.0,
+            "ms": 0.2619
+          }
+        },
+        "graph_launches_per_step": 0.0,
+        "in_graph_kernels_per_step": 0.0,
+        "kernel_launches_per_step": 1012.0,
+        "kernel_sum_ms_per_step": 369.6355,
+        "lifecycle_ms_per_step": 6.9944,
+        "roles": {
+          "attn_o": {
+            "kernels": 8.0,
+            "ms": 6.4105
+          },
+          "attn_qkv": {
+            "kernels": 8.0,
+            "ms": 8.6581
+          },
+          "ffn_down": {
+            "kernels": 34.0,
+            "ms": 65.1983
+          },
+          "ffn_up": {
+            "kernels": 34.0,
+            "ms": 61.8567
+          },
+          "output": {
+            "kernels": 2.0,
+            "ms": 1.0611
+          },
+          "ssm_in": {
+            "kernels": 42.0,
+            "ms": 107.4861
+          },
+          "ssm_out": {
+            "kernels": 42.0,
+            "ms": 48.5778
+          }
+        },
+        "side": "vllm",
+        "source": {
+          "sqlite": "$VLLM_BENCH_ROOT/runs/prof_prefill10k.sqlite"
+        },
+        "status": "ok",
+        "steps": 1,
+        "wall_ms_per_step": 376.63,
+        "wall_ms_per_step_median": 376.63
+      },
+      "warnings": [
+        "wall source differs: ours = host (synchronized perf_counter around the last rep; HCQ replay timestamps are not comparable across graph launches); vLLM = GPU timeline"
+      ]
+    }
+  ]
+}

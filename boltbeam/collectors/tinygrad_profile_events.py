@@ -19,6 +19,10 @@ _authority_command = tinygrad_authority_command
 
 
 def capture_tinygrad_profile_events(cfg:TinygradRocprofCapture) -> dict[str, Any]:
+  if cfg.workload == "decode":
+    raise ValueError("decode PROFILE collection requires measured-window graph events; the unscoped bench.py "
+                     "pickle includes prefill and warmup. Import bounded events with decode_profile_events "
+                     "and an explicit decode_tokens count instead")
   cfg.trace_dir.mkdir(parents=True, exist_ok=True)
   cfg.out.parent.mkdir(parents=True, exist_ok=True)
   raw_profile = cfg.trace_dir / f"{cfg.prefix}_profile.pkl"

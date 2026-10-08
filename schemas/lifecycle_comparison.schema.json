@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam Lifecycle Comparison (ours vs reference runtime, per workload)",
+  "type": "object",
+  "required": ["schema", "model", "layer_pattern", "definitions", "workloads"],
+  "properties": {
+    "schema": {"const": "boltbeam.lifecycle_comparison.v1"},
+    "model": {"type": "string"},
+    "layer_pattern": {"type": "string"},
+    "definitions": {"type": "object"},
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "workloads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "ours", "vllm", "comparison", "prompt_len"],
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"enum": ["decode", "prefill"]},
+          "batch": {"type": ["integer", "null"]},
+          "prompt_len": {"type": "object"},
+          "ours": {"$ref": "#/$defs/side"},
+          "vllm": {"$ref": "#/$defs/side"},
+          "comparison": {
+            "type": "object",
+            "required": ["status"],
+            "properties": {
+              "status": {"enum": ["ok", "incomplete"]},
+              "wall_delta_ms": {"type": "number"},
+              "kernel_sum_delta_ms": {"type": "number"},
+              "gemm_delta_ms": {"type": "number"},
+              "non_gemm_delta_ms": {"type": "number"},
+              "role_deltas": {"type": "object", "additionalProperties": {"$ref": "#/$defs/delta"}},
+              "category_deltas": {"type": "object", "additionalProperties": {"$ref": "#/$defs/delta"}},
+              "lifecycle": {
+                "type": "object",
+                "required": ["delta_ms", "launch_delta", "graph_launch_delta"],
+                "properties": {
+                  "delta_ms": {"type": "number"},
+                  "launch_delta": {"type": "number"},
+                  "graph_launch_delta": {"type": "number"}
+                }
+              },
+              "ranked_deltas": {"type": "array"}
+            }
+          },
+          "warnings": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "delta": {
+      "type": "object",
+      "required": ["ours_ms", "vllm_ms", "delta_ms"],
+      "properties": {"ours_ms": {"type": "number"}, "vllm_ms": {"type": "number"}, "delta_ms": {"type": "number"}}
+    },
+    "side": {
+      "type": "object",
+      "required": ["status"],
+      "oneOf": [
+        {
+          "properties": {"status": {"const": "missing"}, "reason": {"type": "string"}, "command": {"type": "string"}},
+          "required": ["status", "reason"]
+        },
+        {
+          "properties": {
+            "status": {"const": "ok"},
+            "side": {"enum": ["ours", "vllm"]},
+            "steps": {"type": "integer", "minimum": 1},
+            "wall_ms_per_step": {"type": "number"},
+            "kernel_sum_ms_per_step": {"type": "number"},
+            "busy_union_ms_per_step": {"type": "number"},
+            "lifecycle_ms_per_step": {"type": "number"},
+            "kernel_launches_per_step": {"type": "number"},
+            "graph_launches_per_step": {"type": "number"},
+            "roles": {"type": "object"},
+            "categories": {"type": "object"},
+            "attribution": {"type": "object"}
+          },
+          "required": ["status", "side", "steps", "wall_ms_per_step", "kernel_sum_ms_per_step", "lifecycle_ms_per_step",
+                       "kernel_launches_per_step", "graph_launches_per_step", "roles", "categories", "attribution"]
+        }
+      ]
+    }
+  }
+}
