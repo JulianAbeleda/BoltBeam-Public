@@ -363,6 +363,10 @@ func measureBody(f Facts, width int) string {
 	return b.String()
 }
 
+// noKernelChoice replaces the per-role table while no role has had kernels compared; report/html.py says the same.
+const noKernelChoice = "No kernels compared yet. Every role runs the default kernel.\n" +
+	"Next step: compare kernels per role to go faster."
+
 func resultBody(f Facts, width int) string {
 	if f.Run == nil {
 		return stMuted.Render("No run yet. Step 4 makes one.")
@@ -386,7 +390,14 @@ func resultBody(f Facts, width int) string {
 	for _, n := range res.Blocked {
 		fmt.Fprintf(&b, "%s %s (%s)\n", stInfo.Render(glyphWait+" still needed:"), word(plainNeed, n.Need), n.Request)
 	}
-	if len(res.Routes) > 0 {
+	compared := false
+	for _, rt := range res.Routes {
+		compared = compared || rt.Status != "unmeasured"
+	}
+	if len(res.Routes) > 0 && !compared {
+		b.WriteString("\n" + stMuted.Render(noKernelChoice) + "\n")
+	}
+	if compared {
 		rows := [][]string{{" ", "ROLE", "QUANT", "KERNEL CHOICE"}}
 		for _, rt := range res.Routes {
 			won := word(plainRoute, rt.Status)
@@ -397,7 +408,7 @@ func resultBody(f Facts, width int) string {
 		}
 		b.WriteString("\n" + table(rows))
 	}
-	if res.Timing.Status == "classified" {
+	if res.Timing.Status == "classified" && len(res.Timing.Kernels) > 0 {
 		rows := [][]string{{" ", "KERNEL", "µs", "OF STEP", "OF PEAK"}}
 		for _, k := range res.Timing.Kernels {
 			m := "open"
@@ -411,7 +422,15 @@ func resultBody(f Facts, width int) string {
 		}
 		b.WriteString("\n" + table(rows))
 	}
-	if len(res.Regimes) > 0 {
+	clear := false
+	for _, g := range res.Regimes {
+		clear = clear || g.Classification != "inconclusive"
+	}
+	if len(res.Regimes) > 0 && !clear {
+		fmt.Fprintf(&b, "\n%s\n", stMuted.Render(fmt.Sprintf("The building-block tests ran on %d roles. None could be classified:\n"+
+			"this GPU does not report the counters the test needs.", len(res.Regimes))))
+	}
+	if clear {
 		rows := [][]string{{"ROLE", "QUANT", "WHAT THE TEST SAW"}}
 		for _, g := range res.Regimes {
 			rows = append(rows, []string{word(plainRole, g.Role), g.Quant, named(plainRegime, g.Classification)})

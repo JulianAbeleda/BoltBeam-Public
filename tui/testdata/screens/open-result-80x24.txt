@@ -5,14 +5,14 @@
 │ ██████████████████░░ 90% of the limit                                        │
 │ Where the time goes: small kernel, dead time  elementwise_dilution           │
 │                                                                              │
-│    ROLE                        QUANT  KERNEL CHOICE                          │
-│ ⏸  attention keys and values   Q4_K   default kernel, none compared yet      │
-│ ⏸  attention keys and values   Q6_K   default kernel, none compared yet      │
-│ ⏸  attention query and output  Q4_K   default kernel, none compared yet      │
-│ ⏸  feed-forward out            Q4_K   default kernel, none compared yet      │
-│ ⏸  feed-forward out            Q6_K   default kernel, none compared yet      │
-│ ⏸  feed-forward in             Q4_K   default kernel, none compared yet      │
-│ ⏸  vocabulary output           Q6_K   default kernel, none compared yet      │
+│ No kernels compared yet. Every role runs the default kernel.                 │
+│ Next step: compare kernels per role to go faster.                            │
+│                                                                              │
+│    KERNEL                  µs     OF STEP      OF PEAK                       │
+│ ✓  gemv_q4k_ffn_gate_up    23900  ██░░░░  41%  ██████  95%                   │
+│ ✓  gemv_q6k_ffn_down       8700   █░░░░░  15%  ██████  95%                   │
+│ ✓  gemv_q4k_attn_output    8000   █░░░░░  14%  ██████  94%                   │
+│ ✓  gemv_q6k_lm_head        6400   █░░░░░  11%  █████░  89%                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │

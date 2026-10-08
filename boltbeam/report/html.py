@@ -438,11 +438,16 @@ def _blocked_card(report:dict[str, Any], plan:dict[str, Any], policy:dict[str, A
                f'<div class="card-bd">{items}</div>', flag=True)
 
 
+# Shown instead of the per-role table while no role has had kernels compared; boltbeam-tui prints the same line.
+NO_KERNEL_CHOICE = ("No kernels compared yet. Every role runs the default kernel. "
+                    "Next step: compare kernels per role to go faster.")
+
+
 def _routes_card(policy:dict[str, Any]) -> str:
   rows = [r for r in policy.get("routes", []) or [] if isinstance(r, dict) and r.get("selected_route")]
   if not rows:
-    return _card("Selected routes", "route_policy.json",
-                 '<p class="empty">No route selected. Nothing to roll back.</p>', cls="compact")
+    return _card("Kernel choice per role", "route_policy.json",
+                 f'<p class="empty">{_e(NO_KERNEL_CHOICE)}</p>', cls="compact")
   rows = sorted(rows, key=lambda r: (str(r.get("selected_route")), str(r.get("role") or "")))
   blocks = []
   for row in rows:
