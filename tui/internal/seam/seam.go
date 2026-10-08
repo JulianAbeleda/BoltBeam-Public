@@ -151,6 +151,16 @@ func (c Client) Show(id string) (*Run, []byte, error) {
 	return &r, raw, err
 }
 
+// Delete removes one run folder through the seam; Python refuses anything that is not a run under the root.
+func (c Client) Delete(id string) ([]byte, error) {
+	dir, err := c.RunDir(id)
+	if err != nil {
+		return nil, err
+	}
+	raw, _, err := c.call("boltbeam.workflow.screen", nil, "delete", "--run", dir, "--root", c.Root)
+	return raw, err
+}
+
 // Results returns the run's results and whether anything was measured (exit 3 from the seam otherwise).
 func (c Client) Results(id string) (*Results, []byte, int, error) {
 	dir, err := c.RunDir(id)

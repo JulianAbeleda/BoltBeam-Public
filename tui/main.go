@@ -34,6 +34,7 @@ commands (each prints one JSON object):
   start MODEL --target ID [--workload W] [--id RUN] [--probe FILE] [--timing FILE]
                                                run the pipeline in the background; log under --state
   stop <id>                                    SIGTERM the pipeline started here
+  delete <id>                                  remove a run folder that is not running
   tail <id> [--lines N]                        the pipeline's status and the last lines of its log
 
 env: BOLTBEAM_RUNS (runs folder), BOLTBEAM_PYTHON (interpreter; default: the first of python3.13..3.10, python3),
@@ -253,6 +254,18 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 			return fail(out, err)
 		}
 		raw, _ := json.Marshal(job)
+		return emit(out, raw)
+	case "delete":
+		if !need(1) {
+			return 2
+		}
+		if job, err := store.Status(args[0]); err == nil && job.Alive {
+			return fail(out, fmt.Errorf("run %s is still going; stop it first", args[0]))
+		}
+		raw, err := client.Delete(args[0])
+		if err != nil {
+			return fail(out, err)
+		}
 		return emit(out, raw)
 	case "stop":
 		if !need(1) {

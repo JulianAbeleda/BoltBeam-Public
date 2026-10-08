@@ -80,6 +80,9 @@ type jobMsg struct {
 }
 type startedMsg string
 type noteMsg string
+
+// deletedMsg names a run folder that is gone.
+type deletedMsg string
 type tickMsg time.Time
 
 // New builds the model; modelPath and target may be empty, context is the prefill length for the ceiling.
@@ -274,6 +277,19 @@ func (m Model) stopRun() tea.Cmd {
 	}
 }
 
+// deleteRun removes a finished run folder; a run whose job is alive is refused here, since only Go knows the job.
+func (m Model) deleteRun(id string) tea.Cmd {
+	return func() tea.Msg {
+		if job, err := m.store.Status(id); err == nil && job.Alive {
+			return noteMsg("Stop run " + id + " before deleting it.")
+		}
+		if _, err := m.client.Delete(id); err != nil {
+			return noteMsg("Delete failed: " + err.Error())
+		}
+		return deletedMsg(id)
+	}
+}
+
 // openReport hands report.html to the desktop. This is the one place the TUI runs something other than Python.
 func (m Model) openReport() tea.Cmd {
 	run := m.f.Run
@@ -403,6 +419,12 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.f.Job, m.f.Tail = &jobs.Job{ID: id, Alive: true}, nil
 		m.note = "Started " + id + "."
 		return m, tea.Batch(m.loadJob(id), tick())
+	case deletedMsg:
+		if m.runID() == string(msg) {
+			m.f.Run, m.f.Job, m.f.Tail, m.runSet, m.row = nil, nil, nil, false, 0
+		}
+		m.note = "Deleted run " + string(msg) + "."
+		return m, m.loadRuns()
 	case noteMsg:
 		m.note = string(msg)
 	case tickMsg:
@@ -426,6 +448,9 @@ func (m Model) actions() []action {
 }
 
 func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if !key.Matches(msg, keyEnter) {
+		m.f.Confirm = "" // any other key cancels a pending delete
+	}
 	if m.f.Editing {
 		switch msg.Type {
 		case tea.KeyEnter:
@@ -495,7 +520,17 @@ func (m Model) readModel() (Model, tea.Cmd) {
 
 // do runs one action row of the open step.
 func (m Model) do(a action) (Model, tea.Cmd) {
+	if a.do != "delete" {
+		m.f.Confirm = ""
+	}
 	switch a.do {
+	case "delete":
+		if m.f.Confirm != a.arg {
+			m.f.Confirm = a.arg
+			return m, nil
+		}
+		m.f.Confirm = ""
+		return m, m.deleteRun(a.arg)
 	case "edit":
 		m.f.Editing, m.f.Input = true, m.f.Path
 		m.input.SetValue(m.f.Path)

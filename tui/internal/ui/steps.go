@@ -30,6 +30,7 @@ type Facts struct {
 	Job      *jobs.Job
 	Tail     []string
 	Spin     string
+	Confirm  string // the run id waiting for a second enter before it is deleted
 }
 
 // action is one row inside a step's full view; enter on it does `do` with `arg`.
@@ -280,6 +281,13 @@ func measureActions(f Facts) []action {
 			}
 			out = append(out, action{label, "run", r.ID})
 		}
+	}
+	if f.Run != nil && !f.alive() {
+		label := "Delete run " + f.Run.ID
+		if f.Confirm == f.Run.ID {
+			label = stBad.Render("Press enter again to delete " + f.Run.ID + " and its report")
+		}
+		out = append(out, action{label, "delete", f.Run.ID})
 	}
 	return out
 }

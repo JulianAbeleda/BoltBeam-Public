@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
@@ -269,5 +270,18 @@ func TestMeasureStatusWording(t *testing.T) {
 	rows := measureRows(nil, running, true)
 	if len(rows) != 2 || rows[0][0] != "pass" || rows[1][0] != "run" || stageWord(rows[1][1]) != "Time the real decode" {
 		t.Fatalf("live rows: %v", rows)
+	}
+}
+
+func TestDeleteAsksTwice(t *testing.T) {
+	s := loadSample(t)
+	f := facts(program(s, &s.measured, nil, nil, 80, 24))
+	last := func(f Facts) action { a := measureActions(f); return a[len(a)-1] }
+	if a := last(f); a.do != "delete" || a.arg != f.Run.ID || !strings.HasPrefix(a.label, "Delete run ") {
+		t.Fatalf("the last Measure action is %+v, want Delete run %s", a, f.Run.ID)
+	}
+	f.Confirm = f.Run.ID
+	if !strings.Contains(ansi.Strip(last(f).label), "Press enter again") {
+		t.Fatalf("the confirm label is %q", last(f).label)
 	}
 }

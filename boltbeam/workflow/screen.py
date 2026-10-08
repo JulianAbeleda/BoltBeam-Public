@@ -10,6 +10,7 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     ceiling  MODEL | --profile P  --target T   the roofline: the best tokens/s this chip allows for this model
     runs     --root DIR                        one summary per run folder under DIR
     run      --run DIR                         the stages, what is blocked, the next step, the results
+    delete   --run DIR --root ROOT             remove one run folder; refused unless DIR is a run directly under ROOT
     results  --run DIR                         what won per role, the timing against the ceiling, the regimes
     pipeline MODEL --run DIR --target T        load, autoscan, analyze, [measure], [ingest-probe, ingest-timing], output;
                                                `pipeline steps: N` first, then one text line per stage, for tailing.
@@ -32,6 +33,7 @@ import html as html_text
 import json
 import pathlib
 import re
+import shutil
 import sys
 from typing import Any
 
@@ -162,6 +164,17 @@ def summary(run:pathlib.Path) -> dict[str, Any]:
 
 def is_run(path:pathlib.Path) -> bool:
   return path.is_dir() and (path / "run_manifest.json").exists()
+
+
+def delete(root:pathlib.Path, run:pathlib.Path) -> dict[str, Any]:
+  """Remove one run folder. Only a folder holding run_manifest.json directly under the runs root qualifies."""
+  root, run = root.resolve(), run.resolve()
+  if run.parent != root:
+    raise Refused(f"{run} is not directly under the runs folder {root}")
+  if not is_run(run):
+    raise Refused(f"{run} is not a run folder (no run_manifest.json)")
+  shutil.rmtree(run)
+  return {"schema": SCHEMA, "kind": "deleted", "root": str(root), "run": run.name}
 
 
 def runs(root:pathlib.Path) -> dict[str, Any]:
@@ -364,6 +377,9 @@ def main(argv:list[str] | None = None) -> int:
   for name in ("run", "results"):
     p = sub.add_parser(name)
     p.add_argument("--run", required=True)
+  p = sub.add_parser("delete")
+  p.add_argument("--run", required=True)
+  p.add_argument("--root", required=True)
   p = sub.add_parser("pipeline")
   p.add_argument("model")
   p.add_argument("--run", required=True)
@@ -391,6 +407,8 @@ def main(argv:list[str] | None = None) -> int:
       out = runs(pathlib.Path(args.root).expanduser())
     elif args.command == "run":
       out = show(pathlib.Path(args.run).expanduser())
+    elif args.command == "delete":
+      out = delete(pathlib.Path(args.root).expanduser(), pathlib.Path(args.run).expanduser())
     else:
       out = results(pathlib.Path(args.run).expanduser())
       code = 0 if out["measured"] else 3
