@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 
 from boltbeam.vocab import BackendStatus, SCHEMA_TARGET_REGISTRY
@@ -32,7 +33,66 @@ def load_target_registry(path:str | pathlib.Path | None = None) -> dict[str, Tar
   return {row["target_id"]: _from_row(row) for row in data["targets"]}
 
 
-TARGETS = load_target_registry()
+# --- chip profiles made on this machine -------------------------------------------------------------------------
+# A chip no registry row claims gets a profile measured on the machine itself (workflow/chips.py). It is a registry
+# row in the same shape, saved per machine, never in the repo: the registry is reviewed and shared, a local profile is
+# one machine's measurement. One shape means get_target, the ceiling and the tie-out read both the same way.
+
+SCHEMA_CHIP_PROFILE = "boltbeam.chip_profile.v1"
+CHIPS_DIR_ENV = "BOLTBEAM_CHIPS_DIR"
+IGNORE_REGISTRY_ENV = "BOLTBEAM_IGNORE_REGISTRY_TARGET"
+
+
+def chips_dir() -> pathlib.Path:
+  """Where this machine keeps its chip profiles: $BOLTBEAM_CHIPS_DIR, else ~/.boltbeam/chips."""
+  return pathlib.Path(os.environ.get(CHIPS_DIR_ENV) or pathlib.Path.home() / ".boltbeam" / "chips").expanduser()
+
+
+def ignore_registry() -> bool:
+  """BOLTBEAM_IGNORE_REGISTRY_TARGET=1: the built-in rows never claim this machine, so it gets its own profile.
+  The test switch for the new-chip path; the rows still exist for what-if limits."""
+  return os.environ.get(IGNORE_REGISTRY_ENV, "") not in ("", "0")
+
+
+def local_profiles(folder:pathlib.Path | None = None) -> dict[str, dict]:
+  """The chip profiles saved on this machine, by id. A file that is not a profile is skipped, never guessed at."""
+  out = {}
+  d = folder or chips_dir()
+  for p in sorted(d.glob("*.json")) if d.is_dir() else ():
+    try:
+      doc = json.loads(p.read_text())
+    except (OSError, ValueError):
+      continue
+    row = doc.get("target") if doc.get("schema") == SCHEMA_CHIP_PROFILE else None
+    if isinstance(row, dict) and row.get("target_id") == p.stem:
+      out[p.stem] = row
+  return out
+
+
+def _load_all() -> dict[str, TargetProfile]:
+  rows = load_target_registry()
+  for tid, row in local_profiles().items():
+    rows.setdefault(tid, _from_row(row))  # a registry row with the same id wins: reviewed beats local
+  return rows
+
+
+def is_local(name:str | None) -> bool:
+  """Whether a target is a chip profile made on this machine rather than a registry row."""
+  return target_capability(name, "profile_source") == "generated" if name else False
+
+
+def save_local_profile(row:dict, *, measured_at:str) -> pathlib.Path:
+  """Write one chip profile to this machine's store and make it a target now."""
+  d = chips_dir()
+  d.mkdir(parents=True, exist_ok=True)
+  path = d / f"{row['target_id']}.json"
+  path.write_text(json.dumps({"schema": SCHEMA_CHIP_PROFILE, "measured_at": measured_at, "target": row},
+                             indent=1, sort_keys=True) + "\n")
+  TARGETS[row["target_id"]] = _from_row(row)
+  return path
+
+
+TARGETS = _load_all()
 
 # Vendor prefixes are read off the registry rather than listed, so a new vendor row needs no edit here.
 _VENDORS = frozenset(t.split("_", 1)[0] for t in TARGETS if "_" in t)
@@ -93,10 +153,19 @@ def match_target(observed:dict) -> str | None:
   row is a data edit and needs no scanner change. Only ``exact`` rows match: a family descriptor names a
   backend, not a machine. Two rows claiming the same device is a registry fault, so it matches nothing
   rather than picking a winner.
+
+  Registry rows are asked first; a profile made on this machine only when no registry row claims the device
+  (BOLTBEAM_IGNORE_REGISTRY_TARGET=1 skips the registry rows).
   """
-  hits = [name for name, t in TARGETS.items() if is_exact_target(name)
-          and (rule := t.capabilities.get("match")) and all(observed.get(k) == v for k, v in rule.items())]
-  return hits[0] if len(hits) == 1 else None
+  def hits(local:bool) -> list[str]:
+    return [name for name, t in TARGETS.items() if is_exact_target(name) and is_local(name) == local
+            and (rule := t.capabilities.get("match")) and all(observed.get(k) == v for k, v in rule.items())]
+  tiers = (True,) if ignore_registry() else (False, True)
+  for local in tiers:
+    found = hits(local)
+    if found:
+      return found[0] if len(found) == 1 else None
+  return None
 
 
 def family_target(backend:str) -> str | None:

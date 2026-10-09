@@ -64,6 +64,13 @@ type targetsMsg struct {
 type detectMsg struct {
 	id, driver, multi string
 	count             int
+	newChip           string // the GPU's name when no chip profile fits it yet
+}
+
+// scanMsg is the answer of an autoscan: the profile kept, generated or measured again.
+type scanMsg struct {
+	scan *seam.ChipScan
+	err  error
 }
 type filesMsg []string
 type profileMsg struct {
@@ -171,12 +178,19 @@ func (m Model) loadOthers() tea.Cmd {
 }
 
 func (m Model) loadTargets() tea.Cmd {
-	return func() tea.Msg { t, _, err := m.client.Targets(); return targetsMsg{t, err} }
+	return func() tea.Msg { t, _, err := m.client.Chips(); return targetsMsg{t, err} }
 }
 
 func (m Model) detect() tea.Cmd {
 	return func() tea.Msg {
 		d, err := m.client.Detect()
+		if err == nil && d.Profile != nil && d.Profile.Status == "new" {
+			name := "this GPU"
+			if d.Name != nil {
+				name = *d.Name
+			}
+			return detectMsg{count: d.GpuCount, newChip: name}
+		}
 		if err != nil || d.TargetID == nil {
 			if err == nil {
 				return detectMsg{count: d.GpuCount}
@@ -191,8 +205,13 @@ func (m Model) detect() tea.Cmd {
 		if d.MultiGpu != nil {
 			multi = *d.MultiGpu
 		}
-		return detectMsg{*d.TargetID, driver, multi, d.GpuCount}
+		return detectMsg{id: *d.TargetID, driver: driver, multi: multi, count: d.GpuCount}
 	}
+}
+
+// autoscan matches this machine's GPU to a chip profile, or measures and saves a new one (Python decides which).
+func (m Model) autoscan(remeasure bool) tea.Cmd {
+	return func() tea.Msg { s, _, err := m.client.Autoscan(remeasure); return scanMsg{s, err} }
 }
 
 // findFiles lists model files to pick from: the folder of the current path and ~/models. Names only; the
@@ -584,9 +603,24 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.pickChip(m.wantChip)
 		return m, m.chipChanged()
+	case scanMsg:
+		m.f.Scanning = false
+		switch {
+		case msg.err != nil:
+			m.note = "Autoscan failed: " + msg.err.Error()
+			return m, nil
+		case msg.scan.Action == "failed":
+			m.note = "Autoscan could not measure this chip: " + deref(msg.scan.Reason)
+			return m, nil
+		}
+		m.note = "Autoscan: " + deref(msg.scan.TargetID) + " " + msg.scan.Action + "."
+		if !m.f.ByFlag {
+			m.chipSet, m.f.Picked = false, false
+		}
+		return m, tea.Batch(m.loadTargets(), m.detect())
 	case detectMsg:
 		m.f.ThisMachine, m.f.Driver, m.f.Detected = msg.id, msg.driver, true
-		m.f.GpuCount, m.f.MultiGpu = msg.count, msg.multi
+		m.f.GpuCount, m.f.MultiGpu, m.f.NewChip = msg.count, msg.multi, msg.newChip
 		if !m.chipSet && msg.id != "" {
 			m.wantChip = msg.id
 			if m.f.Targets != nil {
@@ -769,12 +803,12 @@ func (m Model) runRow() string {
 // skipHeads moves the row off section headings, in direction dir (1 down, -1 up), never past the ends.
 func (m *Model) skipHeads(dir int) {
 	acts := m.actions()
-	for m.row >= 0 && m.row < len(acts) && acts[m.row].do == "head" {
+	for m.row >= 0 && m.row < len(acts) && skipped(acts[m.row].do) {
 		m.row += dir
 	}
 	if m.row < 0 || m.row >= len(acts) {
 		m.row -= dir
-		for m.row >= 0 && m.row < len(acts) && acts[m.row].do == "head" {
+		for m.row >= 0 && m.row < len(acts) && skipped(acts[m.row].do) {
 			m.row -= dir
 		}
 		m.row = max(0, min(m.row, len(acts)-1))
@@ -878,7 +912,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		m.f.Confirm = ""
 	}
 	switch a.do {
-	case "head", "":
+	case "head", "note", "":
 		return m, nil
 	case "save":
 		return m, m.saveRun()
@@ -932,6 +966,13 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, nil
 	case "analyze":
 		return m, m.startRun(m.f.Engine)
+	case "autoscan":
+		if m.f.Scanning {
+			return m, nil
+		}
+		m.f.Scanning = true
+		m.note = "Autoscan: reading this machine's GPU. A new chip is measured, about a minute."
+		return m, m.autoscan(a.arg == "remeasure")
 	case "chip":
 		if !m.f.mayPick() { // set by flag: not chosen here
 			return m, nil

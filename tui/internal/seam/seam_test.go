@@ -133,6 +133,9 @@ func TestLiveSeamMatchesPinnedContract(t *testing.T) {
 	if python == "" {
 		t.Skip("no interpreter that imports boltbeam (set BOLTBEAM_PYTHON); the pinned contract still holds")
 	}
+	// the registry only: chip profiles saved on this machine would add rows to the pinned targets
+	t.Setenv("BOLTBEAM_CHIPS_DIR", t.TempDir())
+	t.Setenv("BOLTBEAM_IGNORE_REGISTRY_TARGET", "")
 	c := Client{Python: python, Repo: repo, Root: filepath.Join("tui", "testdata", "fixture", "runs")}
 	profile := filepath.Join(c.Root, "qwen3-8b-apple_m3_10c-001", "model_profile.json")
 	for name, call := range map[string]func() ([]byte, error){

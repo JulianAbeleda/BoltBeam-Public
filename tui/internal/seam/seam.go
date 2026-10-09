@@ -158,6 +158,25 @@ func (c Client) Targets() (*Targets, []byte, error) {
 	return &t, raw, err
 }
 
+// Chips is every chip in Setup's groups, with this machine's own (workflow/chips.py).
+func (c Client) Chips() (*Targets, []byte, error) {
+	var t Targets
+	raw, _, err := c.decode(&t, nil, "boltbeam.workflow.screen", "chips")
+	return &t, raw, err
+}
+
+// Autoscan uses the profile that fits this machine's GPU, or measures and saves a new one; remeasure refreshes a
+// profile made here.
+func (c Client) Autoscan(remeasure bool) (*ChipScan, []byte, error) {
+	var s ChipScan
+	args := []string{"autoscan"}
+	if remeasure {
+		args = append(args, "--remeasure")
+	}
+	raw, _, err := c.decode(&s, nil, "boltbeam.workflow.screen", args...)
+	return &s, raw, err
+}
+
 // Detect is the chip this machine is, as autoscan's GPU probe reads it; TargetID is nil when no probe answered.
 func (c Client) Detect() (*Detected, error) {
 	var d Detected

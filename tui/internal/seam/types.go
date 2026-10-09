@@ -11,6 +11,7 @@ type FactStatus struct {
 
 type Target struct {
 	ID                 string             `json:"id"`
+	Source             string             `json:"source"` // registry, or generated: a chip profile measured on this machine
 	Backend            string             `json:"backend"`
 	BackendStatus      string             `json:"backend_status"`
 	Scope              *string            `json:"scope"`
@@ -25,6 +26,42 @@ type Target struct {
 type Targets struct {
 	Kind    string   `json:"kind"`
 	Targets []Target `json:"targets"`
+	// From `screen chips` only: this machine's chip and the groups Setup draws, in order. Python decides both.
+	ThisMachine *ChipHere   `json:"this_machine"`
+	Groups      []ChipGroup `json:"groups"`
+}
+
+// ChipHere is this machine's first GPU and its profile: known (a registry row or one made here), new, or no_gpu.
+type ChipHere struct {
+	Name     *string `json:"name"`
+	TargetID *string `json:"target_id"`
+	Status   string  `json:"status"`
+	Source   *string `json:"source"`
+	NewID    *string `json:"new_id"` // the id a new profile will get
+	Words    string  `json:"words"`
+}
+
+// ChipGroup is one heading of Setup's chip list: this machine, measured chips, not measured yet, families.
+type ChipGroup struct {
+	Key        string `json:"key"`
+	Title      string `json:"title"`
+	Selectable bool   `json:"selectable"`
+	Folded     bool   `json:"folded"`
+	Chips      []struct {
+		ID    string `json:"id"`
+		Words string `json:"words"`
+	} `json:"chips"`
+}
+
+// ChipScan is `screen autoscan`: the profile kept, generated or measured again, or why measuring failed.
+type ChipScan struct {
+	Status   string  `json:"status"`
+	Action   string  `json:"action"`
+	Name     *string `json:"name"`
+	TargetID *string `json:"target_id"`
+	Source   *string `json:"source"`
+	Path     *string `json:"path"`
+	Reason   *string `json:"reason"`
 }
 
 // Detected is `screen detect`: autoscan's GPU probe cut to what a screen shows.
@@ -39,6 +76,11 @@ type Detected struct {
 	// GpuCount is every GPU the driver lists; MultiGpu names them with the limited-support label when more than one.
 	GpuCount int     `json:"gpu_count"`
 	MultiGpu *string `json:"multi_gpu"`
+	// Profile says whether a chip profile fits this GPU: status known or new.
+	Profile *struct {
+		Status string  `json:"status"`
+		ID     *string `json:"id"`
+	} `json:"profile"`
 }
 
 // LayoutRow is one way an engine can use this machine's GPUs (workflow/layout.py).

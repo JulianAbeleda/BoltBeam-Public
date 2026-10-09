@@ -5,6 +5,10 @@ A copy probe (read plus write) under-measures it: on the M4 it gave 90.4 GB/s wh
 already read 95 GB/s. This kernel reads 1 GiB once per dispatch (far past the system cache) and writes
 one float per simdgroup. It sweeps a few launch shapes and keeps the best of five per shape, the same
 "best of five" rule the targets registry records for every measured bandwidth.
+
+measure_matrix_tflops is the compute side of a chip profile: fp16 matrix multiply-accumulate (simdgroup 8x8, fp32
+accumulate) on values held in registers, so no memory is read. It is a lower bound on the matrix unit, and it only
+bounds prefill: decode is memory-bound.
 """
 from __future__ import annotations
 
@@ -46,6 +50,53 @@ def measure_read_gbs(nbytes:int = 1 << 30, reps:int = 5) -> dict:
             "method": "BoltBeam metal_bandwidth: read-only float4 sum over 1 GiB, best of five per launch shape",
             "read_gbs": round(best["gbs"], 1), "best_shape": {"threads": best["threads"], "groups": best["groups"]},
             "shapes": rows}
+  finally:
+    metal.close()
+
+
+_MMA_SRC = """
+#include <metal_stdlib>
+using namespace metal;
+kernel void mma(device float* out [[buffer(0)]], constant uint& iters [[buffer(1)]],
+                uint tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
+                uint sgs [[simdgroups_per_threadgroup]]) {
+  simdgroup_half8x8 a(half(0.001)), b(half(0.002));
+  simdgroup_float8x8 c0(0.0f), c1(0.0f), c2(0.0f), c3(0.0f), c4(0.0f), c5(0.0f), c6(0.0f), c7(0.0f);
+  for (uint i = 0; i < iters; i++) {
+    simdgroup_multiply_accumulate(c0, a, b, c0); simdgroup_multiply_accumulate(c1, a, b, c1);
+    simdgroup_multiply_accumulate(c2, a, b, c2); simdgroup_multiply_accumulate(c3, a, b, c3);
+    simdgroup_multiply_accumulate(c4, a, b, c4); simdgroup_multiply_accumulate(c5, a, b, c5);
+    simdgroup_multiply_accumulate(c6, a, b, c6); simdgroup_multiply_accumulate(c7, a, b, c7);
+  }
+  device float* o = out + (tg * sgs + sg) * 64;
+  simdgroup_store(c0, o, 8); simdgroup_store(c1, o, 8); simdgroup_store(c2, o, 8); simdgroup_store(c3, o, 8);
+  simdgroup_store(c4, o, 8); simdgroup_store(c5, o, 8); simdgroup_store(c6, o, 8); simdgroup_store(c7, o, 8);
+}
+"""
+MMA_ACCUMULATORS = 8
+MMA_FLOP = 2 * 8 * 8 * 8  # one 8x8x8 multiply-accumulate
+MMA_SHAPES = ((256, 64), (256, 256), (1024, 64), (1024, 256))  # threads, threadgroups
+MATRIX_NOTE = "lower bound, prefill only; decode is memory-bound"
+
+
+def measure_matrix_tflops(iters:int = 4096, reps:int = 5) -> dict:
+  """fp16 matrix multiply-accumulate rate, best of `reps` per launch shape, in TFLOP/s."""
+  metal = Metal()
+  try:
+    pso = metal.compile(_MMA_SRC, ["mma"])["mma"]["pso"]
+    rows = []
+    for threads, groups in MMA_SHAPES:
+      out = metal.buffer(length=groups * threads // 32 * 64 * 4)
+      metal.run(pso, [out], [struct.pack("I", iters)], groups, threads)  # warm-up, not counted
+      us = min(metal.run(pso, [out], [struct.pack("I", iters)], groups, threads) for _ in range(reps))
+      flop = groups * threads // 32 * iters * MMA_ACCUMULATORS * MMA_FLOP
+      rows.append({"threads": threads, "groups": groups, "best_us": us, "tflops": flop / (us * 1e-6) / 1e12})
+    best = max(rows, key=lambda r: r["tflops"])
+    return {"schema": "boltbeam.metal_matrix_peak.v1", "device": metal.name, "dtype": "fp16",
+            "method": f"BoltBeam metal_bandwidth: simdgroup 8x8 fp16 multiply-accumulate into fp32, {MMA_ACCUMULATORS} "
+                      f"accumulators in registers, {iters} steps, best of {reps} per launch shape",
+            "tflops": round(best["tflops"], 3), "note": MATRIX_NOTE, "shapes": rows,
+            "working_set_bytes": metal.working_set_bytes}
   finally:
     metal.close()
 

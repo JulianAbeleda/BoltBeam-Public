@@ -226,7 +226,8 @@
       "fp16": 3.152
     },
     "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
-    "scope_observed_at": "2026-10-09"
+    "scope_observed_at": "2026-10-09",
+    "source": "registry"
   },
   "truth_status": "modeled"
 }

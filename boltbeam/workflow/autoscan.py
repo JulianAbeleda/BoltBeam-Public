@@ -14,7 +14,7 @@ from typing import Any
 
 from boltbeam.vocab import (SCHEMA_HARDWARE_PROFILE, SCHEMA_PROVIDER_CAPABILITIES,
                             SCHEMA_RUNTIME_PROFILE, SCHEMA_SCAN_EVIDENCE)
-from boltbeam.target.targets import (TARGETS, family_target, is_exact_target, match_target,
+from boltbeam.target.targets import (TARGETS, family_target, is_exact_target, is_local, match_target,
                                      target_kind)
 from boltbeam.workflow.common import (load_manifest, read_json, run_dir, update_manifest, write_json,
                                       write_manifest)
@@ -63,6 +63,46 @@ def _nvidia_arch(compute_capability:str) -> tuple[str | None, str | None]:
   return f"sm_{suffix}", f"nvidia_sm{suffix}"
 
 
+def _gib(nbytes:int | None) -> int | None:
+  return round(nbytes / (1 << 30)) if nbytes else None
+
+
+def _slug(text:str) -> str:
+  return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
+
+def match_facts(device:dict[str, Any]) -> dict[str, Any]:
+  """What a chip profile matches on, read off the scan: the exact name, the architecture, the memory size in GiB,
+  and the core count where the driver tool reports one (Apple GPU cores; nvidia-smi has no SM count). A registry
+  row may claim a device on fewer keys; a profile made here always uses all of them."""
+  out = {"gpu_name": device.get("name"), "architecture": device.get("architecture"),
+         "memory_gib": _gib(device.get("memory_bytes") or device.get("unified_memory_bytes"))}
+  if device.get("vendor") == "apple":
+    out.update(apple_soc=device.get("apple_soc"), gpu_cores=device.get("gpu_cores"))
+  else:
+    out["compute_capability"] = device.get("compute_capability")
+  return out
+
+
+def chip_profile_id(device:dict[str, Any]) -> str | None:
+  """The id a profile made for this device gets, derived from the hardware: nvidia_<name>_<GiB>g or
+  apple_<soc>_<cores>c_<GiB>g. None when the scan lacks a fact the id needs."""
+  gib = _gib(device.get("memory_bytes") or device.get("unified_memory_bytes"))
+  if device.get("vendor") == "nvidia" and device.get("name") and gib:
+    name = re.sub(r"^NVIDIA\s+", "", device["name"])
+    return f"nvidia_{_slug(name)}_{gib}g"
+  if device.get("vendor") == "apple" and device.get("apple_soc") and device.get("gpu_cores") and gib:
+    return f"apple_{_slug(device['apple_soc'])}_{device['gpu_cores']}c_{gib}g"
+  return None
+
+
+def _profile(device:dict[str, Any], matched:str | None) -> dict[str, Any]:
+  """Which profile the device uses: a registry row, one made on this machine, or none yet (new)."""
+  if matched:
+    return {"status": "known", "source": "generated" if is_local(matched) else "registry", "id": matched}
+  return {"status": "new", "source": None, "id": chip_profile_id(device)}
+
+
 def _probe_nvidia(nvidia_smi:str, run_command) -> tuple[list[dict[str, Any]], str | None]:
   argv = (nvidia_smi, f"--query-gpu={_NVIDIA_QUERY}", "--format=csv,noheader,nounits")
   code, stdout, stderr = run_command(argv)
@@ -77,8 +117,11 @@ def _probe_nvidia(nvidia_smi:str, run_command) -> tuple[list[dict[str, Any]], st
     name, uuid, pci_bus_id, memory_mib_raw, compute_capability, driver_version = (v.strip() for v in row)
     memory_mib = _as_int(memory_mib_raw)
     architecture, by_convention = _nvidia_arch(compute_capability)
+    device = {"vendor": "nvidia", "name": name, "architecture": architecture, "compute_capability": compute_capability or None,
+              "memory_bytes": memory_mib * 1024 * 1024 if memory_mib is not None else None}
     # A row may claim this device outright; otherwise the vendor's own architecture name is the id.
-    target_id = match_target({"compute_capability": compute_capability}) or by_convention
+    matched = match_target(match_facts(device))
+    target_id = matched or by_convention
     devices.append({
       "vendor": "nvidia",
       "name": name,
@@ -90,6 +133,8 @@ def _probe_nvidia(nvidia_smi:str, run_command) -> tuple[list[dict[str, Any]], st
       "target_id": target_id,
       "target_registered": target_id in TARGETS if target_id else False,
       "driver_version": driver_version or None,
+      "match": match_facts(device),
+      "profile": _profile(device, matched),
     })
   return devices, None if devices else "nvidia-smi returned no GPU rows"
 
@@ -129,13 +174,21 @@ def _probe_apple_metal(system_profiler:str, run_command) -> tuple[list[dict[str,
     if not name or "apple" not in name.lower(): continue
     gpu_cores = _apple_gpu_cores(row)
     soc = _apple_soc(name)
+    # The Mac's memory, which the GPU shares; never reported as GPU memory (memory_bytes).
+    device = {"vendor": "apple", "name": name, "apple_soc": soc, "gpu_cores": gpu_cores, "architecture": soc,
+              "unified_memory_bytes": _unified_memory_bytes()}
     # The registry says which row a device is; the scan only reports what the machine said.
-    target_id = match_target({"apple_soc": soc, "gpu_cores": gpu_cores}) or family_target("Metal")
+    matched = match_target(match_facts(device))
+    target_id = matched or family_target("Metal")
     devices.append({
       "vendor": "apple",
       "name": name,
       "apple_soc": soc,
+      "architecture": soc,
       "gpu_cores": gpu_cores,
+      "unified_memory_bytes": device["unified_memory_bytes"],
+      "match": match_facts(device),
+      "profile": _profile(device, matched),
       "metal_support": row.get("spdisplays_metal"),
       "metal_gpu_family_support": row.get("spdisplays_mtlgpufamilysupport"),
       "target_id": target_id,
@@ -151,6 +204,14 @@ def _probe_apple_metal(system_profiler:str, run_command) -> tuple[list[dict[str,
       },
     })
   return devices, None if devices else "system_profiler returned no Apple GPU rows"
+
+
+def _unified_memory_bytes() -> int | None:
+  """The Mac's memory, which its GPU shares (unified memory)."""
+  try:
+    return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+  except (ValueError, OSError, AttributeError):
+    return None
 
 
 def _meminfo() -> dict[str, int]:
@@ -209,6 +270,8 @@ def _hardware_profile(*, run_command=_run_command, tool_resolver=None,
         "target_id": primary["target_id"],
         "target_registered": primary["target_registered"],
         "driver_version": primary["driver_version"],
+        "match": primary["match"],
+        "profile": primary["profile"],
         "devices": devices,
         "notes": ["Primary GPU is the first device returned by nvidia-smi."],
       }

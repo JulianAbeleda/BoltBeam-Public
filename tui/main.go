@@ -26,6 +26,9 @@ const usage = `usage: boltbeam-tui [--json] [--root RUNS] [--saved DIR] [--repo 
 
 commands (each prints one JSON object):
   targets                                      the chips BoltBeam knows, and which carry a speed limit
+  chips                                        the chips in Setup's groups: this machine, measured, not measured yet,
+                                               families
+  autoscan [--remeasure]                       use the chip profile that fits this GPU, or measure and save a new one
   inspect MODEL                                the model profile: roles, shapes, quants (boltbeam inspect, bytes unchanged)
   ceiling MODEL --target ID [--context N]      the roofline: best tokens/s for decode (one token) and prefill (N tokens)
   runs                                         every run: RUNS/<id>, RUNS/.work/<id> and the saved runs, each marked
@@ -165,6 +168,18 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 	switch name {
 	case "targets":
 		_, raw, err := client.Targets()
+		if err != nil {
+			return fail(out, err)
+		}
+		return emit(out, raw)
+	case "chips":
+		_, raw, err := client.Chips()
+		if err != nil {
+			return fail(out, err)
+		}
+		return emit(out, raw)
+	case "autoscan":
+		_, raw, err := client.Autoscan(len(args) > 0 && args[0] == "--remeasure")
 		if err != nil {
 			return fail(out, err)
 		}

@@ -26,6 +26,8 @@ type Facts struct {
 	ThisMachine string         // the target autoscan reads this machine's GPU as
 	Driver      string         // this machine's GPU driver, read live; "" where the probe reports none
 	Detected    bool           // the detect call answered (ThisMachine "" then means no registered chip matched)
+	NewChip     string         // this GPU's name when no chip profile fits it yet: autoscan measures one
+	Scanning    bool           // an autoscan is running
 	ByFlag      bool           // --target chose the chip: shown as chosen by flag, not detected
 	Picked      bool           // detection failed and the user picked the closest registered chip
 	Others      *seam.Ceilings // this model's limit on every registered chip, read-only (step 3)
@@ -139,7 +141,7 @@ func setupBody(f Facts, width int) string {
 	var b strings.Builder
 	b.WriteString(stHeader.Render("Select a model, a chip and an engine. Then press Run.") + "\n")
 	b.WriteString("Run finds the speed limit, checks the GPU is free, measures with the engine and times each role.\n")
-	if f.Ceiling != nil && f.Ceiling.Decode.TokS != nil {
+	if f.Ceiling != nil && f.Ceiling.Decode.TokS != nil && f.chipKnown() { // no limit for a chip nobody chose
 		fmt.Fprintf(&b, "Speed limit on %s: %.1f tokens per second (%.1f ms per token).\n", aboutChip(f), *f.Ceiling.Decode.TokS, f.Ceiling.Decode.FloorMs)
 		if s := f.Ceiling.BandwidthSource; s != nil {
 			b.WriteString(stMuted.Render(fmt.Sprintf("From memory %.1f GB/s, %s.", f.Ceiling.PeakBandwidthGBs, *s)) + "\n")
@@ -209,6 +211,12 @@ func (f Facts) savedAs(id string) (string, bool) {
 
 // head is a section heading inside a list: drawn, never selected.
 func head(title string) action { return action{title, "head", ""} }
+
+// note is a muted line inside a list: drawn, never selected.
+func note(text string) action { return action{stMuted.Render(text), "note", ""} }
+
+// skipped says the cursor never rests on this row.
+func skipped(do string) bool { return do == "head" || do == "note" }
 
 // modelChoices are the model files found, the chosen one marked, and a row to type another path.
 func modelChoices(f Facts) []action {
@@ -614,6 +622,8 @@ func chipLine(f Facts) (string, string) {
 		text += " · not " + here() + ": the speed limit only"
 	case f.registered() && t.ID == f.ThisMachine:
 		text += " · " + here() + " (detected)"
+	case !f.Picked && f.NewChip != "":
+		return "open", "new chip: " + f.NewChip + " has no profile yet · Autoscan measures it"
 	case !f.Picked:
 		return "open", "not detected: no registered chip matches " + here() + " · enter to pick the closest"
 	default:
@@ -632,6 +642,9 @@ func chipActions(f Facts) []action {
 	if f.Targets == nil || f.ByFlag {
 		return nil // set by flag: nothing to choose here
 	}
+	if len(f.Targets.Groups) > 0 {
+		return append(chipGroups(f), layoutActions(f)...)
+	}
 	out := []action{}
 	for i, t := range f.Targets.Targets {
 		where, limit := "", ""
@@ -648,6 +661,85 @@ func chipActions(f Facts) []action {
 		out = append(out, action{fmt.Sprintf("%s%-14s %-22s %s", chosen, t.ID, where, limit), "chip", fmt.Sprint(i)})
 	}
 	return append(out, layoutActions(f)...)
+}
+
+// chipGroups draws Python's chip groups: this machine (with autoscan), measured chips, chips not measured yet,
+// and the families folded into one line. Only this machine and measured chips can be chosen.
+func chipGroups(f Facts) []action {
+	index, w := map[string]int{}, 0
+	for i, t := range f.Targets.Targets {
+		index[t.ID], w = i, max(w, len(t.ID))
+	}
+	out := []action{}
+	for _, g := range f.Targets.Groups {
+		if g.Folded {
+			ids := []string{}
+			for _, c := range g.Chips {
+				ids = append(ids, c.ID)
+			}
+			if len(ids) > 0 {
+				out = append(out, note(g.Title+": "+strings.Join(ids, ", ")+" · "+g.Chips[0].Words))
+			}
+			continue
+		}
+		if g.Key == "this" {
+			out = append(out, thisMachineRows(f, g, w)...)
+			continue
+		}
+		if len(g.Chips) == 0 {
+			continue
+		}
+		out = append(out, note(g.Title))
+		for _, c := range g.Chips {
+			if !g.Selectable {
+				out = append(out, note(fmt.Sprintf("  %-*s  %s", w, c.ID, c.Words)))
+				continue
+			}
+			out = append(out, chipRow(f, c.ID, index[c.ID], w, c.Words))
+		}
+	}
+	return out
+}
+
+// chipRow is one chip that can be chosen, marked when it is the chosen one.
+func chipRow(f Facts, id string, i, w int, words string) action {
+	chosen := "  "
+	if i == f.Target && f.chipKnown() {
+		chosen = stAccent.Render("● ")
+	}
+	return action{fmt.Sprintf("%s%-*s  %s", chosen, w, id, stMuted.Render(words)), "chip", fmt.Sprint(i)}
+}
+
+// thisMachineRows is this machine's chip and the autoscan row: keep the fitting profile, or measure a new one.
+func thisMachineRows(f Facts, g seam.ChipGroup, w int) []action {
+	out := []action{note("This machine")}
+	h := f.Targets.ThisMachine
+	if h == nil {
+		return out
+	}
+	for _, t := range g.Chips {
+		for i, row := range f.Targets.Targets {
+			if row.ID == t.ID {
+				out = append(out, chipRow(f, t.ID, i, w, t.Words))
+			}
+		}
+	}
+	busy := ""
+	if f.Scanning {
+		busy = " " + f.Spin + " measuring…"
+	}
+	switch {
+	case h.Status == "new":
+		out = append(out, action{fmt.Sprintf("  [ Autoscan ] %s is new: measure it and save a profile%s", deref(h.Name), busy), "autoscan", ""})
+		out = append(out, note("  "+h.Words))
+	case h.Source != nil && *h.Source == "generated":
+		out = append(out, action{"  [ Measure again ] refresh this machine's profile" + busy, "autoscan", "remeasure"})
+	case h.Status == "known":
+		out = append(out, action{"  [ Autoscan ] check the profile still fits" + busy, "autoscan", ""})
+	default:
+		out = append(out, note("  "+h.Words))
+	}
+	return out
 }
 
 // layoutLabel names the chosen GPU layout on a machine with more than one GPU.

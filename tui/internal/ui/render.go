@@ -857,6 +857,8 @@ func DetailActions(f Facts, i, row, width, maxRows int) string {
 			b.WriteString("\n\n" + stHeader.Render(a.label)) // a blank line sets each section apart
 		case a.do == "head":
 			b.WriteString("\n" + stHeader.Render(a.label))
+		case a.do == "note":
+			b.WriteString("\n  " + a.label)
 		case j == row:
 			b.WriteString("\n" + stCursor.Render("▸ ") + a.label)
 		default:

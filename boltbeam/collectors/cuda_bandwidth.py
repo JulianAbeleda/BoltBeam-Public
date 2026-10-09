@@ -8,6 +8,11 @@ buffer of at least 1 GiB with 16-byte vector loads in a grid-stride loop and wri
 is compiled at run time with nvcc (from PATH or /usr/local/cuda/bin) for the GPU it runs on (-arch=native), timed
 with CUDA events, and keeps the best of N runs per launch shape, the rule metal_bandwidth.py and the targets
 registry use for every measured bandwidth.
+
+measure_matrix_tflops is the compute side of a chip profile: fp16 WMMA 16x16x16 multiply-accumulate into fp32 on
+fragments held in registers, so no memory is read. It is a lower bound on the tensor cores (WMMA, not the newest
+instructions), and it only bounds prefill: decode is memory-bound. The same program prints the driver's device facts
+(SM count, shared memory per SM, L2, clocks, bus width), each read with cudaDeviceGetAttribute.
 """
 from __future__ import annotations
 
@@ -81,6 +86,81 @@ int main(int argc, char** argv) {
   return 0;
 }
 """
+MATRIX_SRC = r"""
+#include <cstdio>
+#include <cstdlib>
+#include <cuda_fp16.h>
+#include <cuda_runtime.h>
+#include <mma.h>
+using namespace nvcuda;
+#define ACC 8
+
+__global__ void mmaloop(float* out, int iters) {
+  wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;
+  wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b;
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> c[ACC];
+  wmma::fill_fragment(a, __float2half(0.001f));
+  wmma::fill_fragment(b, __float2half(0.002f));
+#pragma unroll
+  for (int k = 0; k < ACC; k++) wmma::fill_fragment(c[k], 0.0f);
+  for (int i = 0; i < iters; i++) {
+#pragma unroll
+    for (int k = 0; k < ACC; k++) wmma::mma_sync(c[k], a, b, c[k]);
+  }
+  float s = 0.0f;
+#pragma unroll
+  for (int k = 0; k < ACC; k++)
+    for (int t = 0; t < c[k].num_elements; t++) s += c[k].x[t];
+  out[blockIdx.x * blockDim.x + threadIdx.x] = s;  // every result is kept, so nothing is optimised away
+}
+
+#define CK(x) do { cudaError_t e = (x); if (e != cudaSuccess) { printf("{\"error\": \"%s\"}\n", cudaGetErrorString(e)); return 1; } } while (0)
+
+static int attr(cudaDeviceAttr a, int dev) { int v = -1; if (cudaDeviceGetAttribute(&v, a, dev) != cudaSuccess) v = -1; return v; }
+
+int main(int argc, char** argv) {
+  int dev = argc > 1 ? atoi(argv[1]) : 0;
+  int iters = argc > 2 ? atoi(argv[2]) : 8192;
+  int reps = argc > 3 ? atoi(argv[3]) : 5;
+  CK(cudaSetDevice(dev));
+  cudaDeviceProp p; CK(cudaGetDeviceProperties(&p, dev));
+  int sms = attr(cudaDevAttrMultiProcessorCount, dev);
+  int shapes[][2] = {{128, 4}, {256, 2}, {256, 4}, {512, 2}};  // threads, blocks per SM
+  float* out; CK(cudaMalloc(&out, (size_t)512 * 8 * sms * sizeof(float)));
+  cudaEvent_t t0, t1; CK(cudaEventCreate(&t0)); CK(cudaEventCreate(&t1));
+  double best = 0;
+  printf("{\"device\": %d, \"name\": \"%s\", \"sm_count\": %d, \"shared_mem_per_sm_bytes\": %d, "
+         "\"l2_cache_bytes\": %d, \"clock_khz\": %d, \"memory_clock_khz\": %d, \"memory_bus_bits\": %d, "
+         "\"total_global_mem_bytes\": %zu, \"iters\": %d, \"reps\": %d, \"shapes\": [",
+         dev, p.name, sms, attr(cudaDevAttrMaxSharedMemoryPerMultiprocessor, dev), attr(cudaDevAttrL2CacheSize, dev),
+         attr(cudaDevAttrClockRate, dev), attr(cudaDevAttrMemoryClockRate, dev), attr(cudaDevAttrGlobalMemoryBusWidth, dev),
+         p.totalGlobalMem, iters, reps);
+  for (int s = 0; s < 4; s++) {
+    int threads = shapes[s][0], blocks = shapes[s][1] * sms;
+    mmaloop<<<blocks, threads>>>(out, iters);  // warm-up, not counted
+    CK(cudaGetLastError());
+    CK(cudaDeviceSynchronize());
+    float ms_best = 1e30f;
+    for (int r = 0; r < reps; r++) {
+      CK(cudaEventRecord(t0));
+      mmaloop<<<blocks, threads>>>(out, iters);
+      CK(cudaEventRecord(t1));
+      CK(cudaEventSynchronize(t1));
+      float ms; CK(cudaEventElapsedTime(&ms, t0, t1));
+      if (ms < ms_best) ms_best = ms;
+    }
+    double flop = (double)blocks * (threads / 32) * iters * ACC * 2.0 * 16 * 16 * 16;
+    double tf = flop / (ms_best * 1e-3) / 1e12;
+    printf("%s{\"threads\": %d, \"blocks\": %d, \"best_ms\": %.4f, \"tflops\": %.2f}", s ? ", " : "", threads, blocks, ms_best, tf);
+    if (tf > best) best = tf;
+  }
+  printf("], \"tflops\": %.2f}\n", best);
+  return 0;
+}
+"""
+MATRIX_NOTE = "lower bound, prefill only; decode is memory-bound"
+MATRIX_METHOD = ("BoltBeam cuda_bandwidth: native CUDA WMMA 16x16x16 fp16 multiply-accumulate into fp32, 8 accumulators "
+                 "in registers, {iters} steps, best of {reps} per launch shape")
 METHOD = "BoltBeam cuda_bandwidth: native CUDA read-only kernel, 16-byte loads over {gib} GiB, best of {reps} per launch shape"
 
 
@@ -91,15 +171,15 @@ def find_nvcc(env:dict[str, str] | None = None) -> str | None:
   return shutil.which("nvcc") or next((p for p in ("/usr/local/cuda/bin/nvcc",) if pathlib.Path(p).is_file()), None)
 
 
-def build(nvcc:str, cache:pathlib.Path | None = None) -> pathlib.Path:
-  """Compile the probe once per source and nvcc; the binary is cached."""
+def build(nvcc:str, cache:pathlib.Path | None = None, *, source:str = CUDA_SRC, stem:str = "readbw") -> pathlib.Path:
+  """Compile a probe once per source and nvcc; the binary is cached."""
   cache = cache or pathlib.Path(tempfile.gettempdir()) / "boltbeam-cuda-bandwidth"
   cache.mkdir(parents=True, exist_ok=True)
-  key = hashlib.sha256((CUDA_SRC + nvcc).encode()).hexdigest()[:12]
-  exe = cache / f"readbw-{key}"
+  key = hashlib.sha256((source + nvcc).encode()).hexdigest()[:12]
+  exe = cache / f"{stem}-{key}"
   if not exe.exists():
-    src = cache / f"readbw-{key}.cu"
-    src.write_text(CUDA_SRC)
+    src = cache / f"{stem}-{key}.cu"
+    src.write_text(source)
     proc = subprocess.run([nvcc, "-O3", "-arch=native", "-o", str(exe), str(src)], capture_output=True, text=True, timeout=600)
     if proc.returncode != 0:
       raise RuntimeError(f"nvcc failed: {(proc.stderr or proc.stdout).strip()[-300:]}")
@@ -127,6 +207,22 @@ def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | N
     raise RuntimeError(f"the CUDA probe exited {proc.returncode}: {(proc.stdout + proc.stderr).strip()[-300:]}")
   out = parse(proc.stdout)
   out.update(schema="boltbeam.cuda_read_bandwidth.v1", method=METHOD.format(gib=gib, reps=reps))
+  return out
+
+
+def measure_matrix_tflops(device:int = 0, *, iters:int = 8192, reps:int = 5, nvcc:str | None = None,
+                          run=subprocess.run) -> dict[str, Any]:
+  """fp16 tensor-core rate in TFLOP/s (a lower bound) and the driver's device facts, from one native program."""
+  nvcc = nvcc or find_nvcc()
+  if not nvcc:
+    raise RuntimeError("nvcc is not installed (set BOLTBEAM_NVCC or put /usr/local/cuda/bin on PATH)")
+  exe = build(nvcc, source=MATRIX_SRC, stem="mma")
+  proc = run([str(exe), str(device), str(iters), str(reps)], capture_output=True, text=True, timeout=600)
+  if proc.returncode != 0:
+    raise RuntimeError(f"the CUDA matrix probe exited {proc.returncode}: {(proc.stdout + proc.stderr).strip()[-300:]}")
+  out = parse(proc.stdout)
+  out.update(schema="boltbeam.cuda_matrix_peak.v1", dtype="fp16", note=MATRIX_NOTE,
+             method=MATRIX_METHOD.format(iters=iters, reps=reps))
   return out
 
 

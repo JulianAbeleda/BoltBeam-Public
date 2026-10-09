@@ -6,6 +6,10 @@ JSON object on stdout and exits 0, or prints `{"kind": "error", "error": ...}` a
 when the run holds no measurement yet; the facts are still printed, so a screen can say what is missing.
 
     targets                                    the registered chips and which of them carry a ceiling
+    chips                                      every chip in Setup's groups: this machine, measured, not measured
+                                               yet, families (workflow/chips.py)
+    autoscan [--remeasure]                     use the profile that fits this machine's GPU, or measure and save
+                                               a new one; --remeasure refreshes a profile made here
     detect                                     the chip this machine is, as autoscan reads it (target_id or null)
     ceiling  MODEL | --profile P  --target T   the roofline: the best tokens/s this chip allows for this model
     ceilings MODEL | --profile P               the decode limit on every registered chip with a ceiling (what-if)
@@ -64,7 +68,8 @@ from boltbeam.profile.loaders import profile_from_model
 from boltbeam.report.html import STAGES, next_step, roofline_kernels, stage_state
 from boltbeam.search import role_compare
 from boltbeam.collectors import providers, tinygrad_role_time
-from boltbeam.target.targets import get_target, load_target_registry
+from boltbeam.target import targets as reg
+from boltbeam.target.targets import get_target
 from boltbeam.workflow import analyze_run, autoscan_run, ingest_probe_run, ingest_timing_run, load_run, output_run
 from boltbeam.workflow.autoscan import _hardware_profile
 from boltbeam.workflow.common import load_manifest, read_json
@@ -96,6 +101,8 @@ def target_facts(target) -> dict[str, Any]:
   sources = caps.get("fact_sources", {}) or {}
   return {
     "id": target.target_id,
+    # registry: the repo's reviewed rows; generated: a profile measured on this machine (workflow/chips.py)
+    "source": "generated" if reg.is_local(target.target_id) else "registry",
     "backend": target.backend,
     "backend_status": target.backend_status,
     "scope": (sources.get("memory_bandwidth_gbs") or {}).get("scope"),
@@ -113,7 +120,7 @@ def target_facts(target) -> dict[str, Any]:
 
 
 def targets() -> dict[str, Any]:
-  return {"schema": SCHEMA, "kind": "targets", "targets": [target_facts(t) for t in load_target_registry().values()]}
+  return {"schema": SCHEMA, "kind": "targets", "targets": [target_facts(t) for t in reg.TARGETS.values()]}
 
 
 def detect(profile:dict[str, Any] | None = None) -> dict[str, Any]:
@@ -129,6 +136,8 @@ def detect(profile:dict[str, Any] | None = None) -> dict[str, Any]:
           "target_id": target_id, "target_kind": gpu.get("target_kind"),
           # read live from nvidia-smi on every call; the registry's driver is the one its facts were measured on
           "driver_version": gpu.get("driver_version"),
+          # known: a registry row or a profile made here fits; new: autoscan would measure one (workflow/chips.py)
+          "profile": gpu.get("profile"),
           "registered": bool(target_id) and target_id in {t["id"] for t in targets()["targets"]}}
 
 
@@ -155,6 +164,10 @@ def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "f
     peak_flops = resolve_peak_flops(target, dtype, peak_tflops)
   except SystemExit as exc:
     raise Refused(str(exc)) from exc
+  if read is None and (known := profile_read({"target_id": target.target_id})):
+    from boltbeam.workflow import layout as lay
+    when = ((target.capabilities.get("fact_sources") or {}).get("memory_bandwidth_gbs") or {}).get("observed_at")
+    read = {"gbs": known[0], "source": known[1], "short": lay.short_source(known[1], when) + ", chip profile"}
   bw = (read or {}).get("gbs") or target.memory_bandwidth_gbs or peak_gbs
   if not bw:
     raise Refused(f"target {target.target_id!r} carries no memory_bandwidth_gbs, so there is no memory ceiling; "
@@ -172,7 +185,7 @@ def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "f
 def ceilings(profile:dict[str, Any]) -> dict[str, Any]:
   """The decode limit of this model on every registered chip that carries a ceiling: read-only what-if facts."""
   chips = []
-  for t in load_target_registry().values():
+  for t in reg.TARGETS.values():
     if not target_facts(t)["has_ceiling"]:
       continue
     try:
@@ -736,6 +749,21 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
 
 
 DEVICE_PREFIX = {"CUDA": "NV", "AMD": "AMD"}  # tinygrad's device name per backend, for the per-GPU probe
+_PROBE_WORDS = {"Metal": "BoltBeam's Metal read probe", "CUDA": "BoltBeam's native CUDA read probe"}
+
+
+def profile_read(gpu:dict[str, Any]) -> tuple[float, str] | None:
+  """A GPU's read bandwidth from the chip profile made on this machine, with its date; None for a registry chip.
+  One measurement: the profile's number is the limit's number."""
+  tid = gpu.get("target_id")
+  if not reg.is_local(tid):
+    return None
+  t = get_target(tid)
+  src = ((t.capabilities or {}).get("fact_sources") or {}).get("memory_bandwidth_gbs") or {}
+  if not t.memory_bandwidth_gbs:
+    return None
+  return t.memory_bandwidth_gbs, (f"measured on this GPU with {_PROBE_WORDS.get(t.backend, 'BoltBeam')}, "
+                                  f"{src.get('observed_at', 'date unknown')} (chip profile {tid})")  # tinygrad's device name per backend, for the per-GPU probe
 
 
 def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | None = None) -> dict[str, Any]:
@@ -768,7 +796,8 @@ def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | Non
         cuda_read = cuda_bandwidth.measure_read_gbs
     facts = lay.measure_machine(devs, backend=target.backend, device_prefix=DEVICE_PREFIX.get(target.backend),
                                 probe=probe, topology=topology, metal_read=metal_read, cuda_read=cuda_read,
-                                fallback=lambda tid: get_target(tid).memory_bandwidth_gbs if tid else None)
+                                fallback=lambda tid: get_target(tid).memory_bandwidth_gbs if tid else None,
+                                profile_read=profile_read)
     facts["reused"] = False
   write_json(run / lay.MACHINE, {k: v for k, v in facts.items() if k != "reused"})
   return {"schema": SCHEMA, "kind": "machine", **facts}
@@ -913,6 +942,9 @@ def main(argv:list[str] | None = None) -> int:
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
   sub = parser.add_subparsers(dest="command", required=True)
   sub.add_parser("targets")
+  sub.add_parser("chips")
+  p = sub.add_parser("autoscan")
+  p.add_argument("--remeasure", action="store_true", help="measure a profile made on this machine again")
   sub.add_parser("detect")
   p = sub.add_parser("ceiling")
   p.add_argument("model", nargs="?")
@@ -994,6 +1026,12 @@ def main(argv:list[str] | None = None) -> int:
   try:
     if args.command == "targets":
       out = targets()
+    elif args.command == "chips":
+      from boltbeam.workflow import chips
+      out = {"schema": SCHEMA, **chips.chip_list()}
+    elif args.command == "autoscan":
+      from boltbeam.workflow import chips
+      out = {"schema": SCHEMA, **chips.autoscan(remeasure=args.remeasure)}
     elif args.command == "detect":
       out = detect()
     elif args.command == "providers":

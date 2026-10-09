@@ -136,21 +136,26 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
                     probe:Callable[[list[str], dict[str, str]], dict[str, Any]] | None,
                     topology:str = "", fallback:Callable[[str | None], float | None] = lambda _: None,
                     metal_read:Callable[[], dict[str, Any]] | None = None,
-                    cuda_read:Callable[[int], dict[str, Any]] | None = None) -> dict[str, Any]:
+                    cuda_read:Callable[[int], dict[str, Any]] | None = None,
+                    profile_read:Callable[[dict[str, Any]], tuple[float, str] | None] = lambda _: None) -> dict[str, Any]:
   """Read bandwidth per GPU, and copy bandwidth and latency per GPU pair, with sources.
 
   Read bandwidth, in this order: BoltBeam's native probe for the backend (metal_read on a Mac; cuda_read(index) on
   NVIDIA, collectors/cuda_bandwidth.py); then the registry figure, labelled with why the probe did not run. On
   NVIDIA tinygrad's sum is no bandwidth measure (382 GB/s on a 5090 that reads about 1,700), so it is used only
   when nothing else exists, and labelled so. Elsewhere (AMD) it stays a labelled lower bound. probe(args, env) runs
-  the fork's gpu_probe.py, which also measures the copies between GPUs."""
+  the fork's gpu_probe.py, which also measures the copies between GPUs. profile_read(gpu) comes first: a chip
+  profile made on this machine already holds the GPU's measured read bandwidth and its date (workflow/chips.py), so
+  the limit uses that one number instead of a second measurement."""
   links = read_topology(topology)
   gpus = []
   for d in devs:
     row = {**d, "read_gbs": None, "read_source": None}
     sum_gbs = None
     try:
-      if backend == "Metal" and metal_read is not None:
+      if (known := profile_read(d)) is not None:
+        row.update(read_gbs=known[0], read_source=known[1])
+      elif backend == "Metal" and metal_read is not None:
         got = metal_read()
         row.update(read_gbs=got["read_gbs"], read_source=f"measured on this GPU with BoltBeam's Metal read probe, {_today()}")
       elif backend == "CUDA" and cuda_read is not None:
