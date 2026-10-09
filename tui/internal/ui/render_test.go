@@ -91,8 +91,9 @@ func press(m tea.Model, k string) tea.Model {
 // program feeds the model the seam's answers in the order they arrive on a real start, then sizes it.
 func program(s sample, run *seam.Run, job *jobs.Job, tail []string, width, height int) tea.Model {
 	var m tea.Model = New(seam.Client{}, jobs.Store{}, "/models/Qwen3-8B.gguf", "", 512)
-	for _, msg := range []tea.Msg{targetsMsg{&s.targets, nil}, detectMsg{"apple_m3_10c", ""}, profileMsg{&s.profile, nil},
-		ceilingMsg{&s.ceiling, nil}, runsMsg{&s.runs, nil}, tea.WindowSizeMsg{Width: width, Height: height}} {
+	for _, msg := range []tea.Msg{targetsMsg{&s.targets, nil}, detectMsg{id: "apple_m3_10c", count: 1}, profileMsg{&s.profile, nil},
+		ceilingMsg{&s.ceiling, nil}, runsMsg{&s.runs, nil}, providersMsg{"apple_m3_10c", engines()},
+		tea.WindowSizeMsg{Width: width, Height: height}} {
 		m, _ = m.Update(msg)
 	}
 	if run != nil {
@@ -104,7 +105,31 @@ func program(s sample, run *seam.Run, job *jobs.Job, tail []string, width, heigh
 	return m
 }
 
+// engines is this Mac's answer to `screen providers`: both engines, llama.cpp without per-role capture.
+func engines() *seam.Providers {
+	method := "tinygrad-profile-events"
+	return &seam.Providers{Providers: []seam.ProviderRow{
+		{Provider: "llama.cpp", Available: true, Capture: seam.Capture{Reason: sp("metal-system-trace is not installed")}},
+		{Provider: "tinygrad", Available: true, Capture: seam.Capture{Method: &method}}}}
+}
+
+// page puts the model on one page, as enter on a Setup row does.
+func page(m tea.Model, p int) tea.Model {
+	got := m.(Model)
+	got.cursor, got.row = p, 0
+	return got
+}
+
 func facts(m tea.Model) Facts { return m.(Model).f }
+
+// savedSample is the answer of `screen saved` with two runs, newest first.
+func savedSample() *seam.Saved {
+	var sv seam.Saved
+	_ = json.Unmarshal([]byte(`{"root":"/home/u/runs/saved","runs":[
+	{"id":"qwen3-8b-apple_m3_10c-002","model_id":"Qwen3-8B","target_id":"apple_m3_10c","provider":"tinygrad","saved_at":"2026-10-09T12:10:00","tok_s":12.6,"pct_of_limit":60.4},
+	{"id":"qwen3-8b-apple_m3_10c-001","model_id":"Qwen3-8B","target_id":"apple_m3_10c","provider":"llama.cpp","saved_at":"2026-10-09T11:20:00","tok_s":17.0,"pct_of_limit":81.7}]}`), &sv)
+	return &sv
+}
 
 // The plain goldens are what NO_COLOR shows: lipgloss strips every colour under the Ascii profile.
 func TestScreensPlain(t *testing.T) {
@@ -113,46 +138,48 @@ func TestScreensPlain(t *testing.T) {
 	empty := New(seam.Client{}, jobs.Store{}, "", "", 512)
 	emptyM, _ := empty.Update(targetsMsg{&s.targets, nil})
 	emptyM, _ = emptyM.Update(runsMsg{&seam.Runs{Root: "/home/u/runs"}, nil})
-	planned := program(s, &s.planned, nil, nil, 80, 24)
-	measuring := program(s, &s.planned, s.job, s.tail, 80, 24)
-	measured := program(s, &s.measured, nil, nil, 80, 24)
-	editing := press(press(press(press(empty, "enter"), "enter"), "/models/Q"), "")
-	opened := press(press(measured, "enter"), "j")
+	ready := program(s, nil, nil, nil, 80, 24)
+	ready, _ = ready.Update(savedListMsg{savedSample(), nil})
+	greyed, _ := ready.Update(providersMsg{"apple_m3_10c", &seam.Providers{Providers: []seam.ProviderRow{
+		{Provider: "llama.cpp", Reason: sp("llama-bench was not found"), Capture: seam.Capture{Reason: sp("x")}},
+		{Provider: "tinygrad", Reason: sp("The tinygrad fork is not at /x."), Capture: seam.Capture{Reason: sp("x")}}}}})
+	running := page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun)
+	measured := page(program(s, &s.measured, nil, nil, 80, 24), pageRun)
+	saved, _ := page(program(s, nil, nil, nil, 80, 24), pageSaved).Update(savedListMsg{savedSample(), nil})
+	editing := press(press(emptyM, "enter"), "/models/Q")
 	for name, got := range map[string]string{
-		"checklist-empty.txt":     emptyM.View(),
-		"checklist-planned.txt":   planned.View(),
-		"checklist-measuring.txt": measuring.View(),
-		"checklist-measured.txt":  measured.View(),
-		"open-result-80x24.txt":   opened.View(),
-		"model-editing.txt":       editing.View(),
-		"detail-model.txt":        detail(facts(measured), 0),
-		"detail-chip.txt":         detail(facts(measured), 1),
-		"detail-limit.txt":        detail(facts(measured), 2),
-		"detail-measure.txt":      detail(facts(measuring), 3),
-		"detail-result.txt":       detail(facts(measured), 4),
+		"setup-empty.txt":   emptyM.View(),
+		"setup-greyed.txt":  greyed.View(),
+		"setup-ready.txt":   ready.View(),
+		"run-progress.txt":  running.View(),
+		"run-results.txt":   measured.View(),
+		"saved-runs.txt":    saved.View(),
+		"model-editing.txt": editing.View(),
+		"detail-run.txt":    detail(facts(measured), pageRun),
+		"detail-setup.txt":  detail(facts(ready), pageSetup),
 	} {
 		golden(t, name, got)
 	}
 }
 
-// One styled capture per shape, with true colour on a dark background: what a terminal shows.
+// One styled capture per screen, with true colour on a dark background: what a terminal shows.
 func TestScreensStyled(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	lipgloss.SetHasDarkBackground(true)
 	defer lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
-	measured := program(s, &s.measured, nil, nil, 80, 24)
-	golden(t, "styled/checklist-measured.ansi", measured.View())
-	golden(t, "styled/checklist-measuring.ansi", program(s, &s.planned, s.job, s.tail, 80, 24).View())
-	golden(t, "styled/detail-result.ansi", detail(facts(measured), 4))
+	golden(t, "styled/setup-ready.ansi", program(s, nil, nil, nil, 80, 24).View())
+	golden(t, "styled/run-progress.ansi", page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun).View())
+	golden(t, "styled/detail-run.ansi", detail(facts(program(s, &s.measured, nil, nil, 80, 24)), pageRun))
 }
 
 // Every frame fits 80x24: 24 lines, none wider than 80 cells.
 func TestFramesFit80x24(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
-	for _, m := range []tea.Model{program(s, &s.planned, nil, nil, 80, 24), program(s, &s.planned, s.job, s.tail, 80, 24),
-		press(press(program(s, &s.measured, nil, nil, 80, 24), "enter"), "j")} {
+	saved, _ := page(program(s, nil, nil, nil, 80, 24), pageSaved).Update(savedListMsg{savedSample(), nil})
+	for _, m := range []tea.Model{program(s, &s.planned, nil, nil, 80, 24), page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun),
+		page(program(s, &s.measured, nil, nil, 80, 24), pageRun), saved} {
 		lines := strings.Split(m.View(), "\n")
 		if len(lines) != 24 {
 			t.Fatalf("%d lines", len(lines))
@@ -165,34 +192,29 @@ func TestFramesFit80x24(t *testing.T) {
 	}
 }
 
-func TestStepStates(t *testing.T) {
+// Setup is three sections under their own headings; Run is greyed, naming what is missing, until all are set.
+func TestSetupHasThreeSectionsAndRun(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
-	marks := func(m tea.Model) string {
-		out := ""
-		for _, st := range steps {
-			mk, _ := st.line(facts(m))
-			out += mk + " "
+	acts := setupActions(facts(program(s, nil, nil, nil, 80, 24)))
+	heads := []string{}
+	var run action
+	for _, a := range acts {
+		if a.do == "head" && a.label != "" {
+			heads = append(heads, a.label)
 		}
-		return out
+		if a.do == "analyze" || strings.Contains(plain(a.label), "[ Run ]") {
+			run = a
+		}
 	}
-	for name, c := range map[string]struct {
-		m      tea.Model
-		marks  string
-		cursor int
-	}{
-		"planned":   {program(s, &s.planned, nil, nil, 80, 24), "pass pass pass wait open ", 3},
-		"measuring": {program(s, &s.planned, s.job, s.tail, 80, 24), "pass pass pass run open ", 3},
-		"measured":  {program(s, &s.measured, nil, nil, 80, 24), "pass pass pass pass pass ", 4},
-		"failed":    {program(s, &s.planned, &jobs.Job{}, []string{"stage analyze: failed: boom"}, 80, 24), "pass pass pass fail open ", 3},
-	} {
-		if got := marks(c.m); got != c.marks || c.m.(Model).cursor != c.cursor {
-			t.Errorf("%s: marks %q cursor %d", name, got, c.m.(Model).cursor)
-		}
+	if strings.Join(heads, "|") != "Select model|Select chip|Select engine" || run.do != "analyze" {
+		t.Fatalf("heads %v run %+v", heads, run)
 	}
 	none := New(seam.Client{}, jobs.Store{}, "", "", 512)
-	if marks(none) != "open open open open open " || none.mood() != faceSleep {
-		t.Fatalf("nothing read: %q %q", marks(none), none.mood())
+	for _, a := range setupActions(none.f) {
+		if strings.Contains(plain(a.label), "[ Run ]") && (a.do != "" || !strings.Contains(plain(a.label), "needs a model, a chip, an engine")) {
+			t.Fatalf("empty: %+v", a)
+		}
 	}
 }
 
@@ -200,41 +222,47 @@ func TestKeys(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
 	m := program(s, &s.measured, nil, nil, 80, 24)
-	if got := m.(Model); got.targetID() != "apple_m3_10c" || got.mood() != faceHappy {
-		t.Fatalf("the detected chip is picked when none is asked for: %q, mood %q", got.targetID(), got.mood())
+	got := m.(Model)
+	if got.targetID() != "apple_m3_10c" || got.cursor != pageSetup || got.f.Engine != "llama.cpp" {
+		t.Fatalf("Setup first, with the detected chip and the first engine here: %q %d %q", got.targetID(), got.cursor, got.f.Engine)
 	}
-	m = press(press(press(m, "k"), "k"), "k") // to step 2
-	if m.(Model).cursor != 1 {
-		t.Fatalf("cursor %d", m.(Model).cursor)
+	if acts := got.actions(); acts[got.row].do == "head" {
+		t.Fatal("the cursor must not rest on a heading")
+	}
+	for i := 0; i < 40 && m.(Model).actions()[m.(Model).row].arg != "tinygrad"; i++ {
+		m = press(m, "j")
 	}
 	m = press(m, "enter")
-	if !m.(Model).open {
-		t.Fatal("enter opens the step")
+	if got := m.(Model); got.f.Engine != "tinygrad" || got.cursor != pageSetup {
+		t.Fatalf("engine %q cursor %d", got.f.Engine, got.cursor)
 	}
-	if m.(Model).row != m.(Model).f.Target {
-		t.Fatal("the chip list opens on the chip in use")
-	}
-	m = press(press(m, "k"), "enter") // the chip above it
-	if got := m.(Model); got.targetID() != "apple_metal" || got.f.Ceiling != nil || !got.chipSet {
-		t.Fatalf("enter on a chip row picks it and drops the old speed limit: %q", got.targetID())
-	}
+	m = page(m, pageRun)
 	m = press(m, "esc")
-	if m.(Model).open || m.(Model).cursor != 1 {
-		t.Fatal("esc goes back to the list, on the same step")
+	if m.(Model).cursor != pageSetup {
+		t.Fatal("esc goes back to Setup")
 	}
-	m = press(press(press(press(press(m, "k"), "enter"), "enter"), "/m"), "esc")
-	if got := m.(Model); got.f.Editing || got.f.Path != "/models/Qwen3-8B.gguf" {
-		t.Fatalf("esc cancels the edit: %q", got.f.Path)
-	}
-	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
-	if note, ok := cmd().(noteMsg); !ok || !strings.Contains(string(note), "No run is going") {
-		t.Fatalf("x with no live run says so, got %v", note)
-	}
-	if _, cmd = next.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
+	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
 		t.Fatal("q quits")
 	}
 	if RunStem("/models/Qwen3-8B.gguf", "apple_m3_10c") != "qwen3-8b-apple_m3_10c" {
 		t.Fatalf("stem %q", RunStem("/models/Qwen3-8B.gguf", "apple_m3_10c"))
+	}
+}
+
+// The Run screen offers Save until the run is saved, then says where; a saved run opened to read offers no Save.
+func TestRunScreenSaves(t *testing.T) {
+	s := loadSample(t)
+	f := facts(program(s, &s.measured, nil, nil, 80, 24))
+	if !hasLabel(runActions(f), stAccent.Render("[ Save run ]")) {
+		t.Fatalf("no Save: %+v", runActions(f))
+	}
+	f.SavedID, f.SavedDir = f.Run.ID, "/home/u/runs/saved/"+f.Run.ID
+	if acts := runActions(f); hasLabel(acts, stAccent.Render("[ Save run ]")) || !strings.Contains(plain(acts[0].label), "Saved to /home/u/runs/saved/") {
+		t.Fatalf("after save: %+v", acts)
+	}
+	f.SavedID, f.ReadOnly = "", true
+	if acts := runActions(f); hasLabel(acts, stAccent.Render("[ Save run ]")) || acts[0].label != "Back to saved runs" {
+		t.Fatalf("read-only: %+v", acts)
 	}
 }
 
@@ -273,25 +301,73 @@ func TestMeasureStatusWording(t *testing.T) {
 	}
 }
 
-func TestDeleteAsksTwice(t *testing.T) {
-	s := loadSample(t)
-	f := facts(program(s, &s.measured, nil, nil, 80, 24))
-	row := func(f Facts) string {
-		for _, a := range measureActions(f) {
-			if a.do == "run" && a.arg == f.Run.ID {
-				return ansi.Strip(a.label)
-			}
-		}
-		return ""
+// Saved runs are listed newest first with model, chip, engine, date and the share of the limit; d deletes on
+// the second press.
+func TestSavedRunsListAndDeleteAsksTwice(t *testing.T) {
+	f := Facts{Saved: savedSample()}
+	acts := savedActions(f)
+	first := plain(acts[0].label)
+	if first != "Qwen3-8B · apple_m3_10c · tinygrad · 2026-10-09 12:10 · 60% of limit" || acts[0].do != "opensaved" {
+		t.Fatalf("first row %q", first)
 	}
-	if got := row(f); !strings.HasPrefix(got, "Open run "+f.Run.ID) {
-		t.Fatalf("the run row is %q", got)
-	}
-	f.Confirm = f.Run.ID
-	if got := row(f); !strings.HasPrefix(got, "Press d again to delete run "+f.Run.ID) {
+	f.Confirm = "qwen3-8b-apple_m3_10c-002"
+	if got := plain(savedActions(f)[0].label); !strings.HasPrefix(got, "Press d again to delete saved run qwen3-8b-apple_m3_10c-002") {
 		t.Fatalf("the confirm row is %q", got)
 	}
 	if !strings.Contains(ansi.Strip(footer(true, true)), "d delete run") {
-		t.Fatal("the footer does not name d on a run row")
+		t.Fatal("the footer does not name d on a saved run row")
+	}
+}
+
+// d, then d again on a saved run calls the seam's delete for that folder; the first d only asks.
+func TestSavedRunDeleteCallsTheSeamOnTheSecondD(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "calls.txt")
+	fake := filepath.Join(dir, "python")
+	script := "#!/bin/sh\necho \"$@\" >> " + logFile + "\necho '{\"kind\": \"deleted\"}'\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	saved := filepath.Join(dir, "saved")
+	s := loadSample(t)
+	var m tea.Model = New(seam.Client{Python: fake, Saved: saved}, jobs.Store{Dir: dir}, "", "", 512)
+	m, _ = m.Update(targetsMsg{&s.targets, nil})
+	m, _ = m.Update(savedListMsg{savedSample(), nil})
+	m = page(m, pageSaved)
+	first, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd != nil || facts(first).Confirm != "qwen3-8b-apple_m3_10c-002" {
+		t.Fatalf("the first d asks: confirm %q", facts(first).Confirm)
+	}
+	second, cmd := first.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if cmd == nil || facts(second).Confirm != "" {
+		t.Fatal("the second d deletes")
+	}
+	if msg := cmd(); msg != deletedMsg("saved:qwen3-8b-apple_m3_10c-002") {
+		t.Fatalf("got %v", msg)
+	}
+	got, _ := os.ReadFile(logFile)
+	want := "-m boltbeam.workflow.screen delete --run " + filepath.Join(saved, "qwen3-8b-apple_m3_10c-002") + " --root " + saved
+	if !strings.Contains(string(got), want) {
+		t.Fatalf("seam call %q, want %q", got, want)
+	}
+	if _, cmd := second.Update(deletedMsg("saved:qwen3-8b-apple_m3_10c-002")); cmd == nil {
+		t.Fatal("the saved list is read again after a delete")
+	}
+}
+
+// On start the screen is Setup, even with an unsaved last run; only a run still going opens its Run screen.
+func TestStartPageIsSetupUnlessARunIsGoing(t *testing.T) {
+	s := loadSample(t)
+	done := program(s, &s.measured, &jobs.Job{ID: "x", Alive: false}, nil, 80, 24)
+	if done.(Model).cursor != pageSetup {
+		t.Fatal("a finished last run starts on Setup")
+	}
+	going := program(s, &s.planned, s.job, s.tail, 80, 24)
+	if going.(Model).cursor != pageRun {
+		t.Fatal("a run still going starts on its Run screen")
+	}
+	again, _ := page(going, pageSetup).Update(jobMsg{s.job, s.tail})
+	if again.(Model).cursor != pageSetup {
+		t.Fatal("the start page is decided once; later job updates do not move the screen")
 	}
 }

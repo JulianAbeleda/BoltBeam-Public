@@ -109,6 +109,8 @@ display:flex;flex-direction:column;gap:2px;margin:0 -1px -1px 0;min-width:0}
 .stage-note{font-size:10.5px;color:var(--tx-3);padding-left:16px;font-family:var(--mono)}
 .s-none .dot{background:transparent;border:1.5px solid var(--tx-3)}
 .s-none .stage-name,.s-none .stage-note{color:var(--tx-3)}
+.s-skip .dot{background:var(--tx-3);border:1.5px solid var(--tx-3)}
+.s-skip .stage-note{color:var(--tx-3)}
 .card-hd{padding:10px 15px;border-bottom:1px solid var(--node-br);background:var(--node-hd);
 display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .card-ttl{margin:0;font-size:12.5px;font-weight:600}
@@ -244,14 +246,31 @@ def _bar_cell(pct:Any) -> str:
   return f'<td class="pct">{_num(pct)}<i><b style="width:{width:.1f}%"></b></i></td>'
 
 
-def _rail(manifest:dict[str, Any]) -> str:
+# Stages a run does not need once step 4 measured on this machine (measure_status.json "measured"): the
+# handoff bundle is for an outside runner, and there is none.
+NOT_NEEDED = {"runner_plan": "not needed: measured on this machine"}
+
+
+def stage_state(key:str, entry:Any, measure:dict[str, Any] | None) -> tuple[str, str | None]:
+  """done, not_needed (with its sentence) or open. The one place this is decided; the screen draws it."""
+  if entry:
+    return "done", None
+  if key in NOT_NEEDED and (measure or {}).get("status") == "measured":
+    return "not_needed", NOT_NEEDED[key]
+  return "open", None
+
+
+def _rail(manifest:dict[str, Any], measure:dict[str, Any] | None = None) -> str:
   stages = manifest.get("stages", {}) or {}
   cells = []
   for i, (key, label, note) in enumerate(STAGES):
     entry = stages.get(key)
-    if entry:
+    state, why = stage_state(key, entry, measure)
+    if state == "done":
       count = len(entry.get("artifacts", []) or [])
       detail, cls = f"{count} file{'' if count == 1 else 's'}", "stage"
+    elif state == "not_needed":
+      detail, cls = why, "stage s-skip"
     else:
       detail, cls = "not run", "stage s-none"
     cells.append(f'<div class="{cls}" title="{_e(note)}"><div class="stage-top"><i class="dot"></i>'
@@ -445,11 +464,42 @@ NO_KERNEL_CHOICE = "No kernels compared yet. Every role runs the default kernel.
 COMPARE_NEXT = "Next step: compare kernels per role to go faster."
 
 
+def _tie_out_html(t:dict[str, Any] | None) -> str:
+  """The measured token line by line against the limit (workflow/tie_out.py); the last line is the difference."""
+  if not t:
+    return ""
+  head = f'<div class="lbl">Tie-out, ms per token at context {t["context"]:.0f}</div>'
+  if t.get("refused"):
+    return head + f'<p class="empty">Not tied out. {_e(t["refused"])}</p>'
+  if t.get("token_ms") is None:
+    return head + (f'<p class="empty">{_e(t["missing"])}</p>' if t.get("missing") else "")
+  rows = "".join(f'<tr><td>{"" if i == 0 else "+ "}{_e(l["label"])}{", the difference" if l["how"] == "difference" else ""}'
+                 f'</td><td>{l["ms"]:.3f}</td><td>{_e(l["how"])}</td></tr>' for i, l in enumerate(t["lines"]))
+  rows += f'<tr><td><b>= measured token</b></td><td><b>{t["token_ms"]:.3f}</b></td><td>{_e(t.get("token_source") or "")}</td></tr>'
+  notes = []
+  for l in t["lines"]:
+    if l.get("parts"):
+      notes.append("Other kernels: " + ", ".join(f'{p["kind"]} {p["ms"]:.3f}' for p in l["parts"]) + ".")
+  if t.get("busy_ms") is not None:
+    notes.append(f'All kernels sum to {t["busy_ms"]:.3f} ms against the real token of {t["token_ms"]:.3f} ms; '
+                 "the gap is their difference.")
+  if t.get("show_both"):
+    notes.append(f'The limit is {t["limit_ms_ctx1"]:.3f} ms at context 1 and {t["limit_ms"]:.3f} ms at context {t["context"]:.0f}.')
+  notes.append(t["kv_source"] + ".")
+  if t.get("untraced_ms") is not None and str(t.get("token_source", "")).startswith("the captured run"):
+    notes.append(f'Tracing slowed the token: {t["token_ms"]:.3f} ms here, {t["untraced_ms"]:.3f} ms untraced.')
+  if t.get("missing"):
+    notes.append("Missing: " + t["missing"] + ".")
+  return (head + '<div class="tscroll"><table><tbody>' + rows + "</tbody></table></div>"
+          + "".join(f'<p class="id">{_e(n)}</p>' for n in notes))
+
+
 def _loss_card(results:dict[str, Any] | None) -> str:
   """The end result in ms per token: each runtime against the limit, and per role where tinygrad loses time."""
   loss = (results or {}).get("loss") or {}
   if loss.get("status") != "modeled" or not loss.get("limit_ms"): return ""
-  lines = [f'<p style="margin:0 0 8px">The limit is <b>{loss["limit_ms"]:.1f} ms</b> per token '
+  lines = [_tie_out_html(loss.get("tie_out")),
+           f'<p style="margin:0 0 8px">The limit is <b>{loss["limit_ms"]:.1f} ms</b> per token '
            f'({loss["limit_tok_s"]:.1f} tokens per second).</p>']
   for r in loss.get("runtimes", []):
     what = (f'{r["ms"]:.1f} ms of GPU time per token' if r["provider"] == "tinygrad"
@@ -462,14 +512,22 @@ def _loss_card(results:dict[str, Any] | None) -> str:
   elif loss.get("missing"):
     body += f'<p class="empty">Per role: {_e(loss["missing"])}</p>'
   elif loss.get("roles"):
+    def opt(v, fmt):
+      return fmt.format(v) if v is not None else ""
     rows = "".join(
       f'<tr><td>{_e(r["role"])}</td><td>{_e(r["quant"])}</td><td>{r["ideal_ms"]:.2f}</td><td>{r["actual_ms"]:.2f}</td>'
-      f'<td>{r["lost_ms"]:.2f}</td>{_bar_cell(r["share"] * 100)}</tr>' for r in loss["roles"])
+      f'<td>{r["lost_ms"]:.2f}</td>{_bar_cell(r["share"] * 100)}<td>{opt(r.get("pct_peak"), "{:.1f}%")}</td>'
+      f'<td>{opt(r.get("us_per_call"), "{:.1f}")}</td><td>{_e(r.get("reason") or "")}</td></tr>' for r in loss["roles"])
     if loss.get("not_attributed_ms") is not None:
-      rows += f'<tr><td>not attributed</td><td></td><td></td><td>{loss["not_attributed_ms"]:.2f}</td><td></td><td></td></tr>'
-    body += (f'<div class="lbl">Where tinygrad loses time, {_e(loss.get("source") or "")}</div>'
+      rows += (f'<tr><td>not attributed</td><td></td><td></td><td>{loss["not_attributed_ms"]:.2f}</td>'
+               '<td></td><td></td><td></td><td></td><td></td></tr>')
+    who = loss.get("roles_provider") or loss.get("provider") or "the runtime"
+    body += (f'<div class="lbl">Where {_e(who)} loses time, {_e(loss.get("source") or "")}</div>'
              '<div class="tscroll"><table><thead><tr><th>role</th><th>quant</th><th>ideal ms</th><th>actual ms</th>'
-             f'<th>lost ms</th><th>share of loss</th></tr></thead><tbody>{rows}</tbody></table></div>')
+             '<th>lost ms</th><th>share of loss</th><th>% of peak</th><th>µs per call</th><th>why</th></tr></thead>'
+             f'<tbody>{rows}</tbody></table></div>')
+    if loss.get("role_rule"):
+      body += f'<p class="id">Why: {_e(loss["role_rule"])}</p>'
   return _card("Time lost against the limit", "roofline · tinygrad_timing_trace.json", f'<div class="card-bd">{body}</div>')
 
 
@@ -543,7 +601,8 @@ def _selected_routes(policy:dict[str, Any]) -> str:
 def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:dict[str, Any],
                     plan:dict[str, Any], policy:dict[str, Any], providers:dict[str, Any],
                     primitive:dict[str, Any], timing:dict[str, Any], runner:dict[str, Any],
-                    source_run:str = "", results:dict[str, Any] | None = None) -> str:
+                    source_run:str = "", results:dict[str, Any] | None = None,
+                    measure:dict[str, Any] | None = None) -> str:
   """Render one staged run directory as a standalone HTML document.
 
   Every argument is the parsed contents of a run artifact, or `{}` when that artifact does not exist. `results`
@@ -591,7 +650,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
     'theme</button></header>'
     f"{_headline(manifest, results)}"
     f"{_loss_card(results)}"
-    f"{_rail(manifest)}"
+    f"{_rail(manifest, measure)}"
     f'<div class="cols">{status_card}{_blocked_card(report, plan, policy, primitive, timing, runner)}</div>'
     f"{_not_measured_card(primitive, timing)}"
     f"{measured}"

@@ -8,9 +8,13 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     targets                                    the registered chips and which of them carry a ceiling
     detect                                     the chip this machine is, as autoscan reads it (target_id or null)
     ceiling  MODEL | --profile P  --target T   the roofline: the best tokens/s this chip allows for this model
+    ceilings MODEL | --profile P               the decode limit on every registered chip with a ceiling (what-if)
     runs     --root DIR                        one summary per run folder under DIR
     run      --run DIR                         the stages, what is blocked, the next step, the results
     delete   --run DIR --root ROOT             remove one run folder; refused unless DIR is a run directly under ROOT
+    save     --run DIR --to SAVED              export a run: the run, results.json, report.html, summary.txt
+    saved    --root SAVED                      the saved runs, newest first, with the share of the limit reached
+    clean-work --work DIR --before ISO         remove temporary runs started before ISO (never --keep ones)
     results  --run DIR                         what won per role, the timing against the ceiling, the regimes
     pipeline MODEL --run DIR --target T        load, autoscan, analyze, [measure], [ingest-probe, ingest-timing], output;
                                                `pipeline steps: N` first, then one text line per stage, for tailing.
@@ -55,7 +59,7 @@ from boltbeam.cli.roofline import peak_flops_status, resolve_peak_flops
 from boltbeam.core.canonical import pretty_json
 from boltbeam.kernel_analysis.theoretical_roofline import model_roofline
 from boltbeam.profile.loaders import profile_from_model
-from boltbeam.report.html import STAGES, next_step, roofline_kernels
+from boltbeam.report.html import STAGES, next_step, roofline_kernels, stage_state
 from boltbeam.search import role_compare
 from boltbeam.collectors import providers, tinygrad_role_time
 from boltbeam.target.targets import get_target, load_target_registry
@@ -112,9 +116,14 @@ def targets() -> dict[str, Any]:
 
 def detect(profile:dict[str, Any] | None = None) -> dict[str, Any]:
   """The chip this machine is: autoscan's own GPU probe, cut to what a screen shows. No probe, no guess: null."""
+  from boltbeam.workflow import layout as lay
   gpu = (profile or _hardware_profile())["gpu"]
   target_id = gpu.get("target_id")
+  devs = lay.devices(gpu)
   return {"schema": SCHEMA, "kind": "detect", "status": gpu.get("status"), "name": gpu.get("name"),
+          # every GPU the probe found; more than one is limited support (workflow/layout.py)
+          "gpus": [{"index": d["index"], "name": d["name"], "target_id": d["target_id"]} for d in devs],
+          "gpu_count": len(devs), "multi_gpu": lay.summary(devs),
           "target_id": target_id, "target_kind": gpu.get("target_kind"),
           # read live from nvidia-smi on every call; the registry's driver is the one its facts were measured on
           "driver_version": gpu.get("driver_version"),
@@ -155,12 +164,32 @@ def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "f
   }
 
 
+def ceilings(profile:dict[str, Any]) -> dict[str, Any]:
+  """The decode limit of this model on every registered chip that carries a ceiling: read-only what-if facts."""
+  chips = []
+  for t in load_target_registry().values():
+    if not target_facts(t)["has_ceiling"]:
+      continue
+    try:
+      c = ceiling(profile, t)
+    except (Refused, SystemExit):
+      continue
+    chips.append({"id": t.target_id, "tok_s": c["decode"]["tok_s"], "floor_ms": c["decode"]["floor_ms"],
+                  "peak_bandwidth_gbs": c["peak_bandwidth_gbs"]})
+  return {"schema": SCHEMA, "kind": "ceilings", "model_id": profile["model_id"], "chips": chips}
+
+
 # --- run folders -----------------------------------------------------------------------------------------------
 
-def stage_rows(manifest:dict[str, Any]) -> list[dict[str, Any]]:
+def stage_rows(manifest:dict[str, Any], measure:dict[str, Any] | None = None) -> list[dict[str, Any]]:
+  """state: done, not_needed (state_note says why) or open (report/html.py stage_state decides)."""
   stages = manifest.get("stages", {}) or {}
-  return [{"key": key, "label": label, "note": note, "done": key in stages,
-           "artifacts": list((stages.get(key) or {}).get("artifacts", []) or [])} for key, label, note in STAGES]
+  rows = []
+  for key, label, note in STAGES:
+    state, why = stage_state(key, stages.get(key), measure)
+    rows.append({"key": key, "label": label, "note": note, "done": key in stages, "state": state, "state_note": why,
+                 "artifacts": list((stages.get(key) or {}).get("artifacts", []) or [])})
+  return rows
 
 
 def blocked(plan:dict[str, Any]) -> list[dict[str, Any]]:
@@ -176,7 +205,7 @@ def summary(run:pathlib.Path) -> dict[str, Any]:
     "id": run.name, "model_id": manifest.get("model_id"), "model_format": manifest.get("model_format"),
     "target_id": manifest.get("target_id"), "workload": manifest.get("workload"),
     "latest_stage": manifest.get("latest_stage"), "status": report.get("status", "not_analyzed"),
-    "stages": stage_rows(manifest), "blocked": blocked(plan),
+    "stages": stage_rows(manifest, _optional(run, MEASURE_STATUS)), "blocked": blocked(plan),
     "measured": {"probe": (run / "primitive_profile.json").exists(), "timing": (run / "timing_profile.json").exists()},
     "report": "report.html" if (run / "report.html").exists() else None,
     "measure": _optional(run, MEASURE_STATUS) or None,
@@ -219,6 +248,7 @@ def _measured_vs_ceiling(manifest:dict[str, Any], profile:dict[str, Any]) -> dic
     return {"status": "absent", "reason": str(exc)}
   block = c["decode"] if manifest.get("workload") == "decode" else c["prefill"]
   return {"status": "modeled", "context": block["context"], "tok_s": block["tok_s"], "floor_ms": block["floor_ms"],
+          "bytes_moved": block["bytes_moved"],
           "peak_bandwidth_gbs": c["peak_bandwidth_gbs"], "_roles": block["roles"]}
 
 
@@ -253,10 +283,17 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], m
   if isinstance(measured_tok_s, (int, float)) and measured_tok_s > 0:
     ms = 1000.0 / measured_tok_s
     runtimes.append({"provider": provider, "tok_s": measured_tok_s, "ms": ms, "lost_ms": ms - limit_ms,
-                     "per_role": False, "note": "whole step, measured in step 4"})
+                     "per_role": False, "note": "whole step, measured untraced"})
   out = {"status": "modeled", "limit_tok_s": ceil["tok_s"], "limit_ms": limit_ms, "runtimes": runtimes, "roles": [],
          "not_attributed_ms": None, "source": None, "missing": None, "refused": None,
-         "provider": provider, "capture": plan, "roles_provider": None, "provider_missing": None, "others": [], "unpaired_roles": []}
+         "provider": provider, "capture": plan, "roles_provider": None, "provider_missing": None, "others": [], "unpaired_roles": [],
+         "tie_out": None, "role_rule": None}
+  from boltbeam.workflow import tie_out as tie
+  profile, bw = _optional(run, "model_profile.json"), ceil.get("peak_bandwidth_gbs")
+  out["layout"], out["machine"] = _layout_limit(run, profile, ceil)
+  if out["layout"] and out["layout"].get("ms") and out["layout"]["gpus"] > 1:
+    limit_ms = out["layout"]["ms"]  # the layout's limit is the one the measurement is compared with
+    out.update(limit_ms=limit_ms, limit_tok_s=1000.0 / limit_ms)
   tables = {name: _provider_table(run, name, ceil, limit_ms) for name in providers.NAMES}
   for name in providers.NAMES:
     table, capture = tables[name]
@@ -277,15 +314,38 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], m
     out["provider_missing"] = _missing(provider, target, manifest)
   if shown is None:
     out["missing"] = out["provider_missing"]
+    out["tie_out"] = tie.tie_out(run, provider=provider, table=None, trace=None, limit_ms=limit_ms, profile=profile,
+                                 bandwidth_gbs=bw, missing=out["missing"])
     return out
   table, capture = tables[shown]
   out["roles_provider"] = shown
   if table["status"] != "measured":  # a floor broken: the reason is shown, the numbers never are
     out["refused"] = table["reason"]
     return out
-  out.update(roles=table["roles"], not_attributed_ms=table["not_attributed_ms"], capture=capture,
+  roles, rule = tie.role_why(table["roles"], bw)
+  out.update(roles=roles, role_rule=rule, not_attributed_ms=table["not_attributed_ms"], capture=capture,
              unpaired_roles=table.get("unpaired_roles") or [], source=_source(shown, capture, target))
+  out["tie_out"] = tie.tie_out(run, provider=shown, table=table, trace=_optional(run, providers.TRACES[shown]),
+                               limit_ms=limit_ms, profile=profile, bandwidth_gbs=bw,
+                               missing=None if roles else "the capture could not split the kernels by role")
   return out
+
+
+def _layout_limit(run:pathlib.Path, profile:dict[str, Any], ceil:dict[str, Any]) -> tuple[dict | None, dict | None]:
+  """The layout the run was measured with and its derived limit, and the machine facts behind it; None, None
+  for a run without machine facts (single-GPU runs keep the registry limit either way)."""
+  from boltbeam.workflow import layout as lay
+  facts = _optional(run, lay.MACHINE)
+  if not facts:
+    return None, None
+  status = _optional(run, MEASURE_STATUS)
+  layout = status.get("layout") or "one"
+  got = lay.limit(layout, bytes_per_token=ceil.get("bytes_moved") or 0, facts=facts,
+                  hidden_size=profile.get("hidden_size"), layers=profile.get("layer_count"))
+  shown = {"gpus": [{k: g.get(k) for k in ("index", "name", "target_id", "read_gbs", "read_source")} for g in facts["gpus"]],
+           "pairs": facts.get("pairs", []), "measured_at": facts.get("measured_at"),
+           "support": lay.LIMITED if len(facts["gpus"]) > 1 else None}
+  return got, shown
 
 
 def _source(provider:str, capture:dict[str, Any], target) -> str:
@@ -325,7 +385,7 @@ def _capture_words(method:str | None) -> str:
 def _missing(provider:str, target, manifest:dict[str, Any]) -> str:
   if provider == tinygrad_role_time.PROVIDER and not tinygrad_role_time.device_for(target):
     return f"{manifest.get('target_id')} names no tinygrad device, so no per-role time can be taken here"
-  return f"pick \"Time each role in {provider}\" in step 5"
+  return f"no per-role time yet: Run with {provider} times each role"
 
 
 def _route_compare(c:Any) -> dict[str, Any] | None:
@@ -429,13 +489,13 @@ def show(run:pathlib.Path) -> dict[str, Any]:
 
 def _write_measure_status(run:str | pathlib.Path, status:str, *, collector:str | None = None, reason:str | None = None,
                           command:str | None = None, probe:str | None = None, probe_reason:str | None = None,
-                          provider:str | None = None) -> None:
+                          provider:str | None = None, layout:str = "one", gpus:int = 1) -> None:
   """probe says whether this collector takes the building-block tests: "measured" or "absent" (with probe_reason)."""
   from boltbeam.workflow.common import run_dir, update_manifest, write_json
   out = run_dir(run)
   write_json(out / MEASURE_STATUS, {"schema": SCHEMA_MEASURE_STATUS, "status": status, "collector": collector,
                                     "reason": reason, "command": command, "probe": probe, "probe_reason": probe_reason,
-                                    "provider": provider or providers.DEFAULT})
+                                    "provider": provider or providers.DEFAULT, "layout": layout, "gpus": gpus})
   update_manifest(out, stage="measure", artifacts=[MEASURE_STATUS])
 
 
@@ -446,7 +506,8 @@ def _collectors() -> dict[str, Any]:
 
 
 def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEFAULT, *,
-                 tinygrad_root:pathlib.Path | None = None, gpu=None) -> dict[str, Any]:
+                 tinygrad_root:pathlib.Path | None = None, gpu=None, layout:str = "one",
+                 devs:list[dict[str, Any]] | None = None) -> dict[str, Any]:
   """Which collector measures this target with this provider on this machine, or why none can. Decided before
   the run starts, so the step count is right from the first line. A GPU another program holds is refused."""
   from boltbeam.collectors.llama_bench_decode import CannotMeasure
@@ -455,8 +516,14 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
     target = get_target(target_id)
   except SystemExit as exc:
     return {"collector": None, "provider": provider, "reason": str(exc), "command": None}
+  from boltbeam.workflow import layout as lay
   cid = providers.collector(provider, target.backend)
-  out = {"collector": cid, "provider": provider, "reason": None, "command": None}
+  devs = devs if devs is not None else lay.devices(_hardware_profile()["gpu"])
+  out = {"collector": cid, "provider": provider, "reason": None, "command": None, "layout": layout, "gpus": max(len(devs), 1)}
+  offered = {l["id"]: l for l in lay.layouts(len(devs), provider)}
+  if layout not in offered or not offered[layout]["available"]:
+    why = offered[layout]["reason"] if layout in offered else f"{lay.LAYOUTS.get(layout, layout)} needs more than one GPU"
+    return out | {"reason": f"{provider} cannot run {lay.LAYOUTS.get(layout, layout)} here: {why}", "command": "pick one GPU"}
   if provider == tinygrad_role_time.PROVIDER:
     from boltbeam.workflow.autoscan import this_machine_target
     here = this_machine_target()
@@ -471,7 +538,10 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
       _collectors()[cid].preflight(target_id, model, run=run)
     except CannotMeasure as exc:
       return out | {"reason": exc.reason, "command": exc.command}
-  free = (gpu or providers.gpu_free)(target.backend)
+  used = lay.used_gpus(layout, devs)
+  uuids = {d["uuid"] for d in used if d.get("uuid")} if len(devs) > 1 else None
+  check = gpu or providers.gpu_free
+  free = check(target.backend, uuids=uuids) if uuids else check(target.backend)
   if not free["free"]:
     return out | {"reason": f"not measured: {free['reason']}", "command": "free the GPU, then measure again"}
   return out
@@ -479,10 +549,11 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
 
 def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
   provider = plan.get("provider") or providers.DEFAULT
+  layout, gpus = plan.get("layout") or "one", plan.get("gpus") or 1
   if plan["reason"]:
     return [("measure", lambda: _write_measure_status(args.run, "skipped", collector=plan["collector"],
                                                        reason=plan["reason"], command=plan["command"],
-                                                       provider=provider))]
+                                                       provider=provider, layout=layout, gpus=gpus))]
   from boltbeam.collectors import llama_bench_decode, metal_native
   run = pathlib.Path(args.run)
   args.timing = str(run / "timing_trace.json")
@@ -494,11 +565,11 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
         work()
       except Exception as exc:  # the reason must outlive the log: a reopened screen reads it from the run
         _write_measure_status(args.run, "failed", collector=plan["collector"], reason=f"{key}: {exc}",
-                              command=again, provider=provider)
+                              command=again, provider=provider, layout=layout, gpus=gpus)
         raise
       if last:
         _write_measure_status(args.run, "measured", collector=plan["collector"], probe=probe,
-                              probe_reason=probe_reason, provider=provider)
+                              probe_reason=probe_reason, provider=provider, layout=layout, gpus=gpus)
     return (f"measure_{key}", step)
 
   out_dir = lambda: metal_native.run_dir(args.run)  # noqa: E731
@@ -512,7 +583,7 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
                      probe="measured" if is_metal else "absent",
                      probe_reason=None if is_metal else llama_bench_decode.PROBE_ABSENT)
   elif plan["collector"] == llama_bench_decode.COLLECTOR_ID:
-    timing = guarded("timing", lambda: llama_bench_decode.measure(out_dir()), probe="absent",
+    timing = guarded("timing", lambda: llama_bench_decode.measure(out_dir(), layout=layout, gpus=gpus), probe="absent",
                      probe_reason=llama_bench_decode.PROBE_ABSENT)
   else:
     timing = guarded("timing", lambda: metal_native.measure(out_dir(), only="timing"), probe="measured")
@@ -532,10 +603,18 @@ def pipeline(args, out=sys.stdout) -> int:
     ("autoscan", lambda: autoscan_run(args.run, providers=())),
     ("analyze", lambda: analyze_run(args.run)),
   ]
+  analyze_all = getattr(args, "analyze", False)
+  if analyze_all:
+    args.measure = "auto"
+  plan = None
   if getattr(args, "measure", "none") == "auto" and not (args.probe or args.timing):
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
-    steps += _measure_steps(args, measure_plan(args.target, str(pathlib.Path(args.model).expanduser().resolve()), args.run,
-                                               getattr(args, "provider", None) or providers.DEFAULT, tinygrad_root=root))
+    plan = measure_plan(args.target, str(pathlib.Path(args.model).expanduser().resolve()), args.run,
+                        getattr(args, "provider", None) or providers.DEFAULT, tinygrad_root=root,
+                        layout=getattr(args, "layout", None) or "one")
+    if analyze_all and not plan["reason"]:  # the machine's measured facts, reused when this machine has them
+      steps.append(("machine", lambda: machine(pathlib.Path(args.run), root=root)))
+    steps += _measure_steps(args, plan)
   if args.probe:
     steps.append(("ingest_probe", lambda: ingest_probe_run(args.run, args.probe)))
   if args.timing:
@@ -543,6 +622,11 @@ def pipeline(args, out=sys.stdout) -> int:
   if args.probe or args.timing:
     steps.append(("analyze", lambda: analyze_run(args.run)))  # the plan and the report read the new evidence
   steps.append(("output", lambda: output_run(args.run)))
+  can_time = plan and providers.capture_method(plan["provider"], get_target(args.target).backend)["method"]
+  if analyze_all and plan and not plan["reason"] and can_time:  # one press: per-role time, same engine, report again
+    root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
+    steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root)))
+    steps.append(("output", lambda: output_run(args.run)))
   say(f"pipeline steps: {len(steps)}")  # a screen draws n of N from this line
   for key, step in steps:
     say(f"stage {key}: start")
@@ -592,10 +676,155 @@ def compare(args, out=sys.stdout) -> int:
 
 # --- the command line ------------------------------------------------------------------------------------------
 
-def provider_list(target, root:pathlib.Path | None = None) -> dict[str, Any]:
-  """The providers that can measure this target here, and for each how step 5 would time its roles."""
+def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None = None) -> dict[str, Any]:
+  """The providers that can measure this target here, how step 5 would time their roles, and the GPU layouts each
+  can run on this machine (one GPU unless more are found)."""
+  from boltbeam.workflow import layout as lay
+  n = gpu_count if gpu_count is not None else len(lay.devices(_hardware_profile()["gpu"]))
+  rows = [{**p, "layouts": lay.layouts(n, p["provider"])} for p in providers.available(target, tinygrad_root=root)]
   return {"schema": SCHEMA, "kind": "providers", "target_id": target.target_id, "default": providers.DEFAULT,
-          "providers": providers.available(target, tinygrad_root=root)}
+          "gpu_count": n, "providers": rows}
+
+
+DEVICE_PREFIX = {"CUDA": "NV", "AMD": "AMD"}  # tinygrad's device name per backend, for the per-GPU probe
+
+
+def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | None = None) -> dict[str, Any]:
+  """This machine's GPUs, their measured read bandwidth and the measured copies between them (workflow/layout.py),
+  cached in the run and reused from the newest run of the same GPUs unless remeasure."""
+  from boltbeam.workflow import layout as lay
+  from boltbeam.workflow.common import write_json
+  devs = lay.devices(_hardware_profile()["gpu"])
+  cached = None if remeasure else lay.cached_machine(run, devs)
+  if cached is not None:
+    facts = {**cached, "reused": True}
+  else:
+    manifest = load_manifest(run)
+    target = get_target(manifest.get("target_id"))
+    probe = None
+    fork = pathlib.Path(root) if root else role_compare.default_fork_root()
+    if role_compare.readiness(fork)["ready"] and target.backend in DEVICE_PREFIX:
+      probe = lambda args, env: lay.run_probe(str(role_compare.fork_python(fork)), str(fork), args, env)  # noqa: E731
+    topology = ""
+    if target.backend == "CUDA" and len(devs) > 1 and shutil.which("nvidia-smi"):
+      topology = providers._run(["nvidia-smi", "topo", "-m"])
+    metal_read = None
+    if target.backend == "Metal" and sys.platform == "darwin":
+      from boltbeam.collectors import metal_bandwidth
+      metal_read = metal_bandwidth.measure_read_gbs
+    cuda_read = None
+    if target.backend == "CUDA":
+      from boltbeam.collectors import cuda_bandwidth
+      if cuda_bandwidth.find_nvcc():
+        cuda_read = cuda_bandwidth.measure_read_gbs
+    facts = lay.measure_machine(devs, backend=target.backend, device_prefix=DEVICE_PREFIX.get(target.backend),
+                                probe=probe, topology=topology, metal_read=metal_read, cuda_read=cuda_read,
+                                fallback=lambda tid: get_target(tid).memory_bandwidth_gbs if tid else None)
+    facts["reused"] = False
+  write_json(run / lay.MACHINE, {k: v for k, v in facts.items() if k != "reused"})
+  return {"schema": SCHEMA, "kind": "machine", **facts}
+
+
+# --- saving: a run is temporary in the work area until it is saved (exported) -----------------------------------
+
+SAVE_RECORD = "save.json"
+
+
+def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
+  """The tie-out and the per-role table as plain text, to paste into a message. why_no_roles is this machine's
+  reason per-role time cannot be taken here; it replaces the generic "Run times each role" sentence."""
+  loss = res.get("loss") or {}
+  lines = [f"{res.get('model_id')} on {res.get('target_id')} with {loss.get('provider')}"]
+  t = loss.get("tie_out") or {}
+  if t.get("refused"):
+    lines.append(f"Not tied out: {t['refused']}")
+  elif t.get("lines") and t.get("token_ms") is not None:
+    lines.append(f"Tie-out, ms per token at context {t['context']:.0f}:")
+    for i, l in enumerate(t["lines"]):
+      lines.append(f"  {'  ' if i == 0 else '+ '}{l['label']:<48} {l['ms']:9.3f}  {l['how']}")
+    lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
+  roles = loss.get("roles") or []
+  if roles:
+    lines.append(f"Per role ({loss.get('source') or ''}):")
+    lines.append(f"  {'role':<12} {'quant':<5} {'ideal':>7} {'actual':>7} {'lost':>6} {'% peak':>7} {'us/call':>8}  why")
+    for r in roles:
+      pct = f"{r['pct_peak']:.1f}%" if r.get("pct_peak") is not None else ""
+      us = f"{r['us_per_call']:.1f}" if r.get("us_per_call") is not None else ""
+      lines.append(f"  {r['role']:<12} {r['quant']:<5} {r['ideal_ms']:7.3f} {r['actual_ms']:7.3f} {r['lost_ms']:6.3f} "
+                   f"{pct:>7} {us:>8}  {r.get('reason') or ''}")
+    if loss.get("not_attributed_ms") is not None:
+      lines.append(f"  {'not attributed':<18} {'':>7} {loss['not_attributed_ms']:7.3f}")
+  elif why_no_roles:
+    lines.append(f"Per role: {why_no_roles}")
+  elif loss.get("missing"):
+    lines.append(f"Per role: {loss['missing']}")
+  return "\n".join(lines) + "\n"
+
+
+def _why_no_roles(run:pathlib.Path, res:dict[str, Any]) -> str | None:
+  """The reason per-role time cannot be taken on this machine for the run's engine, as the Run screen says it."""
+  loss = res.get("loss") or {}
+  if loss.get("roles"):
+    return None
+  try:
+    target = get_target(load_manifest(run).get("target_id"))
+  except SystemExit:
+    return None
+  plan = providers.capture_method(loss.get("provider") or providers.DEFAULT, target.backend)
+  if plan.get("method"):
+    return None
+  where = "this Mac" if sys.platform == "darwin" else "this machine"
+  return f"Not possible on {where}: {plan.get('reason')}."
+
+
+def save(run:pathlib.Path, to_root:pathlib.Path) -> dict[str, Any]:
+  """Export a run into the saved-runs folder: the run itself (so it opens again), results.json (this seam's results),
+  report.html and summary.txt (the tie-out and the per-role table as text). An existing save is replaced."""
+  import datetime
+  if not is_run(run):
+    raise Refused(f"{run} is not a run folder")
+  dest = to_root.expanduser().resolve() / run.name
+  if dest.exists():
+    shutil.rmtree(dest)
+  shutil.copytree(run, dest)
+  res = results(dest)
+  (dest / "results.json").write_text(pretty_json(res))
+  (dest / "summary.txt").write_text(summary_text(res, _why_no_roles(dest, res)))
+  record = {"saved_at": datetime.datetime.now().isoformat(timespec="seconds"), "from": str(run)}
+  (dest / SAVE_RECORD).write_text(json.dumps(record, indent=2) + "\n")
+  return {"schema": SCHEMA, "kind": "saved_run", "id": run.name, "dir": str(dest),
+          "files": ["report.html", "results.json", "summary.txt"], **record}
+
+
+def saved(root:pathlib.Path) -> dict[str, Any]:
+  """The saved runs, newest first: model, chip, engine, date and the share of the limit reached."""
+  rows = []
+  if root.is_dir():
+    for d in root.iterdir():
+      if not (is_run(d) and (d / SAVE_RECORD).exists()):
+        continue
+      rec, manifest, res = read_json(d / SAVE_RECORD), load_manifest(d), _optional(d, "results.json")
+      timing, ceil = res.get("timing") or {}, res.get("ceiling") or {}
+      pct = (100.0 * timing["tok_s"] / ceil["tok_s"]) if timing.get("tok_s") and ceil.get("tok_s") else None
+      rows.append({"id": d.name, "dir": str(d), "model_id": manifest.get("model_id"), "target_id": manifest.get("target_id"),
+                   "provider": run_provider(d), "saved_at": rec.get("saved_at"), "tok_s": timing.get("tok_s"),
+                   "pct_of_limit": pct})
+  rows.sort(key=lambda r: r["saved_at"] or "", reverse=True)
+  return {"schema": SCHEMA, "kind": "saved", "root": str(root), "runs": rows}
+
+
+def clean_work(work:pathlib.Path, *, before:str, keep:list[str]) -> dict[str, Any]:
+  """Remove temporary runs started before `before` (ISO time, the session start), except those in keep. Only on an
+  explicit request; never a run of this session or one still in use."""
+  import datetime
+  cut = datetime.datetime.fromisoformat(before).timestamp()
+  removed = []
+  if work.is_dir():
+    for d in sorted(work.iterdir()):
+      if is_run(d) and d.name not in keep and (d / "run_manifest.json").stat().st_mtime < cut:
+        shutil.rmtree(d)
+        removed.append(d.name)
+  return {"schema": SCHEMA, "kind": "cleaned", "work": str(work), "removed": removed}
 
 
 def gpu_free(target) -> dict[str, Any]:
@@ -632,11 +861,28 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--dtype", default="fp16")
   p.add_argument("--peak-gbs", type=float, default=None)
   p.add_argument("--peak-tflops", type=float, default=None)
+  p = sub.add_parser("ceilings")
+  p.add_argument("model", nargs="?")
+  p.add_argument("--profile", help="a model_profile.json instead of the model file")
+  p.add_argument("--id", default=None)
   p = sub.add_parser("runs")
   p.add_argument("--root", required=True)
   for name in ("run", "results"):
     p = sub.add_parser(name)
     p.add_argument("--run", required=True)
+  p = sub.add_parser("machine")
+  p.add_argument("--run", required=True)
+  p.add_argument("--remeasure", action="store_true", help="measure again instead of reusing the cached facts")
+  p.add_argument("--tinygrad-root", default=None)
+  p = sub.add_parser("save")
+  p.add_argument("--run", required=True)
+  p.add_argument("--to", required=True, help="the saved-runs folder")
+  p = sub.add_parser("saved")
+  p.add_argument("--root", required=True, help="the saved-runs folder")
+  p = sub.add_parser("clean-work")
+  p.add_argument("--work", required=True)
+  p.add_argument("--before", required=True, help="ISO time: runs started before it go (the session start)")
+  p.add_argument("--keep", action="append", default=[])
   p = sub.add_parser("delete")
   p.add_argument("--run", required=True)
   p.add_argument("--root", required=True)
@@ -653,6 +899,10 @@ def main(argv:list[str] | None = None) -> int:
                  help="auto: measure with the target's BoltBeam collector when this machine can, then ingest")
   p.add_argument("--provider", default=providers.DEFAULT, choices=list(providers.NAMES),
                  help="the runtime that decodes the model in step 4")
+  p.add_argument("--layout", default="one", choices=["one", "layer", "row"],
+                 help="how the engine uses this machine's GPUs (more than one GPU is limited support)")
+  p.add_argument("--analyze", action="store_true",
+                 help="one press: measure here, the machine's facts, then per-role time with the same engine")
   p.add_argument("--tinygrad-root", default=None, help="the tinygrad fork; default $BOLTBEAM_TINYGRAD_ROOT")
   for name in ("providers", "gpu-free"):
     p = sub.add_parser(name)
@@ -685,6 +935,8 @@ def main(argv:list[str] | None = None) -> int:
     elif args.command == "ceiling":
       out = ceiling(_profile_arg(args), _target_arg(args.target), context=args.context, dtype=args.dtype,
                     peak_gbs=args.peak_gbs, peak_tflops=args.peak_tflops)
+    elif args.command == "ceilings":
+      out = ceilings(_profile_arg(args))
     elif args.command == "runs":
       out = runs(pathlib.Path(args.root).expanduser())
     elif args.command == "run":
@@ -692,6 +944,15 @@ def main(argv:list[str] | None = None) -> int:
     elif args.command == "compare-ready":
       out = compare_ready(pathlib.Path(args.run).expanduser(),
                           pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None)
+    elif args.command == "machine":
+      out = machine(pathlib.Path(args.run).expanduser(), remeasure=args.remeasure,
+                    root=pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None)
+    elif args.command == "save":
+      out = save(pathlib.Path(args.run).expanduser(), pathlib.Path(args.to))
+    elif args.command == "saved":
+      out = saved(pathlib.Path(args.root).expanduser())
+    elif args.command == "clean-work":
+      out = clean_work(pathlib.Path(args.work).expanduser(), before=args.before, keep=args.keep)
     elif args.command == "delete":
       out = delete(pathlib.Path(args.root).expanduser(), pathlib.Path(args.run).expanduser())
     else:

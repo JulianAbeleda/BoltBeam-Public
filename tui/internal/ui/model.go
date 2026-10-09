@@ -26,7 +26,6 @@ var (
 	keyDown  = key.NewBinding(key.WithKeys("down", "j"))
 	keyEnter = key.NewBinding(key.WithKeys("enter"))
 	keyBack  = key.NewBinding(key.WithKeys("esc"))
-	keyStop  = key.NewBinding(key.WithKeys("x"))
 	keyDel   = key.NewBinding(key.WithKeys("d"))
 	keyQuit  = key.NewBinding(key.WithKeys("q", "ctrl+c"))
 )
@@ -38,8 +37,11 @@ type Model struct {
 	f        Facts
 	context  int
 	wantChip string
-	chipSet  bool // the user picked a chip; detection no longer moves it
-	runSet   bool // the user picked a run; the checklist no longer follows the newest one
+	chipSet  bool     // the user picked a chip; detection no longer moves it
+	runSet   bool     // the user picked a run; the checklist no longer follows the newest one
+	session  []string // runs started in this session: never cleaned
+	opened   bool     // the start page is decided (Setup, or Run when a job is still going)
+	started  string   // when this session began, ISO; Clean removes only unsaved runs from before it
 	cursor   int
 	moved    bool // the user moved; the cursor no longer follows the first open step
 	open     bool
@@ -57,7 +59,10 @@ type targetsMsg struct {
 	targets *seam.Targets
 	err     error
 }
-type detectMsg struct{ id, driver string }
+type detectMsg struct {
+	id, driver, multi string
+	count             int
+}
 type filesMsg []string
 type profileMsg struct {
 	profile *seam.Profile
@@ -89,6 +94,23 @@ type compareJobMsg struct {
 	tail []string
 }
 type compareStartedMsg string
+type savedListMsg struct {
+	saved *seam.Saved
+	err   error
+}
+type savedMsg struct {
+	id, dir string
+	err     error
+}
+type savedRunMsg struct {
+	run *seam.Run
+	err error
+}
+type cleanedMsg struct{ err error }
+type othersMsg struct {
+	path   string
+	others *seam.Ceilings
+}
 type providersMsg struct {
 	target    string
 	providers *seam.Providers
@@ -104,8 +126,8 @@ func New(client seam.Client, store jobs.Store, modelPath, target string, context
 	in := textinput.New()
 	in.Prompt = ""
 	in.SetValue(modelPath)
-	return Model{client: client, store: store, f: Facts{Path: modelPath, Reading: modelPath != ""}, context: context,
-		wantChip: target, chipSet: target != "", input: in, width: 80, height: 24, view: viewport.New(80, 21),
+	return Model{client: client, store: store, f: Facts{Path: modelPath, Reading: modelPath != "", ByFlag: target != ""}, context: context,
+		wantChip: target, chipSet: target != "", open: true, input: in, started: time.Now().Format("2006-01-02T15:04:05"), width: 80, height: 24, view: viewport.New(80, 21),
 		spin: spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(stAccent))}
 }
 
@@ -116,7 +138,7 @@ func Start(client seam.Client, store jobs.Store, modelPath, target string, conte
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.loadRuns(), m.findFiles(), m.spin.Tick}
+	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.loadRuns(), m.findFiles(), m.loadSaved(), m.spin.Tick}
 	if m.f.Path != "" {
 		cmds = append(cmds, m.inspect())
 	}
@@ -134,6 +156,18 @@ func (m Model) loadProviders(target string) tea.Cmd {
 	}
 }
 
+// loadOthers reads the model's limit on every registered chip, for step 3's read-only "On other chips".
+func (m Model) loadOthers() tea.Cmd {
+	path := m.f.Path
+	return func() tea.Msg {
+		o, err := m.client.Ceilings(path)
+		if err != nil {
+			return othersMsg{path, nil}
+		}
+		return othersMsg{path, o}
+	}
+}
+
 func (m Model) loadTargets() tea.Cmd {
 	return func() tea.Msg { t, _, err := m.client.Targets(); return targetsMsg{t, err} }
 }
@@ -142,13 +176,20 @@ func (m Model) detect() tea.Cmd {
 	return func() tea.Msg {
 		d, err := m.client.Detect()
 		if err != nil || d.TargetID == nil {
+			if err == nil {
+				return detectMsg{count: d.GpuCount}
+			}
 			return detectMsg{}
 		}
 		driver := ""
 		if d.DriverVersion != nil {
 			driver = *d.DriverVersion
 		}
-		return detectMsg{*d.TargetID, driver}
+		multi := ""
+		if d.MultiGpu != nil {
+			multi = *d.MultiGpu
+		}
+		return detectMsg{*d.TargetID, driver, multi, d.GpuCount}
 	}
 }
 
@@ -321,8 +362,15 @@ func (m *Model) follow() tea.Cmd {
 }
 
 func (m Model) startRun(provider string) tea.Cmd {
-	path, target, runs := m.f.Path, m.targetID(), m.f.Runs
+	path, target, runs, layout := m.f.Path, m.targetID(), m.f.Runs, m.f.layout()
+	if m.f.GpuCount < 2 {
+		layout = "" // one GPU: the engine runs as it always has
+	}
+	store := m.store
 	return func() tea.Msg {
+		if live := store.Alive(); len(live) > 0 { // two measurements on one GPU would both be wrong
+			return noteMsg("Run " + live[0].ID + " is still going. Stop it or wait, then press Run.")
+		}
 		if path == "" || target == "" {
 			return noteMsg("Pick a model in step 1 and a chip in step 2 first.")
 		}
@@ -334,7 +382,8 @@ func (m Model) startRun(provider string) tea.Cmd {
 		if abs, err := filepath.Abs(path); err == nil { // the pipeline runs in the checkout, not here
 			path = abs
 		}
-		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: "decode", Measure: "auto", Provider: provider})
+		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: "decode", Measure: "auto", Provider: provider,
+			Layout: layout, Analyze: true})
 		if _, err := m.store.Start(id, m.client.Repo, argv); err != nil {
 			return noteMsg("Start failed: " + err.Error())
 		}
@@ -364,6 +413,48 @@ func (m Model) stopRun() tea.Cmd {
 }
 
 // deleteRun removes a finished run folder; a run whose job is alive is refused here, since only Go knows the job.
+// loadSaved lists the saved runs.
+func (m Model) loadSaved() tea.Cmd {
+	return func() tea.Msg { s, _, err := m.client.SavedRuns(); return savedListMsg{s, err} }
+}
+
+// saveRun exports the run on screen into the saved-runs folder. Python copies; this only asks.
+func (m Model) saveRun() tea.Cmd {
+	id := m.runID()
+	return func() tea.Msg {
+		s, _, err := m.client.Save(id)
+		if err != nil {
+			return savedMsg{id, "", err}
+		}
+		return savedMsg{id, s.Dir, nil}
+	}
+}
+
+// openSaved reads a saved run to show its results, read-only.
+func (m Model) openSaved(id string) tea.Cmd {
+	return func() tea.Msg { r, err := m.client.ShowSaved(id); return savedRunMsg{r, err} }
+}
+
+// deleteSaved removes a saved run, after the second press.
+func (m Model) deleteSaved(id string) tea.Cmd {
+	return func() tea.Msg {
+		if _, err := m.client.DeleteSaved(id); err != nil {
+			return noteMsg("Delete failed: " + err.Error())
+		}
+		return deletedMsg("saved:" + id)
+	}
+}
+
+// cleanWork deletes the unsaved runs from earlier sessions; never one of this session, never a live one.
+func (m Model) cleanWork() tea.Cmd {
+	keep := append([]string{}, m.session...)
+	if m.f.Run != nil {
+		keep = append(keep, m.f.Run.ID)
+	}
+	before := m.started
+	return func() tea.Msg { _, err := m.client.CleanWork(before, keep); return cleanedMsg{err} }
+}
+
 func (m Model) deleteRun(id string) tea.Cmd {
 	return func() tea.Msg {
 		if job, err := m.store.Status(id); err == nil && job.Alive {
@@ -429,9 +520,7 @@ func (m *Model) chipChanged() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
-	if !next.moved {
-		next.cursor = firstOpen(next.f)
-	}
+	next.skipHeads(1) // the cursor never rests on a heading
 	return next, cmd
 }
 
@@ -453,7 +542,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.pickChip(m.wantChip)
 		return m, m.chipChanged()
 	case detectMsg:
-		m.f.ThisMachine, m.f.Driver = msg.id, msg.driver
+		m.f.ThisMachine, m.f.Driver, m.f.Detected = msg.id, msg.driver, true
+		m.f.GpuCount, m.f.MultiGpu = msg.count, msg.multi
 		if !m.chipSet && msg.id != "" {
 			m.wantChip = msg.id
 			if m.f.Targets != nil {
@@ -470,7 +560,11 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.f.Profile, m.f.ModelErr = msg.profile, ""
-		return m, m.chipChanged()
+		return m, tea.Batch(m.chipChanged(), m.loadOthers())
+	case othersMsg:
+		if msg.path == m.f.Path {
+			m.f.Others = msg.others
+		}
 	case ceilingMsg:
 		m.f.CeilBusy = false
 		m.f.Ceiling, m.f.CeilErr = msg.ceiling, ""
@@ -479,6 +573,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 	case runsMsg:
 		m.f.Runs = msg.runs
+		m.countOldWork()
 		if msg.err != nil {
 			m.note = "The runs folder could not be read: " + msg.err.Error()
 		}
@@ -499,6 +594,15 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case providersMsg:
 		if t := m.f.target(); t != nil && t.ID == msg.target {
 			m.f.Providers = msg.providers
+			if p := m.f.engineRow(); (p == nil || !p.Available) && msg.providers != nil {
+				m.f.Engine = "" // the first engine this machine has, until one is picked
+				for _, r := range msg.providers.Providers {
+					if r.Available {
+						m.f.Engine = r.Provider
+						break
+					}
+				}
+			}
 		}
 	case readyMsg:
 		if msg.id == m.runID() {
@@ -514,22 +618,66 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		id := string(msg)
 		m.ticking = true
 		m.f.CJob, m.f.CTail = &jobs.Job{ID: compareID(id), Alive: true}, nil
-		m.note = "Started step 5's job for " + id + ". It takes a few minutes."
+		m.note = "Started the job for " + id + ". It takes a few minutes."
 		return m, tea.Batch(m.loadCompare(id), tick())
 	case jobMsg:
 		m.f.Job, m.f.Tail = msg.job, msg.tail
+		if !m.opened { // on start: Setup, unless the newest run is still going, then its Run screen; decided once
+			m.opened = true
+			if m.f.alive() && m.cursor == pageSetup {
+				m.cursor, m.row = pageRun, 0
+			}
+		}
 		if m.f.alive() && !m.ticking {
 			m.ticking = true
 			return m, tick()
 		}
 	case startedMsg:
 		id := string(msg)
+		m.cursor, m.row = pageRun, 0
+		m.f.ReadOnly, m.session = false, append(m.session, id)
 		m.runSet, m.ticking = true, true
 		m.f.Run = &seam.Run{Summary: seam.Summary{ID: id}}
 		m.f.Job, m.f.Tail = &jobs.Job{ID: id, Alive: true}, nil
 		m.note = "Started " + id + "."
 		return m, tea.Batch(m.loadJob(id), tick())
+	case savedListMsg:
+		m.f.Saved = msg.saved
+		if msg.err != nil {
+			m.note = "The saved runs could not be read: " + msg.err.Error()
+		}
+		m.countOldWork()
+	case savedMsg:
+		if msg.err != nil {
+			m.note = "Save failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.f.SavedID, m.f.SavedDir = msg.id, msg.dir
+		m.note = "Saved to " + msg.dir + "."
+		return m, m.loadSaved()
+	case savedRunMsg:
+		if msg.err != nil {
+			m.note = "The saved run could not be read: " + msg.err.Error()
+			return m, nil
+		}
+		m.f.Run, m.f.Job, m.f.Tail, m.f.ReadOnly, m.runSet = msg.run, nil, nil, true, true
+		m.cursor, m.row = pageRun, 0
+		m.view.GotoTop()
+	case cleanedMsg:
+		if msg.err != nil {
+			m.note = "Cleaning failed: " + msg.err.Error()
+		} else {
+			m.note = "Deleted the unsaved runs from earlier sessions."
+		}
+		return m, m.loadRuns()
 	case deletedMsg:
+		if id, ok := strings.CutPrefix(string(msg), "saved:"); ok {
+			m.note = "Deleted saved run " + id + "."
+			if m.f.ReadOnly && m.runID() == id {
+				m.f.Run, m.f.ReadOnly = nil, false
+			}
+			return m, m.loadSaved()
+		}
 		if m.runID() == string(msg) {
 			m.f.Run, m.f.Job, m.f.Tail, m.runSet, m.row = nil, nil, nil, false, 0
 		}
@@ -561,19 +709,58 @@ func (m Model) actions() []action {
 }
 
 // runRow is the run id under the row cursor when an open step shows a run row, else "".
+// runRow is the saved run under the row cursor, or "": d deletes it.
 func (m Model) runRow() string {
-	if !m.open {
-		return ""
-	}
-	if acts := m.actions(); m.row < len(acts) && acts[m.row].do == "run" {
+	if acts := m.actions(); m.row < len(acts) && acts[m.row].do == "opensaved" {
 		return acts[m.row].arg
 	}
 	return ""
 }
 
+// skipHeads moves the row off section headings, in direction dir (1 down, -1 up), never past the ends.
+func (m *Model) skipHeads(dir int) {
+	acts := m.actions()
+	for m.row >= 0 && m.row < len(acts) && acts[m.row].do == "head" {
+		m.row += dir
+	}
+	if m.row < 0 || m.row >= len(acts) {
+		m.row -= dir
+		for m.row >= 0 && m.row < len(acts) && acts[m.row].do == "head" {
+			m.row -= dir
+		}
+		m.row = max(0, min(m.row, len(acts)-1))
+	}
+}
+
+// countOldWork counts the unsaved runs not started in this session, which Setup offers to delete.
+func (m *Model) countOldWork() {
+	m.f.OldWork = 0
+	if m.f.Runs == nil {
+		return
+	}
+	for _, r := range m.f.Runs.Runs {
+		if !contains(m.session, r.ID) && !m.isSaved(r.ID) {
+			m.f.OldWork++
+		}
+	}
+}
+
+func (m Model) isSaved(id string) bool {
+	if m.f.Saved == nil {
+		return false
+	}
+	for _, r := range m.f.Saved.Runs {
+		if r.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
-	if !key.Matches(msg, keyDel) {
-		m.f.Confirm = "" // any other key cancels a pending delete
+	onClean := key.Matches(msg, keyEnter) && m.row < len(m.actions()) && m.actions()[m.row].do == "clean"
+	if !key.Matches(msg, keyDel) && !onClean {
+		m.f.Confirm = "" // any other key cancels a pending delete (enter on the clean row is its second press)
 	}
 	if m.f.Editing {
 		switch msg.Type {
@@ -592,49 +779,37 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.f.Input = m.input.Value()
 		return m, cmd
 	}
-	if m.open {
-		DetailView(m.f, m.cursor, m.row, m.width, m.height-3, &m.view) // size the scroll before keys move it
-	}
+	DetailView(m.f, m.cursor, m.row, m.width, m.height-3, &m.view) // size the scroll before keys move it
 	if key.Matches(msg, keyDel) {
 		if id := m.runRow(); id != "" {
-			return m.do(action{"", "delete", id})
+			return m.do(action{"", "deletesaved", id})
 		}
 		return m, nil
 	}
 	switch {
 	case key.Matches(msg, keyQuit):
 		return m, tea.Quit
-	case key.Matches(msg, keyStop):
-		return m, m.stopRun()
 	case key.Matches(msg, keyBack):
-		m.open = false
-	case key.Matches(msg, keyDown):
-		switch {
-		case !m.open:
-			m.moved, m.cursor = true, min(m.cursor+1, len(steps)-1)
-		case m.row < len(m.actions())-1:
+		if m.cursor != pageSetup {
+			m.cursor, m.row, m.f.ReadOnly = pageSetup, 0, false
+			m.skipHeads(1)
+			m.view.GotoTop()
+		}
+	case key.Matches(msg, keyDown): // the rows first, then the page above them scrolls
+		if m.row < len(m.actions())-1 {
 			m.row++
-		default:
+			m.skipHeads(1)
+		} else {
 			m.view.LineDown(1)
 		}
 	case key.Matches(msg, keyUp):
-		switch {
-		case !m.open:
-			m.moved, m.cursor = true, max(m.cursor-1, 0)
-		case m.view.YOffset > 0:
+		if m.view.YOffset > 0 {
 			m.view.LineUp(1)
-		case m.row > 0:
+		} else if m.row > 0 {
 			m.row--
+			m.skipHeads(-1)
 		}
 	case key.Matches(msg, keyEnter):
-		if !m.open {
-			m.moved, m.open, m.row = true, true, 0
-			if m.cursor == 1 { // the chip list opens on the chip in use
-				m.row = m.f.Target
-			}
-			m.view.GotoTop()
-			return m, nil
-		}
 		if acts := m.actions(); m.row < len(acts) {
 			return m.do(acts[m.row])
 		}
@@ -650,10 +825,30 @@ func (m Model) readModel() (Model, tea.Cmd) {
 
 // do runs one action row of the open step.
 func (m Model) do(a action) (Model, tea.Cmd) {
-	if a.do != "delete" {
+	if a.do != "delete" && a.do != "deletesaved" && a.do != "clean" { // these ask twice: the first press must stay
 		m.f.Confirm = ""
 	}
 	switch a.do {
+	case "head", "":
+		return m, nil
+	case "save":
+		return m, m.saveRun()
+	case "opensaved":
+		return m, m.openSaved(a.arg)
+	case "deletesaved":
+		if m.f.Confirm != a.arg {
+			m.f.Confirm = a.arg
+			return m, nil
+		}
+		m.f.Confirm = ""
+		return m, m.deleteSaved(a.arg)
+	case "clean":
+		if m.f.Confirm != "clean" {
+			m.f.Confirm = "clean"
+			return m, nil
+		}
+		m.f.Confirm = ""
+		return m, m.cleanWork()
 	case "delete":
 		if m.f.Confirm != a.arg {
 			m.f.Confirm = a.arg
@@ -668,9 +863,32 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 	case "file":
 		m.f.Path = a.arg
 		return m.readModel()
+	case "page":
+		m.cursor, _ = strconv.Atoi(a.arg)
+		m.row = 0
+		m.skipHeads(1)
+		m.view.GotoTop()
+		if m.cursor == pageSaved {
+			return m, m.loadSaved()
+		}
+		if m.cursor == pageSetup {
+			m.f.ReadOnly = false
+		}
+		return m, nil
+	case "engine":
+		m.f.Engine, m.f.Layout = a.arg, ""
+		return m, nil
+	case "layout":
+		m.f.Layout = a.arg
+		return m, nil
+	case "analyze":
+		return m, m.startRun(m.f.Engine)
 	case "chip":
+		if !m.f.mayPick() { // set by flag: not chosen here
+			return m, nil
+		}
 		m.f.Target, _ = strconv.Atoi(a.arg)
-		m.chipSet = true
+		m.chipSet, m.f.Picked = true, true
 		return m, m.chipChanged()
 	case "start":
 		return m, m.startRun(a.arg)
@@ -707,13 +925,13 @@ func (m Model) mood() string {
 	return faceIdle
 }
 
-func footer(open, onRun bool) string {
-	pairs := [][2]string{{"↑↓", "step"}, {"enter", "open"}, {"q", "quit"}}
+func footer(back, onRun bool) string {
+	pairs := [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"q", "quit"}}
 	switch {
 	case onRun:
-		pairs = [][2]string{{"↑↓", "move"}, {"enter", "open run"}, {"d", "delete run"}, {"esc", "back"}, {"q", "quit"}}
-	case open:
-		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"esc", "back"}, {"x", "stop"}, {"q", "quit"}}
+		pairs = [][2]string{{"↑↓", "move"}, {"enter", "open run"}, {"d", "delete run"}, {"esc", "setup"}, {"q", "quit"}}
+	case back:
+		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"esc", "setup"}, {"q", "quit"}}
 	}
 	parts := []string{}
 	for _, p := range pairs {
@@ -730,15 +948,7 @@ func (m Model) View() string {
 	}
 	header := left + strings.Repeat(" ", max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
 	room := m.height - 3
-	var body string
-	if m.open {
-		view := m.view
-		body = DetailView(m.f, m.cursor, m.row, m.width, room, &view)
-	} else {
-		body = ChecklistView(m.f, m.cursor, m.width, room)
-		if pad := room - lipgloss.Height(body); pad > 0 {
-			body += strings.Repeat("\n", pad)
-		}
-	}
-	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.open, m.runRow() != "")
+	view := m.view
+	body := DetailView(m.f, m.cursor, m.row, m.width, room, &view)
+	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.cursor != pageSetup, m.runRow() != "")
 }

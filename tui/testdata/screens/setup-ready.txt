@@ -1,4 +1,4 @@
-⚡ BoltBeam                                                             (˘ω˘) zz
+⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Setup                                                                        │
 │ Select a model, a chip and an engine. Then press Run.                        │
@@ -7,18 +7,18 @@
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Choose                                                                       │
-│ needs a model, a chip, an engine                                             │
+│ ready to run                                                                 │
 │ Select model                                                                 │
-│ ▸   /models/Q▏                                                               │
+│ ▸ ● /models/Qwen3-8B.gguf                                                    │
+│     Type a path                                                              │
 │                                                                              │
 │ Select chip                                                                  │
-│   ● amd_gfx1100                                                              │
+│     amd_gfx1100                                                              │
 │     nvidia_sm89                           ⚠ no speed limit                   │
 │     nvidia_sm120                                                             │
 │     apple_metal                           ⚠ no speed limit                   │
-│     apple_m3_10c                                                             │
-│     apple_m4_10c                                                             │
-│   ↓ 4 more                                                                   │
+│   ● apple_m3_10c   this Mac (detected)                                       │
+│   ↓ 7 more                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ move · enter pick · q quit

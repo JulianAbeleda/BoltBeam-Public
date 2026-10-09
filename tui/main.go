@@ -21,7 +21,7 @@ import (
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/ui"
 )
 
-const usage = `usage: boltbeam-tui [--json] [--root RUNS] [--repo DIR] [--python PY] [--state DIR]
+const usage = `usage: boltbeam-tui [--json] [--root RUNS] [--saved DIR] [--repo DIR] [--python PY] [--state DIR]
                     [--model FILE] [--target ID] [--context N] [command]
 
 commands (each prints one JSON object):
@@ -35,6 +35,8 @@ commands (each prints one JSON object):
                                                run the pipeline in the background; log under --state
   stop <id>                                    SIGTERM the pipeline started here
   delete <id>                                  remove a run folder that is not running
+  save <id>                                    export a run to --saved: the run, results.json, report.html, summary.txt
+  saved                                        the saved runs, newest first
   tail <id> [--lines N]                        the pipeline's status and the last lines of its log
 
 env: BOLTBEAM_RUNS (runs folder), BOLTBEAM_PYTHON (interpreter; default: the first of python3.13..3.10, python3),
@@ -101,6 +103,7 @@ func run(args []string, out, errOut io.Writer) int {
 	model := fs.String("model", os.Getenv("BOLTBEAM_MODEL"), "the model file the screens open with")
 	target := fs.String("target", os.Getenv("BOLTBEAM_TARGET"), "the chip the screens open with")
 	context := fs.Int("context", 512, "prefill tokens for the ceiling")
+	saved := fs.String("saved", os.Getenv("BOLTBEAM_SAVED"), "the saved-runs folder (default RUNS/saved)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -127,7 +130,10 @@ func run(args []string, out, errOut io.Writer) int {
 			*root = "runs"
 		}
 	}
-	client := seam.Client{Python: *python, Repo: *repo, Root: *root}
+	if *saved == "" {
+		*saved = filepath.Join(*root, "saved")
+	}
+	client := seam.Client{Python: *python, Repo: *repo, Root: *root, Saved: *saved}
 	store := jobs.Store{Dir: *state}
 	rest := fs.Args()
 	if len(rest) == 0 {
@@ -135,6 +141,7 @@ func run(args []string, out, errOut io.Writer) int {
 			fmt.Fprintln(errOut, usage)
 			return 2
 		}
+		client.Work = filepath.Join(*root, ".work") // the screens keep runs here until they are saved
 		if err := ui.Start(client, store, *model, *target, *context); err != nil {
 			fmt.Fprintln(errOut, err)
 			return 1
@@ -264,6 +271,21 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 			return fail(out, fmt.Errorf("run %s is still going; stop it first", args[0]))
 		}
 		raw, err := client.Delete(args[0])
+		if err != nil {
+			return fail(out, err)
+		}
+		return emit(out, raw)
+	case "save":
+		if !need(1) {
+			return 2
+		}
+		_, raw, err := client.Save(args[0])
+		if err != nil {
+			return fail(out, err)
+		}
+		return emit(out, raw)
+	case "saved":
+		_, raw, err := client.SavedRuns()
 		if err != nil {
 			return fail(out, err)
 		}

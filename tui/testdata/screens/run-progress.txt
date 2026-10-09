@@ -1,24 +1,24 @@
-⚡ BoltBeam                                                               (•-•)⏸
+⚡ BoltBeam                                                            ⠋ (•̀ᴗ•́)⚡
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ 4  Measure · qwen3-8b-apple_m3_10c-001                                       │
+│ Run · qwen3-8b-apple_m3_10c-001                                              │
 │ Qwen3-8B on apple_m3_10c · needs measuring                                   │
 │ ✓ 1. Read the model             4 files                                      │
 │ ✓ 2. Check the machine          4 files                                      │
-│ ✓ 3. Plan what to try           7 files                                      │
+│ ● 3. Plan what to try           running                                      │
 │ ○ 4. Prepare the handoff        not run                                      │
 │ ⏸ 5. Test the building blocks   needs the building-block tests (probe_reque… │
 │ ⏸ 6. Time the real run          needs a timing trace (trace_request.json)    │
 │ ✓ 7. Package the result         5 files                                      │
-│ next Run an external timing trace from trace_request.json, ingest boltbeam.… │
-│ No process was started for this run from this machine.                       │
-│ enter: start, stop, earlier runs, the full log                               │
+│ next Run an external timing trace from trace_request.json, ingest            │
+│ boltbeam.timing_trace.v1, then re-run boltbeam analyze.                      │
+│                                                                              │
+│ ● running   pid 4242 · log /home/u/.local/state/boltbeam-tui/qwen3-8b-apple… │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│   ✓ 1  Model        Qwen3-8B.gguf · 36 layers · F32, Q4_K, Q6_K              │
-│   ✓ 2  Chip         apple_m3_10c · this Mac · memory 97.2 GB/s               │
-│   ✓ 3  Speed limit  up to 20.8 tokens per second                             │
-│ ▸ ⏸ 4  Measure      planned · needs building-block tests and a timing trace  │
-│   ○ 5  Result       nothing measured yet · enter opens report.html           │
+│ What next                                                                    │
+│ ██████░░░░░░░░░░░░░░  2 of 7 · Plan what to try…                             │
+│ ▸ Stop the run                                                               │
+│   [ Back to setup ]                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ step · enter open · q quit
+ ↑↓ move · enter pick · esc setup · q quit

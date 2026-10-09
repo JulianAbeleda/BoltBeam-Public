@@ -77,11 +77,14 @@ def _run(argv:list[str]) -> str:
   return proc.stdout
 
 
-def nvidia_holders(text:str) -> list[str]:
-  """`nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits` as sentences."""
+def nvidia_holders(text:str, uuids:set[str] | None = None) -> list[str]:
+  """`nvidia-smi --query-compute-apps=pid,process_name,used_memory,gpu_uuid --format=csv,noheader,nounits` as
+  sentences; with uuids, only the programs on those GPUs."""
   out = []
   for line in text.strip().splitlines():
     parts = [p.strip() for p in line.split(",")]
+    if uuids is not None and len(parts) >= 4 and parts[3] not in uuids:
+      continue
     if len(parts) >= 3 and parts[0].isdigit():
       out.append(f"{pathlib.Path(parts[1]).name} (pid {parts[0]}) holds {parts[2]} MiB")
   return out
@@ -117,12 +120,13 @@ def heavy_processes(ps:str) -> list[str]:
   return out
 
 
-def gpu_free(backend:str, *, run=_run) -> dict[str, Any]:
-  """{"free": bool, "reason": sentence}. A GPU another program holds gives slower numbers that look real."""
+def gpu_free(backend:str, *, run=_run, uuids:set[str] | None = None) -> dict[str, Any]:
+  """{"free": bool, "reason": sentence}. A GPU another program holds gives slower numbers that look real. uuids:
+  only the GPUs the layout uses (every GPU when None)."""
   try:
     if backend == "CUDA":
-      holders = nvidia_holders(run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory",
-                                    "--format=csv,noheader,nounits"]))
+      holders = nvidia_holders(run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory,gpu_uuid",
+                                    "--format=csv,noheader,nounits"]), uuids)
     elif backend == "AMD":
       holders = amd_holders(run(["rocm-smi", "--showpids", "--json"]))
     elif backend == "Metal" and sys.platform == "darwin":
@@ -181,6 +185,12 @@ def measure_tinygrad(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pa
 
 # --- step 5: per role, any provider ----------------------------------------------------------------------------
 
+def _layout(run:pathlib.Path) -> tuple[str, int]:
+  status = run / "measure_status.json"
+  m = json.loads(status.read_text()) if status.exists() else {}
+  return m.get("layout") or "one", int(m.get("gpus") or 1)
+
+
 def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None) -> dict[str, Any]:
   """Per-role time for one provider, refused under the same floor rule for every provider."""
   from boltbeam.search import role_compare
@@ -205,7 +215,8 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
     trace = tinygrad_role_time.role_time_captured(run, root=root, python=role_compare.fork_python(root), model=model,
                                                   model_id=model_id, target=target)
   else:
-    trace = llama_bench_decode.role_time(run, target=target, model=model, model_id=model_id)
+    layout, gpus = _layout(run)
+    trace = llama_bench_decode.role_time(run, target=target, model=model, model_id=model_id, layout=layout, gpus=gpus)
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
   ceil = _measured_vs_ceiling(manifest, _optional(run, "model_profile.json"))
   table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"))

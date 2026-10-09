@@ -1,24 +1,24 @@
 ⚡ BoltBeam                                                              (≧◡≦)⚡
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ 5  Result · qwen3-8b-apple_m3_10c-002                                        │
+│ Run · qwen3-8b-apple_m3_10c-002                                              │
 │ ⚡ 17.3 tokens per second measured. The limit is 20.8.                       │
 │ █████████████████░░░ 83% of the limit                                        │
-│ Measured with llama.cpp · roles not timed yet                                │
-│ The limit is 48.1 ms per token.                                              │
+│ Measured with llama.cpp · roles not timed                                    │
+│ Tie-out, ms per token at context 128                                         │
+│   limit at context 128 (ideal)  48.304  derived                              │
+│ + kernels and gaps, not split   9.600   difference                           │
+│ = measured token                57.904  the untraced whole step at context … │
+│ The limit is 48.1 ms per token at context 1.                                 │
 │ ○ llama.cpp: 17.3 tokens per second, 57.9 ms per token, 9.8 ms lost.         │
-│   whole step, measured in step 4                                             │
-│ Per role: pick "Time each role in llama.cpp" in step 5                       │
-│ Where the time goes: small kernel, dead time  elementwise_dilution           │
-│                                                                              │
-│ …                                                                            │
-│ enter: open the full report, measure again                                   │
+│   whole step, measured untraced                                              │
+│ Per role: Not possible on this Mac: metal-system-trace is not installed.     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│   ✓ 1  Model        Qwen3-8B.gguf · 36 layers · F32, Q4_K, Q6_K              │
-│   ✓ 2  Chip         apple_m3_10c · this Mac · memory 97.2 GB/s               │
-│   ✓ 3  Speed limit  up to 20.8 tokens per second                             │
-│   ✓ 4  Measure      run 002 · probe ✓ · timing ✓                             │
-│ ▸ ✓ 5  Result       17.3 tokens per second · 83% of the limit                │
+│ What next                                                                    │
+│ 17.3 tokens per second · 83% of the limit                                    │
+│ ▸ [ Save run ]                                                               │
+│   Open the full report (report.html)                                         │
+│   [ Back to setup ]                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ step · enter open · q quit
+ ↑↓ move · enter pick · esc setup · q quit

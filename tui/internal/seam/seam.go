@@ -24,6 +24,17 @@ type Client struct {
 	Python string
 	Repo   string
 	Root   string
+	// Work is where new runs live until saved (the TUI uses <root>/.work); empty means Root, as --json always did.
+	Work string
+	// Saved is the saved-runs folder: a run is exported there by Save.
+	Saved string
+}
+
+func (c Client) work() string {
+	if c.Work != "" {
+		return c.Work
+	}
+	return c.Root
 }
 
 // Error is what the seam reports when Python exits non-zero. Message is Python's own `error` field when it
@@ -102,7 +113,7 @@ func (c Client) RunDir(id string) (string, error) {
 	if id == "" || id != filepath.Base(id) || strings.HasPrefix(id, ".") {
 		return "", fmt.Errorf("run id must be a folder name under the runs folder: %q", id)
 	}
-	return filepath.Join(c.Root, id), nil
+	return filepath.Join(c.work(), id), nil
 }
 
 func (c Client) Targets() (*Targets, []byte, error) {
@@ -135,9 +146,16 @@ func (c Client) Ceiling(model, target string, context int) (*Ceiling, []byte, er
 	return &ce, raw, err
 }
 
+// Ceilings is the model's limit on every registered chip: read-only what-if facts for step 3.
+func (c Client) Ceilings(model string) (*Ceilings, error) {
+	var ce Ceilings
+	_, _, err := c.decode(&ce, nil, "boltbeam.workflow.screen", "ceilings", model)
+	return &ce, err
+}
+
 func (c Client) List() (*Runs, []byte, error) {
 	var r Runs
-	raw, _, err := c.decode(&r, nil, "boltbeam.workflow.screen", "runs", "--root", c.Root)
+	raw, _, err := c.decode(&r, nil, "boltbeam.workflow.screen", "runs", "--root", c.work())
 	return &r, raw, err
 }
 
@@ -157,7 +175,51 @@ func (c Client) Delete(id string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, _, err := c.call("boltbeam.workflow.screen", nil, "delete", "--run", dir, "--root", c.Root)
+	raw, _, err := c.call("boltbeam.workflow.screen", nil, "delete", "--run", dir, "--root", c.work())
+	return raw, err
+}
+
+// Save exports a run into the saved-runs folder: the run, results.json, report.html, summary.txt.
+func (c Client) Save(id string) (*SavedRun, []byte, error) {
+	dir, err := c.RunDir(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	var s SavedRun
+	raw, _, err := c.decode(&s, nil, "boltbeam.workflow.screen", "save", "--run", dir, "--to", c.Saved)
+	return &s, raw, err
+}
+
+// SavedRuns lists the saved runs, newest first.
+func (c Client) SavedRuns() (*Saved, []byte, error) {
+	var s Saved
+	raw, _, err := c.decode(&s, nil, "boltbeam.workflow.screen", "saved", "--root", c.Saved)
+	return &s, raw, err
+}
+
+// DeleteSaved removes one saved run; Python refuses anything that is not a run directly in the saved folder.
+func (c Client) DeleteSaved(id string) ([]byte, error) {
+	if id == "" || id != filepath.Base(id) || strings.HasPrefix(id, ".") {
+		return nil, fmt.Errorf("saved run id must be a folder name: %q", id)
+	}
+	raw, _, err := c.call("boltbeam.workflow.screen", nil, "delete", "--run", filepath.Join(c.Saved, id), "--root", c.Saved)
+	return raw, err
+}
+
+// ShowSaved reads a saved run the way Show reads a run in the work area.
+func (c Client) ShowSaved(id string) (*Run, error) {
+	var r Run
+	_, _, err := c.decode(&r, nil, "boltbeam.workflow.screen", "run", "--run", filepath.Join(c.Saved, id))
+	return &r, err
+}
+
+// CleanWork removes temporary runs started before the session began, keeping the ones named.
+func (c Client) CleanWork(before string, keep []string) ([]byte, error) {
+	args := []string{"clean-work", "--work", c.work(), "--before", before}
+	for _, k := range keep {
+		args = append(args, "--keep", k)
+	}
+	raw, _, err := c.call("boltbeam.workflow.screen", nil, args...)
 	return raw, err
 }
 
@@ -176,15 +238,20 @@ func (c Client) Results(id string) (*Results, []byte, int, error) {
 // line per stage. Probe and timing are optional evidence files to ingest after analyze. Measure "auto" asks the
 // pipeline to measure with the chip's own BoltBeam collector when this machine can (Python decides).
 type Pipeline struct {
-	Model, RunDir, Target, Workload, ID, Probe, Timing, Measure, Provider string
+	Model, RunDir, Target, Workload, ID, Probe, Timing, Measure, Provider, Layout string
+	// Analyze is one press: measure, the machine's facts, then per-role time with the same engine
+	Analyze bool
 }
 
 func (c Client) PipelineArgv(p Pipeline) []string {
 	argv := []string{c.Python, "-m", "boltbeam.workflow.screen", "pipeline", p.Model, "--run", p.RunDir, "--target", p.Target}
-	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider} {
+	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider, "--layout": p.Layout} {
 		if value != "" {
 			argv = append(argv, flag, value)
 		}
+	}
+	if p.Analyze {
+		argv = append(argv, "--analyze")
 	}
 	return argv
 }

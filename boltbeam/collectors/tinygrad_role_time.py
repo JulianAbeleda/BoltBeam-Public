@@ -135,6 +135,9 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
                                 source_path=str(events.relative_to(run)), **peak)
   trace.setdefault("notes", []).append(f"in-model decode on {device} with JIT=2 PROFILE=1: one command buffer per "
                                        f"kernel; {summary['tokens']} tokens after a {context}-token prefill")
+  for row in trace.get("rows", []):  # the profiled run's own wall time per token: the tie-out's measured token
+    if row.get("scope") == "whole_step" and summary.get("wall_s"):
+      row["token_ms"] = summary["wall_s"] * 1000.0 / summary["tokens"]
   trace["capture"] = {"method": OWN_TIMING, "reason": OWN_TIMING_REASON.get(target.backend)}
   (run / TRACE).write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
   return trace

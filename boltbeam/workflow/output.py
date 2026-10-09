@@ -192,5 +192,6 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   (out / "report.html").write_text(
     render_run_html(manifest=final, profile=profile, report=report, plan=plan, policy=policy,
                     providers=providers, primitive=primitive, timing=timing, runner=runner,
-                    source_run=str(out), results=screen_results(out)), encoding="utf-8")
+                    source_run=str(out), results=screen_results(out),
+                    measure=_load_optional(out, "measure_status.json")), encoding="utf-8")
   return final

@@ -22,8 +22,21 @@ type Facts struct {
 	Profile     *seam.Profile
 	Targets     *seam.Targets
 	Target      int
-	ThisMachine string // the target autoscan reads this machine's GPU as
-	Driver      string // this machine's GPU driver, read live; "" where the probe reports none
+	ThisMachine string         // the target autoscan reads this machine's GPU as
+	Driver      string         // this machine's GPU driver, read live; "" where the probe reports none
+	Detected    bool           // the detect call answered (ThisMachine "" then means no registered chip matched)
+	ByFlag      bool           // --target chose the chip: shown as chosen by flag, not detected
+	Picked      bool           // detection failed and the user picked the closest registered chip
+	Others      *seam.Ceilings // this model's limit on every registered chip, read-only (step 3)
+	GpuCount    int            // every GPU the driver lists (detect)
+	MultiGpu    string         // "4 x NAME (limited support...)" when more than one; Python words it
+	Engine      string         // the chosen provider: "llama.cpp" or "tinygrad" (called engine on screen)
+	Layout      string         // how the engine uses the GPUs: one, layer or row
+	Saved       *seam.Saved    // the saved runs (screen saved)
+	SavedID     string         // the run on screen was saved, as this id
+	SavedDir    string         // and here
+	ReadOnly    bool           // the run on screen is a saved run, opened to read
+	OldWork     int            // unsaved runs from earlier sessions, which the user may delete
 	Ceiling     *seam.Ceiling
 	CeilBusy    bool
 	CeilErr     string
@@ -64,22 +77,327 @@ type step struct {
 	actions func(Facts) []action
 }
 
+// The screens: Setup (model, chip, engine, then Run), Run (progress, then the results), Saved runs.
+const (
+	pageSetup = iota
+	pageRun
+	pageSaved
+)
+
 var steps = []step{
-	{"Model", "enter: pick or type the model file", aboutModel, modelLine, modelBody, modelActions},
-	{"Chip", "enter: pick the chip", aboutChip, chipLine, chipBody, chipActions},
-	{"Speed limit", "enter: every role, the prompt, the assumptions", aboutChip, limitLine, limitBody, nil},
-	{"Measure", "enter: start, stop, earlier runs, the full log", aboutRun, measureLine, measureBody, measureActions},
-	{"Result", "enter: open the full report, measure again", aboutRun, resultLine, resultBody, resultActions},
+	{"Setup", "", func(Facts) string { return "" }, setupLine, setupBody, setupActions},
+	{"Run", "", aboutRun, resultLine, resultsBody, runActions},
+	{"Saved runs", "", func(Facts) string { return "" }, savedLine, savedBody, savedActions},
 }
 
-// firstOpen is the step the cursor starts on: the first one not done.
-func firstOpen(f Facts) int {
-	for i, s := range steps {
-		if m, _ := s.line(f); m != "pass" {
-			return i
+// engineRow is this machine's provider row for the chosen engine, or nil.
+func (f Facts) engineRow() *seam.ProviderRow { return f.provider(f.Engine) }
+
+// missing names what Analyze still needs; empty when it can run.
+func (f Facts) missing() []string {
+	out := []string{}
+	if f.Profile == nil {
+		out = append(out, "a model")
+	}
+	if f.target() == nil || !f.chipKnown() {
+		out = append(out, "a chip")
+	}
+	if p := f.engineRow(); p == nil || !p.Available {
+		out = append(out, "an engine")
+	}
+	return out
+}
+
+// thisChip says whether the chosen chip is this machine's: only then does Analyze measure.
+func (f Facts) thisChip() bool {
+	t := f.target()
+	return t != nil && t.ID == f.ThisMachine
+}
+
+// chipPageBody is the chip's facts, the speed limit on it, and the limit on other chips (read-only).
+func chipPageBody(f Facts, width int) string {
+	return chipBody(f, width) + "\n\n" + stHeader.Render("Speed limit") + "\n" + limitBody(f, width)
+}
+
+// --- Setup ----------------------------------------------------------------------------------------------------
+
+func setupLine(f Facts) (string, string) {
+	if f.alive() {
+		return "run", "running " + aboutRun(f) + "…"
+	}
+	if m := f.missing(); len(m) > 0 {
+		return "open", "needs " + strings.Join(m, ", ")
+	}
+	if !f.thisChip() {
+		return "pass", "ready: the speed limit only (" + aboutChip(f) + " is not " + here() + ")"
+	}
+	return "pass", "ready to run"
+}
+
+func setupBody(f Facts, width int) string {
+	var b strings.Builder
+	b.WriteString(stHeader.Render("Select a model, a chip and an engine. Then press Run.") + "\n")
+	b.WriteString("Run finds the speed limit, checks the GPU is free, measures with the engine and times each role.\n")
+	if f.Ceiling != nil && f.Ceiling.Decode.TokS != nil {
+		fmt.Fprintf(&b, "Speed limit on %s: %.1f tokens per second (%.1f ms per token).\n", aboutChip(f), *f.Ceiling.Decode.TokS, f.Ceiling.Decode.FloorMs)
+	}
+	if f.MultiGpu != "" {
+		b.WriteString(stWarn.Render(fmt.Sprintf("%d GPUs found: %s.", f.GpuCount, f.MultiGpu)) + "\n")
+	}
+	if t := f.target(); t != nil {
+		b.WriteString(otherChips(f, t.ID))
+	}
+	return b.String()
+}
+
+func setupActions(f Facts) []action {
+	out := []action{head("Select model")}
+	out = append(out, modelChoices(f)...)
+	out = append(out, head("Select chip"))
+	out = append(out, chipActions(f)...)
+	out = append(out, head("Select engine"))
+	out = append(out, engineActions(f)...)
+	out = append(out, head(""))
+	switch m := f.missing(); {
+	case f.alive():
+		out = append(out, action{"[ Running… ] show the progress", "page", fmt.Sprint(pageRun)})
+	case len(m) > 0:
+		out = append(out, action{stMuted.Render("[ Run ] needs " + strings.Join(m, ", ")), "", ""})
+	default:
+		out = append(out, action{stAccent.Render("[ Run ]"), "analyze", ""})
+	}
+	if f.Run != nil && f.outputDone() && !f.alive() && !f.ReadOnly {
+		state := "not saved"
+		if _, ok := f.savedAs(f.Run.ID); ok {
+			state = "saved"
+		}
+		out = append(out, action{"Last run " + shortRun(f.Run.ID) + with(f.Run.Measure) + " (" + state + ")", "page", fmt.Sprint(pageRun)})
+	}
+	n := 0
+	if f.Saved != nil {
+		n = len(f.Saved.Runs)
+	}
+	out = append(out, action{fmt.Sprintf("Saved runs (%d)", n), "page", fmt.Sprint(pageSaved)})
+	if f.OldWork > 0 {
+		label := fmt.Sprintf("Delete the unsaved runs from earlier sessions (%d)", f.OldWork)
+		if f.Confirm == "clean" {
+			label = stBad.Render("Press enter again to delete them · any other key keeps them")
+		}
+		out = append(out, action{label, "clean", ""})
+	}
+	return out
+}
+
+// savedAs is where a run was saved: from this session's save, or from the saved-runs list.
+func (f Facts) savedAs(id string) (string, bool) {
+	if f.SavedID == id && f.SavedDir != "" {
+		return f.SavedDir, true
+	}
+	if f.Saved != nil {
+		for _, r := range f.Saved.Runs {
+			if r.ID == id {
+				return r.Dir, true
+			}
 		}
 	}
-	return len(steps) - 1
+	return "", false
+}
+
+// head is a section heading inside a list: drawn, never selected.
+func head(title string) action { return action{title, "head", ""} }
+
+// modelChoices are the model files found, the chosen one marked, and a row to type another path.
+func modelChoices(f Facts) []action {
+	out := []action{}
+	for _, path := range f.Files {
+		mark := "  "
+		if path == f.Path {
+			mark = stAccent.Render("● ")
+		}
+		out = append(out, action{mark + path, "file", path})
+	}
+	if f.Path != "" && !contains(f.Files, f.Path) {
+		out = append(out, action{stAccent.Render("● ") + f.Path, "file", f.Path})
+	}
+	typed := "  Type a path"
+	if f.Editing {
+		typed = "  " + f.Input + stCursor.Render("▏")
+	}
+	return append(out, action{typed, "edit", ""})
+}
+
+func contains(xs []string, x string) bool {
+	for _, y := range xs {
+		if y == x {
+			return true
+		}
+	}
+	return false
+}
+
+// --- Engine ---------------------------------------------------------------------------------------------------
+
+func engineLine(f Facts) (string, string) {
+	p := f.engineRow()
+	switch {
+	case f.Providers == nil:
+		return "run", "reading the engines on " + here() + "…"
+	case p == nil:
+		return "open", "pick an engine"
+	case !p.Available:
+		return "fail", p.Provider + " cannot run here: " + deref(p.Reason)
+	}
+	how := "roles not timed here"
+	if p.Capture.Method != nil {
+		how = "roles " + word(captureWords, *p.Capture.Method)
+	}
+	return "pass", p.Provider + " · " + how
+}
+
+func engineBody(f Facts, width int) string {
+	if f.Providers == nil {
+		return stMuted.Render("Reading the engines on " + here() + "…")
+	}
+	var b strings.Builder
+	b.WriteString("The engine is the runtime that decodes the model. Only engines found on " + here() + " can be picked.\n\n")
+	for _, p := range f.Providers.Providers {
+		state := "can measure"
+		if !p.Available {
+			state = "not here: " + deref(p.Reason)
+		}
+		how := "roles: not possible here (" + deref(p.Capture.Reason) + ")"
+		if p.Capture.Method != nil {
+			how = "roles: " + word(captureWords, *p.Capture.Method)
+		}
+		fmt.Fprintf(&b, "%s · %s\n  %s\n", p.Provider, state, stMuted.Render(how))
+	}
+	return b.String()
+}
+
+func engineActions(f Facts) []action {
+	if f.Providers == nil {
+		return nil
+	}
+	out := []action{}
+	for _, p := range f.Providers.Providers {
+		chosen := "  "
+		if p.Provider == f.Engine {
+			chosen = stAccent.Render("● ")
+		}
+		if p.Available {
+			out = append(out, action{chosen + p.Provider, "engine", p.Provider})
+		} else {
+			out = append(out, action{stMuted.Render(chosen + p.Provider + " · not here: " + deref(p.Reason)), "", ""})
+		}
+	}
+	return out
+}
+
+// --- Results --------------------------------------------------------------------------------------------------
+
+func resultsBody(f Facts, width int) string {
+	if f.Run == nil {
+		return stMuted.Render("No run yet. Run makes one.")
+	}
+	var b strings.Builder
+	if f.alive() || f.failedStage() != "" || (f.Run.Measure != nil && f.Run.Measure.Status != "measured") {
+		b.WriteString(measureBody(f, width) + "\n\n")
+	}
+	if f.Run.Results.Loss.Layout != nil {
+		b.WriteString(layoutBody(*f.Run.Results.Loss.Layout) + "\n")
+	}
+	if !f.alive() {
+		b.WriteString(resultBody(f, width))
+	}
+	return b.String()
+}
+
+// layoutBody is the multi-GPU limit: its formula and every input with its source, labelled limited support.
+func layoutBody(l seam.LayoutLimit) string {
+	if l.Gpus < 2 {
+		return ""
+	}
+	var b strings.Builder
+	head := fmt.Sprintf("Limit for %s on %d GPUs", l.Label, l.Gpus)
+	if l.Ms != nil {
+		head += fmt.Sprintf(": %.3f ms per token", *l.Ms)
+	}
+	b.WriteString(stHeader.Render(head) + "\n")
+	if l.Support != nil {
+		b.WriteString(stWarn.Render(*l.Support) + "\n")
+	}
+	if l.Reason != nil {
+		b.WriteString("Not derived: " + *l.Reason + "\n")
+	}
+	if l.Formula != "" {
+		b.WriteString("How: " + l.Formula + "\n")
+	}
+	for _, in := range l.Inputs {
+		fmt.Fprintf(&b, "  %s: %v %s · %s\n", in.What, in.Value, in.Unit, stMuted.Render(in.Source))
+	}
+	return b.String()
+}
+
+func runActions(f Facts) []action {
+	out := []action{}
+	switch {
+	case f.alive():
+		out = append(out, action{"Stop the run", "stop", ""})
+	case f.ReadOnly:
+		out = append(out, action{"Back to saved runs", "page", fmt.Sprint(pageSaved)})
+	case f.Run != nil && f.outputDone():
+		if dir, ok := f.savedAs(f.Run.ID); ok {
+			out = append(out, action{mark("pass") + " Saved to " + dir, "", ""})
+		} else {
+			out = append(out, action{stAccent.Render("[ Save run ]"), "save", ""})
+		}
+	}
+	if f.Run != nil && f.Run.Report != nil && !f.alive() {
+		out = append(out, action{"Open the full report (" + *f.Run.Report + ")", "report", ""})
+	}
+	return append(out, action{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)})
+}
+
+// --- Saved runs -------------------------------------------------------------------------------------------------
+
+func savedLine(f Facts) (string, string) {
+	if f.Saved == nil {
+		return "run", "reading the saved runs…"
+	}
+	noun := "saved runs"
+	if len(f.Saved.Runs) == 1 {
+		noun = "saved run"
+	}
+	return "pass", fmt.Sprintf("%d %s in %s", len(f.Saved.Runs), noun, f.Saved.Root)
+}
+
+func savedBody(f Facts, width int) string {
+	var b strings.Builder
+	b.WriteString("A run is temporary until you save it. Saving keeps the run, its report, results.json and summary.txt.\n")
+	b.WriteString("Enter opens a saved run. Press d twice to delete one.\n")
+	return b.String()
+}
+
+func savedActions(f Facts) []action {
+	out := []action{}
+	if f.Saved != nil {
+		for _, r := range f.Saved.Runs {
+			pct := "not measured"
+			if r.PctOfLimit != nil {
+				pct = fmt.Sprintf("%.0f%% of limit", *r.PctOfLimit)
+			}
+			when := strings.Replace(r.SavedAt, "T", " ", 1)
+			if len(when) > 16 {
+				when = when[:16] // to the minute
+			}
+			label := fmt.Sprintf("%s · %s · %s · %s · %s", deref(r.ModelID), deref(r.TargetID), r.Provider, when, pct)
+			if f.Confirm == r.ID {
+				label = stBad.Render("Press d again to delete saved run " + r.ID + " · any other key keeps it")
+			}
+			out = append(out, action{label, "opensaved", r.ID})
+		}
+	}
+	return append(out, action{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)})
 }
 
 func (f Facts) target() *seam.Target {
@@ -93,6 +411,25 @@ func (f Facts) target() *seam.Target {
 }
 
 func (f Facts) alive() bool { return f.Job != nil && f.Job.Alive }
+
+// registered says whether this machine's detected chip is in the chip list.
+func (f Facts) registered() bool {
+	if f.ThisMachine == "" || f.Targets == nil {
+		return false
+	}
+	for _, t := range f.Targets.Targets {
+		if t.ID == f.ThisMachine {
+			return true
+		}
+	}
+	return false
+}
+
+// mayPick: only when detection failed may the user choose a chip, and only the closest registered one.
+func (f Facts) mayPick() bool { return !f.ByFlag }
+
+// chipKnown: steps 3, 4 and 5 use the detected chip, the flag's chip, or the one picked after detection failed.
+func (f Facts) chipKnown() bool { return f.ByFlag || f.registered() || f.Picked }
 
 // runProvider is the runtime the shown run was measured with; "" before a run says.
 func (f Facts) runProvider() string {
@@ -220,8 +557,22 @@ func chipLine(f Facts) (string, string) {
 		return "open", "reading the chip list…"
 	}
 	text := t.ID
-	if t.ID == f.ThisMachine {
-		text += " · " + here()
+	switch {
+	case f.ByFlag:
+		text += " · chosen by flag, not detected"
+	case !f.Detected:
+		return "run", "reading this machine's GPU…"
+	case f.Picked && t.ID != f.ThisMachine:
+		text += " · not " + here() + ": the speed limit only"
+	case f.registered() && t.ID == f.ThisMachine:
+		text += " · " + here() + " (detected)"
+	case !f.Picked:
+		return "open", "not detected: no registered chip matches " + here() + " · enter to pick the closest"
+	default:
+		text += " · picked: " + here() + " is not a registered chip"
+	}
+	if f.GpuCount > 1 {
+		text += " · " + layoutLabel(f)
 	}
 	if !t.HasCeiling {
 		return "crossed", text + " · no measured speeds, so no speed limit"
@@ -230,14 +581,14 @@ func chipLine(f Facts) (string, string) {
 }
 
 func chipActions(f Facts) []action {
-	if f.Targets == nil {
-		return nil
+	if f.Targets == nil || f.ByFlag {
+		return nil // set by flag: nothing to choose here
 	}
 	out := []action{}
 	for i, t := range f.Targets.Targets {
-		where, limit := "", mark("pass")+" speed limit"
+		where, limit := "", ""
 		if t.ID == f.ThisMachine {
-			where = here()
+			where = here() + " (detected)"
 		}
 		if !t.HasCeiling {
 			limit = mark("crossed") + " no speed limit"
@@ -246,7 +597,52 @@ func chipActions(f Facts) []action {
 		if i == f.Target {
 			chosen = stAccent.Render("● ")
 		}
-		out = append(out, action{fmt.Sprintf("%s%-14s %-*s %s", chosen, t.ID, max(9, len(here())), where, limit), "chip", fmt.Sprint(i)})
+		out = append(out, action{fmt.Sprintf("%s%-14s %-22s %s", chosen, t.ID, where, limit), "chip", fmt.Sprint(i)})
+	}
+	return append(out, layoutActions(f)...)
+}
+
+// layoutLabel names the chosen GPU layout on a machine with more than one GPU.
+func layoutLabel(f Facts) string {
+	for _, l := range layoutRows(f) {
+		if l.ID == f.layout() {
+			return l.Label
+		}
+	}
+	return "one GPU"
+}
+
+func (f Facts) layout() string {
+	if f.Layout == "" {
+		return "one"
+	}
+	return f.Layout
+}
+
+// layoutRows are the chosen engine's layouts on this machine (Python decides which can run).
+func layoutRows(f Facts) []seam.LayoutRow {
+	if p := f.engineRow(); p != nil {
+		return p.Layouts
+	}
+	return nil
+}
+
+// layoutActions are part of the chip choice when the machine has more than one GPU.
+func layoutActions(f Facts) []action {
+	if f.GpuCount < 2 {
+		return nil
+	}
+	out := []action{{stWarn.Render(fmt.Sprintf("%d GPUs: %s", f.GpuCount, f.MultiGpu)), "", ""}}
+	for _, l := range layoutRows(f) {
+		chosen := "  "
+		if l.ID == f.layout() {
+			chosen = stAccent.Render("● ")
+		}
+		if l.Available {
+			out = append(out, action{chosen + "Use " + l.Label, "layout", l.ID})
+		} else {
+			out = append(out, action{stMuted.Render(chosen + "Use " + l.Label + " · " + deref(l.Reason)), "", ""})
+		}
 	}
 	return out
 }
@@ -257,6 +653,8 @@ func limitLine(f Facts) (string, string) {
 	switch {
 	case f.Profile == nil:
 		return "open", "needs step 1"
+	case !f.chipKnown():
+		return "open", "needs step 2"
 	case f.CeilBusy:
 		return "run", "working it out…"
 	case f.Ceiling != nil && f.Ceiling.Decode.TokS != nil:
@@ -322,51 +720,14 @@ func shortRun(id string) string {
 	return id
 }
 
-func measureActions(f Facts) []action {
-	out := []action{}
-	if f.alive() {
-		out = append(out, action{"Stop the run (x)", "stop", ""})
-	} else if f.Path != "" {
-		out = append(out, startActions(f, "Measure "+aboutModel(f)+" on "+aboutChip(f)+" with ")...)
-	}
-	if f.Runs != nil {
-		for i := len(f.Runs.Runs) - 1; i >= 0; i-- {
-			r := f.Runs.Runs[i]
-			label := fmt.Sprintf("Open run %s%s  %s  %s", r.ID, with(r.Measure), runStatus(r.Status, r.Measured.Probe && r.Measured.Timing), measuredMarks(r.Measured))
-			if f.Confirm == r.ID {
-				label = stBad.Render("Press d again to delete run " + r.ID + " and its report · any other key keeps it")
-			}
-			if f.Run != nil && r.ID == f.Run.ID {
-				label += stMuted.Render("  shown")
-			}
-			out = append(out, action{label, "run", r.ID})
-		}
-	}
-	return out
-}
-
-// startActions is one start row per runtime that can measure here; a runtime that cannot is named with why.
-// Before Python has answered, the one row starts the default runtime, as before providers existed.
-func startActions(f Facts, prefix string) []action {
-	if f.Providers == nil {
-		return []action{{prefix + "llama.cpp", "start", ""}}
-	}
-	out := []action{}
-	for _, p := range f.Providers.Providers {
-		if p.Available {
-			out = append(out, action{prefix + p.Provider, "start", p.Provider})
-		} else {
-			out = append(out, action{stMuted.Render(p.Provider + " cannot measure here: " + deref(p.Reason)), "", ""})
-		}
-	}
-	return out
-}
-
 // --- 5 Result ----------------------------------------------------------------------------------------------
 
 func resultLine(f Facts) (string, string) {
-	if !f.outputDone() || f.alive() {
-		return "open", "needs step 4"
+	if f.alive() || f.failedStage() != "" {
+		return measureLine(f) // the progress bar and the stage in flight, or what failed
+	}
+	if !f.outputDone() {
+		return "open", "not run yet"
 	}
 	if f.comparing() {
 		p := seam.ReadCompare(f.CTail)
@@ -414,9 +775,6 @@ func resultActions(f Facts) []action {
 	}
 	if f.Run != nil && f.Run.Report != nil {
 		out = append(out, action{"Open the full report (" + *f.Run.Report + ")", "report", ""})
-	}
-	if f.Path != "" && !f.alive() {
-		out = append(out, startActions(f, "Measure again with ")...)
 	}
 	return out
 }

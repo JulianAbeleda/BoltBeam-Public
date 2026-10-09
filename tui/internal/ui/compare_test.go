@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -121,17 +122,15 @@ func TestLossBodyNamesProviderAndCapture(t *testing.T) {
 	}
 }
 
-// Step 4 offers one start row per runtime this machine has; one it lacks is named with why, and starts nothing.
-// Step 5 offers per-role time only where the run's provider has a capture here.
-func TestProviderActions(t *testing.T) {
-	f := Facts{Path: "m.gguf", Providers: &seam.Providers{Providers: []seam.ProviderRow{
-		{Provider: "llama.cpp", Available: true, Capture: seam.Capture{Reason: sp("whole step only: metal-system-trace is not installed")}},
+// The engine list shows every engine; one this machine lacks is greyed with why, and starts nothing. Per-role
+// time is offered only where the run's engine has a capture here.
+func TestEngineActions(t *testing.T) {
+	f := Facts{Path: "m.gguf", ByFlag: true, Engine: "llama.cpp", Providers: &seam.Providers{Providers: []seam.ProviderRow{
+		{Provider: "llama.cpp", Available: true, Capture: seam.Capture{Reason: sp("metal-system-trace is not installed")}},
 		{Provider: "tinygrad", Available: false, Reason: sp("The tinygrad fork is not at /x.")}}}}
-	acts := measureActions(f)
-	if !hasLabel(acts, "Measure m.gguf on  with llama.cpp") && !strings.Contains(acts[0].label, "with llama.cpp") {
-		t.Fatalf("no llama.cpp start row: %+v", acts)
-	}
-	if acts[0].arg != "llama.cpp" || acts[1].do != "" || !strings.Contains(plain(acts[1].label), "tinygrad cannot measure here: The tinygrad fork is not at /x.") {
+	acts := engineActions(f)
+	if acts[0].do != "engine" || acts[0].arg != "llama.cpp" || acts[1].do != "" ||
+		!strings.Contains(plain(acts[1].label), "tinygrad · not here: The tinygrad fork is not at /x.") {
 		t.Fatalf("rows: %+v", acts)
 	}
 	f.Run = measuredRun(t)
@@ -140,12 +139,7 @@ func TestProviderActions(t *testing.T) {
 	}
 	body := plain(resultBody(f, 100))
 	if !strings.Contains(body, "Not possible on") || !strings.Contains(body, "metal-system-trace is not installed") {
-		t.Errorf("step 5 must say why per role is not possible here:\n%s", body)
-	}
-	method := "metal-system-trace"
-	f.Providers.Providers[0].Capture = seam.Capture{Method: &method}
-	if !hasLabel(resultActions(f), "Time each role in llama.cpp") {
-		t.Fatal("llama.cpp with a capture here must offer per-role time")
+		t.Errorf("results must say why per role is not possible here:\n%s", body)
 	}
 }
 
@@ -157,8 +151,8 @@ func TestLossBody(t *testing.T) {
 		Roles:           []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 10.58, LostMs: 2.30, Share: 0.25, CallsPerToken: 18}},
 		NotAttributedMs: fp(4.46), Source: sp("measured in tinygrad's Metal runtime")}
 	body := plain(lossBody(l))
-	for _, want := range []string{"The limit is 52.0 ms per token.", "llama.cpp: 17.9 tokens per second, 55.8 ms per token, 3.8 ms lost.",
-		"needs Instruments", "tinygrad per role: 65.9 ms of GPU time per token, 13.8 ms lost.", "Measured with llama.cpp · roles not timed yet", "measured in tinygrad's Metal runtime",
+	for _, want := range []string{"The limit is 52.0 ms per token at context 1.", "llama.cpp: 17.9 tokens per second, 55.8 ms per token, 3.8 ms lost.",
+		"needs Instruments", "tinygrad per role: 65.9 ms of GPU time per token, 13.8 ms lost.", "Measured with llama.cpp · roles not timed", "measured in tinygrad's Metal runtime",
 		"feed-forward out", "8.27", "10.58", "2.30", "25%", "not attributed", "4.46"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)
@@ -237,9 +231,11 @@ func TestLinuxSaysThisMachineAndTheLiveDriver(t *testing.T) {
 		Scope: sp("NVIDIA GeForce RTX 5090, driver 595.84"), ScopeObservedAt: sp("2026-09-23"), MemoryBandwidthGBs: fp(1693.3),
 		MatrixTFLOPS: map[string]float64{"fp16": 237.1}, HasCeiling: true,
 		FactStatus: seam.FactStatus{MemoryBandwidthGBs: "measurement", PeakTFLOPS: "measurement"}}}},
-		ThisMachine: "nvidia_sm120", Driver: "595.99.02"}
+		ThisMachine: "nvidia_sm120", Driver: "595.99.02", Detected: true}
 	_, line := chipLine(f)
-	acts := plain(chipActions(f)[0].label)
+	failed := f
+	failed.ThisMachine = ""
+	acts := plain(chipActions(failed)[0].label) // the list exists only when detection fails
 	body := plain(chipBody(f, 100))
 	for _, got := range []string{line, acts, body, stageWord("measure")} {
 		if strings.Contains(got, "Mac") {
@@ -258,5 +254,66 @@ func TestLinuxSaysThisMachineAndTheLiveDriver(t *testing.T) {
 	goos = "darwin"
 	if _, line := chipLine(f); !strings.Contains(line, "this Mac") {
 		t.Errorf("macOS keeps this Mac: %q", line)
+	}
+}
+
+// The chip is detected and pre-filled, tagged as this machine; any registered chip can be picked from the list,
+// and one that is not this machine gives the speed limit only. A --target flag offers no list.
+func TestChipIsDetectedAndChangeableFromTheList(t *testing.T) {
+	targets := &seam.Targets{Targets: []seam.Target{{ID: "apple_m3_10c", HasCeiling: true}, {ID: "apple_m4_10c", HasCeiling: true}}}
+	f := Facts{Path: "m.gguf", Targets: targets, Detected: true, ThisMachine: "apple_m3_10c"}
+	if mark, text := chipLine(f); mark != "pass" || !strings.Contains(text, "this Mac (detected)") {
+		t.Fatalf("chip line: %s %s", mark, text)
+	}
+	acts := chipActions(f)
+	if len(acts) != 2 || !strings.Contains(plain(acts[0].label), "this Mac (detected)") || strings.Contains(plain(acts[1].label), "detected") {
+		t.Fatalf("list: %+v", acts)
+	}
+	f.Target, f.Picked = 1, true
+	if _, text := chipLine(f); !strings.Contains(text, "not this Mac: the speed limit only") {
+		t.Fatalf("other chip: %s", text)
+	}
+	failed := Facts{Path: "m.gguf", Targets: targets, Detected: true}
+	if mark, text := chipLine(failed); mark != "open" || !strings.Contains(text, "not detected") {
+		t.Fatalf("failed detection: %s %s", mark, text)
+	}
+	flag := Facts{Targets: targets, ByFlag: true, Detected: true, ThisMachine: "apple_m3_10c", Target: 1}
+	if _, text := chipLine(flag); !strings.Contains(text, "chosen by flag, not detected") || len(chipActions(flag)) != 0 {
+		t.Fatalf("flag: %s", text)
+	}
+}
+
+// More than one GPU: the chip shows them with the limited-support label, and the layouts are part of the choice.
+func TestMultiGpuLayoutsAreAChipChoice(t *testing.T) {
+	targets := &seam.Targets{Targets: []seam.Target{{ID: "nvidia_sm120", HasCeiling: true}}}
+	f := Facts{Targets: targets, Detected: true, ThisMachine: "nvidia_sm120", GpuCount: 4, Engine: "llama.cpp",
+		MultiGpu: "4 x NVIDIA GeForce RTX 5090 (limited support: no real multi-GPU run yet)",
+		Providers: &seam.Providers{Providers: []seam.ProviderRow{{Provider: "llama.cpp", Available: true, Layouts: []seam.LayoutRow{
+			{ID: "one", Label: "one GPU", Available: true}, {ID: "layer", Label: "split by layer", Available: true},
+			{ID: "row", Label: "split by rows", Available: true}}}}}}
+	labels := ""
+	for _, a := range chipActions(f) {
+		labels += plain(a.label) + "\n"
+	}
+	for _, want := range []string{"4 GPUs: 4 x NVIDIA GeForce RTX 5090 (limited support", "Use one GPU", "Use split by layer", "Use split by rows"} {
+		if !strings.Contains(labels, want) {
+			t.Errorf("missing %q in:\n%s", want, labels)
+		}
+	}
+	f.Layout = "layer"
+	if _, text := chipLine(f); !strings.Contains(text, "split by layer") {
+		t.Fatalf("chip line: %s", text)
+	}
+}
+
+// Step 3 lists this model's limit on the other registered chips, read-only.
+func TestOtherChipsAreReadOnlyFacts(t *testing.T) {
+	var o seam.Ceilings
+	if err := json.Unmarshal([]byte(`{"chips":[{"id":"apple_m3_10c","tok_s":20.8,"peak_bandwidth_gbs":97.2},{"id":"nvidia_sm120","tok_s":362.1,"peak_bandwidth_gbs":1693.3}]}`), &o); err != nil {
+		t.Fatal(err)
+	}
+	body := plain(otherChips(Facts{Others: &o}, "apple_m3_10c"))
+	if !strings.Contains(body, "On other chips") || !strings.Contains(body, "nvidia_sm120") || !strings.Contains(body, "362.1 tokens per second") || strings.Contains(body, "apple_m3_10c") {
+		t.Fatalf("other chips:\n%s", body)
 	}
 }

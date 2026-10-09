@@ -64,26 +64,31 @@ def available(env:dict[str, str] | None = None) -> str | None:
   return None
 
 
-def decode_argv(llama_bench:str, model:pathlib.Path | str, depth:int, tokens:int) -> list[str]:
+def decode_argv(llama_bench:str, model:pathlib.Path | str, depth:int, tokens:int, extra:list[str] | None = None) -> list[str]:
   """One decode of `tokens` tokens after a `depth`-token context: no warmup, one repetition, so a capture of
   this command holds exactly that work."""
   return [llama_bench, "-m", str(model), "-p", "0", "-n", str(tokens), "-d", str(depth), "-ngl", "99", "-r", "1",
-          "--no-warmup", "-o", "json"]
+          "--no-warmup", "-o", "json", *(extra or [])]
 
 
 def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int = 128, tokens:int = ROLE_TOKENS,
-              llama_bench:str = DEFAULT) -> dict[str, Any]:
+              llama_bench:str = DEFAULT, layout:str = "one", gpus:int = 1) -> dict[str, Any]:
   """llama.cpp's kernels per role, captured from outside by the GPU vendor's tool (collectors/vendor_capture.py)
   and attributed by bytes and count (collectors/attribution.py). Two captures at the same depth, one with
   `tokens` decode tokens and one with 1, are subtracted per kernel: what is left is exactly tokens - 1 decode
   tokens, with the context fill, the setup and the first token removed."""
   from boltbeam.collectors import attribution, vendor_capture
+  from boltbeam.workflow import layout as lay
+  if layout == "row":
+    raise attribution.CaptureRefused("split by rows runs every weight kernel on every GPU at once; per-role "
+                                     f"attribution across devices is not built, so this run has the whole step only ({lay.LIMITED})")
   bench = find(llama_bench)
   if bench is None:
     raise CannotMeasure(available() or "llama-bench is missing", f"export {ENV}=/path/to/llama-bench")
+  extra, env = lay.engine_args(layout, PROVIDER) if gpus > 1 else ([], {})
   raw = run / RAW
-  long = vendor_capture.capture(target.backend, decode_argv(bench, model, context, tokens), raw / "long")
-  short = vendor_capture.capture(target.backend, decode_argv(bench, model, context, 1), raw / "short")
+  long = vendor_capture.capture(target.backend, decode_argv(bench, model, context, tokens, extra), raw / "long", env=env)
+  short = vendor_capture.capture(target.backend, decode_argv(bench, model, context, 1, extra), raw / "short", env=env)
   window, overlap = attribution.shared_window(long, short)
   method = vendor_capture.plan(target.backend)["method"]
   tok_s = bench_tok_s(vendor_capture.program_output(raw / "long"))
@@ -108,10 +113,11 @@ def bench_tok_s(text:str) -> float | None:
   return None
 
 
-def bench_decode(llama_bench:str, model:pathlib.Path, depth:int) -> dict[str, Any]:
+def bench_decode(llama_bench:str, model:pathlib.Path, depth:int, layout_args:list[str] | None = None,
+                 env:dict[str, str] | None = None) -> dict[str, Any]:
   cmd = [llama_bench, "-m", str(model), "-p", "0", "-n", str(GEN_TOKENS), "-d", str(depth), "-ngl", "99",
-         "-r", str(BENCH_REPS), "-o", "json"]
-  proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+         "-r", str(BENCH_REPS), "-o", "json", *(layout_args or [])]
+  proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env={**os.environ, **(env or {})})
   if proc.returncode != 0:
     raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
   rows = json.loads(proc.stdout[proc.stdout.find("["):])
@@ -162,16 +168,19 @@ def build_timing_trace(manifest:dict[str, Any], bench:dict[int, dict[str, Any]],
 
 
 def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_bench:str = DEFAULT,
-            say:Callable[[str], None] = lambda _: None) -> pathlib.Path:
+            say:Callable[[str], None] = lambda _: None,
+            layout:str = "one", gpus:int = 1) -> pathlib.Path:
   manifest = load_manifest(run)
   facts = preflight(manifest.get("target_id"), manifest.get("model_path") or "", run=run, llama_bench=llama_bench)
+  from boltbeam.workflow import layout as lay
+  layout_args, layout_env = lay.engine_args(layout, PROVIDER) if gpus > 1 else ([], {})
   request = read_json(run / "trace_request.json")
   if request.get("workload") != "decode":
     raise CannotMeasure("llama-bench-decode times decode only; this run is prefill", "plan the run with workload decode")
   bench = {}
   for ctx in request.get("contexts") or [0]:
     say(f"decode at depth {ctx}: llama-bench")
-    bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx))
+    bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), layout_args, layout_env)
   trace = build_timing_trace(manifest, bench, facts["target"].memory_bandwidth_gbs)
   trace["aux_sources"] = {"llama_bench": {str(k): v for k, v in bench.items()}}
   out = timing_out or run / "timing_trace.json"

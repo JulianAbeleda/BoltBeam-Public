@@ -103,6 +103,23 @@ func alive(pid int) bool {
 
 // Stop sends SIGTERM. Every stage writes its artifacts and updates run_manifest.json when it finishes, so
 // what is lost is at most the stage in flight; the run folder keeps what landed.
+// Alive is every job in the store whose process is still running: one GPU measurement at a time.
+func (s Store) Alive() []Job {
+	out := []Job{}
+	entries, err := os.ReadDir(s.Dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if id, ok := strings.CutSuffix(e.Name(), ".json"); ok {
+			if j, err := s.Status(id); err == nil && j.Alive {
+				out = append(out, j)
+			}
+		}
+	}
+	return out
+}
+
 func (s Store) Stop(id string) (Job, error) {
 	job, err := s.Status(id)
 	if err != nil {

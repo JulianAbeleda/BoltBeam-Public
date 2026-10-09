@@ -5,6 +5,7 @@ package ui
 import (
 	"fmt"
 	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/x/ansi"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -281,7 +282,26 @@ func limitBody(f Facts, width int) string {
 	b.WriteString(stHeader.Render("One token, per role") + "\n" + roleRows(d.Roles) + "\n")
 	b.WriteString(stHeader.Render(fmt.Sprintf("A prompt of %d tokens, per role", p.Context)) + "\n" + roleRows(p.Roles) + "\n")
 	b.WriteString(stHeader.Render("Assumptions") + "\n" + stMuted.Render(strings.Join(c.Assumptions, "\n")))
+	b.WriteString(otherChips(f, c.Target.ID))
 	return b.String()
+}
+
+// otherChips is read-only what-if: this model's limit on every other registered chip. Nothing here is chosen.
+func otherChips(f Facts, current string) string {
+	if f.Others == nil {
+		return ""
+	}
+	rows := [][]string{}
+	for _, c := range f.Others.Chips {
+		if c.ID == current || c.TokS == nil {
+			continue
+		}
+		rows = append(rows, []string{c.ID, fmt.Sprintf("%.1f tokens per second", *c.TokS), fmt.Sprintf("%.1f GB/s", c.PeakBandwidthGBs)})
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	return "\n\n" + stHeader.Render("On other chips") + "\n" + table(rows)
 }
 
 // stageState: the manifest says done; the live log says running or failed; an open need says waiting.
@@ -293,6 +313,9 @@ func stageState(st seam.Stage, events map[string]string, alive bool, blocked []s
 		if alive {
 			return "run", "running"
 		}
+	}
+	if st.State == "not_needed" {
+		return "skip", deref(st.StateNote)
 	}
 	if st.Done {
 		if len(st.Artifacts) == 1 {
@@ -387,24 +410,108 @@ var captureWords = map[string]string{
 
 // lossTitle is step 5's heading: the provider and how its roles were timed.
 func lossTitle(provider string, c *seam.Capture) string {
-	how := "roles not timed yet"
+	how := "roles not timed"
 	if c != nil && c.Method != nil {
 		how = word(captureWords, *c.Method)
 	}
 	return provider + " · " + how
 }
 
-// roleTable is one provider's per-role table.
+// tableWidth is the page width roleTable fits; resultBody sets it from the screen before drawing.
+var tableWidth = 200
+
+// roleTable is one provider's per-role table: the time, the share of peak, the time per call and why. Under 110
+// columns the time per call and the reason move to a second table, so no row is cut.
 func roleTable(roles []seam.RoleLoss, notAttributed *float64) string {
-	rows := [][]string{{"ROLE", "QUANT", "IDEAL ms", "ACTUAL ms", "LOST ms", "SHARE OF LOSS"}}
+	if tableWidth < 110 {
+		return roleTableNarrow(roles, notAttributed)
+	}
+	rows := [][]string{{"ROLE", "QUANT", "IDEAL ms", "ACTUAL ms", "LOST ms", "SHARE OF LOSS", "% PEAK", "µs/CALL", "WHY"}}
 	for _, r := range roles {
+		pct, us := "", ""
+		if r.PctPeak != nil {
+			pct = fmt.Sprintf("%.1f%%", *r.PctPeak)
+		}
+		if r.UsPerCall != nil {
+			us = fmt.Sprintf("%.1f", *r.UsPerCall)
+		}
 		rows = append(rows, []string{word(plainRole, r.Role), r.Quant, fmt.Sprintf("%.2f", r.IdealMs),
-			fmt.Sprintf("%.2f", r.ActualMs), fmt.Sprintf("%.2f", r.LostMs), bar(r.Share, 10) + fmt.Sprintf(" %.0f%%", r.Share*100)})
+			fmt.Sprintf("%.2f", r.ActualMs), fmt.Sprintf("%.2f", r.LostMs), bar(r.Share, 5) + fmt.Sprintf(" %.0f%%", r.Share*100), pct, us, r.Reason})
 	}
 	if notAttributed != nil {
-		rows = append(rows, []string{"not attributed", "", "", fmt.Sprintf("%.2f", *notAttributed), "", ""})
+		rows = append(rows, []string{"not attributed", "", "", fmt.Sprintf("%.2f", *notAttributed), "", "", "", "", ""})
 	}
 	return table(rows)
+}
+
+func roleTableNarrow(roles []seam.RoleLoss, notAttributed *float64) string {
+	main := [][]string{{"ROLE", "QUANT", "IDEAL", "ACTUAL", "LOST", "% PEAK"}}
+	why := [][]string{{"ROLE", "QUANT", "µs/CALL", "WHY"}}
+	for _, r := range roles {
+		pct, us := "", ""
+		if r.PctPeak != nil {
+			pct = fmt.Sprintf("%.1f%%", *r.PctPeak)
+		}
+		if r.UsPerCall != nil {
+			us = fmt.Sprintf("%.1f", *r.UsPerCall)
+		}
+		name := word(plainRole, r.Role)
+		main = append(main, []string{name, r.Quant, fmt.Sprintf("%.2f", r.IdealMs), fmt.Sprintf("%.2f", r.ActualMs),
+			fmt.Sprintf("%.2f", r.LostMs), pct})
+		why = append(why, []string{name, r.Quant, us, r.Reason})
+	}
+	if notAttributed != nil {
+		main = append(main, []string{"not attributed", "", "", fmt.Sprintf("%.2f", *notAttributed), "", ""})
+	}
+	return table(main) + "\n" + table(why)
+}
+
+// tieOutBody is the measured token line by line against the limit. The last line is the difference.
+func tieOutBody(t *seam.TieOut) string {
+	if t == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(stHeader.Render(fmt.Sprintf("Tie-out, ms per token at context %.0f", t.Context)) + "\n")
+	if t.Refused != nil {
+		b.WriteString(stWarn.Render(glyphWarn+" Not tied out. ") + *t.Refused + "\n")
+		return b.String()
+	}
+	if t.TokenMs == nil {
+		return b.String()
+	}
+	rows := [][]string{}
+	for i, l := range t.Lines {
+		sign := "+ "
+		if i == 0 {
+			sign = "  "
+		}
+		rows = append(rows, []string{sign + l.Label, fmt.Sprintf("%.3f", l.Ms), l.How})
+	}
+	rows = append(rows, []string{"= measured token", fmt.Sprintf("%.3f", *t.TokenMs), deref(t.TokenSource)})
+	b.WriteString(table(rows))
+	for _, l := range t.Lines {
+		if len(l.Parts) > 0 {
+			parts := []string{}
+			for _, p := range l.Parts {
+				parts = append(parts, fmt.Sprintf("%s %.3f", p.Kind, p.Ms))
+			}
+			b.WriteString(stMuted.Render("  other kernels: "+strings.Join(parts, ", ")) + "\n")
+		}
+	}
+	if t.BusyMs != nil {
+		fmt.Fprintf(&b, "All kernels sum to %.3f ms against the real token of %.3f ms; the gap is their difference.\n", *t.BusyMs, *t.TokenMs)
+	}
+	if t.ShowBoth {
+		fmt.Fprintf(&b, "The limit is %.3f ms at context 1 and %.3f ms at context %.0f.\n", t.LimitMsCtx1, t.LimitMs, t.Context)
+	}
+	if t.UntracedMs != nil && t.TokenSource != nil && strings.HasPrefix(*t.TokenSource, "the captured run") {
+		fmt.Fprintf(&b, "Tracing slowed the token: %.3f ms here, %.3f ms untraced.\n", *t.TokenMs, *t.UntracedMs)
+	}
+	if t.Missing != nil {
+		b.WriteString(stMuted.Render("Missing: "+*t.Missing) + "\n")
+	}
+	return b.String()
 }
 
 // lossBody is the end result for the run's provider: its speed against the limit and where it loses time.
@@ -419,7 +526,14 @@ func lossBody(l seam.Loss) string {
 		provider = "llama.cpp"
 	}
 	b.WriteString(stHeader.Render("Measured with "+lossTitle(provider, l.Capture)) + "\n")
-	fmt.Fprintf(&b, "The limit is %.1f ms per token.\n", *l.LimitMs)
+	tie := l.TieOut
+	if tie != nil && tie.Missing != nil && l.Missing != nil { // said once, by the per-role line below
+		t := *tie
+		t.Missing = nil
+		tie = &t
+	}
+	b.WriteString(tieOutBody(tie))
+	fmt.Fprintf(&b, "The limit is %.1f ms per token at context 1.\n", *l.LimitMs)
 	for _, r := range l.Runtimes {
 		what := fmt.Sprintf("%.1f tokens per second, %.1f ms per token", r.TokS, r.Ms)
 		if r.PerRole {
@@ -453,6 +567,9 @@ func lossBody(l seam.Loss) string {
 		b.WriteString(stMuted.Render("Per role for "+provider+": "+*l.ProviderMissing) + "\n")
 	}
 	b.WriteString("\nWhere " + shown + " loses time, " + deref(l.Source) + ":\n" + roleTable(l.Roles, l.NotAttributedMs))
+	if l.RoleRule != nil {
+		b.WriteString(stMuted.Render("Why: "+*l.RoleRule) + "\n")
+	}
 	if len(l.UnpairedRoles) > 0 {
 		names := []string{}
 		for _, u := range l.UnpairedRoles {
@@ -594,6 +711,11 @@ func hereLoss(f Facts, l seam.Loss) seam.Loss {
 	if l.ProviderMissing != nil {
 		l.ProviderMissing = &why
 	}
+	if l.TieOut != nil && l.TieOut.Missing != nil {
+		t := *l.TieOut
+		t.Missing = &why
+		l.TieOut = &t
+	}
 	return l
 }
 
@@ -656,73 +778,77 @@ func resultBody(f Facts, width int) string {
 
 // --- the checklist and the full view ----------------------------------------------------------------------
 
-func listLine(i int, f Facts, cursor bool) string {
-	m, text := steps[i].line(f)
-	title := fmt.Sprintf("%d  %-12s", i+1, steps[i].title)
-	if cursor {
-		return stCursor.Render("▸ ") + mark(m) + " " + stCursor.Render(title) + " " + text
-	}
-	return "  " + mark(m) + " " + title + " " + text
-}
-
-// ChecklistView is the main screen: the five steps, then the chosen step's summary cut to fit `height` lines.
-// ChecklistView fills the screen: the chosen step's results on top, stretched to the height, and the five steps
-// pinned at the bottom where the keys act.
-func ChecklistView(f Facts, cursor, width, height int) string {
-	lines := make([]string, len(steps))
-	for i := range steps {
-		lines[i] = listLine(i, f, i == cursor)
-	}
-	list := stBox.Width(width - 2).Render(clip(lines, width-4))
-	s := steps[cursor]
-	hint := s.hint
-	if f.alive() && cursor == 3 {
-		hint = "x stop · " + hint
-	}
-	room := max(height-lipgloss.Height(list)-3, 2) // the results box: two borders and its title
-	body := fill(strings.Split(s.body(f, width-4), "\n"), room-1)
-	return box(title(cursor, f), strings.Join(body, "\n")+"\n"+stMuted.Render(hint), width, false) + "\n" + list
-}
-
-// fill cuts or pads lines to exactly n, ending a cut with "…", so the boxes always span the screen.
-func fill(lines []string, n int) []string {
-	if len(lines) > n {
-		return append(lines[:max(n-1, 0)], stMuted.Render("…"))
-	}
-	return append(lines, make([]string, n-len(lines))...)
-}
-
 func title(i int, f Facts) string {
-	t := fmt.Sprintf("%d  %s", i+1, steps[i].title)
+	t := steps[i].title
 	if about := steps[i].about(f); about != "" {
 		t += " · " + about
 	}
 	return t
 }
 
-// DetailActions is the bottom of the open view: the step's line, then its action rows.
-func DetailActions(f Facts, i, row, width int) string {
+// DetailActions is the bottom of a screen: the page's line, then its rows. Headings are drawn as headings; when
+// the rows do not fit maxRows, a window around the cursor is shown with what is above and below counted.
+func DetailActions(f Facts, i, row, width, maxRows int) string {
 	var b strings.Builder
 	_, text := steps[i].line(f)
 	b.WriteString(text)
+	acts := []action{}
 	if steps[i].actions != nil {
-		for j, a := range steps[i].actions(f) {
-			if j == row {
-				b.WriteString("\n" + stCursor.Render("▸ ") + a.label)
-			} else {
-				b.WriteString("\n  " + a.label)
-			}
+		acts = steps[i].actions(f)
+	}
+	start, end := 0, len(acts)
+	if maxRows > 2 && len(acts) > maxRows {
+		start = max(0, min(row-maxRows/2, len(acts)-maxRows+2))
+		end = min(len(acts), start+maxRows-2)
+		if start > 0 {
+			b.WriteString("\n" + stMuted.Render(fmt.Sprintf("  ↑ %d more", start)))
 		}
 	}
-	return box("What next", b.String(), width, false)
+	for j := start; j < end; j++ {
+		a := acts[j]
+		switch {
+		case a.do == "head" && a.label == "":
+			b.WriteString("\n")
+		case a.do == "head" && j > start:
+			b.WriteString("\n\n" + stHeader.Render(a.label)) // a blank line sets each section apart
+		case a.do == "head":
+			b.WriteString("\n" + stHeader.Render(a.label))
+		case j == row:
+			b.WriteString("\n" + stCursor.Render("▸ ") + a.label)
+		default:
+			b.WriteString("\n  " + a.label)
+		}
+	}
+	if end < len(acts) {
+		b.WriteString("\n" + stMuted.Render(fmt.Sprintf("  ↓ %d more", len(acts)-end)))
+	}
+	title := "What next"
+	if i == pageSetup {
+		title = "Choose"
+	}
+	return box(title, b.String(), width, false)
 }
 
 // DetailView is the open view at a given height: the step's whole result scrolls on top, actions at the bottom.
 func DetailView(f Facts, i, row, width, height int, scroll *viewport.Model) string {
-	actions := DetailActions(f, i, row, width)
+	actions := DetailActions(f, i, row, width, max(height*2/3-3, 6)) // the rows take up to two thirds of the screen
 	scroll.Width, scroll.Height = width-4, max(height-lipgloss.Height(actions)-3, 1)
-	scroll.SetContent(steps[i].body(f, width-4))
+	tableWidth = width - 4
+	scroll.SetContent(wrapText(steps[i].body(f, width-4), width-4))
 	return box(title(i, f), scroll.View(), width, false) + "\n" + actions
+}
+
+// wrapText wraps sentences to the width; a table row (cells apart by two spaces) is cut instead, so columns stay.
+func wrapText(text string, width int) string {
+	lines := strings.Split(text, "\n")
+	for i, l := range lines {
+		if strings.Contains(strings.TrimLeft(ansi.Strip(l), " "), "  ") {
+			lines[i] = truncate(l, width)
+		} else {
+			lines[i] = ansi.Wordwrap(l, width, " ")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func clip(lines []string, width int) string {

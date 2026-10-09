@@ -41,6 +41,7 @@ const (
 	glyphWarn  = "⚠"
 	glyphWait  = "⏸"
 	glyphOpen  = "○"
+	glyphSkip  = "◇" // a stage this run does not need: neither open nor done
 	glyphRun   = "●"
 	glyphHeart = "♡"
 	glyphBolt  = "⚡"
@@ -70,6 +71,8 @@ func mark(result string) string {
 		return stAccent.Render(glyphRun)
 	case "kept":
 		return stAccent.Render(glyphHeart)
+	case "skip":
+		return stMuted.Render(glyphSkip)
 	}
 	return stMuted.Render(glyphOpen)
 }

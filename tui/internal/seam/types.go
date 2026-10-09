@@ -36,6 +36,35 @@ type Detected struct {
 	Registered bool    `json:"registered"`
 	// DriverVersion is read live (nvidia-smi); nil where the probe reports none (Apple).
 	DriverVersion *string `json:"driver_version"`
+	// GpuCount is every GPU the driver lists; MultiGpu names them with the limited-support label when more than one.
+	GpuCount int     `json:"gpu_count"`
+	MultiGpu *string `json:"multi_gpu"`
+}
+
+// LayoutRow is one way an engine can use this machine's GPUs (workflow/layout.py).
+type LayoutRow struct {
+	ID        string  `json:"id"`
+	Label     string  `json:"label"`
+	Available bool    `json:"available"`
+	Reason    *string `json:"reason"`
+}
+
+// LayoutLimit is the limit derived for the run's layout, with its formula and every input and its source.
+type LayoutLimit struct {
+	Layout  string   `json:"layout"`
+	Label   string   `json:"label"`
+	Gpus    int      `json:"gpus"`
+	Ms      *float64 `json:"ms"`
+	TokS    *float64 `json:"tok_s"`
+	Formula string   `json:"formula"`
+	Inputs  []struct {
+		What   string `json:"what"`
+		Value  any    `json:"value"`
+		Unit   string `json:"unit"`
+		Source string `json:"source"`
+	} `json:"inputs"`
+	Support *string `json:"support"`
+	Reason  *string `json:"reason"`
 }
 
 // Role is one row of the model profile: one (role, shape, quant) with how many tensors share it.
@@ -103,6 +132,40 @@ type CeilingBlock struct {
 	Roles      []CeilingRole `json:"roles"`
 }
 
+// SavedRun is `screen save`: where the run was exported.
+type SavedRun struct {
+	ID      string   `json:"id"`
+	Dir     string   `json:"dir"`
+	Files   []string `json:"files"`
+	SavedAt string   `json:"saved_at"`
+}
+
+// Saved is `screen saved`: the saved runs, newest first.
+type Saved struct {
+	Root string `json:"root"`
+	Runs []struct {
+		ID         string   `json:"id"`
+		Dir        string   `json:"dir"`
+		ModelID    *string  `json:"model_id"`
+		TargetID   *string  `json:"target_id"`
+		Provider   string   `json:"provider"`
+		SavedAt    string   `json:"saved_at"`
+		TokS       *float64 `json:"tok_s"`
+		PctOfLimit *float64 `json:"pct_of_limit"`
+	} `json:"runs"`
+}
+
+// Ceilings is `screen ceilings`: this model's decode limit on every registered chip with a ceiling.
+type Ceilings struct {
+	ModelID string `json:"model_id"`
+	Chips   []struct {
+		ID               string   `json:"id"`
+		TokS             *float64 `json:"tok_s"`
+		FloorMs          float64  `json:"floor_ms"`
+		PeakBandwidthGBs float64  `json:"peak_bandwidth_gbs"`
+	} `json:"chips"`
+}
+
 type Ceiling struct {
 	Kind             string       `json:"kind"`
 	ModelID          string       `json:"model_id"`
@@ -117,10 +180,13 @@ type Ceiling struct {
 }
 
 type Stage struct {
-	Key       string   `json:"key"`
-	Label     string   `json:"label"`
-	Note      string   `json:"note"`
-	Done      bool     `json:"done"`
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Note  string `json:"note"`
+	Done  bool   `json:"done"`
+	// State is "done", "not_needed" (StateNote says why) or "open"; Python decides it.
+	State     string   `json:"state"`
+	StateNote *string  `json:"state_note"`
 	Artifacts []string `json:"artifacts"`
 }
 
@@ -161,6 +227,8 @@ type ProviderRow struct {
 	Available bool    `json:"available"`
 	Reason    *string `json:"reason"`
 	Capture   Capture `json:"capture"`
+	// Layouts are the GPU layouts this engine can run here; one GPU unless the machine has more.
+	Layouts []LayoutRow `json:"layouts"`
 }
 
 type Providers struct {
@@ -375,6 +443,41 @@ type Loss struct {
 	Others          []OtherLoss `json:"others"`
 	// UnpairedRoles are roles the capture could not split out by calls and bytes; their time is in not attributed.
 	UnpairedRoles []UnpairedRole `json:"unpaired_roles"`
+	// TieOut is the measured token line by line against the limit (workflow/tie_out.py); RoleRule is the
+	// sentence, with its numbers, behind each role's Reason.
+	TieOut   *TieOut      `json:"tie_out"`
+	Layout   *LayoutLimit `json:"layout"`
+	RoleRule *string      `json:"role_rule"`
+}
+
+type TieOut struct {
+	Provider        string    `json:"provider"`
+	Context         float64   `json:"context"`
+	LimitMsCtx1     float64   `json:"limit_ms_ctx1"`
+	LimitMs         float64   `json:"limit_ms"`
+	KvMs            float64   `json:"kv_ms"`
+	KvSource        string    `json:"kv_source"`
+	ShowBoth        bool      `json:"show_both"`
+	UntracedMs      *float64  `json:"untraced_ms"`
+	UntracedContext *int      `json:"untraced_context"`
+	TokenMs         *float64  `json:"token_ms"`
+	TokenSource     *string   `json:"token_source"`
+	BusyMs          *float64  `json:"busy_ms"`
+	Lines           []TieLine `json:"lines"`
+	Missing         *string   `json:"missing"`
+	Refused         *string   `json:"refused"`
+}
+
+type TieLine struct {
+	Label string    `json:"label"`
+	Ms    float64   `json:"ms"`
+	How   string    `json:"how"` // derived | measured | difference
+	Parts []TiePart `json:"parts"`
+}
+
+type TiePart struct {
+	Kind string  `json:"kind"`
+	Ms   float64 `json:"ms"`
 }
 
 type UnpairedRole struct {
@@ -394,11 +497,14 @@ type Runtime struct {
 }
 
 type RoleLoss struct {
-	Role          string  `json:"role"`
-	Quant         string  `json:"quant"`
-	IdealMs       float64 `json:"ideal_ms"`
-	ActualMs      float64 `json:"actual_ms"`
-	LostMs        float64 `json:"lost_ms"`
-	Share         float64 `json:"share"`
-	CallsPerToken float64 `json:"calls_per_token"`
+	Role          string   `json:"role"`
+	Quant         string   `json:"quant"`
+	IdealMs       float64  `json:"ideal_ms"`
+	ActualMs      float64  `json:"actual_ms"`
+	LostMs        float64  `json:"lost_ms"`
+	Share         float64  `json:"share"`
+	CallsPerToken float64  `json:"calls_per_token"`
+	PctPeak       *float64 `json:"pct_peak"`
+	UsPerCall     *float64 `json:"us_per_call"`
+	Reason        string   `json:"reason"`
 }

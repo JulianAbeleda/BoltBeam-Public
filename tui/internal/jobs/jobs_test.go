@@ -53,3 +53,19 @@ func TestStartTailStop(t *testing.T) {
 		t.Fatal("an unknown job must be an error")
 	}
 }
+
+func TestAliveListsOnlyRunningJobs(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	if len(s.Alive()) != 0 {
+		t.Fatal("an empty store has no live job")
+	}
+	if _, err := s.Start("sleeper", t.TempDir(), []string{"sleep", "30"}); err != nil {
+		t.Fatal(err)
+	}
+	if live := s.Alive(); len(live) != 1 || live[0].ID != "sleeper" {
+		t.Fatalf("live: %+v", live)
+	}
+	if _, err := s.Stop("sleeper"); err != nil {
+		t.Fatal(err)
+	}
+}

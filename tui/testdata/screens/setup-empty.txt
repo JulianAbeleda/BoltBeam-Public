@@ -9,7 +9,7 @@
 │ Choose                                                                       │
 │ needs a model, a chip, an engine                                             │
 │ Select model                                                                 │
-│ ▸   /models/Q▏                                                               │
+│ ▸   Type a path                                                              │
 │                                                                              │
 │ Select chip                                                                  │
 │   ● amd_gfx1100                                                              │

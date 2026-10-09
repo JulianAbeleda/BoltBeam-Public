@@ -17,8 +17,13 @@ dev = ["pytest>=8.0", "jsonschema>=4"]
 [project.scripts]
 boltbeam = "boltbeam.cli:main"
 
+# Only the boltbeam package ships. tui/, gui/, bench/ and schemas/ are repo folders, not Python packages.
+[tool.setuptools.packages.find]
+include = ["boltbeam*"]
+
+# The code reads these files next to its own modules at run time, so the wheel must carry them.
 [tool.setuptools.package-data]
-boltbeam = ["policy/assets/*.json", "policy/assets/*.sha256"]
+boltbeam = ["policy/assets/*.json", "policy/assets/*.sha256", "data/*.json", "data/*.jsonl"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

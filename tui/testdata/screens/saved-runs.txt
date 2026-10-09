@@ -1,7 +1,9 @@
-⚡ BoltBeam                                                             (˘ω˘) zz
+⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ 1  Model                                                                     │
-│ Nothing read yet. The model is never executed; only its shape is read.       │
+│ Saved runs                                                                   │
+│ A run is temporary until you save it. Saving keeps the run, its report,      │
+│ results.json and summary.txt.                                                │
+│ Enter opens a saved run. Press d twice to delete one.                        │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -10,15 +12,13 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│                                                                              │
-│ enter: pick or type the model file                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ ▸ ○ 1  Model        pick a model file                                        │
-│   ✓ 2  Chip         amd_gfx1100 · memory 960.0 GB/s                          │
-│   ○ 3  Speed limit  needs step 1                                             │
-│   ○ 4  Measure      needs step 1                                             │
-│   ○ 5  Result       needs step 4                                             │
+│ What next                                                                    │
+│ 2 saved runs in /home/u/runs/saved                                           │
+│ ▸ Qwen3-8B · apple_m3_10c · tinygrad · 2026-10-09 12:10 · 60% of limit       │
+│   Qwen3-8B · apple_m3_10c · llama.cpp · 2026-10-09 11:20 · 82% of limit      │
+│   [ Back to setup ]                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ step · enter open · q quit
+ ↑↓ move · enter open run · d delete run · esc setup · q quit

@@ -34,7 +34,9 @@
           "done": true,
           "key": "load",
           "label": "load",
-          "note": "model / weight / workload facts"
+          "note": "model / weight / workload facts",
+          "state": "done",
+          "state_note": null
         },
         {
           "artifacts": [
@@ -46,7 +48,9 @@
           "done": true,
           "key": "autoscan",
           "label": "autoscan",
-          "note": "machine + provider capabilities"
+          "note": "machine + provider capabilities",
+          "state": "done",
+          "state_note": null
         },
         {
           "artifacts": [
@@ -61,28 +65,36 @@
           "done": true,
           "key": "analyze",
           "label": "analyze",
-          "note": "search space + measurement plan"
+          "note": "search space + measurement plan",
+          "state": "done",
+          "state_note": null
         },
         {
           "artifacts": [],
           "done": false,
           "key": "runner_plan",
           "label": "runner-plan",
-          "note": "audit-tracer handoff bundle"
+          "note": "audit-tracer handoff bundle",
+          "state": "open",
+          "state_note": null
         },
         {
           "artifacts": [],
           "done": false,
           "key": "ingest_probe",
           "label": "probe",
-          "note": "primitive evidence classified"
+          "note": "primitive evidence classified",
+          "state": "open",
+          "state_note": null
         },
         {
           "artifacts": [],
           "done": false,
           "key": "ingest_timing",
           "label": "timing",
-          "note": "timing trace classified"
+          "note": "timing trace classified",
+          "state": "open",
+          "state_note": null
         },
         {
           "artifacts": [
@@ -95,7 +107,9 @@
           "done": true,
           "key": "output",
           "label": "output",
-          "note": "policy / report / provider plan"
+          "note": "policy / report / provider plan",
+          "state": "done",
+          "state_note": null
         }
       ],
       "status": "needs_measurement",
@@ -125,7 +139,9 @@
           "done": true,
           "key": "load",
           "label": "load",
-          "note": "model / weight / workload facts"
+          "note": "model / weight / workload facts",
+          "state": "done",
+          "state_note": null
         },
         {
           "artifacts": [
@@ -137,7 +153,9 @@
           "done": true,
           "key": "autoscan",
           "label": "autoscan",
-          "note": "machine + provider capabilities"
+          "note": "machine + provider capabilities",
+          "state": "done",
+          "state_note": null
         },
         {
           "artifacts": [
@@ -152,14 +170,18 @@
           "done": true,
           "key": "analyze",
           "label": "analyze",
-          "note": "search space + measurement plan"
+          "note": "search space + measurement plan",
+          "state": "done",
+          "state_note": null
         },
         {
           "artifacts": [],
           "done": false,
           "key": "runner_plan",
           "label": "runner-plan",
-          "note": "audit-tracer handoff bundle"
+          "note": "audit-tracer handoff bundle",
+          "state": "open",
+          "state_note": null
         },
         {
           "artifacts": [
@@ -168,7 +190,9 @@
           "done": true,
           "key": "ingest_probe",
           "label": "probe",
-          "note": "primitive evidence classified"
+          "note": "primitive evidence classified",
+          "state": "done",
+          "state_note": null
         },
         {
           "artifacts": [
@@ -178,7 +202,9 @@
           "done": true,
           "key": "ingest_timing",
           "label": "timing",
-          "note": "timing trace classified"
+          "note": "timing trace classified",
+          "state": "done",
+          "state_note": null
         },
         {
           "artifacts": [
@@ -191,7 +217,9 @@
           "done": true,
           "key": "output",
           "label": "output",
-          "note": "policy / report / provider plan"
+          "note": "policy / report / provider plan",
+          "state": "done",
+          "state_note": null
         }
       ],
       "status": "needs_measurement",
