@@ -9,13 +9,15 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     detect                                     the chip this machine is, as autoscan reads it (target_id or null)
     ceiling  MODEL | --profile P  --target T   the roofline: the best tokens/s this chip allows for this model
     ceilings MODEL | --profile P               the decode limit on every registered chip with a ceiling (what-if)
-    runs     --root DIR                        one summary per run folder under DIR
-    run      --run DIR                         the stages, what is blocked, the next step, the results
+    runs     --root DIR [--all]                one summary per run folder under DIR; --all adds DIR/.work and the
+                                               saved runs, each row marked where: runs, work or saved
+    run      --run DIR | --run ID --root DIR   the stages, what is blocked, the next step, the results; an id is
+                                               looked up in DIR/ID, DIR/.work/ID, then SAVED/ID (find_run)
     delete   --run DIR --root ROOT             remove one run folder; refused unless DIR is a run directly under ROOT
     save     --run DIR --to SAVED              export a run: the run, results.json, report.html, summary.txt
     saved    --root SAVED                      the saved runs, newest first, with the share of the limit reached
     clean-work --work DIR --before ISO         remove temporary runs started before ISO (never --keep ones)
-    results  --run DIR                         what won per role, the timing against the ceiling, the regimes
+    results  --run DIR | --run ID --root DIR   what won per role, the timing against the ceiling, the regimes
     pipeline MODEL --run DIR --target T        load, autoscan, analyze, [measure], [ingest-probe, ingest-timing], output;
                                                `pipeline steps: N` first, then one text line per stage, for tailing.
                                                --measure auto runs the target's BoltBeam collector here when this
@@ -144,13 +146,16 @@ def _block(report:dict[str, Any], context:int) -> dict[str, Any]:
 
 
 def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "fp16",
-            peak_gbs:float | None = None, peak_tflops:float | None = None) -> dict[str, Any]:
-  """The roofline for one model on one chip: decode (one token) and prefill (the context), with tokens/s."""
+            peak_gbs:float | None = None, peak_tflops:float | None = None,
+            read:dict[str, Any] | None = None) -> dict[str, Any]:
+  """The roofline for one model on one chip: decode (one token) and prefill (the context), with tokens/s.
+  read is this machine's one-GPU read bandwidth (layout.read_bandwidth): when given it is the memory speed, so the
+  limit, the tie-out and the per-role rule use the same number, and bandwidth_source says where it came from."""
   try:
     peak_flops = resolve_peak_flops(target, dtype, peak_tflops)
   except SystemExit as exc:
     raise Refused(str(exc)) from exc
-  bw = target.memory_bandwidth_gbs or peak_gbs
+  bw = (read or {}).get("gbs") or target.memory_bandwidth_gbs or peak_gbs
   if not bw:
     raise Refused(f"target {target.target_id!r} carries no memory_bandwidth_gbs, so there is no memory ceiling; "
                   "pass --peak-gbs or add a measured figure to boltbeam/data/targets.json")
@@ -158,7 +163,7 @@ def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "f
   prefill = model_roofline(profile, peak_flops=peak_flops, peak_bw_bytes_s=bw * 1e9, context=context)
   return {
     "schema": SCHEMA, "kind": "ceiling", "model_id": profile["model_id"], "target": target_facts(target),
-    "peak_bandwidth_gbs": bw, "peak_tflops": peak_flops / 1e12, "truth_status": decode["truth_status"],
+    "peak_bandwidth_gbs": bw, "bandwidth_source": (read or {}).get("short"), "peak_tflops": peak_flops / 1e12, "truth_status": decode["truth_status"],
     "ridge_intensity": decode["ridge_intensity"], "assumptions": decode["assumptions"],
     "decode": _block(decode, 1), "prefill": _block(prefill, context),
   }
@@ -227,29 +232,63 @@ def delete(root:pathlib.Path, run:pathlib.Path) -> dict[str, Any]:
   return {"schema": SCHEMA, "kind": "deleted", "root": str(root), "run": run.name}
 
 
-def runs(root:pathlib.Path) -> dict[str, Any]:
+WORK = ".work"  # where the screens keep a run until it is saved
+SAVED = "saved"  # where a saved run lives (the screens' default --saved)
+
+
+def run_places(root:pathlib.Path, saved:pathlib.Path | None = None) -> list[tuple[str, pathlib.Path]]:
+  """Where a run id is looked up, in this order: <root>/<id> (runs made by --json start and older layouts),
+  <root>/.work/<id> (the screens' unsaved runs), <saved>/<id> (saved runs; default <root>/saved)."""
+  return [("runs", root), ("work", root / WORK), ("saved", saved if saved is not None else root / SAVED)]
+
+
+def find_run(root:pathlib.Path, run_id:str, saved:pathlib.Path | None = None) -> pathlib.Path:
+  """The run folder for an id: the first of run_places that holds it. Refused, naming every place, when none does."""
+  if not run_id or run_id != pathlib.Path(run_id).name or run_id.startswith("."):
+    raise Refused(f"run id must be a folder name: {run_id!r}")
+  places = run_places(root, saved)
+  for _, folder in places:
+    if is_run(folder / run_id):
+      return folder / run_id
+  raise Refused(f"no run {run_id} in " + ", ".join(str(f / run_id) for _, f in places))
+
+
+def runs(root:pathlib.Path, saved:pathlib.Path | None = None, *, all_places:bool = False) -> dict[str, Any]:
   """One summary per run under root. A root that does not exist yet holds no runs: that is a fact, not an error.
-  This read never creates it; the first pipeline run does (workflow/common.py run_dir)."""
-  if not root.exists():
-    return {"schema": SCHEMA, "kind": "runs", "root": str(root), "runs": []}
-  if not root.is_dir():
+  This read never creates it; the first pipeline run does (workflow/common.py run_dir). all_places also lists the
+  screens' work area and the saved runs (run_places), each row marked where it lives: runs, work or saved."""
+  if root.exists() and not root.is_dir():
     raise Refused(f"{root} is not a folder")
-  return {"schema": SCHEMA, "kind": "runs", "root": str(root),
-          "runs": [summary(p) for p in sorted(root.iterdir()) if is_run(p)]}
+  places = run_places(root, saved) if all_places else [("runs", root)]
+  rows = []
+  for where, folder in places:
+    if folder.is_dir():
+      rows += [{**summary(p), "where": where, "dir": str(p)} for p in sorted(folder.iterdir()) if is_run(p)]
+  return {"schema": SCHEMA, "kind": "runs", "root": str(root), "runs": rows}
 
 
-def _measured_vs_ceiling(manifest:dict[str, Any], profile:dict[str, Any]) -> dict[str, Any]:
-  """The modeled ceiling for this run's model and chip, or the reason there is none. Never a guess."""
+def run_read(run:pathlib.Path, target_id:str | None) -> dict[str, Any] | None:
+  """The run's one-GPU read bandwidth from its machine facts (layout.read_bandwidth), when its GPU is the run's chip."""
+  from boltbeam.workflow import layout as lay
+  got = lay.read_bandwidth(_optional(run, lay.MACHINE), _optional(run, MEASURE_STATUS).get("layout") or "one")
+  return got if got and got.get("target_id") in (None, target_id) else None
+
+
+def _measured_vs_ceiling(manifest:dict[str, Any], profile:dict[str, Any], run:pathlib.Path | None = None) -> dict[str, Any]:
+  """The modeled ceiling for this run's model and chip, or the reason there is none. Never a guess. With machine
+  facts in the run, the memory speed is the one measured on this GPU (or the registry's, labelled)."""
   if not profile:
     return {"status": "absent", "reason": "no model_profile.json in the run"}
+  read = run_read(run, manifest.get("target_id")) if run is not None else None
   try:
-    c = ceiling(profile, get_target(manifest.get("target_id")))
+    c = ceiling(profile, get_target(manifest.get("target_id")), read=read)
   except (Refused, SystemExit) as exc:
     return {"status": "absent", "reason": str(exc)}
   block = c["decode"] if manifest.get("workload") == "decode" else c["prefill"]
   return {"status": "modeled", "context": block["context"], "tok_s": block["tok_s"], "floor_ms": block["floor_ms"],
           "bytes_moved": block["bytes_moved"],
-          "peak_bandwidth_gbs": c["peak_bandwidth_gbs"], "_roles": block["roles"]}
+          "peak_bandwidth_gbs": c["peak_bandwidth_gbs"], "bandwidth_source": c["bandwidth_source"],
+          "_roles": block["roles"]}
 
 
 def run_provider(run:pathlib.Path) -> str:
@@ -366,12 +405,22 @@ def sibling_runs(run:pathlib.Path, manifest:dict[str, Any], provider:str) -> lis
       continue
     seen.add(name)
     res = results_core(other)
-    loss = res["loss"]
+    loss, tok_s = res["loss"], res["timing"]["tok_s"]
     out.append({"provider": name, "run": other.name, "capture": loss.get("capture") or {"method": None, "reason": None},
-                "tok_s": res["timing"]["tok_s"], "ms": 1000.0 / res["timing"]["tok_s"] if res["timing"]["tok_s"] else None,
+                "tok_s": tok_s, "ms": 1000.0 / tok_s if tok_s else None,
+                # an absent speed is said with its reason, never as 0.0
+                "missing": None if tok_s else not_measured(other),
                 "roles": loss.get("roles") if loss.get("roles_provider") == name else [],
                 "not_attributed_ms": loss.get("not_attributed_ms") if loss.get("roles_provider") == name else None})
   return out
+
+
+def not_measured(run:pathlib.Path) -> str:
+  """Why a run holds no speed, from its measure status: "not measured: <reason>"."""
+  status = _optional(run, MEASURE_STATUS)
+  reason = status.get("reason") or (f"the measure step ended {status['status']}" if status.get("status") else
+                                     "the run never reached the measure step")
+  return "not measured: " + str(reason)
 
 
 CAPTURE_WORDS = {tinygrad_role_time.OWN_TIMING: "tinygrad's own timing", "nsys": "captured with nsys",
@@ -432,7 +481,7 @@ def results_core(run:pathlib.Path, beside:bool = False) -> dict[str, Any]:
   timing = _optional(run, "timing_profile.json")
   kernels, context = roofline_kernels(timing) if timing else ([], None)
   chosen = next((s for s in timing.get("context_summaries", []) if s.get("context") == context), {}) if timing else {}
-  ceil = _measured_vs_ceiling(manifest, profile)
+  ceil = _measured_vs_ceiling(manifest, profile, run)
   return {
     "schema": SCHEMA, "kind": "results", "id": run.name, "model_id": manifest.get("model_id"),
     "target_id": manifest.get("target_id"), "workload": manifest.get("workload"),
@@ -784,6 +833,8 @@ def save(run:pathlib.Path, to_root:pathlib.Path) -> dict[str, Any]:
   if not is_run(run):
     raise Refused(f"{run} is not a run folder")
   dest = to_root.expanduser().resolve() / run.name
+  if dest == run.resolve():
+    raise Refused(f"{run} is already saved in {to_root}")
   if dest.exists():
     shutil.rmtree(dest)
   shutil.copytree(run, dest)
@@ -846,6 +897,17 @@ def _target_arg(name:str):
     raise Refused(str(exc)) from exc
 
 
+def _saved_arg(args) -> pathlib.Path | None:
+  return pathlib.Path(args.saved).expanduser() if getattr(args, "saved", None) else None
+
+
+def _run_arg(args) -> pathlib.Path:
+  """--run as a folder; with --root, an id looked up by find_run."""
+  if args.root:
+    return find_run(pathlib.Path(args.root).expanduser(), args.run, _saved_arg(args))
+  return pathlib.Path(args.run).expanduser()
+
+
 def main(argv:list[str] | None = None) -> int:
   parser = argparse.ArgumentParser(prog="python -m boltbeam.workflow.screen", description=__doc__,
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -861,15 +923,21 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--dtype", default="fp16")
   p.add_argument("--peak-gbs", type=float, default=None)
   p.add_argument("--peak-tflops", type=float, default=None)
+  p.add_argument("--facts-root", action="append", default=[],
+                 help="a runs folder: the newest machine facts there for this chip set the memory speed (one GPU)")
   p = sub.add_parser("ceilings")
   p.add_argument("model", nargs="?")
   p.add_argument("--profile", help="a model_profile.json instead of the model file")
   p.add_argument("--id", default=None)
   p = sub.add_parser("runs")
   p.add_argument("--root", required=True)
+  p.add_argument("--saved", default=None, help="the saved-runs folder (default ROOT/saved)")
+  p.add_argument("--all", action="store_true", help="also list ROOT/.work and the saved runs, each marked where")
   for name in ("run", "results"):
     p = sub.add_parser(name)
-    p.add_argument("--run", required=True)
+    p.add_argument("--run", required=True, help="a run folder, or a run id with --root")
+    p.add_argument("--root", default=None, help="look the id up in ROOT, ROOT/.work, then the saved runs")
+    p.add_argument("--saved", default=None, help="the saved-runs folder (default ROOT/saved)")
   p = sub.add_parser("machine")
   p.add_argument("--run", required=True)
   p.add_argument("--remeasure", action="store_true", help="measure again instead of reusing the cached facts")
@@ -933,14 +1001,20 @@ def main(argv:list[str] | None = None) -> int:
     elif args.command == "gpu-free":
       out = gpu_free(_target_arg(args.target))
     elif args.command == "ceiling":
-      out = ceiling(_profile_arg(args), _target_arg(args.target), context=args.context, dtype=args.dtype,
-                    peak_gbs=args.peak_gbs, peak_tflops=args.peak_tflops)
+      target = _target_arg(args.target)
+      read = None
+      if args.facts_root:
+        from boltbeam.workflow import layout as lay
+        roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
+        read = lay.read_bandwidth(lay.newest_facts(roots, target.target_id))
+      out = ceiling(_profile_arg(args), target, context=args.context, dtype=args.dtype,
+                    peak_gbs=args.peak_gbs, peak_tflops=args.peak_tflops, read=read)
     elif args.command == "ceilings":
       out = ceilings(_profile_arg(args))
     elif args.command == "runs":
-      out = runs(pathlib.Path(args.root).expanduser())
+      out = runs(pathlib.Path(args.root).expanduser(), _saved_arg(args), all_places=args.all)
     elif args.command == "run":
-      out = show(pathlib.Path(args.run).expanduser())
+      out = show(_run_arg(args))
     elif args.command == "compare-ready":
       out = compare_ready(pathlib.Path(args.run).expanduser(),
                           pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None)
@@ -956,7 +1030,7 @@ def main(argv:list[str] | None = None) -> int:
     elif args.command == "delete":
       out = delete(pathlib.Path(args.root).expanduser(), pathlib.Path(args.run).expanduser())
     else:
-      out = results(pathlib.Path(args.run).expanduser())
+      out = results(_run_arg(args))
       code = 0 if out["measured"] else 3
   except (Refused, FileNotFoundError, ValueError, KeyError, json.JSONDecodeError) as exc:
     sys.stdout.write(pretty_json({"schema": SCHEMA, "kind": "error", "error": str(exc)}))

@@ -115,7 +115,7 @@ func TestLossBodyNamesProviderAndCapture(t *testing.T) {
 			Roles: []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 9.0, LostMs: 0.73, Share: 1}}}}}
 	body := plain(lossBody(l))
 	for _, want := range []string{"Measured with llama.cpp · captured with nsys", "Where llama.cpp loses time, measured in llama.cpp, captured with nsys",
-		"Beside it, tinygrad · tinygrad's own timing: 0.0 tokens per second.", "9.00"} {
+		"Beside it, tinygrad · tinygrad's own timing: not measured.", "9.00"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)
 		}

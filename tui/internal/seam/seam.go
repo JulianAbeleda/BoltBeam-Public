@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -116,6 +117,41 @@ func (c Client) RunDir(id string) (string, error) {
 	return filepath.Join(c.work(), id), nil
 }
 
+// Places are where an existing run id is looked up, in this order (screen.py run_places says the same):
+// <root>/<id> (--json start and older layouts), <root>/.work/<id> (the screens' unsaved runs), <saved>/<id>.
+func (c Client) Places() []Place {
+	saved := c.Saved
+	if saved == "" {
+		saved = filepath.Join(c.Root, "saved")
+	}
+	return []Place{{"runs", c.Root}, {"work", filepath.Join(c.Root, ".work")}, {"saved", saved}}
+}
+
+// Place is one folder runs live in, and what it is called in `runs`: runs, work or saved.
+type Place struct{ Where, Dir string }
+
+// FindRun is the folder of an existing run: the screens read their own work area; an agent (--json, Work
+// empty) gets the first of Places holding the id, or an error naming every place tried.
+func (c Client) FindRun(id string) (string, error) {
+	dir, err := c.RunDir(id)
+	if err != nil || c.Work != "" {
+		return dir, err
+	}
+	tried := []string{}
+	for _, p := range c.Places() {
+		d := filepath.Join(p.Dir, id)
+		at := d // a relative root is relative to the checkout, where Python runs
+		if !filepath.IsAbs(at) && c.Repo != "" {
+			at = filepath.Join(c.Repo, at)
+		}
+		if _, err := os.Stat(filepath.Join(at, "run_manifest.json")); err == nil {
+			return d, nil
+		}
+		tried = append(tried, d)
+	}
+	return "", &Error{Message: fmt.Sprintf("no run %s: looked in %s", id, strings.Join(tried, ", ")), Code: 1}
+}
+
 func (c Client) Targets() (*Targets, []byte, error) {
 	var t Targets
 	raw, _, err := c.decode(&t, nil, "boltbeam.workflow.screen", "targets")
@@ -136,11 +172,18 @@ func (c Client) Inspect(model string) (*Profile, []byte, error) {
 	return &p, raw, err
 }
 
-func (c Client) Ceiling(model, target string, context int) (*Ceiling, []byte, error) {
+// Ceiling is the model's speed limit on the chip. here says the chip is this machine's: then the newest machine
+// facts in the run folders set the memory speed (measured on this GPU), so the limit is the one runs compare with.
+func (c Client) Ceiling(model, target string, context int, here bool) (*Ceiling, []byte, error) {
 	var ce Ceiling
 	args := []string{"ceiling", model, "--target", target}
 	if context > 0 {
 		args = append(args, "--context", strconv.Itoa(context))
+	}
+	if here {
+		for _, p := range c.Places() {
+			args = append(args, "--facts-root", p.Dir)
+		}
 	}
 	raw, _, err := c.decode(&ce, nil, "boltbeam.workflow.screen", args...)
 	return &ce, raw, err
@@ -155,12 +198,16 @@ func (c Client) Ceilings(model string) (*Ceilings, error) {
 
 func (c Client) List() (*Runs, []byte, error) {
 	var r Runs
-	raw, _, err := c.decode(&r, nil, "boltbeam.workflow.screen", "runs", "--root", c.work())
+	args := []string{"runs", "--root", c.work()}
+	if c.Work == "" { // an agent: every run, wherever it lives, each marked runs, work or saved
+		args = append(args, "--all", "--saved", c.Places()[2].Dir)
+	}
+	raw, _, err := c.decode(&r, nil, "boltbeam.workflow.screen", args...)
 	return &r, raw, err
 }
 
 func (c Client) Show(id string) (*Run, []byte, error) {
-	dir, err := c.RunDir(id)
+	dir, err := c.FindRun(id)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -171,17 +218,17 @@ func (c Client) Show(id string) (*Run, []byte, error) {
 
 // Delete removes one run folder through the seam; Python refuses anything that is not a run under the root.
 func (c Client) Delete(id string) ([]byte, error) {
-	dir, err := c.RunDir(id)
+	dir, err := c.FindRun(id)
 	if err != nil {
 		return nil, err
 	}
-	raw, _, err := c.call("boltbeam.workflow.screen", nil, "delete", "--run", dir, "--root", c.work())
+	raw, _, err := c.call("boltbeam.workflow.screen", nil, "delete", "--run", dir, "--root", filepath.Dir(dir))
 	return raw, err
 }
 
 // Save exports a run into the saved-runs folder: the run, results.json, report.html, summary.txt.
 func (c Client) Save(id string) (*SavedRun, []byte, error) {
-	dir, err := c.RunDir(id)
+	dir, err := c.FindRun(id)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -225,7 +272,7 @@ func (c Client) CleanWork(before string, keep []string) ([]byte, error) {
 
 // Results returns the run's results and whether anything was measured (exit 3 from the seam otherwise).
 func (c Client) Results(id string) (*Results, []byte, int, error) {
-	dir, err := c.RunDir(id)
+	dir, err := c.FindRun(id)
 	if err != nil {
 		return nil, nil, 0, err
 	}

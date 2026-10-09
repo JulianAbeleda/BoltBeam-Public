@@ -28,8 +28,10 @@ commands (each prints one JSON object):
   targets                                      the chips BoltBeam knows, and which carry a speed limit
   inspect MODEL                                the model profile: roles, shapes, quants (boltbeam inspect, bytes unchanged)
   ceiling MODEL --target ID [--context N]      the roofline: best tokens/s for decode (one token) and prefill (N tokens)
-  runs                                         one summary per run folder
-  run <id>                                     the stages, what is blocked, the next step, the results
+  runs                                         every run: RUNS/<id>, RUNS/.work/<id> and the saved runs, each marked
+                                               where it lives (runs, work or saved)
+  run <id>                                     the stages, what is blocked, the next step, the results; <id> is looked
+                                               up in RUNS/<id>, then RUNS/.work/<id>, then --saved/<id>
   results <id>                                 what won per role and the timing against the ceiling (exit 3: nothing measured)
   start MODEL --target ID [--workload W] [--id RUN] [--probe FILE] [--timing FILE] [--provider P]
                                                run the pipeline in the background; log under --state
@@ -188,7 +190,7 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 			fmt.Fprintln(errOut, "ceiling needs MODEL and --target")
 			return 2
 		}
-		_, raw, err := client.Ceiling(args[0], *target, *context)
+		_, raw, err := client.Ceiling(args[0], *target, *context, false)
 		if err != nil {
 			return fail(out, err)
 		}

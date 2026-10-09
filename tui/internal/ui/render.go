@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/x/ansi"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -221,7 +222,7 @@ func chipBody(f Facts, width int) string {
 	if t.ID == f.ThisMachine && f.Driver != "" {
 		b.WriteString(stMuted.Render(capFirst(here())+" now: driver "+f.Driver+", read live") + "\n")
 	}
-	fmt.Fprintf(&b, "%s · %s\n", gbs(t.MemoryBandwidthGBs), tflops(*t))
+	fmt.Fprintf(&b, "%s · %s\n", memoryLine(f, *t), tflops(*t))
 	b.WriteString(stMuted.Render(fmt.Sprintf("%s · %s · memory from %s · compute from %s", t.Backend, t.BackendStatus,
 		t.FactStatus.MemoryBandwidthGBs, t.FactStatus.PeakTFLOPS)))
 	return b.String()
@@ -277,7 +278,11 @@ func limitBody(f Facts, width int) string {
 	if c.TruthStatus != "modeled" {
 		note = c.TruthStatus
 	}
-	b.WriteString(stMuted.Render(fmt.Sprintf("memory speed from %s · compute from %s · %s", c.Target.FactStatus.MemoryBandwidthGBs,
+	memory := c.Target.FactStatus.MemoryBandwidthGBs
+	if c.BandwidthSource != nil {
+		memory = *c.BandwidthSource
+	}
+	b.WriteString(stMuted.Render(fmt.Sprintf("memory speed %s · compute from %s · %s", memoryFrom(memory),
 		c.Target.FactStatus.PeakTFLOPS, note)) + "\n\n")
 	b.WriteString(stHeader.Render("One token, per role") + "\n" + roleRows(d.Roles) + "\n")
 	b.WriteString(stHeader.Render(fmt.Sprintf("A prompt of %d tokens, per role", p.Context)) + "\n" + roleRows(p.Roles) + "\n")
@@ -420,12 +425,28 @@ func lossTitle(provider string, c *seam.Capture) string {
 // tableWidth is the page width roleTable fits; resultBody sets it from the screen before drawing.
 var tableWidth = 200
 
-// roleTable is one provider's per-role table: the time, the share of peak, the time per call and why. Under 110
-// columns the time per call and the reason move to a second table, so no row is cut.
+// roleTable is one provider's per-role table: the time, the share of peak, the time per call and why. The reason
+// word is the most useful column, so when the page is narrow the share bar goes first, then IDEAL; only when the
+// table still does not fit do the time per call and the reason move to a second table, so no row is cut.
 func roleTable(roles []seam.RoleLoss, notAttributed *float64) string {
-	if tableWidth < 110 {
-		return roleTableNarrow(roles, notAttributed)
+	for _, drop := range [][]string{nil, {"SHARE OF LOSS"}, {"SHARE OF LOSS", "IDEAL ms"}} {
+		if t := roleTableWithout(roles, notAttributed, drop); maxWidth(t) <= tableWidth {
+			return t
+		}
 	}
+	return roleTableNarrow(roles, notAttributed)
+}
+
+func maxWidth(s string) int {
+	w := 0
+	for _, l := range strings.Split(s, "\n") {
+		w = max(w, lipgloss.Width(l))
+	}
+	return w
+}
+
+// roleTableWithout is the full table without the named columns.
+func roleTableWithout(roles []seam.RoleLoss, notAttributed *float64, drop []string) string {
 	rows := [][]string{{"ROLE", "QUANT", "IDEAL ms", "ACTUAL ms", "LOST ms", "SHARE OF LOSS", "% PEAK", "µs/CALL", "WHY"}}
 	for _, r := range roles {
 		pct, us := "", ""
@@ -440,6 +461,19 @@ func roleTable(roles []seam.RoleLoss, notAttributed *float64) string {
 	}
 	if notAttributed != nil {
 		rows = append(rows, []string{"not attributed", "", "", fmt.Sprintf("%.2f", *notAttributed), "", "", "", "", ""})
+	}
+	keep := []int{}
+	for i, h := range rows[0] {
+		if !slices.Contains(drop, h) {
+			keep = append(keep, i)
+		}
+	}
+	for j, row := range rows {
+		cut := []string{}
+		for _, i := range keep {
+			cut = append(cut, row[i])
+		}
+		rows[j] = cut
 	}
 	return table(rows)
 }
@@ -592,7 +626,17 @@ func othersBody(others []seam.OtherLoss, shown string) string {
 		if o.Run != nil {
 			label += " (run " + shortRun(*o.Run) + ")"
 		}
-		fmt.Fprintf(&b, "\nBeside it, %s: %.1f tokens per second.\n", lossTitle(label, &o.Capture), o.TokS)
+		speed := "not measured" // never 0.0 for a speed that was not taken
+		if o.TokS != nil && *o.TokS > 0 {
+			speed = fmt.Sprintf("%.1f tokens per second", *o.TokS)
+		} else if o.Missing != nil {
+			speed = *o.Missing
+		}
+		title := lossTitle(label, &o.Capture)
+		if (o.TokS == nil || *o.TokS <= 0) && len(o.Roles) == 0 {
+			title = label // the reason says why; "roles not timed" would only repeat it
+		}
+		fmt.Fprintf(&b, "\nBeside it, %s: %s.\n", title, speed)
 		if len(o.Roles) > 0 {
 			b.WriteString(roleTable(o.Roles, o.NotAttributedMs))
 		}

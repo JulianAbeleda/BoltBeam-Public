@@ -32,27 +32,29 @@ var (
 
 // Model is the checklist: seam facts, the step cursor, and whether that step's full view is open.
 type Model struct {
-	client   seam.Client
-	store    jobs.Store
-	f        Facts
-	context  int
-	wantChip string
-	chipSet  bool     // the user picked a chip; detection no longer moves it
-	runSet   bool     // the user picked a run; the checklist no longer follows the newest one
-	session  []string // runs started in this session: never cleaned
-	opened   bool     // the start page is decided (Setup, or Run when a job is still going)
-	started  string   // when this session began, ISO; Clean removes only unsaved runs from before it
-	cursor   int
-	moved    bool // the user moved; the cursor no longer follows the first open step
-	open     bool
-	row      int
-	ticking  bool
-	width    int
-	height   int
-	input    textinput.Model
-	note     string
-	view     viewport.Model
-	spin     spinner.Model
+	client    seam.Client
+	store     jobs.Store
+	f         Facts
+	context   int
+	wantChip  string
+	chipSet   bool     // the user picked a chip; detection no longer moves it
+	runSet    bool     // the user picked a run; the checklist no longer follows the newest one
+	session   []string // runs started in this session: never cleaned
+	opened    bool     // the start page is decided (Setup, or Run when a job is still going)
+	engineSet bool     // the engine was picked in this session; until then it is the last run's (rememberEngine)
+	ceilAsked string   // the run and memory speed the limit was last reloaded for (followMeasured)
+	started   string   // when this session began, ISO; Clean removes only unsaved runs from before it
+	cursor    int
+	moved     bool // the user moved; the cursor no longer follows the first open step
+	open      bool
+	row       int
+	ticking   bool
+	width     int
+	height    int
+	input     textinput.Model
+	note      string
+	view      viewport.Model
+	spin      spinner.Model
 }
 
 type targetsMsg struct {
@@ -294,8 +296,8 @@ func (m Model) inspect() tea.Cmd {
 }
 
 func (m Model) loadCeiling() tea.Cmd {
-	path, target, context := m.f.Path, m.targetID(), m.context
-	return func() tea.Msg { c, _, err := m.client.Ceiling(path, target, context); return ceilingMsg{c, err} }
+	path, target, context, here := m.f.Path, m.targetID(), m.context, m.f.thisChip()
+	return func() tea.Msg { c, _, err := m.client.Ceiling(path, target, context, here); return ceilingMsg{c, err} }
 }
 
 func tick() tea.Cmd {
@@ -343,6 +345,25 @@ func (m Model) newestRun() string {
 		}
 	}
 	return ""
+}
+
+// rememberEngine picks the engine the newest run on this chip measured with, the way the model and chip come
+// back on a relaunch; a pick in this session, or an engine this machine lacks, is left alone.
+func (m *Model) rememberEngine() {
+	t := m.f.target()
+	if m.engineSet || m.f.Runs == nil || m.f.Providers == nil || t == nil {
+		return
+	}
+	for i := len(m.f.Runs.Runs) - 1; i >= 0; i-- {
+		r := m.f.Runs.Runs[i]
+		if r.TargetID != t.ID || r.Measure == nil || r.Measure.Provider == nil {
+			continue
+		}
+		if p := m.f.provider(*r.Measure.Provider); p != nil && p.Available {
+			m.f.Engine = p.Provider
+		}
+		return
+	}
 }
 
 // follow reloads the run the checklist is about when it changed under the model, the chip or the runs list.
@@ -504,6 +525,28 @@ func (m *Model) pickChip(id string) {
 	}
 }
 
+// followMeasured reloads the speed limit once when the run on screen measured this chip's memory speed and the
+// limit Setup shows does not use it yet: one number for the chip line, the limit and the run.
+func (m *Model) followMeasured() tea.Cmd {
+	r := m.f.Run
+	if r == nil || m.f.ReadOnly || m.f.Profile == nil || !m.f.thisChip() {
+		return nil
+	}
+	rc := r.Results.Ceiling
+	if rc.BandwidthSource == nil || rc.PeakBandwidthGBs == nil || r.TargetID != m.targetID() {
+		return nil
+	}
+	if c := m.f.Ceiling; c != nil && c.PeakBandwidthGBs == *rc.PeakBandwidthGBs {
+		return nil
+	}
+	key := r.ID + " " + strconv.FormatFloat(*rc.PeakBandwidthGBs, 'f', 3, 64)
+	if m.ceilAsked == key || m.f.CeilBusy {
+		return nil
+	}
+	m.ceilAsked, m.f.CeilBusy = key, true
+	return m.loadCeiling()
+}
+
 // chipChanged reloads what depends on the chip: the speed limit and the run.
 func (m *Model) chipChanged() tea.Cmd {
 	m.f.Ceiling, m.f.CeilErr, m.f.Providers = nil, "", nil
@@ -574,6 +617,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case runsMsg:
 		m.f.Runs = msg.runs
 		m.countOldWork()
+		m.rememberEngine()
 		if msg.err != nil {
 			m.note = "The runs folder could not be read: " + msg.err.Error()
 		}
@@ -587,9 +631,13 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		changed := m.runID() != msg.run.ID
 		m.f.Run = msg.run
+		reload := m.followMeasured()
 		if changed {
 			m.f.Ready, m.f.CJob, m.f.CTail = nil, nil, nil
-			return m, tea.Batch(m.loadJob(msg.run.ID), m.loadReady(msg.run.ID), m.loadCompare(msg.run.ID))
+			return m, tea.Batch(m.loadJob(msg.run.ID), m.loadReady(msg.run.ID), m.loadCompare(msg.run.ID), reload)
+		}
+		if reload != nil {
+			return m, reload
 		}
 	case providersMsg:
 		if t := m.f.target(); t != nil && t.ID == msg.target {
@@ -603,6 +651,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 					}
 				}
 			}
+			m.rememberEngine()
 		}
 	case readyMsg:
 		if msg.id == m.runID() {
@@ -876,7 +925,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		}
 		return m, nil
 	case "engine":
-		m.f.Engine, m.f.Layout = a.arg, ""
+		m.f.Engine, m.f.Layout, m.engineSet = a.arg, "", true
 		return m, nil
 	case "layout":
 		m.f.Layout = a.arg

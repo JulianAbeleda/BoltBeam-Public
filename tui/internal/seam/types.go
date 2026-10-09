@@ -171,6 +171,7 @@ type Ceiling struct {
 	ModelID          string       `json:"model_id"`
 	Target           Target       `json:"target"`
 	PeakBandwidthGBs float64      `json:"peak_bandwidth_gbs"`
+	BandwidthSource  *string      `json:"bandwidth_source"` // this machine's memory speed and its source; nil: the registry's
 	PeakTFLOPS       float64      `json:"peak_tflops"`
 	TruthStatus      string       `json:"truth_status"`
 	RidgeIntensity   float64      `json:"ridge_intensity"`
@@ -243,8 +244,9 @@ type OtherLoss struct {
 	// Run is set when the row is another run folder (same model, same chip); empty when it is this run's.
 	Run             *string    `json:"run"`
 	Capture         Capture    `json:"capture"`
-	TokS            float64    `json:"tok_s"`
-	Ms              float64    `json:"ms"`
+	TokS            *float64   `json:"tok_s"`
+	Ms              *float64   `json:"ms"`
+	Missing         *string    `json:"missing"` // "not measured: <reason>" when the run holds no speed
 	Roles           []RoleLoss `json:"roles"`
 	NotAttributedMs *float64   `json:"not_attributed_ms"`
 }
@@ -262,6 +264,8 @@ type Summary struct {
 	Measured    Measured       `json:"measured"`
 	Report      *string        `json:"report"`
 	Measure     *MeasureStatus `json:"measure"`
+	Where       string         `json:"where"` // runs, work or saved: set by `runs --all`
+	Dir         string         `json:"dir"`
 }
 
 type Runs struct {
@@ -391,6 +395,7 @@ type CeilingRef struct {
 	TokS             *float64 `json:"tok_s"`
 	FloorMs          *float64 `json:"floor_ms"`
 	PeakBandwidthGBs *float64 `json:"peak_bandwidth_gbs"`
+	BandwidthSource  *string  `json:"bandwidth_source"`
 }
 
 type Results struct {

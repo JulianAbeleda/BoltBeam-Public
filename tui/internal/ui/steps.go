@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -140,6 +141,9 @@ func setupBody(f Facts, width int) string {
 	b.WriteString("Run finds the speed limit, checks the GPU is free, measures with the engine and times each role.\n")
 	if f.Ceiling != nil && f.Ceiling.Decode.TokS != nil {
 		fmt.Fprintf(&b, "Speed limit on %s: %.1f tokens per second (%.1f ms per token).\n", aboutChip(f), *f.Ceiling.Decode.TokS, f.Ceiling.Decode.FloorMs)
+		if s := f.Ceiling.BandwidthSource; s != nil {
+			b.WriteString(stMuted.Render(fmt.Sprintf("From memory %.1f GB/s, %s.", f.Ceiling.PeakBandwidthGBs, *s)) + "\n")
+		}
 	}
 	if f.MultiGpu != "" {
 		b.WriteString(stWarn.Render(fmt.Sprintf("%d GPUs found: %s.", f.GpuCount, f.MultiGpu)) + "\n")
@@ -312,9 +316,15 @@ func resultsBody(f Facts, width int) string {
 	return b.String()
 }
 
-// layoutBody is the multi-GPU limit: its formula and every input with its source, labelled limited support.
+// layoutBody is the limit's inputs with their sources. One GPU: one line, the read bandwidth the limit uses and
+// where it came from. More GPUs: the formula and every input, labelled limited support.
 func layoutBody(l seam.LayoutLimit) string {
 	if l.Gpus < 2 {
+		for _, in := range l.Inputs {
+			if v, ok := in.Value.(float64); ok && in.Unit == "GB/s" {
+				return stMuted.Render(fmt.Sprintf("Limit from memory %.1f GB/s, %s", v, shortSource(in.Source))) + "\n"
+			}
+		}
 		return ""
 	}
 	var b strings.Builder
@@ -551,6 +561,44 @@ func gbs(v *float64) string {
 	return fmt.Sprintf("memory %.1f GB/s", *v)
 }
 
+// memoryFrom words a memory-speed source: a fact status from the registry ("from measured") or this machine's
+// own ("measured on this GPU (native CUDA probe, 2026-10-09)").
+func memoryFrom(source string) string {
+	if strings.HasPrefix(source, "measured on") || strings.HasPrefix(source, "registry figure") {
+		return source
+	}
+	return "from " + source
+}
+
+// shortSource is a limit input's source in a few words; Python's layout.short_source words the same.
+func shortSource(s string) string {
+	for _, p := range [][2]string{{"native CUDA read probe", "native CUDA probe"}, {"Metal read probe", "Metal read probe"},
+		{"tinygrad read-sum", "tinygrad read-sum, a lower bound"}} {
+		if strings.Contains(s, p[0]) {
+			when := ""
+			if m := dateRe.FindString(s); m != "" {
+				when = ", " + m
+			}
+			return "measured on this GPU (" + p[1] + when + ")"
+		}
+	}
+	if strings.HasPrefix(s, "registry figure") {
+		return "registry figure, not measured on this GPU"
+	}
+	return s
+}
+
+var dateRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+
+// memoryLine is the chip's memory speed as the speed limit uses it: this machine's (measured, with its source)
+// when the limit carries one for this chip, else the registry's figure.
+func memoryLine(f Facts, t seam.Target) string {
+	if c := f.Ceiling; c != nil && c.BandwidthSource != nil && c.Target.ID == t.ID {
+		return fmt.Sprintf("memory %.1f GB/s, %s", c.PeakBandwidthGBs, *c.BandwidthSource)
+	}
+	return gbs(t.MemoryBandwidthGBs)
+}
+
 func chipLine(f Facts) (string, string) {
 	t := f.target()
 	if t == nil {
@@ -577,7 +625,7 @@ func chipLine(f Facts) (string, string) {
 	if !t.HasCeiling {
 		return "crossed", text + " · no measured speeds, so no speed limit"
 	}
-	return "pass", text + " · " + gbs(t.MemoryBandwidthGBs)
+	return "pass", text + " · " + memoryLine(f, *t)
 }
 
 func chipActions(f Facts) []action {

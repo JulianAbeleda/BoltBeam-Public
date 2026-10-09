@@ -176,7 +176,7 @@ func TestLiveSeamMatchesPinnedContract(t *testing.T) {
 	} else if e, ok := err.(*Error); !ok || e.Code != 1 {
 		t.Fatalf("want a seam Error with code 1, got %#v", err)
 	}
-	if _, _, err := c.Ceiling(profile, "nvidia_sm89", 0); err == nil {
+	if _, _, err := c.Ceiling(profile, "nvidia_sm89", 0, false); err == nil {
 		t.Fatal("a descriptor-only chip has no ceiling and must say so")
 	}
 }

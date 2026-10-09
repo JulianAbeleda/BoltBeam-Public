@@ -259,3 +259,49 @@ def limit(layout:str, *, bytes_per_token:float, facts:dict[str, Any], hidden_siz
   ms = weights + transfer
   return {**out, "ms": ms, "tok_s": 1000.0 / ms, "weights_ms": weights, "transfer_ms": transfer, "formula": formula,
           "support": LIMITED}
+
+
+# --- the one read bandwidth a single-GPU limit uses -----------------------------------------------------------------
+
+def short_source(source:str | None, measured_at:str | None = None) -> str:
+  """The read bandwidth's source in a few words for a screen line: which probe, and when; or that it is the
+  registry's figure. The full source stays in the limit's inputs."""
+  s = source or ""
+  when = f", {measured_at}" if measured_at else ""
+  for needle, words in (("native CUDA read probe", "native CUDA probe"), ("Metal read probe", "Metal read probe"),
+                        ("tinygrad read-sum", "tinygrad read-sum, a lower bound")):
+    if needle in s:
+      return f"measured on this GPU ({words}{when})"
+  if s.startswith("registry figure"):
+    return "registry figure, not measured on this GPU"
+  return s or "unknown"
+
+
+def read_bandwidth(facts:dict[str, Any] | None, layout:str = "one") -> dict[str, Any] | None:
+  """The read bandwidth the one-GPU limit uses (the layout's first GPU), with its source in full and in short;
+  None for no facts, a multi-GPU layout or a GPU with no read bandwidth. Measured or registry, it is the one number
+  the speed limit, the tie-out and the per-role rule all use."""
+  if not facts or not facts.get("gpus") or (layout != "one" and len(facts["gpus"]) > 1):
+    return None
+  g = facts["gpus"][0]
+  if not g.get("read_gbs"):
+    return None
+  return {"gbs": g["read_gbs"], "source": g.get("read_source"), "target_id": g.get("target_id"),
+          "measured": str(g.get("read_source") or "").startswith("measured"),
+          "short": short_source(g.get("read_source"), facts.get("measured_at"))}
+
+
+def newest_facts(folders:list[pathlib.Path], target_id:str) -> dict[str, Any] | None:
+  """The newest machine facts, in any run under these folders, whose first GPU is this chip: what Setup shows
+  before a run of this session has measured. Newest by when they were measured, then by file time."""
+  found = []
+  for folder in folders:
+    if folder.is_dir():
+      for p in folder.glob(f"*/{MACHINE}"):
+        try:
+          facts = json.loads(p.read_text())
+        except (OSError, ValueError):
+          continue
+        if (facts.get("gpus") or [{}])[0].get("target_id") == target_id:
+          found.append((str(facts.get("measured_at") or ""), p.stat().st_mtime, facts))
+  return max(found, key=lambda f: (f[0], f[1]))[2] if found else None

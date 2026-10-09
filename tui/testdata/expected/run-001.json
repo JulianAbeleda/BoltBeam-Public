@@ -70,6 +70,7 @@
       }
     ],
     "ceiling": {
+      "bandwidth_source": null,
       "bytes_moved": 4676301568.0,
       "context": 1,
       "floor_ms": 48.110098436213995,

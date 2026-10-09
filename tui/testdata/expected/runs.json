@@ -13,6 +13,7 @@
           "request": "trace_request.json"
         }
       ],
+      "dir": "tui/testdata/fixture/runs/qwen3-8b-apple_m3_10c-001",
       "id": "qwen3-8b-apple_m3_10c-001",
       "latest_stage": "output",
       "measure": null,
@@ -114,10 +115,12 @@
       ],
       "status": "needs_measurement",
       "target_id": "apple_m3_10c",
+      "where": "runs",
       "workload": "decode"
     },
     {
       "blocked": [],
+      "dir": "tui/testdata/fixture/runs/qwen3-8b-apple_m3_10c-002",
       "id": "qwen3-8b-apple_m3_10c-002",
       "latest_stage": "output",
       "measure": null,
@@ -224,6 +227,7 @@
       ],
       "status": "needs_measurement",
       "target_id": "apple_m3_10c",
+      "where": "runs",
       "workload": "decode"
     }
   ],
