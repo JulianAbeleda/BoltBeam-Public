@@ -319,7 +319,7 @@ Verdicts:
 Use this prompt for a fresh agent:
 
 ```text
-You are working across /home/ubuntu/tinygrad-arkey and /home/ubuntu/BoltBeam.
+You are working across <home>/tinygrad-arkey and <home>/BoltBeam.
 
 Goal: TG-P10, final pure-machine-search blocker for 8B decode attention. Do not write a handwritten HIP/ASM/ISA attention kernel. Fix the generic tinygrad AMD lowering gap that prevents split-preserving generated combine from compiling correctly.
 

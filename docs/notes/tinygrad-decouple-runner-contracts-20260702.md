@@ -1,6 +1,6 @@
 # Tinygrad Decouple Runner Contracts
 
-Source audit: `/home/ubuntu/tinygrad-arkey/bench/qk-repo-principles-cleanup/boltbeam_boundary_audit.json`
+Source audit: `<home>/tinygrad-arkey/bench/qk-repo-principles-cleanup/boltbeam_boundary_audit.json`
 
 Boundary plan: `docs/tinygrad-boundary-plan-20260702.md`
 

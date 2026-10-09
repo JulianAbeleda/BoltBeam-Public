@@ -87,7 +87,10 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
     "fact_sources": {
       "hardware_scan": scan,
       "memory_bandwidth_gbs": {"kind": "measurement", "scope": scope, "method": read["method"],
-                               "value_gbs": read["read_gbs"], "observed_at": today},
+                               "value_gbs": read["read_gbs"], "observed_at": today,
+                               # cold burst, sustained series, the regime between them, and the chip's one band
+                               **{k: read.get(k) for k in ("regime", "cold_gbs", "sustained_gbs", "spread", "drift", "band")
+                                  if read.get(k) is not None}},
       "matrix_tflops": {"kind": "measurement", "bound": "lower", "scope": scope, "method": matrix["method"],
                         "value_tflops": matrix["tflops"], "dtype": "fp16", "note": matrix["note"], "observed_at": today},
     },

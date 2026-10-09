@@ -208,7 +208,7 @@ tests/test_semantic_campaign_cli.py::test_actual_cli_runs_persistent_five_stage_
 The first resolves the machine's real GPU and compares it against an
 Apple/Metal target id; this box is an RTX 5090, so preflight blocks with
 `errors=['target_resolution']`. The second requires
-`/home/ubuntu/tinygrad-arkey-exp`, which does not exist.
+`<home>/tinygrad-arkey-exp`, which does not exist.
 
 ### 3.2 Why this needs fixing
 

@@ -1,15 +1,20 @@
 """The runtimes BoltBeam measures a model in, and the one check before any measurement: is the GPU free.
 
-A provider is a runtime that decodes the model: llama.cpp (collectors/llama_bench_decode.py) or tinygrad
-(collectors/tinygrad_role_time.py). Each adapter knows only how to find its runtime, how to run N decode tokens at
-a context, and how its per-role time is taken. Everything after that is shared: the vendor capture
-(vendor_capture.py), the attribution by bytes and count (attribution.py), and the floor rule (tinygrad_role_time.loss).
+A provider (an engine on screen) is a runtime that decodes the model. Each adapter knows only how to find its
+runtime, which weight files it reads, how to run N decode tokens at a context and batch, and how its per-role time
+is taken. Everything after that is shared: the vendor capture (vendor_capture.py), the attribution by bytes and
+count (attribution.py), and the floor rule (tinygrad_role_time.loss).
 
-    provider    whole step (step 4)              per role (step 5)
-    llama.cpp   llama-bench decode               the vendor's capture of llama-bench, attributed by bytes
-    tinygrad    the fork's decode, no profiling  the vendor's capture where it sees tinygrad (Metal with Xcode),
-                                                 else tinygrad's own profile events (nsys and rocprofv3 cannot
-                                                 see tinygrad's direct driver path)
+    provider      weights       whole step (step 4)                    per role (step 5)
+    llama.cpp     GGUF          llama-bench decode; batch > 1 with     the vendor's capture of llama-bench
+                                llama-batched-bench
+    tinygrad      GGUF          the fork's decode, no profiling        the vendor's capture where it sees tinygrad
+                                                                       (Metal), else tinygrad's own profile events
+    vllm          safetensors   offline LLM API, N minus 1 tokens      nsys of the same driver, CUDA graphs on
+    ollama        GGUF          its API's eval_count / eval_duration   nsys of `ollama serve` and its runner
+    tensorrt-llm  safetensors   its LLM API, N minus 1 tokens          nsys of the same driver
+
+ENGINES is the one table of them. A run is labelled with its engine and its weight format (weight_format).
 """
 from __future__ import annotations
 
@@ -21,16 +26,24 @@ import sys
 import time
 from typing import Any
 
-from boltbeam.collectors import llama_bench_decode, tinygrad_role_time, vendor_capture
+from boltbeam.collectors import (llama_bench_decode, ollama_decode, tinygrad_role_time, trtllm_decode, vendor_capture,
+                                 vllm_decode)
 
-NAMES = (llama_bench_decode.PROVIDER, tinygrad_role_time.PROVIDER)
+# name -> adapter module; the order is the order Setup lists them
+ENGINES = {m.PROVIDER: m for m in (llama_bench_decode, tinygrad_role_time, vllm_decode, ollama_decode, trtllm_decode)}
+NAMES = tuple(ENGINES)
 DEFAULT = llama_bench_decode.PROVIDER  # a run measured before providers existed was measured with llama-bench
 # the per-role trace each provider writes into the run folder
-TRACES = {llama_bench_decode.PROVIDER: llama_bench_decode.TRACE, tinygrad_role_time.PROVIDER: tinygrad_role_time.TRACE}
+TRACES = {name: m.TRACE for name, m in ENGINES.items()}
+# the engines that run as their own program through a driver (engine_common.py)
+DRIVEN = (vllm_decode.PROVIDER, ollama_decode.PROVIDER, trtllm_decode.PROVIDER)
 # the run's step-4 collector per provider and backend; "*" is any backend
 COLLECTORS = {(llama_bench_decode.PROVIDER, "Metal"): "metal-native", (llama_bench_decode.PROVIDER, "*"): "llama-bench-decode",
-              (tinygrad_role_time.PROVIDER, "*"): "tinygrad-decode"}
+              (tinygrad_role_time.PROVIDER, "*"): "tinygrad-decode",
+              **{(name, "*"): f"{name}-decode" for name in DRIVEN}}
 TINYGRAD_TOKENS = 16
+FORMATS = {llama_bench_decode.PROVIDER: ("gguf",), tinygrad_role_time.PROVIDER: ("gguf",),
+           **{name: ENGINES[name].FORMATS for name in DRIVEN}}
 
 
 def collector(provider:str, backend:str) -> str:
@@ -41,6 +54,45 @@ def check(provider:str) -> str:
   if provider not in NAMES:
     raise ValueError(f"unknown provider {provider!r}; one of {', '.join(NAMES)}")
   return provider
+
+
+def kv_element(provider:str) -> tuple[int, str]:
+  """KV cache bytes per element in this engine as it runs by default, and where that fact comes from (each
+  adapter's KV_ELEMENT)."""
+  m = ENGINES.get(provider)
+  return getattr(m, "KV_ELEMENT", None) or (2, "f16 assumed")
+
+
+def weight_format(profile:dict[str, Any]) -> str:
+  """The weights as a label: the file family and the quant types by share of the weight bytes, largest first:
+  "GGUF Q4_K+Q6_K", "GGUF F16", "safetensors BF16"."""
+  family = str((profile.get("metadata") or {}).get("format_family") or "unknown")
+  share: dict[str, float] = {}
+  for r in profile.get("roles") or []:
+    q = str(r.get("quant") or "?")
+    share[q] = share.get(q, 0.0) + float(r.get("rows") or 0) * float(r.get("cols") or 0) * float(r.get("count") or 1)
+  quants = [q for q, _ in sorted(share.items(), key=lambda kv: -kv[1])]
+  return f"{'GGUF' if family == 'gguf' else family} {'+'.join(quants[:2]) if quants else '?'}"
+
+
+def model_format(model:str | pathlib.Path) -> str | None:
+  """The model's file family (profile/loaders.detect_model_format), or None when it is not one BoltBeam reads."""
+  from boltbeam.profile.loaders import detect_model_format
+  try:
+    return detect_model_format(model)
+  except (ValueError, OSError):
+    return None
+
+
+def reads(provider:str, model:str | pathlib.Path) -> str | None:
+  """Why this engine cannot read this model file, or None when it can. A path that is not there is left to the
+  engine's own preflight, which says the file is gone."""
+  fmt = model_format(model)
+  want = FORMATS.get(provider, ())
+  if fmt in want or (fmt is None and not pathlib.Path(model).expanduser().exists()):
+    return None
+  return (f"{provider} reads {' or '.join(f.upper() if f == 'gguf' else f for f in want)} weights; "
+          f"{pathlib.Path(model).name} is {fmt or 'not a model BoltBeam reads'}")
 
 
 def capture_method(provider:str, backend:str) -> dict[str, Any]:
@@ -55,12 +107,23 @@ def capture_method(provider:str, backend:str) -> dict[str, Any]:
   return {"method": p["method"], "reason": None}
 
 
+def _why(name:str, target, tinygrad_root:pathlib.Path | None) -> str | None:
+  if name == llama_bench_decode.PROVIDER:
+    return llama_bench_decode.available()
+  if name == tinygrad_role_time.PROVIDER:
+    return tinygrad_role_time.available(target, tinygrad_root)
+  return ENGINES[name].available(target)
+
+
 def available(target, *, tinygrad_root:pathlib.Path | None = None) -> list[dict[str, Any]]:
-  """Every provider, whether it can measure this target on this machine, and how step 5 would time its roles."""
-  why = {llama_bench_decode.PROVIDER: llama_bench_decode.available(),
-         tinygrad_role_time.PROVIDER: tinygrad_role_time.available(target, tinygrad_root)}
-  return [{"provider": name, "available": why[name] is None, "reason": why[name],
-           "capture": capture_method(name, target.backend)} for name in NAMES]
+  """Every provider, whether it can measure this target on this machine, the weights it reads, and how step 5
+  would time its roles."""
+  out = []
+  for name in NAMES:
+    why = _why(name, target, tinygrad_root)
+    out.append({"provider": name, "available": why is None, "reason": why, "formats": list(FORMATS[name]),
+                "capture": capture_method(name, target.backend)})
+  return out
 
 
 # --- is the GPU free ---------------------------------------------------------------------------------------
@@ -183,6 +246,56 @@ def measure_tinygrad(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pa
   return out
 
 
+# --- step 4: whole step in an engine that runs as its own program (vLLM, Ollama, TensorRT-LLM) -------------
+
+ENGINE_TOKENS = 64
+
+
+def engine_trace(manifest:dict[str, Any], *, provider:str, provider_id:str, collector_id:str,
+                 points:list[dict[str, Any]], weights:str, peak_gbs:float | None) -> dict[str, Any]:
+  """A boltbeam.timing_trace.v1 from measured points. The batch-1 points are the whole_step rows every reader
+  takes; every point, batch 1 included, is kept under "batches" with tokens/s per stream and in total."""
+  from boltbeam.vocab import SCHEMA_TIMING_TRACE
+  ones = sorted((p for p in points if p["batch"] == 1), key=lambda p: p["context"])
+  rows = [{"scope": "whole_step", "context": p["context"], "wall_us": p["step_ms"] * 1000.0, "tok_s": p["tok_s_stream"],
+           "decode_tokens": p.get("tokens"), "batch": 1, "source": p.get("source")} for p in ones]
+  trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
+           "workload": manifest["workload"], "provider": provider, "provider_id": provider_id,
+           "collector_id": collector_id, "weight_format": weights, "timing_source": f"{provider} whole step",
+           "contexts": [r["context"] for r in rows], "rows": rows,
+           "batches": sorted(points, key=lambda p: (p["context"], p["batch"])),
+           "measured": [f"whole_step.tok_s ({provider} decode at each context, batch 1)",
+                        "batches: one decode step of B streams, tokens/s per stream and in total"],
+           "absent": ["kernel rows: per role is step 5"]}
+  if peak_gbs:
+    trace["peak_gbs"] = peak_gbs
+  return trace
+
+
+def measure_engine(run:pathlib.Path, provider:str, *, batches:list[int] | tuple[int, ...] = (1,),
+                   tokens:int = ENGINE_TOKENS) -> pathlib.Path:
+  """trace_request.json answered by a driven engine: one point per requested context and batch."""
+  from boltbeam.core.canonical import pretty_json
+  from boltbeam.target.targets import get_target
+  from boltbeam.workflow.common import load_manifest, read_json
+  m = ENGINES[check(provider)]
+  manifest = load_manifest(run)
+  target = get_target(manifest.get("target_id"))
+  model = str(manifest["model_path"])
+  if why := m.available(target) or reads(provider, model):
+    raise RuntimeError(why)
+  request = read_json(run / "trace_request.json")
+  contexts = [int(c) for c in request.get("contexts") or [128]]
+  points = m.whole_step(model, contexts, sorted({1, *batches}), tokens=tokens,
+                        log=run / "kernel_compare" / f"{provider}_whole_step.log")
+  profile = read_json(run / "model_profile.json") if (run / "model_profile.json").exists() else {}
+  trace = engine_trace(manifest, provider=provider, provider_id=m.PROVIDER_ID, collector_id=collector(provider, target.backend),
+                       points=points, weights=weight_format(profile), peak_gbs=target.memory_bandwidth_gbs)
+  out = run / "timing_trace.json"
+  out.write_text(pretty_json(trace))
+  return out
+
+
 # --- step 5: per role, any provider ----------------------------------------------------------------------------
 
 def _layout(run:pathlib.Path) -> tuple[str, int]:
@@ -191,8 +304,10 @@ def _layout(run:pathlib.Path) -> tuple[str, int]:
   return m.get("layout") or "one", int(m.get("gpus") or 1)
 
 
-def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None) -> dict[str, Any]:
-  """Per-role time for one provider, refused under the same floor rule for every provider."""
+def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None, batch:int = 1,
+              context:int = 128) -> dict[str, Any]:
+  """Per-role time for one provider, refused under the same floor rule for every provider. batch > 1 captures
+  one decode step of that many streams (driven engines and llama.cpp's batched bench)."""
   from boltbeam.search import role_compare
   from boltbeam.target.targets import get_target
   from boltbeam.workflow.common import load_manifest
@@ -206,9 +321,13 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
   if provider == tinygrad_role_time.PROVIDER and how["method"] == tinygrad_role_time.OWN_TIMING:
     return role_compare.time_roles(run, root=root)
   if how["method"] is None:
-    raise RuntimeError(f"llama.cpp per role is not possible here: {how['reason']}")
+    raise RuntimeError(f"{provider} per role is not possible here: {how['reason']}")
   model, model_id = str(manifest.get("model_path")), str(manifest.get("model_id"))
-  if provider == tinygrad_role_time.PROVIDER:
+  if provider in DRIVEN:
+    if why := ENGINES[provider].available(target) or reads(provider, model):
+      raise RuntimeError(why)
+    trace = ENGINES[provider].role_time(run, target=target, model=model, model_id=model_id, context=context, batch=batch)
+  elif provider == tinygrad_role_time.PROVIDER:
     root = pathlib.Path(root) if root else role_compare.default_fork_root()
     if why := tinygrad_role_time.available(target, root):
       raise RuntimeError(why)
@@ -216,10 +335,11 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
                                                   model_id=model_id, target=target)
   else:
     layout, gpus = _layout(run)
-    trace = llama_bench_decode.role_time(run, target=target, model=model, model_id=model_id, layout=layout, gpus=gpus)
+    trace = llama_bench_decode.role_time(run, target=target, model=model, model_id=model_id, layout=layout, gpus=gpus,
+                                         context=context, batch=batch)
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
   ceil = _measured_vs_ceiling(manifest, _optional(run, "model_profile.json"))
-  table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"))
+  table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), ceil.get("band"))
   if table and table["status"] != "measured":
     raise RuntimeError(table["reason"])
   return trace

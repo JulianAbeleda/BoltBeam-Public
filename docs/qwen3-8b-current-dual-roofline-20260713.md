@@ -48,12 +48,12 @@ but their first and only pass is a compulsory DRAM stream, so fit is not reporte
 
 ## Reproduction artifacts
 
-- `/home/ubuntu/boltbeam-runs/qwen3-8b-current-20260713/prefill/roofline_input.json`
-- `/home/ubuntu/boltbeam-runs/qwen3-8b-current-20260713/prefill/profiler_report.json`
-- `/home/ubuntu/boltbeam-runs/qwen3-8b-current-20260713/decode/roofline_input.json`
-- `/home/ubuntu/boltbeam-runs/qwen3-8b-current-20260713/decode/profiler_report.json`
-- `/home/ubuntu/boltbeam-runs/qwen3-8b-current-20260713/execution_profile.json`
-- `/home/ubuntu/boltbeam-runs/qwen3-8b-current-20260713/tiered_roofline.json`
+- `<home>/boltbeam-runs/qwen3-8b-current-20260713/prefill/roofline_input.json`
+- `<home>/boltbeam-runs/qwen3-8b-current-20260713/prefill/profiler_report.json`
+- `<home>/boltbeam-runs/qwen3-8b-current-20260713/decode/roofline_input.json`
+- `<home>/boltbeam-runs/qwen3-8b-current-20260713/decode/profiler_report.json`
+- `<home>/boltbeam-runs/qwen3-8b-current-20260713/execution_profile.json`
+- `<home>/boltbeam-runs/qwen3-8b-current-20260713/tiered_roofline.json`
 
 The profiler report validates `model_id` and `workload` before accepting a roofline input, preventing a stale model's
 ceiling from being attached to the current trace.

@@ -191,7 +191,7 @@ def time_roles(run:pathlib.Path, *, root:pathlib.Path | None = None) -> dict[str
                                      model_id=str(manifest.get("model_id")), target=get_target(manifest.get("target_id")))
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
   ceil = _measured_vs_ceiling(manifest, _optional(run, "model_profile.json"))
-  table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"))
+  table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), ceil.get("band"))
   if table and table["status"] != "measured":  # say it where the job ends, not only on the next screen
     raise RuntimeError(table["reason"])
   return trace
@@ -206,7 +206,7 @@ def role_losses(run:pathlib.Path) -> dict[tuple[str, str], dict[str, Any]]:
   path = run / tinygrad_role_time.TRACE
   if not path.is_file(): return {}
   ceil = _measured_vs_ceiling(load_manifest(run), _optional(run, "model_profile.json"))
-  table = tinygrad_role_time.loss(ceil.get("_roles") or [], read_json(path), ceil.get("floor_ms")) or {"roles": []}
+  table = tinygrad_role_time.loss(ceil.get("_roles") or [], read_json(path), ceil.get("floor_ms"), ceil.get("band")) or {"roles": []}
   return {(r["role"], r["quant"]): r for r in table["roles"]}  # an incomplete table has no roles
 
 

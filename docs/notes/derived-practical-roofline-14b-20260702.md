@@ -28,7 +28,7 @@ This audit separates four targets that were previously too easy to conflate:
 - Source artifacts:
   - `bench/practical_roofline_14b_refreshed_20260702.json`
   - `bench/refreshed_loss_stack_14b_20260702.json`
-  - `/home/ubuntu/tinygrad-arkey/bench/system-fusion-sf4-aggregate/latest.json`
+  - `<home>/tinygrad-arkey/bench/system-fusion-sf4-aggregate/latest.json`
 - Contexts in the source audit: ctx512 and ctx2048. ctx4096 was intentionally not run.
 
 ## Route-Family Floors

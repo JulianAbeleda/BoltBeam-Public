@@ -1,6 +1,6 @@
 # Tinygrad / BoltBeam Boundary Plan
 
-Source: `/home/ubuntu/tinygrad-arkey` @ `5a5215318`
+Source: `<home>/tinygrad-arkey` @ `5a5215318`
 
 ## Principle
 

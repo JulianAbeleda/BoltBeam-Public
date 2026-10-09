@@ -51,26 +51,26 @@ these or a more specific successor artifact.
 
 | claim | citation |
 |---|---|
-| Core coding principles: centralize authority, modularize execution, encode invariants, avoid re-sprawl | `/home/ubuntu/tinygrad-arkey/structure/Development/coding-principles.md`; BoltBeam copy: `docs/coding-principles.md` |
-| Performance primitives must be measured as whole primitives, not isolated wins | `/home/ubuntu/tinygrad-arkey/structure/Development/performance-primitive-research-principles.md` |
-| Current active-work state and agnostic-search direction | `/home/ubuntu/tinygrad-arkey/docs/claude-active-work-audit-and-agnostic-search-scope-20260630.md` |
+| Core coding principles: centralize authority, modularize execution, encode invariants, avoid re-sprawl | `<home>/tinygrad-arkey/structure/Development/coding-principles.md`; BoltBeam copy: `docs/coding-principles.md` |
+| Performance primitives must be measured as whole primitives, not isolated wins | `<home>/tinygrad-arkey/structure/Development/performance-primitive-research-principles.md` |
+| Current active-work state and agnostic-search direction | `<home>/tinygrad-arkey/docs/claude-active-work-audit-and-agnostic-search-scope-20260630.md` |
 | BoltBeam currently emits profile/search/policy/measurement handoff only | `docs/analyze-command-scope.md`; `boltbeam/analyze.py` |
 
 ### Current Result Sources To Preserve
 
 | result | citation |
 |---|---|
-| Q4_K G3 generated route is speed-equivalent and promoted | `/home/ubuntu/tinygrad-arkey/bench/amd-isa-backend-g3-weight-promotion/latest.json`; `/home/ubuntu/tinygrad-arkey/bench/qk-candidate-evaluator/decode_q4k_g3_generated/ledger_update.json`; `/home/ubuntu/tinygrad-arkey/docs/amd-isa-g3-weight-promotion-hardening-scope-20260629.md` |
-| Q6_K direct half-warp route is token-correct but speed-refuted | `/home/ubuntu/tinygrad-arkey/bench/amd-isa-backend-q6k-direct-speed/latest.json`; `/home/ubuntu/tinygrad-arkey/bench/qk-candidate-evaluator/decode_q6k_direct_refuted/ledger_update.json`; `/home/ubuntu/tinygrad-arkey/docs/amd-isa-q6k-direct-route-full-scope-20260629.md` |
-| Prefill role-selective pipe is promoted and supersedes global pipe where eligible | `/home/ubuntu/tinygrad-arkey/bench/qk-prefill-pipe-role-selective/latest.json`; `/home/ubuntu/tinygrad-arkey/bench/qk-candidate-evaluator/prefill_pipe_role_selective_default/ledger_update.json` |
-| Prefill whole-role attribution and authority harness are the prefill measurement sources | `/home/ubuntu/tinygrad-arkey/bench/qk-prefill-whole-role-attribution/latest.json`; `/home/ubuntu/tinygrad-arkey/bench/qk-prefill-whole-role-attribution/summary.md`; `/home/ubuntu/tinygrad-arkey/extra/qk_prefill_whole_synced.py` |
-| Runtime overhead must be separated from GPU/codegen work | `/home/ubuntu/tinygrad-arkey/bench/qk-decode-runtime-overhead/result.json`; `/home/ubuntu/tinygrad-arkey/extra/qk_decode_runtime_overhead.py` |
-| 14B/32B Q4_K route miss, anyshape binding, and topology-space stop | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-truegen-q1432-result-20260630.md`; `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-shape-tuned-topology-kt-result-20260630.md` |
-| 14B split-K was measured/refuted for FFN; gap redirected away from Q4_K FFN | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-split-k-sk-result-20260630.md` |
-| 14B/32B model-driven role attribution redirected target to reduce/source resolution | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-ldr-attribution-result-20260630.md`; `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-model-driven-decode-route-continuation-scope-20260630.md` |
-| Reduce-source tracing identified `attn_k` route miss as the major 14B issue | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-attn-k-route-miss-result-20260630.md`; `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-reduce-source-resolution-scope-20260630.md`; `/home/ubuntu/tinygrad-arkey/extra/qk_decode_reduce_source_trace.py` |
-| Decode attention native route is correct but low-leverage / not the active max-out target | `/home/ubuntu/tinygrad-arkey/bench/amd-isa-backend-decode-attention-ceiling/latest.json`; `/home/ubuntu/tinygrad-arkey/docs/amd-isa-system-residual-to-bandwidth-ceiling-scope-20260629.md` |
-| Candidate evaluator already exists in tinygrad and should be moved conceptually, not copied wholesale | `/home/ubuntu/tinygrad-arkey/extra/qk_candidate_evaluator.py`; `/home/ubuntu/tinygrad-arkey/bench/qk-candidate-evaluator/` |
+| Q4_K G3 generated route is speed-equivalent and promoted | `<home>/tinygrad-arkey/bench/amd-isa-backend-g3-weight-promotion/latest.json`; `<home>/tinygrad-arkey/bench/qk-candidate-evaluator/decode_q4k_g3_generated/ledger_update.json`; `<home>/tinygrad-arkey/docs/amd-isa-g3-weight-promotion-hardening-scope-20260629.md` |
+| Q6_K direct half-warp route is token-correct but speed-refuted | `<home>/tinygrad-arkey/bench/amd-isa-backend-q6k-direct-speed/latest.json`; `<home>/tinygrad-arkey/bench/qk-candidate-evaluator/decode_q6k_direct_refuted/ledger_update.json`; `<home>/tinygrad-arkey/docs/amd-isa-q6k-direct-route-full-scope-20260629.md` |
+| Prefill role-selective pipe is promoted and supersedes global pipe where eligible | `<home>/tinygrad-arkey/bench/qk-prefill-pipe-role-selective/latest.json`; `<home>/tinygrad-arkey/bench/qk-candidate-evaluator/prefill_pipe_role_selective_default/ledger_update.json` |
+| Prefill whole-role attribution and authority harness are the prefill measurement sources | `<home>/tinygrad-arkey/bench/qk-prefill-whole-role-attribution/latest.json`; `<home>/tinygrad-arkey/bench/qk-prefill-whole-role-attribution/summary.md`; `<home>/tinygrad-arkey/extra/qk_prefill_whole_synced.py` |
+| Runtime overhead must be separated from GPU/codegen work | `<home>/tinygrad-arkey/bench/qk-decode-runtime-overhead/result.json`; `<home>/tinygrad-arkey/extra/qk_decode_runtime_overhead.py` |
+| 14B/32B Q4_K route miss, anyshape binding, and topology-space stop | `<home>/tinygrad-arkey/docs/qwen-14b-32b-truegen-q1432-result-20260630.md`; `<home>/tinygrad-arkey/docs/qwen-14b-32b-shape-tuned-topology-kt-result-20260630.md` |
+| 14B split-K was measured/refuted for FFN; gap redirected away from Q4_K FFN | `<home>/tinygrad-arkey/docs/qwen-14b-32b-split-k-sk-result-20260630.md` |
+| 14B/32B model-driven role attribution redirected target to reduce/source resolution | `<home>/tinygrad-arkey/docs/qwen-14b-32b-ldr-attribution-result-20260630.md`; `<home>/tinygrad-arkey/docs/qwen-14b-32b-model-driven-decode-route-continuation-scope-20260630.md` |
+| Reduce-source tracing identified `attn_k` route miss as the major 14B issue | `<home>/tinygrad-arkey/docs/qwen-14b-32b-attn-k-route-miss-result-20260630.md`; `<home>/tinygrad-arkey/docs/qwen-14b-32b-reduce-source-resolution-scope-20260630.md`; `<home>/tinygrad-arkey/extra/qk_decode_reduce_source_trace.py` |
+| Decode attention native route is correct but low-leverage / not the active max-out target | `<home>/tinygrad-arkey/bench/amd-isa-backend-decode-attention-ceiling/latest.json`; `<home>/tinygrad-arkey/docs/amd-isa-system-residual-to-bandwidth-ceiling-scope-20260629.md` |
+| Candidate evaluator already exists in tinygrad and should be moved conceptually, not copied wholesale | `<home>/tinygrad-arkey/extra/qk_candidate_evaluator.py`; `<home>/tinygrad-arkey/bench/qk-candidate-evaluator/` |
 
 ### Citation Rule For New Work
 
@@ -138,16 +138,16 @@ Relevant tinygrad tools and what BoltBeam should do with them:
 
 | tinygrad tool/artifact family | tinygrad role | BoltBeam role | source |
 |---|---|---|---|
-| `qk_decode_role_attribution_modular.py` | run model/profile/capture and emit role bucket artifacts | ingest role attribution and normalize per-role wall share | `/home/ubuntu/tinygrad-arkey/extra/qk_decode_role_attribution_modular.py`; 14B use: `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-ldr-attribution-result-20260630.md` |
-| `qk_decode_reduce_source_trace.py` | trace reduce kernels to source positions | ingest reduce-source rows and attach them to candidate decisions | `/home/ubuntu/tinygrad-arkey/extra/qk_decode_reduce_source_trace.py`; attn_k result: `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-attn-k-route-miss-result-20260630.md` |
-| `qk_decode_runtime_overhead.py` | separate host sync from GPU work | ingest runtime-overhead rows and prevent false codegen blame | `/home/ubuntu/tinygrad-arkey/extra/qk_decode_runtime_overhead.py`; `/home/ubuntu/tinygrad-arkey/bench/qk-decode-runtime-overhead/result.json` |
-| prefill authority artifacts | measure synced whole-prefill throughput | ingest as authority gate evidence | `/home/ubuntu/tinygrad-arkey/extra/qk_prefill_whole_synced.py`; `/home/ubuntu/tinygrad-arkey/bench/qk-prefill-whole-role-attribution/latest.json` |
-| decode W==D artifacts | measure token/s and route binding | ingest as authority gate evidence | current candidate examples: `/home/ubuntu/tinygrad-arkey/bench/amd-isa-backend-g3-weight-promotion/latest.json`; `/home/ubuntu/tinygrad-arkey/bench/amd-isa-backend-q6k-direct-speed/latest.json` |
-| policy consistency checks | catch stale docs/policies | reimplement as BoltBeam policy guard over ledgers/manifests | `/home/ubuntu/tinygrad-arkey/extra/qk_policy_consistency_check.py`; principles: `/home/ubuntu/tinygrad-arkey/docs/repo-principles-audit-remediation-scope-20260630.md` |
-| artifact cache | fingerprint results and source state | implement in BoltBeam over normalized evidence | `/home/ubuntu/tinygrad-arkey/extra/qk_artifact_cache.py`; consolidation note: `/home/ubuntu/tinygrad-arkey/docs/claude-active-work-audit-and-agnostic-search-scope-20260630.md` |
-| candidate evaluator | classify promote/refute/defer | implement in BoltBeam as the main decision engine | `/home/ubuntu/tinygrad-arkey/extra/qk_candidate_evaluator.py`; `/home/ubuntu/tinygrad-arkey/bench/qk-candidate-evaluator/` |
-| refutation ledgers | prevent re-chasing closed axes | implement as durable ledger JSONL/JSON | examples: `/home/ubuntu/tinygrad-arkey/bench/qk-candidate-evaluator/decode_q6k_direct_refuted/ledger_update.json`; `/home/ubuntu/tinygrad-arkey/docs/claude-active-work-audit-and-agnostic-search-scope-20260630.md` |
-| roofline/ceiling audits | calculate theoretical/practical headroom | implement in BoltBeam as pure math helpers | `/home/ubuntu/tinygrad-arkey/extra/amd_isa_system_residual_ceiling_audit.py`; `/home/ubuntu/tinygrad-arkey/docs/amd-isa-system-residual-to-bandwidth-ceiling-scope-20260629.md` |
+| `qk_decode_role_attribution_modular.py` | run model/profile/capture and emit role bucket artifacts | ingest role attribution and normalize per-role wall share | `<home>/tinygrad-arkey/extra/qk_decode_role_attribution_modular.py`; 14B use: `<home>/tinygrad-arkey/docs/qwen-14b-32b-ldr-attribution-result-20260630.md` |
+| `qk_decode_reduce_source_trace.py` | trace reduce kernels to source positions | ingest reduce-source rows and attach them to candidate decisions | `<home>/tinygrad-arkey/extra/qk_decode_reduce_source_trace.py`; attn_k result: `<home>/tinygrad-arkey/docs/qwen-14b-32b-attn-k-route-miss-result-20260630.md` |
+| `qk_decode_runtime_overhead.py` | separate host sync from GPU work | ingest runtime-overhead rows and prevent false codegen blame | `<home>/tinygrad-arkey/extra/qk_decode_runtime_overhead.py`; `<home>/tinygrad-arkey/bench/qk-decode-runtime-overhead/result.json` |
+| prefill authority artifacts | measure synced whole-prefill throughput | ingest as authority gate evidence | `<home>/tinygrad-arkey/extra/qk_prefill_whole_synced.py`; `<home>/tinygrad-arkey/bench/qk-prefill-whole-role-attribution/latest.json` |
+| decode W==D artifacts | measure token/s and route binding | ingest as authority gate evidence | current candidate examples: `<home>/tinygrad-arkey/bench/amd-isa-backend-g3-weight-promotion/latest.json`; `<home>/tinygrad-arkey/bench/amd-isa-backend-q6k-direct-speed/latest.json` |
+| policy consistency checks | catch stale docs/policies | reimplement as BoltBeam policy guard over ledgers/manifests | `<home>/tinygrad-arkey/extra/qk_policy_consistency_check.py`; principles: `<home>/tinygrad-arkey/docs/repo-principles-audit-remediation-scope-20260630.md` |
+| artifact cache | fingerprint results and source state | implement in BoltBeam over normalized evidence | `<home>/tinygrad-arkey/extra/qk_artifact_cache.py`; consolidation note: `<home>/tinygrad-arkey/docs/claude-active-work-audit-and-agnostic-search-scope-20260630.md` |
+| candidate evaluator | classify promote/refute/defer | implement in BoltBeam as the main decision engine | `<home>/tinygrad-arkey/extra/qk_candidate_evaluator.py`; `<home>/tinygrad-arkey/bench/qk-candidate-evaluator/` |
+| refutation ledgers | prevent re-chasing closed axes | implement as durable ledger JSONL/JSON | examples: `<home>/tinygrad-arkey/bench/qk-candidate-evaluator/decode_q6k_direct_refuted/ledger_update.json`; `<home>/tinygrad-arkey/docs/claude-active-work-audit-and-agnostic-search-scope-20260630.md` |
+| roofline/ceiling audits | calculate theoretical/practical headroom | implement in BoltBeam as pure math helpers | `<home>/tinygrad-arkey/extra/amd_isa_system_residual_ceiling_audit.py`; `<home>/tinygrad-arkey/docs/amd-isa-system-residual-to-bandwidth-ceiling-scope-20260629.md` |
 
 Do **not** port:
 
@@ -386,7 +386,7 @@ Acceptance:
 - fixture artifacts from tinygrad-style JSON normalize into evidence;
 - malformed but recognizable artifacts return `adapter-incomplete` with reason;
 - unknown artifacts return `unsupported-artifact-kind`;
-- no hardcoded `/home/ubuntu/tinygrad-arkey` paths in normalized evidence.
+- no hardcoded `<home>/tinygrad-arkey` paths in normalized evidence.
 
 ### BB3 - Artifact Cache And Fingerprints
 
@@ -645,15 +645,15 @@ as provenance when available:
 
 | seed row | required citation |
 |---|---|
-| Q4_K G3 generated route speed-equivalent on 8B | `/home/ubuntu/tinygrad-arkey/bench/amd-isa-backend-g3-weight-promotion/latest.json`; `/home/ubuntu/tinygrad-arkey/bench/qk-candidate-evaluator/decode_q4k_g3_generated/ledger_update.json` |
-| Q6_K direct half-warp refuted | `/home/ubuntu/tinygrad-arkey/bench/amd-isa-backend-q6k-direct-speed/latest.json`; `/home/ubuntu/tinygrad-arkey/bench/qk-candidate-evaluator/decode_q6k_direct_refuted/ledger_update.json` |
-| native attention correct-route-bound but not fast enough | `/home/ubuntu/tinygrad-arkey/bench/amd-isa-backend-decode-attention-ceiling/latest.json`; `/home/ubuntu/tinygrad-arkey/docs/claude-active-work-audit-and-agnostic-search-scope-20260630.md` |
-| prefill pipe global promoted | `/home/ubuntu/tinygrad-arkey/bench/qk-prefill-pipe-promotion/latest.json`; successor context in `/home/ubuntu/tinygrad-arkey/bench/qk-prefill-pipe-role-selective/latest.json` |
-| prefill role-selective promoted | `/home/ubuntu/tinygrad-arkey/bench/qk-prefill-pipe-role-selective/latest.json`; `/home/ubuntu/tinygrad-arkey/bench/qk-candidate-evaluator/prefill_pipe_role_selective_default/ledger_update.json` |
-| Q4_K large-shape route miss fixed by anyshape binding | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-truegen-q1432-result-20260630.md` |
-| topology tuning stopped for 14B/32B because legal alternatives are more serial | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-shape-tuned-topology-kt-result-20260630.md` |
-| split-K for 14B FFN refuted as role-local no-win | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-split-k-sk-result-20260630.md` |
-| reduce-source trace identified attn_k route miss vs pure reduce | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-attn-k-route-miss-result-20260630.md` |
+| Q4_K G3 generated route speed-equivalent on 8B | `<home>/tinygrad-arkey/bench/amd-isa-backend-g3-weight-promotion/latest.json`; `<home>/tinygrad-arkey/bench/qk-candidate-evaluator/decode_q4k_g3_generated/ledger_update.json` |
+| Q6_K direct half-warp refuted | `<home>/tinygrad-arkey/bench/amd-isa-backend-q6k-direct-speed/latest.json`; `<home>/tinygrad-arkey/bench/qk-candidate-evaluator/decode_q6k_direct_refuted/ledger_update.json` |
+| native attention correct-route-bound but not fast enough | `<home>/tinygrad-arkey/bench/amd-isa-backend-decode-attention-ceiling/latest.json`; `<home>/tinygrad-arkey/docs/claude-active-work-audit-and-agnostic-search-scope-20260630.md` |
+| prefill pipe global promoted | `<home>/tinygrad-arkey/bench/qk-prefill-pipe-promotion/latest.json`; successor context in `<home>/tinygrad-arkey/bench/qk-prefill-pipe-role-selective/latest.json` |
+| prefill role-selective promoted | `<home>/tinygrad-arkey/bench/qk-prefill-pipe-role-selective/latest.json`; `<home>/tinygrad-arkey/bench/qk-candidate-evaluator/prefill_pipe_role_selective_default/ledger_update.json` |
+| Q4_K large-shape route miss fixed by anyshape binding | `<home>/tinygrad-arkey/docs/qwen-14b-32b-truegen-q1432-result-20260630.md` |
+| topology tuning stopped for 14B/32B because legal alternatives are more serial | `<home>/tinygrad-arkey/docs/qwen-14b-32b-shape-tuned-topology-kt-result-20260630.md` |
+| split-K for 14B FFN refuted as role-local no-win | `<home>/tinygrad-arkey/docs/qwen-14b-32b-split-k-sk-result-20260630.md` |
+| reduce-source trace identified attn_k route miss vs pure reduce | `<home>/tinygrad-arkey/docs/qwen-14b-32b-attn-k-route-miss-result-20260630.md` |
 
 Acceptance:
 
@@ -670,7 +670,7 @@ The build is complete when this works without running the GPU:
 python3 -m unittest discover -s tests -v
 
 PYTHONPATH=. python3 -m boltbeam.cli analyze \
-  /home/ubuntu/models/Qwen3-14B-Q4_K_M.gguf \
+  <home>/models/Qwen3-14B-Q4_K_M.gguf \
   --target amd_gfx1100 \
   --id qwen3-14b \
   --out-dir outputs/qwen3-14b-analysis

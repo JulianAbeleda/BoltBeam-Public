@@ -60,7 +60,7 @@ Classification legend:
 | Z3 | `_candidate_families` L47–51 | **Duplicate** of `emit._route_families`' quant→family knowledge (Q4_K→lanemap, Q6_K→q6k_route, F16→matmul). Two sources of truth for the same rule. | quant-family-specific | **A4** single capability source; analyze reuses emit |
 | Z4 | `_env_prefix` L67 | `DEV=AMD` hardcoded into every emitted command. | target-specific | **A6** command prefix derived from target backend |
 | Z5 | `build_tinygrad_commands` L54–59,83,88–102 | Tool paths `qk_decode_*` (Qwen-decode-named tinygrad scripts) and default route flag `DECODE_Q4K_G3_ANYSHAPE=1` hardcoded. | name-pattern, target-specific | **A6/A7** target/route descriptors supply the flag; tools stay tinygrad-scoped data |
-| Z6 | `emit_analysis_bundle` L215–216 | `tinygrad_root` default `/home/ubuntu/tinygrad-arkey` and `max_context=4608` (Qwen ctx) baked as defaults. | target-specific, name-pattern | **A6** (kept as caller-supplied; no host path in agnostic core) |
+| Z6 | `emit_analysis_bundle` L215–216 | `tinygrad_root` default `<home>/tinygrad-arkey` and `max_context=4608` (Qwen ctx) baked as defaults. | target-specific, name-pattern | **A6** (kept as caller-supplied; no host path in agnostic core) |
 | Z7 | `build_measurement_plan` L117–118,155–162 | `route_focus` splits roles into `q4k_like_roles` / `q6k_roles`; summary counts `q4k_like_roles`/`q6k_roles`. | quant-family-specific | **A4** focus/summary keyed off registry route families, not named quants |
 
 ## Adjacent authorities (context, not in the four files)

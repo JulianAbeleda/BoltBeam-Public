@@ -5,8 +5,8 @@ Date: 2026-07-11
 Repositories:
 
 ```text
-BoltBeam: /home/ubuntu/BoltBeam
-tinygrad: /home/ubuntu/tinygrad-arkey
+BoltBeam: <home>/BoltBeam
+tinygrad: <home>/tinygrad-arkey
 ```
 
 ## Objective

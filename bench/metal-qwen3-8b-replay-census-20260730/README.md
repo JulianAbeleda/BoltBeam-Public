@@ -28,10 +28,10 @@ role ranking or generated schedule search.
 Replay with:
 
 ```sh
-cd /Users/julianabeleda/env/tinygrad-arkey-exp
+cd <home>/env/tinygrad-arkey-exp
 DEV=METAL PYTHONPATH=. .venv/bin/python \
   extra/llm_research/decode/decode_runtime_overhead.py \
-  --model /Users/julianabeleda/models/Qwen3-8B-Q4_K_M.gguf \
+  --model <home>/models/Qwen3-8B-Q4_K_M.gguf \
   --ckpts 128 --nmeas 1 --reps 1 --warmup-decode 2 \
   --out /tmp/metal-census-authority.json \
   --graph-admission-out /tmp/metal-graph-admission-census.json

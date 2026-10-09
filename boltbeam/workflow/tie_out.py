@@ -20,9 +20,6 @@ import json
 import pathlib
 from typing import Any
 
-# KV cache element size per provider, and where that fact comes from
-KV_ELEMENT = {"llama.cpp": (2, "llama-bench's default KV cache type, f16"),
-              "tinygrad": (2, "tinygrad's fp16 KV cache on its generated decode path")}
 TINYGRAD_WARM = 3  # warm tokens before the measured window (runtime/tinygrad_decode_profile.py --warm)
 SHOW_BOTH_SHARE = 0.01  # show the limit at context 1 beside context N when the KV read changes it by 1% or more
 
@@ -83,6 +80,20 @@ def attended_context(trace:dict[str, Any], provider:str) -> float | None:
   return base + ((n + 3) / 2 if captured else (n + 1) / 2)
 
 
+def batch_limit(*, weight_ms:float, profile:dict[str, Any], context:float, batch:int, element_bytes:int,
+                bandwidth_gbs:float, params:float | None = None, peak_flops:float | None = None) -> dict[str, Any]:
+  """The decode limit for B streams at one context. One step reads the weights once for B tokens and each stream's
+  own KV cache, so step ms = weight ms + B x KV ms. A matrix product of B columns also does 2 x params x B flops;
+  when that takes longer than the reads, the step is compute bound and that is its floor. tokens/s per stream is
+  1000 / step ms; in total it is B times that."""
+  mem = weight_ms + batch * kv_ms(profile, context, element_bytes, bandwidth_gbs)
+  compute = 2.0 * params * batch / peak_flops * 1e3 if params and peak_flops else 0.0
+  step = max(mem, compute)
+  return {"batch": batch, "context": context, "step_ms": step, "memory_ms": mem, "compute_ms": compute,
+          "bound": "compute" if compute > mem else "memory", "tok_s_stream": 1000.0 / step,
+          "tok_s_total": batch * 1000.0 / step}
+
+
 def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float) -> tuple[list[dict[str, Any]], str]:
   """Each role with % of peak, µs per call and its reason word; and the rule as one sentence with its numbers."""
   in_flight = bandwidth_gbs * 1e9 * ROLE_RULE["latency_us"] * 1e-6  # bytes
@@ -92,7 +103,9 @@ def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float) -> tuple[list[dict
     calls = r.get("calls_per_token") or 0
     pct = 100.0 * r["ideal_ms"] / r["actual_ms"] if r["actual_ms"] > 0 else None
     per_call_bytes = r["ideal_ms"] * 1e-3 * bandwidth_gbs * 1e9 / calls if calls else None
-    if pct is not None and round(pct, 1) >= ROLE_RULE["at_limit_pct"]:
+    if r.get("within_noise"):  # below its floor, inside the chip's plausibility band (tinygrad_role_time.loss)
+      why = r.get("label") or REASONS["at_limit"]
+    elif pct is not None and round(pct, 1) >= ROLE_RULE["at_limit_pct"]:
       why = REASONS["at_limit"]
     elif per_call_bytes is not None and per_call_bytes < small:
       why = REASONS["small"]
@@ -114,7 +127,8 @@ def _step4(run:pathlib.Path, context:float | None, provider:str) -> tuple[float 
   if not p.exists():
     return None, None
   trace = json.loads(p.read_text())
-  measured_by = "tinygrad" if str(trace.get("provider_id", "")).startswith("tinygrad") else "llama.cpp"
+  measured_by = trace.get("provider") or ("tinygrad" if str(trace.get("provider_id", "")).startswith("tinygrad")
+                                          else "llama.cpp")
   if measured_by != provider:
     return None, None
   rows = [r for r in trace.get("rows", []) if r.get("scope") == "whole_step" and r.get("tok_s")]
@@ -126,16 +140,21 @@ def _step4(run:pathlib.Path, context:float | None, provider:str) -> tuple[float 
 
 def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trace:dict[str, Any] | None,
             limit_ms:float, profile:dict[str, Any], bandwidth_gbs:float, missing:str | None = None) -> dict[str, Any]:
-  """The tie-out for one provider's measurement. `table` is loss()'s measured table (or None: no kernels here)."""
-  element, element_source = KV_ELEMENT.get(provider, (2, "f16 assumed"))
+  """The tie-out for one provider's measurement. `table` is loss()'s measured table (or None: no kernels here).
+  For a capture of B streams the token is one decode step: the weights once, and B streams' KV caches."""
+  from boltbeam.collectors.providers import kv_element
+  element, element_source = kv_element(provider)
   context = attended_context(trace or {}, provider) if trace else None
-  untraced, untraced_ctx = _step4(run, context, provider)
+  batch = int(next((r.get("batch") or 1 for r in (trace or {}).get("rows", []) if r.get("scope") == "whole_step"), 1))
+  untraced, untraced_ctx = _step4(run, context, provider) if batch == 1 else (None, None)
   if context is None:
     context = float(untraced_ctx or 1)
-  kv = kv_ms(profile, context, element, bandwidth_gbs)
+  kv = batch * kv_ms(profile, context, element, bandwidth_gbs)
   limit = limit_ms + kv
+  streams = f" for each of {batch} streams" if batch > 1 else ""
   out = {"provider": provider, "context": context, "limit_ms_ctx1": limit_ms, "limit_ms": limit, "kv_ms": kv,
-         "kv_source": f"KV cache read at context {context:.0f}: {element} bytes per element, {element_source}",
+         "batch": batch,
+         "kv_source": f"KV cache read at context {context:.0f}{streams}: {element} bytes per element, {element_source}",
          "show_both": kv >= SHOW_BOTH_SHARE * limit_ms, "untraced_ms": untraced, "untraced_context": untraced_ctx,
          "lines": [], "token_ms": None, "token_source": None, "busy_ms": None, "missing": missing, "refused": None}
   whole = next((r for r in (trace or {}).get("rows", []) if r.get("scope") == "whole_step"), {})
@@ -147,6 +166,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
                     {"label": "kernels and gaps, not split", "ms": untraced - limit, "how": "difference"}]
     return out
   busy = table["kernel_ms"]
+  out["band"] = (table.get("band") or {}).get("words")
   # An outside capture (nsys, xctrace) runs the program nearly as it is: its own token is the one its kernels fit.
   # The engine's own profiling (tinygrad PROFILE=1, one command buffer per kernel) slows the run many times over,
   # so its wall time is mostly profiling: the token is the untraced whole step, and its idle is never "gaps".
@@ -159,7 +179,8 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   if token is None:
     out["refused"] = f"no measured token for {provider} in this run to tie the kernels out against"
     return out
-  if busy > token:  # idle time cannot be negative: the two numbers are not from comparable runs
+  band = float((table.get("band") or {}).get("band") or 0.01)
+  if busy > token * (1 + band):  # idle time cannot be negative beyond noise: the two numbers are not comparable
     numbers = (f"profiled kernels do not fit the real token: they sum to {busy:.3f} ms, more than the "
                f"{token:.3f} ms token ({source})")
     out["refused"] = (f"{provider}'s profiling mode inflates kernel times on this GPU, so its tie-out cannot be shown "
@@ -185,7 +206,8 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
                "parts": [{"kind": k, "ms": v} for k, v in sorted(parts.items(), key=lambda kv_: -kv_[1])]}]
   else:
     lines.append({"label": "all kernels above the ideal, not split by role", "ms": busy - limit, "how": "measured"})
-  lines.append({"label": "gaps between kernels (GPU idle)", "ms": token - limit - sum(l["ms"] for l in lines[1:]),
-                "how": "difference"})
+  gaps = token - limit - sum(l["ms"] for l in lines[1:])
+  lines.append({"label": "gaps between kernels (GPU idle)" if gaps >= 0 else
+                f"gaps between kernels (below 0, within ±{100 * band:.1f}%)", "ms": gaps, "how": "difference"})
   out["lines"] = lines
   return out

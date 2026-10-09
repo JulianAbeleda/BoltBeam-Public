@@ -82,7 +82,24 @@ int main(int argc, char** argv) {
     printf("%s{\"threads\": %d, \"blocks\": %d, \"best_ms\": %.4f, \"gbs\": %.1f}", s ? ", " : "", threads, blocks, ms_best, gbs);
     if (gbs > best) { best = gbs; bt = threads; bb = blocks; }
   }
-  printf("], \"read_gbs\": %.1f, \"best_shape\": {\"threads\": %d, \"blocks\": %d}}\n", best, bt, bb);
+  // sustained: the best shape read back to back for SUSTAIN_S seconds, as a decode reads (the clocks settle under
+  // continuous load); each launch is one sample
+  double sustain_s = argc > 4 ? atof(argv[4]) : 5.0;
+  int n = 0; double s_best = 0, s_sum = 0, s_min = 1e30, elapsed = 0;
+  while (elapsed < sustain_s * 1e3) {
+    CK(cudaEventRecord(t0));
+    readsum<<<bb, bt>>>(a, n4, out);
+    CK(cudaEventRecord(t1));
+    CK(cudaEventSynchronize(t1));
+    float ms; CK(cudaEventElapsedTime(&ms, t0, t1));
+    double g = (double)(n4 * 16) / (ms * 1e-3) / 1e9;
+    if (g > s_best) s_best = g;
+    if (g < s_min) s_min = g;
+    s_sum += g; elapsed += ms; n++;
+  }
+  printf("], \"read_gbs\": %.1f, \"best_shape\": {\"threads\": %d, \"blocks\": %d}, "
+         "\"sustained\": {\"seconds\": %.2f, \"launches\": %d, \"best_gbs\": %.1f, \"mean_gbs\": %.1f, \"min_gbs\": %.1f}}\n",
+         best, bt, bb, elapsed / 1e3, n, s_best, s_sum / n, s_min);
   return 0;
 }
 """
@@ -196,17 +213,36 @@ def parse(stdout:str) -> dict[str, Any]:
   return out
 
 
+SUSTAIN_S = 5.0  # about the length of a decode capture
+
+
+def plausibility(cold:float, shapes:list[float], sustained:float | None) -> dict[str, Any]:
+  """The chip's read ceiling and its one plausibility band. The ceiling is roofline_ceiling.resolve_achieved_ceiling's
+  pick between the cold burst and the sustained series (sustained when the clocks ramp or throttle, the larger when
+  flat). The band is the larger of the probe's spread over its launch shapes, the cold to sustained difference, and
+  1%: a measured kernel within it of the floor is at the limit, further below is refused."""
+  from boltbeam.roofline.roofline_ceiling import resolve_achieved_ceiling
+  res = resolve_achieved_ceiling(cold_samples=[cold], sustained_samples=[sustained] if sustained else None)
+  spread = (max(shapes) - min(shapes)) / max(shapes) if shapes else 0.0
+  drift = abs(sustained - cold) / sustained if sustained else 0.0
+  return {"read_gbs": res.achieved_gbs, "regime": res.regime, "cold_gbs": cold, "sustained_gbs": sustained,
+          "spread": round(spread, 4), "drift": round(drift, 4), "band": round(max(spread, drift, 0.01), 4)}
+
+
 def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | None = None,
-                     run=subprocess.run) -> dict[str, Any]:
+                     run=subprocess.run, sustain_s:float = SUSTAIN_S) -> dict[str, Any]:
   nvcc = nvcc or find_nvcc()
   if not nvcc:
     raise RuntimeError("nvcc is not installed (set BOLTBEAM_NVCC or put /usr/local/cuda/bin on PATH)")
   exe = build(nvcc)
-  proc = run([str(exe), str(device), str(gib << 30), str(reps)], capture_output=True, text=True, timeout=600)
+  proc = run([str(exe), str(device), str(gib << 30), str(reps), str(sustain_s)], capture_output=True, text=True, timeout=600)
   if proc.returncode != 0:
     raise RuntimeError(f"the CUDA probe exited {proc.returncode}: {(proc.stdout + proc.stderr).strip()[-300:]}")
   out = parse(proc.stdout)
-  out.update(schema="boltbeam.cuda_read_bandwidth.v1", method=METHOD.format(gib=gib, reps=reps))
+  sustained = (out.get("sustained") or {}).get("best_gbs")
+  out.update(plausibility(out["read_gbs"], [r["gbs"] for r in out.get("shapes") or []], sustained))
+  out.update(schema="boltbeam.cuda_read_bandwidth.v1", method=METHOD.format(gib=gib, reps=reps) +
+             f"; then the best shape back to back for {sustain_s:.0f} s (sustained)")
   return out
 
 

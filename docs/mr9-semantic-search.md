@@ -7,10 +7,10 @@ reconstruct a request or candidate-population JSON file before the run.
 From the BoltBeam checkout, the current EXP control command is:
 
 ```sh
-cd /Users/julianabeleda/env/BoltBeam
+cd <home>/env/BoltBeam
 .venv/bin/python -m boltbeam.cli mr9-semantic-search mr8-selection.json \
-  --provider-command '["/Users/julianabeleda/env/tinygrad-arkey-exp/.venv/bin/python","/Users/julianabeleda/env/tinygrad-arkey-exp/extra/llm_research/search_provider.py","--backend","METAL"]' \
-  --provider-revision "$(git -C /Users/julianabeleda/env/tinygrad-arkey-exp rev-parse HEAD)" \
+  --provider-command '["<home>/env/tinygrad-arkey-exp/.venv/bin/python","<home>/env/tinygrad-arkey-exp/extra/llm_research/search_provider.py","--backend","METAL"]' \
+  --provider-revision "$(git -C <home>/env/tinygrad-arkey-exp rev-parse HEAD)" \
   --boltbeam-revision "$(git rev-parse HEAD)" \
   --finalist-repeats 2 \
   --minimum-win 0.03 \

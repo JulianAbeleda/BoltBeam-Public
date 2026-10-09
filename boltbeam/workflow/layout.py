@@ -157,11 +157,12 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
         row.update(read_gbs=known[0], read_source=known[1])
       elif backend == "Metal" and metal_read is not None:
         got = metal_read()
-        row.update(read_gbs=got["read_gbs"], read_source=f"measured on this GPU with BoltBeam's Metal read probe, {_today()}")
+        row.update(read_gbs=got["read_gbs"], read_source=f"measured on this GPU with BoltBeam's Metal read probe, {_today()}",
+                   **_ceiling_facts(got))
       elif backend == "CUDA" and cuda_read is not None:
         got = cuda_read(d["index"])
         row.update(read_gbs=got["read_gbs"], read_source=f"measured on GPU {d['index']} with BoltBeam's native CUDA read "
-                   f"probe, best of {got.get('reps', 10)} per launch shape, {_today()}")
+                   f"probe, best of {got.get('reps', 10)} per launch shape, {_today()}", **_ceiling_facts(got))
       elif backend == "CUDA" and cuda_read is None:
         raise RuntimeError("BoltBeam's CUDA read probe cannot run here: nvcc is not installed")
       elif probe is not None and device_prefix:
@@ -282,6 +283,11 @@ def short_source(source:str | None, measured_at:str | None = None) -> str:
   return s or "unknown"
 
 
+def _ceiling_facts(got:dict[str, Any]) -> dict[str, Any]:
+  """A probe's cold, sustained, regime and plausibility band, as a machine-facts row keeps them."""
+  return {k: got[k] for k in ("regime", "cold_gbs", "sustained_gbs", "spread", "drift", "band") if got.get(k) is not None}
+
+
 def read_bandwidth(facts:dict[str, Any] | None, layout:str = "one") -> dict[str, Any] | None:
   """The read bandwidth the one-GPU limit uses (the layout's first GPU), with its source in full and in short;
   None for no facts, a multi-GPU layout or a GPU with no read bandwidth. Measured or registry, it is the one number
@@ -291,7 +297,7 @@ def read_bandwidth(facts:dict[str, Any] | None, layout:str = "one") -> dict[str,
   g = facts["gpus"][0]
   if not g.get("read_gbs"):
     return None
-  return {"gbs": g["read_gbs"], "source": g.get("read_source"), "target_id": g.get("target_id"),
+  return {"gbs": g["read_gbs"], "source": g.get("read_source"), "target_id": g.get("target_id"), "band": g.get("band"),
           "measured": str(g.get("read_source") or "").startswith("measured"),
           "short": short_source(g.get("read_source"), facts.get("measured_at"))}
 

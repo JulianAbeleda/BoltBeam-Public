@@ -9,7 +9,7 @@ The current BoltBeam profile-events collector ran the authority code path after
 Russell’s authority-mode fix, with:
 
 ```text
-model:          /home/ubuntu/models/Qwen3-14B-Q4_K_M.gguf
+model:          <home>/models/Qwen3-14B-Q4_K_M.gguf
 target:         AMD gfx1100
 K/warmups:      1 / 1
 rounds:         1
@@ -38,8 +38,8 @@ packed-step attribution. Its weighted trace is
 Command:
 
 ```bash
-/home/ubuntu/env/llama.cpp/build/bin/llama-bench \
-  -m /home/ubuntu/models/Qwen3-14B-Q4_K_M.gguf -ngl 99 \
+<home>/env/llama.cpp/build/bin/llama-bench \
+  -m <home>/models/Qwen3-14B-Q4_K_M.gguf -ngl 99 \
   -p 512 -n 128 -b 2048 -ub 512 -r 3 -o json
 ```
 

@@ -46,7 +46,20 @@ def groups(launches:Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], counts:dict[tuple[str, str], int],
               tokens:int, peak_gbs:float | None) -> dict[str, Any]:
   """Pair kernel groups with roles. roles: the ceiling's decode roles (role, quant, bytes_moved, floor_ms).
-  counts: calls per token per (role, quant). Returns {"pairs": [...], "groups": every group with its role or None}."""
+  counts: calls per token per (role, quant). Returns {"pairs": [...], "groups": every group with its role or None}.
+  Exact matches are tried before fused ones, and also the other way round; the pairing that places more roles is
+  kept (exact first on a tie). A fused gate and up kernel makes as many calls as ffn_down, so exact-first alone can
+  give it to ffn_down and leave gate and up with no kernel that could move their bytes."""
+  import copy
+  first = _attribute(copy.deepcopy(kernel_groups), roles, counts, tokens, peak_gbs, fused_first=False)
+  if not first["unpaired"]:
+    return first
+  other = _attribute(copy.deepcopy(kernel_groups), roles, counts, tokens, peak_gbs, fused_first=True)
+  return other if len(other["unpaired"]) < len(first["unpaired"]) else first
+
+
+def _attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], counts:dict[tuple[str, str], int],
+               tokens:int, peak_gbs:float | None, *, fused_first:bool) -> dict[str, Any]:
   per_count: dict[int, list[dict[str, Any]]] = {}
   for r in roles:
     c = counts.get((r["role"], r["quant"]))
@@ -62,7 +75,7 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
   paired: set[tuple[str, str]] = set()
   # exact matches first, then fused kernels: a group that makes 1/k of a role's calls, each moving k calls' bytes
   # (llama.cpp on CUDA runs ffn gate and up as one kernel: 36 calls per token for the role's 72)
-  for k in range(1, MAX_FUSED + 1):
+  for k in (range(MAX_FUSED, 0, -1) if fused_first else range(1, MAX_FUSED + 1)):
     for count, rs in per_count.items():
       if count % k:
         continue
@@ -274,25 +287,27 @@ class CaptureRefused(RuntimeError):
 
 
 def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_ms:float | None,
-                 long_kernels:int) -> None:
-  """Refuse a window with no kernels, or with more GPU time per token than the captured run took per token."""
+                 long_kernels:int, band:float = 0.01) -> None:
+  """Refuse a window with no kernels, or with more GPU time per token than the captured run took per token by more
+  than the chip's plausibility band (screen.plausibility_band)."""
   if not window:
     raise CaptureRefused(f"{method} captured {long_kernels} kernels, but none ran only in the decode tokens: the "
                          "decode's kernels were not visible to it (for llama.cpp on CUDA, its CUDA graphs)")
   per_token = sum(g["wall_us"] for g in window) / tokens / 1000.0
-  if token_ms and per_token > token_ms:
+  if token_ms and per_token > token_ms * (1 + band):
     raise CaptureRefused(f"{method} counted {per_token:.2f} ms of GPU time per token, more than the {token_ms:.2f} ms "
-                         "the captured run took per token, so it counted work outside the decode tokens")
+                         f"the captured run took per token by more than ±{100 * band:.1f}%, so it counted work "
+                         "outside the decode tokens")
 
 
 def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str, model_id:str, target,
                    context:int, tokens:int, out:str, token_ms:float | None = None,
-                   long_kernels:int = 0, overlap:dict[str, Any] | None = None) -> dict[str, Any]:
+                   long_kernels:int = 0, overlap:dict[str, Any] | None = None, batch:int = 1) -> dict[str, Any]:
   """A boltbeam.timing_trace.v1 of one provider's captured decode window, attributed, written to run/out.
-  token_ms is the captured run's own time per token, as the runtime printed it. Refused (CaptureRefused, no file
+  token_ms is the captured run's own time per token, as the runtime printed it. With batch B, a token is one decode
+  step of B streams: the weights are read once per step, so a role's calls per step are its count at any batch. Refused (CaptureRefused, no file
   written) when the window is empty or holds more GPU time per token than that."""
   (pathlib.Path(run) / out).unlink(missing_ok=True)  # a refused capture leaves no earlier result standing
-  check_window(window, method=method, tokens=tokens, token_ms=token_ms, long_kernels=long_kernels)
   import json
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
   from boltbeam.workflow.common import load_manifest
@@ -300,6 +315,8 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   manifest = load_manifest(run)
   profile = _optional(run, "model_profile.json")
   ceil = _measured_vs_ceiling(manifest, profile)
+  check_window(window, method=method, tokens=tokens, token_ms=token_ms, long_kernels=long_kernels,
+               band=max(float(ceil.get("band") or 0.0), 0.01))
   counts = {(r["role"], r["quant"]): int(r["count"]) for r in profile.get("roles", []) if r.get("count")}
   result = attribute(window, ceil.get("_roles") or [], counts, tokens, target.memory_bandwidth_gbs)
   wall = sum(g["wall_us"] for g in window)
@@ -308,7 +325,8 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
            "timing_source": f"{method} kernel timeline, attributed by bytes and count",
            "rows": [{"scope": "whole_step", "context": context, "decode_tokens": tokens, "wall_us": wall,
                      "tok_s": tokens / (wall / 1e6) if wall else None, "launch_count": sum(g["calls"] for g in window),
-                     "measurement_scope": "summed_kernel_intervals", "time_source": method, "token_ms": token_ms}]
+                     "measurement_scope": "summed_kernel_intervals", "time_source": method, "token_ms": token_ms,
+                     "batch": batch}]
                    + trace_rows(result, context=context, time_source=method),
            "pairs": result["pairs"], "unpaired_roles": result["unpaired"], "assembled_roles": result["assembled"],
            "ambiguous": result["ambiguous"], "overlap": overlap}

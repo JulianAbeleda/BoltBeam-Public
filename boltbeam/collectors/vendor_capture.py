@@ -31,15 +31,19 @@ class NoCapture(RuntimeError):
   """No outside view of the GPU here. The message says why, in one sentence."""
 
 
-def _nsys_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str]) -> list[str]:
+def _nsys_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str], flush_ms:int | None = None) -> list[str]:
   # llama.cpp runs its decode as CUDA graphs. By default nsys reports a graph launch as one item with no
   # kernels; node tracing reports every kernel inside the graph, with its grid.
-  return [tool, "profile", "-t", "cuda", "--cuda-graph-trace=node", "--force-overwrite", "true",
+  # flush_ms: a GPU process that its parent stops with a signal (a server's runner) never flushes CUPTI's buffers
+  # at exit; flushing on a timer keeps its kernels.
+  flush = [f"--cuda-flush-interval={flush_ms}"] if flush_ms else []
+  return [tool, "profile", "-t", "cuda", "--cuda-graph-trace=node", *flush, "--force-overwrite", "true",
           "-o", str(out / "capture"), *argv]
 
 
 def _nsys_read(tool:str, out:pathlib.Path) -> list[dict[str, Any]]:
-  proc = subprocess.run([tool, "stats", "--report", "cuda_gpu_trace", "--format", "csv", "--output", "-",
+  # --force-export: a capture again in the same folder must not be read through the last capture's sqlite export
+  proc = subprocess.run([tool, "stats", "--force-export=true", "--report", "cuda_gpu_trace", "--format", "csv", "--output", "-",
                          str(out / "capture.nsys-rep")], capture_output=True, text=True, timeout=600)
   if proc.returncode != 0:
     raise RuntimeError(f"nsys stats exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
@@ -163,8 +167,9 @@ def plan(backend:str, find:Callable[[str], str | None] | None = None) -> dict[st
 
 
 def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 1800.0, cwd:pathlib.Path | None = None,
-            env:dict[str, str] | None = None) -> list[dict[str, Any]]:
-  """Run argv under the vendor tool and return its kernel launches. NoCapture when there is no tool here."""
+            env:dict[str, str] | None = None, flush_ms:int | None = None) -> list[dict[str, Any]]:
+  """Run argv under the vendor tool and return its kernel launches. NoCapture when there is no tool here.
+  flush_ms asks the tool to flush its buffers on a timer, where it can (nsys)."""
   p = plan(backend)
   if p["tool"] is None:
     raise NoCapture(p["reason"])
@@ -172,7 +177,8 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   out.mkdir(parents=True, exist_ok=True)
   log = out / "capture.log"
   with open(log, "w") as fh:
-    proc = subprocess.run(wrap(p["tool"], argv, out, env or {}), stdout=fh, stderr=subprocess.STDOUT, timeout=timeout_s,
+    wrapped = wrap(p["tool"], argv, out, env or {}, flush_ms) if backend == "CUDA" else wrap(p["tool"], argv, out, env or {})
+    proc = subprocess.run(wrapped, stdout=fh, stderr=subprocess.STDOUT, timeout=timeout_s,
                           cwd=cwd, env={**os.environ, **(env or {})})
   if proc.returncode != 0:
     raise RuntimeError(f"{p['method']} exited {proc.returncode}: {log.read_text()[-300:]}")

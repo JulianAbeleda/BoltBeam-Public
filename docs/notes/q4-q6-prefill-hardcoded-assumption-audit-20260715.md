@@ -1,7 +1,7 @@
 # Q4/Q6 prefill hard-coded-assumption audit
 
 Audit date: 2026-07-15. Scope: the Q4/Q6 prefill path spanning
-`/home/ubuntu/tinygrad-arkey` and `/home/ubuntu/BoltBeam`. This is an inventory,
+`<home>/tinygrad-arkey` and `<home>/BoltBeam`. This is an inventory,
 not a runtime change. Runtime dispatch and emitters are intentionally untouched.
 
 ## Executive result
@@ -28,7 +28,7 @@ The following assumptions are fully evidenced in source and tests:
 - Role normalization is explicit for gate/up, down, Q/O, K/V, and lm_head
   (`tinygrad-arkey/tinygrad/llm/prefill_routes.py:96-108`). BoltBeam’s all-four
   authority requires exactly `ffn_gate_up`, `ffn_down`, `attn_qo`, and `attn_kv`
-  (`/home/ubuntu/BoltBeam/boltbeam/prefill_authority.py:25-30`).
+  (`<home>/BoltBeam/boltbeam/prefill_authority.py:25-30`).
 - The route spec advertises fp16 activations, Q4_K/Q6_K tensor formats, and
   packed-dequant-dot lowering (`tinygrad-arkey/tinygrad/llm/prefill_routes.py:187-194`).
   KV storage is a separate concern: the model uses int8 plus fp16 scales only
@@ -37,9 +37,9 @@ The following assumptions are fully evidenced in source and tests:
   (`model.py:421-454`).
 - The pinned authority protocol is K=8, 4 warmups, 3 rounds, pinned clock,
   whole lengths 512/1024/2048/4096, and generated-pure/no-rollback metadata
-  (`/home/ubuntu/BoltBeam/docs/prefill-policy-benchmark-protocol-20260712.md:12-23`).
+  (`<home>/BoltBeam/docs/prefill-policy-benchmark-protocol-20260712.md:12-23`).
   The validator enforces those fields and the context sweep
-  (`/home/ubuntu/BoltBeam/boltbeam/prefill_authority.py:17-30`).
+  (`<home>/BoltBeam/boltbeam/prefill_authority.py:17-30`).
 
 ## Assumption ledger
 
@@ -77,7 +77,7 @@ warmups, rounds, clock status, route purity, rollback status, context lengths,
 model profile, and role census match. Do not merge the 8B generated-pure series
 with the 14B direct-packed series, and do not call the raw HBM byte floor a Q6
 authority. Typed host-side fixtures also do not establish execution:
-`/home/ubuntu/BoltBeam/boltbeam/prefill_authority.py:5-15`.
+`<home>/BoltBeam/boltbeam/prefill_authority.py:5-15`.
 
 ## Audit limits
 

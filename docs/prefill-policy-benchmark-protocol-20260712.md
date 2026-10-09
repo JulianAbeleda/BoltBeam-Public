@@ -12,7 +12,7 @@ From the Tinygrad checkout:
 ```sh
 PYTHONPATH=. DEV=AMD PREFILL_V2=1 PREFILL_GRAPH_GEMM=1 \
 python3 extra/qk/bench.py --prefill \
-  --model /home/ubuntu/models/Qwen3-8B-Q4_K_M.gguf \
+  --model <home>/models/Qwen3-8B-Q4_K_M.gguf \
   --prefill-K 8 --prefill-warmups 4 --prefill-rounds 3 \
   --prefill-whole-lengths 512,1024,2048,4096 --pin-clock
 ```

@@ -35,7 +35,7 @@ Repositories are clean and pushed at:
 
 Current trusted facts:
 
-- model: `/home/ubuntu/models/Qwen3-8B-Q4_K_M.gguf`;
+- model: `<home>/models/Qwen3-8B-Q4_K_M.gguf`;
 - target: RX 7900 XTX / `gfx1100`;
 - clean authorities: prefill pp512 `3881 tok/s`, decode ctx512 `117.1 tok/s`;
 - post-change smoke: prefill pp512 `3860 tok/s`, decode ctx512 `116.9 tok/s`;
@@ -52,13 +52,13 @@ Current trusted facts:
 Existing model and roofline artifacts are under:
 
 ```text
-/home/ubuntu/boltbeam-runs/qwen3-8b-current-20260713/
+<home>/boltbeam-runs/qwen3-8b-current-20260713/
 ```
 
 The canonical promoted prefill candidate set is:
 
 ```text
-/home/ubuntu/tinygrad-arkey/bench/prefill-pure-full-kernel/multirole-buffer2-candidate-set-v1/candidate-set.json
+<home>/tinygrad-arkey/bench/prefill-pure-full-kernel/multirole-buffer2-candidate-set-v1/candidate-set.json
 ```
 
 ## Non-negotiable evidence rules
@@ -213,17 +213,17 @@ For a non-synthetic request, the predicate must verify at least:
 
 Add negative tests for each gate and one production-shaped positive fixture. Keep the existing synthetic structural
 golden explicitly non-production. Build the final request from real artifacts and write the result under a dated
-`/home/ubuntu/boltbeam-runs/` directory; commit only durable small authorities according to repository policy.
+`<home>/boltbeam-runs/` directory; commit only durable small authorities according to repository policy.
 
 ## Verification sequence
 
 Run CPU/contract gates first:
 
 ```bash
-cd /home/ubuntu/BoltBeam
+cd <home>/BoltBeam
 python3 -m pytest -q tests/kernel_analysis tests/test_amd_runtime_bridge.py tests/test_process_isolated.py
 
-cd /home/ubuntu/tinygrad-arkey
+cd <home>/tinygrad-arkey
 python3 -m pytest -q \
   test/unit/test_amd_final_elf_capture_20260712.py \
   test/unit/test_amd_isa_extraction_fixtures.py \

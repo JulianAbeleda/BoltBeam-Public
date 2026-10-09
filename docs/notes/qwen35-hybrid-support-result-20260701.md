@@ -19,7 +19,7 @@ emit SSM-specific route families.
 
 - Qwen model card: <https://huggingface.co/Qwen/Qwen3.5-27B>
 - GGUF artifact used locally: <https://huggingface.co/unsloth/Qwen3.5-27B-GGUF>
-- Downloaded file: `/home/ubuntu/models/Qwen3.5-27B-Q4_K_M.gguf`
+- Downloaded file: `<home>/models/Qwen3.5-27B-Q4_K_M.gguf`
 
 ## Real GGUF Profile
 
@@ -27,7 +27,7 @@ Command:
 
 ```bash
 PYTHONPATH=. python3 -m boltbeam.cli inspect \
-  /home/ubuntu/models/Qwen3.5-27B-Q4_K_M.gguf \
+  <home>/models/Qwen3.5-27B-Q4_K_M.gguf \
   --target amd_gfx1100 \
   --out outputs/qwen3.5-27b-hybrid/model_profile.json
 ```
@@ -84,7 +84,7 @@ Command:
 
 ```bash
 PYTHONPATH=. python3 -m boltbeam.cli emit-search \
-  /home/ubuntu/models/Qwen3.5-27B-Q4_K_M.gguf \
+  <home>/models/Qwen3.5-27B-Q4_K_M.gguf \
   --target amd_gfx1100 \
   --out outputs/qwen3.5-27b-hybrid/search_space.json
 ```

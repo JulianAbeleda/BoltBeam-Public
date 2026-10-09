@@ -131,16 +131,16 @@ The only dirty source was `boltbeam/collectors/llama_rocprof.py` in `codex/boltb
 - Six non-main BoltBeam worktrees.
 - Five local research branches.
 - Worktrees removed:
-  - `/home/ubuntu/worktrees/boltbeam-decode-decay`;
-  - `/home/ubuntu/worktrees/boltbeam-kfd-bridge`;
-  - `/home/ubuntu/worktrees/boltbeam-port-resources`;
-  - `/home/ubuntu/worktrees/boltbeam-port-scope`;
-  - `/home/ubuntu/worktrees/boltbeam-port-timing-routes`;
-  - `/home/ubuntu/worktrees/boltbeam-tinygrad-integration`.
+  - `<home>/worktrees/boltbeam-decode-decay`;
+  - `<home>/worktrees/boltbeam-kfd-bridge`;
+  - `<home>/worktrees/boltbeam-port-resources`;
+  - `<home>/worktrees/boltbeam-port-scope`;
+  - `<home>/worktrees/boltbeam-port-timing-routes`;
+  - `<home>/worktrees/boltbeam-tinygrad-integration`.
 
 ## Final repository shape
 
-- Production worktree: `/home/ubuntu/BoltBeam` on `main`.
+- Production worktree: `<home>/BoltBeam` on `main`.
 - Local branches: `main` and `archive/tinygrad-integration-worktrees-20260727`.
 - Research history is remote-recoverable; the archive branch must not be merged into main because its additional parents
   are reachability anchors, not production integration.

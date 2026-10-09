@@ -29,9 +29,12 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
                                                llama-bench decode, collectors/llama_bench_decode.py) and writes
                                                measure_status.json either way: measured, skipped or failed, with
                                                the reason and the command to run instead. --provider llama.cpp
-                                               (default) or tinygrad picks the runtime; a busy GPU is refused.
-    providers --target T                       the runtimes that can measure here (llama.cpp, tinygrad), each with
-                                               the reason when it cannot, and how step 5 times its roles
+                                               (default), tinygrad, vllm, ollama or tensorrt-llm picks the engine;
+                                               an engine that cannot read the model's weight format is refused, and
+                                               so is a busy GPU. --batch 1,32 also times a decode step of 32 streams.
+    providers --target T                       the engines that can measure here (collectors/providers.ENGINES),
+                                               each with the reason when it cannot, the weight formats it reads,
+                                               and how step 5 times its roles
     gpu-free --target T                        is the GPU free, or which program holds it
     role-time --run DIR [--provider P]         time every role inside a real decode with the run's provider
                                                (collectors/providers.py); feeds `results.loss`
@@ -154,6 +157,19 @@ def _block(report:dict[str, Any], context:int) -> dict[str, Any]:
           "roles": _roles(report)}
 
 
+def plausibility_band(target, read:dict[str, Any] | None = None) -> float:
+  """The chip's one plausibility band, as a ± fraction: the largest of the read probe's spread over its launch
+  shapes, its cold to sustained difference, the chip's documented run-to-run range (half its width around the
+  middle), and 1%. The probe's numbers come from this machine's facts when the bandwidth is theirs, else from the
+  chip's fact source; the documented range is the chip's."""
+  src = ((getattr(target, "capabilities", None) or {}).get("fact_sources") or {}).get("memory_bandwidth_gbs") or {}
+  probe = (read or {}).get("band") if read and read.get("band") is not None else \
+    max(float(src.get("band") or 0.0), float(src.get("spread") or 0.0), float(src.get("drift") or 0.0))
+  rr = src.get("run_to_run") or {}
+  documented = (rr["high"] - rr["low"]) / (rr["high"] + rr["low"]) if rr.get("high") and rr.get("low") else 0.0
+  return round(max(float(probe or 0.0), documented, 0.01), 4)
+
+
 def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "fp16",
             peak_gbs:float | None = None, peak_tflops:float | None = None,
             read:dict[str, Any] | None = None) -> dict[str, Any]:
@@ -176,7 +192,7 @@ def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "f
   prefill = model_roofline(profile, peak_flops=peak_flops, peak_bw_bytes_s=bw * 1e9, context=context)
   return {
     "schema": SCHEMA, "kind": "ceiling", "model_id": profile["model_id"], "target": target_facts(target),
-    "peak_bandwidth_gbs": bw, "bandwidth_source": (read or {}).get("short"), "peak_tflops": peak_flops / 1e12, "truth_status": decode["truth_status"],
+    "peak_bandwidth_gbs": bw, "bandwidth_source": (read or {}).get("short"), "band": plausibility_band(target, read), "peak_tflops": peak_flops / 1e12, "truth_status": decode["truth_status"],
     "ridge_intensity": decode["ridge_intensity"], "assumptions": decode["assumptions"],
     "decode": _block(decode, 1), "prefill": _block(prefill, context),
   }
@@ -301,7 +317,7 @@ def _measured_vs_ceiling(manifest:dict[str, Any], profile:dict[str, Any], run:pa
   return {"status": "modeled", "context": block["context"], "tok_s": block["tok_s"], "floor_ms": block["floor_ms"],
           "bytes_moved": block["bytes_moved"],
           "peak_bandwidth_gbs": c["peak_bandwidth_gbs"], "bandwidth_source": c["bandwidth_source"],
-          "_roles": block["roles"]}
+          "band": c.get("band"), "_roles": block["roles"]}
 
 
 def run_provider(run:pathlib.Path) -> str:
@@ -315,7 +331,7 @@ def _provider_table(run:pathlib.Path, provider:str, ceil:dict[str, Any], limit_m
   if not trace:
     return None, {}
   capture = trace.get("capture") or {"method": tinygrad_role_time.OWN_TIMING, "reason": None}
-  return tinygrad_role_time.loss(ceil.get("_roles") or [], trace, limit_ms), capture
+  return tinygrad_role_time.loss(ceil.get("_roles") or [], trace, limit_ms, ceil.get("band")), capture
 
 
 def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], measured_tok_s:Any, *,
@@ -523,7 +539,37 @@ def results_core(run:pathlib.Path, beside:bool = False) -> dict[str, Any]:
                  "next_action": r.get("next_action")} for r in primitive.get("quant_gemv_regimes", []) or []],
     "blocked": blocked(plan),
     "report": "report.html" if (run / "report.html").exists() else None,
+    "engine": {"provider": run_provider(run), "weight_format": _optional(run, MEASURE_STATUS).get("weight_format")
+               or (providers.weight_format(profile) if profile else None)},
+    "batches": batch_rows(run, manifest, profile, ceil),
   }
+
+
+def batch_rows(run:pathlib.Path, manifest:dict[str, Any], profile:dict[str, Any], ceil:dict[str, Any]) -> list[dict[str, Any]]:
+  """Every measured point (context, batch) of step 4 beside its own limit (tie_out.batch_limit): tokens/s per
+  stream and in total, and the share of the limit reached. Empty when step 4 kept no points."""
+  from boltbeam.workflow import tie_out as tie
+  trace = _optional(run, "timing_trace.json")
+  points = trace.get("batches") or []
+  if not points or ceil.get("status") != "modeled":
+    return []
+  provider = trace.get("provider") or run_provider(run)
+  element, _ = providers.kv_element(provider)
+  params = sum(float(r.get("rows") or 0) * float(r.get("cols") or 0) * float(r.get("count") or 1)
+               for r in profile.get("roles") or [])
+  try:
+    peak_flops = resolve_peak_flops(get_target(manifest.get("target_id")), "fp16", None)
+  except SystemExit:
+    peak_flops = None
+  out = []
+  for p in points:
+    lim = tie.batch_limit(weight_ms=ceil["floor_ms"], profile=profile, context=float(p["context"]), batch=int(p["batch"]),
+                          element_bytes=element, bandwidth_gbs=ceil["peak_bandwidth_gbs"], params=params or None,
+                          peak_flops=peak_flops)
+    out.append({"context": p["context"], "batch": p["batch"], "step_ms": p["step_ms"], "tok_s_stream": p["tok_s_stream"],
+                "tok_s_total": p["tok_s_total"], "source": p.get("source"), "limit": lim,
+                "pct_of_limit": 100.0 * lim["step_ms"] / p["step_ms"] if p["step_ms"] else None})
+  return out
 
 
 def show(run:pathlib.Path) -> dict[str, Any]:
@@ -551,13 +597,18 @@ def show(run:pathlib.Path) -> dict[str, Any]:
 
 def _write_measure_status(run:str | pathlib.Path, status:str, *, collector:str | None = None, reason:str | None = None,
                           command:str | None = None, probe:str | None = None, probe_reason:str | None = None,
-                          provider:str | None = None, layout:str = "one", gpus:int = 1) -> None:
-  """probe says whether this collector takes the building-block tests: "measured" or "absent" (with probe_reason)."""
+                          provider:str | None = None, layout:str = "one", gpus:int = 1,
+                          batches:list[int] | None = None) -> None:
+  """probe says whether this collector takes the building-block tests: "measured" or "absent" (with probe_reason).
+  Every run is labelled with its engine (provider) and its weight format, read off the run's model profile."""
   from boltbeam.workflow.common import run_dir, update_manifest, write_json
   out = run_dir(run)
+  profile = _optional(out, "model_profile.json")
   write_json(out / MEASURE_STATUS, {"schema": SCHEMA_MEASURE_STATUS, "status": status, "collector": collector,
                                     "reason": reason, "command": command, "probe": probe, "probe_reason": probe_reason,
-                                    "provider": provider or providers.DEFAULT, "layout": layout, "gpus": gpus})
+                                    "provider": provider or providers.DEFAULT, "layout": layout, "gpus": gpus,
+                                    "weight_format": providers.weight_format(profile) if profile else None,
+                                    "batches": sorted({1, *(batches or [])})})
   update_manifest(out, stage="measure", artifacts=[MEASURE_STATUS])
 
 
@@ -595,7 +646,18 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
                                "--measure auto --provider tinygrad"}
     if why := tinygrad_role_time.available(target, tinygrad_root):
       return out | {"reason": why, "command": "set BOLTBEAM_TINYGRAD_ROOT to the tinygrad fork, then measure again"}
-  else:
+  if why := providers.reads(provider, model):
+    return out | {"reason": why, "command": f"pick a {' or '.join(providers.FORMATS[provider])} model for {provider}"}
+  if provider in providers.DRIVEN:
+    from boltbeam.workflow.autoscan import this_machine_target
+    here = this_machine_target()
+    if here != target_id:
+      return out | {"reason": f"this machine is {here or 'no registered GPU'}, not {target_id}",
+                    "command": f"on the machine with {target_id}: pipeline MODEL --run {run} --target {target_id} "
+                               f"--measure auto --provider {provider}"}
+    if why := providers.ENGINES[provider].available(target):
+      return out | {"reason": why, "command": f"install {provider}, then measure again"}
+  elif provider != tinygrad_role_time.PROVIDER:
     try:
       _collectors()[cid].preflight(target_id, model, run=run)
     except CannotMeasure as exc:
@@ -609,13 +671,19 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
   return out
 
 
+def _parse_batches(text:str | None) -> list[int]:
+  """--batch "1,32": the batch sizes to time. Batch 1 is always timed."""
+  return sorted({1, *(int(x) for x in (text or "1").split(",") if x.strip())})
+
+
 def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
   provider = plan.get("provider") or providers.DEFAULT
   layout, gpus = plan.get("layout") or "one", plan.get("gpus") or 1
+  batches = _parse_batches(getattr(args, "batch", None))
   if plan["reason"]:
     return [("measure", lambda: _write_measure_status(args.run, "skipped", collector=plan["collector"],
                                                        reason=plan["reason"], command=plan["command"],
-                                                       provider=provider, layout=layout, gpus=gpus))]
+                                                       provider=provider, layout=layout, gpus=gpus, batches=batches))]
   from boltbeam.collectors import llama_bench_decode, metal_native
   run = pathlib.Path(args.run)
   args.timing = str(run / "timing_trace.json")
@@ -631,7 +699,7 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
         raise
       if last:
         _write_measure_status(args.run, "measured", collector=plan["collector"], probe=probe,
-                              probe_reason=probe_reason, provider=provider, layout=layout, gpus=gpus)
+                              probe_reason=probe_reason, provider=provider, layout=layout, gpus=gpus, batches=batches)
     return (f"measure_{key}", step)
 
   out_dir = lambda: metal_native.run_dir(args.run)  # noqa: E731
@@ -644,9 +712,12 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
     timing = guarded("timing", lambda: providers.measure_tinygrad(out_dir(), root=root),
                      probe="measured" if is_metal else "absent",
                      probe_reason=None if is_metal else llama_bench_decode.PROBE_ABSENT)
-  elif plan["collector"] == llama_bench_decode.COLLECTOR_ID:
-    timing = guarded("timing", lambda: llama_bench_decode.measure(out_dir(), layout=layout, gpus=gpus), probe="absent",
+  elif provider in providers.DRIVEN:
+    timing = guarded("timing", lambda: providers.measure_engine(out_dir(), provider, batches=batches), probe="absent",
                      probe_reason=llama_bench_decode.PROBE_ABSENT)
+  elif plan["collector"] == llama_bench_decode.COLLECTOR_ID:
+    timing = guarded("timing", lambda: llama_bench_decode.measure(out_dir(), layout=layout, gpus=gpus, batches=batches),
+                     probe="absent", probe_reason=llama_bench_decode.PROBE_ABSENT)
   else:
     timing = guarded("timing", lambda: metal_native.measure(out_dir(), only="timing"), probe="measured")
   if probe:
@@ -711,7 +782,8 @@ def role_time(args, out=sys.stdout) -> int:
   try:
     provider = getattr(args, "provider", None) or run_provider(run)
     say(f"role-time: start {provider}")
-    providers.role_time(run, provider, root=pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None)
+    providers.role_time(run, provider, root=pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None,
+                        batch=int(getattr(args, "batch", None) or 1))
     output_run(run)
   except Exception as exc:  # application boundary: the reason is the fact the reader needs
     say(f"role-time failed: {exc}")
@@ -821,6 +893,8 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     for i, l in enumerate(t["lines"]):
       lines.append(f"  {'  ' if i == 0 else '+ '}{l['label']:<48} {l['ms']:9.3f}  {l['how']}")
     lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
+  if t.get("band"):
+    lines.append(f"Band: {t['band']}")
   roles = loss.get("roles") or []
   if roles:
     lines.append(f"Per role ({loss.get('source') or ''}):")
@@ -1004,6 +1078,7 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--analyze", action="store_true",
                  help="one press: measure here, the machine's facts, then per-role time with the same engine")
   p.add_argument("--tinygrad-root", default=None, help="the tinygrad fork; default $BOLTBEAM_TINYGRAD_ROOT")
+  p.add_argument("--batch", default="1", help="batch sizes to time, as 1,32; batch 1 is always timed")
   for name in ("providers", "gpu-free"):
     p = sub.add_parser(name)
     p.add_argument("--target", required=True)
@@ -1015,6 +1090,7 @@ def main(argv:list[str] | None = None) -> int:
     if name == "role-time":
       p.add_argument("--provider", default=None, choices=list(providers.NAMES),
                      help="default: the provider step 4 measured the run with")
+      p.add_argument("--batch", type=int, default=1, help="capture one decode step of this many streams")
   args = parser.parse_args(argv)
   if args.command == "pipeline":
     return pipeline(args)

@@ -14,10 +14,10 @@ This does not prove that no future attention route can win. It proves that a fut
 
 | Path | Mechanism result | W==D result | Source |
 | --- | --- | --- | --- |
-| `FLASH_L` knob | `attention_combine` shrank from 13.57% to 12.01% | ctx512 regressed 50.2 -> 43.5 tok/s | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-attention-combine-flash-l-search-result.md` |
-| 14B wholecache / score-broadcast route | token-correct | ctx512 regressed 50.2 -> 45.3 tok/s | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-attention-combine-inkernel-result.md` |
-| flash at ctx128 | earlier route selection | slower than shipped threshold | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-attention-combine-inkernel-result.md` |
-| fused-flash in-kernel LSE combine | bucket removed: 13.57% -> 1.71%; total reduce 19.0% -> 2.5%; token-identical | ctx512 regressed 50.2 -> 6.2 tok/s | `/home/ubuntu/tinygrad-arkey/docs/qwen-14b-32b-attention-fused-combine-result.md` |
+| `FLASH_L` knob | `attention_combine` shrank from 13.57% to 12.01% | ctx512 regressed 50.2 -> 43.5 tok/s | `<home>/tinygrad-arkey/docs/qwen-14b-32b-attention-combine-flash-l-search-result.md` |
+| 14B wholecache / score-broadcast route | token-correct | ctx512 regressed 50.2 -> 45.3 tok/s | `<home>/tinygrad-arkey/docs/qwen-14b-32b-attention-combine-inkernel-result.md` |
+| flash at ctx128 | earlier route selection | slower than shipped threshold | `<home>/tinygrad-arkey/docs/qwen-14b-32b-attention-combine-inkernel-result.md` |
+| fused-flash in-kernel LSE combine | bucket removed: 13.57% -> 1.71%; total reduce 19.0% -> 2.5%; token-identical | ctx512 regressed 50.2 -> 6.2 tok/s | `<home>/tinygrad-arkey/docs/qwen-14b-32b-attention-fused-combine-result.md` |
 
 The fused-combine result is the key stress test. It separates two questions:
 

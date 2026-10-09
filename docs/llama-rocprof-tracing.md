@@ -19,7 +19,7 @@ boltbeam analyze/output -> timing-aware report
 Create the run and ask for llama.cpp trace commands:
 
 ```bash
-boltbeam load /home/ubuntu/models/Qwen3-14B-Q4_K_M.gguf \
+boltbeam load <home>/models/Qwen3-14B-Q4_K_M.gguf \
   --run outputs/qwen3-14b-llama-prefill \
   --id qwen3-14b \
   --workload prefill \
@@ -29,7 +29,7 @@ boltbeam analyze --run outputs/qwen3-14b-llama-prefill
 
 boltbeam runner-plan \
   --run outputs/qwen3-14b-llama-prefill \
-  --provider llama.cpp=/home/ubuntu/env/llama.cpp/build/bin/llama-bench
+  --provider llama.cpp=<home>/env/llama.cpp/build/bin/llama-bench
 ```
 
 `runner_plan.json` then contains `provider_commands` for:

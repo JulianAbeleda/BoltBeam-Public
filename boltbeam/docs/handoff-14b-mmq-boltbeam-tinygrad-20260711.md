@@ -2,7 +2,7 @@
 
 Date: 2026-07-11
 
-BoltBeam repo: `/home/ubuntu/BoltBeam/boltbeam`
+BoltBeam repo: `<home>/BoltBeam/boltbeam`
 
 BoltBeam head at pause:
 
@@ -10,7 +10,7 @@ BoltBeam head at pause:
 c8b87cc [search] join mmq r4 evidence
 ```
 
-Tinygrad repo: `/home/ubuntu/tinygrad-arkey`
+Tinygrad repo: `<home>/tinygrad-arkey`
 
 Tinygrad head pushed to master:
 
@@ -257,7 +257,7 @@ reduce VGPR pressure or scratch
 Tinygrad should produce fresh artifacts:
 
 ```text
-cd /home/ubuntu/tinygrad-arkey
+cd <home>/tinygrad-arkey
 PYTHONPATH=. python3 extra/qk/mmq_machine_search.py \
   --r5-geometry-search --run --warmups 0 --rounds 1 \
   --out bench/prefill-14b-mmq-machine-search/r5-current.json
@@ -270,7 +270,7 @@ PYTHONPATH=. python3 extra/qk/mmq_machine_search.py \
 BoltBeam should then join and report:
 
 ```text
-cd /home/ubuntu/BoltBeam/boltbeam
+cd <home>/BoltBeam/boltbeam
 python3 -m pytest -q
 ```
 

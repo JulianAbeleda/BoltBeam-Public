@@ -1,6 +1,8 @@
 {
+  "batches": [],
   "blocked": [],
   "ceiling": {
+    "band": 0.01,
     "bandwidth_source": null,
     "bytes_moved": 4676301568.0,
     "context": 1,
@@ -8,6 +10,10 @@
     "peak_bandwidth_gbs": 97.2,
     "status": "modeled",
     "tok_s": 20.78565690996941
+  },
+  "engine": {
+    "provider": "llama.cpp",
+    "weight_format": "GGUF Q4_K+Q6_K"
   },
   "id": "qwen3-8b-apple_m3_10c-002",
   "kind": "results",
@@ -39,6 +45,7 @@
     "source": null,
     "status": "modeled",
     "tie_out": {
+      "batch": 1,
       "busy_ms": null,
       "context": 128.0,
       "kv_ms": 0.19418074074074074,

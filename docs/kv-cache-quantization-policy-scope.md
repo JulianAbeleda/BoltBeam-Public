@@ -49,11 +49,11 @@ This keeps two separate truths:
 
 Local:
 
-- tinygrad result note: `/home/ubuntu/tinygrad-arkey/docs/quantized-kv-residual-term-20260701.md`
-- tinygrad benchmark producer: `/home/ubuntu/tinygrad-arkey/extra/llama_kv_ctx_slope_bench.py`
-- local llama.cpp dtype flags: `/home/ubuntu/env/llama.cpp/tools/llama-bench/README.md`
-- local llama.cpp FlashAttention dtype dispatch: `/home/ubuntu/env/llama.cpp/ggml/src/ggml-cuda/fattn.cu`
-- local llama.cpp quantized K/V helpers: `/home/ubuntu/env/llama.cpp/ggml/src/ggml-cuda/fattn-common.cuh`
+- tinygrad result note: `<home>/tinygrad-arkey/docs/quantized-kv-residual-term-20260701.md`
+- tinygrad benchmark producer: `<home>/tinygrad-arkey/extra/llama_kv_ctx_slope_bench.py`
+- local llama.cpp dtype flags: `<home>/env/llama.cpp/tools/llama-bench/README.md`
+- local llama.cpp FlashAttention dtype dispatch: `<home>/env/llama.cpp/ggml/src/ggml-cuda/fattn.cu`
+- local llama.cpp quantized K/V helpers: `<home>/env/llama.cpp/ggml/src/ggml-cuda/fattn-common.cuh`
 
 External:
 
@@ -107,7 +107,7 @@ Normalized rows:
 Acceptance:
 
 - adapter reads existing ignored/local artifacts when given an explicit path;
-- no hardcoded `/home/ubuntu` path in normalized evidence;
+- no hardcoded `<home>` path in normalized evidence;
 - row has `model_id`, `target_id`, `workload=decode`;
 - missing fit fields produce `adapter-incomplete`, not a crash.
 
@@ -221,7 +221,7 @@ Acceptance:
 
 Goal: make the producer robust enough for BoltBeam ingestion.
 
-Update `/home/ubuntu/tinygrad-arkey/extra/llama_kv_ctx_slope_bench.py` or add a tinygrad-native equivalent:
+Update `<home>/tinygrad-arkey/extra/llama_kv_ctx_slope_bench.py` or add a tinygrad-native equivalent:
 
 - emit stable schema fields for BoltBeam;
 - include `target_id`, backend/build commit, cache K/V dtype, flash-attention mode;

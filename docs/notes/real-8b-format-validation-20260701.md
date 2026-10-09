@@ -19,12 +19,12 @@ It is not an inference or speed benchmark.
 
 | format | source repo | local path |
 |---|---|---|
-| GGUF | existing local `Qwen3-8B-Q4_K_M.gguf` | `/home/ubuntu/models/Qwen3-8B-Q4_K_M.gguf` |
-| Safetensors | `Qwen/Qwen3-8B` | `/home/ubuntu/format-validation-models/qwen3-8b-safetensors` |
-| AWQ | `Qwen/Qwen3-8B-AWQ` | `/home/ubuntu/format-validation-models/qwen3-8b-awq` |
-| GPTQ | `JunHowie/Qwen3-8B-GPTQ-Int4` | `/home/ubuntu/format-validation-models/qwen3-8b-gptq` |
-| ONNX | `onnx-community/Qwen3-8B-ONNX` | `/home/ubuntu/format-validation-models/qwen3-8b-onnx/onnxruntime/cuda/cuda-int4-kld-block-128/model.onnx` |
-| MLX | `Qwen/Qwen3-8B-MLX-4bit` | `/home/ubuntu/format-validation-models/qwen3-8b-mlx` |
+| GGUF | existing local `Qwen3-8B-Q4_K_M.gguf` | `<home>/models/Qwen3-8B-Q4_K_M.gguf` |
+| Safetensors | `Qwen/Qwen3-8B` | `<home>/format-validation-models/qwen3-8b-safetensors` |
+| AWQ | `Qwen/Qwen3-8B-AWQ` | `<home>/format-validation-models/qwen3-8b-awq` |
+| GPTQ | `JunHowie/Qwen3-8B-GPTQ-Int4` | `<home>/format-validation-models/qwen3-8b-gptq` |
+| ONNX | `onnx-community/Qwen3-8B-ONNX` | `<home>/format-validation-models/qwen3-8b-onnx/onnxruntime/cuda/cuda-int4-kld-block-128/model.onnx` |
+| MLX | `Qwen/Qwen3-8B-MLX-4bit` | `<home>/format-validation-models/qwen3-8b-mlx` |
 
 For sharded safetensors/AWQ/GPTQ repos, this validation downloaded the real config/index plus the first
 real weight shard. That is enough to validate tensor naming, dtype, shape parsing, role classification, and

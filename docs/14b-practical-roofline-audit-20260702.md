@@ -14,7 +14,7 @@ The latest promoted/default-on 14B attention result is the G5 K-only route:
 | 512 | 49.9 tok/s | 53.8 tok/s | +3.9 / +7.8% |
 | 2048 | 46.9 tok/s | 53.8 tok/s | +6.9 / +14.7% |
 
-Source: `/home/ubuntu/tinygrad-arkey/bench/gp-track/gp4_latest.json`.
+Source: `<home>/tinygrad-arkey/bench/gp-track/gp4_latest.json`.
 
 The route is promoted/default-on in tinygrad:
 

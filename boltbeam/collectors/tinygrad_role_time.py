@@ -29,6 +29,7 @@ ROLE_SOURCES = (ROLE_SOURCE, "attributed_by_bytes_and_count")
 
 
 PROVIDER = "tinygrad"  # the provider adapter's name (collectors/providers.py)
+KV_ELEMENT = (2, "tinygrad's fp16 KV cache on its generated decode path")
 OWN_TIMING = "tinygrad-profile-events"
 # backends whose vendor capture sees tinygrad's kernels: on Metal each command buffer is labelled with its kernel
 # when graphs are off (JIT=2, tinygrad/runtime/ops_metal.py), so Metal System Trace splits time per kernel
@@ -145,30 +146,48 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
 
 INCOMPLETE = "incomplete measurement"
 OVERCOUNTED = "overcounted measurement"
+DEFAULT_BAND = 0.01  # the band when the chip has none recorded
+BAND_RULE = ("within ±{pct:.1f}% of the floor counts as at the limit: the largest of this chip's read probe spread, "
+             "its cold to sustained difference and its documented run-to-run range, at least 1%")
+AT_LIMIT_NOISE = "at the limit (within ±{pct:.1f}%)"
+
+
+def noise_band(band:float | None) -> dict[str, Any]:
+  """The chip's one plausibility band (screen.plausibility_band), at least 1%, with the sentence that explains it."""
+  b = max(float(band or 0.0), DEFAULT_BAND)
+  return {"band": b, "words": BAND_RULE.format(pct=100 * b)}
 
 
 def refusal(table:dict[str, Any], limit_ms:float | None) -> str | None:
-  """Why a loss table cannot be a result, or None. A floor is a lower bound: nothing real runs below it. The
-  captured run's own token time is an upper bound: kernels that run one after another fit inside it."""
+  """Why a loss table cannot be a result, or None. A floor is a lower bound: nothing real runs below it, beyond
+  measurement noise. A role or a token below its floor by no more than its noise band is accepted (loss() labels
+  it); further below is refused. The captured run's own token time is an upper bound: kernels that run one after
+  another fit inside it."""
   token_ms = table.get("token_ms")
-  if token_ms and table["kernel_ms"] > token_ms:
+  total = table.get("band") or noise_band(None)
+  if token_ms and table["kernel_ms"] > token_ms * (1 + total["band"]):
     return (f"{OVERCOUNTED}: {table['kernel_ms']:.2f} ms of GPU time per token is more than the "
-            f"{token_ms:.2f} ms the captured run took per token, so the capture counted work outside the "
-            "decode tokens or kernels that overlap")
-  if limit_ms and table["kernel_ms"] < limit_ms:
+            f"{token_ms:.2f} ms the captured run took per token by more than ±{100 * total['band']:.1f}%, so the "
+            "capture counted work outside the decode tokens or kernels that overlap")
+  if limit_ms and table["kernel_ms"] < limit_ms * (1 - total["band"]):
     return (f"{INCOMPLETE}: {table['kernel_ms']:.2f} ms of GPU time per token is below the limit's floor of "
-            f"{limit_ms:.2f} ms, so the capture missed kernels or counted tokens wrong")
-  below = [r for r in table["roles"] if r["actual_ms"] < r["ideal_ms"]]
+            f"{limit_ms:.2f} ms by more than ±{100 * total['band']:.1f}%, so the "
+            "capture missed kernels or counted tokens wrong")
+  below = [r for r in table["roles"] if r["actual_ms"] < r["ideal_ms"] * (1 - total["band"])]
   if below:
-    names = ", ".join(f"{r['role']} {r['quant']} {r['actual_ms']:.2f} < {r['ideal_ms']:.2f} ms" for r in below)
-    return f"{INCOMPLETE}: {len(below)} role(s) measured below their floor ({names}), so the capture missed kernels"
+    names = ", ".join(f"{r['role']} {r['quant']} {r['actual_ms']:.2f} < {r['ideal_ms']:.2f} ms "
+                      for r in below)
+    return (f"{INCOMPLETE}: {len(below)} role(s) measured more than ±{100 * total['band']:.1f}% below their floor ({names}), "
+            "so the capture missed kernels")
   return None
 
 
 def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
-         limit_ms:float | None = None) -> dict[str, Any] | None:
+         limit_ms:float | None = None, band:float | None = None) -> dict[str, Any] | None:
   """Per role: ideal ms (roofline), actual ms (in model), lost ms; sorted by lost ms. None without a trace.
-  A table that breaks a floor comes back as {"status": "incomplete", "reason": ...} with no numbers."""
+  A table that breaks a floor beyond the chip's band (noise_band) comes back as {"status": "incomplete", "reason":
+  ...} with no numbers. A role inside the band is labelled at the limit and loses 0 ms."""
+  chip = noise_band(band)
   if not trace: return None
   rows = trace.get("rows", [])
   whole = next((r for r in rows if r.get("scope") == "whole_step"), None)
@@ -184,8 +203,10 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
     got = actual.get((c["role"], c["quant"]))
     if got is None: continue
     ms = got["us"] / tokens / 1000.0
+    noise = ms < c["floor_ms"] and ms >= c["floor_ms"] * (1 - chip["band"])
     out.append({"role": c["role"], "quant": c["quant"], "ideal_ms": c["floor_ms"], "actual_ms": ms,
-                "lost_ms": ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens})
+                "lost_ms": 0.0 if noise else ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens,
+                "within_noise": noise, "label": AT_LIMIT_NOISE.format(pct=100 * chip["band"]) if noise else None})
   total_lost = sum(max(r["lost_ms"], 0.0) for r in out)
   for r in out: r["share"] = (max(r["lost_ms"], 0.0) / total_lost) if total_lost > 0 else 0.0
   out.sort(key=lambda r: -r["lost_ms"])
@@ -193,7 +214,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   table = {"status": "measured", "source": "measured in tinygrad's runtime", "device": trace.get("target_id"),
            "tokens": tokens, "kernel_ms": whole_ms, "tok_s": whole["tok_s"], "roles": out,
            "not_attributed_ms": whole_ms - sum(r["actual_ms"] for r in out), "token_ms": whole.get("token_ms"),
-           "unpaired_roles": list(trace.get("unpaired_roles") or [])}
+           "unpaired_roles": list(trace.get("unpaired_roles") or []), "band": chip}
   if reason := refusal(table, limit_ms):
     return {"status": "incomplete", "reason": reason, "tokens": tokens,
             "events": whole.get("launch_count"), "roles": []}

@@ -34,7 +34,10 @@ kernel void readsum(device const float4* a [[buffer(0)]], device float* out [[bu
 SHAPES = ((256, 1024), (256, 4096), (256, 16384), (1024, 1024), (1024, 4096), (1024, 16384))
 
 
-def measure_read_gbs(nbytes:int = 1 << 30, reps:int = 5) -> dict:
+SUSTAIN_S = 5.0  # about the length of a decode capture
+
+
+def measure_read_gbs(nbytes:int = 1 << 30, reps:int = 5, sustain_s:float = SUSTAIN_S) -> dict:
   metal = Metal()
   try:
     pso = metal.compile(_SRC, ["readsum"])["readsum"]["pso"]
@@ -46,10 +49,20 @@ def measure_read_gbs(nbytes:int = 1 << 30, reps:int = 5) -> dict:
       us = [metal.run(pso, [src, out], [struct.pack("I", nbytes // 16)], groups, threads) for _ in range(reps)]
       rows.append({"threads": threads, "groups": groups, "best_us": min(us), "gbs": nbytes / (min(us) * 1e-6) / 1e9})
     best = max(rows, key=lambda r: r["gbs"])
+    # sustained: the best shape back to back for sustain_s seconds, as a decode reads
+    out, done, series = metal.buffer(length=best["groups"] * best["threads"] // 32 * 4), 0.0, []
+    while done < sustain_s * 1e6:
+      us = metal.run(pso, [src, out], [struct.pack("I", nbytes // 16)], best["groups"], best["threads"])
+      series.append(nbytes / (us * 1e-6) / 1e9)
+      done += us
+    from boltbeam.collectors.cuda_bandwidth import plausibility
     return {"schema": "boltbeam.metal_read_bandwidth.v1", "device": metal.name, "bytes": nbytes, "reps": reps,
-            "method": "BoltBeam metal_bandwidth: read-only float4 sum over 1 GiB, best of five per launch shape",
-            "read_gbs": round(best["gbs"], 1), "best_shape": {"threads": best["threads"], "groups": best["groups"]},
-            "shapes": rows}
+            "method": "BoltBeam metal_bandwidth: read-only float4 sum over 1 GiB, best of five per launch shape; "
+                      f"then the best shape back to back for {sustain_s:.0f} s (sustained)",
+            "best_shape": {"threads": best["threads"], "groups": best["groups"]}, "shapes": rows,
+            "sustained": {"seconds": done / 1e6, "launches": len(series), "best_gbs": round(max(series), 1),
+                          "mean_gbs": round(sum(series) / len(series), 1), "min_gbs": round(min(series), 1)},
+            **plausibility(round(best["gbs"], 1), [r["gbs"] for r in rows], round(max(series), 1))}
   finally:
     metal.close()
 
