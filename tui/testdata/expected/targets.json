@@ -17,7 +17,8 @@
         "fp16": 122.8,
         "fp32": 61.4
       },
-      "scope": null
+      "scope": null,
+      "scope_observed_at": null
     },
     {
       "backend": "CUDA",
@@ -31,14 +32,15 @@
       "matrix_tflops": {},
       "memory_bandwidth_gbs": null,
       "peak_tflops": {},
-      "scope": null
+      "scope": null,
+      "scope_observed_at": null
     },
     {
       "backend": "CUDA",
       "backend_status": "descriptor_only",
       "fact_status": {
         "memory_bandwidth_gbs": "measurement",
-        "peak_tflops": "unknown"
+        "peak_tflops": "measurement"
       },
       "has_ceiling": true,
       "id": "nvidia_sm120",
@@ -52,7 +54,8 @@
         "fp32": 104.8,
         "int8": 180.0
       },
-      "scope": "NVIDIA GeForce RTX 5090, driver 595.84"
+      "scope": "NVIDIA GeForce RTX 5090, driver 595.84",
+      "scope_observed_at": "2026-09-23"
     },
     {
       "backend": "Metal",
@@ -66,7 +69,8 @@
       "matrix_tflops": {},
       "memory_bandwidth_gbs": null,
       "peak_tflops": {},
-      "scope": null
+      "scope": null,
+      "scope_observed_at": null
     },
     {
       "backend": "Metal",
@@ -78,25 +82,29 @@
       "has_ceiling": true,
       "id": "apple_m3_10c",
       "matrix_tflops": {},
-      "memory_bandwidth_gbs": 89.9,
+      "memory_bandwidth_gbs": 97.2,
       "peak_tflops": {
         "fp16": 3.152
       },
-      "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU"
+      "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
+      "scope_observed_at": "2026-10-09"
     },
     {
       "backend": "Metal",
       "backend_status": "descriptor_only",
       "fact_status": {
-        "memory_bandwidth_gbs": "vendor_spec",
-        "peak_tflops": "unknown"
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "measurement"
       },
-      "has_ceiling": false,
+      "has_ceiling": true,
       "id": "apple_m4_10c",
       "matrix_tflops": {},
-      "memory_bandwidth_gbs": 120.0,
-      "peak_tflops": {},
-      "scope": "Mac mini (2024), Apple M4, 10-core GPU"
+      "memory_bandwidth_gbs": 112.1,
+      "peak_tflops": {
+        "fp16": 3.781
+      },
+      "scope": "Mac mini (2024), Apple M4, 10-core GPU",
+      "scope_observed_at": "2026-10-09"
     }
   ]
 }

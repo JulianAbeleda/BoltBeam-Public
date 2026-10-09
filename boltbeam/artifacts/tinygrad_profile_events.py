@@ -16,7 +16,7 @@ from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
 
 
 _WHOLE_PREFILL_RE = re.compile(r"^\s*WHOLE-PREFILL@(?P<context>\d+):\s*(?P<tok_s>[0-9]+(?:\.[0-9]+)?)\s+tok/s\s*$", re.MULTILINE)
-_GPU_DEVICE_PREFIXES = ("AMD", "NV", "HIP", "CUDA")
+_GPU_DEVICE_PREFIXES = ("AMD", "NV", "HIP", "CUDA", "METAL")
 
 
 def reconcile_authority_wall(trace:dict[str, Any], stdout:str, *, context:int) -> dict[str, Any]:

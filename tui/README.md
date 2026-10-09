@@ -54,9 +54,14 @@ screen mid run lands on the same marks.
 
 Full views: **Model** has a "type a path" row and the model files found next to the current one and in
 `~/models`, then the role census. **Chip** lists every chip to pick from. **Speed limit** has the roofline per
-role for one token and for a prompt, and the assumptions. **Measure** has "Plan and measure" (or "Stop the
-run"), the earlier runs to open, the stages, and the log. **Result** has "Open the full report" and "Measure
-again", then what won per role, the kernels against the peak, and the building blocks.
+role for one token and for a prompt, and the assumptions. **Measure** has one "Measure with" row per runtime this
+machine has (llama.cpp, tinygrad; `screen providers` decides, and a runtime it lacks is named with why), or
+"Stop the run", then the earlier runs to open, each labelled with its runtime, the stages, and the log. Step 4
+refuses a GPU another program holds (`screen gpu-free`). **Result** is titled with the run's runtime and how its
+roles were timed (nsys, rocprofv3, Metal System Trace, or tinygrad's own timing); another runtime's table for
+the same run is shown beside it, labelled. It has "Time each role in RUNTIME" where this machine can capture
+that runtime, "Open the full report" and "Measure again with", then what won per role, the kernels against the
+peak, and the building blocks.
 
 Main lines use plain words only (BoltBeam's vocabulary from `gui/README.md`). Full views show the plain word
 with the record's own name beside it, muted (`small kernel, dead time  elementwise_dilution`). There is no

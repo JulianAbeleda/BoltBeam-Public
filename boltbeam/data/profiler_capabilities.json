@@ -9,7 +9,7 @@
       "tool_version": "1.0",
       "operation": "capture",
       "selection_priority": 200,
-      "target_support": ["amd_gfx1100", "nvidia_sm89", "nvidia_sm120"],
+      "target_support": ["amd_gfx1100", "nvidia_sm89", "nvidia_sm120", "apple_metal", "apple_m3_10c", "apple_m4_10c"],
       "supported_scopes": ["whole_step", "kernel", "role"],
       "requires_replay": true,
       "requires_root_or_privilege": false,
@@ -227,9 +227,9 @@
       ]
     },
     {
-      "provider_id": "boltbeam",
+      "provider_id": "llama.cpp",
       "provider_support": [
-        "boltbeam"
+        "llama.cpp"
       ],
       "collector_id": "metal-native",
       "tool": "Metal.framework via ctypes + llama-bench",
@@ -285,6 +285,53 @@
         "Every timed probe sample follows a 64 MiB flush, so weights come from DRAM.",
         "Each probe output is checked against a pure-Python dequantize-and-dot reference before timing.",
         "Whole-step tokens per second is llama-bench decode at the requested depth; nothing else stands in for it."
+      ]
+    },
+    {
+      "provider_id": "llama.cpp",
+      "provider_support": [
+        "llama.cpp"
+      ],
+      "collector_id": "llama-bench-decode",
+      "tool": "llama-bench",
+      "tool_version": "llama.cpp build with the target's GPU backend",
+      "operation": "capture",
+      "selection_priority": 50,
+      "target_support": [
+        "nvidia_sm120",
+        "nvidia_sm89"
+      ],
+      "supported_scopes": [
+        "whole_step"
+      ],
+      "requires_replay": false,
+      "requires_root_or_privilege": false,
+      "supports_dispatch_timing": false,
+      "supports_kernel_resources": false,
+      "supports_dynamic_counters": false,
+      "supports_memory_copy": false,
+      "supports_allocations": false,
+      "supports_source_correlation": false,
+      "supports_disassembly": false,
+      "supports_thread_trace": false,
+      "supported_metrics": [
+        "tok_s",
+        "wall_us"
+      ],
+      "unsupported_metrics": [
+        "candidate_us",
+        "per_kernel_timing_of_llama_cpp",
+        "registers",
+        "occupancy_pct",
+        "correctness"
+      ],
+      "known_blind_spots": [
+        "Whole step only: no kernel rows and no probe evidence. BoltBeam's probe kernels are Metal only.",
+        "Per-kernel llama.cpp time on NVIDIA needs the vendor profiler (collect-hw-trace --provider llama)."
+      ],
+      "calibration_notes": [
+        "Whole-step tokens per second is llama-bench decode at the requested depth; nothing else stands in for it.",
+        "llama-bench is found by --llama-bench, then $BOLTBEAM_LLAMA_BENCH, then PATH."
       ]
     }
   ]

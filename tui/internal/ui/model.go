@@ -57,7 +57,7 @@ type targetsMsg struct {
 	targets *seam.Targets
 	err     error
 }
-type detectMsg struct{ id string }
+type detectMsg struct{ id, driver string }
 type filesMsg []string
 type profileMsg struct {
 	profile *seam.Profile
@@ -80,6 +80,19 @@ type jobMsg struct {
 	tail []string
 }
 type startedMsg string
+type readyMsg struct {
+	id    string
+	ready *seam.CompareReady
+}
+type compareJobMsg struct {
+	job  *jobs.Job
+	tail []string
+}
+type compareStartedMsg string
+type providersMsg struct {
+	target    string
+	providers *seam.Providers
+}
 type noteMsg string
 
 // deletedMsg names a run folder that is gone.
@@ -110,6 +123,17 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// loadProviders asks Python which runtimes can measure the chip on this machine.
+func (m Model) loadProviders(target string) tea.Cmd {
+	return func() tea.Msg {
+		p, err := m.client.Providers(target)
+		if err != nil {
+			return providersMsg{target, nil}
+		}
+		return providersMsg{target, p}
+	}
+}
+
 func (m Model) loadTargets() tea.Cmd {
 	return func() tea.Msg { t, _, err := m.client.Targets(); return targetsMsg{t, err} }
 }
@@ -118,9 +142,13 @@ func (m Model) detect() tea.Cmd {
 	return func() tea.Msg {
 		d, err := m.client.Detect()
 		if err != nil || d.TargetID == nil {
-			return detectMsg{""}
+			return detectMsg{}
 		}
-		return detectMsg{*d.TargetID}
+		driver := ""
+		if d.DriverVersion != nil {
+			driver = *d.DriverVersion
+		}
+		return detectMsg{*d.TargetID, driver}
 	}
 }
 
@@ -167,6 +195,55 @@ func (m Model) loadJob(id string) tea.Cmd {
 		}
 		lines, _ := m.store.Tail(id, 200)
 		return jobMsg{&job, lines}
+	}
+}
+
+// loadReady asks Python whether this machine can compare kernels for the run.
+func (m Model) loadReady(id string) tea.Cmd {
+	return func() tea.Msg {
+		r, err := m.client.CompareReady(id)
+		if err != nil {
+			return readyMsg{id, nil}
+		}
+		return readyMsg{id, r}
+	}
+}
+
+// loadCompare reads the compare job's state and log tail. No job file means no comparison ever ran from here.
+func (m Model) loadCompare(id string) tea.Cmd {
+	return func() tea.Msg {
+		job, err := m.store.Status(compareID(id))
+		if err != nil {
+			return compareJobMsg{nil, nil}
+		}
+		lines, _ := m.store.Tail(compareID(id), 200)
+		return compareJobMsg{&job, lines}
+	}
+}
+
+// startCompare starts step 5's kernel comparison as a detached job. Python runs it; this only starts it.
+func (m Model) startCompare() tea.Cmd { return m.startStep5(false) }
+
+// startStep5 starts one of step 5's jobs (compare, or time each role) in the step's one job slot.
+func (m Model) startStep5(timeOnly bool) tea.Cmd {
+	run := m.f.Run
+	provider := m.f.runProvider()
+	return func() tea.Msg {
+		if run == nil {
+			return noteMsg("No run to compare kernels for.")
+		}
+		dir, err := m.client.RunDir(run.ID)
+		if err != nil {
+			return noteMsg(err.Error())
+		}
+		argv := m.client.CompareArgv(dir)
+		if timeOnly {
+			argv = m.client.RoleTimeArgv(dir, provider)
+		}
+		if _, err := m.store.Start(compareID(run.ID), m.client.Repo, argv); err != nil {
+			return noteMsg("Start failed: " + err.Error())
+		}
+		return compareStartedMsg(run.ID)
 	}
 }
 
@@ -243,7 +320,7 @@ func (m *Model) follow() tea.Cmd {
 	return m.loadRun(id)
 }
 
-func (m Model) startRun() tea.Cmd {
+func (m Model) startRun(provider string) tea.Cmd {
 	path, target, runs := m.f.Path, m.targetID(), m.f.Runs
 	return func() tea.Msg {
 		if path == "" || target == "" {
@@ -257,7 +334,7 @@ func (m Model) startRun() tea.Cmd {
 		if abs, err := filepath.Abs(path); err == nil { // the pipeline runs in the checkout, not here
 			path = abs
 		}
-		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: "decode", Measure: "auto"})
+		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: "decode", Measure: "auto", Provider: provider})
 		if _, err := m.store.Start(id, m.client.Repo, argv); err != nil {
 			return noteMsg("Start failed: " + err.Error())
 		}
@@ -267,6 +344,14 @@ func (m Model) startRun() tea.Cmd {
 
 func (m Model) stopRun() tea.Cmd {
 	id, alive := m.runID(), m.f.alive()
+	if m.f.comparing() {
+		return func() tea.Msg {
+			if _, err := m.store.Stop(compareID(id)); err != nil {
+				return noteMsg("Stop failed: " + err.Error())
+			}
+			return noteMsg("Sent SIGTERM to the kernel comparison. Roles that finished keep their result.")
+		}
+	}
 	return func() tea.Msg {
 		if !alive {
 			return noteMsg("No run is going from here.")
@@ -330,8 +415,11 @@ func (m *Model) pickChip(id string) {
 
 // chipChanged reloads what depends on the chip: the speed limit and the run.
 func (m *Model) chipChanged() tea.Cmd {
-	m.f.Ceiling, m.f.CeilErr = nil, ""
+	m.f.Ceiling, m.f.CeilErr, m.f.Providers = nil, "", nil
 	cmds := []tea.Cmd{m.follow()}
+	if t := m.f.target(); t != nil {
+		cmds = append(cmds, m.loadProviders(t.ID))
+	}
 	if m.f.Profile != nil {
 		m.f.CeilBusy = true
 		cmds = append(cmds, m.loadCeiling())
@@ -365,7 +453,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.pickChip(m.wantChip)
 		return m, m.chipChanged()
 	case detectMsg:
-		m.f.ThisMac = msg.id
+		m.f.ThisMachine, m.f.Driver = msg.id, msg.driver
 		if !m.chipSet && msg.id != "" {
 			m.wantChip = msg.id
 			if m.f.Targets != nil {
@@ -405,8 +493,29 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		changed := m.runID() != msg.run.ID
 		m.f.Run = msg.run
 		if changed {
-			return m, m.loadJob(msg.run.ID)
+			m.f.Ready, m.f.CJob, m.f.CTail = nil, nil, nil
+			return m, tea.Batch(m.loadJob(msg.run.ID), m.loadReady(msg.run.ID), m.loadCompare(msg.run.ID))
 		}
+	case providersMsg:
+		if t := m.f.target(); t != nil && t.ID == msg.target {
+			m.f.Providers = msg.providers
+		}
+	case readyMsg:
+		if msg.id == m.runID() {
+			m.f.Ready = msg.ready
+		}
+	case compareJobMsg:
+		m.f.CJob, m.f.CTail = msg.job, msg.tail
+		if m.f.comparing() && !m.ticking {
+			m.ticking = true
+			return m, tick()
+		}
+	case compareStartedMsg:
+		id := string(msg)
+		m.ticking = true
+		m.f.CJob, m.f.CTail = &jobs.Job{ID: compareID(id), Alive: true}, nil
+		m.note = "Started step 5's job for " + id + ". It takes a few minutes."
+		return m, tea.Batch(m.loadCompare(id), tick())
 	case jobMsg:
 		m.f.Job, m.f.Tail = msg.job, msg.tail
 		if m.f.alive() && !m.ticking {
@@ -432,6 +541,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		id := m.runID()
 		if m.f.alive() {
 			return m, tea.Batch(m.loadJob(id), m.loadRuns(), m.loadRun(id), tick())
+		}
+		if m.f.comparing() {
+			return m, tea.Batch(m.loadCompare(id), m.loadRun(id), tick())
 		}
 		m.ticking = false
 		return m, tea.Batch(m.loadRuns(), m.loadRun(id))
@@ -561,9 +673,13 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		m.chipSet = true
 		return m, m.chipChanged()
 	case "start":
-		return m, m.startRun()
+		return m, m.startRun(a.arg)
 	case "stop":
 		return m, m.stopRun()
+	case "compare":
+		return m, m.startCompare()
+	case "roletime":
+		return m, m.startStep5(true)
 	case "run":
 		m.runSet = true
 		return m, m.loadRun(a.arg)
@@ -577,7 +693,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 func (m Model) mood() string {
 	f := m.f
 	switch {
-	case f.Reading || f.CeilBusy || f.alive():
+	case f.Reading || f.CeilBusy || f.alive() || f.comparing():
 		return faceBusy
 	case f.failedStage() != "":
 		return faceWorried
@@ -609,7 +725,7 @@ func footer(open, onRun bool) string {
 func (m Model) View() string {
 	left := stAccent.Render(glyphBolt) + " " + gradient("BoltBeam")
 	right := stAccent.Render(m.mood())
-	if m.f.Reading || m.f.CeilBusy || m.f.alive() {
+	if m.f.Reading || m.f.CeilBusy || m.f.alive() || m.f.comparing() {
 		right = m.spin.View() + " " + right
 	}
 	header := left + strings.Repeat(" ", max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right

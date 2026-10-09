@@ -71,13 +71,30 @@
     ],
     "ceiling": {
       "context": 1,
-      "floor_ms": 52.01670264738599,
-      "peak_bandwidth_gbs": 89.9,
+      "floor_ms": 48.110098436213995,
+      "peak_bandwidth_gbs": 97.2,
       "status": "modeled",
-      "tok_s": 19.224594199652778
+      "tok_s": 20.78565690996941
     },
     "id": "qwen3-8b-apple_m3_10c-001",
     "kind": "results",
+    "loss": {
+      "capture": null,
+      "limit_ms": 48.110098436213995,
+      "limit_tok_s": 20.78565690996941,
+      "missing": "pick \"Time each role in llama.cpp\" in step 5",
+      "not_attributed_ms": null,
+      "others": [],
+      "provider": "llama.cpp",
+      "provider_missing": "pick \"Time each role in llama.cpp\" in step 5",
+      "refused": null,
+      "roles": [],
+      "roles_provider": null,
+      "runtimes": [],
+      "source": null,
+      "status": "modeled",
+      "unpaired_roles": []
+    },
     "measured": false,
     "model_id": "Qwen3-8B",
     "regimes": [],
@@ -87,6 +104,7 @@
         "candidates": [
           "lanemap_gemv"
         ],
+        "compare": null,
         "evidence_refs": [],
         "quant": "Q4_K",
         "role": "attn_kv",
@@ -101,6 +119,7 @@
         "candidates": [
           "q6k_route"
         ],
+        "compare": null,
         "evidence_refs": [],
         "quant": "Q6_K",
         "role": "attn_kv",
@@ -115,6 +134,7 @@
         "candidates": [
           "lanemap_gemv"
         ],
+        "compare": null,
         "evidence_refs": [],
         "quant": "Q4_K",
         "role": "attn_qo",
@@ -129,6 +149,7 @@
         "candidates": [
           "lanemap_gemv"
         ],
+        "compare": null,
         "evidence_refs": [],
         "quant": "Q4_K",
         "role": "ffn_down",
@@ -143,6 +164,7 @@
         "candidates": [
           "q6k_route"
         ],
+        "compare": null,
         "evidence_refs": [],
         "quant": "Q6_K",
         "role": "ffn_down",
@@ -157,6 +179,7 @@
         "candidates": [
           "lanemap_gemv"
         ],
+        "compare": null,
         "evidence_refs": [],
         "quant": "Q4_K",
         "role": "ffn_gate_up",
@@ -171,6 +194,7 @@
         "candidates": [
           "q6k_route"
         ],
+        "compare": null,
         "evidence_refs": [],
         "quant": "Q6_K",
         "role": "lm_head",

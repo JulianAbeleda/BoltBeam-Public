@@ -91,7 +91,7 @@ func press(m tea.Model, k string) tea.Model {
 // program feeds the model the seam's answers in the order they arrive on a real start, then sizes it.
 func program(s sample, run *seam.Run, job *jobs.Job, tail []string, width, height int) tea.Model {
 	var m tea.Model = New(seam.Client{}, jobs.Store{}, "/models/Qwen3-8B.gguf", "", 512)
-	for _, msg := range []tea.Msg{targetsMsg{&s.targets, nil}, detectMsg{"apple_m3_10c"}, profileMsg{&s.profile, nil},
+	for _, msg := range []tea.Msg{targetsMsg{&s.targets, nil}, detectMsg{"apple_m3_10c", ""}, profileMsg{&s.profile, nil},
 		ceilingMsg{&s.ceiling, nil}, runsMsg{&s.runs, nil}, tea.WindowSizeMsg{Width: width, Height: height}} {
 		m, _ = m.Update(msg)
 	}

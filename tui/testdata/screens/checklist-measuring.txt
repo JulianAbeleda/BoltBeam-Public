@@ -15,8 +15,8 @@
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │   ✓ 1  Model        Qwen3-8B.gguf · 36 layers · F32, Q4_K, Q6_K              │
-│   ✓ 2  Chip         apple_m3_10c · this Mac · memory 89.9 GB/s               │
-│   ✓ 3  Speed limit  up to 19.2 tokens per second                             │
+│   ✓ 2  Chip         apple_m3_10c · this Mac · memory 97.2 GB/s               │
+│   ✓ 3  Speed limit  up to 20.8 tokens per second                             │
 │ ▸ ● 4  Measure      ██████░░░░░░░░░░░░░░  2 of 7 · Plan what to try…         │
 │   ○ 5  Result       needs step 4                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯

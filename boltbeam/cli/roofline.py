@@ -137,6 +137,35 @@ def _register_roofline_theoretical(sub) -> None:
 
 
 
+def peak_flops_fact(target, dtype:str) -> tuple[float | None, str | None]:
+  """The registry's compute figure in TFLOP/s and the fact_status key that says where it came from.
+
+  The one place the precedence lives: the matrix unit's measured rate for the dtype, then the ALU rate for the dtype,
+  then fp16, then the largest. A screen reads the key to say where the ceiling's compute came from.
+  """
+  measured = target.matrix_tflops_for(dtype)
+  if measured:
+    return measured, "matrix_tflops"
+  peaks = target.peak_tflops or {}
+  for key in (dtype, "fp16"):
+    if peaks.get(key):
+      return float(peaks[key]), key
+  if peaks:
+    key = max(peaks, key=lambda k: peaks[k])
+    return float(peaks[key]), key
+  return None, None
+
+
+def peak_flops_status(target, dtype:str) -> str:
+  """fact_status of the compute figure peak_flops_fact picks: the row's own word for it, or unknown."""
+  _, key = peak_flops_fact(target, dtype)
+  status = ((target.capabilities or {}).get("fact_status") or {})
+  if key is None: return "unknown"
+  if key == "matrix_tflops": return status.get("matrix_tflops", "unknown")
+  # rows name an ALU rate either by dtype (fp16_tflops) or as one peak_tflops entry
+  return status.get(f"{key}_tflops") or status.get("peak_tflops") or "unknown"
+
+
 def resolve_peak_flops(target, dtype:str, override_tflops:float | None) -> float:
   """Compute ceiling in FLOP/s, or a stated refusal.
 
@@ -152,11 +181,7 @@ def resolve_peak_flops(target, dtype:str, override_tflops:float | None) -> float
   if override_tflops is not None:
     if override_tflops <= 0: raise SystemExit("--peak-tflops must be positive")
     return override_tflops * 1e12
-  measured = target.matrix_tflops_for(dtype)
-  if measured:
-    return measured * 1e12
-  peaks = target.peak_tflops or {}
-  value = peaks.get(dtype) or peaks.get("fp16") or (max(peaks.values()) if peaks else None)
+  value, _ = peak_flops_fact(target, dtype)
   if value:
     return value * 1e12
   raise SystemExit(

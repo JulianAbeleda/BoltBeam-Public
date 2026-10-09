@@ -421,9 +421,9 @@ def _blocked_card(report:dict[str, Any], plan:dict[str, Any], policy:dict[str, A
                    ". The bundle was prepared but the provider has not written back.")
   # needs_measurement means no route is selected yet (workflow/analyze.py), even when the probe and the trace are
   # in: the route candidates themselves (plan phase M3, `wd_speed`) are still unmeasured.
-  if report.get("status") == "needs_measurement":
-    routes = [r for r in policy.get("routes", []) or [] if isinstance(r, dict)]
-    open_routes = [r for r in routes if not r.get("selected_route")]
+  routes = [r for r in policy.get("routes", []) or [] if isinstance(r, dict)]
+  open_routes = [r for r in routes if not r.get("selected_route") and r.get("status") in (None, "unmeasured")]
+  if report.get("status") == "needs_measurement" and (open_routes or not routes):
     count = f"{len(open_routes)} of {len(routes)} roles have" if routes else "No role has"
     needs.append(f"Route measurements. {count} no measured route yet (<code>route_policy.json</code>). Measure the "
                  "route candidates from <code>measurement_plan.json</code> (phase M3), then re-run "
@@ -439,15 +439,90 @@ def _blocked_card(report:dict[str, Any], plan:dict[str, Any], policy:dict[str, A
 
 
 # Shown instead of the per-role table while no role has had kernels compared; boltbeam-tui prints the same line.
-NO_KERNEL_CHOICE = ("No kernels compared yet. Every role runs the default kernel. "
-                    "Next step: compare kernels per role to go faster.")
+NO_KERNEL_CHOICE = "No kernels compared yet. Every role runs the default kernel."
+# Only where comparing can run (search/role_compare.py COMPARE_BACKENDS); a step the target cannot run is never
+# suggested.
+COMPARE_NEXT = "Next step: compare kernels per role to go faster."
+
+
+def _loss_card(results:dict[str, Any] | None) -> str:
+  """The end result in ms per token: each runtime against the limit, and per role where tinygrad loses time."""
+  loss = (results or {}).get("loss") or {}
+  if loss.get("status") != "modeled" or not loss.get("limit_ms"): return ""
+  lines = [f'<p style="margin:0 0 8px">The limit is <b>{loss["limit_ms"]:.1f} ms</b> per token '
+           f'({loss["limit_tok_s"]:.1f} tokens per second).</p>']
+  for r in loss.get("runtimes", []):
+    what = (f'{r["ms"]:.1f} ms of GPU time per token' if r["provider"] == "tinygrad"
+            else f'{r["tok_s"]:.1f} tokens per second, {r["ms"]:.1f} ms per token')
+    note = "" if r.get("per_role") else f' <span class="id">{_e(r.get("note") or "")}</span>'
+    lines.append(f'<p style="margin:0 0 6px">{_e(r["provider"])}: {_e(what)}, <b>{r["lost_ms"]:.1f} ms lost</b>.{note}</p>')
+  body = "".join(lines)
+  if loss.get("refused"):
+    body += f'<p class="empty">Per role: not shown. {_e(loss["refused"])}</p>'
+  elif loss.get("missing"):
+    body += f'<p class="empty">Per role: {_e(loss["missing"])}</p>'
+  elif loss.get("roles"):
+    rows = "".join(
+      f'<tr><td>{_e(r["role"])}</td><td>{_e(r["quant"])}</td><td>{r["ideal_ms"]:.2f}</td><td>{r["actual_ms"]:.2f}</td>'
+      f'<td>{r["lost_ms"]:.2f}</td>{_bar_cell(r["share"] * 100)}</tr>' for r in loss["roles"])
+    if loss.get("not_attributed_ms") is not None:
+      rows += f'<tr><td>not attributed</td><td></td><td></td><td>{loss["not_attributed_ms"]:.2f}</td><td></td><td></td></tr>'
+    body += (f'<div class="lbl">Where tinygrad loses time, {_e(loss.get("source") or "")}</div>'
+             '<div class="tscroll"><table><thead><tr><th>role</th><th>quant</th><th>ideal ms</th><th>actual ms</th>'
+             f'<th>lost ms</th><th>share of loss</th></tr></thead><tbody>{rows}</tbody></table></div>')
+  return _card("Time lost against the limit", "roofline · tinygrad_timing_trace.json", f'<div class="card-bd">{body}</div>')
+
+
+# Where every compare time comes from; boltbeam-tui prints the same sentence (render.go compareNote).
+COMPARE_NOTE = "Times are from tinygrad's Metal runtime, not llama.cpp."
+
+
+def _compare_card(policy:dict[str, Any]) -> str:
+  """The per-role kernel comparison (boltbeam/search/role_compare.py), the same table step 5 shows."""
+  routes = [r for r in policy.get("routes", []) or [] if isinstance(r, dict)]
+  body = []
+  for r in routes:
+    c = r.get("compare") if isinstance(r.get("compare"), dict) else {}
+    ab = c.get("ab") if isinstance(c.get("ab"), dict) else {}
+    whole = "—"
+    if all(isinstance(ab.get(k), (int, float)) for k in ("baseline_tok_s", "candidate_tok_s", "delta_pct")):
+      whole = f'{ab["baseline_tok_s"]:.2f} to {ab["candidate_tok_s"]:.2f} ({ab["delta_pct"]:+.1f}%)'
+    kn = c.get("kernel") if isinstance(c.get("kernel"), dict) else None
+    kernel = "—"
+    if kn and kn.get("model_us_per_call") is not None:
+      kernel = (f'model {kn["model_us_per_call"]:.0f} µs to plan {kn["plan_us"]:.0f} µs '
+                f'({"faster" if kn["faster_than_model"] else "slower"})')
+    elif kn:
+      kernel = f'plan {kn["plan_us"]:.0f} µs alone'
+    body.append(f'<tr><td>{_e(r.get("role") or "unknown")}</td><td>{_e(r.get("quant") or "unknown")}</td>'
+                f'<td class="l">{_named(PLAIN_ROUTE, r.get("status") or "unknown", tag=True)}</td>'
+                f'<td class="l">{_e(c.get("plan") or "—")}</td>'
+                f'<td>{_e(kernel)}</td><td>{_e(whole)}</td><td class="l wrap">{_e(c.get("reason") or "")}</td></tr>')
+  table = ('<div class="tscroll"><table class="wide"><thead><tr><th>role</th><th>quant</th><th class="l">choice</th>'
+           '<th class="l">best plan</th><th>kernel per call</th><th>whole model tok/s</th>'
+           f'<th class="l">why</th></tr></thead><tbody>{"".join(body)}</tbody></table></div>'
+           f'<p class="empty">{_e(COMPARE_NOTE)} Kernel per call is the kernel of the role inside the running model, to '
+           'the best plan alone at the same shape. Whole model is the default kernel to the plan, in a matched decode A/B. '
+           'One number never stands in for the other.</p>')
+  return _card("Kernel choice per role", "route_policy.json · kernel_compare/", table)
 
 
 def _routes_card(policy:dict[str, Any]) -> str:
-  rows = [r for r in policy.get("routes", []) or [] if isinstance(r, dict) and r.get("selected_route")]
+  routes = [r for r in policy.get("routes", []) or [] if isinstance(r, dict)]
+  if any(r.get("status") not in (None, "unmeasured") and isinstance(r.get("compare"), dict) for r in routes):
+    return _compare_card(policy) + _selected_routes(policy)
+  rows = [r for r in routes if r.get("selected_route")]
   if not rows:
-    return _card("Kernel choice per role", "route_policy.json",
-                 f'<p class="empty">{_e(NO_KERNEL_CHOICE)}</p>', cls="compact")
+    from boltbeam.search.role_compare import COMPARE_BACKENDS
+    backend = str((policy.get("target") or {}).get("backend") or "").lower()
+    text = NO_KERNEL_CHOICE + (" " + COMPARE_NEXT if backend in COMPARE_BACKENDS else "")
+    return _card("Kernel choice per role", "route_policy.json", f'<p class="empty">{_e(text)}</p>', cls="compact")
+  return _selected_routes(policy)
+
+
+def _selected_routes(policy:dict[str, Any]) -> str:
+  rows = [r for r in policy.get("routes", []) or [] if isinstance(r, dict) and r.get("selected_route")]
+  if not rows: return ""
   rows = sorted(rows, key=lambda r: (str(r.get("selected_route")), str(r.get("role") or "")))
   blocks = []
   for row in rows:
@@ -515,6 +590,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
     '<button id="theme" class="chip" type="button" style="cursor:pointer;font:inherit;font-size:11px">'
     'theme</button></header>'
     f"{_headline(manifest, results)}"
+    f"{_loss_card(results)}"
     f"{_rail(manifest)}"
     f'<div class="cols">{status_card}{_blocked_card(report, plan, policy, primitive, timing, runner)}</div>'
     f"{_not_measured_card(primitive, timing)}"

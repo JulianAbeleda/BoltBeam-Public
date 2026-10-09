@@ -201,6 +201,16 @@ def _register_metal_measure(sub) -> None:
   p.set_defaults(fn=cmd_metal_measure)
 
 
+def _register_metal_bandwidth(sub) -> None:
+  p = sub.add_parser("metal-bandwidth", help="measure this Mac GPU's read-only memory speed, the number the speed limit needs")
+  p.set_defaults(fn=cmd_metal_bandwidth)
+
+
+def cmd_metal_bandwidth(args) -> int:
+  from boltbeam.collectors.metal_bandwidth import run_cli
+  return run_cli(args)
+
+
 def cmd_metal_measure(args) -> int:
   from boltbeam.collectors.metal_native import run_cli
   return run_cli(args)
@@ -330,6 +340,7 @@ def register(sub) -> None:
   _register_import_ncu(sub)
   _register_collect_hw_trace(sub)
   _register_metal_measure(sub)
+  _register_metal_bandwidth(sub)
   _register_compare_hw_trace(sub)
   _register_compare_substrate(sub)
   _register_profiler_report(sub)

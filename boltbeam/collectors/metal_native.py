@@ -26,13 +26,13 @@ import argparse
 import json
 import pathlib
 import random
-import shutil
 import statistics
 import struct
-import subprocess
 import sys
 from typing import Any, Callable
 
+from boltbeam.collectors import llama_bench_decode
+from boltbeam.collectors.llama_bench_decode import CannotMeasure, bench_decode  # one refusal type for every collector
 from boltbeam.core.canonical import pretty_json
 from boltbeam.profile.gguf import read_gguf_layout
 from boltbeam.target.targets import get_target
@@ -49,7 +49,6 @@ ROWS_PER_GROUP = 4  # simdgroups per threadgroup; one simdgroup owns one output 
 SAMPLES, WARMUPS = 20, 10  # warmups let the GPU clock ramp up before the first timed sample
 CHECK_ROWS = 9
 TOLERANCE = 1e-3  # max |gpu - cpu| over max |cpu|: float32 sums in a different order
-GEN_TOKENS, BENCH_REPS = 32, 3
 WORKING_SET_SHARE = 0.8  # never ask for more than this share of Metal's recommended working set
 
 MSL = r"""
@@ -134,14 +133,6 @@ KERNELS = {"Q4_K": "gemv_q4_k", "Q6_K": "gemv_q6_k"}
 KERNEL_SOURCE = {"loads": "Q4_K: one 32-bit load per lane per block; Q6_K: bytes", "rows_per_simdgroup": 1, "reduction": "simd_sum"}
 
 
-class CannotMeasure(RuntimeError):
-  """Measuring is impossible here. `reason` says why; `command` says what to run instead."""
-
-  def __init__(self, reason:str, command:str) -> None:
-    super().__init__(reason)
-    self.reason, self.command = reason, command
-
-
 # --- the CPU reference: pure Python, the GGUF block layouts written out once more ---------------------------
 
 def _half(raw:bytes, at:int) -> float:
@@ -204,8 +195,8 @@ def check_rows(rows:int) -> list[int]:
 # --- where measuring is possible ---------------------------------------------------------------------------
 
 def this_machine_target() -> str | None:
-  from boltbeam.workflow.autoscan import _hardware_profile
-  return _hardware_profile()["gpu"].get("target_id")
+  from boltbeam.workflow.autoscan import this_machine_target as here
+  return here()
 
 
 def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path = "RUN", need_bench:bool = True,
@@ -224,10 +215,11 @@ def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path
   path = pathlib.Path(model).expanduser()
   if not path.is_file():
     raise CannotMeasure(f"the model file is gone: {path}", "measure again with the model file in place")
-  bench = shutil.which(llama_bench) or (llama_bench if pathlib.Path(llama_bench).is_file() else None)
+  bench = llama_bench_decode.find(llama_bench)
   if need_bench and bench is None:
     raise CannotMeasure("llama-bench is not installed, so there is no whole-step decode time",
-                        "brew install llama.cpp, then measure again")
+                        f"brew install llama.cpp (or export {llama_bench_decode.ENV}=/path/to/llama-bench), "
+                        "then measure again")
   return {"target": target, "model": path, "llama_bench": bench}
 
 
@@ -374,18 +366,6 @@ def collect_probe_evidence(run:pathlib.Path, say:Callable[[str], None] = lambda 
 
 
 # --- timing trace ------------------------------------------------------------------------------------------
-
-def bench_decode(llama_bench:str, model:pathlib.Path, depth:int) -> dict[str, Any]:
-  cmd = [llama_bench, "-m", str(model), "-p", "0", "-n", str(GEN_TOKENS), "-d", str(depth), "-ngl", "99",
-         "-r", str(BENCH_REPS), "-o", "json"]
-  proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-  if proc.returncode != 0:
-    raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
-  rows = json.loads(proc.stdout[proc.stdout.find("["):])
-  row = next(r for r in rows if int(r.get("n_gen", 0)) > 0)
-  return {"tok_s": float(row["avg_ts"]), "stddev_tok_s": float(row.get("stddev_ts", 0.0)), "command": cmd,
-          "build": row.get("build_commit"), "backends": row.get("backends"), "gpu": row.get("gpu_info")}
-
 
 def build_timing_trace(manifest:dict[str, Any], request:dict[str, Any], evidence:dict[str, Any],
                        bench:dict[int, dict[str, Any]], peak_gbs:float | None) -> dict[str, Any]:

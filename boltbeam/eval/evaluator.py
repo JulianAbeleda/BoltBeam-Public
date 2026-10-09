@@ -391,6 +391,10 @@ def evaluate(candidate:Candidate, evidences:list[NormalizedEvidence], *, model_i
                     f"speed-equivalent ({delta:.1f}%) reduces hand-written surface but correctness/route/rollback not all confirmed",
                     tier=tier_for, guardrails=guardrails,
                     next_action="confirm correctness, route-binding, and a rollback knob to promote the purity replacement")
+    if spread is not None and abs(delta) > SPEED_EQUIVALENT_BAND_PCT:
+      return decide(Verdict.DIAGNOSTIC.value,
+                    f"no measurable change: {delta:+.1f}% is inside the {spread:.1f}% run-to-run noise",
+                    tier=tier_for, guardrails=guardrails, next_action="measure with less noise before judging speed")
     return decide(Verdict.DIAGNOSTIC.value, f"correct but speed-equivalent ({delta:.1f}%); not a promotable win",
                   tier=tier_for, guardrails=guardrails, next_action="explains behavior; not a candidate for promotion")
 

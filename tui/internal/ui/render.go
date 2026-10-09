@@ -52,13 +52,16 @@ var plainLimit = map[string]string{"memory": "reading weights", "compute": "doin
 // plainMeasureStage words the pipeline's measuring stages. They are not report stages (report/html.py STAGES), so
 // they live apart from plainStage, which tests/test_report_html.py pins to the report's own table.
 var plainMeasureStage = map[string]string{
-	"measure": "Can this Mac measure", "measure_probe": "Test blocks on the GPU",
+	"measure": "Can %s measure", "measure_probe": "Test blocks on the GPU",
 	"measure_timing": "Time the real decode",
 }
 
 // stageWord is the plain word for any pipeline stage key.
 func stageWord(key string) string {
 	if plain, ok := plainMeasureStage[key]; ok {
+		if strings.Contains(plain, "%s") {
+			return fmt.Sprintf(plain, here())
+		}
 		return plain
 	}
 	return word(plainStage, key)
@@ -207,10 +210,19 @@ func chipBody(f Facts, width int) string {
 	}
 	var b strings.Builder
 	if t.Scope != nil {
-		b.WriteString(*t.Scope + "\n")
+		// the scope is the machine the facts were measured on, as recorded; it is never this machine read live
+		scope := *t.Scope
+		if t.ScopeObservedAt != nil {
+			scope += stMuted.Render(" · recorded " + *t.ScopeObservedAt)
+		}
+		b.WriteString(scope + "\n")
+	}
+	if t.ID == f.ThisMachine && f.Driver != "" {
+		b.WriteString(stMuted.Render(capFirst(here())+" now: driver "+f.Driver+", read live") + "\n")
 	}
 	fmt.Fprintf(&b, "%s · %s\n", gbs(t.MemoryBandwidthGBs), tflops(*t))
-	b.WriteString(stMuted.Render(fmt.Sprintf("%s · %s · memory speed from %s", t.Backend, t.BackendStatus, t.FactStatus.MemoryBandwidthGBs)))
+	b.WriteString(stMuted.Render(fmt.Sprintf("%s · %s · memory from %s · compute from %s", t.Backend, t.BackendStatus,
+		t.FactStatus.MemoryBandwidthGBs, t.FactStatus.PeakTFLOPS)))
 	return b.String()
 }
 
@@ -304,6 +316,8 @@ func measureRows(ms *seam.MeasureStatus, events map[string]string, alive bool) [
 		switch {
 		case ms != nil && !alive && key == "measure" && ms.Status == "skipped":
 			rows = append(rows, [3]string{"crossed", key, "not here: " + deref(ms.Reason)})
+		case ms != nil && !alive && key == "measure_probe" && deref(ms.Probe) == "absent":
+			rows = append(rows, [3]string{"crossed", key, "not here: " + deref(ms.ProbeReason)})
 		case ms != nil && !alive && key != "measure" && ms.Status == "measured":
 			rows = append(rows, [3]string{"pass", key, "done"})
 		case ms != nil && !alive && key == "measure_probe" && ms.Status == "failed":
@@ -326,7 +340,7 @@ func measureBody(f Facts, width int) string {
 	case (r == nil || r.Stages == nil) && f.alive():
 		b.WriteString(stMuted.Render("The run folder appears when the first stage finishes.") + "\n")
 	case r == nil:
-		return stMuted.Render("No run yet. Plan and measure plans the run, then measures on this GPU when this machine can.")
+		return stMuted.Render("No run yet. Measure with llama.cpp or tinygrad: it plans the run, then measures on this GPU when this machine can.")
 	default:
 		fmt.Fprintf(&b, "%s on %s · %s\n", r.ModelID, r.TargetID, runStatus(r.Status, r.Results.Measured))
 		events := seam.StageEvents(f.Tail)
@@ -363,9 +377,225 @@ func measureBody(f Facts, width int) string {
 	return b.String()
 }
 
+// captureWords names how per-role time was taken, in the screen's words.
+var captureWords = map[string]string{
+	"tinygrad-profile-events": "tinygrad's own timing",
+	"nsys":                    "captured with nsys",
+	"rocprofv3":               "captured with rocprofv3",
+	"metal-system-trace":      "captured with Metal System Trace",
+}
+
+// lossTitle is step 5's heading: the provider and how its roles were timed.
+func lossTitle(provider string, c *seam.Capture) string {
+	how := "roles not timed yet"
+	if c != nil && c.Method != nil {
+		how = word(captureWords, *c.Method)
+	}
+	return provider + " · " + how
+}
+
+// roleTable is one provider's per-role table.
+func roleTable(roles []seam.RoleLoss, notAttributed *float64) string {
+	rows := [][]string{{"ROLE", "QUANT", "IDEAL ms", "ACTUAL ms", "LOST ms", "SHARE OF LOSS"}}
+	for _, r := range roles {
+		rows = append(rows, []string{word(plainRole, r.Role), r.Quant, fmt.Sprintf("%.2f", r.IdealMs),
+			fmt.Sprintf("%.2f", r.ActualMs), fmt.Sprintf("%.2f", r.LostMs), bar(r.Share, 10) + fmt.Sprintf(" %.0f%%", r.Share*100)})
+	}
+	if notAttributed != nil {
+		rows = append(rows, []string{"not attributed", "", "", fmt.Sprintf("%.2f", *notAttributed), "", ""})
+	}
+	return table(rows)
+}
+
+// lossBody is the end result for the run's provider: its speed against the limit and where it loses time.
+// Another provider's numbers for the same run are shown after it, each labelled with its provider.
+func lossBody(l seam.Loss) string {
+	if l.Status != "modeled" || l.LimitMs == nil {
+		return ""
+	}
+	var b strings.Builder
+	provider := l.Provider
+	if provider == "" {
+		provider = "llama.cpp"
+	}
+	b.WriteString(stHeader.Render("Measured with "+lossTitle(provider, l.Capture)) + "\n")
+	fmt.Fprintf(&b, "The limit is %.1f ms per token.\n", *l.LimitMs)
+	for _, r := range l.Runtimes {
+		what := fmt.Sprintf("%.1f tokens per second, %.1f ms per token", r.TokS, r.Ms)
+		if r.PerRole {
+			what = fmt.Sprintf("%.1f ms of GPU time per token", r.Ms)
+		}
+		label := r.Provider
+		if r.PerRole {
+			label += " per role"
+		}
+		fmt.Fprintf(&b, "%s %s: %s, %s lost.\n", mark("open"), label, what, stHeader.Render(fmt.Sprintf("%.1f ms", r.LostMs)))
+		if !r.PerRole {
+			b.WriteString("  " + stMuted.Render(r.Note) + "\n")
+		}
+	}
+	if l.Refused != nil {
+		b.WriteString(stWarn.Render(glyphWarn+" Per role: not shown. ") + *l.Refused + "\n")
+		return b.String()
+	}
+	if l.Missing != nil {
+		b.WriteString(stMuted.Render("Per role: "+*l.Missing) + "\n")
+		return b.String() + othersBody(l.Others, provider)
+	}
+	if len(l.Roles) == 0 {
+		return b.String() + othersBody(l.Others, provider)
+	}
+	shown := provider
+	if l.RolesProvider != nil {
+		shown = *l.RolesProvider
+	}
+	if shown != provider && l.ProviderMissing != nil {
+		b.WriteString(stMuted.Render("Per role for "+provider+": "+*l.ProviderMissing) + "\n")
+	}
+	b.WriteString("\nWhere " + shown + " loses time, " + deref(l.Source) + ":\n" + roleTable(l.Roles, l.NotAttributedMs))
+	if len(l.UnpairedRoles) > 0 {
+		names := []string{}
+		for _, u := range l.UnpairedRoles {
+			names = append(names, word(plainRole, u.Role)+" "+u.Quant)
+		}
+		b.WriteString(stMuted.Render("Not split out, so in not attributed: "+strings.Join(names, ", ")+".") + "\n")
+	}
+	b.WriteString(othersBody(l.Others, shown))
+	return b.String()
+}
+
+// othersBody is the other provider's numbers, each labelled with its provider and, for another run, its run.
+func othersBody(others []seam.OtherLoss, shown string) string {
+	var b strings.Builder
+	for _, o := range others {
+		if o.Provider == shown && o.Run == nil {
+			continue
+		}
+		label := o.Provider
+		if o.Run != nil {
+			label += " (run " + shortRun(*o.Run) + ")"
+		}
+		fmt.Fprintf(&b, "\nBeside it, %s: %.1f tokens per second.\n", lossTitle(label, &o.Capture), o.TokS)
+		if len(o.Roles) > 0 {
+			b.WriteString(roleTable(o.Roles, o.NotAttributedMs))
+		}
+	}
+	return b.String()
+}
+
+// compareNote says where every role and compare time comes from. Python names the runtime (compare-ready
+// "runtime", from tinygrad_role_time.runtime_name); the screen never names a backend itself.
+func compareNote(f Facts) string {
+	runtime := "tinygrad's runtime"
+	if f.Ready != nil && f.Ready.Runtime != nil {
+		runtime = *f.Ready.Runtime
+	}
+	return "Times are from " + runtime + ", not llama.cpp."
+}
+
+// compareBody is step 5's kernel choice per role: progress while the compare job runs, what is missing when
+// this machine cannot compare, and the per-role table once any role has been compared.
+func compareBody(f Facts) string {
+	res := f.Run.Results
+	var b strings.Builder
+	if f.comparing() {
+		p := seam.ReadCompare(f.CTail)
+		rows := [][]string{{" ", "ROLE", "QUANT", "COMPARING"}}
+		for _, rt := range res.Routes {
+			key, state, m := rt.Role+" "+rt.Quant, "waiting", "open"
+			if status, ok := p.Done[key]; ok {
+				state, m = word(plainRoute, status), routeMark[status]
+			} else if key == p.Now {
+				state, m = compareDoing[p.Doing]+"…", "run"
+			}
+			rows = append(rows, []string{mark(m), word(plainRole, rt.Role), rt.Quant, state})
+		}
+		return "\n" + table(rows) + stMuted.Render(compareNote(f)) + "\n"
+	}
+	compared := false
+	for _, rt := range res.Routes {
+		compared = compared || rt.Status != "unmeasured"
+	}
+	if r := f.Ready; r != nil && !compared {
+		switch {
+		case !r.Ready:
+			fmt.Fprintf(&b, "\n%s %s\n", stInfo.Render(glyphWait+" cannot time or compare kernels here:"), deref(r.Message))
+			if r.Fix != nil {
+				fmt.Fprintf(&b, "Fix: %s\n", stAccent.Render(*r.Fix))
+			}
+		case !r.Applies:
+			fmt.Fprintf(&b, "\n%s\n", stMuted.Render(deref(r.CompareMessage)))
+		}
+	}
+	if len(res.Routes) > 0 && !compared {
+		text := noKernelChoice
+		if f.Ready != nil && f.Ready.Applies { // never suggest a step this target cannot run
+			text += "\n" + compareNext
+		}
+		b.WriteString("\n" + stMuted.Render(text) + "\n")
+		return b.String()
+	}
+	if !compared {
+		return b.String()
+	}
+	rows := [][]string{{" ", "ROLE", "QUANT", "KERNEL CHOICE", "KERNEL ALONE", "WHOLE MODEL tok/s"}}
+	reasons := []string{}
+	for _, rt := range res.Routes {
+		choice, kernel, whole := word(plainRoute, rt.Status), "-", "-"
+		if c := rt.Compare; c != nil {
+			if c.Plan != nil {
+				choice += " · " + *c.Plan
+			}
+			if k := c.Kernel; k != nil {
+				kernel = fmt.Sprintf("plan %.0f µs alone", k.PlanUs)
+				if k.ModelUsPerCall != nil && k.FasterThanModel != nil {
+					word := "slower"
+					if *k.FasterThanModel {
+						word = "faster"
+					}
+					kernel = fmt.Sprintf("model %.0f µs to plan %.0f µs (%s)", *k.ModelUsPerCall, k.PlanUs, word)
+				}
+			}
+			if ab := c.AB; ab != nil && ab.BaselineTokS != nil && ab.CandidateTokS != nil && ab.DeltaPct != nil {
+				whole = fmt.Sprintf("%.2f to %.2f (%+.1f%%)", *ab.BaselineTokS, *ab.CandidateTokS, *ab.DeltaPct)
+			}
+			if c.Reason != nil {
+				reasons = append(reasons, word(plainRole, rt.Role)+" "+rt.Quant+": "+*c.Reason)
+			}
+		}
+		rows = append(rows, []string{mark(routeMark[rt.Status]), word(plainRole, rt.Role), rt.Quant, choice, kernel, whole})
+	}
+	b.WriteString("\n" + table(rows))
+	b.WriteString(stMuted.Render("Kernel: the role's own kernel per call in the model, to the plan alone. Whole model: default to plan.") + "\n")
+	b.WriteString(stMuted.Render(compareNote(f)) + "\n")
+	for _, r := range reasons {
+		b.WriteString(stMuted.Render(r) + "\n")
+	}
+	return b.String()
+}
+
 // noKernelChoice replaces the per-role table while no role has had kernels compared; report/html.py says the same.
-const noKernelChoice = "No kernels compared yet. Every role runs the default kernel.\n" +
-	"Next step: compare kernels per role to go faster."
+const noKernelChoice = "No kernels compared yet. Every role runs the default kernel."
+
+// compareNext is shown only where comparing can run (compare-ready "applies"); report/html.py COMPARE_NEXT.
+const compareNext = "Next step: compare kernels per role to go faster."
+
+// hereLoss says, in place of "pick Time each role", why this machine cannot time the run's provider per role.
+// The run's results never hold machine facts; this machine's provider row does.
+func hereLoss(f Facts, l seam.Loss) seam.Loss {
+	p := f.provider(l.Provider)
+	if p == nil || p.Capture.Method != nil {
+		return l
+	}
+	why := "Not possible on " + here() + ": " + deref(p.Capture.Reason) + "."
+	if l.Missing != nil {
+		l.Missing = &why
+	}
+	if l.ProviderMissing != nil {
+		l.ProviderMissing = &why
+	}
+	return l
+}
 
 func resultBody(f Facts, width int) string {
 	if f.Run == nil {
@@ -384,30 +614,14 @@ func resultBody(f Facts, width int) string {
 	default:
 		fmt.Fprintf(&b, "%s\n", stMuted.Render("No speed limit for this chip: "+res.Ceiling.Reason))
 	}
+	b.WriteString(lossBody(hereLoss(f, res.Loss)))
 	if res.Timing.DominantBucket != nil {
 		fmt.Fprintf(&b, "Where the time goes: %s\n", named(plainBucket, *res.Timing.DominantBucket))
 	}
 	for _, n := range res.Blocked {
 		fmt.Fprintf(&b, "%s %s (%s)\n", stInfo.Render(glyphWait+" still needed:"), word(plainNeed, n.Need), n.Request)
 	}
-	compared := false
-	for _, rt := range res.Routes {
-		compared = compared || rt.Status != "unmeasured"
-	}
-	if len(res.Routes) > 0 && !compared {
-		b.WriteString("\n" + stMuted.Render(noKernelChoice) + "\n")
-	}
-	if compared {
-		rows := [][]string{{" ", "ROLE", "QUANT", "KERNEL CHOICE"}}
-		for _, rt := range res.Routes {
-			won := word(plainRoute, rt.Status)
-			if rt.SelectedRoute != nil {
-				won += "  " + stMuted.Render(*rt.SelectedRoute)
-			}
-			rows = append(rows, []string{mark(routeMark[rt.Status]), word(plainRole, rt.Role), rt.Quant, won})
-		}
-		b.WriteString("\n" + table(rows))
-	}
+	b.WriteString(compareBody(f))
 	if res.Timing.Status == "classified" && len(res.Timing.Kernels) > 0 {
 		rows := [][]string{{" ", "KERNEL", "µs", "OF STEP", "OF PEAK"}}
 		for _, k := range res.Timing.Kernels {
@@ -516,4 +730,12 @@ func clip(lines []string, width int) string {
 		lines[i] = truncate(l, width)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// capFirst starts a sentence with a phrase like "this machine".
+func capFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

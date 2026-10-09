@@ -14,6 +14,7 @@ type Target struct {
 	Backend            string             `json:"backend"`
 	BackendStatus      string             `json:"backend_status"`
 	Scope              *string            `json:"scope"`
+	ScopeObservedAt    *string            `json:"scope_observed_at"` // when the scope's facts were recorded
 	MemoryBandwidthGBs *float64           `json:"memory_bandwidth_gbs"`
 	PeakTFLOPS         map[string]float64 `json:"peak_tflops"`
 	MatrixTFLOPS       map[string]float64 `json:"matrix_tflops"`
@@ -33,6 +34,8 @@ type Detected struct {
 	TargetID   *string `json:"target_id"`
 	TargetKind *string `json:"target_kind"`
 	Registered bool    `json:"registered"`
+	// DriverVersion is read live (nvidia-smi); nil where the probe reports none (Apple).
+	DriverVersion *string `json:"driver_version"`
 }
 
 // Role is one row of the model profile: one (role, shape, quant) with how many tensors share it.
@@ -138,6 +141,44 @@ type MeasureStatus struct {
 	Collector *string `json:"collector"`
 	Reason    *string `json:"reason"`
 	Command   *string `json:"command"`
+	// Probe is "measured" or "absent": whether this collector takes the building-block tests at all.
+	Probe       *string `json:"probe"`
+	ProbeReason *string `json:"probe_reason"`
+	// Provider is the runtime step 4 measured with: "llama.cpp" or "tinygrad". Older runs leave it out.
+	Provider *string `json:"provider"`
+}
+
+// Capture is how a provider's per-role time was taken: "nsys", "rocprofv3", "metal-system-trace" or
+// "tinygrad-profile-events". Method nil means whole step only; Reason says why.
+type Capture struct {
+	Method *string `json:"method"`
+	Reason *string `json:"reason"`
+}
+
+// ProviderRow is one runtime from `screen providers`: can it measure here, and how would step 5 time its roles.
+type ProviderRow struct {
+	Provider  string  `json:"provider"`
+	Available bool    `json:"available"`
+	Reason    *string `json:"reason"`
+	Capture   Capture `json:"capture"`
+}
+
+type Providers struct {
+	TargetID  string        `json:"target_id"`
+	Default   string        `json:"default"`
+	Providers []ProviderRow `json:"providers"`
+}
+
+// OtherLoss is another provider's per-role table for the same run, shown beside the chosen one, labelled.
+type OtherLoss struct {
+	Provider string `json:"provider"`
+	// Run is set when the row is another run folder (same model, same chip); empty when it is this run's.
+	Run             *string    `json:"run"`
+	Capture         Capture    `json:"capture"`
+	TokS            float64    `json:"tok_s"`
+	Ms              float64    `json:"ms"`
+	Roles           []RoleLoss `json:"roles"`
+	NotAttributedMs *float64   `json:"not_attributed_ms"`
 }
 
 type Summary struct {
@@ -173,13 +214,65 @@ type ModelFacts struct {
 }
 
 type Route struct {
-	Role          string   `json:"role"`
-	Quant         string   `json:"quant"`
-	Shape         []int    `json:"shape"`
-	SelectedRoute *string  `json:"selected_route"`
-	Status        string   `json:"status"` // promoted | refuted | blocked | unmeasured | candidate
-	Candidates    []string `json:"candidates"`
-	EvidenceRefs  []string `json:"evidence_refs"`
+	Role          string        `json:"role"`
+	Quant         string        `json:"quant"`
+	Shape         []int         `json:"shape"`
+	SelectedRoute *string       `json:"selected_route"`
+	Status        string        `json:"status"` // promoted | refuted | blocked | unmeasured | candidate
+	Candidates    []string      `json:"candidates"`
+	EvidenceRefs  []string      `json:"evidence_refs"`
+	Compare       *RouteCompare `json:"compare"`
+}
+
+// RouteCompare is one role's kernel comparison (boltbeam/search/role_compare.py), nil before any ran. Every
+// time in it is a tinygrad Metal runtime time.
+type RouteCompare struct {
+	PlanID          *string      `json:"plan_id"`
+	Plan            *string      `json:"plan"`
+	SearchMedianNs  *float64     `json:"search_median_ns"`
+	DefaultMedianNs *float64     `json:"default_median_ns"`
+	MeasuredCorrect *int         `json:"measured_correct"`
+	Candidates      *int         `json:"candidates"`
+	Reason          *string      `json:"reason"`
+	TimingSource    *string      `json:"timing_source"`
+	Kernel          *KernelAlone `json:"kernel"`
+	DecidedBy       *string      `json:"decided_by"`
+	AB              *AB          `json:"ab"`
+}
+
+// KernelAlone is the winning plan alone vs the search's reference kernel, at the role shape, in one harness. The
+// reference is not the model's own kernel, so it never says faster or slower; nor does it stand in for the
+// whole-model number.
+type KernelAlone struct {
+	PlanUs          float64  `json:"plan_us"`
+	ReferenceUs     *float64 `json:"reference_us"`
+	Reference       string   `json:"reference"`
+	ModelUsPerCall  *float64 `json:"model_us_per_call"`
+	FasterThanModel *bool    `json:"faster_than_model"`
+}
+
+// AB is the matched whole-model decode A/B for one role's winning plan.
+type AB struct {
+	BaselineTokS  *float64 `json:"baseline_tok_s"`
+	CandidateTokS *float64 `json:"candidate_tok_s"`
+	DeltaPct      *float64 `json:"delta_pct"`
+	TokenMatch    *bool    `json:"token_match"`
+	RouteBound    *bool    `json:"route_bound"`
+}
+
+// CompareReady says whether this machine can compare kernels for a run, and if not, the missing piece and the
+// one command that fixes it.
+type CompareReady struct {
+	Applies bool    `json:"applies"`
+	Ready   bool    `json:"ready"`
+	Missing *string `json:"missing"`
+	Message *string `json:"message"`
+	Fix     *string `json:"fix"`
+	Fork    *string `json:"fork"`
+	// CompareMessage says why kernels cannot be compared here even when the fork is ready (not Metal).
+	CompareMessage *string `json:"compare_message"`
+	// Runtime names where role times come from, for example "tinygrad's CUDA runtime". Python builds it.
+	Runtime *string `json:"runtime"`
 }
 
 type RoleTiming struct {
@@ -240,6 +333,7 @@ type Results struct {
 	Workload string     `json:"workload"`
 	Measured bool       `json:"measured"`
 	Ceiling  CeilingRef `json:"ceiling"`
+	Loss     Loss       `json:"loss"`
 	Routes   []Route    `json:"routes"`
 	Timing   Timing     `json:"timing"`
 	Regimes  []Regime   `json:"regimes"`
@@ -255,4 +349,56 @@ type Run struct {
 	NextStep  string     `json:"next_step"`
 	Artifacts []string   `json:"artifacts"`
 	Results   Results    `json:"results"`
+}
+
+// Loss is the end result: measured vs the speed limit in ms per token, and per role where the run's provider
+// loses time. Roles come from that provider's capture, attributed to roles by bytes and count, or from
+// tinygrad's own timing.
+type Loss struct {
+	Status          string     `json:"status"`
+	Reason          *string    `json:"reason"`
+	LimitTokS       *float64   `json:"limit_tok_s"`
+	LimitMs         *float64   `json:"limit_ms"`
+	Runtimes        []Runtime  `json:"runtimes"`
+	Roles           []RoleLoss `json:"roles"`
+	NotAttributedMs *float64   `json:"not_attributed_ms"`
+	Source          *string    `json:"source"`
+	Missing         *string    `json:"missing"`
+	// Refused is why the per-role times are not shown: a role or the token below its floor.
+	Refused *string `json:"refused"`
+	// Provider is the runtime step 4 measured with; RolesProvider is whose table Roles is (it may be another
+	// provider's earlier table); ProviderMissing says why the chosen provider has no table yet.
+	Provider        string      `json:"provider"`
+	Capture         *Capture    `json:"capture"`
+	RolesProvider   *string     `json:"roles_provider"`
+	ProviderMissing *string     `json:"provider_missing"`
+	Others          []OtherLoss `json:"others"`
+	// UnpairedRoles are roles the capture could not split out by calls and bytes; their time is in not attributed.
+	UnpairedRoles []UnpairedRole `json:"unpaired_roles"`
+}
+
+type UnpairedRole struct {
+	Role  string `json:"role"`
+	Quant string `json:"quant"`
+	Count int    `json:"count"`
+}
+
+type Runtime struct {
+	Provider string  `json:"provider"`
+	TokS     float64 `json:"tok_s"`
+	Ms       float64 `json:"ms"`
+	LostMs   float64 `json:"lost_ms"`
+	PerRole  bool    `json:"per_role"`
+	Note     string  `json:"note"`
+	Capture  *string `json:"capture"`
+}
+
+type RoleLoss struct {
+	Role          string  `json:"role"`
+	Quant         string  `json:"quant"`
+	IdealMs       float64 `json:"ideal_ms"`
+	ActualMs      float64 `json:"actual_ms"`
+	LostMs        float64 `json:"lost_ms"`
+	Share         float64 `json:"share"`
+	CallsPerToken float64 `json:"calls_per_token"`
 }

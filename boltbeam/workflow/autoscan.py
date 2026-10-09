@@ -230,6 +230,12 @@ def _hardware_profile(*, run_command=_run_command, tool_resolver=None,
   }
 
 
+def this_machine_target() -> str | None:
+  """The registry target this machine's GPU is, read live by the probe above, or None. Every collector's
+  "can this machine measure" check asks here."""
+  return _hardware_profile()["gpu"].get("target_id")
+
+
 def _target_resolution_decision(hardware:dict[str, Any], manifest:dict[str, Any]) -> dict[str, Any]:
   """The irreversible-manifest-rewrite POLICY, isolated from the writes it authorizes ("contain dangerous
   power": an unsafe operation must have a small, reviewed boundary documenting validity/callers/mutation).

@@ -31,7 +31,7 @@ commands (each prints one JSON object):
   runs                                         one summary per run folder
   run <id>                                     the stages, what is blocked, the next step, the results
   results <id>                                 what won per role and the timing against the ceiling (exit 3: nothing measured)
-  start MODEL --target ID [--workload W] [--id RUN] [--probe FILE] [--timing FILE]
+  start MODEL --target ID [--workload W] [--id RUN] [--probe FILE] [--timing FILE] [--provider P]
                                                run the pipeline in the background; log under --state
   stop <id>                                    SIGTERM the pipeline started here
   delete <id>                                  remove a run folder that is not running
@@ -224,6 +224,7 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 		fs.StringVar(&p.Probe, "probe", "", "probe_evidence.v1 JSON to ingest")
 		fs.StringVar(&p.Timing, "timing", "", "timing_trace.v1 JSON to ingest")
 		fs.StringVar(&p.Measure, "measure", "auto", "auto: measure here when this machine can; none: plan only")
+		fs.StringVar(&p.Provider, "provider", "", "llama.cpp or tinygrad: the runtime that decodes in step 4 (default llama.cpp)")
 		runID := fs.String("run", "", "run folder name (default: <model>-<chip>-NNN)")
 		if fs.Parse(args[1:]) != nil || p.Target == "" {
 			fmt.Fprintln(errOut, "start needs MODEL and --target")

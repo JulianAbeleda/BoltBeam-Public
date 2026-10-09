@@ -176,17 +176,89 @@ func (c Client) Results(id string) (*Results, []byte, int, error) {
 // line per stage. Probe and timing are optional evidence files to ingest after analyze. Measure "auto" asks the
 // pipeline to measure with the chip's own BoltBeam collector when this machine can (Python decides).
 type Pipeline struct {
-	Model, RunDir, Target, Workload, ID, Probe, Timing, Measure string
+	Model, RunDir, Target, Workload, ID, Probe, Timing, Measure, Provider string
 }
 
 func (c Client) PipelineArgv(p Pipeline) []string {
 	argv := []string{c.Python, "-m", "boltbeam.workflow.screen", "pipeline", p.Model, "--run", p.RunDir, "--target", p.Target}
-	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure} {
+	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider} {
 		if value != "" {
 			argv = append(argv, flag, value)
 		}
 	}
 	return argv
+}
+
+// CompareReady asks Python whether this machine can compare kernels per role for the run.
+func (c Client) CompareReady(id string) (*CompareReady, error) {
+	dir, err := c.RunDir(id)
+	if err != nil {
+		return nil, err
+	}
+	var r CompareReady
+	_, _, err = c.decode(&r, nil, "boltbeam.workflow.screen", "compare-ready", "--run", dir)
+	return &r, err
+}
+
+// CompareArgv is what the step 5 action starts: the seam's compare command, one line per role.
+func (c Client) CompareArgv(runDir string) []string {
+	return []string{c.Python, "-m", "boltbeam.workflow.screen", "compare", "--run", runDir}
+}
+
+// RoleTimeArgv times every role inside a real decode with a provider; "" is the run's own provider.
+func (c Client) RoleTimeArgv(runDir, provider string) []string {
+	argv := []string{c.Python, "-m", "boltbeam.workflow.screen", "role-time", "--run", runDir}
+	if provider != "" {
+		argv = append(argv, "--provider", provider)
+	}
+	return argv
+}
+
+// Providers lists the runtimes that can measure the target on this machine.
+func (c Client) Providers(target string) (*Providers, error) {
+	var p Providers
+	_, _, err := c.decode(&p, nil, "boltbeam.workflow.screen", "providers", "--target", target)
+	return &p, err
+}
+
+// CompareProgress reads the compare command's own lines: "compare roles: N", "role ROLE QUANT: search|ab",
+// "role ROLE QUANT: done STATUS", "compare failed: REASON". Done maps "ROLE QUANT" to its status; Now is the role
+// in flight and what it is doing.
+type CompareProgress struct {
+	Total  int
+	Done   map[string]string
+	Now    string
+	Doing  string
+	Failed string
+}
+
+func ReadCompare(lines []string) CompareProgress {
+	p := CompareProgress{Done: map[string]string{}}
+	for _, line := range lines {
+		if n, ok := strings.CutPrefix(line, "compare roles: "); ok {
+			p = CompareProgress{Done: map[string]string{}}
+			p.Total, _ = strconv.Atoi(n)
+		} else if reason, ok := strings.CutPrefix(line, "compare failed: "); ok {
+			p.Failed = reason
+		} else if reason, ok := strings.CutPrefix(line, "role-time failed: "); ok {
+			p.Failed = reason
+		} else if line == "role-time: start" {
+			p.Now, p.Doing = "every role", "time"
+		} else if line == "role-time: done" {
+			p.Now, p.Doing = "", ""
+		} else if rest, ok := strings.CutPrefix(line, "role "); ok {
+			key, event, ok := strings.Cut(rest, ": ")
+			if !ok {
+				continue
+			}
+			if status, done := strings.CutPrefix(event, "done "); done {
+				p.Done[key], p.Now, p.Doing = status, "", ""
+				continue
+			}
+			p.Now, p.Doing = key, event
+		}
+	}
+	return p
 }
 
 // NextName is the first `<prefix>-NNN` not already a run folder.

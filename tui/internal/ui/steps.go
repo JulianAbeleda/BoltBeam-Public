@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
@@ -12,25 +13,41 @@ import (
 // Facts is everything the checklist reads. Every step's state is a function of these seam facts, never of
 // what the user clicked, so reopening the screen mid run lands on the same marks.
 type Facts struct {
-	Path     string
-	Editing  bool
-	Input    string
-	Files    []string
-	Reading  bool
-	ModelErr string
-	Profile  *seam.Profile
-	Targets  *seam.Targets
-	Target   int
-	ThisMac  string
-	Ceiling  *seam.Ceiling
-	CeilBusy bool
-	CeilErr  string
-	Runs     *seam.Runs
-	Run      *seam.Run
-	Job      *jobs.Job
-	Tail     []string
-	Spin     string
-	Confirm  string // the run id waiting for a second enter before it is deleted
+	Path        string
+	Editing     bool
+	Input       string
+	Files       []string
+	Reading     bool
+	ModelErr    string
+	Profile     *seam.Profile
+	Targets     *seam.Targets
+	Target      int
+	ThisMachine string // the target autoscan reads this machine's GPU as
+	Driver      string // this machine's GPU driver, read live; "" where the probe reports none
+	Ceiling     *seam.Ceiling
+	CeilBusy    bool
+	CeilErr     string
+	Runs        *seam.Runs
+	Run         *seam.Run
+	Job         *jobs.Job
+	Tail        []string
+	Ready       *seam.CompareReady // can this machine compare kernels for the run (step 5)
+	Providers   *seam.Providers    // the runtimes that can measure the chip here (step 4)
+	CJob        *jobs.Job          // the compare job, id "<run>-compare"
+	CTail       []string
+	Spin        string
+	Confirm     string // the run id waiting for a second enter before it is deleted
+}
+
+// goos is the platform the screen runs on; a variable so a test can draw the Linux screen on a Mac.
+var goos = runtime.GOOS
+
+// here is what the screen calls the machine it runs on: "this Mac" only on macOS.
+func here() string {
+	if goos == "darwin" {
+		return "this Mac"
+	}
+	return "this machine"
 }
 
 // action is one row inside a step's full view; enter on it does `do` with `arg`.
@@ -76,6 +93,43 @@ func (f Facts) target() *seam.Target {
 }
 
 func (f Facts) alive() bool { return f.Job != nil && f.Job.Alive }
+
+// runProvider is the runtime the shown run was measured with; "" before a run says.
+func (f Facts) runProvider() string {
+	if f.Run == nil {
+		return ""
+	}
+	if f.Run.Measure != nil && f.Run.Measure.Provider != nil {
+		return *f.Run.Measure.Provider
+	}
+	return f.Run.Results.Loss.Provider
+}
+
+// provider is this machine's row for a runtime, or nil.
+func (f Facts) provider(name string) *seam.ProviderRow {
+	if f.Providers == nil {
+		return nil
+	}
+	for i, p := range f.Providers.Providers {
+		if p.Provider == name {
+			return &f.Providers.Providers[i]
+		}
+	}
+	return nil
+}
+
+// with names a run's provider for a label: " · llama.cpp", or "" when the run does not say.
+func with(m *seam.MeasureStatus) string {
+	if m == nil || m.Provider == nil {
+		return ""
+	}
+	return " · " + *m.Provider
+}
+
+func (f Facts) comparing() bool { return f.CJob != nil && f.CJob.Alive }
+
+// compareID is the job id of a run's kernel comparison.
+func compareID(run string) string { return run + "-compare" }
 
 func (f Facts) outputDone() bool {
 	if f.Run == nil {
@@ -166,8 +220,8 @@ func chipLine(f Facts) (string, string) {
 		return "open", "reading the chip list…"
 	}
 	text := t.ID
-	if t.ID == f.ThisMac {
-		text += " · this Mac"
+	if t.ID == f.ThisMachine {
+		text += " · " + here()
 	}
 	if !t.HasCeiling {
 		return "crossed", text + " · no measured speeds, so no speed limit"
@@ -181,9 +235,9 @@ func chipActions(f Facts) []action {
 	}
 	out := []action{}
 	for i, t := range f.Targets.Targets {
-		here, limit := "", mark("pass")+" speed limit"
-		if t.ID == f.ThisMac {
-			here = "this Mac"
+		where, limit := "", mark("pass")+" speed limit"
+		if t.ID == f.ThisMachine {
+			where = here()
 		}
 		if !t.HasCeiling {
 			limit = mark("crossed") + " no speed limit"
@@ -192,7 +246,7 @@ func chipActions(f Facts) []action {
 		if i == f.Target {
 			chosen = stAccent.Render("● ")
 		}
-		out = append(out, action{fmt.Sprintf("%s%-14s %-9s %s", chosen, t.ID, here, limit), "chip", fmt.Sprint(i)})
+		out = append(out, action{fmt.Sprintf("%s%-14s %-*s %s", chosen, t.ID, max(9, len(here())), where, limit), "chip", fmt.Sprint(i)})
 	}
 	return out
 }
@@ -246,6 +300,9 @@ func measureLine(f Facts) (string, string) {
 			last = word(plainStage, *f.Run.LatestStage)
 		}
 		return "crossed", "stopped after " + last
+	case f.Run.Measure != nil && f.Run.Measure.Status == "measured" && deref(f.Run.Measure.Probe) == "absent":
+		// timing is what the result needs; the open probe request is named, never hidden
+		return "pass", "run " + shortRun(f.Run.ID) + with(f.Run.Measure) + " · timing " + mark("pass") + " · no probe for this chip"
 	case len(f.Run.Blocked) > 0 && f.Run.Measure != nil && f.Run.Measure.Status == "skipped":
 		return "wait", "planned · not measured here: " + deref(f.Run.Measure.Reason) + " · enter for what to run"
 	case len(f.Run.Blocked) == 1:
@@ -254,7 +311,7 @@ func measureLine(f Facts) (string, string) {
 	case len(f.Run.Blocked) > 1:
 		return "wait", "planned · needs building-block tests and a timing trace"
 	}
-	return "pass", "run " + shortRun(f.Run.ID) + " · " + measuredMarks(f.Run.Measured)
+	return "pass", "run " + shortRun(f.Run.ID) + with(f.Run.Measure) + " · " + measuredMarks(f.Run.Measured)
 }
 
 // shortRun is the run's number, the part after the model and chip.
@@ -270,12 +327,12 @@ func measureActions(f Facts) []action {
 	if f.alive() {
 		out = append(out, action{"Stop the run (x)", "stop", ""})
 	} else if f.Path != "" {
-		out = append(out, action{"Plan and measure " + aboutModel(f) + " on " + aboutChip(f), "start", ""})
+		out = append(out, startActions(f, "Measure "+aboutModel(f)+" on "+aboutChip(f)+" with ")...)
 	}
 	if f.Runs != nil {
 		for i := len(f.Runs.Runs) - 1; i >= 0; i-- {
 			r := f.Runs.Runs[i]
-			label := fmt.Sprintf("Open run %s  %s  %s", r.ID, runStatus(r.Status, r.Measured.Probe && r.Measured.Timing), measuredMarks(r.Measured))
+			label := fmt.Sprintf("Open run %s%s  %s  %s", r.ID, with(r.Measure), runStatus(r.Status, r.Measured.Probe && r.Measured.Timing), measuredMarks(r.Measured))
 			if f.Confirm == r.ID {
 				label = stBad.Render("Press d again to delete run " + r.ID + " and its report · any other key keeps it")
 			}
@@ -288,11 +345,42 @@ func measureActions(f Facts) []action {
 	return out
 }
 
+// startActions is one start row per runtime that can measure here; a runtime that cannot is named with why.
+// Before Python has answered, the one row starts the default runtime, as before providers existed.
+func startActions(f Facts, prefix string) []action {
+	if f.Providers == nil {
+		return []action{{prefix + "llama.cpp", "start", ""}}
+	}
+	out := []action{}
+	for _, p := range f.Providers.Providers {
+		if p.Available {
+			out = append(out, action{prefix + p.Provider, "start", p.Provider})
+		} else {
+			out = append(out, action{stMuted.Render(p.Provider + " cannot measure here: " + deref(p.Reason)), "", ""})
+		}
+	}
+	return out
+}
+
 // --- 5 Result ----------------------------------------------------------------------------------------------
 
 func resultLine(f Facts) (string, string) {
 	if !f.outputDone() || f.alive() {
 		return "open", "needs step 4"
+	}
+	if f.comparing() {
+		p := seam.ReadCompare(f.CTail)
+		now := ""
+		if p.Now != "" {
+			now = " · " + p.Now + " " + compareDoing[p.Doing] + "…"
+		}
+		if p.Total == 0 {
+			return "run", "working" + now
+		}
+		return "run", fmt.Sprintf("comparing kernels %s %d of %d%s", bar(float64(len(p.Done))/float64(p.Total), 14), len(p.Done), p.Total, now)
+	}
+	if p := seam.ReadCompare(f.CTail); p.Failed != "" {
+		return "fail", "comparing kernels failed: " + p.Failed
 	}
 	res := f.Run.Results
 	if res.Measured && res.Timing.TokS != nil {
@@ -307,13 +395,28 @@ func resultLine(f Facts) (string, string) {
 	return "open", "nothing measured yet"
 }
 
+// compareDoing words what the compare job is doing for the role in flight.
+var compareDoing = map[string]string{"search": "searching kernels", "ab": "timing the whole model", "time": "timing in the model"}
+
 func resultActions(f Facts) []action {
 	out := []action{}
+	switch {
+	case f.comparing():
+		out = append(out, action{"Stop comparing (x)", "stop", ""})
+	case f.outputDone() && !f.alive():
+		name := f.runProvider()
+		if p := f.provider(name); p != nil && p.Available && p.Capture.Method != nil {
+			out = append(out, action{"Time each role in " + name, "roletime", ""})
+		}
+		if f.Ready != nil && f.Ready.Ready && f.Ready.Applies {
+			out = append(out, action{"Compare kernels per role", "compare", ""})
+		}
+	}
 	if f.Run != nil && f.Run.Report != nil {
 		out = append(out, action{"Open the full report (" + *f.Run.Report + ")", "report", ""})
 	}
 	if f.Path != "" && !f.alive() {
-		out = append(out, action{"Measure again", "start", ""})
+		out = append(out, startActions(f, "Measure again with ")...)
 	}
 	return out
 }

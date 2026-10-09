@@ -40,7 +40,7 @@ func TestPinnedContractDecodes(t *testing.T) {
 			m3 = i
 		}
 	}
-	if m3 < 0 || !targets.Targets[m3].HasCeiling || *targets.Targets[m3].MemoryBandwidthGBs != 89.9 ||
+	if m3 < 0 || !targets.Targets[m3].HasCeiling || *targets.Targets[m3].MemoryBandwidthGBs != 97.2 ||
 		targets.Targets[m3].FactStatus.MemoryBandwidthGBs != "measurement" {
 		t.Fatalf("targets decoded wrong: %+v", targets.Targets)
 	}
@@ -49,7 +49,7 @@ func TestPinnedContractDecodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if ce.ModelID != "Qwen3-8B" || ce.Decode.Context != 1 || ce.Decode.Regime != "memory" || ce.Decode.TokS == nil ||
-		int(*ce.Decode.TokS*10) != 192 || ce.Prefill.Context != 512 || ce.Prefill.Regime != "compute" || len(ce.Decode.Roles) != 7 {
+		int(*ce.Decode.TokS*10) != 207 || ce.Prefill.Context != 512 || ce.Prefill.Regime != "compute" || len(ce.Decode.Roles) != 7 {
 		t.Fatalf("ceiling decoded wrong: %+v", ce)
 	}
 	var runs Runs
