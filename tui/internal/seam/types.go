@@ -88,6 +88,7 @@ type LayoutRow struct {
 	ID        string  `json:"id"`
 	Label     string  `json:"label"`
 	Available bool    `json:"available"`
+	State     string  `json:"state"` // available, not_here or not_compatible: Python decides, the screen words it
 	Reason    *string `json:"reason"`
 }
 
@@ -268,6 +269,7 @@ type Capture struct {
 type ProviderRow struct {
 	Provider  string  `json:"provider"`
 	Available bool    `json:"available"`
+	State     string  `json:"state"` // available, not_here or not_compatible: Python decides, the screen words it
 	Reason    *string `json:"reason"`
 	Capture   Capture `json:"capture"`
 	// Layouts are the GPU layouts this engine can run here; one GPU unless the machine has more.

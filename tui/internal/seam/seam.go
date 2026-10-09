@@ -161,7 +161,11 @@ func (c Client) Targets() (*Targets, []byte, error) {
 // Chips is every chip in Setup's groups, with this machine's own (workflow/chips.py).
 func (c Client) Chips() (*Targets, []byte, error) {
 	var t Targets
-	raw, _, err := c.decode(&t, nil, "boltbeam.workflow.screen", "chips")
+	args := []string{"chips"}
+	for _, p := range c.Places() { // the runs the ceiling reads this machine's measured read from: one number
+		args = append(args, "--facts-root", p.Dir)
+	}
+	raw, _, err := c.decode(&t, nil, "boltbeam.workflow.screen", args...)
 	return &t, raw, err
 }
 

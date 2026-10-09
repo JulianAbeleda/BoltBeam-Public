@@ -1,14 +1,13 @@
-⚡ BoltBeam                                                             (˘ω˘) zz
+⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ Model                                                                        │
-│ Nothing read yet. The model is never executed; only its shape is read.       │
+│ Engine                                                                       │
+│ The engine is the runtime that decodes the model. Only engines found on this │
+│ Mac can be picked.                                                           │
 │                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
+│ llama.cpp · can measure                                                      │
+│   roles: not possible here (metal-system-trace is not installed)             │
+│ tinygrad · can measure                                                       │
+│   roles: tinygrad's own timing                                               │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -17,8 +16,9 @@
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Choose                                                                       │
-│ pick a model file                                                            │
-│ ▸   /models/Q▏                                                               │
+│ llama.cpp · roles not timed here                                             │
+│ ▸ ● llama.cpp                                                                │
+│     tinygrad                                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ move · enter pick · esc setup · q quit

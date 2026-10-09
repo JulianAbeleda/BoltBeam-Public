@@ -1,9 +1,8 @@
-⚡ BoltBeam                                                             (˘ω˘) zz
+⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ Model                                                                        │
-│ Nothing read yet. The model is never executed; only its shape is read.       │
-│                                                                              │
-│                                                                              │
+│ Engine                                                                       │
+│ The engine is the runtime that decodes the model. Only engines found on this │
+│ Mac can be picked.                                                           │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -17,8 +16,9 @@
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Choose                                                                       │
-│ pick a model file                                                            │
-│ ▸   /models/Q▏                                                               │
+│ pick an engine                                                               │
+│     llama.cpp      not here                                                  │
+│     tinygrad       not here                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ move · enter pick · esc setup · q quit

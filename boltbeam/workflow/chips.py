@@ -156,6 +156,16 @@ def _measured_words(t) -> str:
   return f"{t.memory_bandwidth_gbs:.1f} GB/s{when}"
 
 
+def _here_words(t, facts_roots:list | None) -> str:
+  """This machine's memory speed as the ceiling uses it: the newest measured read in the runs, else the profile's
+  own figure (a profile made here, or the registry's), with its source."""
+  from boltbeam.workflow import layout as lay
+  read = lay.read_bandwidth(lay.newest_facts(facts_roots, t.target_id)) if facts_roots else None
+  if read and read.get("gbs"):
+    return f"{read['gbs']:.1f} GB/s · {read['short']}"
+  return _measured_words(t).replace(", ", " · ", 1)
+
+
 def _vendor_words(t) -> str | None:
   """A vendor figure the registry records for a chip it has not measured, labelled so; None when there is none."""
   src = ((t.capabilities or {}).get("fact_sources") or {}).get("memory_bandwidth_gbs") or {}
@@ -163,21 +173,20 @@ def _vendor_words(t) -> str | None:
   return f"vendor figure {gbs:.0f} GB/s, not measured" if gbs else None
 
 
-def chip_list(detected:dict[str, Any] | None = None) -> dict[str, Any]:
-  """Every chip in the four groups Setup shows, in order. `detected` is this machine's first GPU from the scan."""
+def chip_list(detected:dict[str, Any] | None = None, facts_roots:list | None = None) -> dict[str, Any]:
+  """Every chip in the four groups Setup shows, in order. `detected` is this machine's first GPU from the scan.
+  facts_roots are the run folders the ceiling reads this machine's measured read from: the chip's words use the
+  same number, so the picker and the speed limit never disagree."""
   from boltbeam.workflow.screen import target_facts
   device = detected if detected is not None else (_first_gpu(_hardware_profile()) or {})
   profile = device.get("profile") or {}
   here = profile.get("id") if profile.get("status") == "known" else None
   this = {"name": device.get("name"), "target_id": here, "status": profile.get("status") or "no_gpu",
           "source": profile.get("source"), "new_id": profile.get("id") if profile.get("status") == "new" else None}
-  if here and reg.is_local(here):
-    src = (reg.TARGETS[here].capabilities.get("fact_sources") or {}).get("memory_bandwidth_gbs") or {}
-    this["words"] = f"profile made on {here_words()}, {src.get('observed_at', 'date unknown')}"
-  elif here:
-    this["words"] = "built-in profile"
+  if here:  # built-in or made here, the screen shows it the same: the profile this machine runs with
+    this["words"] = "cached profile · " + _here_words(reg.TARGETS[here], facts_roots)
   elif this["status"] == "new":
-    this["words"] = "new chip: no profile yet. Autoscan measures it (a minute at most)."
+    this["words"] = "No profile for this GPU yet"
   else:
     this["words"] = "no GPU found"
   rows = list(reg.TARGETS.values())

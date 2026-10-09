@@ -36,7 +36,7 @@ func chipsJSON(t *testing.T, here string) *seam.Targets {
 }
 
 const newChip = `{"name": "Apple M3", "target_id": null, "status": "new", "source": null, "new_id": "apple_m3_10c_16g",
-  "words": "new chip: no profile yet. Autoscan measures it (a minute at most)."}`
+  "words": "No profile for this GPU yet"}`
 const madeHere = `{"name": "Apple M3", "target_id": "apple_m3_10c_16g", "status": "known", "source": "generated",
   "words": "profile made on this Mac, 2026-10-09"}`
 
@@ -48,43 +48,29 @@ func rows(acts []action) []string {
 	return out
 }
 
-// The list is Python's groups in order; chips not measured yet and the families are drawn, never chosen.
-func TestChipGroupsDrawPythonsGroups(t *testing.T) {
+// The chip picker shows this machine's chip only, with Python's words for its cached profile, and Autoscan.
+// No other chip is offered: a what if is chosen with --target.
+func TestChipPickerIsThisMachineOnly(t *testing.T) {
 	f := Facts{Path: "m.gguf", Targets: chipsJSON(t, madeHere), Detected: true, ThisMachine: "apple_m3_10c_16g", Target: 4}
-	got := rows(chipActions(f))
 	want := []string{
-		"note|This machine",
 		"chip|● apple_m3_10c_16g  profile made on this Mac, 2026-10-09",
 		"autoscan|[ Measure again ] refresh this machine's profile",
-		"note|Measured chips",
-		"chip|amd_gfx1100       what if: 960.0 GB/s, source not recorded",
-		"chip|apple_m3_10c      what if: 97.2 GB/s, measured 2026-10-09",
-		"note|Not measured yet",
-		"note|nvidia_sm89       run BoltBeam on one to measure it",
-		"note|Families: apple_metal · a family, not one chip: not a run target",
 	}
+	got := rows(chipActions(f))
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
-	if acts := chipActions(f); acts[2].arg != "remeasure" || acts[1].arg != "4" || acts[4].arg != "0" {
-		t.Fatalf("args: %q %q %q", acts[2].arg, acts[1].arg, acts[4].arg)
-	}
-	if !skipped("note") || skipped("chip") {
-		t.Fatal("the cursor skips notes and rests on chips")
+	if acts := chipActions(f); acts[0].arg != "4" || acts[1].arg != "remeasure" {
+		t.Fatalf("args: %+v", acts)
 	}
 }
 
-// A new chip: Autoscan is offered, nothing is marked chosen, and Run waits for a chip.
+// A new chip: the picker says there is no profile yet and offers Autoscan; nothing is chosen, Run waits.
 func TestNewChipOffersAutoscan(t *testing.T) {
 	f := Facts{Path: "m.gguf", Targets: chipsJSON(t, newChip), Detected: true, NewChip: "Apple M3"}
-	acts := chipActions(f)
-	if acts[1].do != "autoscan" || acts[1].arg != "" || !strings.Contains(plain(acts[1].label), "Apple M3 is new") {
-		t.Fatalf("autoscan row: %+v", acts[1])
-	}
-	for _, a := range acts {
-		if strings.Contains(plain(a.label), "●") {
-			t.Fatalf("no chip is chosen before autoscan: %q", plain(a.label))
-		}
+	got := rows(chipActions(f))
+	if len(got) != 2 || got[0] != "note|No profile for this GPU yet" || got[1] != "autoscan|[ Autoscan ] measure this GPU and save a profile" {
+		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
 	if mark, text := chipLine(f); mark != "open" || !strings.Contains(text, "new chip: Apple M3 has no profile yet") {
 		t.Fatalf("chip line: %s %s", mark, text)
@@ -111,11 +97,11 @@ func TestAutoscanAnswer(t *testing.T) {
 func TestNoLimitForAChipNobodyChose(t *testing.T) {
 	f := Facts{Path: "m.gguf", Targets: chipsJSON(t, newChip), Detected: true, NewChip: "Apple M3",
 		Ceiling: &seam.Ceiling{Decode: seam.CeilingBlock{TokS: fp(205.3), FloorMs: 4.9}}}
-	if body := plain(setupBody(f, 100)); strings.Contains(body, "Speed limit on") {
+	if body := plain(chipPickerBody(f, 100)); strings.Contains(body, "Speed limit on") {
 		t.Fatalf("limit shown for an unchosen chip:\n%s", body)
 	}
 	f.Picked = true
-	if body := plain(setupBody(f, 100)); !strings.Contains(body, "Speed limit on amd_gfx1100") {
+	if body := plain(chipPickerBody(f, 100)); !strings.Contains(body, "Speed limit on amd_gfx1100") {
 		t.Fatalf("a picked chip shows its limit:\n%s", body)
 	}
 }

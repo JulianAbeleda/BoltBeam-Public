@@ -146,17 +146,30 @@ func TestScreensPlain(t *testing.T) {
 	running := page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun)
 	measured := page(program(s, &s.measured, nil, nil, 80, 24), pageRun)
 	saved, _ := page(program(s, nil, nil, nil, 80, 24), pageSaved).Update(savedListMsg{savedSample(), nil})
-	editing := press(press(emptyM, "enter"), "/models/Q")
+	editing := press(press(page(emptyM, pageModel), "enter"), "/models/Q")
+	grouped, _ := program(s, nil, nil, nil, 80, 24).Update(targetsMsg{chipsJSON(t, madeHere), nil})
+	grouped, _ = grouped.Update(detectMsg{id: "apple_m3_10c_16g", count: 1})
+	chipShut := press(press(grouped, "j"), "enter")
+	engineGreyed := page(greyed, pageEngine)
+	old := page(program(s, nil, nil, nil, 80, 24), pageSaved)
+	old, _ = old.Update(savedListMsg{savedSample(), nil})
+	oldM := old.(Model)
+	oldM.f.OldWork = 1
 	for name, got := range map[string]string{
-		"setup-empty.txt":   emptyM.View(),
-		"setup-greyed.txt":  greyed.View(),
-		"setup-ready.txt":   ready.View(),
-		"run-progress.txt":  running.View(),
-		"run-results.txt":   measured.View(),
-		"saved-runs.txt":    saved.View(),
-		"model-editing.txt": editing.View(),
-		"detail-run.txt":    detail(facts(measured), pageRun),
-		"detail-setup.txt":  detail(facts(ready), pageSetup),
+		"setup-empty.txt":        emptyM.View(),
+		"setup-greyed.txt":       greyed.View(),
+		"setup-ready.txt":        ready.View(),
+		"run-progress.txt":       running.View(),
+		"run-results.txt":        measured.View(),
+		"saved-runs.txt":         saved.View(),
+		"model-editing.txt":      editing.View(),
+		"picker-model.txt":       page(ready, pageModel).View(),
+		"picker-engine.txt":      page(ready, pageEngine).View(),
+		"picker-chip.txt":        chipShut.View(),
+		"picker-engine-none.txt": engineGreyed.View(),
+		"saved-runs-clean.txt":   oldM.View(),
+		"detail-run.txt":         detail(facts(measured), pageRun),
+		"detail-setup.txt":       detail(facts(ready), pageSetup),
 	} {
 		golden(t, name, got)
 	}
@@ -179,6 +192,8 @@ func TestFramesFit80x24(t *testing.T) {
 	s := loadSample(t)
 	saved, _ := page(program(s, nil, nil, nil, 80, 24), pageSaved).Update(savedListMsg{savedSample(), nil})
 	for _, m := range []tea.Model{program(s, &s.planned, nil, nil, 80, 24), page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun),
+		page(program(s, nil, nil, nil, 80, 24), pageModel), page(program(s, nil, nil, nil, 80, 24), pageChip),
+		page(program(s, nil, nil, nil, 80, 24), pageEngine),
 		page(program(s, &s.measured, nil, nil, 80, 24), pageRun), saved} {
 		lines := strings.Split(m.View(), "\n")
 		if len(lines) != 24 {
@@ -192,29 +207,46 @@ func TestFramesFit80x24(t *testing.T) {
 	}
 }
 
-// Setup is three sections under their own headings; Run is greyed, naming what is missing, until all are set.
+// Setup is one line per choice and Run; Run is greyed, naming what is missing, until all three are set.
 func TestSetupHasThreeSectionsAndRun(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
 	acts := setupActions(facts(program(s, nil, nil, nil, 80, 24)))
-	heads := []string{}
-	var run action
-	for _, a := range acts {
-		if a.do == "head" && a.label != "" {
-			heads = append(heads, a.label)
-		}
-		if a.do == "analyze" || strings.Contains(plain(a.label), "[ Run ]") {
-			run = a
-		}
+	want := []string{"page|Model    Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K\t›", "page|Chip     apple_m3_10c · this Mac · 97.2 GB/s\t›",
+		"page|Engine   llama.cpp\t›", "head|", "analyze|[ Run ]", "page|Saved runs (0)\t›"}
+	if got := rows(acts); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
-	if strings.Join(heads, "|") != "Select model|Select chip|Select engine" || run.do != "analyze" {
-		t.Fatalf("heads %v run %+v", heads, run)
+	if acts[0].arg != "3" || acts[1].arg != "4" || acts[2].arg != "5" {
+		t.Fatalf("each line opens its picker: %+v", acts[:3])
 	}
 	none := New(seam.Client{}, jobs.Store{}, "", "", 512)
-	for _, a := range setupActions(none.f) {
-		if strings.Contains(plain(a.label), "[ Run ]") && (a.do != "" || !strings.Contains(plain(a.label), "needs a model, a chip, an engine")) {
-			t.Fatalf("empty: %+v", a)
-		}
+	got := rows(setupActions(none.f))
+	if got[0] != "page|Model    not chosen\t›" || got[4] != "|[ Run ] needs a model, a chip, an engine" {
+		t.Fatalf("empty:\n%s", strings.Join(got, "\n"))
+	}
+	what := facts(program(s, nil, nil, nil, 80, 24))
+	what.Target, what.Picked = 0, true
+	if v := chipValue(what); !strings.HasPrefix(v, "what if: amd_gfx1100") {
+		t.Fatalf("a chip that is not this machine: %q", v)
+	}
+}
+
+// Enter opens a picker; a pick sets the value and comes back to Setup on that line; esc changes nothing.
+func TestPickersOpenPickAndGoBack(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	s := loadSample(t)
+	m := press(press(press(program(s, nil, nil, nil, 80, 24), "j"), "j"), "enter")
+	if m.(Model).cursor != pageEngine {
+		t.Fatalf("enter on Engine opens its picker: %d", m.(Model).cursor)
+	}
+	m = press(press(m, "j"), "esc")
+	if got := m.(Model); got.cursor != pageSetup || got.row != 2 || got.f.Engine != "llama.cpp" {
+		t.Fatalf("esc: page %d row %d engine %q", got.cursor, got.row, got.f.Engine)
+	}
+	m = press(press(press(m, "enter"), "j"), "enter")
+	if got := m.(Model); got.cursor != pageSetup || got.row != 2 || got.f.Engine != "tinygrad" {
+		t.Fatalf("pick: page %d row %d engine %q", got.cursor, got.row, got.f.Engine)
 	}
 }
 
@@ -229,6 +261,7 @@ func TestKeys(t *testing.T) {
 	if acts := got.actions(); acts[got.row].do == "head" {
 		t.Fatal("the cursor must not rest on a heading")
 	}
+	m = page(m, pageEngine)
 	for i := 0; i < 40 && m.(Model).actions()[m.(Model).row].arg != "tinygrad"; i++ {
 		m = press(m, "j")
 	}

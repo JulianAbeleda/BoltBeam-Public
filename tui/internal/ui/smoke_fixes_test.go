@@ -19,7 +19,7 @@ func TestOneGpuShowsTheMeasuredBandwidthEverywhere(t *testing.T) {
 		Ceiling: &seam.Ceiling{Target: target, PeakBandwidthGBs: 1694.9, BandwidthSource: &src,
 			Decode: seam.CeilingBlock{TokS: fp(362.44), FloorMs: 2.759}}}
 	_, line := chipLine(f)
-	setup := plain(setupBody(f, 100))
+	setup := plain(chipPickerBody(f, 100))
 	limit := plain(limitBody(f, 100))
 	chip := plain(chipBody(f, 100))
 	for name, got := range map[string]string{"chip line": line, "setup": setup, "limit": limit, "chip": chip} {

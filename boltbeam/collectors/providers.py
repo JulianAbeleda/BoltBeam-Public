@@ -115,13 +115,24 @@ def _why(name:str, target, tinygrad_root:pathlib.Path | None) -> str | None:
   return ENGINES[name].available(target)
 
 
+def state(name:str, target, why:str | None) -> str:
+  """One word a screen shows for an engine here: available, not_compatible (it never runs on this GPU type) or
+  not_here (it could, but it is not installed or not set up). The sentence stays in `reason`."""
+  if why is None:
+    return "available"
+  if name == tinygrad_role_time.PROVIDER:
+    return "not_here" if tinygrad_role_time.device_for(target) else "not_compatible"
+  backends = getattr(ENGINES[name], "BACKENDS", None)
+  return "not_compatible" if backends is not None and target.backend not in backends else "not_here"
+
+
 def available(target, *, tinygrad_root:pathlib.Path | None = None) -> list[dict[str, Any]]:
   """Every provider, whether it can measure this target on this machine, the weights it reads, and how step 5
   would time its roles."""
   out = []
   for name in NAMES:
     why = _why(name, target, tinygrad_root)
-    out.append({"provider": name, "available": why is None, "reason": why, "formats": list(FORMATS[name]),
+    out.append({"provider": name, "available": why is None, "state": state(name, target, why), "reason": why, "formats": list(FORMATS[name]),
                 "capture": capture_method(name, target.backend)})
   return out
 

@@ -122,16 +122,20 @@ func TestLossBodyNamesProviderAndCapture(t *testing.T) {
 	}
 }
 
-// The engine list shows every engine; one this machine lacks is greyed with why, and starts nothing. Per-role
-// time is offered only where the run's engine has a capture here.
+// The engine picker lists every engine; one that cannot run here is muted with two words Python chose, and
+// starts nothing. Per-role time is offered only where the run's engine has a capture here.
 func TestEngineActions(t *testing.T) {
 	f := Facts{Path: "m.gguf", ByFlag: true, Engine: "llama.cpp", Providers: &seam.Providers{Providers: []seam.ProviderRow{
-		{Provider: "llama.cpp", Available: true, Capture: seam.Capture{Reason: sp("metal-system-trace is not installed")}},
-		{Provider: "tinygrad", Available: false, Reason: sp("The tinygrad fork is not at /x.")}}}}
-	acts := engineActions(f)
-	if acts[0].do != "engine" || acts[0].arg != "llama.cpp" || acts[1].do != "" ||
-		!strings.Contains(plain(acts[1].label), "tinygrad · not here: The tinygrad fork is not at /x.") {
-		t.Fatalf("rows: %+v", acts)
+		{Provider: "llama.cpp", Available: true, State: "available", Capture: seam.Capture{Reason: sp("metal-system-trace is not installed")}},
+		{Provider: "tinygrad", State: "not_here", Reason: sp("The tinygrad fork is not at /x.")},
+		{Provider: "vllm", State: "not_compatible", Reason: sp("BoltBeam runs vLLM on NVIDIA GPUs only")}}}}
+	got := rows(engineActions(f))
+	want := []string{"engine|● llama.cpp", "note|tinygrad       not here", "note|vllm           not compatible"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s", strings.Join(got, "\n"))
+	}
+	if body := plain(engineBody(f, 100)); strings.Contains(body, "tinygrad") || strings.Contains(body, "NVIDIA") {
+		t.Fatalf("no sentence for an engine that cannot run here:\n%s", body)
 	}
 	f.Run = measuredRun(t)
 	if hasLabel(resultActions(f), "Time each role in llama.cpp") {
@@ -266,8 +270,8 @@ func TestChipIsDetectedAndChangeableFromTheList(t *testing.T) {
 		t.Fatalf("chip line: %s %s", mark, text)
 	}
 	acts := chipActions(f)
-	if len(acts) != 2 || !strings.Contains(plain(acts[0].label), "this Mac (detected)") || strings.Contains(plain(acts[1].label), "detected") {
-		t.Fatalf("list: %+v", acts)
+	if len(acts) != 1 || !strings.Contains(plain(acts[0].label), "apple_m3_10c  this Mac (detected)") {
+		t.Fatalf("only this machine is offered: %+v", acts)
 	}
 	f.Target, f.Picked = 1, true
 	if _, text := chipLine(f); !strings.Contains(text, "not this Mac: the speed limit only") {

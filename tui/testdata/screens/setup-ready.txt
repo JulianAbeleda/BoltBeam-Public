@@ -1,24 +1,24 @@
 ⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Setup                                                                        │
-│ Select a model, a chip and an engine. Then press Run.                        │
-│ Run finds the speed limit, checks the GPU is free, measures with the engine  │
-│ and times each role.                                                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────╮
-│ Choose                                                                       │
-│ ready to run                                                                 │
-│ Select model                                                                 │
-│ ▸ ● /models/Qwen3-8B.gguf                                                    │
-│     Type a path                                                              │
+│ ▸ Model    Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K                       › │
+│   Chip     apple_m3_10c · this Mac · 97.2 GB/s                             › │
+│   Engine   llama.cpp                                                       › │
 │                                                                              │
-│ Select chip                                                                  │
-│     amd_gfx1100                                                              │
-│     nvidia_sm89                           ⚠ no speed limit                   │
-│     nvidia_sm120                                                             │
-│     apple_metal                           ⚠ no speed limit                   │
-│   ● apple_m3_10c   this Mac (detected)                                       │
-│   ↓ 7 more                                                                   │
+│   [ Run ]                                                                    │
+│   Saved runs (2)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
 
  ↑↓ move · enter pick · q quit

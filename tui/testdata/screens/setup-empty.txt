@@ -1,24 +1,24 @@
 ⚡ BoltBeam                                                             (˘ω˘) zz
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Setup                                                                        │
-│ Select a model, a chip and an engine. Then press Run.                        │
-│ Run finds the speed limit, checks the GPU is free, measures with the engine  │
-│ and times each role.                                                         │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────╮
-│ Choose                                                                       │
-│ needs a model, a chip, an engine                                             │
-│ Select model                                                                 │
-│ ▸   Type a path                                                              │
+│ ▸ Model    not chosen                                                      › │
+│   Chip     not chosen                                                      › │
+│   Engine   not chosen                                                      › │
 │                                                                              │
-│ Select chip                                                                  │
-│   ● amd_gfx1100                                                              │
-│     nvidia_sm89                           ⚠ no speed limit                   │
-│     nvidia_sm120                                                             │
-│     apple_metal                           ⚠ no speed limit                   │
-│     apple_m3_10c                                                             │
-│     apple_m4_10c                                                             │
-│   ↓ 4 more                                                                   │
+│   [ Run ] needs a model, a chip, an engine                                   │
+│   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
 
  ↑↓ move · enter pick · q quit

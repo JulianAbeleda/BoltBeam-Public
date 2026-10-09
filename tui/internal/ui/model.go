@@ -850,6 +850,7 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 		case tea.KeyEnter:
 			m.f.Editing, m.f.Path = false, strings.TrimSpace(m.input.Value())
 			m.input.Blur()
+			m.backToSetup()
 			return m.readModel()
 		case tea.KeyEsc:
 			m.f.Editing = false
@@ -874,9 +875,7 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Matches(msg, keyBack):
 		if m.cursor != pageSetup {
-			m.cursor, m.row, m.f.ReadOnly = pageSetup, 0, false
-			m.skipHeads(1)
-			m.view.GotoTop()
+			m.backToSetup()
 		}
 	case key.Matches(msg, keyDown): // the rows first, then the page above them scrolls
 		if m.row < len(m.actions())-1 {
@@ -898,6 +897,17 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// backToSetup shows Setup again; from a picker the cursor rests on that picker's line.
+func (m *Model) backToSetup() {
+	m.row = 0
+	if picker(m.cursor) {
+		m.row = m.cursor - pageModel
+	}
+	m.cursor, m.f.ReadOnly = pageSetup, false
+	m.skipHeads(1)
+	m.view.GotoTop()
 }
 
 func (m Model) readModel() (Model, tea.Cmd) {
@@ -945,6 +955,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, m.input.Focus()
 	case "file":
 		m.f.Path = a.arg
+		m.backToSetup()
 		return m.readModel()
 	case "page":
 		m.cursor, _ = strconv.Atoi(a.arg)
@@ -960,6 +971,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, nil
 	case "engine":
 		m.f.Engine, m.f.Layout, m.engineSet = a.arg, "", true
+		m.backToSetup()
 		return m, nil
 	case "layout":
 		m.f.Layout = a.arg
@@ -979,6 +991,9 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		}
 		m.f.Target, _ = strconv.Atoi(a.arg)
 		m.chipSet, m.f.Picked = true, true
+		if m.f.GpuCount < 2 { // more GPUs: the layout is chosen on the same picker
+			m.backToSetup()
+		}
 		return m, m.chipChanged()
 	case "start":
 		return m, m.startRun(a.arg)

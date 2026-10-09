@@ -1,12 +1,9 @@
-⚡ BoltBeam                                                             (˘ω˘) zz
+⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ Model                                                                        │
-│ Nothing read yet. The model is never executed; only its shape is read.       │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
+│ Saved runs                                                                   │
+│ A run is temporary until you save it. Saving keeps the run, its report,      │
+│ results.json and summary.txt.                                                │
+│ Enter opens a saved run. Press d twice to delete one.                        │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -16,9 +13,12 @@
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ Choose                                                                       │
-│ pick a model file                                                            │
-│ ▸   /models/Q▏                                                               │
+│ What next                                                                    │
+│ 2 saved runs in /home/u/runs/saved                                           │
+│ ▸ Qwen3-8B · apple_m3_10c · tinygrad · 2026-10-09 12:10 · 60% of limit       │
+│   Qwen3-8B · apple_m3_10c · llama.cpp · 2026-10-09 11:20 · 82% of limit      │
+│   Delete the unsaved runs from earlier sessions (1)                          │
+│   [ Back to setup ]                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · enter pick · esc setup · q quit
+ ↑↓ move · enter open run · d delete run · esc setup · q quit

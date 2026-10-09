@@ -1016,7 +1016,8 @@ def main(argv:list[str] | None = None) -> int:
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
   sub = parser.add_subparsers(dest="command", required=True)
   sub.add_parser("targets")
-  sub.add_parser("chips")
+  p = sub.add_parser("chips")
+  p.add_argument("--facts-root", action="append", default=[], help="a runs folder to read this machine's measured read from")
   p = sub.add_parser("autoscan")
   p.add_argument("--remeasure", action="store_true", help="measure a profile made on this machine again")
   sub.add_parser("detect")
@@ -1104,7 +1105,8 @@ def main(argv:list[str] | None = None) -> int:
       out = targets()
     elif args.command == "chips":
       from boltbeam.workflow import chips
-      out = {"schema": SCHEMA, **chips.chip_list()}
+      roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
+      out = {"schema": SCHEMA, **chips.chip_list(facts_roots=roots)}
     elif args.command == "autoscan":
       from boltbeam.workflow import chips
       out = {"schema": SCHEMA, **chips.autoscan(remeasure=args.remeasure)}

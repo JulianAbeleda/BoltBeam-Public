@@ -1,9 +1,8 @@
-⚡ BoltBeam                                                             (˘ω˘) zz
+⚡ BoltBeam                                                            ⠋ (•̀ᴗ•́)⚡
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ Model                                                                        │
-│ Nothing read yet. The model is never executed; only its shape is read.       │
-│                                                                              │
-│                                                                              │
+│ Chip                                                                         │
+│ memory speed unknown · compute speed unknown                                 │
+│  ·  · memory from  · compute from                                            │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -17,8 +16,9 @@
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Choose                                                                       │
-│ pick a model file                                                            │
-│ ▸   /models/Q▏                                                               │
+│ apple_m3_10c_16g · this Mac (detected) · memory speed unknown                │
+│ ▸ ● apple_m3_10c_16g  profile made on this Mac, 2026-10-09                   │
+│     [ Measure again ] refresh this machine's profile                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ move · enter pick · esc setup · q quit

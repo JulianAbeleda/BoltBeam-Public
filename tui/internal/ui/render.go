@@ -860,23 +860,45 @@ func DetailActions(f Facts, i, row, width, maxRows int) string {
 		case a.do == "note":
 			b.WriteString("\n  " + a.label)
 		case j == row:
-			b.WriteString("\n" + stCursor.Render("▸ ") + a.label)
+			b.WriteString("\n" + stCursor.Render("▸ ") + spread(a.label, width-6))
 		default:
-			b.WriteString("\n  " + a.label)
+			b.WriteString("\n  " + spread(a.label, width-6))
 		}
 	}
 	if end < len(acts) {
 		b.WriteString("\n" + stMuted.Render(fmt.Sprintf("  ↓ %d more", len(acts)-end)))
 	}
 	title := "What next"
-	if i == pageSetup {
+	switch {
+	case i == pageSetup:
+		title = "Setup"
+	case picker(i):
 		title = "Choose"
 	}
-	return box(title, b.String(), width, false)
+	body := b.String()
+	if text == "" { // no line: the first row starts the box
+		body = strings.TrimPrefix(body, "\n")
+	}
+	return box(title, body, width, false)
+}
+
+// spread puts a row's right part (after a tab) at the right edge, so the "›" marks line up.
+func spread(label string, width int) string {
+	left, right, ok := strings.Cut(label, "\t")
+	if !ok {
+		return label
+	}
+	left = truncate(left, width-lipgloss.Width(right)-2) // a long value is cut; the mark stays
+	gap := max(width-lipgloss.Width(right)-lipgloss.Width(left), 2)
+	return left + strings.Repeat(" ", gap) + right
 }
 
 // DetailView is the open view at a given height: the step's whole result scrolls on top, actions at the bottom.
 func DetailView(f Facts, i, row, width, height int, scroll *viewport.Model) string {
+	if i == pageSetup { // Setup is its rows only: one box, padded to the screen
+		actions := DetailActions(f, i, row, width, height-2)
+		return actions + strings.Repeat("\n", max(height-lipgloss.Height(actions), 0))
+	}
 	actions := DetailActions(f, i, row, width, max(height*2/3-3, 6)) // the rows take up to two thirds of the screen
 	scroll.Width, scroll.Height = width-4, max(height-lipgloss.Height(actions)-3, 1)
 	tableWidth = width - 4
