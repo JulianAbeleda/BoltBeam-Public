@@ -30,6 +30,7 @@ def _role_inventory(profile) -> list[dict[str, Any]]:
       "shape": [role.rows, role.cols],
       "count": role.count,
       "n_expert": role.n_expert,
+      "experts_read": role.experts_read,
       "quant": role.quant,
       "elements": elems,
       "estimated_weight_bytes": bytes_est,

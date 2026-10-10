@@ -9,7 +9,7 @@ profile. It is intentionally tinygrad-free so it can run before loading a model.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import collections, pathlib, struct
+import collections, math, pathlib, struct
 from typing import Any
 
 # one classifier for every reader (profile/roles.py): a second copy here said `other` for the hybrid's
@@ -53,6 +53,8 @@ class WeightRole:
   ggml_type: int
   quant: str
   count: int
+  n_expert: int = 0       # a MoE expert stack's depth; 0 = one matrix
+  experts_read: int = 0   # experts of the stack read per token (expert_used_count); 0 = one matrix
 
 
 @dataclass(frozen=True)
@@ -139,18 +141,26 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Deco
   layers = kv.get(f"{arch}.block_count") if arch else None
   vocab = len(kv["tokenizer.ggml.tokens"]) if "tokenizer.ggml.tokens" in kv else None
 
-  grouped: dict[tuple[str, int, int, int], list[str]] = collections.defaultdict(list)
+  from boltbeam.profile.roles import is_expert_role, is_matrix
+  from boltbeam.profile.weight_ledger import experts_read
+  grouped: dict[tuple[str, int, int, int, int], list[str]] = collections.defaultdict(list)
   for name, dims, typ, _off in infos:
-    if not name.endswith(".weight") or len(dims) != 2: continue
-    role = _role_from_tensor_name(name)
+    dims = tuple(int(d) for d in dims)
+    role = _role_from_tensor_name(name, dims)
     if role == "embedding": continue
-    rows, cols = tuple(reversed(dims))
-    grouped[(role, rows, cols, typ)].append(name)
+    if is_matrix(dims):  # a matrix, whatever its name ends in
+      (rows, cols), n_expert = tuple(reversed(dims)), 0
+    elif len(dims) == 3 and is_expert_role(role):  # GGUF ne = [in, out, n_expert]
+      cols, rows, n_expert = dims
+    else:
+      continue
+    grouped[(role, rows, cols, typ, n_expert)].append(name)
     if role == "lm_head": vocab = vocab or rows
 
   weights = tuple(WeightRole(role=role, tensor_name=names[0], rows=rows, cols=cols, ggml_type=typ,
-                             quant=GGML_TYPE_NAMES.get(typ, f"GGML_{typ}"), count=len(names))
-                  for (role, rows, cols, typ), names in sorted(grouped.items()))
+                             quant=GGML_TYPE_NAMES.get(typ, f"GGML_{typ}"), count=len(names), n_expert=n_expert,
+                             experts_read=experts_read(kv, arch, n_expert) if n_expert else 0)
+                  for (role, rows, cols, typ, n_expert), names in sorted(grouped.items()))
   return DecodeRoleProfile(model_id=model_id or p.stem, model_path=str(p), arch=arch, hidden=hidden, ffn=ffn,
                            vocab=vocab, layers=layers, weights=weights)
 
@@ -170,25 +180,39 @@ def _physical_bytes(numel:int, ggml_type:int, *, tensor_name:str) -> int:
 def decode_roofline_inventory_from_gguf(path:str | pathlib.Path, model_id:str | None = None) -> dict[str, Any]:
   """Static, lower-bound decode work derived directly from one GGUF tensor table.
 
-  Rank-two ``*.weight`` tensors are counted once as matrix-vector products and
-  rank-one weights (normally norms) are counted once as elementwise reads.
-  ``token_embd.weight`` is special: decode reads one selected row, not the full
-  vocabulary table. This deliberately does not claim activation, KV, allocator,
+  Every tensor of the file is a row, whatever its name ends in. Rank-two tensors
+  are counted once as matrix-vector products and rank-one tensors (norms,
+  biases, ssm state vectors) once as elementwise reads. A rank-three MoE expert
+  stack is read k of its n experts per token (expert_used_count; all n without
+  it: profile/weight_ledger.experts_read). ``token_embd.weight`` is special:
+  decode reads one selected row, not the full vocabulary table. This deliberately does not claim activation, KV, allocator,
   cache, or reload traffic; those are provider-measured additions to the shared
   roofline report.
   """
   p = pathlib.Path(path).expanduser()
-  _kv, infos = read_gguf_metadata(p)
+  from boltbeam.profile.roles import is_expert_role
+  from boltbeam.profile.weight_ledger import experts_read
+  kv, infos = read_gguf_metadata(p)
+  arch = kv.get("general.architecture")
   rows: list[dict[str, Any]] = []
   for name, dims, typ, _offset in infos:
-    if not name.endswith(".weight") or len(dims) not in (1, 2):
+    dims = tuple(int(d) for d in dims)
+    if not dims:
       continue
-    role = _role_from_tensor_name(name)
-    if len(dims) == 1:
+    role = _role_from_tensor_name(name, dims)
+    extra: dict[str, Any] = {}
+    if len(dims) == 3 and is_expert_role(role):  # GGUF ne = [in, out, n_expert]: k of n experts read per token
+      cols, out_rows, n_expert = dims
+      k = experts_read(kv, arch, n_expert)
+      shape = [out_rows, cols]
+      packed_bytes = _physical_bytes(cols * out_rows * n_expert, typ, tensor_name=name) // n_expert * k
+      flops, execution = 2 * cols * out_rows * k, "k_of_n_expert_matrix_vector"
+      extra = {"n_expert": n_expert, "experts_read": k}
+    elif len(dims) == 1:
       packed_bytes = _physical_bytes(int(dims[0]), typ, tensor_name=name)
       flops, execution, shape, role = 0, "one_elementwise_weight_read", [int(dims[0])], "normalization_elementwise"
-    else:
-      cols, out_rows = (int(dims[0]), int(dims[1]))
+    else:  # rank two, or a higher rank read whole as one matrix of its first side by the rest
+      cols, out_rows = int(dims[0]), int(math.prod(dims[1:]))
       shape = [out_rows, cols]
       if role == "embedding":
         packed_bytes = _physical_bytes(cols, typ, tensor_name=name)
@@ -199,9 +223,9 @@ def decode_roofline_inventory_from_gguf(path:str | pathlib.Path, model_id:str | 
     rows.append({"tensor_name": name, "role": role, "shape": shape,
                  "ggml_type": typ, "quant": GGML_TYPE_NAMES.get(typ, f"GGML_{typ}"),
                  "packed_weight_bytes": packed_bytes, "semantic_flops": flops,
-                 "execution": execution})
+                 "execution": execution, **extra})
   if not rows:
-    raise ValueError(f"{p}: no rank-two *.weight tensors found for decode inventory")
+    raise ValueError(f"{p}: no tensors found for decode inventory")
   total_bytes = sum(r["packed_weight_bytes"] for r in rows)
   total_flops = sum(r["semantic_flops"] for r in rows)
   by_role: dict[str, dict[str, int]] = {}
@@ -219,7 +243,7 @@ def decode_roofline_inventory_from_gguf(path:str | pathlib.Path, model_id:str | 
     "dense_matrix_flops_per_token": total_flops,
     "arithmetic_intensity_flop_per_byte": total_flops / total_bytes if total_bytes else None,
     "role_contributions": dict(sorted(by_role.items())), "tensors": rows,
-    "provenance": {"source": "GGUF tensor table", "weight_execution": "every rank-two matrix weight and active rank-one elementwise weight once; token_embd is one row",
+    "provenance": {"source": "GGUF tensor table", "weight_execution": "every rank-two matrix and rank-one tensor once; an expert stack k of n experts; token_embd is one row",
                    "flop_definition": "two operations per dense matrix MAC"},
     "caveats": ["packed weight bytes are a lower bound, not measured DRAM traffic",
                 "activation, KV-cache, intermediates, reload, allocator, and cache effects are unmeasured",

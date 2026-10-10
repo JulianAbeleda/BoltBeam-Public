@@ -77,7 +77,7 @@ def _route_families(role:TensorRole, target:TargetProfile, top_k:int | None = No
   """All route families for a role. The router is purely MoE (top-k), no quant GEMV; routed expert weights get
   the quant GEMV family PLUS MoE batched-GEMV/layout/dispatch families; dense and shared-expert roles get the
   quant GEMV family only (audit A5 — a MoE model is not searched as if it were dense FFN). An ssm matrix the
-  decode reads once per token (`ssm_out`, `ssm_alpha_beta`: vocab.WEIGHT_GEMV_ROLES) is a quant GEMV like the
+  decode reads once per token (`ssm_in`, `ssm_out`, `ssm_alpha_beta`, one named after its tensor: vocab.is_weight_gemv_role) is a quant GEMV like the
   attention and FFN weights and takes the quant families; conv, state and scan tensors take the ssm families."""
   if is_ssm_role(role.role) and not is_weight_gemv_role(role.role):
     return ssm_families(role, target)

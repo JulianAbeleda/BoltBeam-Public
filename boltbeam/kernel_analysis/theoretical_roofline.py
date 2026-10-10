@@ -16,10 +16,9 @@ from typing import Any, Mapping
 from boltbeam.math.roofline import amdahl_whole_gain
 from boltbeam.perf.mem_tier import effective_bandwidth_gbs
 from boltbeam.profile.decode_roles import GGML_BITS_PER_WEIGHT
-from boltbeam.vocab import SCHEMA_THEORETICAL_ROOFLINE, WEIGHT_GEMV_ROLES
+from boltbeam.vocab import SCHEMA_THEORETICAL_ROOFLINE, is_weight_gemv_role
 from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
 
-_GEMM_ROLES = WEIGHT_GEMV_ROLES  # the roles of the limit: every weight the decode reads once per token (vocab)
 _ACT_BYTES = 2.0  # fp16 activations
 
 
@@ -146,8 +145,19 @@ class RoleRoofline:
 def limit_roles(profile: Mapping[str, Any]) -> list[Mapping[str, Any]]:
   """The rows of the limit, the one list both rooflines read: the profile's limit roles, then every other weight the
   decode reads per token as the weight ledger counted it ("unclassified weight: <pattern>", its bytes and reads per
-  token; profile/weight_ledger.py). A tensor the classifier cannot name never drops out of the limit."""
-  named = [r for r in profile.get("roles") or [] if isinstance(r, Mapping) and r.get("role") in _GEMM_ROLES]
+  token; profile/weight_ledger.py). A tensor the classifier cannot name never drops out of the limit.
+  A MoE expert role's count is its matrices read per token (k of n experts per stack, weight_ledger.reads_per_token);
+  calls_per_token keeps its launches (one per stack) and the note says so."""
+  from boltbeam.profile.weight_ledger import reads_per_token
+  named = []
+  for r in profile.get("roles") or []:
+    if not (isinstance(r, Mapping) and is_weight_gemv_role(str(r.get("role")))):
+      continue
+    if r.get("n_expert"):
+      k, n = int(r.get("experts_read") or r["n_expert"]), int(r["n_expert"])
+      r = {**r, "count": reads_per_token(r), "calls_per_token": int(r.get("count") or 1),
+           "note": f"{k} of {n} experts read per token; one launch per layer reads the {k}"}
+    named.append(r)
   return named + list((((profile.get("metadata") or {}).get("weights")) or {}).get("unclassified") or [])
 
 

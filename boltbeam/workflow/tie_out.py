@@ -90,8 +90,8 @@ def kind_of(row:dict[str, Any]) -> str:
 
 
 def roles_outside_limit(profile:dict[str, Any] | None, limit_keys:set[tuple[str, str]]) -> dict[int, str]:
-  """The profile's matrix roles the limit has no bytes for (not in vocab.WEIGHT_GEMV_ROLES: an `ssm_in` kept as
-  `ssm_projection`, a MoE router), named by their calls per token: {48: "ssm projection"}.
+  """The profile's matrix roles the limit has no bytes for (not vocab.is_weight_gemv_role: an ssm tensor of unknown
+  shape kept as `ssm_projection`), named by their calls per token: {48: "ssm projection"}.
   A GEMV no role took that runs such a role's count of times per token is labelled with the role's name instead of
   UNATTRIBUTED (a label only: its time stays in other kernels, nothing is attributed). A count two such roles share
   names neither. A role whose quant the registry does not know (an F32 conv weight) is not a matrix role here."""

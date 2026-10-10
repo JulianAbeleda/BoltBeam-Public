@@ -101,7 +101,8 @@ class RoleClass(str, Enum):
   MOE_SHARED_EXPERT_GATE = "moe_shared_expert_gate"
   MOE_SHARED_EXPERT_UP = "moe_shared_expert_up"
   MOE_SHARED_EXPERT_DOWN = "moe_shared_expert_down"
-  SSM_PROJECTION = "ssm_projection"  # an ssm matrix not named below (`ssm_in`, `gated_delta_proj`)
+  SSM_PROJECTION = "ssm_projection"  # an ssm matrix no pattern names: its coarse role is its tensor's name (`ssm_dt`)
+  SSM_IN = "ssm_in"                  # the state-space input projection (`ssm_in`: x, z, B, C and dt in one matrix)
   SSM_OUT = "ssm_out"                # the state-space output projection
   SSM_ALPHA = "ssm_alpha"            # the decay gate projection of a gated delta net
   SSM_BETA = "ssm_beta"              # the update gate projection beside it, the same shape
@@ -129,7 +130,8 @@ class RoleGroup(str, Enum):
   MOE_EXPERT_DOWN = "moe_expert_down"
   MOE_SHARED_EXPERT_GATE_UP = "moe_shared_expert_gate_up"
   MOE_SHARED_EXPERT_DOWN = "moe_shared_expert_down"
-  SSM_PROJECTION = "ssm_projection"
+  SSM_PROJECTION = "ssm_projection"  # an ssm tensor of unknown shape; a matrix of known shape is named after its tensor
+  SSM_IN = "ssm_in"
   SSM_OUT = "ssm_out"
   SSM_ALPHA_BETA = "ssm_alpha_beta"  # alpha and beta collapse as k and v do: two launches of one program, one shape
   SSM_CONV = "ssm_conv"
@@ -161,6 +163,7 @@ ROLE_GROUP_OF: dict[str, str] = {
   RoleClass.MOE_SHARED_EXPERT_UP.value: RoleGroup.MOE_SHARED_EXPERT_GATE_UP.value,
   RoleClass.MOE_SHARED_EXPERT_DOWN.value: RoleGroup.MOE_SHARED_EXPERT_DOWN.value,
   RoleClass.SSM_PROJECTION.value: RoleGroup.SSM_PROJECTION.value,
+  RoleClass.SSM_IN.value: RoleGroup.SSM_IN.value,
   RoleClass.SSM_OUT.value: RoleGroup.SSM_OUT.value,
   RoleClass.SSM_ALPHA.value: RoleGroup.SSM_ALPHA_BETA.value,
   RoleClass.SSM_BETA.value: RoleGroup.SSM_ALPHA_BETA.value,
@@ -175,19 +178,27 @@ ROLE_GROUP_OF: dict[str, str] = {
 # roofline limit (kernel_analysis/theoretical_roofline.model_roofline), of the per-role tables and of the pairing by
 # bytes and count (collectors/attribution.py). Those tables key on (role, quant), so two different tensors of one
 # quant must be two names here: the 27B hybrid's `ssm_out` (5120x6144) and `ssm_alpha`/`ssm_beta` (48x5120) are both
-# Q8_0 and collapsed into one row while both were `ssm_projection`. A rank-one or non-matrix ssm tensor (conv, state,
-# scan) is not here; an ssm matrix this list does not name (`ssm_in`) stays `ssm_projection`, outside the limit, and
-# the tie-out names its GEMV after it in other kernels (workflow/tie_out.roles_outside_limit).
+# Q8_0 and collapsed into one row while both were `ssm_projection`.
+#   MoE: the router (`ffn_gate_inp`) and the shared experts are one GEMV per layer. A routed expert stack (rank 3,
+#   n experts) is read k of n per token (expert_used_count, profile/weight_ledger.reads_per_token), and the engine
+#   launches it once per layer: one launch reads k experts' bytes (llama.cpp mul_mat_id).
+#   ssm: an ssm matrix of known shape that no pattern names is a GEMV role named after its tensor (`ssm_dt`):
+#   is_weight_gemv_role. Conv, state and scan tensors, and an ssm tensor of unknown shape, are not GEMV roles.
 WEIGHT_GEMV_ROLES: tuple[str, ...] = (
   RoleGroup.ATTN_QO.value, RoleGroup.ATTN_KV.value, RoleGroup.ATTN_QKV.value, RoleGroup.ATTN_GATE.value,
   RoleGroup.FFN_GATE_UP.value, RoleGroup.FFN_DOWN.value, RoleGroup.LM_HEAD.value,
-  RoleGroup.SSM_OUT.value, RoleGroup.SSM_ALPHA_BETA.value,
+  RoleGroup.SSM_IN.value, RoleGroup.SSM_OUT.value, RoleGroup.SSM_ALPHA_BETA.value,
+  RoleGroup.MOE_ROUTER.value, RoleGroup.MOE_EXPERT_GATE_UP.value, RoleGroup.MOE_EXPERT_DOWN.value,
+  RoleGroup.MOE_SHARED_EXPERT_GATE_UP.value, RoleGroup.MOE_SHARED_EXPERT_DOWN.value,
 )
+_ROLE_GROUPS = frozenset(g.value for g in RoleGroup)
 
 
 def is_weight_gemv_role(role:str) -> bool:
-  """True for a coarse role the decode reads once per token as a matrix-vector product (WEIGHT_GEMV_ROLES)."""
-  return role in WEIGHT_GEMV_ROLES
+  """True for a coarse role the decode reads once per token as a matrix-vector product: a WEIGHT_GEMV_ROLES name, or
+  an ssm matrix named after its tensor (an `ssm_*` name that is no fixed group: profile/roles.py gives it only to a
+  rank-two ssm matrix)."""
+  return role in WEIGHT_GEMV_ROLES or (role.startswith("ssm_") and role not in _ROLE_GROUPS)
 
 
 def role_group_of(role_class:str) -> str:

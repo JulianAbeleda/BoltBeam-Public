@@ -11,6 +11,7 @@ from boltbeam.profile.architecture import classify_architecture
 from boltbeam.profile.gguf import GGML_TYPE_NAMES, profile_from_gguf
 from boltbeam.profile.ir import ModelProfile, TensorRole
 from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
+from boltbeam.profile.weight_ledger import experts_read
 from boltbeam.vocab import is_ssm_role
 
 _DTYPE_TO_QUANT = {
@@ -185,8 +186,8 @@ def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:li
   grouped: dict[tuple[str, int, int, str, int, str], list[str]] = {}
   tensors_for_arch: list[tuple[str, tuple[int, ...], int, int]] = []
   for spec in specs:
-    rc = classify_tensor_role(spec.name)
-    role = role_from_tensor_name(spec.name)
+    rc = classify_tensor_role(spec.name, tuple(spec.shape))
+    role = role_from_tensor_name(spec.name, tuple(spec.shape))
     if role in {"embedding", "norm", "other"}:
       continue
     rows, cols, n_expert = _shape_for_role(spec, role)
@@ -196,11 +197,13 @@ def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:li
     grouped.setdefault(key, []).append(spec.name)
     tensors_for_arch.append((spec.name, spec.shape, spec.ggml_type, 0))
 
-  roles = tuple(TensorRole(role=role, tensor_name=names[0], rows=rows, cols=cols, quant=quant,
-                           ggml_type=-1, count=len(names), role_class=role_class, n_expert=n_expert)
-                for (role, rows, cols, quant, n_expert, role_class), names in sorted(grouped.items()))
   arch = cfg.get("model_type") or (cfg.get("architectures") or [None])[0]
-  cls, signals = classify_architecture(_kv_from_config(cfg), tensors_for_arch, str(arch) if arch else None)
+  kv = _kv_from_config(cfg)
+  roles = tuple(TensorRole(role=role, tensor_name=names[0], rows=rows, cols=cols, quant=quant,
+                           ggml_type=-1, count=len(names), role_class=role_class, n_expert=n_expert,
+                           experts_read=experts_read(kv, kv["general.architecture"], n_expert) if n_expert else 0)
+                for (role, rows, cols, quant, n_expert, role_class), names in sorted(grouped.items()))
+  cls, signals = classify_architecture(kv, tensors_for_arch, str(arch) if arch else None)
   meta = {"format_family": fmt, "architecture_signals": signals, "tensor_count": len(specs),
           "quant_types": sorted({s.quant for s in specs})}
   if extra: meta.update(extra)

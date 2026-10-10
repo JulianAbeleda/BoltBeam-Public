@@ -17,6 +17,14 @@ Kernels on several streams can run at once. Each launch then gets only its share
 sum. A fused kernel (llama.cpp on CUDA runs ffn gate and up as one) makes 1/k of a role's calls and moves k
 calls' bytes each.
 
+A MoE expert stack is read k of n experts per token (the limit counts k matrices per stack), but the engine launches
+it once per layer: llama.cpp's mul_mat_id at one decode token is one kernel (CUDA: mul_mat_vec_q with grid.y = k, each
+y-block reading the expert ids[y] names; Metal: one mul_mv_id dispatch over k), so that launch moves k experts' bytes.
+The profile's count for an expert role is its stacks, the launches per token, and bytes per call is the role's limit
+bytes over that count: k experts' bytes. CUDA also fuses an expert gate and up with their GLU into one launch that
+reads 2k matrices; that is the fused case below with k = 2 (the gate_up role's count is 2 per layer). The router and
+the shared experts are plain matrices: one launch per layer each.
+
 The pairing is one assignment over every role at once (PAIRING_RULE), not a walk that places one role and moves
 on: on the 27B hybrid, ffn_down and the fused gate+up kernel both run 64 times per token, and placing ffn_down
 first gave it the 100 MB launch (755 GB/s, plausible alone) and left the 50 MB launch to no one. Paired by bytes,

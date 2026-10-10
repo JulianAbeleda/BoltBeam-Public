@@ -17,6 +17,7 @@ class TensorRole:
   count: int = 1
   role_class: str = ""            # fine RoleClass of the representative tensor (audit A1); "" = unclassified
   n_expert: int = 0               # MoE expert-stack depth (audit A5); 0 = dense (2D) weight
+  experts_read: int = 0           # experts of the stack the decode reads per token (expert_used_count); 0 = dense
 
   @property
   def shape(self) -> tuple[int, int]:

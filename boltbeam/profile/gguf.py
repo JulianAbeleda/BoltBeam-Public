@@ -105,8 +105,9 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
   vocab = len(kv["tokenizer.ggml.tokens"]) if "tokenizer.ggml.tokens" in kv else None
 
   grouped: dict[tuple[str, int, int, int, int], list[str]] = collections.defaultdict(list)
+  shapes = {name: tuple(dims) for name, dims, _typ, _off in tensors}
   for name, dims, typ, _off in tensors:
-    role = role_from_tensor_name(name)
+    role = role_from_tensor_name(name, tuple(dims))
     if not name.endswith(".weight") and not is_ssm_role(role): continue
     if role in ("embedding", "norm", "other"): continue
     if len(dims) == 2:
@@ -126,7 +127,8 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
 
   roles = tuple(TensorRole(role=role, tensor_name=names[0], rows=rows, cols=cols,
                            ggml_type=typ, quant=GGML_TYPE_NAMES.get(typ, f"GGML_{typ}"), count=len(names),
-                           role_class=classify_tensor_role(names[0]).value, n_expert=n_expert)
+                           role_class=classify_tensor_role(names[0], shapes[names[0]]).value, n_expert=n_expert,
+                           experts_read=weight_ledger.experts_read(kv, arch, n_expert) if n_expert else 0)
                 for (role, rows, cols, typ, n_expert), names in sorted(grouped.items()))
   # every tensor counted in the limit or excluded with a reason; refused here when the two do not add up
   ledger = weight_ledger.build(kv, tensors, arch=arch, data_bytes=p.stat().st_size - data_start,

@@ -1,8 +1,9 @@
 """The weight ledger: every tensor in the file, counted in the decode limit or excluded with a stated reason.
 
 The limit (kernel_analysis/theoretical_roofline.model_roofline) is the weight bytes a decode reads per token. The rule:
-every weight the decode reads once per token counts in it. A tensor whose name the classifier (profile/roles.py) maps
-to a limit role (vocab.WEIGHT_GEMV_ROLES) is counted through the profile's roles. Every other tensor is still counted,
+every weight the decode reads once per token counts in it. A tensor the classifier (profile/roles.py) maps, by its name
+and shape, to a limit role (vocab.is_weight_gemv_role) is counted through the profile's roles: a matrix once per token,
+a MoE expert stack k of its n experts per token (reads_per_token). Every other tensor is still counted,
 as the row "unclassified weight: <tensor name pattern>" with its bytes and count, unless one of the stated exclusions
 below applies. An unrecognised tensor never drops out of the limit: the 27B hybrid's recurrent-block matrices
 (5.9 GB per token) once did, and the limit read 137 tok/s against a truth of 92.8.
@@ -15,6 +16,9 @@ The exclusions, each with its reason (EXCLUSIONS):
                      under SMALL_BYTES per tensor.
     inactive_experts an expert stack (rank 3, n experts): the decode reads expert_used_count of them per token, so
                      the other n - k are not read. The k are counted; without expert_used_count all n are counted.
+                     The engine launches the stack once per layer, and that one launch reads the k experts' bytes
+                     (llama.cpp mul_mat_id: on CUDA one mul_mat_vec_q with grid.y = k, on Metal one mul_mv_id
+                     dispatch over k), so the stack's calls per token are its tensor count, not count x k.
 
 The invariant (check): bytes counted in the limit + bytes excluded with a reason = total tensor bytes in the file, and
 that total fills the file's data region to within its alignment padding. The counted bytes are read back from the
@@ -28,11 +32,10 @@ import re
 from typing import Any, Iterable, Mapping
 
 from boltbeam.profile.decode_roles import GGML_TYPE_NAMES, _physical_bytes
-from boltbeam.profile.roles import role_from_tensor_name
-from boltbeam.vocab import WEIGHT_GEMV_ROLES, is_ssm_role
+from boltbeam.profile.roles import VECTOR_SIDE, is_expert_role, role_from_tensor_name
+from boltbeam.vocab import is_ssm_role, is_weight_gemv_role
 
 SMALL_BYTES = 1 << 20  # 1 MiB per tensor: below this a vector-like tensor is a stated exclusion
-VECTOR_SIDE = 16  # a matrix with a side under this is vector-like (conv taps 4, norm groups 8, a (1, n) scale)
 UNCLASSIFIED = "unclassified weight"
 
 EXCLUSIONS = {
@@ -53,10 +56,25 @@ def name_pattern(name:str) -> str:
 
 
 def is_limit_role_tensor(name:str, dims:tuple[int, ...]) -> bool:
-  """True for a tensor the profile's roles carry into the limit: a rank-two weight of a limit role. The same test
-  gguf.profile_from_gguf applies (a `.weight`, or any ssm tensor, of rank two)."""
-  role = role_from_tensor_name(name)
-  return role in WEIGHT_GEMV_ROLES and len(dims) == 2 and (name.endswith(".weight") or is_ssm_role(role))
+  """True for a tensor the profile's roles carry into the limit: a rank-two weight of a limit role, or a rank-three
+  expert stack of one. The same test gguf.profile_from_gguf applies (a `.weight`, or any ssm tensor)."""
+  role = role_from_tensor_name(name, dims)
+  rank_ok = len(dims) == 2 or (len(dims) == 3 and is_expert_role(role))
+  return is_weight_gemv_role(role) and rank_ok and (name.endswith(".weight") or is_ssm_role(role))
+
+
+def experts_read(kv:Mapping[str, Any], arch:str | None, n_expert:int) -> int:
+  """The experts of an n-expert stack the decode reads per token: expert_used_count, or all n without it."""
+  k = _expert_used(kv, arch)
+  return min(k, n_expert) if k else n_expert
+
+
+def reads_per_token(role:Mapping[str, Any]) -> int:
+  """How many matrices of a profile role's shape the decode reads per token: its tensor count, times the experts
+  read per stack for a MoE expert role (count x k of n). Its launches per token stay its count (one launch per
+  stack reads its k experts)."""
+  count = int(role.get("count") or 1)
+  return count * int(role.get("experts_read") or role.get("n_expert") or 1) if role.get("n_expert") else count
 
 
 def _vector_like(dims:tuple[int, ...]) -> bool:
@@ -72,9 +90,9 @@ def build(kv:Mapping[str, Any], tensors:Iterable[tuple[str, tuple[int, ...], int
           data_bytes:int | None = None, alignment:int = 32) -> dict[str, Any]:
   """Sort every tensor of the file into the limit's roles, an unclassified counted row, or a stated exclusion."""
   tensors = list(tensors)
-  has_head = any(role_from_tensor_name(n) == "lm_head" for n, *_ in tensors)
+  has_head = any(role_from_tensor_name(n, tuple(d)) == "lm_head" for n, d, *_ in tensors)
   k_used = _expert_used(kv, arch)
-  total = limit_bytes = limit_tensors = 0
+  total = limit_bytes = limit_tensors = limit_stacks = 0
   counted: dict[tuple, dict[str, Any]] = {}
   excluded: dict[tuple, dict[str, Any]] = {}
   notes: list[str] = []
@@ -94,10 +112,17 @@ def build(kv:Mapping[str, Any], tensors:Iterable[tuple[str, tuple[int, ...], int
       unsized.append({"tensor_name": name, "ggml_type": typ, "why": str(exc)})
       continue
     total += nbytes
-    role, pattern = role_from_tensor_name(name), name_pattern(name)
+    role, pattern = role_from_tensor_name(name, dims), name_pattern(name)
     if is_limit_role_tensor(name, dims):
-      limit_bytes += nbytes
       limit_tensors += 1
+      if len(dims) == 3:  # an expert stack, GGUF ne = [in, out, n_expert]: k of n counted, the rest excluded
+        n_expert, limit_stacks = dims[2], limit_stacks + 1
+        reads = experts_read(kv, arch, n_expert)
+        if reads < n_expert:
+          exclude(pattern, "inactive_experts", nbytes // n_expert * (n_expert - reads),
+                  f"{n_expert - reads} of {n_expert} experts not read per token (expert_used_count {reads})")
+        nbytes = nbytes // n_expert * reads
+      limit_bytes += nbytes
       continue
     if role == "embedding" and has_head:
       exclude(pattern, "row_gather", nbytes)
@@ -129,7 +154,7 @@ def build(kv:Mapping[str, Any], tensors:Iterable[tuple[str, tuple[int, ...], int
   if unsized:
     notes.append(f"{len(unsized)} tensors have a type with no block layout, so their bytes are unknown and neither in "
                  "the limit nor in the file total: the limit is incomplete")
-  if not k_used and any("expert" in r["classifier_role"] and "shared" not in r["classifier_role"] for r in counted.values()):
+  if not k_used and (limit_stacks or any("expert" in r["classifier_role"] and "shared" not in r["classifier_role"] for r in counted.values())):
     notes.append(f"{arch}.expert_used_count is absent, so every expert of every stack is counted")
   unclassified = sorted(counted.values(), key=lambda r: -r["bytes"])
   dropped = sorted(excluded.values(), key=lambda r: -r["bytes"])
@@ -158,11 +183,11 @@ def check(ledger:Mapping[str, Any], roles:Iterable[Any]) -> None:
   from_roles = 0
   for r in roles:
     role = r if isinstance(r, Mapping) else r.to_json()
-    if role.get("role") not in WEIGHT_GEMV_ROLES:
+    if not is_weight_gemv_role(str(role.get("role"))):
       continue
     try:
       from_roles += _physical_bytes(int(role["rows"]) * int(role["cols"]), int(role["ggml_type"]),
-                                    tensor_name=str(role.get("tensor_name"))) * int(role.get("count") or 1)
+                                    tensor_name=str(role.get("tensor_name"))) * reads_per_token(role)
     except ValueError:  # unsized: listed in ledger["unsized"] and left out of both sides
       continue
   counted = from_roles + int(ledger["unclassified_bytes"])
