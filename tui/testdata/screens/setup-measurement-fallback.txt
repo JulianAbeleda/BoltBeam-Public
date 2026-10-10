@@ -9,9 +9,9 @@
 │     (in-model not available here: needs Xcode's Metal System Trace)          │
 │                                                                              │
 │   [ Run ]                                                                    │
+│   [ Emit ] Run first                                                         │
 │   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

@@ -847,7 +847,7 @@ def _stage_list(manifest:dict[str, Any], measure:dict[str, Any] | None) -> str:
   return "".join(out) or '<span class="chip">no stage ran</span>'
 
 
-def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, Any] | None) -> str:
+def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, Any] | None, gameplan:str | None = None) -> str:
   loss = results.get("loss") or {}
   ceil = results.get("ceiling") or {}
   machine = loss.get("machine") or {}
@@ -892,6 +892,8 @@ def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, An
   files = "".join(f'<a class="chip" href="{_e(a)}">{_e(a)}</a>' for a in manifest.get("artifacts", []) or [])
   dl += f'<dt>Stages that ran</dt><dd><div class="chips">{_stage_list(manifest, measure)}</div></dd>'
   dl += f'<dt>Files in the run</dt><dd><div class="chips">{files or "none listed"}</div></dd>'
+  if gameplan:  # Emit wrote it (workflow/gameplan.py): per role, worst first, what kernel to emit, from this run's files
+    dl += f'<dt>Gameplan</dt><dd><a href="{_e(gameplan)}">{_e(gameplan)}</a>: what to emit per role, worst first (Emit)</dd>'
   return _section(5, "Facts", f"<dl>{dl}</dl>")
 
 
@@ -899,9 +901,10 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
                     plan:dict[str, Any], policy:dict[str, Any], providers:dict[str, Any],
                     primitive:dict[str, Any], timing:dict[str, Any], runner:dict[str, Any],
                     source_run:str = "", results:dict[str, Any] | None = None,
-                    measure:dict[str, Any] | None = None) -> str:
+                    measure:dict[str, Any] | None = None, gameplan:str | None = None) -> str:
   """Render one run as a standalone HTML document from `results` (workflow.screen.results). The other arguments
-  are the run's artifacts, `{}` when absent; the page reads only the manifest and the policy from them."""
+  are the run's artifacts, `{}` when absent; the page reads only the manifest and the policy from them. gameplan is
+  the gameplan file's name when Emit wrote one into the run; the Facts link it."""
   results = results or {}
   loss = results.get("loss") or {}
   model_id = manifest.get("model_id") or profile.get("model_id") or "unknown"
@@ -909,7 +912,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
   sections = _answer(manifest, results, measure, source_run)
   if measured:
     sections += _where(loss) + _per_role(loss) + _next(loss, policy)
-  sections += _probe(results) + _facts(manifest, results, measure)
+  sections += _probe(results) + _facts(manifest, results, measure, gameplan)
   sections = _number(sections)
   return (
     "<!doctype html>\n"

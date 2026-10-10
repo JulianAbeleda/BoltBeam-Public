@@ -55,16 +55,18 @@ type Facts struct {
 	CJob        *jobs.Job          // the compare job, id "<run>-compare"
 	CTail       []string
 	Spin        string
-	Confirm     string    // the run id waiting for a second enter before it is deleted
-	Batch       int       // streams decoded at once; 0 means 1
-	BatchTyped  string    // digits typed on the batch picker
-	Measurement string    // how roles are timed, as picked: in_model or generic; "" is Python's default here
-	ShowLog     bool      // l: the running screen shows the raw log
-	Frac        float64   // the bar, 0 to 1; it never goes back while one job runs
-	fracJob     string    // the job Frac belongs to
-	stageAt     time.Time // when this screen saw the current step start
-	stageDone   int       // the step count stageAt was taken at
-	logRoom     int       // screen lines the log may take under the bar; 0: up to 20
+	Confirm     string        // the run id waiting for a second enter before it is deleted
+	Batch       int           // streams decoded at once; 0 means 1
+	BatchTyped  string        // digits typed on the batch picker
+	Measurement string        // how roles are timed, as picked: in_model or generic; "" is Python's default here
+	Plan        *seam.Emitted // the gameplan Emit wrote for the run on screen (screen emit); nil before Emit
+	Emitting    bool          // an Emit is running
+	ShowLog     bool          // l: the running screen shows the raw log
+	Frac        float64       // the bar, 0 to 1; it never goes back while one job runs
+	fracJob     string        // the job Frac belongs to
+	stageAt     time.Time     // when this screen saw the current step start
+	stageDone   int           // the step count stageAt was taken at
+	logRoom     int           // screen lines the log may take under the bar; 0: up to 20
 }
 
 // clock is the time the screen reads; a variable so a test can fix it.
@@ -127,6 +129,7 @@ const (
 	pageSetup = iota
 	pageRun
 	pageSaved
+	pageEmit
 	pageModel
 	pageChip
 	pageEngine
@@ -140,6 +143,7 @@ var steps = []step{
 	{"Setup", "", none, func(Facts) (string, string) { return "", "" }, func(Facts, int) string { return "" }, setupActions},
 	{"Run", "", aboutRun, resultLine, resultsBody, runActions},
 	{"Saved runs", "", none, savedLine, savedBody, savedActions},
+	{"Gameplan", "", aboutRun, emitLine, emitBody, emitActions},
 	{"Model", "", none, modelLine, modelBody, modelChoices},
 	{"Chip", "", none, chipLine, chipPickerBody, chipActions},
 	{"Engine", "", none, engineLine, engineBody, engineActions},
@@ -265,6 +269,7 @@ func setupActions(f Facts) []action {
 	default:
 		out = append(out, action{stAccent.Render("[ Run ]"), "analyze", ""})
 	}
+	out = append(out, emitAction(f))
 	if f.Run != nil && f.outputDone() && !f.alive() && !f.ReadOnly {
 		state := "not saved"
 		if _, ok := f.savedAs(f.Run.ID); ok {
@@ -277,6 +282,48 @@ func setupActions(f Facts) []action {
 		n = len(f.Saved.Runs)
 	}
 	return append(out, action{fmt.Sprintf("Saved runs (%d)\t›", n), "page", fmt.Sprint(pageSaved)})
+}
+
+// emitAction is the Setup row under Run. Emit turns the run on screen into a gameplan (what kernel to emit per role,
+// worst first); it needs a finished run with a per-role table, so before one the row is muted with "Run first".
+func emitAction(f Facts) action {
+	switch {
+	case f.Emitting:
+		return action{stMuted.Render("[ Emit ] writing the gameplan…"), "", ""}
+	case f.canEmit():
+		return action{stAccent.Render("[ Emit ]"), "emit", ""}
+	}
+	return action{stMuted.Render("[ Emit ] Run first"), "", ""}
+}
+
+// canEmit: the run on screen has finished and holds a per-role table (Python refuses Emit otherwise).
+func (f Facts) canEmit() bool {
+	return f.Run != nil && f.outputDone() && !f.alive() && len(f.Run.Results.Loss.Roles) > 0
+}
+
+// --- Gameplan (Emit) --------------------------------------------------------------------------------------------
+
+func emitLine(f Facts) (string, string) {
+	if f.Plan == nil {
+		return "open", "no gameplan yet · Emit on Setup writes one from the run on screen"
+	}
+	return "pass", fmt.Sprintf("%d roles, worst first · gameplan.md and gameplan.json written to the run", len(f.Plan.Plan.Roles))
+}
+
+// emitBody is the gameplan as Python wrote it: the markdown, shown as plain text. Nothing is rendered here twice.
+func emitBody(f Facts, width int) string {
+	if f.Plan == nil {
+		return stMuted.Render("No gameplan yet. Emit on Setup writes one from the run on screen: per role, worst first, what kernel to emit.")
+	}
+	return strings.TrimRight(f.Plan.Markdown, "\n")
+}
+
+func emitActions(f Facts) []action {
+	out := []action{}
+	if f.Plan != nil {
+		out = append(out, action{"Open the gameplan (gameplan.md)", "gameplan", ""})
+	}
+	return append(out, action{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)})
 }
 
 // cleanAction offers to delete the unsaved runs from earlier sessions; enter asks twice.

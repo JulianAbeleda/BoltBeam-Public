@@ -4,6 +4,7 @@ import pathlib
 from typing import Any
 
 from boltbeam.report.html import next_step, render_run_html
+from boltbeam.workflow import gameplan
 from boltbeam.vocab import SCHEMA_OUTPUT_MANIFEST
 from boltbeam.workflow.common import load_manifest, read_json, run_dir, update_manifest, write_json
 
@@ -217,5 +218,6 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   (out / "report.html").write_text(
     render_run_html(manifest=final, profile=profile, report=report, plan=plan, policy=policy,
                     providers=providers, primitive=primitive, timing=timing, runner=runner,
-                    source_run=str(out), results=screen_results(out), measure=measure), encoding="utf-8")
+                    source_run=str(out), results=screen_results(out), measure=measure,
+                    gameplan=gameplan.MD_FILE if (out / gameplan.MD_FILE).is_file() else None), encoding="utf-8")
   return final

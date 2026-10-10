@@ -2,7 +2,7 @@
 
 BoltBeam on a screen, or as JSON. One Go binary, two modes:
 
-- a human runs `boltbeam-tui` and gets three screens: Setup, Run, Saved runs;
+- a human runs `boltbeam-tui` and gets four screens: Setup, Run, Saved runs, Gameplan;
 - an agent runs `boltbeam-tui --json <command>` and gets one JSON object and an exit code.
 
 Both modes read through the same seam, `python -m boltbeam.workflow.screen` (plus `boltbeam inspect` for the
@@ -37,6 +37,7 @@ Engine   llama.cpp                                       ›
 Batch    1                                               ›
 
 [ Run ]
+[ Emit ] Run first
 Saved runs (2)                                           ›
 ```
 
@@ -44,6 +45,13 @@ Model lists the model files next to the current one and in `~/models`, or takes 
 machine, detected (autoscan: a known profile is used, a new GPU is measured into `~/.boltbeam/chips/<id>.json`,
 `BOLTBEAM_CHIPS_DIR` moves that folder). Engine is llama.cpp or tinygrad; an engine this machine lacks is named
 with why. `[ Run ]` is greyed until all three are set. Setup does not show the speed limit; Run does.
+
+`[ Emit ]` sits under Run. Run measures the model's roles against the roofline and, with the kernel search on, finds
+faster kernel plans; Emit turns the run on screen into a gameplan: per role, worst first, what kernel to emit for this
+exact shape, built only from what the run recorded, with the check that must pass. It is what a person or an agent
+follows to write the kernel into the tinygrad fork; it writes no kernel itself. The row is muted with "Run first" until
+the run on screen has finished with a per-role table. Pressing it has Python write `<run>/gameplan.json` and
+`<run>/gameplan.md` (`boltbeam/workflow/gameplan.py`, the one writer) and opens the Gameplan screen.
 
 **Run.** One press runs the pipeline: read the model, check the machine, the speed limit, the GPU free check, the
 building-block probe (BoltBeam's own kernels on the model's real bytes), the real decode with the engine, per-role
@@ -72,6 +80,17 @@ temporary (`<runs>/.work`) until saved; Save exports the run, `results.json`, `r
 
 **Saved runs.** Every saved run, newest first, in the top box: model, chip, engine, date and the share of the limit
 reached. Enter opens one to read. `d` twice deletes one.
+
+**Gameplan.** The markdown Emit wrote, as plain text: the header (model, chip, engine, batch, the measured token
+against the limit), then one block per role ordered by lost ms (the estimate column for isolated runs, said so) with
+the role's shape, bytes per call, calls per token, µs per call, GB/s and share of peak, its reason word and search
+verdict, and the search's lineage in four layers, each read off the run's own files: BubbleBeam (the legal dimensions
+proposed for this shape), FutureSight (static rejections and the measurement order), Measured (candidates measured,
+the best plan against the model's own kernel, the A/B) and Promotion (the verdict; for a winner the fork emitter with
+its spec, the promotion record to add with backend, architecture and shape, and the check: correctness against the
+reference, then a Run whose tie-out puts the role within the chip's band of the plan's time). A layer the run does not
+hold says "not recorded in this run" and names the file it would be in. Every number carries its evidence pointer. The
+bottom box holds "Open the gameplan (gameplan.md)" and `[ Back to setup ]`. The report links gameplan.md in its Facts.
 
 ## Agent mode: the JSON contract
 

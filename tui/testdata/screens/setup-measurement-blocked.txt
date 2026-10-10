@@ -8,9 +8,9 @@
 │   Measurement in-model (cannot run here)                                   › │
 │                                                                              │
 │   [ Run ] in-model needs Xcode's Metal System Trace on this Mac              │
+│   [ Emit ] Run first                                                         │
 │   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

@@ -22,6 +22,10 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     saved    --root SAVED                      the saved runs, newest first, with the share of the limit reached
     clean-work --work DIR --before ISO         remove temporary runs started before ISO (never --keep ones)
     results  --run DIR | --run ID --root DIR   what won per role, the timing against the ceiling, the regimes
+    emit     --run DIR | --run ID --root DIR   Emit: write <run>/gameplan.json and gameplan.md (workflow/gameplan.py), the
+                                               run's per-role table turned into what kernel to emit per role, worst first,
+                                               from the run's own files only; prints where, the plan and its markdown.
+                                               Refused (exit 1) before a run has a per-role table. Refreshes report.html.
     pipeline MODEL --run DIR --target T        load, autoscan, analyze, [measure], [ingest-probe, ingest-timing], output;
                                                `pipeline steps: N` (counted stages only) and `pipeline counted:`
                                                first, then one text line per stage, for tailing.
@@ -1437,7 +1441,7 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--root", required=True)
   p.add_argument("--saved", default=None, help="the saved-runs folder (default ROOT/saved)")
   p.add_argument("--all", action="store_true", help="also list ROOT/.work and the saved runs, each marked where")
-  for name in ("run", "results"):
+  for name in ("run", "results", "emit"):
     p = sub.add_parser(name)
     p.add_argument("--run", required=True, help="a run folder, or a run id with --root")
     p.add_argument("--root", default=None, help="look the id up in ROOT, ROOT/.work, then the saved runs")
@@ -1534,6 +1538,11 @@ def main(argv:list[str] | None = None) -> int:
       out = runs(pathlib.Path(args.root).expanduser(), _saved_arg(args), all_places=args.all)
     elif args.command == "run":
       out = show(_run_arg(args))
+    elif args.command == "emit":
+      from boltbeam.workflow import gameplan
+      run = _run_arg(args)
+      out = gameplan.emit(run, results(run))
+      output_run(run)  # the report links gameplan.md once it exists
     elif args.command == "compare-ready":
       out = compare_ready(pathlib.Path(args.run).expanduser(),
                           pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None)

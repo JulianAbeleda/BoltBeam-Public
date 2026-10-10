@@ -304,6 +304,28 @@ func (c Client) Results(id string) (*Results, []byte, int, error) {
 	return &r, raw, code, err
 }
 
+// Emit writes the run's gameplan (gameplan.json and gameplan.md, by Python) and returns where, the plan and its markdown.
+// Python refuses a run with no per-role table yet.
+func (c Client) Emit(id string) (*Emitted, []byte, error) {
+	dir, err := c.FindRun(id)
+	if err != nil {
+		return nil, nil, err
+	}
+	var e Emitted
+	raw, _, err := c.decode(&e, nil, "boltbeam.workflow.screen", "emit", "--run", dir)
+	return &e, raw, err
+}
+
+// EmitSaved writes the gameplan of a saved run, the way ShowSaved reads one.
+func (c Client) EmitSaved(id string) (*Emitted, []byte, error) {
+	if id == "" || id != filepath.Base(id) || strings.HasPrefix(id, ".") {
+		return nil, nil, fmt.Errorf("saved run id must be a folder name: %q", id)
+	}
+	var e Emitted
+	raw, _, err := c.decode(&e, nil, "boltbeam.workflow.screen", "emit", "--run", filepath.Join(c.Saved, id))
+	return &e, raw, err
+}
+
 // Pipeline is what `start` runs: the seam's own pipeline command, which runs the stages in order and prints a
 // line per stage. Probe and timing are optional evidence files to ingest after analyze. Measure "auto" asks the
 // pipeline to measure with the chip's own BoltBeam collector when this machine can (Python decides).

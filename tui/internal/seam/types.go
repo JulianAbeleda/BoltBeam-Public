@@ -768,3 +768,68 @@ type SearchNext struct {
 	Do       string    `json:"do"`
 	Evidence []Pointer `json:"evidence"`
 }
+
+// Emitted is `screen emit`: where Emit wrote the gameplan (workflow/gameplan.py), the plan itself and its markdown,
+// the on-paper version of the same JSON. The screen shows Markdown; it never reads the files.
+type Emitted struct {
+	Kind     string   `json:"kind"`
+	ID       string   `json:"id"`
+	Dir      string   `json:"dir"`
+	Files    []string `json:"files"`
+	Plan     Gameplan `json:"plan"`
+	Markdown string   `json:"markdown"`
+}
+
+// Gameplan is gameplan.json: the header, one block per role (worst first) with the four lineage layers, the footer.
+type Gameplan struct {
+	Kind      string         `json:"kind"`
+	ID        string         `json:"id"`
+	Header    GameplanHeader `json:"header"`
+	OrderedBy string         `json:"ordered_by"`
+	Roles     []GameplanRole `json:"roles"`
+	Footer    struct {
+		FilesRead []string `json:"files_read"`
+		Date      string   `json:"date"`
+		Sentence  string   `json:"sentence"`
+	} `json:"footer"`
+}
+
+type GameplanHeader struct {
+	ModelID     string    `json:"model_id"`
+	TargetID    string    `json:"target_id"`
+	Engine      string    `json:"engine"`
+	Batch       int       `json:"batch"`
+	Measurement *string   `json:"measurement"`
+	TokenMs     *float64  `json:"token_ms"`
+	TokS        *float64  `json:"tok_s"`
+	LimitMs     *float64  `json:"limit_ms"`
+	LimitTokS   *float64  `json:"limit_tok_s"`
+	PctOfLimit  *float64  `json:"pct_of_limit"`
+	LostMs      *float64  `json:"lost_ms"`
+	Evidence    []Pointer `json:"evidence"`
+}
+
+// GameplanRole is one role block: its facts, the plan in one phrase, and the layers in order (BubbleBeam,
+// FutureSight, Measured, Promotion), each recorded or "not recorded in this run" with the file it would be in.
+type GameplanRole struct {
+	Rank           int             `json:"rank"`
+	Role           string          `json:"role"`
+	Quant          string          `json:"quant"`
+	Rows           *int            `json:"rows"`
+	Cols           *int            `json:"cols"`
+	LostMs         *float64        `json:"lost_ms"`
+	LostIsEstimate bool            `json:"lost_is_estimate"`
+	Reason         *string         `json:"reason"`
+	Verdict        string          `json:"verdict"`
+	Plan           *string         `json:"plan"`
+	Layers         []GameplanLayer `json:"layers"`
+	Evidence       []Pointer       `json:"evidence"`
+}
+
+type GameplanLayer struct {
+	Layer    string    `json:"layer"`
+	Title    string    `json:"title"`
+	Recorded bool      `json:"recorded"`
+	Lines    []string  `json:"lines"`
+	Evidence []Pointer `json:"evidence"`
+}

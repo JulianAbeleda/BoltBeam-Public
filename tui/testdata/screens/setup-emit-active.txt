@@ -1,17 +1,17 @@
-⚡ BoltBeam                                                             (˘ω˘) zz
+⚡ BoltBeam                                                            ⠋ (•̀ᴗ•́)⚡
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Setup                                                                        │
-│ ▸ Model       not chosen                                                   › │
-│   Chip        not chosen                                                   › │
-│   Engine      not chosen                                                   › │
+│ ▸ Model       Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K                    › │
+│   Chip        apple_m3_10c · this Mac · 97.2 GB/s                          › │
+│   Engine      llama.cpp                                                    › │
 │   Batch       1                                                            › │
 │   Measurement auto                                                         › │
 │                                                                              │
-│   [ Run ] needs a model, a chip, an engine                                   │
-│   [ Emit ] Run first                                                         │
+│   [ Run ]                                                                    │
+│   [ Emit ]                                                                   │
+│   Last run 002 (not saved)                                                   │
 │   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

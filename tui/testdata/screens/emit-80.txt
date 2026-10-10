@@ -1,0 +1,30 @@
+⚡ BoltBeam                                                            ⠋ (•̀ᴗ•́)⚡
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Gameplan · qwen3-8b-apple_m3_10c-002                                         │
+│ # Gameplan: Qwen3-8B on apple_m3_10c                                         │
+│                                                                              │
+│ Run qwen3-8b-apple_m3_10c-005 · llama.cpp · batch 1 · GGUF Q4_K+Q6_K         │
+│ Measured 55.1 ms per token (18.1 tok/s); the limit is 48.0 ms (20.8 tok/s);  │
+│ 87% of the limit; 7.1 ms per token lost.                                     │
+│ Per-role source: isolated (BoltBeam kernel timer, llama.cpp kernels from     │
+│ ggml 0.19.0 at /opt/homebrew/opt/ggml/libexec/libggml-metal.so).             │
+│   evidence: timing_trace.json › rows[0], machine_facts.json › gpus[0],       │
+│ measure_status.json                                                          │
+│                                                                              │
+│ Roles ordered by est_lost_ms (an estimate from isolated times), worst first. │
+│ Each role shows the search's lineage: BubbleBeam, FutureSight, Measured,     │
+│ Promotion.                                                                   │
+│                                                                              │
+│ ## 1. attn_kv Q4_K · 2.95 ms lost est.                                       │
+│ 1024 x 4096 · 2.4 MB per call · 54 calls per token · 91.5 µs/call · 25.9     │
+│ GB/s · 26.6% of peak (isolated) · too small to fill memory; noisy: ±20.4% ·  │
+│ not searched                                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ 7 roles, worst first · gameplan.md and gameplan.json written to the run      │
+│ ▸ Open the gameplan (gameplan.md)                                            │
+│   [ Back to setup ]                                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+Wrote gameplan.md and gameplan.json in <runs>/.work/qwen3-8b-apple_m3_10c-005.
+ ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit

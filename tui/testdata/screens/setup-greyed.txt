@@ -8,9 +8,9 @@
 │   Measurement auto                                                         › │
 │                                                                              │
 │   [ Run ] needs an engine                                                    │
+│   [ Emit ] Run first                                                         │
 │   Saved runs (2)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

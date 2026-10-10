@@ -209,17 +209,19 @@ func TestFramesFit80x24(t *testing.T) {
 	}
 }
 
-// Setup is one line per choice and Run; Run is greyed, naming what is missing, until all three are set.
+// Setup is one line per choice, Run and Emit; Run is greyed, naming what is missing, until all three are set, and
+// Emit is greyed with "Run first" until the run on screen has a per-role table.
 func TestSetupHasThreeSectionsAndRun(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
 	acts := setupActions(facts(program(s, nil, nil, nil, 80, 24)))
 	want := []string{"page|Model       Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K\t›", "page|Chip        apple_m3_10c · this Mac · 97.2 GB/s\t›",
-		"page|Engine      llama.cpp\t›", "page|Batch       1\t›", "page|Measurement auto\t›", "head|", "analyze|[ Run ]", "page|Saved runs (0)\t›"}
+		"page|Engine      llama.cpp\t›", "page|Batch       1\t›", "page|Measurement auto\t›", "head|", "analyze|[ Run ]", "|[ Emit ] Run first",
+		"page|Saved runs (0)\t›"}
 	if got := rows(acts); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
-	if acts[0].arg != "3" || acts[1].arg != "4" || acts[2].arg != "5" || acts[3].arg != "6" || acts[4].arg != "7" {
+	if acts[0].arg != "4" || acts[1].arg != "5" || acts[2].arg != "6" || acts[3].arg != "7" || acts[4].arg != "8" {
 		t.Fatalf("each line opens its picker: %+v", acts[:3])
 	}
 	none := New(seam.Client{}, jobs.Store{}, "", "", 512)

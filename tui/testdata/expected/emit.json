@@ -1,0 +1,777 @@
+{
+  "dir": "<runs>/.work/qwen3-8b-apple_m3_10c-005",
+  "files": [
+    "gameplan.json",
+    "gameplan.md"
+  ],
+  "id": "qwen3-8b-apple_m3_10c-005",
+  "kind": "emitted",
+  "markdown": "# Gameplan: Qwen3-8B on apple_m3_10c\n\nRun qwen3-8b-apple_m3_10c-005 \u00b7 llama.cpp \u00b7 batch 1 \u00b7 GGUF Q4_K+Q6_K\nMeasured 55.1 ms per token (18.1 tok/s); the limit is 48.0 ms (20.8 tok/s); 87% of the limit; 7.1 ms per token lost.\nPer-role source: isolated (BoltBeam kernel timer, llama.cpp kernels from ggml 0.19.0 at /opt/homebrew/opt/ggml/libexec/libggml-metal.so).\n  evidence: timing_trace.json \u203a rows[0], machine_facts.json \u203a gpus[0], measure_status.json\n\nRoles ordered by est_lost_ms (an estimate from isolated times), worst first. Each role shows the search's lineage: BubbleBeam, FutureSight, Measured, Promotion.\n\n## 1. attn_kv Q4_K \u00b7 2.95 ms lost est.\n1024 x 4096 \u00b7 2.4 MB per call \u00b7 54 calls per token \u00b7 91.5 \u00b5s/call \u00b7 25.9 GB/s \u00b7 26.6% of peak (isolated) \u00b7 too small to fill memory; noisy: \u00b120.4% \u00b7 not searched\n  evidence: llama_timing_trace.json \u203a rows[1], model_profile.json \u203a roles[0], machine_facts.json \u203a gpus[0], measure_status.json, route_policy.json \u203a routes[0]\n- **BubbleBeam**: not recorded in this run: no kernel_compare/attn_kv-q4_k-search-request.json\n- **FutureSight**: not recorded in this run: no FutureSight evidence in kernel_compare/attn_kv-q4_k-search-result.json (futuresight_static_evidence) or kernel_compare/attn_kv-q4_k-search-request.json (futuresight_evidence)\n- **Measured**: not recorded in this run: no kernel_compare/attn_kv-q4_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp\n  evidence: kernel_compare/search_status.json\n- **Promotion**: verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)\n  not searched: run with the kernel search on\n  evidence: route_policy.json \u203a routes[0], kernel_compare/search_status.json \u203a reason\n\n## 2. attn_qo Q4_K \u00b7 2.28 ms lost est.\n4096 x 4096 \u00b7 9.5 MB per call \u00b7 72 calls per token \u00b7 149.3 \u00b5s/call \u00b7 63.3 GB/s \u00b7 65.0% of peak (isolated) \u00b7 slow kernel \u00b7 not searched\n  evidence: llama_timing_trace.json \u203a rows[3], model_profile.json \u203a roles[2], machine_facts.json \u203a gpus[0], measure_status.json, route_policy.json \u203a routes[2]\n- **BubbleBeam**: not recorded in this run: no kernel_compare/attn_qo-q4_k-search-request.json\n- **FutureSight**: not recorded in this run: no FutureSight evidence in kernel_compare/attn_qo-q4_k-search-result.json (futuresight_static_evidence) or kernel_compare/attn_qo-q4_k-search-request.json (futuresight_evidence)\n- **Measured**: not recorded in this run: no kernel_compare/attn_qo-q4_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp\n  evidence: kernel_compare/search_status.json\n- **Promotion**: verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)\n  not searched: run with the kernel search on\n  evidence: route_policy.json \u203a routes[2], kernel_compare/search_status.json \u203a reason\n\n## 3. ffn_gate_up Q4_K \u00b7 1.14 ms lost est.\n12288 x 4096 \u00b7 28.3 MB per call \u00b7 72 calls per token \u00b7 355.8 \u00b5s/call \u00b7 79.7 GB/s \u00b7 81.8% of peak (isolated) \u00b7 slow kernel \u00b7 not searched\n  evidence: llama_timing_trace.json \u203a rows[6], model_profile.json \u203a roles[5], machine_facts.json \u203a gpus[0], measure_status.json, route_policy.json \u203a routes[5]\n- **BubbleBeam**: not recorded in this run: no kernel_compare/ffn_gate_up-q4_k-search-request.json\n- **FutureSight**: not recorded in this run: no FutureSight evidence in kernel_compare/ffn_gate_up-q4_k-search-result.json (futuresight_static_evidence) or kernel_compare/ffn_gate_up-q4_k-search-request.json (futuresight_evidence)\n- **Measured**: not recorded in this run: no kernel_compare/ffn_gate_up-q4_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp\n  evidence: kernel_compare/search_status.json\n- **Promotion**: verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)\n  not searched: run with the kernel search on\n  evidence: route_policy.json \u203a routes[5], kernel_compare/search_status.json \u203a reason\n\n## 4. attn_kv Q6_K \u00b7 0.52 ms lost est.\n1024 x 4096 \u00b7 3.5 MB per call \u00b7 18 calls per token \u00b7 74.8 \u00b5s/call \u00b7 46.1 GB/s \u00b7 47.4% of peak (isolated) \u00b7 too small to fill memory \u00b7 not searched\n  evidence: llama_timing_trace.json \u203a rows[2], model_profile.json \u203a roles[1], machine_facts.json \u203a gpus[0], measure_status.json, route_policy.json \u203a routes[1]\n- **BubbleBeam**: not recorded in this run: no kernel_compare/attn_kv-q6_k-search-request.json\n- **FutureSight**: not recorded in this run: no FutureSight evidence in kernel_compare/attn_kv-q6_k-search-result.json (futuresight_static_evidence) or kernel_compare/attn_kv-q6_k-search-request.json (futuresight_evidence)\n- **Measured**: not recorded in this run: no kernel_compare/attn_kv-q6_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp\n  evidence: kernel_compare/search_status.json\n- **Promotion**: verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)\n  not searched: run with the kernel search on\n  evidence: route_policy.json \u203a routes[1], kernel_compare/search_status.json \u203a reason\n\n## 5. ffn_down Q6_K \u00b7 0.35 ms lost est.\n4096 x 12288 \u00b7 41.3 MB per call \u00b7 18 calls per token \u00b7 514.5 \u00b5s/call \u00b7 80.3 GB/s \u00b7 82.5% of peak (isolated) \u00b7 slow kernel \u00b7 not searched\n  evidence: llama_timing_trace.json \u203a rows[5], model_profile.json \u203a roles[4], machine_facts.json \u203a gpus[0], measure_status.json, route_policy.json \u203a routes[4]\n- **BubbleBeam**: not recorded in this run: no kernel_compare/ffn_down-q6_k-search-request.json\n- **FutureSight**: not recorded in this run: no FutureSight evidence in kernel_compare/ffn_down-q6_k-search-result.json (futuresight_static_evidence) or kernel_compare/ffn_down-q6_k-search-request.json (futuresight_evidence)\n- **Measured**: not recorded in this run: no kernel_compare/ffn_down-q6_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp\n  evidence: kernel_compare/search_status.json\n- **Promotion**: verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)\n  not searched: run with the kernel search on\n  evidence: route_policy.json \u203a routes[4], kernel_compare/search_status.json \u203a reason\n\n## 6. ffn_down Q4_K \u00b7 0.23 ms lost est.\n4096 x 12288 \u00b7 28.3 MB per call \u00b7 18 calls per token \u00b7 352.1 \u00b5s/call \u00b7 80.5 GB/s \u00b7 82.6% of peak (isolated) \u00b7 slow kernel \u00b7 not searched\n  evidence: llama_timing_trace.json \u203a rows[4], model_profile.json \u203a roles[3], machine_facts.json \u203a gpus[0], measure_status.json, route_policy.json \u203a routes[3]\n- **BubbleBeam**: not recorded in this run: no kernel_compare/ffn_down-q4_k-search-request.json\n- **FutureSight**: not recorded in this run: no FutureSight evidence in kernel_compare/ffn_down-q4_k-search-result.json (futuresight_static_evidence) or kernel_compare/ffn_down-q4_k-search-request.json (futuresight_evidence)\n- **Measured**: not recorded in this run: no kernel_compare/ffn_down-q4_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp\n  evidence: kernel_compare/search_status.json\n- **Promotion**: verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)\n  not searched: run with the kernel search on\n  evidence: route_policy.json \u203a routes[3], kernel_compare/search_status.json \u203a reason\n\n## 7. lm_head Q6_K \u00b7 -0.55 ms lost est.\n151936 x 4096 \u00b7 510.8 MB per call \u00b7 1 calls per token \u00b7 5444.9 \u00b5s/call \u00b7 93.8 GB/s \u00b7 96.3% of peak (isolated) \u00b7 at the limit \u00b7 not searched\n  evidence: llama_timing_trace.json \u203a rows[7], model_profile.json \u203a roles[6], machine_facts.json \u203a gpus[0], measure_status.json, route_policy.json \u203a routes[6]\n- **BubbleBeam**: not recorded in this run: no kernel_compare/lm_head-q6_k-search-request.json\n- **FutureSight**: not recorded in this run: no FutureSight evidence in kernel_compare/lm_head-q6_k-search-result.json (futuresight_static_evidence) or kernel_compare/lm_head-q6_k-search-request.json (futuresight_evidence)\n- **Measured**: not recorded in this run: no kernel_compare/lm_head-q6_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp\n  evidence: kernel_compare/search_status.json\n- **Promotion**: verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)\n  at the limit, nothing to gain\n  evidence: route_policy.json \u203a routes[6]\n\n---\nFiles read: kernel_compare/search_status.json, llama_timing_trace.json, machine_facts.json, measure_status.json, model_profile.json, route_policy.json, run_manifest.json, timing_trace.json.\nDate: 2026-10-10.\nEmit writes the plan, not the kernel.\n",
+  "plan": {
+    "footer": {
+      "date": "2026-10-10",
+      "files_read": [
+        "kernel_compare/search_status.json",
+        "llama_timing_trace.json",
+        "machine_facts.json",
+        "measure_status.json",
+        "model_profile.json",
+        "route_policy.json",
+        "run_manifest.json",
+        "timing_trace.json"
+      ],
+      "sentence": "Emit writes the plan, not the kernel."
+    },
+    "header": {
+      "batch": 1,
+      "engine": "llama.cpp",
+      "evidence": [
+        {
+          "file": "timing_trace.json",
+          "path": "rows[0]"
+        },
+        {
+          "file": "machine_facts.json",
+          "path": "gpus[0]"
+        },
+        {
+          "file": "measure_status.json"
+        }
+      ],
+      "limit_ms": 48.011309733059555,
+      "limit_tok_s": 20.828425751347947,
+      "lost_ms": 7.113020437423465,
+      "measurement": null,
+      "model_id": "Qwen3-8B",
+      "pct_of_limit": 87.0964047718584,
+      "role_source": "isolated (BoltBeam kernel timer, llama.cpp kernels from ggml 0.19.0 at /opt/homebrew/opt/ggml/libexec/libggml-metal.so)",
+      "target_id": "apple_m3_10c",
+      "tok_s": 18.14081,
+      "token_ms": 55.12433017048302,
+      "weight_format": "GGUF Q4_K+Q6_K"
+    },
+    "id": "qwen3-8b-apple_m3_10c-005",
+    "kind": "gameplan",
+    "ordered_by": "est_lost_ms (an estimate from isolated times)",
+    "roles": [
+      {
+        "calls_per_token": 54.0,
+        "cols": 4096,
+        "evidence": [
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[1]"
+          },
+          {
+            "file": "model_profile.json",
+            "path": "roles[0]"
+          },
+          {
+            "file": "machine_facts.json",
+            "path": "gpus[0]"
+          },
+          {
+            "file": "measure_status.json"
+          },
+          {
+            "file": "route_policy.json",
+            "path": "routes[0]"
+          }
+        ],
+        "gbs": 25.896568805768748,
+        "ideal_ms": 1.3137057905544147,
+        "layers": [
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "bubblebeam",
+            "lines": [
+              "not recorded in this run: no kernel_compare/attn_kv-q4_k-search-request.json"
+            ],
+            "recorded": false,
+            "title": "BubbleBeam"
+          },
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "futuresight",
+            "lines": [
+              "not recorded in this run: no FutureSight evidence in kernel_compare/attn_kv-q4_k-search-result.json (futuresight_static_evidence) or kernel_compare/attn_kv-q4_k-search-request.json (futuresight_evidence)"
+            ],
+            "recorded": false,
+            "title": "FutureSight"
+          },
+          {
+            "evidence": [
+              {
+                "file": "kernel_compare/search_status.json"
+              }
+            ],
+            "facts": {},
+            "layer": "measured",
+            "lines": [
+              "not recorded in this run: no kernel_compare/attn_kv-q4_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp"
+            ],
+            "recorded": false,
+            "title": "Measured"
+          },
+          {
+            "evidence": [
+              {
+                "file": "route_policy.json",
+                "path": "routes[0]"
+              },
+              {
+                "file": "kernel_compare/search_status.json",
+                "path": "reason"
+              }
+            ],
+            "facts": {
+              "plan": "not searched: run with the kernel search on",
+              "verdict": "not_searched",
+              "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+              "why_off": "the kernel search runs in tinygrad only; this run used llama.cpp"
+            },
+            "layer": "promotion",
+            "lines": [
+              "verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)",
+              "not searched: run with the kernel search on"
+            ],
+            "recorded": true,
+            "title": "Promotion"
+          }
+        ],
+        "lost_is_estimate": true,
+        "lost_ms": 2.947176532894537,
+        "mb_per_call": 2.3695360000000005,
+        "pct_peak": 26.6,
+        "plan": "not searched: run with the kernel search on",
+        "quant": "Q4_K",
+        "rank": 1,
+        "rate_basis": "isolated",
+        "reason": "too small to fill memory; noisy: \u00b120.4%",
+        "reason_word": "too small to fill memory",
+        "role": "attn_kv",
+        "rows": 1024,
+        "us_per_call": 91.4999982342124,
+        "us_per_call_less_floor": null,
+        "verdict": "not_searched"
+      },
+      {
+        "calls_per_token": 72.0,
+        "cols": 4096,
+        "evidence": [
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[3]"
+          },
+          {
+            "file": "model_profile.json",
+            "path": "roles[2]"
+          },
+          {
+            "file": "machine_facts.json",
+            "path": "gpus[0]"
+          },
+          {
+            "file": "measure_status.json"
+          },
+          {
+            "file": "route_policy.json",
+            "path": "routes[2]"
+          }
+        ],
+        "gbs": 63.33163377547366,
+        "ideal_ms": 6.9882638193018485,
+        "layers": [
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "bubblebeam",
+            "lines": [
+              "not recorded in this run: no kernel_compare/attn_qo-q4_k-search-request.json"
+            ],
+            "recorded": false,
+            "title": "BubbleBeam"
+          },
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "futuresight",
+            "lines": [
+              "not recorded in this run: no FutureSight evidence in kernel_compare/attn_qo-q4_k-search-result.json (futuresight_static_evidence) or kernel_compare/attn_qo-q4_k-search-request.json (futuresight_evidence)"
+            ],
+            "recorded": false,
+            "title": "FutureSight"
+          },
+          {
+            "evidence": [
+              {
+                "file": "kernel_compare/search_status.json"
+              }
+            ],
+            "facts": {},
+            "layer": "measured",
+            "lines": [
+              "not recorded in this run: no kernel_compare/attn_qo-q4_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp"
+            ],
+            "recorded": false,
+            "title": "Measured"
+          },
+          {
+            "evidence": [
+              {
+                "file": "route_policy.json",
+                "path": "routes[2]"
+              },
+              {
+                "file": "kernel_compare/search_status.json",
+                "path": "reason"
+              }
+            ],
+            "facts": {
+              "plan": "not searched: run with the kernel search on",
+              "verdict": "not_searched",
+              "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+              "why_off": "the kernel search runs in tinygrad only; this run used llama.cpp"
+            },
+            "layer": "promotion",
+            "lines": [
+              "verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)",
+              "not searched: run with the kernel search on"
+            ],
+            "recorded": true,
+            "title": "Promotion"
+          }
+        ],
+        "lost_is_estimate": true,
+        "lost_ms": 2.2798690594798634,
+        "mb_per_call": 9.453568000000002,
+        "pct_peak": 65.0,
+        "plan": "not searched: run with the kernel search on",
+        "quant": "Q4_K",
+        "rank": 2,
+        "rate_basis": "isolated",
+        "reason": "slow kernel",
+        "reason_word": "slow kernel",
+        "role": "attn_qo",
+        "rows": 4096,
+        "us_per_call": 149.27086886018515,
+        "us_per_call_less_floor": null,
+        "verdict": "not_searched"
+      },
+      {
+        "calls_per_token": 72.0,
+        "cols": 4096,
+        "evidence": [
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[6]"
+          },
+          {
+            "file": "model_profile.json",
+            "path": "roles[5]"
+          },
+          {
+            "file": "machine_facts.json",
+            "path": "gpus[0]"
+          },
+          {
+            "file": "measure_status.json"
+          },
+          {
+            "file": "route_policy.json",
+            "path": "routes[5]"
+          }
+        ],
+        "gbs": 79.65617015548968,
+        "ideal_ms": 20.952680082135522,
+        "layers": [
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "bubblebeam",
+            "lines": [
+              "not recorded in this run: no kernel_compare/ffn_gate_up-q4_k-search-request.json"
+            ],
+            "recorded": false,
+            "title": "BubbleBeam"
+          },
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "futuresight",
+            "lines": [
+              "not recorded in this run: no FutureSight evidence in kernel_compare/ffn_gate_up-q4_k-search-result.json (futuresight_static_evidence) or kernel_compare/ffn_gate_up-q4_k-search-request.json (futuresight_evidence)"
+            ],
+            "recorded": false,
+            "title": "FutureSight"
+          },
+          {
+            "evidence": [
+              {
+                "file": "kernel_compare/search_status.json"
+              }
+            ],
+            "facts": {},
+            "layer": "measured",
+            "lines": [
+              "not recorded in this run: no kernel_compare/ffn_gate_up-q4_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp"
+            ],
+            "recorded": false,
+            "title": "Measured"
+          },
+          {
+            "evidence": [
+              {
+                "file": "route_policy.json",
+                "path": "routes[5]"
+              },
+              {
+                "file": "kernel_compare/search_status.json",
+                "path": "reason"
+              }
+            ],
+            "facts": {
+              "plan": "not searched: run with the kernel search on",
+              "verdict": "not_searched",
+              "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+              "why_off": "the kernel search runs in tinygrad only; this run used llama.cpp"
+            },
+            "layer": "promotion",
+            "lines": [
+              "verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)",
+              "not searched: run with the kernel search on"
+            ],
+            "recorded": true,
+            "title": "Promotion"
+          }
+        ],
+        "lost_is_estimate": true,
+        "lost_ms": 1.140783817229412,
+        "mb_per_call": 28.344319999999996,
+        "pct_peak": 81.8,
+        "plan": "not searched: run with the kernel search on",
+        "quant": "Q4_K",
+        "rank": 3,
+        "rate_basis": "isolated",
+        "reason": "slow kernel",
+        "reason_word": "slow kernel",
+        "role": "ffn_gate_up",
+        "rows": 12288,
+        "us_per_call": 355.83332646638155,
+        "us_per_call_less_floor": null,
+        "verdict": "not_searched"
+      },
+      {
+        "calls_per_token": 18.0,
+        "cols": 4096,
+        "evidence": [
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[2]"
+          },
+          {
+            "file": "model_profile.json",
+            "path": "roles[1]"
+          },
+          {
+            "file": "machine_facts.json",
+            "path": "gpus[0]"
+          },
+          {
+            "file": "measure_status.json"
+          },
+          {
+            "file": "route_policy.json",
+            "path": "routes[1]"
+          }
+        ],
+        "gbs": 46.12701375561705,
+        "ideal_ms": 0.6377396303901437,
+        "layers": [
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "bubblebeam",
+            "lines": [
+              "not recorded in this run: no kernel_compare/attn_kv-q6_k-search-request.json"
+            ],
+            "recorded": false,
+            "title": "BubbleBeam"
+          },
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "futuresight",
+            "lines": [
+              "not recorded in this run: no FutureSight evidence in kernel_compare/attn_kv-q6_k-search-result.json (futuresight_static_evidence) or kernel_compare/attn_kv-q6_k-search-request.json (futuresight_evidence)"
+            ],
+            "recorded": false,
+            "title": "FutureSight"
+          },
+          {
+            "evidence": [
+              {
+                "file": "kernel_compare/search_status.json"
+              }
+            ],
+            "facts": {},
+            "layer": "measured",
+            "lines": [
+              "not recorded in this run: no kernel_compare/attn_kv-q6_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp"
+            ],
+            "recorded": false,
+            "title": "Measured"
+          },
+          {
+            "evidence": [
+              {
+                "file": "route_policy.json",
+                "path": "routes[1]"
+              },
+              {
+                "file": "kernel_compare/search_status.json",
+                "path": "reason"
+              }
+            ],
+            "facts": {
+              "plan": "not searched: run with the kernel search on",
+              "verdict": "not_searched",
+              "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+              "why_off": "the kernel search runs in tinygrad only; this run used llama.cpp"
+            },
+            "layer": "promotion",
+            "lines": [
+              "verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)",
+              "not searched: run with the kernel search on"
+            ],
+            "recorded": true,
+            "title": "Promotion"
+          }
+        ],
+        "lost_is_estimate": true,
+        "lost_ms": 0.5235263881377545,
+        "mb_per_call": 3.4508800000000006,
+        "pct_peak": 47.4,
+        "plan": "not searched: run with the kernel search on",
+        "quant": "Q6_K",
+        "rank": 4,
+        "rate_basis": "isolated",
+        "reason": "too small to fill memory",
+        "reason_word": "too small to fill memory",
+        "role": "attn_kv",
+        "rows": 1024,
+        "us_per_call": 74.81256034225225,
+        "us_per_call_less_floor": null,
+        "verdict": "not_searched"
+      },
+      {
+        "calls_per_token": 18.0,
+        "cols": 12288,
+        "evidence": [
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[5]"
+          },
+          {
+            "file": "model_profile.json",
+            "path": "roles[4]"
+          },
+          {
+            "file": "machine_facts.json",
+            "path": "gpus[0]"
+          },
+          {
+            "file": "measure_status.json"
+          },
+          {
+            "file": "route_policy.json",
+            "path": "routes[4]"
+          }
+        ],
+        "gbs": 80.31511153292442,
+        "ideal_ms": 7.636222422997947,
+        "layers": [
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "bubblebeam",
+            "lines": [
+              "not recorded in this run: no kernel_compare/ffn_down-q6_k-search-request.json"
+            ],
+            "recorded": false,
+            "title": "BubbleBeam"
+          },
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "futuresight",
+            "lines": [
+              "not recorded in this run: no FutureSight evidence in kernel_compare/ffn_down-q6_k-search-result.json (futuresight_static_evidence) or kernel_compare/ffn_down-q6_k-search-request.json (futuresight_evidence)"
+            ],
+            "recorded": false,
+            "title": "FutureSight"
+          },
+          {
+            "evidence": [
+              {
+                "file": "kernel_compare/search_status.json"
+              }
+            ],
+            "facts": {},
+            "layer": "measured",
+            "lines": [
+              "not recorded in this run: no kernel_compare/ffn_down-q6_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp"
+            ],
+            "recorded": false,
+            "title": "Measured"
+          },
+          {
+            "evidence": [
+              {
+                "file": "route_policy.json",
+                "path": "routes[4]"
+              },
+              {
+                "file": "kernel_compare/search_status.json",
+                "path": "reason"
+              }
+            ],
+            "facts": {
+              "plan": "not searched: run with the kernel search on",
+              "verdict": "not_searched",
+              "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+              "why_off": "the kernel search runs in tinygrad only; this run used llama.cpp"
+            },
+            "layer": "promotion",
+            "lines": [
+              "verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)",
+              "not searched: run with the kernel search on"
+            ],
+            "recorded": true,
+            "title": "Promotion"
+          }
+        ],
+        "lost_is_estimate": true,
+        "lost_ms": 0.3496975609013413,
+        "mb_per_call": 41.320448000000006,
+        "pct_peak": 82.5,
+        "plan": "not searched: run with the kernel search on",
+        "quant": "Q6_K",
+        "rank": 5,
+        "rate_basis": "isolated",
+        "reason": "slow kernel",
+        "reason_word": "slow kernel",
+        "role": "ffn_down",
+        "rows": 4096,
+        "us_per_call": 514.4791211932898,
+        "us_per_call_less_floor": null,
+        "verdict": "not_searched"
+      },
+      {
+        "calls_per_token": 18.0,
+        "cols": 12288,
+        "evidence": [
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[4]"
+          },
+          {
+            "file": "model_profile.json",
+            "path": "roles[3]"
+          },
+          {
+            "file": "machine_facts.json",
+            "path": "gpus[0]"
+          },
+          {
+            "file": "measure_status.json"
+          },
+          {
+            "file": "route_policy.json",
+            "path": "routes[3]"
+          }
+        ],
+        "gbs": 80.49978124196117,
+        "ideal_ms": 5.238170020533881,
+        "layers": [
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "bubblebeam",
+            "lines": [
+              "not recorded in this run: no kernel_compare/ffn_down-q4_k-search-request.json"
+            ],
+            "recorded": false,
+            "title": "BubbleBeam"
+          },
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "futuresight",
+            "lines": [
+              "not recorded in this run: no FutureSight evidence in kernel_compare/ffn_down-q4_k-search-result.json (futuresight_static_evidence) or kernel_compare/ffn_down-q4_k-search-request.json (futuresight_evidence)"
+            ],
+            "recorded": false,
+            "title": "FutureSight"
+          },
+          {
+            "evidence": [
+              {
+                "file": "kernel_compare/search_status.json"
+              }
+            ],
+            "facts": {},
+            "layer": "measured",
+            "lines": [
+              "not recorded in this run: no kernel_compare/ffn_down-q4_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp"
+            ],
+            "recorded": false,
+            "title": "Measured"
+          },
+          {
+            "evidence": [
+              {
+                "file": "route_policy.json",
+                "path": "routes[3]"
+              },
+              {
+                "file": "kernel_compare/search_status.json",
+                "path": "reason"
+              }
+            ],
+            "facts": {
+              "plan": "not searched: run with the kernel search on",
+              "verdict": "not_searched",
+              "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+              "why_off": "the kernel search runs in tinygrad only; this run used llama.cpp"
+            },
+            "layer": "promotion",
+            "lines": [
+              "verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)",
+              "not searched: run with the kernel search on"
+            ],
+            "recorded": true,
+            "title": "Promotion"
+          }
+        ],
+        "lost_is_estimate": true,
+        "lost_ms": 0.2273129054452685,
+        "mb_per_call": 28.344319999999996,
+        "pct_peak": 82.6,
+        "plan": "not searched: run with the kernel search on",
+        "quant": "Q4_K",
+        "rank": 6,
+        "rate_basis": "isolated",
+        "reason": "slow kernel",
+        "reason_word": "slow kernel",
+        "role": "ffn_down",
+        "rows": 4096,
+        "us_per_call": 352.1043108776212,
+        "us_per_call_less_floor": null,
+        "verdict": "not_searched"
+      },
+      {
+        "calls_per_token": 1.0,
+        "cols": 4096,
+        "evidence": [
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[7]"
+          },
+          {
+            "file": "model_profile.json",
+            "path": "roles[6]"
+          },
+          {
+            "file": "machine_facts.json",
+            "path": "gpus[0]"
+          },
+          {
+            "file": "measure_status.json"
+          },
+          {
+            "file": "route_policy.json",
+            "path": "routes[6]"
+          }
+        ],
+        "gbs": 93.8161161126801,
+        "ideal_ms": 5.244527967145791,
+        "layers": [
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "bubblebeam",
+            "lines": [
+              "not recorded in this run: no kernel_compare/lm_head-q6_k-search-request.json"
+            ],
+            "recorded": false,
+            "title": "BubbleBeam"
+          },
+          {
+            "evidence": [],
+            "facts": {},
+            "layer": "futuresight",
+            "lines": [
+              "not recorded in this run: no FutureSight evidence in kernel_compare/lm_head-q6_k-search-result.json (futuresight_static_evidence) or kernel_compare/lm_head-q6_k-search-request.json (futuresight_evidence)"
+            ],
+            "recorded": false,
+            "title": "FutureSight"
+          },
+          {
+            "evidence": [
+              {
+                "file": "kernel_compare/search_status.json"
+              }
+            ],
+            "facts": {},
+            "layer": "measured",
+            "lines": [
+              "not recorded in this run: no kernel_compare/lm_head-q6_k-search-result.json; the search skipped: the kernel search runs in tinygrad only; this run used llama.cpp"
+            ],
+            "recorded": false,
+            "title": "Measured"
+          },
+          {
+            "evidence": [
+              {
+                "file": "route_policy.json",
+                "path": "routes[6]"
+              }
+            ],
+            "facts": {
+              "plan": "at the limit, nothing to gain",
+              "verdict": "not_searched",
+              "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp"
+            },
+            "layer": "promotion",
+            "lines": [
+              "verdict: not searched (the kernel search runs in tinygrad only; this run used llama.cpp)",
+              "at the limit, nothing to gain"
+            ],
+            "recorded": true,
+            "title": "Promotion"
+          }
+        ],
+        "lost_is_estimate": true,
+        "lost_ms": -0.5491278389850365,
+        "mb_per_call": 510.81702400000006,
+        "pct_peak": 96.3,
+        "plan": "at the limit, nothing to gain",
+        "quant": "Q6_K",
+        "rank": 7,
+        "rate_basis": "isolated",
+        "reason": "at the limit",
+        "reason_word": "at the limit",
+        "role": "lm_head",
+        "rows": 151936,
+        "us_per_call": 5444.874987006187,
+        "us_per_call_less_floor": null,
+        "verdict": "not_searched"
+      }
+    ],
+    "schema": "boltbeam.gameplan.v1"
+  },
+  "schema": "boltbeam.gameplan.v1"
+}

@@ -36,6 +36,8 @@ commands (each prints one JSON object):
   run <id>                                     the stages, what is blocked, the next step, the results; <id> is looked
                                                up in RUNS/<id>, then RUNS/.work/<id>, then --saved/<id>
   results <id>                                 what won per role and the timing against the ceiling (exit 3: nothing measured)
+  emit <id>                                    Emit: write <run>/gameplan.json and gameplan.md, what kernel to emit per role,
+                                               worst first, from the run's own files; prints where, the plan, the markdown
   start MODEL --target ID [--workload W] [--id RUN] [--probe FILE] [--timing FILE] [--provider P]
         [--analyze [--no-search]] [--role-time auto|in-model|generic]
                                                run the pipeline in the background; log under --state
@@ -237,6 +239,15 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 		}
 		emit(out, raw)
 		return code
+	case "emit":
+		if !need(1) {
+			return 2
+		}
+		_, raw, err := client.Emit(args[0])
+		if err != nil {
+			return fail(out, err)
+		}
+		return emit(out, raw)
 	case "start":
 		if !need(1) {
 			return 2

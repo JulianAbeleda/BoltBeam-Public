@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,6 +131,12 @@ type providersMsg struct {
 	providers *seam.Providers
 }
 type noteMsg string
+
+// emitMsg is the answer of Emit: the gameplan Python wrote, or why it could not.
+type emitMsg struct {
+	plan *seam.Emitted
+	err  error
+}
 
 // deletedMsg names a run folder that is gone.
 type deletedMsg string
@@ -522,22 +529,61 @@ func (m Model) deleteRun(id string) tea.Cmd {
 	}
 }
 
-// openReport hands report.html to the desktop. This is the one place the TUI runs something other than Python.
+// runFolder is where the run on screen lives: the saved-runs folder for a saved run, else the work area.
+func (m Model) runFolder(id string) (string, error) {
+	if m.f.ReadOnly {
+		return filepath.Join(m.client.Saved, id), nil
+	}
+	return m.client.RunDir(id)
+}
+
+// openReport hands report.html to the desktop.
 func (m Model) openReport() tea.Cmd {
 	run := m.f.Run
+	dir, err := m.runFolder(run.ID)
+	if err != nil {
+		return func() tea.Msg { return noteMsg(err.Error()) }
+	}
+	return openPath(filepath.Join(dir, *run.Report), "the report")
+}
+
+// openGameplan hands gameplan.md to the desktop, as openReport does for report.html.
+func (m Model) openGameplan() tea.Cmd {
+	if m.f.Plan == nil {
+		return func() tea.Msg { return noteMsg("No gameplan yet. Emit on Setup writes one.") }
+	}
+	return openPath(filepath.Join(m.f.Plan.Dir, "gameplan.md"), "the gameplan")
+}
+
+// openPath hands a file to the desktop opener. This is the one place the TUI runs something other than Python.
+func openPath(path, what string) tea.Cmd {
 	return func() tea.Msg {
-		dir, err := m.client.RunDir(run.ID)
-		if err != nil {
-			return noteMsg(err.Error())
-		}
 		opener := "xdg-open"
 		if runtime.GOOS == "darwin" {
 			opener = "open"
 		}
-		if err := exec.Command(opener, filepath.Join(dir, *run.Report)).Start(); err != nil {
-			return noteMsg("Could not open the report: " + err.Error())
+		if err := exec.Command(opener, path).Start(); err != nil {
+			return noteMsg("Could not open " + what + ": " + err.Error())
 		}
-		return noteMsg("Opened " + filepath.Join(dir, *run.Report))
+		return noteMsg("Opened " + path)
+	}
+}
+
+// emitPlan asks Python to write the gameplan for the run on screen (screen emit): Python writes, Go shows.
+func (m Model) emitPlan() tea.Cmd {
+	run, saved := m.f.Run, m.f.ReadOnly
+	return func() tea.Msg {
+		if run == nil {
+			return emitMsg{nil, fmt.Errorf("no run on screen")}
+		}
+		var e *seam.Emitted
+		var err error
+		if saved {
+			e, _, err = m.client.EmitSaved(run.ID)
+		} else {
+			e, _, err = m.client.Emit(run.ID)
+		}
+		return emitMsg{e, err}
 	}
 }
 
@@ -680,6 +726,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		changed := m.runID() != msg.run.ID
 		m.f.Run = msg.run
+		if m.f.Plan != nil && m.f.Plan.ID != msg.run.ID { // the gameplan belongs to the run it was written for
+			m.f.Plan = nil
+		}
 		reload := m.followMeasured()
 		if changed {
 			m.f.Ready, m.f.CJob, m.f.CTail = nil, nil, nil
@@ -787,6 +836,16 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, m.loadRuns()
 	case noteMsg:
 		m.note = string(msg)
+	case emitMsg:
+		m.f.Emitting = false
+		if msg.err != nil {
+			m.note = "Emit failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.f.Plan = msg.plan
+		m.cursor, m.row = pageEmit, 0
+		m.view.GotoTop()
+		m.note = "Wrote gameplan.md and gameplan.json in " + msg.plan.Dir + "."
 	case tickMsg:
 		m.f.advance(clock())
 		id := m.runID()
@@ -1079,6 +1138,15 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, m.loadRun(a.arg)
 	case "report":
 		return m, m.openReport()
+	case "emit":
+		if m.f.Emitting || !m.f.canEmit() {
+			return m, nil
+		}
+		m.f.Emitting = true
+		m.note = "Emit: writing the gameplan for " + m.runID() + "…"
+		return m, m.emitPlan()
+	case "gameplan":
+		return m, m.openGameplan()
 	}
 	return m, nil
 }
