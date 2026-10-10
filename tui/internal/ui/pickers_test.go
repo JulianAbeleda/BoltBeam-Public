@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
@@ -81,5 +82,21 @@ func TestListsScrollByPageEndsAndWheel(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
 	if row() != 0 {
 		t.Fatalf("Home: row %d, want 0", row())
+	}
+}
+
+// A picker shows ListRows rows at once, whatever the terminal height; the rest is reached by scrolling.
+func TestPickersShowTenRowsOnATallScreen(t *testing.T) {
+	files := make([]string, 30)
+	for i := range files {
+		files[i] = fmt.Sprintf("/m/model-%02d.gguf", i)
+	}
+	f := Facts{Files: files, Path: files[0]}
+	view := DetailView(f, pageModel, 0, 100, 60, &viewport.Model{})
+	if n := strings.Count(view, "/m/model-"); n > ListRows {
+		t.Fatalf("%d model rows on a 60-line screen, want at most %d:\n%s", n, ListRows, view)
+	}
+	if !strings.Contains(view, "more") {
+		t.Fatalf("the rows below the window must be counted:\n%s", view)
 	}
 }

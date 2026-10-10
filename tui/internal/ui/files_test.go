@@ -49,3 +49,32 @@ func TestFindFilesListsEveryModelInTheFolder(t *testing.T) {
 		}
 	}
 }
+
+// ~/models that is a link to the model's folder (a data disk) lists each file once, under the path the model
+// was given, not twice.
+func TestFindFilesListsALinkedFolderOnce(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	store := filepath.Join(dir, "storage", "models")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"alpha-8B-Q4_K_M.gguf", "bravo-27B-Q4_K_M.gguf"} {
+		if err := os.WriteFile(filepath.Join(store, n), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(store, filepath.Join(dir, "models")); err != nil {
+		t.Skip("no symlinks here")
+	}
+	m := Model{f: Facts{Path: filepath.Join(store, "alpha-8B-Q4_K_M.gguf")}}
+	got := m.findFiles()().(filesMsg)
+	if len(got) != 2 {
+		t.Fatalf("listed %d files, want 2 (each once): %v", len(got), got)
+	}
+	for _, p := range got {
+		if filepath.Dir(p) != store {
+			t.Errorf("%s: listed under the link, want the model's own folder", p)
+		}
+	}
+}

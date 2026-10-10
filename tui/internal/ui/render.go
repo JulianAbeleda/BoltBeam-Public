@@ -1162,18 +1162,30 @@ func spread(label string, width int) string {
 	return left + strings.Repeat(" ", gap) + right
 }
 
+// ListRows is how many rows a picker or the Saved list shows at once, whatever the terminal height: a long list
+// scrolls inside that window (DetailActions counts what is above and below) instead of filling the screen.
+const ListRows = 10
+
+// listWindow is the DetailActions budget for a scrolling list: ListRows plus the two count lines, never more than
+// the room on screen.
+func listWindow(room int) int { return min(max(room, 6), ListRows+2) }
+
 // DetailView is the open view at a given height: the step's whole result scrolls on top, actions at the bottom.
 func DetailView(f Facts, i, row, width, height int, scroll *viewport.Model) string {
 	if i == pageSetup { // Setup is its rows only: one box, padded to the screen
 		actions := DetailActions(f, i, row, width, height-2)
 		return actions + strings.Repeat("\n", max(height-lipgloss.Height(actions), 0))
 	}
-	if i == pageSaved { // the list is the page: the rows take the big box on top, the hint sits below
+	if i == pageSaved { // the list is the page: the rows scroll in the box on top, the hint sits below
 		hint := box("What next", steps[i].body(f, width-4), width, false)
-		actions := DetailActions(f, i, row, width, max(height-lipgloss.Height(hint)-3, 6))
+		actions := DetailActions(f, i, row, width, listWindow(height-lipgloss.Height(hint)-3))
 		return actions + strings.Repeat("\n", max(height-lipgloss.Height(actions)-lipgloss.Height(hint), 0)) + "\n" + hint
 	}
-	actions := DetailActions(f, i, row, width, max(height*2/3-3, 6)) // the rows take up to two thirds of the screen
+	rows := max(height*2/3-3, 6) // the rows take up to two thirds of the screen
+	if picker(i) {
+		rows = listWindow(rows) // a picker is a scrolling list of ListRows
+	}
+	actions := DetailActions(f, i, row, width, rows)
 	scroll.Width, scroll.Height = width-4, max(height-lipgloss.Height(actions)-3, 1)
 	tableWidth = width - 4
 	f.logRoom = scroll.Height - 6 // the log fits under the bar, so the bar never scrolls away
