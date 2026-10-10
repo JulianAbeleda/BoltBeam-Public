@@ -29,12 +29,57 @@ func TestRunningScreens(t *testing.T) {
 	}
 	dead := *s.job
 	dead.Alive = false
-	failed := page(program(s, &s.planned, &dead, append(append([]string{}, s.tail...), "stage analyze: failed: no roles in the model"), 80, 24), pageRun)
+	failed := page(program(s, &s.planned, &dead, append(append([]string{}, s.tail...), "stage measure_timing: failed: llama-bench exited 1"), 80, 24), pageRun)
 	golden(t, "run-failed.txt", failed.View())
-	for _, want := range []string{"Plan what to try failed", "no roles in the model", "Back to setup"} {
+	for _, want := range []string{"failed", "llama-bench exited 1", "Back to setup"} {
 		if !strings.Contains(failed.View(), want) {
 			t.Fatalf("the failed screen lacks %q", want)
 		}
+	}
+}
+
+// The quick setup stages are not steps: while they run the step line says Starting, the count is hidden
+// (never "0 of N") and the bar holds at 2% at most. Step 1 is the first counted stage.
+func TestSetupStagesAreNotCounted(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	s := loadSample(t)
+	setup := []string{s.tail[0], "pipeline steps: 6", "pipeline counted: 0,0,0,0,0,1,1,1,1,1,1",
+		"stage load: start", "stage load: done", "stage autoscan: start", "stage autoscan: done", "stage analyze: start",
+		"stage analyze: done", "stage machine: start", "stage machine: done", "stage measure_probe: start"}
+	p := seam.ReadProgress(setup)
+	if !p.Setup || p.Done != 0 || p.Total != 6 {
+		t.Fatalf("%+v", p)
+	}
+	if got := p.Fraction(1); got <= 0 || got > seam.SetupShare {
+		t.Fatalf("setup fraction %v", got)
+	}
+	if got := p.Fraction(600); got != seam.SetupShare {
+		t.Fatalf("setup fraction %v", got)
+	}
+	starting := page(program(s, &s.planned, s.job, setup, 80, 24), pageRun)
+	golden(t, "run-starting.txt", starting.View())
+	if v := starting.View(); !strings.Contains(v, "Starting…") || strings.Contains(v, " of 6") {
+		t.Fatalf("setup must read Starting with no count:\n%s", v)
+	}
+	if line, _ := measureLine(Facts{Job: s.job, Tail: setup}); line != "run" {
+		t.Fatal(line)
+	}
+	step1 := append(append([]string{}, setup...), "stage measure_probe: done", "stage measure_timing: start", "stage measure_timing: progress 1/4")
+	p = seam.ReadProgress(step1)
+	if p.Setup || p.Done != 0 || p.Current != "measure_timing" {
+		t.Fatalf("%+v", p)
+	}
+	v := page(program(s, &s.planned, s.job, step1, 80, 24), pageRun).View()
+	if !strings.Contains(v, "1 of 6") || !strings.Contains(v, "Time the real decode") {
+		t.Fatalf("step 1 must read 1 of 6:\n%s", v)
+	}
+	done := append(append([]string{}, step1...), "stage measure_timing: done", "stage ingest_probe: start", "stage ingest_probe: done",
+		"stage ingest_timing: start")
+	if p = seam.ReadProgress(done); p.Done != 2 || p.Setup {
+		t.Fatalf("%+v", p)
+	}
+	if d, n := seam.PipelineProgress(done); d != 2 || n != 6 {
+		t.Fatalf("%d of %d", d, n)
 	}
 }
 

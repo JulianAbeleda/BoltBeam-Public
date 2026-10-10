@@ -962,14 +962,14 @@ func runningBody(f Facts, width int) string {
 	var b strings.Builder
 	b.WriteString(runHeadline(f) + "\n\n")
 	count := ""
-	if p.Total > 0 {
+	if p.Total > 0 && !p.Setup { // the setup stages are not steps: never "0 of N"
 		count = fmt.Sprintf("%d of %d", min(p.Done+1, p.Total), p.Total)
 	}
 	pct := fmt.Sprintf("%3.0f%%", f.Frac*100)
 	barW := max(width-4-lipgloss.Width(pct)-lipgloss.Width(count)-4, 10)
 	fmt.Fprintf(&b, "  %s  %s  %s\n", bar(f.Frac, barW), pct, count)
 	now := "Starting"
-	if p.Current != "" {
+	if p.Current != "" && !p.Setup {
 		now = stageWord(p.Current)
 	}
 	took := elapsed(f.Job)

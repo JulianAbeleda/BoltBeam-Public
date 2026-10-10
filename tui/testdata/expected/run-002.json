@@ -474,6 +474,7 @@
         "weight_inventory.json",
         "workload_profile.json"
       ],
+      "counted": false,
       "done": true,
       "key": "load",
       "label": "load",
@@ -488,6 +489,7 @@
         "provider_capabilities.json",
         "scan_evidence.json"
       ],
+      "counted": false,
       "done": true,
       "key": "autoscan",
       "label": "autoscan",
@@ -505,6 +507,7 @@
         "probe_request.json",
         "trace_request.json"
       ],
+      "counted": false,
       "done": true,
       "key": "analyze",
       "label": "analyze",
@@ -514,6 +517,7 @@
     },
     {
       "artifacts": [],
+      "counted": false,
       "done": false,
       "key": "runner_plan",
       "label": "runner-plan",
@@ -525,6 +529,7 @@
       "artifacts": [
         "primitive_profile.json"
       ],
+      "counted": true,
       "done": true,
       "key": "ingest_probe",
       "label": "probe",
@@ -537,6 +542,7 @@
         "timing_trace.json",
         "timing_profile.json"
       ],
+      "counted": true,
       "done": true,
       "key": "ingest_timing",
       "label": "timing",
@@ -552,6 +558,7 @@
         "provider_plan.json",
         "report.html"
       ],
+      "counted": true,
       "done": true,
       "key": "output",
       "label": "output",

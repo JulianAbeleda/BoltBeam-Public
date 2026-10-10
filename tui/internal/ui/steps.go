@@ -77,10 +77,15 @@ func (f *Facts) advance(now time.Time) {
 	if job := f.Job.ID + f.Job.StartedAt; f.fracJob != job {
 		f.fracJob, f.Frac, f.stageDone = job, 0, -1
 	}
-	if p.Done != f.stageDone {
-		f.stageAt, f.stageDone = now, p.Done
-		if t, err := time.Parse(time.RFC3339, f.Job.StartedAt); err == nil && p.Done == 0 {
-			f.stageAt = t // the first step began when the job did
+	mark := p.Done
+	if p.Setup {
+		mark = -2 // the setup stages: their time is not step 1's time
+	}
+	if mark != f.stageDone {
+		first := f.stageDone == -1
+		f.stageAt, f.stageDone = now, mark
+		if t, err := time.Parse(time.RFC3339, f.Job.StartedAt); err == nil && first && p.Done == 0 {
+			f.stageAt = t // the job began here: count from its start
 		}
 	}
 	f.Frac = max(f.Frac, p.Fraction(now.Sub(f.stageAt).Seconds()))
@@ -859,12 +864,16 @@ func limitLine(f Facts) (string, string) {
 
 func measureLine(f Facts) (string, string) {
 	if f.alive() {
-		done, total := seam.PipelineProgress(f.Tail)
+		p := seam.ReadProgress(f.Tail)
+		done, total := p.Done, p.Total
 		now := ""
 		for key, state := range seam.StageEvents(f.Tail) {
 			if state == "running" {
 				now = " · " + stageWord(key) + "…"
 			}
+		}
+		if p.Setup {
+			return "run", "starting…"
 		}
 		if total == 0 {
 			return "run", "running" + now

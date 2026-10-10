@@ -126,7 +126,9 @@ manifest when it finishes, so the run folder keeps what landed. A new run always
 - `runs`, `run` and `results` read the run artifacts and reuse the report's stage table, next-step ladder and
   hot-kernel pick (`report/html.py`), so the screen, `summary.md` and `report.html` never disagree;
 - `pipeline` calls the workflow's own stage functions in order and prints `pipeline steps: N` first, so a
-  screen can draw `n of N`.
+  screen can draw `n of N`. N counts only the slow stages. The quick setup stages (load, autoscan, the first
+  analyze, machine, measure_probe) are not steps. `pipeline counted: 0,0,1,…` gives one flag per stage line, in
+  order. While a setup stage runs, the screen says Starting and shows no count.
 
 Three private names in `report/html.py` and `cli/roofline.py` became public for that reuse (`STAGES`,
 `next_step`, `roofline_kernels`, `resolve_peak_flops`); nothing else outside `tui/` changed.

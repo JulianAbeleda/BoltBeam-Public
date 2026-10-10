@@ -71,8 +71,9 @@ func loadSample(t *testing.T) sample {
 	load(t, "run-002", &s.measured)
 	s.job = &jobs.Job{ID: "qwen3-8b-apple_m3_10c-001", PID: 4242, Alive: true, LogPath: "/home/u/.local/state/boltbeam-tui/qwen3-8b-apple_m3_10c-001.log",
 		StartedAt: "2026-10-08T10:00:00Z", Argv: []string{"python3", "-m", "boltbeam.workflow.screen", "pipeline"}}
-	s.tail = []string{"=== 2026-10-08T10:00:00Z start python3 -m boltbeam.workflow.screen pipeline", "pipeline steps: 7",
-		"stage load: start", "stage load: done", "stage autoscan: start", "stage autoscan: done", "stage analyze: start"}
+	s.tail = []string{"=== 2026-10-08T10:00:00Z start python3 -m boltbeam.workflow.screen pipeline", "pipeline steps: 4",
+		"pipeline counted: 0,0,0,1,1,1,1", "stage load: start", "stage load: done", "stage autoscan: start", "stage autoscan: done",
+		"stage analyze: start", "stage analyze: done", "stage measure_timing: start"}
 	return s
 }
 

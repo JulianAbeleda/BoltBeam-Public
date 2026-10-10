@@ -23,7 +23,8 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     clean-work --work DIR --before ISO         remove temporary runs started before ISO (never --keep ones)
     results  --run DIR | --run ID --root DIR   what won per role, the timing against the ceiling, the regimes
     pipeline MODEL --run DIR --target T        load, autoscan, analyze, [measure], [ingest-probe, ingest-timing], output;
-                                               `pipeline steps: N` first, then one text line per stage, for tailing.
+                                               `pipeline steps: N` (counted stages only) and `pipeline counted:`
+                                               first, then one text line per stage, for tailing.
                                                --measure auto runs the target's BoltBeam collector here when this
                                                machine can (Metal: collectors/metal_native.py; NVIDIA: the
                                                llama-bench decode, collectors/llama_bench_decode.py) and writes
@@ -217,13 +218,18 @@ def ceilings(profile:dict[str, Any]) -> dict[str, Any]:
 
 # --- run folders -----------------------------------------------------------------------------------------------
 
+# the stage rows a running screen counts as steps (analyze is setup on its first run, so it is not counted here)
+COUNTED_STAGES = frozenset({"ingest_probe", "ingest_timing", "output"})
+
+
 def stage_rows(manifest:dict[str, Any], measure:dict[str, Any] | None = None) -> list[dict[str, Any]]:
   """state: done, not_needed (state_note says why) or open (report/html.py stage_state decides)."""
   stages = manifest.get("stages", {}) or {}
   rows = []
   for key, label, note in STAGES:
     state, why = stage_state(key, stages.get(key), measure)
-    rows.append({"key": key, "label": label, "note": note, "done": key in stages, "state": state, "state_note": why,
+    rows.append({"key": key, "label": label, "note": note, "counted": key in COUNTED_STAGES, "done": key in stages,
+                 "state": state, "state_note": why,
                  "artifacts": list((stages.get(key) or {}).get("artifacts", []) or [])})
   return rows
 
@@ -727,6 +733,15 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
   return [*probe, timing]
 
 
+# The quick setup stages run in under two seconds. The screen does not count them: step 1 is the first slow one.
+SETUP = frozenset({"load", "autoscan", "analyze", "machine", "measure_probe", "measure"})
+
+
+def counted(step_id:str) -> bool:
+  """A step id from progress.step_ids. The first analyze is setup; the second (analyze#2) is counted."""
+  return step_id not in SETUP
+
+
 def pipeline(args, out=sys.stdout) -> int:
   """Run the stages in order and say so, one line each. The run folder keeps whatever landed before a failure."""
   def say(text:str) -> None:
@@ -762,11 +777,14 @@ def pipeline(args, out=sys.stdout) -> int:
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
     steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root)))
     steps.append(("output", lambda: output_run(args.run)))
-  say(f"pipeline steps: {len(steps)}")  # a screen draws n of N from this line
   ids = progress.step_ids([key for key, _ in steps])
+  flags = [counted(sid) for sid in ids]
+  say(f"pipeline steps: {sum(flags)}")  # a screen draws n of N from this line: counted stages only
+  say("pipeline counted: " + ",".join("1" if c else "0" for c in flags))  # one flag per stage line, in order
   batch = max(_parse_batches(getattr(args, "batch", None)))
   where = f"{args.target}|{plan['provider'] if plan else 'none'}|batch {batch}"
-  if plan and (expect := progress.expected(where, ids)):  # the screen weights a measuring run's bar by these seconds
+  counted_ids = [sid for sid, c in zip(ids, flags) if c]
+  if plan and (expect := progress.expected(where, counted_ids)):  # the bar weights counted steps by these seconds
     say("pipeline expect: " + ",".join(f"{s:.1f}" for s in expect))
   times:dict[str, float] = {}
   run_path = pathlib.Path(args.run)

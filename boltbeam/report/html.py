@@ -1,23 +1,24 @@
-"""Self-contained HTML run report (companion to `summary.md`).
+"""Self-contained HTML run report: the TUI results screen on paper.
 
-`_summary_md` in workflow/output.py renders the same run-directory facts as markdown; this renders them as one
-standalone HTML file you can open, scp, or attach to a handoff without a server, a build step, or a network
-fetch. Nothing here computes new facts: every number on the page already exists in a staged artifact, and every
-section names the artifact it came from, so a reader can always go from a claim back to its file.
+The point of the page is to show where the token loses time against the roofline, and what to try about it. It
+reads `workflow.screen.results(run)`, the same seam the TUI reads (loss, tie_out, roles), and computes nothing
+new: every number on the page is a measured or derived number from that seam, or a share of two of them.
 
-Two properties are load-bearing, both inherited from report/markdown.py:
-  * deterministic — stable ordering, no timestamps, no randomness, so two runs over the same run directory are
-    byte identical and the report can be committed / diffed;
-  * absence is rendered, not omitted — a stage with no artifact, a plan blocked on missing evidence, and a
-    route with no measurement all get visible rows. A report that silently drops what it lacks reads as
-    complete when it is not.
+Sections, in order (a measured run):
+  1. The answer: model, chip, engine, batch, weight format; measured speed against the limit; ms per token lost.
+  2. Where the time goes: the tie-out from the limit to the measured token.
+  3. Per role, sorted by lost ms, in the TUI's words.
+  4. What to try next, from the reasons by a stated rule table (NEXT_RULES, LINE_RULES): data, not code.
+  5. Facts: chip profile, capture method, stages that ran, files in the run.
+An unmeasured run has section 1 with one sentence on what is missing and the command, then section 5.
 
-The CSS/JS are inlined deliberately. A report that needs a CDN is a report that renders blank on the machine
-you actually want to read it on.
+Load-bearing properties: deterministic (no timestamps, stable order, so two renders are byte identical); no
+external requests (CSS and JS inline, system fonts); both themes; a phone at 390 px scrolls only vertically.
 """
 from __future__ import annotations
 
 import html
+import re
 from typing import Any
 
 # canonical pipeline order. The keys are the `stage=` values workflow/*.py pass to update_manifest; the label
@@ -62,125 +63,132 @@ SEVERITY = {
   "timing_loss": "bad", "correctness_failed": "bad", "refuted": "bad",
   # timing_hot / timing_observed say how big a role is, not whether it is healthy: no colour.
 }
+PLAIN_ROLE = {"attn_kv": "attention keys and values", "attn_qo": "attention query and output", "ffn_gate_up": "feed-forward in",
+              "ffn_down": "feed-forward out", "lm_head": "vocabulary output", "embed": "token embedding"}
 
 _CSS = """
-/* Tokyo Night, matching the BoltBeam run graph: dark canvas, panel cards, typed accent colours.
-   Light mode maps onto Tokyo Night Day rather than inverting the dark palette.
-   Type is a system UI/mono stack — no @font-face, so this file issues no external requests. */
-:root{--ui:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+/* Glass over a gradient. Cards keep an opaque enough fill that text reads without backdrop-filter (print, old
+   browsers). System fonts only: this file makes no external requests. */
+:root{--ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
 --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
---canvas:#1a1b26;--grid:rgba(192,202,245,.055);--grid-2:rgba(192,202,245,.10);
---node:#24283b;--node-hd:#1f2335;--node-br:#414868;--widget:#1a1b26;--widget-br:#3b4261;
---tx:#c0caf5;--tx-2:#a9b1d6;--tx-3:#565f89;
---profile:#bb9af7;--plan:#7aa2f7;--evidence:#9ece6a;--trace:#ff9e64;--policy:#f7768e;
---run:#9ece6a;--warn:#e0af68;--bad:#db4b4b}
-@media (prefers-color-scheme:light){:root{--canvas:#e1e2e7;--grid:rgba(55,96,191,.09);--grid-2:rgba(55,96,191,.14);
---node:#e9e9ec;--node-hd:#d5d6db;--node-br:#a8aecb;--widget:#d5d6db;--widget-br:#c4c8da;
---tx:#3760bf;--tx-2:#6172b0;--tx-3:#848cb5;--profile:#9854f1;--plan:#2e7de9;--evidence:#587539;
---trace:#b15c00;--policy:#f52a65;--run:#587539;--warn:#8c6c3e;--bad:#c64343}}
-:root[data-theme=light]{--canvas:#e1e2e7;--grid:rgba(55,96,191,.09);--grid-2:rgba(55,96,191,.14);--node:#e9e9ec;
---node-hd:#d5d6db;--node-br:#a8aecb;--widget:#d5d6db;--widget-br:#c4c8da;--tx:#3760bf;--tx-2:#6172b0;
---tx-3:#848cb5;--profile:#9854f1;--plan:#2e7de9;--evidence:#587539;--trace:#b15c00;--policy:#f52a65;
---run:#587539;--warn:#8c6c3e;--bad:#c64343}
-:root[data-theme=dark]{--canvas:#1a1b26;--grid:rgba(192,202,245,.055);--grid-2:rgba(192,202,245,.10);
---node:#24283b;--node-hd:#1f2335;--node-br:#414868;--widget:#1a1b26;--widget-br:#3b4261;--tx:#e9e9e9;
---tx-2:#a8a8a8;--tx-3:#767676;--profile:#b39ddb;--plan:#64b5f6;--evidence:#81c784;--trace:#ff8a65;
---policy:#f06292;--run:#7ec86a;--warn:#e0a33e;--bad:#e5534b}
+--bg:#0d1022;--bg-a:#141a3d;--bg-b:#2a1747;
+--glass:rgba(30,34,64,.78);--glass-2:rgba(255,255,255,.05);--edge:rgba(190,200,255,.16);--shadow:0 10px 30px rgba(0,0,0,.35);
+--tx:#eef0ff;--tx-2:#c3c8ea;--tx-3:#9198c2;
+--g1:#ff7ac6;--g2:#a98bff;--g3:#5fd6ff;
+--ideal:#7f88b8;--excess:#f2b84b;--other:#b48cff;--gaps:#ff6b81;--ok:#7fd88f;--track:rgba(255,255,255,.08)}
+@media (prefers-color-scheme:light){:root:not([data-theme=dark]){--bg:#eef0fa;--bg-a:#e3e8ff;--bg-b:#f3e6ff;
+--glass:rgba(255,255,255,.82);--glass-2:rgba(40,50,120,.04);--edge:rgba(60,70,140,.16);--shadow:0 10px 30px rgba(60,70,140,.12);
+--tx:#1d2250;--tx-2:#3f4677;--tx-3:#666c96;--g1:#d63c96;--g2:#7c4ddb;--g3:#0a8fbf;
+--ideal:#8790b8;--excess:#b06d00;--other:#7c4ddb;--gaps:#d0334f;--ok:#2f8a46;--track:rgba(40,50,120,.08)}}
+:root[data-theme=light]{--bg:#eef0fa;--bg-a:#e3e8ff;--bg-b:#f3e6ff;--glass:rgba(255,255,255,.82);
+--glass-2:rgba(40,50,120,.04);--edge:rgba(60,70,140,.16);--shadow:0 10px 30px rgba(60,70,140,.12);--tx:#1d2250;
+--tx-2:#3f4677;--tx-3:#666c96;--g1:#d63c96;--g2:#7c4ddb;--g3:#0a8fbf;--ideal:#8790b8;--excess:#b06d00;
+--other:#7c4ddb;--gaps:#d0334f;--ok:#2f8a46;--track:rgba(40,50,120,.08)}
 *,*::before,*::after{box-sizing:border-box}
-body{margin:0;min-height:100vh;background:var(--canvas);color:var(--tx);font-family:var(--ui);font-size:13px;
-line-height:1.6;-webkit-font-smoothing:antialiased;padding:30px 20px 64px;
-background-image:radial-gradient(var(--grid-2) 1px,transparent 1px),radial-gradient(var(--grid) 1px,transparent 1px);
-background-size:100px 100px,20px 20px;background-attachment:fixed}
-.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:16px}
-.mast{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:2px 2px 6px}
-.mark{font-weight:700;font-size:17px;letter-spacing:-.01em}
-.mark span{color:var(--profile)}
-.run-id{color:var(--tx-3);font-family:var(--mono);font-size:11.5px;word-break:break-all}
-.meta{color:var(--tx-3);font-size:11.5px;display:flex;gap:16px;flex-wrap:wrap;margin-left:auto}
-.meta b{color:var(--tx-2);font-weight:500;font-family:var(--mono)}
-.card,.rail{background:var(--node);border:1px solid var(--node-br);border-radius:9px;
-box-shadow:0 4px 16px rgba(6,8,18,.32);overflow:hidden}
-.rail{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
-.stage{padding:10px 14px;border-right:1px solid var(--node-br);border-bottom:1px solid var(--node-br);
-display:flex;flex-direction:column;gap:2px;margin:0 -1px -1px 0;min-width:0}
-.stage-top{display:flex;align-items:center;gap:8px}
-.stage-name{font-size:12.5px;font-weight:600}
-.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--run)}
-.stage-note{font-size:10.5px;color:var(--tx-3);padding-left:16px;font-family:var(--mono)}
-.s-none .dot{background:transparent;border:1.5px solid var(--tx-3)}
-.s-none .stage-name,.s-none .stage-note{color:var(--tx-3)}
-.s-skip .dot{background:var(--tx-3);border:1.5px solid var(--tx-3)}
-.s-skip .stage-note{color:var(--tx-3)}
-.card-hd{padding:10px 15px;border-bottom:1px solid var(--node-br);background:var(--node-hd);
-display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.card-ttl{margin:0;font-size:12.5px;font-weight:600}
-.card-sub{font-size:10.5px;color:var(--tx-3);margin-left:auto;font-family:var(--mono)}
-.card-bd{padding:14px 15px}
-.card.flag{border-left:3px solid var(--warn)}
-.cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
-.cols.one{grid-template-columns:minmax(0,1fr)}
-@media (max-width:920px){.cols{grid-template-columns:1fr}.meta{margin-left:0}}
-.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
-.tscroll table{min-width:640px}
-.tscroll table.wide{min-width:900px}
-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-thead th{font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);
-text-align:right;padding:10px 12px 8px;border-bottom:1px solid var(--node-br);white-space:nowrap}
-thead th:first-child,tbody td:first-child{text-align:left}
-tbody td{padding:8px 12px;border-bottom:1px solid color-mix(in srgb,var(--node-br) 55%,transparent);
-text-align:right;font-size:12px;color:var(--tx-2);font-family:var(--mono);white-space:nowrap;vertical-align:middle}
-th.l,td.l{text-align:left!important}
-td.wrap{white-space:normal;min-width:280px;font-family:var(--ui)}
-tbody tr:last-child td{border-bottom:0}
-tbody td:first-child{color:var(--tx)}
-tbody tr:hover td{background:var(--node-hd)}
-.name{max-width:32ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pct{position:relative}
-.pct i{position:absolute;left:6px;right:6px;bottom:2px;height:2px;background:var(--widget-br);border-radius:2px}
-.pct i b{position:absolute;left:0;top:0;bottom:0;background:var(--plan);border-radius:2px}
-.tag{font-size:10.5px;padding:2px 9px;border-radius:14px;white-space:nowrap;color:var(--tx-2);
-background:var(--widget);border:1px solid var(--widget-br);font-family:var(--mono)}
-.t-bad{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
-.t-warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
-.t-ok{color:var(--run);border-color:color-mix(in srgb,var(--run) 45%,transparent)}
-ul{margin:0;padding-left:17px;color:var(--tx-2)}
-li{padding:3px 0}
-.need{display:grid;grid-template-columns:26px 1fr;gap:12px;align-items:start;padding:5px 0}
-.need-k{color:var(--warn);font-family:var(--mono);font-size:11.5px}
-.need-b{color:var(--tx-2);font-size:12.5px;line-height:1.7}
-code{background:var(--widget);border:1px solid var(--widget-br);padding:1px 6px;border-radius:4px;
-color:var(--tx);font-family:var(--mono);font-size:11px}
-.chips{display:flex;flex-wrap:wrap;gap:7px}
-.chip{font-size:10.5px;padding:3px 10px;border-radius:14px;background:var(--widget);color:var(--tx-2);
-border:1px solid var(--widget-br);font-family:var(--mono);text-decoration:none}
-a.chip:hover{border-color:var(--plan);color:var(--tx)}
-.chip.on{color:var(--run);border-color:color-mix(in srgb,var(--run) 45%,transparent)}
-a{color:var(--plan)}
-.id{font-family:var(--mono);font-size:10px;color:var(--tx-3)}
-.lbl{font-size:9.5px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3);margin:0 0 6px}
-.lbl .id{letter-spacing:0;text-transform:none;font-weight:400}
-.compact .card-bd{padding:9px 15px}
-.compact .empty{padding:9px 15px}
-.head-bd{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr) minmax(0,1fr);gap:18px;padding:18px 20px;align-items:start}
-.head-model{font-size:22px;font-weight:700;letter-spacing:-.01em;word-break:break-word}
-.head-chip{color:var(--tx-2);font-family:var(--mono);font-size:12px}
-.big{font-size:30px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
-.big.dim{font-size:18px;color:var(--warn)}
-.big-u{color:var(--tx-2);font-size:12px}
-.big-n{color:var(--tx-3);font-size:11px;margin-top:4px}
-.head{border-left:3px solid var(--profile)}
-@media (max-width:640px){.head-bd{grid-template-columns:1fr 1fr}.head-who{grid-column:1/-1}body{padding:16px 16px 48px}}
-details{border-bottom:1px solid var(--node-br)}
-details:last-child{border-bottom:0}
-summary{padding:11px 15px;cursor:pointer;display:flex;gap:11px;align-items:center;flex-wrap:wrap}
-summary:hover{background:var(--widget)}
-summary:focus-visible{outline:2px solid var(--plan);outline-offset:-2px}
-summary .rb-name{font-size:13px;font-weight:600;color:var(--tx)}
-pre{margin:0 15px 14px 32px;padding:11px 13px;background:var(--widget);border:1px solid var(--widget-br);
-border-radius:7px;overflow-x:auto;font-size:11px;color:var(--tx-2);font-family:var(--mono)}
-.empty{color:var(--tx-3);font-size:12px;padding:15px}
-.foot{color:var(--tx-3);font-size:11px;text-align:center;padding-top:10px;line-height:1.85}
-@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+html{background:var(--bg)}
+body{margin:0;min-height:100vh;color:var(--tx);font-family:var(--ui);font-size:14px;line-height:1.55;
+-webkit-font-smoothing:antialiased;padding:32px 24px 64px;
+background:radial-gradient(1200px 700px at 10% -10%,var(--bg-a),transparent 60%),
+radial-gradient(1000px 800px at 100% 10%,var(--bg-b),transparent 60%),var(--bg);background-attachment:fixed}
+.wrap{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:20px;min-width:0}
+.mast{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.mark{font-weight:800;font-size:17px;letter-spacing:-.01em;background:linear-gradient(90deg,var(--g1),var(--g2),var(--g3));
+-webkit-background-clip:text;background-clip:text;color:transparent}
+.run-id{color:var(--tx-3);font-family:var(--mono);font-size:11.5px;overflow-wrap:anywhere;flex:1;min-width:0}
+.toggle{cursor:pointer;font:inherit;font-size:12px;color:var(--tx-2);background:var(--glass);border:1px solid var(--edge);
+border-radius:20px;padding:4px 12px}
+.card{background:var(--glass);border:1px solid var(--edge);border-radius:16px;box-shadow:var(--shadow);
+-webkit-backdrop-filter:blur(18px) saturate(140%);backdrop-filter:blur(18px) saturate(140%);padding:22px 24px;min-width:0}
+.card h2{margin:0 0 14px;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3)}
+.card h2 .n{display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;border-radius:50%;
+margin-right:8px;color:#fff;background:linear-gradient(135deg,var(--g1),var(--g2));letter-spacing:0;font-size:11px}
+.who{font-size:13.5px;color:var(--tx-2);margin:0 0 14px;overflow-wrap:anywhere}
+.who b{color:var(--tx);font-size:20px;font-weight:700;margin-right:6px}
+.hero{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 18px}
+.big{font-size:clamp(40px,8vw,96px);font-weight:800;line-height:1;letter-spacing:-.03em;font-variant-numeric:tabular-nums;
+background:linear-gradient(90deg,var(--g1),var(--g2) 55%,var(--g3));-webkit-background-clip:text;background-clip:text;color:transparent}
+.big-u{font-size:16px;color:var(--tx-2)}
+.lim{font-size:clamp(18px,3vw,28px);font-weight:700;color:var(--tx-2);font-variant-numeric:tabular-nums}
+.lim small{font-size:13px;font-weight:500;color:var(--tx-3)}
+.big.dim{font-size:clamp(30px,6vw,56px)}
+.gauge{position:relative;height:16px;border-radius:9px;background:var(--track);margin:22px 0 8px;border:1px solid var(--edge)}
+.gauge i{position:absolute;left:0;top:0;bottom:0;border-radius:9px;background:linear-gradient(90deg,var(--g1),var(--g2),var(--g3))}
+.gauge s{position:absolute;right:-1px;top:-6px;bottom:-6px;width:3px;border-radius:2px;background:var(--g3);
+box-shadow:0 0 10px 2px var(--g3)}
+.gauge-l{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:13px;color:var(--tx-2)}
+.gauge-l b{color:var(--tx);font-size:15px}
+.lost{color:var(--gaps);font-weight:700}
+.stack{display:flex;height:34px;border-radius:10px;overflow:hidden;border:1px solid var(--edge);background:var(--track);position:relative}
+.stack span{display:flex;align-items:center;justify-content:center;font-size:11.5px;font-weight:700;color:#10132a;
+white-space:nowrap;overflow:hidden;min-width:0;font-variant-numeric:tabular-nums}
+.stack .band{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,rgba(255,255,255,.45) 0 3px,transparent 3px 6px);
+border-left:1px solid var(--tx);border-right:1px solid var(--tx);opacity:.7}
+.sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:8px;vertical-align:baseline}
+.c-ideal{background:var(--ideal)}.c-excess{background:var(--excess)}.c-other{background:var(--other)}.c-gaps{background:var(--gaps)}
+.c-ok{background:var(--ok)}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;margin-top:14px}
+td{padding:8px 6px;border-bottom:1px solid var(--edge);text-align:right;color:var(--tx-2);vertical-align:top}
+td:first-child{text-align:left;color:var(--tx)}
+td.how{color:var(--tx-3);font-size:12px;text-align:left;padding-left:16px}
+tr.sum td{font-weight:800;color:var(--tx);border-bottom:0;border-top:2px solid var(--edge)}
+.sub{display:block;color:var(--tx-3);font-size:12px;font-weight:400}
+.note{color:var(--tx-2);font-size:13px;margin:10px 0 0}
+.muted{color:var(--tx-3);font-size:12.5px;margin:8px 0 0}
+.roles{display:flex;flex-direction:column;gap:6px}
+.role{border-radius:12px;background:var(--glass-2);border:1px solid var(--edge)}
+.role summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(150px,1.2fr) minmax(0,2fr) auto;
+gap:6px 14px;align-items:center;padding:10px 14px}
+.role summary::-webkit-details-marker{display:none}
+.rname{font-weight:600;overflow-wrap:anywhere}
+.rname .q{color:var(--tx-3);font-weight:500;font-size:12px;margin-left:6px}
+.rbar{height:12px;border-radius:6px;background:var(--track);overflow:hidden}
+.rbar i{display:block;height:100%;border-radius:6px}
+.rnum{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.rnum b{color:var(--tx)}.rnum span{color:var(--tx-3);font-size:12px;margin-left:8px}
+.why{font-size:12px;font-weight:600}
+.r-ok{color:var(--ok)}.r-small{color:var(--excess)}.r-slow{color:var(--gaps)}
+.rdet{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px 12px;padding:0 14px 12px;font-size:12.5px;color:var(--tx-2)}
+.rdet div span{display:block;color:var(--tx-3);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase}
+.next{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px;counter-reset:n}
+.next li{counter-increment:n;position:relative;padding:14px 16px 14px 56px;border-radius:12px;background:var(--glass-2);
+border:1px solid var(--edge)}
+.next li::before{content:counter(n);position:absolute;left:16px;top:14px;width:26px;height:26px;line-height:26px;
+text-align:center;border-radius:50%;font-weight:800;font-size:13px;color:var(--tx);border:1px solid var(--edge)}
+.next li.top{border:1px solid transparent;background:linear-gradient(var(--glass),var(--glass)) padding-box,
+linear-gradient(90deg,var(--g1),var(--g2),var(--g3)) border-box}
+.next li.top::before{color:#fff;border:0;background:linear-gradient(135deg,var(--g1),var(--g2))}
+.next .what{font-weight:700;color:var(--tx)}
+.next .ms{color:var(--tx-2);font-variant-numeric:tabular-nums}
+.next .do{display:block;margin-top:4px;color:var(--tx-2)}
+.rules{margin-top:12px}
+.rules summary{cursor:pointer;color:var(--tx-3);font-size:12.5px}
+.rules table td{font-size:12.5px}
+dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:8px 18px;margin:0;font-size:13.5px}
+dt{color:var(--tx-3)}dd{margin:0;color:var(--tx-2);overflow-wrap:anywhere}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font-size:11px;padding:3px 10px;border-radius:12px;background:var(--glass-2);color:var(--tx-2);
+border:1px solid var(--edge);font-family:var(--mono);text-decoration:none;overflow-wrap:anywhere}
+a.chip:hover{color:var(--tx)}
+a{color:var(--g3)}
+code{background:var(--glass-2);border:1px solid var(--edge);padding:1px 6px;border-radius:5px;font-family:var(--mono);
+font-size:12px;overflow-wrap:anywhere}
+.foot{color:var(--tx-3);font-size:11.5px;text-align:center}
+@media (max-width:640px){
+body{padding:16px 16px 40px}.card{padding:18px 16px}dl{grid-template-columns:1fr;gap:2px}dd{margin-bottom:8px}
+.role summary{grid-template-columns:minmax(0,1fr)}.rnum{text-align:left;white-space:normal}
+.rdet{grid-template-columns:repeat(2,minmax(0,1fr))}
+td.how{display:none}.stack span{font-size:10px}
+.next li{padding-left:48px}.next li::before{left:12px}
+}
+.card .card{box-shadow:none;border-radius:12px;margin-top:16px;padding:0;overflow:hidden}
+.card-hd{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;padding:10px 14px;border-bottom:1px solid var(--edge)}
+.card-ttl{margin:0;font-size:13px;color:var(--tx)}
+.card-sub,.id{color:var(--tx-3);font-family:var(--mono);font-size:11px}
+.tscroll{overflow-x:auto}.tscroll table{margin:0}.tscroll td{white-space:nowrap}td.wrap{white-space:normal;min-width:220px}
+.tag{font-size:11px;padding:1px 8px;border-radius:10px;border:1px solid var(--edge)}
+.empty{color:var(--tx-3);font-size:12.5px;padding:10px 14px;margin:0}
+@media print{:root,:root[data-theme]{--bg:#fff;--bg-a:#fff;--bg-b:#fff;--glass:#fff;--tx:#1d2250;--tx-2:#3f4677;--tx-3:#666c96;
+--edge:rgba(60,70,140,.25)}body{background:#fff}.card{box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}.toggle{display:none}}
 """
 
 # theme toggle only; everything else is static so the page is readable with JS disabled.
@@ -202,17 +210,6 @@ def _e(value:Any) -> str:
   return html.escape("" if value is None else str(value), quote=True)
 
 
-def _num(value:Any, fmt:str = "{:.1f}", dash:str = "—") -> str:
-  return fmt.format(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else dash
-
-
-def _shape_str(shape:Any) -> str:
-  if isinstance(shape, dict):
-    return "x".join(str(shape[k]) for k in ("rows", "cols") if k in shape) or "unknown"
-  if isinstance(shape, (list, tuple)) and shape: return "x".join(str(x) for x in shape)
-  return "unknown"
-
-
 def _bucket_class(bucket:Any) -> str:
   sev = SEVERITY.get(str(bucket)) if bucket else None
   return f"t-{sev}" if sev else ""
@@ -229,21 +226,11 @@ def _named(table:dict[str, str], key:Any, *, tag:bool = False) -> str:
   return f'{_e(plain)} <span class="id">{_e(key_s)}</span>' if plain else _e(key_s or "unknown")
 
 
-def _ms(us:Any) -> str:
-  """Every time on the page is milliseconds. Artifacts store microseconds; this is the one conversion."""
-  return _num(us / 1000.0, "{:.2f}") if isinstance(us, (int, float)) and not isinstance(us, bool) else "—"
-
-
 def _card(title:str, source:str, body:str, *, flag:bool = False, cls:str = "") -> str:
   """A titled panel. `source` names the artifact the body was read from: no section without a citation."""
   classes = " ".join(c for c in ("card", "flag" if flag else "", cls) if c)
   return (f'<section class="{classes}"><div class="card-hd"><h2 class="card-ttl">{title}</h2>'
           f'<span class="card-sub">{_e(source)}</span></div>{body}</section>')
-
-
-def _bar_cell(pct:Any) -> str:
-  width = max(0.0, min(100.0, float(pct))) if isinstance(pct, (int, float)) and not isinstance(pct, bool) else 0.0
-  return f'<td class="pct">{_num(pct)}<i><b style="width:{width:.1f}%"></b></i></td>'
 
 
 # Stages a run does not need once step 4 measured on this machine (measure_status.json "measured"): the
@@ -258,67 +245,6 @@ def stage_state(key:str, entry:Any, measure:dict[str, Any] | None) -> tuple[str,
   if key in NOT_NEEDED and (measure or {}).get("status") == "measured":
     return "not_needed", NOT_NEEDED[key]
   return "open", None
-
-
-def _rail(manifest:dict[str, Any], measure:dict[str, Any] | None = None) -> str:
-  stages = manifest.get("stages", {}) or {}
-  cells = []
-  for i, (key, label, note) in enumerate(STAGES):
-    entry = stages.get(key)
-    state, why = stage_state(key, entry, measure)
-    if state == "done":
-      count = len(entry.get("artifacts", []) or [])
-      detail, cls = f"{count} file{'' if count == 1 else 's'}", "stage"
-    elif state == "not_needed":
-      detail, cls = why, "stage s-skip"
-    else:
-      detail, cls = "not run", "stage s-none"
-    cells.append(f'<div class="{cls}" title="{_e(note)}"><div class="stage-top"><i class="dot"></i>'
-                 f'<span class="stage-name">{i + 1}. {_e(PLAIN_STAGE.get(key, label))}</span></div>'
-                 f'<div class="stage-note">{_e(label)} · {_e(detail)}</div></div>')
-  return '<nav class="rail" aria-label="Pipeline stages">' + "".join(cells) + "</nav>"
-
-
-def _headline(manifest:dict[str, Any], results:dict[str, Any] | None) -> str:
-  """The answer first: model, chip, speed limit, measured speed. Numbers come from `screen.results`, the same
-  facts the TUI's Speed limit and Result steps print. Nothing is computed here."""
-  results = results or {}
-  model = manifest.get("model_id") or "unknown model"
-  chip = manifest.get("target_id") or "unknown chip"
-  ceil = results.get("ceiling") or {}
-  limit = ceil.get("tok_s") if ceil.get("status") == "modeled" else None
-  timing = results.get("timing") or {}
-  measured = timing.get("tok_s")
-  if isinstance(limit, (int, float)):
-    limit_html = (f'<div class="big">{limit:.1f}</div><div class="big-u">tokens per second</div>'
-                  f'<div class="big-n">memory {_num(ceil.get("peak_bandwidth_gbs"))} GB/s · context '
-                  f'{_e(ceil.get("context"))}</div>')
-  else:
-    limit_html = (f'<div class="big dim">none</div><div class="big-n">{_e(ceil.get("reason") or "not computed for this page")}'
-                  '</div>')
-  if isinstance(measured, (int, float)):
-    pct = f" · {measured / limit * 100:.0f}% of the limit" if isinstance(limit, (int, float)) and limit else ""
-    meas_html = (f'<div class="big">{measured:.1f}</div><div class="big-u">tokens per second{pct}</div>'
-                 f'<div class="big-n">timing trace · context {_e(timing.get("context"))}</div>')
-  else:
-    blocked = results.get("blocked") or []
-    if blocked:
-      missing = "Needs " + " and ".join(
-        f'{_e(PLAIN_NEED.get(b.get("need"), b.get("need")))} (<a href="{_e(b.get("request"))}">{_e(b.get("request"))}</a>)'
-        for b in blocked) + "."
-    elif not results:
-      missing = "Results were not read for this page."
-    elif results.get("measured"):
-      missing = "Needs a timing trace."
-    else:
-      missing = "Needs a plan: run <code>boltbeam analyze</code>."
-    meas_html = f'<div class="big dim">not measured yet</div><div class="big-n">{missing}</div>'
-  body = (f'<div class="head-bd"><div class="head-who"><div class="head-model">{_e(model)}</div>'
-          f'<div class="head-chip">on {_e(chip)} · {_e(manifest.get("workload") or "unknown workload")}</div></div>'
-          f'<div class="head-num"><div class="lbl">Speed limit</div>{limit_html}</div>'
-          f'<div class="head-num"><div class="lbl">Measured</div>{meas_html}</div></div>')
-  return f'<section class="card head" aria-label="Answer">{body}</section>'
-
 
 def next_step(report:dict[str, Any], plan:dict[str, Any]) -> str:
   """Same decision ladder as workflow/output.py::_summary_md, so the two reports never disagree."""
@@ -347,189 +273,11 @@ def roofline_kernels(timing:dict[str, Any]) -> tuple[list[dict[str, Any]], Any]:
   return kernels, chosen.get("context")
 
 
-def _kernel_table(timing:dict[str, Any]) -> str:
-  kernels, context = roofline_kernels(timing)
-  if not kernels:
-    rows = [r for r in timing.get("role_timing", []) or [] if isinstance(r, dict)]
-    if not rows: return ""
-    rows.sort(key=lambda r: (-(r.get("pct_step") or 0.0), str(r.get("role") or "")))
-    body = "".join(
-      f'<tr><td class="name" title="{_e(r.get("role"))}">{_e(r.get("role") or "unknown")}</td>'
-      f'<td>{_e(_shape_str(r.get("shape")))}</td><td>{_ms(r.get("wall_us"))}</td>'
-      f'{_bar_cell(r.get("pct_step"))}'
-      f'<td class="l">{_named(PLAIN_BUCKET, r.get("classification") or "unclassified", tag=True)}</td></tr>'
-      for r in rows[:12])
-    table = ('<div class="tscroll"><table><thead><tr><th>role</th><th>shape</th><th>wall ms</th>'
-             '<th>% step</th><th class="l">classification</th></tr></thead>'
-             f'<tbody>{body}</tbody></table></div>')
-    return _card("Hot roles", "timing_profile.json · role_timing", table)
-
-  body = "".join(
-    f'<tr><td class="name" title="{_e(k.get("name"))}">{_e(k.get("name") or "unnamed")}</td>'
-    f'<td>{_e(k.get("kind") or "—")}</td><td>{_ms(k.get("us"))}</td>'
-    f'{_bar_cell(k.get("pct_step"))}<td>{_num(k.get("phys_util_pct"))}</td>'
-    f'<td>{_ms(k.get("loss_us"))}</td>'
-    f'<td class="l">{_named(PLAIN_BUCKET, k.get("bucket") or "unclassified", tag=True)}</td></tr>'
-    for k in kernels[:12])
-  more = ""
-  if len(kernels) > 12:
-    more = f'<p class="empty">{len(kernels) - 12} more kernels in <code>timing_profile.json</code>.</p>'
-  table = ('<div class="tscroll"><table><thead><tr><th>kernel</th><th>kind</th><th>ms</th><th>% step</th>'
-           '<th>% peak</th><th>loss ms</th><th class="l">bucket</th></tr></thead>'
-           f'<tbody>{body}</tbody></table></div>{more}')
-  ctx = f"timing_profile.json · context {context}" if context is not None else "timing_profile.json"
-  return _card("Hot kernels", ctx, table)
-
-
-def _timing_card(timing:dict[str, Any]) -> str:
-  bucket = timing.get("dominant_timing_bucket") or "timing_inconclusive"
-  actions = [a for a in timing.get("next_actions", []) or []][:4]
-  items = "".join(f"<li>{_e(a)}</li>" for a in actions) or '<li class="empty">no recorded next action</li>'
-  counts = (f'<div class="chips"><span class="chip">role rows {len(timing.get("role_timing", []) or [])}</span>'
-            f'<span class="chip">candidate rows {len(timing.get("candidate_timing", []) or [])}</span></div>')
-  body = (f'<div class="card-bd"><p style="margin:0 0 12px">Most time lost to '
-          f'{_named(PLAIN_BUCKET, bucket, tag=True)}</p><ul>{items}</ul><div style="margin-top:12px">{counts}</div></div>')
-  return _card("Timing verdict", "timing_profile.json", body)
-
-
-def _regime_card(primitive:dict[str, Any]) -> str:
-  regimes = [r for r in primitive.get("quant_gemv_regimes", []) or [] if isinstance(r, dict)]
-  if not regimes: return ""
-  regimes = sorted(regimes, key=lambda r: (str(r.get("role") or ""), str(r.get("quant") or "")))
-  body = "".join(
-    f'<tr><td>{_e(r.get("role") or "unknown")}</td><td>{_e(r.get("quant") or "unknown")}</td>'
-    f'<td>{_e(_shape_str(r.get("shape")))}</td>'
-    f'<td class="l">{_named(PLAIN_REGIME, r.get("classification") or "unknown", tag=True)}</td>'
-    f'<td class="l">{_e(r.get("visible_bottleneck") or "unknown")}</td>'
-    f'<td class="l wrap">{_e(r.get("next_action") or "collect more evidence")}</td></tr>'
-    for r in regimes[:12])
-  table = ('<div class="tscroll"><table class="wide"><thead><tr><th>role</th><th>quant</th><th>shape</th>'
-           '<th class="l">regime</th><th class="l">bottleneck</th>'
-           f'<th class="l">next action</th></tr></thead><tbody>{body}</tbody></table></div>')
-  return _card("Building blocks (quant GEMV regimes)", "primitive_profile.json", table)
-
-
-def _not_measured_card(primitive:dict[str, Any], timing:dict[str, Any]) -> str:
-  """One compact card for every measured section that has no data yet, instead of one empty card each."""
-  missing = []
-  if not timing: missing.append(("Timing verdict and hot kernels", "timing_profile.json", "a timing trace"))
-  if not primitive: missing.append(("Building blocks", "primitive_profile.json", "the building-block tests"))
-  if not missing: return ""
-  items = "".join(f'<li>{_e(what)}: needs {_e(need)} <span class="id">{_e(src)}</span></li>'
-                  for what, src, need in missing)
-  return _card("Not measured yet", " · ".join(src for _, src, _ in missing),
-               f'<div class="card-bd"><ul>{items}</ul></div>', cls="compact")
-
-
-def _blocked_card(report:dict[str, Any], plan:dict[str, Any], policy:dict[str, Any], primitive:dict[str, Any],
-                  timing:dict[str, Any], runner:dict[str, Any]) -> str:
-  """Absence as a first-class panel. A run that is missing evidence should say so above the fold."""
-  needs = []
-  if plan.get("primitive_profile", {}).get("status") == "requested" or not primitive:
-    needs.append("The building-block tests (<code>probe_evidence.json</code>). Until they land no route may be "
-                 "promoted on primitive grounds.")
-  if plan.get("timing_profile", {}).get("status") == "requested" or not timing:
-    needs.append("A timing trace (<code>hw_trace.json</code> to <code>timing_trace.json</code>). Without it every "
-                 "speed on this page is a prediction, not a measurement.")
-  if runner:
-    missing = []
-    if not primitive: missing.append("probe_evidence")
-    if not timing: missing.append("timing_trace")
-    if missing:
-      needs.append("The handoff returned no " + _e(", ".join(missing)) +
-                   ". The bundle was prepared but the provider has not written back.")
-  # needs_measurement means no route is selected yet (workflow/analyze.py), even when the probe and the trace are
-  # in: the route candidates themselves (plan phase M3, `wd_speed`) are still unmeasured.
-  routes = [r for r in policy.get("routes", []) or [] if isinstance(r, dict)]
-  open_routes = [r for r in routes if not r.get("selected_route") and r.get("status") in (None, "unmeasured")]
-  if report.get("status") == "needs_measurement" and (open_routes or not routes):
-    count = f"{len(open_routes)} of {len(routes)} roles have" if routes else "No role has"
-    needs.append(f"Route measurements. {count} no measured route yet (<code>route_policy.json</code>). Measure the "
-                 "route candidates from <code>measurement_plan.json</code> (phase M3), then re-run "
-                 "<code>boltbeam analyze</code>.")
-  if not needs:
-    return _card("Blocked on", "measurement_plan.json",
-                 '<div class="card-bd"><p style="margin:0;color:var(--tx-2)">Nothing outstanding. Every '
-                 'requested measurement has been ingested and classified.</p></div>')
-  items = "".join(f'<div class="need"><span class="need-k">{i + 1:02d}</span>'
-                  f'<span class="need-b">{n}</span></div>' for i, n in enumerate(needs))
-  return _card("Blocked on", f"measurement_plan.json · {len(needs)} item{'' if len(needs) == 1 else 's'}",
-               f'<div class="card-bd">{items}</div>', flag=True)
-
-
 # Shown instead of the per-role table while no role has had kernels compared; boltbeam-tui prints the same line.
 NO_KERNEL_CHOICE = "No kernels compared yet. Every role runs the default kernel."
 # Only where comparing can run (search/role_compare.py COMPARE_BACKENDS); a step the target cannot run is never
 # suggested.
 COMPARE_NEXT = "Next step: compare kernels per role to go faster."
-
-
-def _tie_out_html(t:dict[str, Any] | None) -> str:
-  """The measured token line by line against the limit (workflow/tie_out.py); the last line is the difference."""
-  if not t:
-    return ""
-  head = f'<div class="lbl">Tie-out, ms per token at context {t["context"]:.0f}</div>'
-  if t.get("refused"):
-    return head + f'<p class="empty">Not tied out. {_e(t["refused"])}</p>'
-  if t.get("token_ms") is None:
-    return head + (f'<p class="empty">{_e(t["missing"])}</p>' if t.get("missing") else "")
-  rows = "".join(f'<tr><td>{"" if i == 0 else "+ "}{_e(l["label"])}{", the difference" if l["how"] == "difference" else ""}'
-                 f'</td><td>{l["ms"]:.3f}</td><td>{_e(l["how"])}</td></tr>' for i, l in enumerate(t["lines"]))
-  rows += f'<tr><td><b>= measured token</b></td><td><b>{t["token_ms"]:.3f}</b></td><td>{_e(t.get("token_source") or "")}</td></tr>'
-  notes = []
-  for l in t["lines"]:
-    if l.get("parts"):
-      notes.append("Other kernels: " + ", ".join(f'{p["kind"]} {p["ms"]:.3f}' for p in l["parts"]) + ".")
-  if t.get("busy_ms") is not None:
-    notes.append(f'All kernels sum to {t["busy_ms"]:.3f} ms against the real token of {t["token_ms"]:.3f} ms; '
-                 "the gap is their difference.")
-  if t.get("show_both"):
-    notes.append(f'The limit is {t["limit_ms_ctx1"]:.3f} ms at context 1 and {t["limit_ms"]:.3f} ms at context {t["context"]:.0f}.')
-  notes.append(t["kv_source"] + ".")
-  if t.get("untraced_ms") is not None and str(t.get("token_source", "")).startswith("the captured run"):
-    notes.append(f'Tracing slowed the token: {t["token_ms"]:.3f} ms here, {t["untraced_ms"]:.3f} ms untraced.')
-  if t.get("missing"):
-    notes.append("Missing: " + t["missing"] + ".")
-  return (head + '<div class="tscroll"><table><tbody>' + rows + "</tbody></table></div>"
-          + "".join(f'<p class="id">{_e(n)}</p>' for n in notes))
-
-
-def _loss_card(results:dict[str, Any] | None) -> str:
-  """The end result in ms per token: each runtime against the limit, and per role where tinygrad loses time."""
-  loss = (results or {}).get("loss") or {}
-  if loss.get("status") != "modeled" or not loss.get("limit_ms"): return ""
-  lines = [_tie_out_html(loss.get("tie_out")),
-           f'<p style="margin:0 0 8px">The limit is <b>{loss["limit_ms"]:.1f} ms</b> per token '
-           f'({loss["limit_tok_s"]:.1f} tokens per second).</p>']
-  for r in loss.get("runtimes", []):
-    what = (f'{r["ms"]:.1f} ms of GPU time per token' if r["provider"] == "tinygrad"
-            else f'{r["tok_s"]:.1f} tokens per second, {r["ms"]:.1f} ms per token')
-    note = "" if r.get("per_role") else f' <span class="id">{_e(r.get("note") or "")}</span>'
-    lines.append(f'<p style="margin:0 0 6px">{_e(r["provider"])}: {_e(what)}, <b>{r["lost_ms"]:.1f} ms lost</b>.{note}</p>')
-  body = "".join(lines)
-  if loss.get("refused"):
-    body += f'<p class="empty">Per role: not shown. {_e(loss["refused"])}</p>'
-  elif loss.get("missing"):
-    body += f'<p class="empty">Per role: {_e(loss["missing"])}</p>'
-  elif loss.get("roles"):
-    def opt(v, fmt):
-      return fmt.format(v) if v is not None else ""
-    rows = "".join(
-      f'<tr><td>{_e(r["role"])}</td><td>{_e(r["quant"])}</td><td>{r["ideal_ms"]:.2f}</td><td>{r["actual_ms"]:.2f}</td>'
-      f'<td>{r["lost_ms"]:.2f}</td>{_bar_cell(r["share"] * 100)}<td>{opt(r.get("pct_peak"), "{:.1f}%")}</td>'
-      f'<td>{opt(r.get("us_per_call"), "{:.1f}")}</td><td>{_e(r.get("reason") or "")}</td></tr>' for r in loss["roles"])
-    if loss.get("not_attributed_ms") is not None:
-      rows += (f'<tr><td>not attributed</td><td></td><td></td><td>{loss["not_attributed_ms"]:.2f}</td>'
-               '<td></td><td></td><td></td><td></td><td></td></tr>')
-    who = loss.get("roles_provider") or loss.get("provider") or "the runtime"
-    body += (f'<div class="lbl">Where {_e(who)} loses time, {_e(loss.get("source") or "")}</div>'
-             '<div class="tscroll"><table><thead><tr><th>role</th><th>quant</th><th>ideal ms</th><th>actual ms</th>'
-             '<th>lost ms</th><th>share of loss</th><th>% of peak</th><th>µs per call</th><th>why</th></tr></thead>'
-             f'<tbody>{rows}</tbody></table></div>')
-    if loss.get("role_rule"):
-      body += f'<p class="id">Why: {_e(loss["role_rule"])}</p>'
-  return _card("Time lost against the limit", "roofline · tinygrad_timing_trace.json", f'<div class="card-bd">{body}</div>')
-
 
 # Where every compare time comes from; boltbeam-tui prints the same sentence (render.go compareNote).
 COMPARE_NOTE = "Times are from tinygrad's Metal runtime, not llama.cpp."
@@ -598,64 +346,294 @@ def _selected_routes(policy:dict[str, Any]) -> str:
   return _card("Selected routes", "route_policy.json · rollback commands", "".join(blocks))
 
 
+# --- What to try next: the rule table (Prefer data over code). Each rule maps a measured reason or tie-out line
+# to one lever. The page states the rule beside its advice; it never adds a number the seam did not give.
+REASON_CLASS = {"at the limit": "r-ok", "too small to fill memory": "r-small", "slow kernel": "r-slow"}
+REASON_COLOR = {"at the limit": "var(--ok)", "too small to fill memory": "var(--excess)", "slow kernel": "var(--gaps)"}
+NEXT_RULES = {  # per-role reason word (tie_out.REASONS) to the lever; "at the limit" has nothing to gain
+  "too small to fill memory": "Fuse it with the roles next to it (Q, K and V) or batch more tokens, so each call moves more bytes.",
+  "slow kernel": "Try other kernels for it: compare kernels per role.",
+}
+GAPS_SHARE = 0.10  # gaps between kernels at or above this share of the token: launch fewer kernels
+GAPS_LEVER = "Launch fewer kernels: run the token as one graph (CUDA graphs or Metal command buffer reuse) or fuse kernels."
+OTHER_SHARE = 0.05  # other kernels above their ideal at or above this share of the token get an item
+FUSIBLE = ("quantize", "norm", "elementwise", "rope", "copy")  # kernels small enough to fold into a neighbour
+OTHER_LEVER_FUSE = "Fuse {kinds} into the weight kernels next to them."
+OTHER_LEVER_KERNEL = "Try a faster {kind} kernel."
+SPLIT_LEVER = "Split the loss by role first: {missing}."
+COMMAND = "python -m boltbeam.workflow.screen pipeline {model} --run {run} --target {target} --measure auto"
+
+
+def _f(v:Any, fmt:str = "{:.2f}") -> str:
+  return fmt.format(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else ""
+
+
+def _pct(part:float, whole:float) -> float:
+  return max(0.0, min(100.0, 100.0 * part / whole)) if whole else 0.0
+
+
+def _role_name(role:Any, quant:Any) -> str:
+  return f'{_e(PLAIN_ROLE.get(str(role), role))}<span class="q">{_e(quant)}</span>'
+
+
+def _other_label(line:dict[str, Any] | None) -> str:
+  """The other-kernels line in plain words, with its kinds inline when the capture named them."""
+  kinds = [p["kind"] for p in (line or {}).get("parts") or []]
+  return "Other kernels" + (f" ({', '.join(kinds)})" if kinds else "")
+
+
+def _section(n:int, title:str, body:str) -> str:
+  return f'<section class="card"><h2><span class="n">{n}</span>{_e(title)}</h2>{body}</section>'
+
+
+def _measured(loss:dict[str, Any]) -> dict[str, Any] | None:
+  """The engine's untraced whole step (the TUI's Result line); the per-role GPU time only when it is all there is."""
+  runs = loss.get("runtimes") or []
+  return next((r for r in runs if not r.get("per_role")), runs[0] if runs else None)
+
+
+def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, Any] | None, source_run:str) -> str:
+  loss = results.get("loss") or {}
+  engine = results.get("engine") or {}
+  tie = loss.get("tie_out") or {}
+  who = (f'<p class="who"><b>{_e(manifest.get("model_id") or "unknown model")}</b> on {_e(manifest.get("target_id") or "unknown chip")}'
+         f' · {_e(engine.get("provider") or loss.get("provider") or "unknown engine")} · batch {_e(tie.get("batch") or 1)}'
+         f' · {_e(engine.get("weight_format") or "unknown weights")}</p>')
+  limit_tok, limit_ms = loss.get("limit_tok_s"), loss.get("limit_ms")
+  if limit_tok is None and (results.get("ceiling") or {}).get("status") == "modeled":
+    limit_tok = results["ceiling"].get("tok_s")
+  lim = f'<span class="lim">limit {_f(limit_tok, "{:.1f}")} <small>tok/s</small></span>' if limit_tok else ""
+  m = _measured(loss)
+  if not m:
+    reason = (measure or {}).get("reason") or (f"the measure step ended {measure['status']}" if (measure or {}).get("status")
+                                                else "the run never reached the measure step")
+    cmd = COMMAND.format(model=manifest.get("model_path") or "MODEL", run=source_run or "RUN",
+                         target=manifest.get("target_id") or "TARGET")
+    return _section(1, "The answer", who + f'<div class="hero"><span class="big dim">not measured yet</span>{lim}</div>'
+                    f'<p class="note">Missing: a measured token ({_e(reason)}). Measure it with <code>{_e(cmd)}</code>.</p>')
+  pct = 100.0 * limit_ms / m["ms"] if limit_ms and m.get("ms") else None
+  gauge = (f'<div class="gauge" role="img" aria-label="{pct:.0f}% of roofline"><i style="width:{_pct(pct, 100):.1f}%"></i><s></s></div>'
+           f'<div class="gauge-l"><span><b>{pct:.0f}%</b> of roofline</span><span>roofline {limit_ms:.1f} ms per token</span></div>'
+           if pct is not None else "")
+  return _section(1, "The answer", who +
+                  f'<div class="hero"><span class="big">{m["tok_s"]:.1f}</span><span class="big-u">tok/s measured</span>{lim}</div>'
+                  + gauge +
+                  f'<p class="note"><span class="lost">{m["lost_ms"]:.1f} ms per token lost</span> against the limit: '
+                  f'{m["ms"]:.1f} ms measured, {limit_ms:.1f} ms ideal. <span class="muted">{_e(m.get("note") or "")}</span></p>')
+
+
+def _seg_class(line:dict[str, Any]) -> str:
+  if line["how"] == "derived": return "c-ideal"
+  if line["how"] == "difference": return "c-gaps"
+  return "c-excess" if line["label"].startswith(("weight", "all kernels")) else "c-other"
+
+
+def _line_label(line:dict[str, Any]) -> str:
+  return _other_label(line) + " above their ideal" if line.get("parts") is not None and line["label"].startswith("other") else line["label"]
+
+
+def _where(loss:dict[str, Any]) -> str:
+  t = loss.get("tie_out") or {}
+  if t.get("refused"):
+    return _section(2, "Where the time goes", f'<p class="note">Not tied out. {_e(t["refused"])}</p>')
+  if t.get("token_ms") is None or not t.get("lines"):
+    return ""
+  token = t["token_ms"]
+  words = t.get("band")
+  frac = loss.get("band") if isinstance(loss.get("band"), (int, float)) else None
+  if frac is None:  # the band fraction is not in the seam's tie-out; the ±X% is in its words
+    got = re.search(r"±([0-9.]+)%", str(words or ""))
+    frac = float(got.group(1)) / 100 if got else None
+  segs, rows = [], []
+  for i, l in enumerate(t["lines"]):
+    cls = _seg_class(l)
+    w = _pct(max(l["ms"], 0.0), token)
+    segs.append(f'<span class="{cls}" style="width:{w:.2f}%" title="{_e(_line_label(l))}">{l["ms"]:.1f}</span>')
+    tag = f' <span class="sub" style="display:inline">±{frac * 100:.1f}%</span>' if i == 0 and frac else ""
+    rows.append(f'<tr><td><span class="sw {cls}"></span>{"" if i == 0 else "+ "}{_e(_line_label(l))}{tag}</td>'
+                f'<td>{l["ms"]:.3f}</td><td>{_pct(l["ms"], token):.0f}%</td><td class="how">{_e(l["how"])}</td></tr>')
+  band = ""
+  if frac:
+    ideal = t["lines"][0]["ms"]
+    band = (f'<span class="band" style="left:{_pct(ideal * (1 - frac), token):.2f}%;'
+            f'width:{_pct(2 * ideal * frac, token):.2f}%" title="band ±{frac * 100:.1f}%"></span>')
+  rows.append(f'<tr class="sum"><td>= measured token</td><td>{token:.3f}</td><td>100%</td>'
+              f'<td class="how">{_e(t.get("token_source") or "")}</td></tr>')
+  notes = []
+  if t.get("untraced_ms") is not None and str(t.get("token_source", "")).startswith("the captured run"):
+    notes.append(f'Tracing slowed the token: {token:.3f} ms here, {t["untraced_ms"]:.3f} ms untraced.')
+  if t.get("show_both"):
+    notes.append(f'The limit is {t["limit_ms_ctx1"]:.3f} ms at context 1 and {t["limit_ms"]:.3f} ms at context {t["context"]:.0f}.')
+  body = (f'<p class="muted" style="margin:0 0 10px">ms per token at context {t["context"]:.0f}</p>'
+          f'<div class="stack">{"".join(segs)}{band}</div>'
+          f'<table class="tie"><tbody>{"".join(rows)}</tbody></table>'
+          + "".join(f'<p class="muted">{_e(n)}</p>' for n in notes))
+  return _section(2, "Where the time goes", body)
+
+
+def _other_line(t:dict[str, Any]) -> dict[str, Any] | None:
+  return next((l for l in t.get("lines") or [] if l.get("parts") is not None), None)
+
+
+def _per_role(loss:dict[str, Any]) -> str:
+  if loss.get("refused"):
+    return _section(3, "Per role", f'<p class="note">Per role: not shown. {_e(loss["refused"])}</p>')
+  roles = sorted(loss.get("roles") or [], key=lambda r: (-r["lost_ms"], str(r["role"]), str(r["quant"])))
+  if not roles:
+    return ""
+  top = max(r["lost_ms"] for r in roles) or 1.0
+  items = []
+  for r in roles:
+    why = r.get("reason") or ""
+    det = "".join(f'<div><span>{k}</span>{v}</div>' for k, v in (
+      ("ideal ms", f'{r["ideal_ms"]:.2f}'), ("actual ms", f'{r["actual_ms"]:.2f}'),
+      ("µs/call", _f(r.get("us_per_call"), "{:.1f}")), ("share of loss", f'{r["share"] * 100:.0f}%')))
+    items.append(
+      f'<details class="role"><summary><span class="rname">{_role_name(r["role"], r["quant"])}</span>'
+      f'<span class="rbar"><i style="width:{_pct(max(r["lost_ms"], 0.0), top):.1f}%;background:{REASON_COLOR.get(why, "var(--ideal)")}"></i></span>'
+      f'<span class="rnum"><b>{r["lost_ms"]:.2f} ms</b><span>{_f(r.get("pct_peak"), "{:.1f}%")} of peak</span>'
+      f'<span class="why {REASON_CLASS.get(why, "")}">{_e(why)}</span></span></summary><div class="rdet">{det}</div></details>')
+  t = loss.get("tie_out") or {}
+  body = f'<p class="muted" style="margin:0 0 10px">{_e(loss.get("source") or "")} · lost ms per token, longest first; open a row for its numbers</p>'
+  body += f'<div class="roles">{"".join(items)}</div>'
+  if loss.get("not_attributed_ms") is not None:
+    body += (f'<p class="note">{_e(_other_label(_other_line(t)))}: {loss["not_attributed_ms"]:.2f} ms of kernel time per token.</p>')
+  unsplit = loss.get("unpaired_roles") or []
+  if unsplit:
+    names = ", ".join(f'{PLAIN_ROLE.get(str(u.get("role")), u.get("role"))} {u.get("quant") or ""}'.strip() for u in unsplit)
+    body += f'<p class="note">Roles that could not be split: {_e(names)}. Their time is inside other kernels.</p>'
+  return _section(3, "Per role", body)
+
+
+def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, Any]]:
+  """What to try next, from NEXT_RULES and the line rules; each item restates measured ms and its share of the
+  token. Sorted by ms, largest first."""
+  t = loss.get("tie_out") or {}
+  token = t.get("token_ms")
+  if not token or t.get("refused"):
+    return []
+  out = []
+  groups: dict[str, list[dict[str, Any]]] = {}
+  for r in loss.get("roles") or []:
+    if r.get("reason") in NEXT_RULES and r["lost_ms"] > 0:
+      groups.setdefault(r["reason"], []).append(r)
+  for reason, rs in groups.items():
+    rs = sorted(rs, key=lambda r: -r["lost_ms"])
+    ms = sum(r["lost_ms"] for r in rs)
+    lever = NEXT_RULES[reason]
+    if reason == "slow kernel" and not compare_runs:
+      lever = "Try other kernels for it."
+    out.append({"what": f"{reason.capitalize()}: " + ", ".join(
+      f'{PLAIN_ROLE.get(r["role"], r["role"])} {r["quant"]} {r["lost_ms"]:.2f} ms' for r in rs),
+      "ms": ms, "share": ms / token, "do": lever, "rule": reason})
+  for l in t.get("lines") or []:
+    if l["how"] == "difference" and l["label"].startswith("gaps between kernels (GPU idle)") and l["ms"] >= GAPS_SHARE * token:
+      out.append({"what": "Gaps between kernels (GPU idle)", "ms": l["ms"], "share": l["ms"] / token, "do": GAPS_LEVER,
+                  "rule": f"gaps ≥ {GAPS_SHARE:.0%} of the token"})
+    if l.get("parts") is not None and l["ms"] >= OTHER_SHARE * token:
+      parts = l.get("parts") or []
+      fuse = [p["kind"] for p in parts if p["kind"] in FUSIBLE]
+      lead = parts[0]["kind"] if parts else None
+      do = (OTHER_LEVER_FUSE.format(kinds=", ".join(fuse)) if fuse and lead in FUSIBLE else
+            OTHER_LEVER_KERNEL.format(kind=lead) if lead else OTHER_LEVER_FUSE.format(kinds="them"))
+      if fuse and lead not in FUSIBLE and lead:
+        do = OTHER_LEVER_KERNEL.format(kind=lead) + " " + OTHER_LEVER_FUSE.format(kinds=", ".join(fuse))
+      out.append({"what": _other_label(l) + " above their ideal", "ms": l["ms"], "share": l["ms"] / token, "do": do,
+                  "rule": f"other kernels ≥ {OTHER_SHARE:.0%} of the token"})
+    if l["label"] == "kernels and gaps, not split" and loss.get("missing"):
+      out.append({"what": "Kernels and gaps, not split", "ms": l["ms"], "share": l["ms"] / token,
+                  "do": SPLIT_LEVER.format(missing=loss["missing"]), "rule": "no per-role time"})
+  return sorted(out, key=lambda x: (-x["ms"], x["what"]))
+
+
+def _next(loss:dict[str, Any], policy:dict[str, Any]) -> str:
+  from boltbeam.search.role_compare import COMPARE_BACKENDS
+  compare_runs = str((policy.get("target") or {}).get("backend") or "").lower() in COMPARE_BACKENDS
+  items = next_items(loss, compare_runs)
+  routes = [r for r in policy.get("routes", []) or [] if isinstance(r, dict)]
+  compared = any(r.get("status") not in (None, "unmeasured") and isinstance(r.get("compare"), dict) for r in routes)
+  if not items and not compared:
+    return ""
+  lis = "".join(
+    f'<li class="{"top" if i == 0 else ""}"><span class="what">{_e(x["what"])}</span> '
+    f'<span class="ms">· {x["ms"]:.2f} ms, {x["share"] * 100:.0f}% of the token</span>'
+    f'<span class="do">{_e(x["do"])}</span></li>' for i, x in enumerate(items))
+  body = f'<ol class="next">{lis}</ol>' if lis else ""
+  if compared:
+    body += _routes_card(policy)
+  return _section(4, "What to try next", body)
+
+
+def _stage_list(manifest:dict[str, Any], measure:dict[str, Any] | None) -> str:
+  stages = manifest.get("stages", {}) or {}
+  known = [k for k, _, _ in STAGES]
+  keys = known + sorted(k for k in stages if k not in known)
+  out = []
+  for key in keys:
+    state, _ = stage_state(key, stages.get(key), measure)
+    if state != "done":
+      continue
+    n = len((stages.get(key) or {}).get("artifacts", []) or [])
+    out.append(f'<span class="chip">{_e(PLAIN_STAGE.get(key, key))} · {n} file{"" if n == 1 else "s"}</span>')
+  return "".join(out) or '<span class="chip">no stage ran</span>'
+
+
+def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, Any] | None) -> str:
+  loss = results.get("loss") or {}
+  ceil = results.get("ceiling") or {}
+  machine = loss.get("machine") or {}
+  rows = []
+  bw = ceil.get("peak_bandwidth_gbs")
+  if bw is not None:
+    src = ceil.get("bandwidth_source") or "the chip registry"
+    rows.append(("Chip profile", f'{manifest.get("target_id")}: {bw:.1f} GB/s read bandwidth, {src}'
+                 + (f', machine facts {machine["measured_at"]}' if machine.get("measured_at") else "")))
+  if (loss.get("layout") or {}).get("formula"):
+    rows.append(("Limit", f'{loss["layout"]["formula"]} ({loss["layout"].get("label") or ""})'))
+  elif ceil.get("bytes_moved"):
+    rows.append(("Limit", f'{ceil["bytes_moved"] / 1e9:.2f} GB of weights per token over {bw:.1f} GB/s'))
+  cap = loss.get("capture") or {}
+  if cap.get("method"):
+    from boltbeam.workflow.screen import CAPTURE_WORDS
+    rows.append(("Capture", CAPTURE_WORDS.get(cap["method"], cap["method"]) + (f'; {cap["reason"]}' if cap.get("reason") else "")))
+  elif loss.get("runtimes"):
+    rows.append(("Capture", "whole step only, untraced"))
+  if (loss.get("tie_out") or {}).get("kv_source"):
+    rows.append(("KV cache", loss["tie_out"]["kv_source"]))
+  if measure and measure.get("status"):
+    rows.append(("Measure step", str(measure["status"]) + (f': {measure["reason"]}' if measure.get("reason") else "")))
+  for o in loss.get("others") or []:
+    label = o.get("provider") + (f' (run {o["run"]})' if o.get("run") else "")
+    rows.append(("Also measured", f'{label}: ' + (f'{o["tok_s"]:.1f} tok/s' if o.get("tok_s") else str(o.get("missing") or "no speed"))))
+  dl = "".join(f"<dt>{_e(a)}</dt><dd>{_e(b)}</dd>" for a, b in rows)
+  files = "".join(f'<a class="chip" href="{_e(a)}">{_e(a)}</a>' for a in manifest.get("artifacts", []) or [])
+  dl += f'<dt>Stages that ran</dt><dd><div class="chips">{_stage_list(manifest, measure)}</div></dd>'
+  dl += f'<dt>Files in the run</dt><dd><div class="chips">{files or "none listed"}</div></dd>'
+  return _section(5, "Facts", f"<dl>{dl}</dl>")
+
+
 def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:dict[str, Any],
                     plan:dict[str, Any], policy:dict[str, Any], providers:dict[str, Any],
                     primitive:dict[str, Any], timing:dict[str, Any], runner:dict[str, Any],
                     source_run:str = "", results:dict[str, Any] | None = None,
                     measure:dict[str, Any] | None = None) -> str:
-  """Render one staged run directory as a standalone HTML document.
-
-  Every argument is the parsed contents of a run artifact, or `{}` when that artifact does not exist. `results`
-  is `workflow.screen.results` for the run (speed limit and measured tokens/s); without it the headline says the
-  numbers were not read. Missing inputs are rendered as missing: this function never invents a value.
-  """
+  """Render one run as a standalone HTML document from `results` (workflow.screen.results). The other arguments
+  are the run's artifacts, `{}` when absent; the page reads only the manifest and the policy from them."""
+  results = results or {}
+  loss = results.get("loss") or {}
   model_id = manifest.get("model_id") or profile.get("model_id") or "unknown"
-  provider_names = sorted(str((p.get("provider_id") or p.get("provider")) if isinstance(p, dict) else p)
-                          for p in providers.get("providers", []) or [])
-  ready = {str(p.get("provider_id")) for p in providers.get("providers", []) or []
-           if isinstance(p, dict) and p.get("status") not in (None, "missing")}
-
-  meta = "".join(f"<div>{_e(label)} <b>{_e(value)}</b></div>" for label, value in (
-    ("format", manifest.get("model_format") or "unknown"),
-    ("arch", profile.get("architecture_class") or "unknown"),
-    ("last stage", manifest.get("latest_stage") or "unknown"),
-  ))
-
-  artifacts = "".join(f'<a class="chip" href="{_e(a)}">{_e(a)}</a>' for a in manifest.get("artifacts", []) or [])
-  providers_html = ("".join(f'<span class="chip{" on" if p in ready else ""}">{_e(p)}</span>' for p in provider_names)
-                    or '<span class="chip">none recorded</span>')
-
-  status = report.get("status") or "not_analyzed"
-  status_card = _card("Where this run stands", "run_manifest.json · analysis_report.json",
-    f'<div class="card-bd"><p style="margin:0 0 10px;color:var(--tx-2)">Status '
-    f'{_named(PLAIN_STATUS, status)}</p>'
-    f'<p style="margin:0 0 12px;color:var(--tx-2)"><b style="color:var(--tx)">Next step.</b> '
-    f'{next_step(report, plan)}</p>'
-    f'<div class="lbl">Providers <span class="id">provider_capabilities.json</span></div>'
-    f'<div class="chips">{providers_html}</div></div>')
-
-  measured = ""
-  if timing: measured += f'<div class="cols one">{_timing_card(timing)}</div>'
-  measured += _regime_card(primitive) + (_kernel_table(timing) if timing else "")
-
+  measured = _measured(loss) is not None
+  sections = _answer(manifest, results, measure, source_run)
+  if measured:
+    sections += _where(loss) + _per_role(loss) + _next(loss, policy)
+  sections += _facts(manifest, results, measure)
   return (
     "<!doctype html>\n"
     '<html lang="en"><head><meta charset="utf-8">'
     '<meta name="viewport" content="width=device-width,initial-scale=1">'
     f"<title>BoltBeam {_e(model_id)}</title><style>{_CSS}</style></head><body><div class=\"wrap\">"
-    f'<header class="mast"><div class="mark">Bolt<span>Beam</span></div>'
-    f'<div class="run-id">{_e(source_run or model_id)}</div>'
-    f'<div class="meta">{meta}</div>'
-    '<button id="theme" class="chip" type="button" style="cursor:pointer;font:inherit;font-size:11px">'
-    'theme</button></header>'
-    f"{_headline(manifest, results)}"
-    f"{_loss_card(results)}"
-    f"{_rail(manifest, measure)}"
-    f'<div class="cols">{status_card}{_blocked_card(report, plan, policy, primitive, timing, runner)}</div>'
-    f"{_not_measured_card(primitive, timing)}"
-    f"{measured}"
-    f"{_routes_card(policy)}"
-    f'{_card("Files in this run", "run_manifest.json", f"<div class=\'card-bd\'><div class=\'chips\'>{artifacts}</div></div>")}'
-    '<p class="foot">Generated by <code>boltbeam output</code>. Deterministic: no timestamps, stable ordering.'
-    '<br>Every panel names the file it was read from. Times are milliseconds.</p>'
+    f'<header class="mast"><div class="mark">BoltBeam</div><div class="run-id">{_e(source_run or model_id)}</div>'
+    '<button id="theme" class="toggle" type="button">theme</button></header>'
+    f"{sections}"
+    '<p class="foot">Written by <code>boltbeam output</code> from the same results the TUI shows. Times are ms per token.</p>'
     f"</div><script>{_JS}</script></body></html>\n")

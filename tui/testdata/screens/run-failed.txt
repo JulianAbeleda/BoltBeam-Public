@@ -3,18 +3,18 @@
 │ Run · qwen3-8b-apple_m3_10c-001                                              │
 │ Qwen3-8B on apple_m3_10c with llama.cpp                                      │
 │                                                                              │
-│ ✗ Plan what to try failed                                                    │
-│ no roles in the model                                                        │
+│ ✗ Time the real decode failed                                                │
+│ llama-bench exited 1                                                         │
 │                                                                              │
 │ Last lines of the log                                                        │
-│ pipeline steps: 7                                                            │
+│ pipeline steps: 4                                                            │
+│ pipeline counted: 0,0,0,1,1,1,1                                              │
 │ stage load: start                                                            │
 │ stage load: done                                                             │
 │ stage autoscan: start                                                        │
 │ stage autoscan: done                                                         │
 │ stage analyze: start                                                         │
-│ stage analyze: failed: no roles in the model                                 │
-│                                                                              │
+│ stage analyze: done                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │

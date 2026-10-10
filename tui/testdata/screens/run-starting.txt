@@ -3,16 +3,16 @@
 │ Run · qwen3-8b-apple_m3_10c-001                                              │
 │ Qwen3-8B on apple_m3_10c with llama.cpp                                      │
 │                                                                              │
-│   ███████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   25%  1 of 4   │
-│   Time the real decode…   01:20                                              │
+│   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    2%     │
+│   Starting…   01:20                                                          │
 │                                                                              │
-│ Log /home/u/.local/state/boltbeam-tui/qwen3-8b-apple_m3_10c-001.log          │
-│ stage load: done                                                             │
-│ stage autoscan: start                                                        │
-│ stage autoscan: done                                                         │
-│ stage analyze: start                                                         │
-│ stage analyze: done                                                          │
-│ stage measure_timing: start                                                  │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │

@@ -440,25 +440,20 @@ func StageEvents(lines []string) map[string]string {
 	return state
 }
 
-// PipelineProgress counts the stages the pipeline finished out of the total its first line announced
+// PipelineProgress counts the counted stages the pipeline finished out of the total its first line announced
 // ("pipeline steps: N"). Total is 0 when the log does not carry that line.
 func PipelineProgress(lines []string) (done, total int) {
-	for _, line := range lines {
-		if n, ok := strings.CutPrefix(line, "pipeline steps: "); ok {
-			total, _ = strconv.Atoi(n)
-			done = 0
-		} else if strings.HasPrefix(line, "stage ") && strings.HasSuffix(line, ": done") {
-			done++
-		}
-	}
-	return done, total
+	p := ReadProgress(lines)
+	return p.Done, p.Total
 }
 
 // Progress is the current pipeline's own account of itself, read from the lines after its last
 // "pipeline steps: N" line, so an older run in the same log does not leak in. A job start line ("=== ")
 // after that line means a new job has begun and has not printed its steps yet: nothing is known.
 type Progress struct {
-	Done, Total int
+	Done, Total int       // counted steps only: the quick setup stages are not steps
+	Setup       bool      // a setup stage runs now, or no counted step has started yet
+	Counted     []bool    // one flag per stage line, in order ("pipeline counted: 0,0,1,…"); nil in an older log
 	Expect      []float64 // seconds per step from this machine's last run ("pipeline expect: a,b,…"); nil on a first run
 	Current     string    // the stage running now, or ""
 	Sub, SubOf  int       // "stage X: progress p/q" inside the current stage
@@ -477,9 +472,18 @@ func ReadProgress(lines []string) Progress {
 		}
 	}
 	p := Progress{Lines: lines[start:]}
+	stage := 0 // the stage lines started so far, counted or not
+	counts := func() bool { return stage >= len(p.Counted) || p.Counted[stage] }
+	isCounted := true
 	for _, line := range p.Lines {
 		if n, ok := strings.CutPrefix(line, "pipeline steps: "); ok {
 			p.Total, _ = strconv.Atoi(n)
+			continue
+		}
+		if list, ok := strings.CutPrefix(line, "pipeline counted: "); ok {
+			for _, s := range strings.Split(list, ",") {
+				p.Counted = append(p.Counted, strings.TrimSpace(s) == "1")
+			}
 			continue
 		}
 		if list, ok := strings.CutPrefix(line, "pipeline expect: "); ok {
@@ -507,9 +511,13 @@ func ReadProgress(lines []string) Progress {
 		}
 		switch {
 		case event == "start":
+			isCounted = counts()
+			stage++
 			p.Current, p.Sub, p.SubOf = key, 0, 0
 		case event == "done":
-			p.Done++
+			if isCounted {
+				p.Done++
+			}
 			p.Current, p.Sub, p.SubOf = "", 0, 0
 		case strings.HasPrefix(event, "progress "):
 			a, b, _ := strings.Cut(strings.TrimPrefix(event, "progress "), "/")
@@ -520,8 +528,12 @@ func ReadProgress(lines []string) Progress {
 			p.Reason = strings.TrimPrefix(strings.TrimPrefix(event, "failed"), ": ")
 		}
 	}
+	p.Setup = !p.Finished && p.Failed == "" && p.Done == 0 && (p.Current == "" || !isCounted)
 	return p
 }
+
+// SetupShare is the most of the bar the setup stages fill, over their first two seconds.
+const SetupShare = 0.02
 
 // Fraction is how far the pipeline is, 0 to 1. Each step weighs its expected seconds (equal weights on a first
 // run); the current step adds the time spent in it, or its own p of q when larger, never past its weight.
@@ -529,6 +541,9 @@ func ReadProgress(lines []string) Progress {
 func (p Progress) Fraction(inStage float64) float64 {
 	if p.Finished {
 		return 1
+	}
+	if p.Setup {
+		return SetupShare * min(max(inStage, 0)/2, 1)
 	}
 	if p.Total <= 0 {
 		return 0
@@ -563,5 +578,5 @@ func (p Progress) Fraction(inStage float64) float64 {
 
 // Over says the current step has run longer than the last run's time for it. False on a first run.
 func (p Progress) Over(inStage float64) bool {
-	return p.Current != "" && len(p.Expect) == p.Total && p.Done < len(p.Expect) && inStage > p.Expect[p.Done]
+	return p.Current != "" && !p.Setup && len(p.Expect) == p.Total && p.Done < len(p.Expect) && inStage > p.Expect[p.Done]
 }
