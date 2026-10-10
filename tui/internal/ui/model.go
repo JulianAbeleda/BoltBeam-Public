@@ -24,6 +24,10 @@ import (
 var (
 	keyUp    = key.NewBinding(key.WithKeys("up", "k"))
 	keyDown  = key.NewBinding(key.WithKeys("down", "j"))
+	keyPgUp  = key.NewBinding(key.WithKeys("pgup", "ctrl+u"))
+	keyPgDn  = key.NewBinding(key.WithKeys("pgdown", "ctrl+d"))
+	keyHome  = key.NewBinding(key.WithKeys("home", "g"))
+	keyEnd   = key.NewBinding(key.WithKeys("end", "G"))
 	keyEnter = key.NewBinding(key.WithKeys("enter"))
 	keyBack  = key.NewBinding(key.WithKeys("esc"))
 	keyDel   = key.NewBinding(key.WithKeys("d"))
@@ -143,7 +147,7 @@ func New(client seam.Client, store jobs.Store, modelPath, target string, context
 
 // Start runs the program on the terminal.
 func Start(client seam.Client, store jobs.Store, modelPath, target string, context int) error {
-	_, err := tea.NewProgram(New(client, store, modelPath, target, context), tea.WithAltScreen()).Run()
+	_, err := tea.NewProgram(New(client, store, modelPath, target, context), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
 
@@ -791,8 +795,43 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, tea.Batch(m.loadRuns(), m.loadRun(id))
 	case tea.KeyMsg:
 		return m.key(msg)
+	case tea.MouseMsg: // the wheel scrolls a list the way the arrow keys do
+		switch msg.Button {
+		case tea.MouseButtonWheelDown:
+			m.moveDown(1)
+		case tea.MouseButtonWheelUp:
+			m.moveUp(1)
+		}
 	}
 	return m, nil
+}
+
+// PageRows is how far PgUp/PgDn (and ctrl+u/ctrl+d) move the cursor through a list.
+const PageRows = 10
+
+// moveDown moves the cursor n rows down through the step's rows; past the last row the page above them scrolls.
+// The rows are shown windowed around the cursor (DetailActions), so this is the list's scrolling.
+func (m *Model) moveDown(n int) {
+	for ; n > 0; n-- {
+		if m.row < len(m.actions())-1 {
+			m.row++
+			m.skipHeads(1)
+		} else {
+			m.view.LineDown(1)
+		}
+	}
+}
+
+// moveUp is moveDown's mirror: the page above scrolls back first, then the cursor climbs the rows.
+func (m *Model) moveUp(n int) {
+	for ; n > 0; n-- {
+		if m.view.YOffset > 0 {
+			m.view.LineUp(1)
+		} else if m.row > 0 {
+			m.row--
+			m.skipHeads(-1)
+		}
+	}
 }
 
 func (m Model) actions() []action {
@@ -896,19 +935,19 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.backToSetup()
 		}
 	case key.Matches(msg, keyDown): // the rows first, then the page above them scrolls
-		if m.row < len(m.actions())-1 {
-			m.row++
-			m.skipHeads(1)
-		} else {
-			m.view.LineDown(1)
-		}
+		m.moveDown(1)
 	case key.Matches(msg, keyUp):
-		if m.view.YOffset > 0 {
-			m.view.LineUp(1)
-		} else if m.row > 0 {
-			m.row--
-			m.skipHeads(-1)
-		}
+		m.moveUp(1)
+	case key.Matches(msg, keyPgDn):
+		m.moveDown(PageRows)
+	case key.Matches(msg, keyPgUp):
+		m.moveUp(PageRows)
+	case key.Matches(msg, keyEnd):
+		m.moveDown(len(m.actions()))
+	case key.Matches(msg, keyHome):
+		m.view.GotoTop()
+		m.row = 0
+		m.skipHeads(1)
 	case key.Matches(msg, keyEnter):
 		if acts := m.actions(); m.row < len(acts) {
 			return m.do(acts[m.row])
@@ -1063,9 +1102,9 @@ func footer(back, onRun, running bool) string {
 	case running:
 		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"l", "log"}, {"esc", "setup"}, {"q", "quit"}}
 	case onRun:
-		pairs = [][2]string{{"↑↓", "move"}, {"enter", "open run"}, {"d", "delete run"}, {"esc", "setup"}, {"q", "quit"}}
+		pairs = [][2]string{{"↑↓", "move"}, {"pgup/pgdn", "page"}, {"enter", "open run"}, {"d", "delete run"}, {"esc", "setup"}, {"q", "quit"}}
 	case back:
-		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"esc", "setup"}, {"q", "quit"}}
+		pairs = [][2]string{{"↑↓", "move"}, {"pgup/pgdn", "page"}, {"enter", "pick"}, {"esc", "setup"}, {"q", "quit"}}
 	}
 	parts := []string{}
 	for _, p := range pairs {

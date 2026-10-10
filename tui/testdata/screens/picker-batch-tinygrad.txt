@@ -21,4 +21,4 @@
 │     32   not supported                                                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · enter pick · esc setup · q quit
+ ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit

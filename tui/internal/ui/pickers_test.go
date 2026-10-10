@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
 
@@ -46,5 +48,38 @@ func TestPickersWindowLongListsWithoutDroppingRows(t *testing.T) {
 		if !strings.Contains(bottom, c.last) || !strings.Contains(bottom, "↑") {
 			t.Errorf("%s at the bottom: the last row must be on screen with the count above it:\n%s", c.name, bottom)
 		}
+	}
+}
+
+// A list scrolls: PgDn/PgUp move the cursor a page, End/Home jump to the ends, and the mouse wheel moves one row,
+// all through the same move routine the arrow keys use.
+func TestListsScrollByPageEndsAndWheel(t *testing.T) {
+	files := make([]string, 30)
+	for i := range files {
+		files[i] = fmt.Sprintf("/m/model-%02d.gguf", i)
+	}
+	var m tea.Model = Model{f: Facts{Files: files, Path: files[0]}, cursor: pageModel}
+	row := func() int { return m.(Model).row }
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	if row() != PageRows {
+		t.Fatalf("PgDn: row %d, want %d", row(), PageRows)
+	}
+	m, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	if row() != PageRows+1 {
+		t.Fatalf("wheel down: row %d, want %d", row(), PageRows+1)
+	}
+	m, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	if row() != 0 {
+		t.Fatalf("wheel up then PgUp: row %d, want 0", row())
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	last := len(m.(Model).actions()) - 1
+	if row() != last {
+		t.Fatalf("End: row %d, want the last row %d", row(), last)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	if row() != 0 {
+		t.Fatalf("Home: row %d, want 0", row())
 	}
 }

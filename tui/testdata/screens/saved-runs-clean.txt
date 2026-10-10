@@ -21,4 +21,4 @@
 │ Enter opens a saved run. Press d twice to delete one.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · enter open run · d delete run · esc setup · q quit
+ ↑↓ move · pgup/pgdn page · enter open run · d delete run · esc setup · q quit
