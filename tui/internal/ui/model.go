@@ -27,6 +27,7 @@ var (
 	keyEnter = key.NewBinding(key.WithKeys("enter"))
 	keyBack  = key.NewBinding(key.WithKeys("esc"))
 	keyDel   = key.NewBinding(key.WithKeys("d"))
+	keyLog   = key.NewBinding(key.WithKeys("l"))
 	keyQuit  = key.NewBinding(key.WithKeys("q", "ctrl+c"))
 )
 
@@ -320,7 +321,7 @@ func (m Model) loadCeiling() tea.Cmd {
 }
 
 func tick() tea.Cmd {
-	return tea.Tick(1500*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func (m Model) targetID() string {
@@ -406,7 +407,10 @@ func (m Model) startRun(provider string) tea.Cmd {
 	if m.f.GpuCount < 2 {
 		layout = "" // one GPU: the engine runs as it always has
 	}
-	store := m.store
+	store, batch := m.store, ""
+	if b := m.f.batch(); b > 1 {
+		batch = strconv.Itoa(b) // batch 1 is always timed beside it
+	}
 	return func() tea.Msg {
 		if live := store.Alive(); len(live) > 0 { // two measurements on one GPU would both be wrong
 			return noteMsg("Run " + live[0].ID + " is still going. Stop it or wait, then press Run.")
@@ -423,7 +427,7 @@ func (m Model) startRun(provider string) tea.Cmd {
 			path = abs
 		}
 		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: "decode", Measure: "auto", Provider: provider,
-			Layout: layout, Analyze: true})
+			Layout: layout, Analyze: true, Batch: batch})
 		if _, err := m.store.Start(id, m.client.Repo, argv); err != nil {
 			return noteMsg("Start failed: " + err.Error())
 		}
@@ -705,6 +709,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		return m, tea.Batch(m.loadCompare(id), tick())
 	case jobMsg:
 		m.f.Job, m.f.Tail = msg.job, msg.tail
+		m.f.advance(clock())
 		if !m.opened { // on start: Setup, unless the newest run is still going, then its Run screen; decided once
 			m.opened = true
 			if m.f.alive() && m.cursor == pageSetup {
@@ -769,6 +774,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case noteMsg:
 		m.note = string(msg)
 	case tickMsg:
+		m.f.advance(clock())
 		id := m.runID()
 		if m.f.alive() {
 			return m, tea.Batch(m.loadJob(id), m.loadRuns(), m.loadRun(id), tick())
@@ -871,8 +877,15 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 	}
 	switch {
+	case m.cursor == pageBatch && len(msg.Runes) == 1 && msg.Runes[0] >= '0' && msg.Runes[0] <= '9' && len(m.f.BatchTyped) < 3:
+		m.f.BatchTyped += string(msg.Runes)
+		m.row = len(m.actions()) - 1
+	case m.cursor == pageBatch && msg.Type == tea.KeyBackspace && m.f.BatchTyped != "":
+		m.f.BatchTyped = m.f.BatchTyped[:len(m.f.BatchTyped)-1]
 	case key.Matches(msg, keyQuit):
 		return m, tea.Quit
+	case key.Matches(msg, keyLog) && m.cursor == pageRun && m.f.alive():
+		m.f.ShowLog = !m.f.ShowLog
 	case key.Matches(msg, keyBack):
 		if m.cursor != pageSetup {
 			m.backToSetup()
@@ -973,6 +986,13 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		m.f.Engine, m.f.Layout, m.engineSet = a.arg, "", true
 		m.backToSetup()
 		return m, nil
+	case "batch":
+		if n, err := strconv.Atoi(a.arg); err == nil && n >= 1 && n <= 512 {
+			m.f.Batch, m.f.BatchTyped = n, ""
+			m.backToSetup()
+			return m, nil
+		}
+		return m, func() tea.Msg { return noteMsg("Type a batch size from 1 to 512.") }
 	case "layout":
 		m.f.Layout = a.arg
 		return m, nil
@@ -1030,9 +1050,11 @@ func (m Model) mood() string {
 	return faceIdle
 }
 
-func footer(back, onRun bool) string {
+func footer(back, onRun, running bool) string {
 	pairs := [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"q", "quit"}}
 	switch {
+	case running:
+		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"l", "log"}, {"esc", "setup"}, {"q", "quit"}}
 	case onRun:
 		pairs = [][2]string{{"↑↓", "move"}, {"enter", "open run"}, {"d", "delete run"}, {"esc", "setup"}, {"q", "quit"}}
 	case back:
@@ -1055,5 +1077,5 @@ func (m Model) View() string {
 	room := m.height - 3
 	view := m.view
 	body := DetailView(m.f, m.cursor, m.row, m.width, room, &view)
-	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.cursor != pageSetup, m.runRow() != "")
+	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.cursor != pageSetup, m.runRow() != "", m.cursor == pageRun && m.f.alive())
 }

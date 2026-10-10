@@ -1,10 +1,9 @@
-⚡ BoltBeam                                                            ⠋ (•̀ᴗ•́)⚡
+⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ Run · qwen3-8b-apple_m3_10c-001                                              │
-│ Qwen3-8B on apple_m3_10c with llama.cpp                                      │
+│ Batch                                                                        │
+│ Batch is how many streams the engine decodes at once. Batch 1 is always      │
+│ timed too, so the two can be compared.                                       │
 │                                                                              │
-│   █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   29%  3 of 7   │
-│   Plan what to try…   01:20                                                  │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -15,10 +14,11 @@
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
-│ What next                                                                    │
-│ ▸ Stop the run                                                               │
-│   Back to setup                                                              │
-│   The run keeps going after you leave this screen.                           │
+│ Choose                                                                       │
+│ ▸ ● 1                                                                        │
+│     8                                                                        │
+│     32                                                                       │
+│     Other: type a number                                                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · enter pick · l log · esc setup · q quit
+ ↑↓ move · enter pick · esc setup · q quit

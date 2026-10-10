@@ -6,13 +6,13 @@
 │   █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   29%  3 of 7   │
 │   Plan what to try…   01:20                                                  │
 │                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
+│ Log /home/u/.local/state/boltbeam-tui/qwen3-8b-apple_m3_10c-001.log          │
+│ pipeline steps: 7                                                            │
+│ stage load: start                                                            │
+│ stage load: done                                                             │
+│ stage autoscan: start                                                        │
+│ stage autoscan: done                                                         │
+│ stage analyze: start                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │

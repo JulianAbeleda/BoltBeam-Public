@@ -61,6 +61,7 @@ import pathlib
 import re
 import shutil
 import sys
+import time
 from typing import Any
 
 from boltbeam.cli._common import _parse_ctxs
@@ -75,6 +76,7 @@ from boltbeam.target import targets as reg
 from boltbeam.target.targets import get_target
 from boltbeam.workflow import analyze_run, autoscan_run, ingest_probe_run, ingest_timing_run, load_run, output_run
 from boltbeam.workflow.autoscan import _hardware_profile
+from boltbeam.workflow import progress
 from boltbeam.workflow.common import load_manifest, read_json
 
 SCHEMA = "boltbeam.tui.v1"
@@ -719,7 +721,7 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
     timing = guarded("timing", lambda: llama_bench_decode.measure(out_dir(), layout=layout, gpus=gpus, batches=batches),
                      probe="absent", probe_reason=llama_bench_decode.PROBE_ABSENT)
   else:
-    timing = guarded("timing", lambda: metal_native.measure(out_dir(), only="timing"), probe="measured")
+    timing = guarded("timing", lambda: metal_native.measure(out_dir(), only="timing", batches=batches), probe="measured")
   if probe:
     args.probe = str(run / "probe_evidence.json")
   return [*probe, timing]
@@ -761,14 +763,28 @@ def pipeline(args, out=sys.stdout) -> int:
     steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root)))
     steps.append(("output", lambda: output_run(args.run)))
   say(f"pipeline steps: {len(steps)}")  # a screen draws n of N from this line
-  for key, step in steps:
+  ids = progress.step_ids([key for key, _ in steps])
+  batch = max(_parse_batches(getattr(args, "batch", None)))
+  where = f"{args.target}|{plan['provider'] if plan else 'none'}|batch {batch}"
+  if plan and (expect := progress.expected(where, ids)):  # the screen weights a measuring run's bar by these seconds
+    say("pipeline expect: " + ",".join(f"{s:.1f}" for s in expect))
+  times:dict[str, float] = {}
+  run_path = pathlib.Path(args.run)
+  for (key, step), sid in zip(steps, ids):
     say(f"stage {key}: start")
+    progress.listen(lambda done, total, key=key: say(f"stage {key}: progress {done}/{total}"))
+    began = time.monotonic()
     try:
       step()
     except Exception as exc:  # application boundary: the stage's own message is the fact the reader needs
       say(f"stage {key}: failed: {exc}")
       return 1
+    finally:
+      progress.listen(lambda done, total: None)
+    times[sid] = round(time.monotonic() - began, 2)
+    progress.save(run_path, where, times, finished=False)
     say(f"stage {key}: done")
+  progress.save(run_path, where, times, finished=plan is not None)
   say(f"pipeline done: {args.run}")
   return 0
 

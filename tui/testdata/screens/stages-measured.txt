@@ -1,0 +1,10 @@
+Qwen3-8B on apple_m3_10c · measured
+✓ 1. Read the model             4 files
+✓ 2. Check the machine          4 files
+✓ 3. Plan what to try           7 files
+✓ 4. Test blocks on the GPU     done
+✓ 5. Time the real decode       done
+✓ 6. Test the building blocks   1 file
+✓ 7. Time the real run          2 files
+✓ 8. Package the result         5 files
+No process was started for this run from this machine.

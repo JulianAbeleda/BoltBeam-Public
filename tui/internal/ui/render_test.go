@@ -167,6 +167,7 @@ func TestScreensPlain(t *testing.T) {
 		"picker-engine.txt":      page(ready, pageEngine).View(),
 		"picker-chip.txt":        chipShut.View(),
 		"picker-engine-none.txt": engineGreyed.View(),
+		"picker-batch.txt":       page(ready, pageBatch).View(),
 		"saved-runs-clean.txt":   oldM.View(),
 		"detail-run.txt":         detail(facts(measured), pageRun),
 		"detail-setup.txt":       detail(facts(ready), pageSetup),
@@ -213,16 +214,16 @@ func TestSetupHasThreeSectionsAndRun(t *testing.T) {
 	s := loadSample(t)
 	acts := setupActions(facts(program(s, nil, nil, nil, 80, 24)))
 	want := []string{"page|Model    Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K\t›", "page|Chip     apple_m3_10c · this Mac · 97.2 GB/s\t›",
-		"page|Engine   llama.cpp\t›", "head|", "analyze|[ Run ]", "page|Saved runs (0)\t›"}
+		"page|Engine   llama.cpp\t›", "page|Batch    1\t›", "head|", "analyze|[ Run ]", "page|Saved runs (0)\t›"}
 	if got := rows(acts); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
-	if acts[0].arg != "3" || acts[1].arg != "4" || acts[2].arg != "5" {
+	if acts[0].arg != "3" || acts[1].arg != "4" || acts[2].arg != "5" || acts[3].arg != "6" {
 		t.Fatalf("each line opens its picker: %+v", acts[:3])
 	}
 	none := New(seam.Client{}, jobs.Store{}, "", "", 512)
 	got := rows(setupActions(none.f))
-	if got[0] != "page|Model    not chosen\t›" || got[4] != "|[ Run ] needs a model, a chip, an engine" {
+	if got[0] != "page|Model    not chosen\t›" || got[5] != "|[ Run ] needs a model, a chip, an engine" {
 		t.Fatalf("empty:\n%s", strings.Join(got, "\n"))
 	}
 	what := facts(program(s, nil, nil, nil, 80, 24))
@@ -347,7 +348,7 @@ func TestSavedRunsListAndDeleteAsksTwice(t *testing.T) {
 	if got := plain(savedActions(f)[0].label); !strings.HasPrefix(got, "Press d again to delete saved run qwen3-8b-apple_m3_10c-002") {
 		t.Fatalf("the confirm row is %q", got)
 	}
-	if !strings.Contains(ansi.Strip(footer(true, true)), "d delete run") {
+	if !strings.Contains(ansi.Strip(footer(true, true, false)), "d delete run") {
 		t.Fatal("the footer does not name d on a saved run row")
 	}
 }

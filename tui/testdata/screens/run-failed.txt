@@ -1,24 +1,24 @@
-⚡ BoltBeam                                                            ⠋ (•̀ᴗ•́)⚡
+⚡ BoltBeam                                                               (•́︿•̀)
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Run · qwen3-8b-apple_m3_10c-001                                              │
 │ Qwen3-8B on apple_m3_10c with llama.cpp                                      │
 │                                                                              │
-│   █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   29%  3 of 7   │
-│   Plan what to try…   01:20                                                  │
+│ ✗ Plan what to try failed                                                    │
+│ no roles in the model                                                        │
 │                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
+│ Last lines of the log                                                        │
+│ pipeline steps: 7                                                            │
+│ stage load: start                                                            │
+│ stage load: done                                                             │
+│ stage autoscan: start                                                        │
+│ stage autoscan: done                                                         │
+│ stage analyze: start                                                         │
+│ stage analyze: failed: no roles in the model                                 │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │
-│ ▸ Stop the run                                                               │
-│   Back to setup                                                              │
-│   The run keeps going after you leave this screen.                           │
+│ ▸ [ Back to setup ]                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · enter pick · l log · esc setup · q quit
+ ↑↓ move · enter pick · esc setup · q quit

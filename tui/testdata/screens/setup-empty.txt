@@ -4,11 +4,11 @@
 │ ▸ Model    not chosen                                                      › │
 │   Chip     not chosen                                                      › │
 │   Engine   not chosen                                                      › │
+│   Batch    1                                                               › │
 │                                                                              │
 │   [ Run ] needs a model, a chip, an engine                                   │
 │   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

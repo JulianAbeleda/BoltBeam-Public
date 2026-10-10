@@ -241,6 +241,27 @@ def build_timing_trace(manifest:dict[str, Any], bench:dict[int, dict[str, Any]],
   return trace
 
 
+def batch_points(bench:dict[int, dict[str, Any]], model:pathlib.Path, batches, *, say:Callable[[str], None] = lambda _: None,
+                 layout_args:list[str] | None = None, env:dict[str, str] | None = None) -> list[dict[str, Any]]:
+  """Every timed point: batch 1 from the llama-bench decodes, then each batch > 1 per depth from
+  llama-batched-bench. Reports progress as the second half of the stage (the first half is the decodes)."""
+  from boltbeam.workflow import progress
+  points = [{"context": ctx, "batch": 1, "step_ms": 1000.0 / b["tok_s"], "tok_s_stream": b["tok_s"],
+             "tok_s_total": b["tok_s"], "tokens": GEN_TOKENS, "source": "llama-bench"} for ctx, b in sorted(bench.items())]
+  wide = sorted({int(b) for b in batches if int(b) > 1})
+  if not wide:
+    return points
+  batched = find_batched()
+  if batched is None:
+    raise CannotMeasure("llama-batched-bench was not found, so a batch cannot be timed",
+                        f"export {BATCHED_ENV}=/path/to/llama-batched-bench")
+  for i, ctx in enumerate(sorted(bench)):
+    say(f"decode at depth {ctx}, batches {wide}: llama-batched-bench")
+    points += bench_batched(batched, model, ctx, wide, layout_args, env)
+    progress.report(len(bench) + i + 1, 2 * len(bench))
+  return points
+
+
 def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_bench:str = DEFAULT,
             say:Callable[[str], None] = lambda _: None,
             layout:str = "one", gpus:int = 1, batches:list[int] | tuple[int, ...] = (1,)) -> pathlib.Path:
@@ -251,25 +272,19 @@ def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_be
   request = read_json(run / "trace_request.json")
   if request.get("workload") != "decode":
     raise CannotMeasure("llama-bench-decode times decode only; this run is prefill", "plan the run with workload decode")
+  from boltbeam.workflow import progress
   bench = {}
-  for ctx in request.get("contexts") or [0]:
+  contexts = request.get("contexts") or [0]
+  parts = len(contexts) * (2 if any(int(b) > 1 for b in batches) else 1)
+  progress.report(0, parts)
+  for ctx in contexts:
     say(f"decode at depth {ctx}: llama-bench")
     bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), layout_args, layout_env)
+    progress.report(len(bench), parts)
   trace = build_timing_trace(manifest, bench, facts["target"].memory_bandwidth_gbs)
   trace["aux_sources"] = {"llama_bench": {str(k): v for k, v in bench.items()}}
   trace["provider"] = PROVIDER
-  points = [{"context": ctx, "batch": 1, "step_ms": 1000.0 / b["tok_s"], "tok_s_stream": b["tok_s"],
-             "tok_s_total": b["tok_s"], "tokens": GEN_TOKENS, "source": "llama-bench"} for ctx, b in sorted(bench.items())]
-  wide = sorted({int(b) for b in batches if int(b) > 1})
-  if wide:
-    batched = find_batched()
-    if batched is None:
-      raise CannotMeasure("llama-batched-bench was not found, so a batch cannot be timed",
-                          f"export {BATCHED_ENV}=/path/to/llama-batched-bench")
-    for ctx in sorted(bench):
-      say(f"decode at depth {ctx}, batches {wide}: llama-batched-bench")
-      points += bench_batched(batched, facts["model"], ctx, wide, layout_args, layout_env)
-  trace["batches"] = points
+  trace["batches"] = batch_points(bench, facts["model"], batches, say=say, layout_args=layout_args, env=layout_env)
   out = timing_out or run / "timing_trace.json"
   out.parent.mkdir(parents=True, exist_ok=True)
   out.write_text(pretty_json(trace))

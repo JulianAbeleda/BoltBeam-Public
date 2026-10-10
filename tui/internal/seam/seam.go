@@ -309,13 +309,14 @@ func (c Client) Results(id string) (*Results, []byte, int, error) {
 // pipeline to measure with the chip's own BoltBeam collector when this machine can (Python decides).
 type Pipeline struct {
 	Model, RunDir, Target, Workload, ID, Probe, Timing, Measure, Provider, Layout string
+	Batch                                                                         string // batch sizes beside 1, as "8" or "8,32"
 	// Analyze is one press: measure, the machine's facts, then per-role time with the same engine
 	Analyze bool
 }
 
 func (c Client) PipelineArgv(p Pipeline) []string {
 	argv := []string{c.Python, "-m", "boltbeam.workflow.screen", "pipeline", p.Model, "--run", p.RunDir, "--target", p.Target}
-	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider, "--layout": p.Layout} {
+	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider, "--layout": p.Layout, "--batch": p.Batch} {
 		if value != "" {
 			argv = append(argv, flag, value)
 		}
@@ -451,4 +452,110 @@ func PipelineProgress(lines []string) (done, total int) {
 		}
 	}
 	return done, total
+}
+
+// Progress is the current pipeline's own account of itself, read from the lines after its last
+// "pipeline steps: N" line, so an older run in the same log does not leak in.
+type Progress struct {
+	Done, Total int
+	Expect      []float64 // seconds per step from this machine's last run ("pipeline expect: a,b,…"); nil on a first run
+	Current     string    // the stage running now, or ""
+	Sub, SubOf  int       // "stage X: progress p/q" inside the current stage
+	Finished    bool      // "pipeline done"
+	Failed      string    // the stage that failed, or ""
+	Reason      string    // what it said
+	Lines       []string  // this pipeline's lines
+}
+
+// ReadProgress reads the pipeline's lines: steps, expected seconds, stage start, progress, done and failed.
+func ReadProgress(lines []string) Progress {
+	start := 0
+	for i, line := range lines {
+		if strings.HasPrefix(line, "pipeline steps: ") {
+			start = i
+		}
+	}
+	p := Progress{Lines: lines[start:]}
+	for _, line := range p.Lines {
+		if n, ok := strings.CutPrefix(line, "pipeline steps: "); ok {
+			p.Total, _ = strconv.Atoi(n)
+			continue
+		}
+		if list, ok := strings.CutPrefix(line, "pipeline expect: "); ok {
+			for _, s := range strings.Split(list, ",") {
+				v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+				if err != nil {
+					p.Expect = nil
+					break
+				}
+				p.Expect = append(p.Expect, v)
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "pipeline done") {
+			p.Finished = true
+			continue
+		}
+		rest, ok := strings.CutPrefix(line, "stage ")
+		if !ok {
+			continue
+		}
+		key, event, ok := strings.Cut(rest, ": ")
+		if !ok {
+			continue
+		}
+		switch {
+		case event == "start":
+			p.Current, p.Sub, p.SubOf = key, 0, 0
+		case event == "done":
+			p.Done++
+			p.Current, p.Sub, p.SubOf = "", 0, 0
+		case strings.HasPrefix(event, "progress "):
+			a, b, _ := strings.Cut(strings.TrimPrefix(event, "progress "), "/")
+			p.Sub, _ = strconv.Atoi(a)
+			p.SubOf, _ = strconv.Atoi(b)
+		case strings.HasPrefix(event, "failed"):
+			p.Failed, p.Current = key, ""
+			p.Reason = strings.TrimPrefix(strings.TrimPrefix(event, "failed"), ": ")
+		}
+	}
+	return p
+}
+
+// Fraction is how far the pipeline is, 0 to 1. Each step weighs its expected seconds (equal weights on a first
+// run); the current step adds the time spent in it, or its own p of q when larger, never past its weight.
+// It stays under 0.99 until "pipeline done".
+func (p Progress) Fraction(inStage float64) float64 {
+	if p.Finished {
+		return 1
+	}
+	if p.Total <= 0 {
+		return 0
+	}
+	w := p.Expect
+	if len(w) != p.Total {
+		w = make([]float64, p.Total)
+		for i := range w {
+			w[i] = 30 // a first run: every step the same
+		}
+	}
+	sum, done := 0.0, 0.0
+	for i, x := range w {
+		sum += x
+		if i < p.Done {
+			done += x
+		}
+	}
+	if p.Done < len(w) && p.Current != "" {
+		e := w[p.Done]
+		t := min(max(inStage, 0), e)
+		if p.SubOf > 0 {
+			t = max(t, e*float64(min(p.Sub, p.SubOf))/float64(p.SubOf))
+		}
+		done += min(t, e)
+	}
+	if sum <= 0 {
+		return 0
+	}
+	return min(done/sum, 0.99)
 }

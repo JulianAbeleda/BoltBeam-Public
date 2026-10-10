@@ -4,11 +4,11 @@
 │ ▸ Model    Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K                       › │
 │   Chip     apple_m3_10c · this Mac · 97.2 GB/s                             › │
 │   Engine   not chosen                                                      › │
+│   Batch    1                                                               › │
 │                                                                              │
 │   [ Run ] needs an engine                                                    │
 │   Saved runs (2)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

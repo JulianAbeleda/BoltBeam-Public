@@ -256,6 +256,8 @@ type MeasureStatus struct {
 	ProbeReason *string `json:"probe_reason"`
 	// Provider is the runtime step 4 measured with: "llama.cpp" or "tinygrad". Older runs leave it out.
 	Provider *string `json:"provider"`
+	// Batches are the batch sizes timed; 1 is always among them.
+	Batches []int `json:"batches"`
 }
 
 // Capture is how a provider's per-role time was taken: "nsys", "rocprofv3", "metal-system-trace" or
@@ -274,6 +276,8 @@ type ProviderRow struct {
 	Capture   Capture `json:"capture"`
 	// Layouts are the GPU layouts this engine can run here; one GPU unless the machine has more.
 	Layouts []LayoutRow `json:"layouts"`
+	// BatchOverOne says the engine decodes more than one stream; nil from an older Python means yes.
+	BatchOverOne *bool `json:"batch_over_one"`
 }
 
 type Providers struct {
@@ -456,6 +460,22 @@ type Results struct {
 	Regimes  []Regime   `json:"regimes"`
 	Blocked  []Need     `json:"blocked"`
 	Report   *string    `json:"report"`
+	Batches  []BatchRow `json:"batches"`
+}
+
+// BatchRow is one measured point of step 4 beside its own limit (tie_out.batch_limit).
+type BatchRow struct {
+	Context    float64  `json:"context"`
+	Batch      int      `json:"batch"`
+	StepMs     float64  `json:"step_ms"`
+	TokSStream float64  `json:"tok_s_stream"`
+	TokSTotal  float64  `json:"tok_s_total"`
+	PctOfLimit *float64 `json:"pct_of_limit"`
+	Limit      struct {
+		TokSStream float64 `json:"tok_s_stream"`
+		TokSTotal  float64 `json:"tok_s_total"`
+		Bound      string  `json:"bound"`
+	} `json:"limit"`
 }
 
 type Run struct {

@@ -249,6 +249,7 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 		fs.StringVar(&p.Timing, "timing", "", "timing_trace.v1 JSON to ingest")
 		fs.StringVar(&p.Measure, "measure", "auto", "auto: measure here when this machine can; none: plan only")
 		fs.StringVar(&p.Provider, "provider", "", "llama.cpp or tinygrad: the runtime that decodes in step 4 (default llama.cpp)")
+		fs.StringVar(&p.Batch, "batch", "", "batch sizes to time beside 1, as 8 or 8,32")
 		runID := fs.String("run", "", "run folder name (default: <model>-<chip>-NNN)")
 		if fs.Parse(args[1:]) != nil || p.Target == "" {
 			fmt.Fprintln(errOut, "start needs MODEL and --target")

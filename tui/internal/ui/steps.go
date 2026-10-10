@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
@@ -52,7 +54,36 @@ type Facts struct {
 	CJob        *jobs.Job          // the compare job, id "<run>-compare"
 	CTail       []string
 	Spin        string
-	Confirm     string // the run id waiting for a second enter before it is deleted
+	Confirm     string    // the run id waiting for a second enter before it is deleted
+	Batch       int       // streams decoded at once; 0 means 1
+	BatchTyped  string    // digits typed on the batch picker
+	ShowLog     bool      // l: the running screen shows the raw log
+	Frac        float64   // the bar, 0 to 1; it never goes back while one job runs
+	fracJob     string    // the job Frac belongs to
+	stageAt     time.Time // when this screen saw the current step start
+	stageDone   int       // the step count stageAt was taken at
+	logRoom     int       // screen lines the log may take under the bar; 0: up to 20
+}
+
+// clock is the time the screen reads; a variable so a test can fix it.
+var clock = time.Now
+
+// advance moves the bar: the time in the current step counts toward its expected seconds.
+func (f *Facts) advance(now time.Time) {
+	if f.Job == nil {
+		return
+	}
+	p := seam.ReadProgress(f.Tail)
+	if job := f.Job.ID + f.Job.StartedAt; f.fracJob != job {
+		f.fracJob, f.Frac, f.stageDone = job, 0, -1
+	}
+	if p.Done != f.stageDone {
+		f.stageAt, f.stageDone = now, p.Done
+		if t, err := time.Parse(time.RFC3339, f.Job.StartedAt); err == nil && p.Done == 0 {
+			f.stageAt = t // the first step began when the job did
+		}
+	}
+	f.Frac = max(f.Frac, p.Fraction(now.Sub(f.stageAt).Seconds()))
 }
 
 // goos is the platform the screen runs on; a variable so a test can draw the Linux screen on a Mac.
@@ -89,6 +120,7 @@ const (
 	pageModel
 	pageChip
 	pageEngine
+	pageBatch
 )
 
 func none(Facts) string { return "" }
@@ -100,10 +132,11 @@ var steps = []step{
 	{"Model", "", none, modelLine, modelBody, modelChoices},
 	{"Chip", "", none, chipLine, chipPickerBody, chipActions},
 	{"Engine", "", none, engineLine, engineBody, engineActions},
+	{"Batch", "", none, batchLine, batchBody, batchActions},
 }
 
 // picker reports whether a page is one of the three pickers Setup opens.
-func picker(page int) bool { return page >= pageModel && page <= pageEngine }
+func picker(page int) bool { return page >= pageModel && page <= pageBatch }
 
 // engineRow is this machine's provider row for the chosen engine, or nil.
 func (f Facts) engineRow() *seam.ProviderRow { return f.provider(f.Engine) }
@@ -206,6 +239,7 @@ func setupActions(f Facts) []action {
 		{summary("Model", modelValue(f)), "page", fmt.Sprint(pageModel)},
 		{summary("Chip", chipValue(f)), "page", fmt.Sprint(pageChip)},
 		{summary("Engine", engineValue(f)), "page", fmt.Sprint(pageEngine)},
+		{summary("Batch", fmt.Sprint(f.batch())), "page", fmt.Sprint(pageBatch)},
 		head(""),
 	}
 	switch m := f.missing(); {
@@ -367,16 +401,20 @@ func resultsBody(f Facts, width int) string {
 	if f.Run == nil {
 		return stMuted.Render("No run yet. Run makes one.")
 	}
+	if f.alive() {
+		return runningBody(f, width)
+	}
+	if f.failedStage() != "" {
+		return failedBody(f)
+	}
 	var b strings.Builder
-	if f.alive() || f.failedStage() != "" || (f.Run.Measure != nil && f.Run.Measure.Status != "measured") {
+	if f.Run.Measure != nil && f.Run.Measure.Status != "measured" {
 		b.WriteString(measureBody(f, width) + "\n\n")
 	}
 	if f.Run.Results.Loss.Layout != nil {
 		b.WriteString(layoutBody(*f.Run.Results.Loss.Layout) + "\n")
 	}
-	if !f.alive() {
-		b.WriteString(resultBody(f, width))
-	}
+	b.WriteString(resultBody(f, width))
 	return b.String()
 }
 
@@ -416,7 +454,10 @@ func runActions(f Facts) []action {
 	out := []action{}
 	switch {
 	case f.alive():
-		out = append(out, action{"Stop the run", "stop", ""})
+		return []action{{"Stop the run", "stop", ""}, {"Back to setup", "page", fmt.Sprint(pageSetup)},
+			{stMuted.Render("The run keeps going after you leave this screen."), "note", ""}}
+	case f.failedStage() != "":
+		return []action{{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)}}
 	case f.ReadOnly:
 		out = append(out, action{"Back to saved runs", "page", fmt.Sprint(pageSaved)})
 	case f.Run != nil && f.outputDone():
@@ -535,6 +576,9 @@ func with(m *seam.MeasureStatus) string {
 	if m == nil || m.Provider == nil {
 		return ""
 	}
+	if b := slices.Max(append([]int{1}, m.Batches...)); b > 1 {
+		return fmt.Sprintf(" · %s · batch %d", *m.Provider, b)
+	}
 	return " · " + *m.Provider
 }
 
@@ -557,12 +601,10 @@ func (f Facts) outputDone() bool {
 
 // failedStage is the stage the live log says failed, or "".
 func (f Facts) failedStage() string {
-	for key, state := range seam.StageEvents(f.Tail) {
-		if state == "failed" {
-			return key
-		}
+	if f.alive() {
+		return ""
 	}
-	return ""
+	return seam.ReadProgress(f.Tail).Failed
 }
 
 func aboutModel(f Facts) string {
@@ -583,6 +625,12 @@ func aboutChip(f Facts) string {
 }
 
 func aboutRun(f Facts) string {
+	if f.Run != nil && f.Run.ID != "" {
+		return f.Run.ID
+	}
+	if f.Job != nil {
+		return f.Job.ID
+	}
 	if f.Run != nil {
 		return f.Run.ID
 	}
@@ -863,7 +911,7 @@ func shortRun(id string) string {
 
 func resultLine(f Facts) (string, string) {
 	if f.alive() || f.failedStage() != "" {
-		return measureLine(f) // the progress bar and the stage in flight, or what failed
+		return "", "" // the box above holds the bar, or what failed
 	}
 	if !f.outputDone() {
 		return "open", "not run yet"
@@ -914,6 +962,55 @@ func resultActions(f Facts) []action {
 	}
 	if f.Run != nil && f.Run.Report != nil {
 		out = append(out, action{"Open the full report (" + *f.Run.Report + ")", "report", ""})
+	}
+	return out
+}
+
+// --- Batch ----------------------------------------------------------------------------------------------------
+
+// batch is the chosen batch size; an engine that decodes one stream only runs batch 1.
+func (f Facts) batch() int {
+	if f.Batch < 1 || !f.batchOverOne() {
+		return 1
+	}
+	return f.Batch
+}
+
+// batchOverOne says whether the chosen engine decodes more than one stream. Python decides (batch_over_one).
+func (f Facts) batchOverOne() bool {
+	p := f.engineRow()
+	return p == nil || p.BatchOverOne == nil || *p.BatchOverOne
+}
+
+func batchLine(Facts) (string, string) { return "", "" }
+
+func batchBody(f Facts, width int) string {
+	text := "Batch is how many streams the engine decodes at once. Batch 1 is always timed too, so the two can be compared."
+	if !f.batchOverOne() {
+		text += "\n" + stMuted.Render(f.Engine+" decodes one stream only.")
+	}
+	return text
+}
+
+func batchActions(f Facts) []action {
+	out := []action{}
+	for _, n := range []int{1, 8, 32} {
+		chosen := "  "
+		if n == f.batch() {
+			chosen = stAccent.Render("● ")
+		}
+		if n > 1 && !f.batchOverOne() {
+			out = append(out, note(stMuted.Render(fmt.Sprintf("  %-4d not supported", n))))
+			continue
+		}
+		out = append(out, action{chosen + fmt.Sprint(n), "batch", fmt.Sprint(n)})
+	}
+	if f.batchOverOne() {
+		typed := f.BatchTyped
+		if typed == "" {
+			typed = stMuted.Render("type a number")
+		}
+		out = append(out, action{"  Other: " + typed, "batch", f.BatchTyped})
 	}
 	return out
 }

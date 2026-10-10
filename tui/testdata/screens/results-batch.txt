@@ -1,0 +1,36 @@
+⚡ 17.3 tokens per second measured. The limit is 20.8.
+█████████████████░░░ 83% of the limit
+Measured with llama.cpp · roles not timed · batch 8
+Tie-out, ms per token at context 128
+  limit at context 128 (ideal)  48.304  derived
++ kernels and gaps, not split   9.600   difference
+= measured token                57.904  the untraced whole step at context 128
+The limit is 48.1 ms per token at context 1.
+○ llama.cpp: 17.3 tokens per second, 57.9 ms per token, 9.8 ms lost.
+  whole step, measured untraced
+Per role: no per-role time yet: Run with llama.cpp times each role
+
+BATCH  CONTEXT  PER STREAM  TOTAL tok/s  LIMIT tok/s  OF LIMIT  BOUND BY
+1      512      16.6        16.6         20.8         80%       reading weights
+8      512      12.5        100.0        164.0        61%       reading weights
+
+Where the time goes: small kernel, dead time  elementwise_dilution
+
+No kernels compared yet. Every role runs the default kernel.
+
+   KERNEL                  µs     OF STEP      OF PEAK
+✓  gemv_q4k_ffn_gate_up    23900  ██░░░░  41%  ██████  95%
+✓  gemv_q6k_ffn_down       8700   █░░░░░  15%  ██████  95%
+✓  gemv_q4k_attn_output    8000   █░░░░░  14%  ██████  94%
+✓  gemv_q6k_lm_head        6400   █░░░░░  11%  █████░  89%
+✓  gemv_q4k_ffn_down       6000   █░░░░░  10%  ██████  94%
+⚠  gemv_q4k_attn_kv        1900   ░░░░░░   3%  ████░░  75%
+⚠  gemv_q6k_attn_v         1000   ░░░░░░   2%  ████░░  69%
+⚠  flash_attention_decode  900    ░░░░░░   2%  █░░░░░  23%
+○  rms_norm                500    ░░░░░░   1%  ░░░░░░   0%
+○  rope                    300    ░░░░░░   0%  ░░░░░░   0%
+○  silu_mul                300    ░░░░░░   0%  ░░░░░░   0%
+
+ROLE                       QUANT  WHAT THE TEST SAW
+feed-forward in            Q4_K   reads memory at full speed  streaming_bound
+attention keys and values  Q4_K   not enough work in flight  occupancy_starved

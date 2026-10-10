@@ -8,9 +8,11 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
 
@@ -374,6 +376,9 @@ func measureBody(f Facts, width int) string {
 		events := seam.StageEvents(f.Tail)
 		n := 0
 		for _, st := range r.Stages {
+			if st.State == "not_needed" { // Python said this run did not need it: not a step of this run
+				continue
+			}
 			state, detail := stageState(st, events, f.alive(), r.Blocked)
 			n++
 			fmt.Fprintf(&b, "%s %d. %-26s %s\n", mark(state), n, plainStage[st.Key], stMuted.Render(detail))
@@ -387,7 +392,9 @@ func measureBody(f Facts, width int) string {
 		if ms := r.Measure; ms != nil && ms.Status != "measured" && ms.Command != nil {
 			fmt.Fprintf(&b, "%s %s\n", stInfo.Render("to measure"), *ms.Command)
 		}
-		fmt.Fprintf(&b, "%s %s\n", stInfo.Render("next"), r.NextStep)
+		if ms := r.Measure; ms != nil && (ms.Status == "skipped" || ms.Status == "failed") { // a measured run's next is its results
+			fmt.Fprintf(&b, "%s %s\n", stInfo.Render("next"), r.NextStep)
+		}
 	}
 	if f.Job == nil {
 		return b.String() + stMuted.Render("No process was started for this run from this machine.")
@@ -550,7 +557,10 @@ func tieOutBody(t *seam.TieOut) string {
 
 // lossBody is the end result for the run's provider: its speed against the limit and where it loses time.
 // Another provider's numbers for the same run are shown after it, each labelled with its provider.
-func lossBody(l seam.Loss) string {
+func lossBody(l seam.Loss) string { return lossBodyAt(l, 1) }
+
+// lossBodyAt is lossBody for a run that also timed batch > 1: its heading names the batch.
+func lossBodyAt(l seam.Loss, batch int) string {
 	if l.Status != "modeled" || l.LimitMs == nil {
 		return ""
 	}
@@ -559,7 +569,11 @@ func lossBody(l seam.Loss) string {
 	if provider == "" {
 		provider = "llama.cpp"
 	}
-	b.WriteString(stHeader.Render("Measured with "+lossTitle(provider, l.Capture)) + "\n")
+	title := "Measured with " + lossTitle(provider, l.Capture)
+	if batch > 1 {
+		title += fmt.Sprintf(" · batch %d", batch)
+	}
+	b.WriteString(stHeader.Render(title) + "\n")
 	tie := l.TieOut
 	if tie != nil && tie.Missing != nil && l.Missing != nil { // said once, by the per-role line below
 		t := *tie
@@ -780,7 +794,12 @@ func resultBody(f Facts, width int) string {
 	default:
 		fmt.Fprintf(&b, "%s\n", stMuted.Render("No speed limit for this chip: "+res.Ceiling.Reason))
 	}
-	b.WriteString(lossBody(hereLoss(f, res.Loss)))
+	batch := 1
+	if ms := f.Run.Measure; ms != nil {
+		batch = slices.Max(append([]int{1}, ms.Batches...))
+	}
+	b.WriteString(lossBodyAt(hereLoss(f, res.Loss), batch))
+	b.WriteString(batchTable(res.Batches))
 	if res.Timing.DominantBucket != nil {
 		fmt.Fprintf(&b, "Where the time goes: %s\n", named(plainBucket, *res.Timing.DominantBucket))
 	}
@@ -902,6 +921,7 @@ func DetailView(f Facts, i, row, width, height int, scroll *viewport.Model) stri
 	actions := DetailActions(f, i, row, width, max(height*2/3-3, 6)) // the rows take up to two thirds of the screen
 	scroll.Width, scroll.Height = width-4, max(height-lipgloss.Height(actions)-3, 1)
 	tableWidth = width - 4
+	f.logRoom = scroll.Height - 6 // the log fits under the bar, so the bar never scrolls away
 	scroll.SetContent(wrapText(steps[i].body(f, width-4), width-4))
 	return box(title(i, f), scroll.View(), width, false) + "\n" + actions
 }
@@ -932,4 +952,128 @@ func capFirst(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// --- the running screen ----------------------------------------------------------------------------------------
+
+// runningBody is the whole top box while a run is going: what runs, the bar, the step and the time. l adds the log.
+func runningBody(f Facts, width int) string {
+	p := seam.ReadProgress(f.Tail)
+	var b strings.Builder
+	b.WriteString(runHeadline(f) + "\n\n")
+	count := ""
+	if p.Total > 0 {
+		count = fmt.Sprintf("%d of %d", min(p.Done+1, p.Total), p.Total)
+	}
+	pct := fmt.Sprintf("%3.0f%%", f.Frac*100)
+	barW := max(width-4-lipgloss.Width(pct)-lipgloss.Width(count)-4, 10)
+	fmt.Fprintf(&b, "  %s  %s  %s\n", bar(f.Frac, barW), pct, count)
+	now := "Starting"
+	if p.Current != "" {
+		now = stageWord(p.Current)
+	}
+	fmt.Fprintf(&b, "  %s…   %s\n", now, stMuted.Render(elapsed(f.Job)))
+	if f.ShowLog {
+		tail, room := p.Lines, 20
+		if f.logRoom > 0 {
+			room = max(min(room, f.logRoom), 3)
+		}
+		if len(tail) > room {
+			tail = tail[len(tail)-room:]
+		}
+		for i, l := range tail {
+			tail[i] = truncate(l, width) // one log line, one screen line
+		}
+		b.WriteString("\n" + stHeader.Render("Log") + " " + stMuted.Render(truncate(f.Job.LogPath, width-4)) + "\n")
+		b.WriteString(stMuted.Render(strings.Join(tail, "\n")))
+	}
+	return b.String()
+}
+
+// runHeadline is "MODEL on CHIP with ENGINE".
+func runHeadline(f Facts) string {
+	model, chip := "", ""
+	if f.Run != nil {
+		model, chip = f.Run.ModelID, f.Run.TargetID
+	}
+	if model == "" && f.Profile != nil {
+		model = f.Profile.ModelID
+	}
+	if chip == "" {
+		chip = aboutChip(f)
+	}
+	line := model + " on " + chip
+	if engine := jobEngine(f); engine != "" {
+		line += " with " + engine
+	}
+	return line
+}
+
+// jobEngine is the engine the job was started with (--provider), else the chosen one.
+func jobEngine(f Facts) string {
+	if f.Job != nil {
+		for i, a := range f.Job.Argv {
+			if a == "--provider" && i+1 < len(f.Job.Argv) {
+				return f.Job.Argv[i+1]
+			}
+		}
+	}
+	return f.Engine
+}
+
+// elapsed is the time since the job started, as mm:ss (h:mm:ss past an hour).
+func elapsed(j *jobs.Job) string {
+	if j == nil {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, j.StartedAt)
+	if err != nil {
+		return ""
+	}
+	d := max(clock().Sub(t), 0)
+	h, m, s := int(d.Hours()), int(d.Minutes())%60, int(d.Seconds())%60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%02d:%02d", m, s)
+}
+
+// failedBody is a run that stopped: the step that failed, why, and the last lines of its log.
+func failedBody(f Facts) string {
+	p := seam.ReadProgress(f.Tail)
+	var b strings.Builder
+	b.WriteString(runHeadline(f) + "\n\n")
+	b.WriteString(mark("fail") + " " + stageWord(p.Failed) + " failed\n")
+	if p.Reason != "" {
+		b.WriteString(p.Reason + "\n")
+	}
+	tail := p.Lines
+	if len(tail) > 10 {
+		tail = tail[len(tail)-10:]
+	}
+	b.WriteString("\n" + stHeader.Render("Last lines of the log") + "\n")
+	b.WriteString(stMuted.Render(strings.Join(tail, "\n")))
+	return b.String()
+}
+
+// batchTable is step 4's points beside their own limit, when more than batch 1 was timed: tokens per second per
+// stream and in total, the limit's total, and the share of it reached.
+func batchTable(rows []seam.BatchRow) string {
+	wide := false
+	for _, r := range rows {
+		wide = wide || r.Batch > 1
+	}
+	if !wide {
+		return ""
+	}
+	t := [][]string{{"BATCH", "CONTEXT", "PER STREAM", "TOTAL tok/s", "LIMIT tok/s", "OF LIMIT", "BOUND BY"}}
+	for _, r := range rows {
+		pct := ""
+		if r.PctOfLimit != nil {
+			pct = fmt.Sprintf("%.0f%%", *r.PctOfLimit)
+		}
+		t = append(t, []string{fmt.Sprint(r.Batch), fmt.Sprintf("%.0f", r.Context), fmt.Sprintf("%.1f", r.TokSStream),
+			fmt.Sprintf("%.1f", r.TokSTotal), fmt.Sprintf("%.1f", r.Limit.TokSTotal), pct, word(plainLimit, r.Limit.Bound)})
+	}
+	return "\n" + table(t) + "\n"
 }

@@ -408,17 +408,23 @@ def build_timing_trace(manifest:dict[str, Any], request:dict[str, Any], evidence
 
 
 def collect_timing_trace(run:pathlib.Path, evidence:dict[str, Any], *, llama_bench:str = "llama-bench",
-                         say:Callable[[str], None] = lambda _: None) -> dict[str, Any]:
+                         say:Callable[[str], None] = lambda _: None, batches=(1,)) -> dict[str, Any]:
+  from boltbeam.workflow import progress
   facts = _run_facts(run, llama_bench=llama_bench)
   request = read_json(run / "trace_request.json")
   if request.get("workload") != "decode":
     raise CannotMeasure("metal-native times decode only; this run is prefill", "plan the run with workload decode")
   bench = {}
-  for ctx in request.get("contexts") or [0]:
+  contexts = request.get("contexts") or [0]
+  parts = len(contexts) * (2 if any(int(b) > 1 for b in batches) else 1)
+  progress.report(0, parts)
+  for ctx in contexts:
     say(f"decode at depth {ctx}: llama-bench")
     bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx))
+    progress.report(len(bench), parts)
   trace = build_timing_trace(facts["manifest"], request, evidence, bench, facts["target"].memory_bandwidth_gbs)
   trace["aux_sources"] = {"llama_bench": {str(k): v for k, v in bench.items()}}
+  trace["batches"] = llama_bench_decode.batch_points(bench, facts["model"], batches, say=say)
   return trace
 
 
@@ -431,7 +437,7 @@ def _write(obj:dict[str, Any], path:pathlib.Path) -> None:
 
 def measure(run:pathlib.Path, *, only:str | None = None, probe_out:pathlib.Path | None = None,
             timing_out:pathlib.Path | None = None, llama_bench:str = "llama-bench",
-            say:Callable[[str], None] = lambda _: None) -> dict[str, pathlib.Path]:
+            say:Callable[[str], None] = lambda _: None, batches=(1,)) -> dict[str, pathlib.Path]:
   probe_out = probe_out or run / "probe_evidence.json"
   timing_out = timing_out or run / "timing_trace.json"
   written = {}
@@ -440,7 +446,7 @@ def measure(run:pathlib.Path, *, only:str | None = None, probe_out:pathlib.Path 
     written["probe"] = probe_out
   if only in (None, "timing"):
     evidence = read_json(probe_out) if probe_out.exists() else {"probes": []}
-    _write(collect_timing_trace(run, evidence, llama_bench=llama_bench, say=say), timing_out)
+    _write(collect_timing_trace(run, evidence, llama_bench=llama_bench, say=say, batches=batches), timing_out)
     written["timing"] = timing_out
   return written
 

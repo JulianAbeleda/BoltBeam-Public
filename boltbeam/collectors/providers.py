@@ -133,7 +133,8 @@ def available(target, *, tinygrad_root:pathlib.Path | None = None) -> list[dict[
   for name in NAMES:
     why = _why(name, target, tinygrad_root)
     out.append({"provider": name, "available": why is None, "state": state(name, target, why), "reason": why, "formats": list(FORMATS[name]),
-                "capture": capture_method(name, target.backend)})
+                "capture": capture_method(name, target.backend),
+                "batch_over_one": name != tinygrad_role_time.PROVIDER})  # tinygrad's decode runs one stream
   return out
 
 
