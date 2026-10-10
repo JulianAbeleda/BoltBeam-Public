@@ -215,8 +215,9 @@ func (m Model) autoscan(remeasure bool) tea.Cmd {
 	return func() tea.Msg { s, _, err := m.client.Autoscan(remeasure); return scanMsg{s, err} }
 }
 
-// findFiles lists model files to pick from: the folder of the current path and ~/models. Names only; the
-// model itself is read by Python.
+// findFiles lists model files to pick from: every .gguf and .safetensors in the folder of the current path and in
+// ~/models, in name order. No cap: the picker windows a long list around the cursor. Names only; the model itself
+// is read by Python.
 func (m Model) findFiles() tea.Cmd {
 	dirs := []string{}
 	if m.f.Path != "" {
@@ -231,7 +232,7 @@ func (m Model) findFiles() tea.Cmd {
 			for _, ext := range []string{"*.gguf", "*.safetensors"} {
 				found, _ := filepath.Glob(filepath.Join(dir, ext))
 				for _, p := range found {
-					if !seen[p] && len(out) < 10 {
+					if !seen[p] {
 						seen[p] = true
 						out = append(out, p)
 					}
