@@ -254,7 +254,7 @@ def ggml_metal_spec(text:str, quant:str, rows:int, cols:int, weights:bytes, x:li
 # --- llama.cpp on CUDA: ggml's CUDA backend ---------------------------------------------------------------------------
 
 _CUDA_CANDIDATES = ("~/env/llama.cpp/ggml/src/ggml-cuda", "~/llama.cpp/ggml/src/ggml-cuda", "/usr/local/src/llama.cpp/ggml/src/ggml-cuda")
-GGML_TYPE = {"Q4_K": 12, "Q6_K": 14, "Q8_0": 8}  # ggml.h enum values, the same ones metal_native.GGML_TYPES reads from GGUF
+from boltbeam.collectors.metal_native import GGML_TYPES as GGML_TYPE  # noqa: E402  the one ggml.h type table (metal_native)
 Q8_1_BLOCK, Q8_1_BYTES = 32, 36  # block_q8_1: half d, half s, 32 int8 (ggml-common.h)
 MATRIX_ROW_PADDING = 512  # ggml-cuda common.cuh: the quantized vector is padded to this many columns
 CUDA_RULE = ("ggml-cuda mmvq.cu mul_mat_vec_q<type, ncols_dst=1, has_fusion=false, small_k, halve_iters>: grid (ceil(rows / "

@@ -61,6 +61,11 @@ EMITTERS: tuple[tuple[str, tuple[str, ...] | None, str, str, str], ...] = (
    "and rows % 32 == 0 (_Q4KDecodeCandidate)"),
   ("Q6_K", None, "emit_q6k_gemv_kernel", 'Q6KGEMVRouteSpec(rows={rows}, k={k}, role="{role}", route_family="q6k_coop", row_tile=q6k_coop_row_tile_for_target(backend, architecture), target="{target}")',
    "k % 256 == 0, rows % row_tile == 0, lane_extent 16 (Q6KGEMVRouteSpec.validate)"),
+  *(((q, None, "emit_block_quant_gemv_kernel",
+      'BlockQuantGEMVRouteSpec(rows={rows}, k={k}, quant=QUANT_FORMATS["' + q + '"], wave_size=<the device wave size>, '
+      'lanes_per_block=<the winner\'s code bytes / memory.b.vector_width>, warps_per_cta=<the winner\'s tile.n>)',
+      "k % block_elems == 0, rows >= 1, lanes_per_block divides the block's code units and the wave size, wave size a power of "
+      "two (BlockQuantGEMVRouteSpec.validate)") for q in ("Q8_0", "Q5_0", "Q4_0"))),
   ("*", NORM_ROLES, "emit_decode_rmsnorm_kernel", "DecodeRMSNormSpec(rows={rows}, dim={k}, eps=<the model's rms epsilon>)",
    "dim % 32 == 0, eps > 0 (DecodeRMSNormSpec.validate)"),
 )
@@ -98,8 +103,9 @@ class _Files:
     return self._cache[name]
 
 
-def _stem(role:str, quant:str) -> str:
-  return f"{role}-{quant.lower()}"
+def _stem(role:str, quant:str, shape:Any = None) -> str:
+  from boltbeam.role_key import role_stem
+  return role_stem(role, quant, shape)
 
 
 def _layer(key:str, recorded:bool, lines:list[str], facts:dict[str, Any] | None = None,
@@ -351,9 +357,15 @@ def _shape(route:dict[str, Any] | None, profile_role:dict[str, Any] | None) -> t
 def _role_block(files:_Files, r:dict[str, Any], i:int, est:dict[str, Any] | None, policy:dict[str, Any],
                 status:dict[str, Any] | None, compare:dict[str, Any] | None, band:float | None) -> dict[str, Any]:
   role, quant = str(r["role"]), str(r["quant"])
-  stem = _stem(role, quant)
+  from boltbeam.role_key import role_key
+  rk = role_key(r)
   routes = policy.get("routes") or []
-  route_index = next((j for j, x in enumerate(routes) if (x.get("role"), x.get("quant")) == (role, quant)), None)
+  route_index = next((j for j, x in enumerate(routes) if role_key(x) == rk), None)
+  if route_index is None and len(rk) == 2:  # a table row without a shape: the one route of its role and format
+    route_index = next((j for j, x in enumerate(routes) if role_key(x)[:2] == rk), None)
+  stem = _stem(role, quant, (routes[route_index].get("shape") if route_index is not None else r.get("shape")))
+  if not (files.run / REQUEST.format(stem=stem)).is_file() and (files.run / REQUEST.format(stem=_stem(role, quant))).is_file():
+    stem = _stem(role, quant)  # a run searched before roles carried their shape in the file names
   route = routes[route_index] if route_index is not None else None
   profile_role = None
   for p in r.get("evidence") or []:
@@ -364,7 +376,7 @@ def _role_block(files:_Files, r:dict[str, Any], i:int, est:dict[str, Any] | None
         profile_role = None
   rows, k = _shape(route, profile_role)
   request, result = files.get(REQUEST.format(stem=stem)), files.get(RESULT.format(stem=stem))
-  compare_index = next((j for j, x in enumerate((compare or {}).get("roles") or []) if (x.get("role"), x.get("quant")) == (role, quant)), None)
+  compare_index = next((j for j, x in enumerate((compare or {}).get("roles") or []) if role_key(x) == role_key(route or r)), None)
   lost = r.get("est_lost_ms") if est else r.get("lost_ms")
   floor = bool(est and est.get("columns_words"))
   basis = ("isolated, less the dispatch floor" if floor else "isolated" if r.get("est_ms") is not None or est else "in the model")

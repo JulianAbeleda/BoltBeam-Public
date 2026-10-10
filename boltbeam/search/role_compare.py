@@ -25,6 +25,7 @@ import functools, hashlib, json, os, pathlib, statistics, subprocess
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from boltbeam.role_key import role_key, role_label, role_stem
 from boltbeam.artifacts.base import EvidenceFlags, EvidenceRow, EvidenceSource, NormalizedEvidence
 from boltbeam.eval.evaluator import evaluate
 from boltbeam.ledger.model import CandidateDecision, EvidenceRef, status_for_verdict
@@ -216,7 +217,7 @@ def semantic_workload(route:Mapping[str, Any], *, tensor_name:str, model_sha:str
 
 
 def propose(route:Mapping[str, Any], *, tensor_name:str, model:str, model_id:str, target_id:str, describe_result:Mapping[str, Any],
-            model_sha:str, run_id:str, timestamp:str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+            model_sha:str, run_id:str, timestamp:str, sm_count:int | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
   """BubbleBeam, then the population, then FutureSight, for one role: (campaign request, population, FutureSight
   evidence, the role's proposal inputs). The documented pipeline (docs/semantic-campaign.md) steps 1 to 3."""
   from boltbeam.search.futuresight_adapter import assess_population, propose_request, target_facts
@@ -225,7 +226,8 @@ def propose(route:Mapping[str, Any], *, tensor_name:str, model:str, model_id:str
   resolved = resolved_target_document(target_id, observed)
   workload = semantic_workload(route, tensor_name=tensor_name, model_sha=model_sha, target=candidate_target(resolved))
   facts, _missing = target_facts(target_id, describe_result)
-  inputs = role_space.proposal_inputs(describe_result, facts, str(route["quant"]))
+  inputs = role_space.proposal_inputs(describe_result, facts, str(route["quant"]), subgroup_size=workload["target"].get("subgroup_size"),
+                                      shape=(int(route["shape"][0]), int(route["shape"][1])), sm_count=sm_count)
   if inputs.get("why"):
     raise ValueError(inputs["why"])
   role, quant = str(route["role"]), str(route["quant"])
@@ -315,8 +317,8 @@ def time_roles(run:pathlib.Path, *, root:pathlib.Path | None = None) -> dict[str
   return trace
 
 
-def role_losses(run:pathlib.Path) -> dict[tuple[str, str], dict[str, Any]]:
-  """The per-role loss rows of a run, by (role, quant); empty before the roles were timed."""
+def role_losses(run:pathlib.Path) -> dict[tuple[Any, ...], dict[str, Any]]:
+  """The per-role loss rows of a run, by role_key (role, quant, rows, k); empty before the roles were timed."""
   from boltbeam.collectors import tinygrad_role_time
   from boltbeam.workflow.common import read_json
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
@@ -325,7 +327,7 @@ def role_losses(run:pathlib.Path) -> dict[tuple[str, str], dict[str, Any]]:
   if not path.is_file(): return {}
   ceil = _measured_vs_ceiling(load_manifest(run), _optional(run, "model_profile.json"))
   table = tinygrad_role_time.loss(ceil.get("_roles") or [], read_json(path), ceil.get("floor_ms"), ceil.get("band")) or {"roles": []}
-  return {(r["role"], r["quant"]): r for r in table["roles"]}  # an incomplete table has no roles
+  return {role_key(r): r for r in table["roles"]}  # an incomplete table has no roles
 
 
 def kernel_numbers(summary:Mapping[str, Any], in_model:Mapping[str, Any] | None = None,
@@ -573,9 +575,9 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
     time_roles(run, root=root)
   losses = role_losses(run)
   profile = read_json(run / "model_profile.json") if (run / "model_profile.json").is_file() else {}
-  tensors = {(r.get("role"), r.get("quant")): r.get("tensor_name") for r in profile.get("roles", []) if r.get("tensor_name")}
+  tensors = {role_key(r): r.get("tensor_name") for r in profile.get("roles", []) if r.get("tensor_name")}
   # the biggest loss first: that is where a better kernel can save the most
-  routes.sort(key=lambda r: -losses.get((r["role"], r["quant"]), {}).get("lost_ms", float("-inf")))
+  routes.sort(key=lambda r: -losses.get(role_key(r), {}).get("lost_ms", float("-inf")))
   provider_rev = (facts.get("provider_revision") or {}).get("revision")
   bb_rev, bb_dirty = _git_state(pathlib.Path(__file__).resolve().parents[2])
   model_sha = _sha256_file(pathlib.Path(model)) if search is None else "0" * 63 + "1"
@@ -603,14 +605,15 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
   say(f"compare roles: {len(routes)} on {device}")
   for route in routes:
     role, quant = str(route["role"]), str(route["quant"])
-    key, stem = f"{role} {quant}", f"{role}-{quant.lower()}"
+    key, stem, rk = role_label(role, quant, route["shape"]), role_stem(role, quant, route["shape"]), role_key(route)
     n, k = (int(x) for x in route["shape"])
     say(f"role {key}: search")
-    tensor_name = route.get("tensor_name") or tensors.get((role, quant))
+    tensor_name = route.get("tensor_name") or tensors.get(rk)
     try:
       request, population, evidence, inputs = propose(route, tensor_name=str(tensor_name), model=model, model_id=model_id,
                                                       target_id=target_id, describe_result=facts, model_sha=model_sha,
-                                                      run_id=f"{run.name}-compare", timestamp=timestamp)
+                                                      run_id=f"{run.name}-compare", timestamp=timestamp,
+                                                      sm_count=checker.facts().get("sm_count"))  # BoltBeam's bridge, after the identity check
     except Exception as exc:  # no space for this role: say why, the other roles go on
       request, population, evidence, inputs = None, None, None, {"why": str(exc)}
     if request is not None:
@@ -659,7 +662,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
         summary["winner"] = winner
         verify = {"winner": judged["boltbeam_winner"], "model_kernel": judged.get("model_kernel")}
     reproduced = bool(verify) and (verify.get("winner") or {}).get("verdict") == provider_check.REPRODUCED
-    k_numbers = kernel_numbers(summary, losses.get((role, quant)), verify if reproduced else None)
+    k_numbers = kernel_numbers(summary, losses.get(rk), verify if reproduced else None)
     if winner is None:
       reason = result.get("error") or "no candidate compiled and passed the correctness check"
       row.update(status="blocked", reason=f"decided by the search: {reason}", decided_by="search")
@@ -700,7 +703,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
         # Both arms ran the same code, so neither number can judge the plan. Not tested is not refuted.
         row.update(status="blocked", decided_by="binding",
                    reason=f"decided by binding: the plan reached {ab['binding'].get('calls_reached', 0)} of the "
-                          f"{_calls(losses.get((role, quant)))} {role} {quant} calls per token "
+                          f"{_calls(losses.get(rk))} {role} {quant} calls per token "
                           f"({ab['binding'].get('decode_graph_calls', 0)} decode calls in all) "
                           f"(applied to {ab['binding'].get('applied', 0)} other kernels); "
                           "the A/B compared the default decode with itself")
@@ -708,7 +711,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
         decision = decide(route, winner, ab, model_id=model_id, target_id=target_id, ab_path=row["ab_result"], ab_sha=ab_sha)
     row["kernel"] = k_numbers
     if row["kernel"] and row["kernel"]["model_us_per_call"] is not None:
-      row["role_calls_per_token"] = losses[(role, quant)]["calls_per_token"]
+      row["role_calls_per_token"] = losses[rk]["calls_per_token"]
     if decision is not None:
       by = "kernel alone" if row["ab"] is None else "whole model"
       row.update(status=route_status(decision.verdict), reason=f"decided by the {by}: {decision.reason}",
@@ -881,7 +884,7 @@ def found_summary(routes:list[Mapping[str, Any]]) -> dict[str, Any] | None:
     if v["verdict"] != "found_not_applied" or not b or b.get("calls_per_token") is None:
       continue
     ms += (b["model_us"] - b["plan_us"]) * b["calls_per_token"] / 1000.0
-    rows.append(f"{r.get('role')} {r.get('quant')}")
+    rows.append(role_label(str(r.get('role')), str(r.get('quant')), r.get('shape')))
     ab = (r.get("compare") or {}).get("ab") or {}
     binding = ab.get("binding") if isinstance(ab.get("binding"), dict) else None
     if binding is not None:

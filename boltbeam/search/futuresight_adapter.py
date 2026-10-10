@@ -59,6 +59,16 @@ def target_facts(target_id:str, describe:Mapping[str, Any] | None = None) -> tup
   return facts, tuple(key for key in TARGET_FACT_KEYS if key not in facts)
 
 
+def boltbeam_emitter_facts() -> dict[str, Any]:
+  """BoltBeam's own facts for the emitter families it proposes rows for (data/emitter_kinds.json): which families own
+  rows per subgroup, and each of their formats' code bytes per block (collectors/metal_native). Never the provider's."""
+  from boltbeam.collectors import metal_native as native
+  from boltbeam.search.role_space import emitter_kinds
+  kinds = [k for k in emitter_kinds().values() if k.get("row_owner") == "subgroup"]
+  return {"subgroup_row_families": sorted(k["family"] for k in kinds),
+          "block_code_bytes": {q: native.code_bytes(q) for k in kinds for q in k["quants"]}}
+
+
 def propose_request(spec:Mapping[str, Any], describe:Mapping[str, Any] | None = None) -> tuple[dict[str, Any], tuple[str, ...]]:
   """BubbleBeam: propose legal dimensions and split coupled rows for one exact workload on its resolved target.
 
@@ -79,6 +89,7 @@ def propose_request(spec:Mapping[str, Any], describe:Mapping[str, Any] | None = 
   validate_candidate_target(workload["target"], resolved)
   provider = describe if describe is not None else {"target": resolved["observed_facts"]}
   facts, missing = target_facts(resolved["target_id"], provider)
+  facts = facts | boltbeam_emitter_facts()  # BoltBeam's own block layouts, never a target or provider fact
   if resolved_target_document(resolved["target_id"], provider.get("target")) != resolved:
     raise ValueError("provider describe target facts differ from the request's resolved target")
   shape = semantic_workload_facts(workload)
@@ -117,4 +128,4 @@ def assess_population(population:Mapping[str, Any], preferences:Mapping[str, Any
   return evidence
 
 
-__all__ = ["SPEC_FIELDS", "TARGET_FACT_KEYS", "assess_population", "propose_request", "target_facts"]
+__all__ = ["SPEC_FIELDS", "TARGET_FACT_KEYS", "assess_population", "boltbeam_emitter_facts", "propose_request", "target_facts"]

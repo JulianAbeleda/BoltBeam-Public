@@ -39,12 +39,13 @@ from boltbeam.workflow.common import load_manifest, read_json, run_dir
 
 COLLECTOR_ID = "metal-native"
 PROVIDER_ID = "boltbeam/metal-native"
-GGML_TYPES = {"Q4_K": 12, "Q6_K": 14, "Q8_0": 8}
+GGML_TYPES = {"Q4_K": 12, "Q6_K": 14, "Q8_0": 8, "Q5_0": 6, "Q4_0": 2}
 # the block layouts the pure-Python reference can dequantize (DEQUANT): bytes per block and weights per block, the
 # same figures as data/quants.json's rows (block_bytes, block_elems) for these quants
-BLOCK_BYTES = {"Q4_K": 144, "Q6_K": 210, "Q8_0": 34}
-BLOCK_ELEMS = {"Q4_K": 256, "Q6_K": 256, "Q8_0": 32}
-METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18, "Q8_0": 2}  # Q4_K: d, dmin, 12 scale bytes. Q6_K: 16 int8 scales, d. Q8_0: d.
+BLOCK_BYTES = {"Q4_K": 144, "Q6_K": 210, "Q8_0": 34, "Q5_0": 22, "Q4_0": 18}
+BLOCK_ELEMS = {"Q4_K": 256, "Q6_K": 256, "Q8_0": 32, "Q5_0": 32, "Q4_0": 32}
+METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18, "Q8_0": 2, "Q5_0": 6, "Q4_0": 2}  # Q4_K: d, dmin, 12 scale bytes. Q6_K: 16 int8 scales, d.
+# Q8_0, Q4_0: d. Q5_0: d and the 4 bytes of fifth bits. The rest of a block is its codes (code_bytes).
 WORKING_SET_SHARE = 0.8  # never ask for more than this share of Metal's recommended working set
 CHECK_ROWS = 9
 TOLERANCE = 1e-3  # max |gpu - cpu| over max |cpu|: float32 sums in a different order
@@ -102,7 +103,28 @@ def dequant_q8_0_block(blk:bytes) -> list[float]:
   return [d * q for q in struct.unpack_from("<32b", blk, 2)]
 
 
-DEQUANT: dict[str, Callable[[bytes], list[float]]] = {"Q4_K": dequant_q4_k_block, "Q6_K": dequant_q6_k_block, "Q8_0": dequant_q8_0_block}
+def dequant_q4_0_block(blk:bytes) -> list[float]:
+  d = _half(blk, 0)  # block_q4_0: half d, 16 qs bytes; byte j holds element j (low nibble) and j+16 (high)
+  qs = blk[2:18]
+  return [d * ((qs[j] & 0xF) - 8) for j in range(16)] + [d * ((qs[j] >> 4) - 8) for j in range(16)]
+
+
+def dequant_q5_0_block(blk:bytes) -> list[float]:
+  d = _half(blk, 0)  # block_q5_0: half d, uint32 qh (bit j = fifth bit of element j), 16 qs bytes as Q4_0
+  qh = struct.unpack_from("<I", blk, 2)[0]
+  qs = blk[6:22]
+  lo = [d * (((qs[j] & 0xF) | ((qh >> j) & 1) << 4) - 16) for j in range(16)]
+  hi = [d * (((qs[j] >> 4) | ((qh >> (j + 16)) & 1) << 4) - 16) for j in range(16)]
+  return lo + hi
+
+
+def code_bytes(quant:str) -> int:
+  """The bytes of a block that hold its codes, after its scales and extra bits."""
+  return BLOCK_BYTES[quant] - METADATA_BYTES[quant]
+
+
+DEQUANT: dict[str, Callable[[bytes], list[float]]] = {"Q4_K": dequant_q4_k_block, "Q6_K": dequant_q6_k_block, "Q8_0": dequant_q8_0_block,
+                                                      "Q5_0": dequant_q5_0_block, "Q4_0": dequant_q4_0_block}
 
 
 def reference_row(weights:bytes, quant:str, row:int, cols:int, x:list[float]) -> float:

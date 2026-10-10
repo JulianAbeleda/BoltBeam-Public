@@ -61,6 +61,10 @@ def build_static_legality(workload_facts: Mapping[str, Any], target_facts: Mappi
   facts = _static_facts(workload_facts, target_facts)
   shape, vocabulary, supported = facts.shape, facts.vocabulary, facts.vocabulary.transforms
   one_subgroup = frozenset(target_facts.get("single_subgroup_families") or ())
+  # families whose subgroups own whole rows and whose lanes split a block's code bytes (data/emitter_kinds.json), and
+  # each format's code bytes per block, both BoltBeam's own facts (futuresight_adapter.boltbeam_emitter_facts)
+  row_owner = frozenset(target_facts.get("subgroup_row_families") or ())
+  block_code_bytes = dict(target_facts.get("block_code_bytes") or {})
 
   def check(candidate: CanonicalCandidate) -> str | None:
     schedule = candidate.get("schedule", {})
@@ -79,6 +83,13 @@ def build_static_legality(workload_facts: Mapping[str, Any], target_facts: Mappi
     # a kernel family that reduces inside one subgroup (the compiler says which) cannot launch more threads than one
     family, width = _at_path(candidate, "schedule.compute.family"), _at_path(candidate, "workload.target.subgroup_size")
     if family in one_subgroup and _positive_int(width) and threads > width: return "threads_exceed_one_subgroup"
+    if family in row_owner:  # a coupled row alone carries no workload: each rule runs once its facts are present
+      quant, lane = _at_path(candidate, "workload.operands.b.quantization"), _at_path(candidate, "schedule.memory.b.vector_width")
+      code = block_code_bytes.get(str(quant)) if quant is not None else None
+      if quant is not None and code is None: return "no_block_layout_for_format"
+      if _positive_int(width) and threads != _at_path(candidate, "schedule.tile.n") * width: return "threads_not_one_subgroup_per_row"
+      if not _positive_int(lane): return "non_positive_lane_bytes"
+      if code is not None and (code % lane or (_positive_int(width) and width % (code // lane))): return "lanes_do_not_split_the_block"
     local_limit = _at_path(candidate, "static_constraints.max_local_memory_bytes")
     if local_limit is not None and not _positive_int(local_limit): return "non_positive_local_memory"
     if facts.max_local_memory is not None and _positive_int(local_limit) and local_limit > facts.max_local_memory: return "over_local_memory"

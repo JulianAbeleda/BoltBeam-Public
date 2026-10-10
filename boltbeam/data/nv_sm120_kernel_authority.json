@@ -39,6 +39,7 @@
     {"route_policy": "decode-q4k-epilogue-fusion-route-policy.json", "route_id": "decode_q4k_epilogue_fusion", "phase": "decode", "components": ["q4_gemv_epilogue"], "choke_point": "kernel_program", "state": "exact"},
     {"route_policy": "decode-q4k-q4q4-qkv-full-route-policy.json", "route_id": "decode_q4k_q4q4_qkv_full", "phase": "decode", "components": ["q4q4_qkv_full"], "choke_point": "kernel_program", "state": "exact"},
     {"route_policy": "decode-shared-q8-q4q4-qkv-full-route-policy.json", "route_id": "decode_shared_q8_q4q4_qkv_full", "phase": "decode", "components": ["shared_q8_q4q4_qkv_full"], "choke_point": "kernel_program", "state": "exact"},
+    {"route_policy": "decode-q8-0-gemv-route-policy.json", "route_id": "decode_q8_0_gemv", "phase": "decode", "components": ["block_quant_gemv"], "choke_point": "kernel_program", "state": "exact"},
     {"route_policy": null, "route_id": "decode_q4k_g3_generated", "phase": "decode", "components": ["q4_g3_gemv"], "choke_point": "kernel_program", "state": "exact"},
     {"route_policy": null, "route_id": "decode_q6k_coop_generated", "phase": "decode", "components": ["q6_gemv", "q6_vocab_reduce"], "choke_point": "kernel_program", "state": "exact"},
     {"route_policy": null, "route_id": "decode_q4k_k_four_warp", "phase": "decode", "components": ["q4_k_four_warp"], "choke_point": "kernel_program", "state": "exact"},

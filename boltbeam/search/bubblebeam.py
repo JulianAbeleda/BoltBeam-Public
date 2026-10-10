@@ -131,5 +131,41 @@ def propose_legal_dimensions(workload_facts: Mapping[str, Any], target_facts: Ma
   return tuple(proposals)
 
 
+def _powers_of_two(limit:int) -> list[int]:
+  out, n = [], 1
+  while n <= limit:
+    out.append(n)
+    n *= 2
+  return out
+
+
+def subgroup_row_block_unit_rows(*, code_bytes:int, unit_bytes:int, block_elems:int, subgroup_size:int,
+                                 max_threads:int | None) -> list[dict[str, JSONValue]]:
+  """Coupled rows for an emitter whose subgroups each own one output row and whose lanes split one block's code bytes
+  in whole load units (data/emitter_kinds.json: row_owner subgroup, lane_split block_code_units). From the chip's facts
+  and the block layout only:
+
+  - lane bytes (memory.b.vector_width): unit_bytes x units per lane, units per lane a power of two dividing the
+    block's units; lanes per block = code_bytes / lane bytes, which must divide the subgroup.
+  - rows per group (tile.n) = subgroups per group, powers of two while the group fits the chip's thread limit
+    (launch.threads = rows per group x subgroup size).
+  - tile.k = one block: k must be whole blocks.
+  An unknown thread limit proposes one subgroup per group."""
+  for name, value in (("code_bytes", code_bytes), ("unit_bytes", unit_bytes), ("block_elems", block_elems), ("subgroup_size", subgroup_size)):
+    if not _positive_int(value): raise ValueError(f"{name} must be a positive int, got {value!r}")
+  if code_bytes % unit_bytes: raise ValueError(f"{code_bytes} code bytes are not whole {unit_bytes}-byte load units")
+  units = code_bytes // unit_bytes
+  groups = _powers_of_two(max_threads // subgroup_size) if _positive_int(max_threads) else [1]
+  rows: list[dict[str, JSONValue]] = []
+  for per_lane in _powers_of_two(units):
+    lanes = units // per_lane
+    if units % per_lane or lanes > subgroup_size or subgroup_size % lanes: continue
+    for g in groups:
+      rows.append({"schedule.launch.threads": g * subgroup_size, "schedule.tile.n": g, "schedule.tile.k": block_elems,
+                   "schedule.memory.b.vector_width": per_lane * unit_bytes, "schedule.memory.a.space": "global",
+                   "schedule.pipeline.stage_count": 1})
+  return rows
+
+
 __all__ = ["JSONValue", "LegalDimensionProposal", "ScheduleVocabulary", "dimension_mapping", "propose_legal_dimensions",
-           "target_schedule_vocabulary"]
+           "subgroup_row_block_unit_rows", "target_schedule_vocabulary"]

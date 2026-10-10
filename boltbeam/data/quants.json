@@ -23,6 +23,16 @@
       "refuted_routes": [], "pending_routes": ["q8_0_gemv"]
     },
     {
+      "name": "Q5_0", "ggml_type": 6, "block_elems": 32, "block_bytes": 22, "packed_word_bits": 8,
+      "dequant_family": "legacy_scale", "route_families": [],
+      "refuted_routes": [], "pending_routes": ["q8_0_gemv"]
+    },
+    {
+      "name": "Q4_0", "ggml_type": 2, "block_elems": 32, "block_bytes": 18, "packed_word_bits": 8,
+      "dequant_family": "legacy_scale", "route_families": [],
+      "refuted_routes": [], "pending_routes": ["q8_0_gemv"]
+    },
+    {
       "name": "F16", "ggml_type": 1, "block_elems": 1, "block_bytes": 2, "packed_word_bits": 16,
       "dequant_family": "float_passthrough", "route_families": ["matmul_or_attention"],
       "refuted_routes": [], "pending_routes": []

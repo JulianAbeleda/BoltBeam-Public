@@ -1,0 +1,20 @@
+{
+  "schema": "boltbeam.emitter_kinds.v1",
+  "note": "Decode emitter families whose coupled rows BoltBeam proposes itself, from the chip's facts and BoltBeam's own block layouts (collectors/metal_native.METADATA_BYTES, data/quants.json), never from the provider's row list. row_owner subgroup: each subgroup owns whole output rows, so a launch is rows_per_group x subgroup_size threads. lane_split block_code_units: the lanes of a subgroup split one block's code bytes in whole load units of the provider's declared width, so lanes_per_block divides both the block's units and the subgroup. launch_constants: the route's measured constants that become search dimensions.",
+  "kinds": [
+    {
+      "family": "block_quant_gemv.v1",
+      "quants": [
+        "Q8_0",
+        "Q5_0",
+        "Q4_0"
+      ],
+      "row_owner": "subgroup",
+      "lane_split": "block_code_units",
+      "launch_constants": [
+        "units_per_lane",
+        "max_warps_per_cta"
+      ]
+    }
+  ]
+}

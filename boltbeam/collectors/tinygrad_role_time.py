@@ -210,9 +210,10 @@ def refusal(table:dict[str, Any], limit_ms:float | None) -> str | None:
     return (f"{INCOMPLETE}: {table['kernel_ms']:.2f} ms of GPU time per token is below the limit's floor of "
             f"{limit_ms:.2f} ms by more than ±{100 * total['band']:.1f}%, so the "
             "capture missed kernels or counted tokens wrong")
+  from boltbeam.role_key import role_label
   below = [r for r in table["roles"] if r["actual_ms"] < r["ideal_ms"] * (1 - total["band"])]
   if below:
-    names = ", ".join(f"{r['role']} {r['quant']} {r['actual_ms']:.2f} < {r['ideal_ms']:.2f} ms "
+    names = ", ".join(f"{role_label(r['role'], r['quant'], r.get('shape'))} {r['actual_ms']:.2f} < {r['ideal_ms']:.2f} ms "
                       for r in below)
     return (f"{INCOMPLETE}: {len(below)} role(s) measured more than ±{100 * total['band']:.1f}% below their floor ({names}), "
             "so the capture missed kernels")
@@ -233,15 +234,17 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   whole = next((r for r in rows if r.get("scope") == "whole_step"), None)
   if not whole or not whole.get("tok_s") or not whole.get("wall_us"): return None
   tokens = whole.get("decode_tokens") or max(1, round(whole["wall_us"] * whole["tok_s"] / 1e6))
-  actual: dict[tuple[str, str], dict[str, float]] = {}
+  from boltbeam.role_key import role_key, shape_nk
+  actual: dict[tuple[Any, ...], dict[str, float]] = {}
   floor_us = None  # an isolated row's dispatch floor (kernel_timer.less_floor_us): one per trace, read off the rows
   not_timed = []  # rows the timer could not time (no adapter for the quant, a failed check): no time, never a 0 ms
   for r in rows:
     if r.get("scope") == "kernel" and r.get("status") not in (None, "measured"):
-      not_timed.append({"role": r.get("role"), "quant": r.get("quant"), "status": r["status"], "reason": r.get("reason")})
+      not_timed.append({"role": r.get("role"), "quant": r.get("quant"), **({"shape": list(shape_nk(r))} if shape_nk(r) else {}),
+                        "status": r["status"], "reason": r.get("reason")})
       continue
     if r.get("scope") == "kernel" and r.get("role_source") in ROLE_SOURCES and r.get("role") and r.get("quant"):
-      slot = actual.setdefault((r["role"], r["quant"]), {"us": 0.0, "us_less_floor": 0.0, "calls": 0, "spread_pct": None})
+      slot = actual.setdefault(role_key(r), {"us": 0.0, "us_less_floor": 0.0, "calls": 0, "spread_pct": None})
       slot["us"] += float(r["wall_us"]); slot["calls"] += int(r.get("calls", 1))
       slot["us_less_floor"] += float(r.get("wall_us_less_floor", r["wall_us"]))
       if r.get("spread_pct") is not None:  # an isolated row's sample spread (P90 - P10 over the median, %): the widest kept
@@ -250,11 +253,13 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
         floor_us = (r.get("timing") or {}).get("dispatch_floor_us", floor_us)
   out = []
   for c in ceiling_roles:
-    got = actual.get((c["role"], c["quant"]))
+    got = actual.get(role_key(c))
+    if got is None and shape_nk(c) is not None and not any(k[:2] == (c["role"], c["quant"]) and len(k) > 2 for k in actual):
+      got = actual.get((c["role"], c["quant"]))  # a trace without shapes keys by role and quant
     if got is None: continue
     ms = got["us"] / tokens / 1000.0
     noise = ms < c["floor_ms"] and ms >= c["floor_ms"] * (1 - chip["band"])
-    out.append({"role": c["role"], "quant": c["quant"], "ideal_ms": c["floor_ms"], "actual_ms": ms,
+    out.append({"role": c["role"], "quant": c["quant"], "shape": list(shape_nk(c) or []) or None, "ideal_ms": c["floor_ms"], "actual_ms": ms,
                 "lost_ms": 0.0 if noise else ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens,
                 "less_floor_ms": got["us_less_floor"] / tokens / 1000.0 if floor_us is not None else None,
                 "spread_pct": got["spread_pct"],
@@ -269,7 +274,8 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
            "not_attributed_ms": whole_ms - sum(r["actual_ms"] for r in out), "token_ms": whole.get("token_ms"),
            "unpaired_roles": list(trace.get("unpaired_roles") or []), "band": chip,
            # a limit role the timer had no adapter for: its own row with the reason, outside the floor rule and the sums
-           "not_timed": [n for n in not_timed if (n["role"], n["quant"]) in {(c["role"], c["quant"]) for c in ceiling_roles}]}
+           "not_timed": [n for n in not_timed if role_key(n) in {role_key(c) for c in ceiling_roles}
+                         or (n["role"], n["quant"]) in {(c["role"], c["quant"]) for c in ceiling_roles}]}
   if reason := refusal(table, limit_ms):
     return {"status": "incomplete", "reason": reason, "tokens": tokens,
             "events": whole.get("launch_count"), "roles": []}

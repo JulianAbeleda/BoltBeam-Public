@@ -108,13 +108,14 @@ class Facts:
       out.append(_ptr(MEASURE))
     return out
 
-  def role(self, role:str, quant:str) -> list[dict[str, Any]]:
+  def role(self, role:str, quant:str, shape:Any = None) -> list[dict[str, Any]]:
+    from boltbeam.role_key import shape_nk
+    want = shape_nk({"shape": shape})
+    same = lambda r: r.get("role") == role and r.get("quant") == quant and (want is None or shape_nk(r) in (None, want))  # noqa: E731
     out = [_ptr(self.trace_file, f"rows[{i}]") for i, r in enumerate(self.trace.get("rows") or [])
-           if r.get("scope") == "kernel" and r.get("role") == role and r.get("quant") == quant]
-    out += [_ptr(PROFILE, f"roles[{i}]") for i, r in enumerate(self.profile.get("roles") or [])
-            if r.get("role") == role and r.get("quant") == quant]
-    out += [_ptr(COMPARE, f"roles[{i}]") for i, r in enumerate(self.compare.get("roles") or [])
-            if r.get("role") == role and r.get("quant") == quant]
+           if r.get("scope") == "kernel" and same(r)]
+    out += [_ptr(PROFILE, f"roles[{i}]") for i, r in enumerate(self.profile.get("roles") or []) if same(r)]
+    out += [_ptr(COMPARE, f"roles[{i}]") for i, r in enumerate(self.compare.get("roles") or []) if same(r)]
     return out + self.common()
 
   def whole(self) -> list[dict[str, Any]]:
@@ -123,9 +124,10 @@ class Facts:
     return [_ptr(self.trace_file, f"rows[{i}]") for i, r in enumerate(self.trace.get("rows") or [])
             if r.get("scope") == "whole_step"][:1]
 
-  def others(self, taken:set[tuple[str, str]]) -> list[dict[str, Any]]:
+  def others(self, taken:set[tuple[Any, ...]]) -> list[dict[str, Any]]:
+    from boltbeam.role_key import role_key
     return [_ptr(self.trace_file, f"rows[{i}]") for i, r in enumerate(self.trace.get("rows") or [])
-            if r.get("scope") == "kernel" and (r.get("role"), r.get("quant")) not in taken]
+            if r.get("scope") == "kernel" and role_key(r) not in taken and role_key(r)[:2] not in taken]
 
   def launches_per_token(self) -> float | None:
     w = next((r for r in self.trace.get("rows") or [] if r.get("scope") == "whole_step"), {})

@@ -434,18 +434,19 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
     out["refused"] = table["reason"]
     return out
   facts = ev.Facts(run, providers.TRACES[shown])
-  regimes = {(r["role"], r["quant"]): r.get("regime") for r in ceil.get("_roles") or []}
+  from boltbeam.role_key import role_key
+  regimes = {role_key(r): r.get("regime") for r in ceil.get("_roles") or []}
   roles, rule = tie.role_why(table["roles"], bw, regimes=regimes, throttled=facts.throttle() is not None, latency_us=floor_us,
                              floor_us=table.get("floor_us"))
   out["cross_check"] = cross_check(run, bw)
-  roles = [{**r, "evidence": facts.role(r["role"], r["quant"])} for r in roles]
+  roles = [{**r, "evidence": facts.role(r["role"], r["quant"], r.get("shape"))} for r in roles]
   if shown != provider:
     out["search"] = search_block(run, shown)
     state = out["search"].pop("state")
-  by_key = {(r.get("role"), r.get("quant")): r for r in _optional(run, "route_policy.json").get("routes", []) or []}
+  by_key = {role_key(r): r for r in _optional(run, "route_policy.json").get("routes", []) or []}
   if shown != tinygrad_role_time.PROVIDER:  # the search compares tinygrad kernels; this table is another engine's
     state, by_key = {"status": "skipped", "reason": role_compare.search_applies(None, shown)}, {}
-  roles = [{**r, **role_compare.role_verdict(by_key.get((r["role"], r["quant"])), state)} for r in roles]
+  roles = [{**r, **role_compare.role_verdict(by_key.get(role_key(r)), state)} for r in roles]
   out.update(roles=roles, role_rule=rule, not_attributed_ms=table["not_attributed_ms"], capture=capture,
              unpaired_roles=table.get("unpaired_roles") or [], not_timed=table.get("not_timed") or [],
              source=_source(shown, capture, target))
@@ -464,7 +465,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
         r.update(isolated=True, lost_ms=None, note="the kernels' times summed, each timed alone; attention, norms and gaps are not in it")
   out["where_token_goes"] = tie.where_token_goes(out["tie_out"], out["roles"])
   out["findings"] = ev.items(facts, out)
-  taken = {(r["role"], r["quant"]) for r in roles}
+  taken = {role_key(r) for r in roles}
   out["evidence"] = {"whole_step": facts.whole(), "other_kernels": facts.others(taken), "common": facts.common()}
   if out["search"].get("next"):
     out["search"]["next"]["evidence"] = [p for r in roles if f"{r['role']} {r['quant']}" in out["search"]["next"]["roles"]
