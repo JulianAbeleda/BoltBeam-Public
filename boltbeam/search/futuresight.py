@@ -60,6 +60,7 @@ def build_static_legality(workload_facts: Mapping[str, Any], target_facts: Mappi
   """Build a pure generic legality check from the same supplied live facts."""
   facts = _static_facts(workload_facts, target_facts)
   shape, vocabulary, supported = facts.shape, facts.vocabulary, facts.vocabulary.transforms
+  one_subgroup = frozenset(target_facts.get("single_subgroup_families") or ())
 
   def check(candidate: CanonicalCandidate) -> str | None:
     schedule = candidate.get("schedule", {})
@@ -75,6 +76,9 @@ def build_static_legality(workload_facts: Mapping[str, Any], target_facts: Mappi
       tile, extent = _at_path(candidate, f"schedule.tile.{axis}"), shape.get(axis)
       if not _positive_int(tile): return f"non_positive_tile_{axis}"
       if _positive_int(extent) and extent % tile: return f"non_divisible_tile_{axis}"
+    # a kernel family that reduces inside one subgroup (the compiler says which) cannot launch more threads than one
+    family, width = _at_path(candidate, "schedule.compute.family"), _at_path(candidate, "workload.target.subgroup_size")
+    if family in one_subgroup and _positive_int(width) and threads > width: return "threads_exceed_one_subgroup"
     local_limit = _at_path(candidate, "static_constraints.max_local_memory_bytes")
     if local_limit is not None and not _positive_int(local_limit): return "non_positive_local_memory"
     if facts.max_local_memory is not None and _positive_int(local_limit) and local_limit > facts.max_local_memory: return "over_local_memory"

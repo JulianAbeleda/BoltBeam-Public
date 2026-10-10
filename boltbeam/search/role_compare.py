@@ -1,19 +1,27 @@
-"""Compare kernels per role on Metal: search, matched whole-model A/B, decision, route status.
+"""Compare kernels per role on any tinygrad GPU: search, BoltBeam's own check, matched whole-model A/B, decision.
 
 For every role in a run's route_policy.json this module
-  1. builds a finite full-kernel search request (the same 13-row space as the 2026-07-29 Apple M4 record),
-  2. runs it through the tinygrad fork's search provider (`search-full-kernel`'s own runner),
-  3. times the winner against the default kernel in a matched whole-model decode A/B, in tinygrad's own Metal
-     runtime (default, plan, default, plan), with the greedy tokens compared,
-  4. turns that into a CandidateDecision with the existing evaluator, appends it to the run's route ledger, and
+  1. asks the tinygrad fork's search provider which devices it can run (its capability action) and picks the first
+     of the run's backend's devices that opened (boltbeam/data/search_runtime.json, a table, not code),
+  2. checks the provider's device identity against BoltBeam's own reading of the GPU (search/provider_check.py),
+  3. builds the role's finite space from what the model's decode binds through on that device (search/role_space.py:
+     the fork's decode emitters, or Opt sequences on tinygrad's scheduler), with BubbleBeam's proposal and
+     FutureSight's static rejections recorded,
+  4. runs it through the provider (`search-full-kernel`'s own runner),
+  5. rebuilds the winner and the model's own kernel from the source the provider returned, on the model's weight
+     bytes, checks them against BoltBeam's reference and times them with BoltBeam's kernel timer: a provider time
+     outside the chip's band is "provider claim not reproduced" and the role is never promoted,
+  6. times the winner against the default in a matched whole-model decode A/B in tinygrad's runtime,
+  7. turns that into a CandidateDecision with the existing evaluator, appends it to the run's route ledger, and
      writes the route's status into route_policy.json.
 
-Every time it records is a tinygrad runtime time. None of them is a llama.cpp time.
+The provider's numbers are claims. The kernel numbers this module judges by are BoltBeam's own (the kernel timer);
+the whole-model numbers are tinygrad runtime times. None of them is a llama.cpp time.
 """
 from __future__ import annotations
 
 import datetime as _dt
-import hashlib, json, os, pathlib, statistics, subprocess
+import functools, hashlib, json, os, pathlib, statistics, subprocess
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -23,31 +31,35 @@ from boltbeam.ledger.model import CandidateDecision, EvidenceRef, status_for_ver
 from boltbeam.ledger.store import LedgerStore
 from boltbeam.manifest import Candidate
 from boltbeam.plan.resolved_target import candidate_target, resolved_target_document
-from boltbeam.search.full_kernel.full_kernel_search import run_full_kernel_search, subprocess_worker
+from boltbeam.search import provider_check, role_space
 from boltbeam.vocab import Verdict
 
-SCHEMA = "boltbeam.kernel_compare.v1"
+SCHEMA = "boltbeam.kernel_compare.v2"
 FOLDER = "kernel_compare"
-TIMING_SOURCE = "tinygrad Metal runtime"
-# The backends whose kernels this module can compare (the fork's search provider runs on Metal only).
-COMPARE_BACKENDS = ("metal",)
+TIMING_SOURCE = "tinygrad runtime (whole model) and BoltBeam's kernel timer (each kernel alone)"
 FORK_URL = "https://github.com/JulianAbeleda/tinygrad-arkey"
 PROVIDER = "extra/llm_research/search_provider.py"
+PROTOCOL = "tinygrad.search_provider.v1"
 AB_DRIVER = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "tinygrad_decode_ab.py"
-# The fork's default Metal replay cannot encode Qwen3-8B decode (ICB offset over 32 bits); the fork's own
-# EXP switch direct-encodes those calls. Both A/B arms run with it, so the comparison stays matched.
-RUNTIME_ENV = {"DEV": "METAL", "METAL_HYBRID_REPLAY": "1"}
+RUNTIME_TABLE = pathlib.Path(__file__).resolve().parents[1] / "data" / "search_runtime.json"
 REOPEN = "reopen when the plan binds by model-graph role identity or the A/B is re-measured at a new revision"
+DEFAULT_KIND = role_space.HEURISTIC
 
-# One row per candidate; the same finite space as bench/metal-qwen3-8b-20260729 (Apple M4).
-ROWS: tuple[dict[str, Any], ...] = (
-  {"schedule.plan_kind": "tinygrad_heuristic.v1", "schedule.transforms": [], "schedule.launch.threads": 32},
-  {"schedule.plan_kind": "tinygrad_opt_sequence.v1", "schedule.transforms": [], "schedule.launch.threads": 1},
-  *({"schedule.transforms": [{"op": "UPCAST", "axis": 0, "arg": n}], "schedule.launch.threads": 1} for n in (2, 3, 4)),
-  *({"schedule.transforms": [{"op": "LOCAL", "axis": 0, "arg": n}], "schedule.launch.threads": n}
-    for n in (8, 16, 32, 64, 128, 256, 512, 1024)),
-)
-DEFAULT_KIND = "tinygrad_heuristic.v1"
+
+@functools.lru_cache(maxsize=1)
+def _runtime_table() -> dict[str, Any]:
+  return json.loads(RUNTIME_TABLE.read_text())
+
+
+def runtime_row(backend:str | None) -> dict[str, Any] | None:
+  """The search runtime row of a BoltBeam target backend (Metal, CUDA, AMD), or None when the table has none."""
+  rows = _runtime_table()["backends"]
+  return next((dict(v) for k, v in rows.items() if backend and k.lower() == str(backend).lower()), None)
+
+
+def decode_env(backend:str | None, device:str) -> dict[str, str]:
+  """The whole-model A/B environment: the device the search served on and the backend's recorded switches."""
+  return {"DEV": device, **dict((runtime_row(backend) or {}).get("decode_env") or {})}
 
 
 def _sha256_file(path:pathlib.Path) -> str:
@@ -151,62 +163,96 @@ def clean_refusal(root:pathlib.Path) -> str | None:
 
 # --- the request for one role ---------------------------------------------------------------------------------
 
-def describe(root:pathlib.Path, timeout_s:float = 180.0) -> dict[str, Any]:
-  line = json.dumps({"protocol": "tinygrad.search_provider.v1", "request_id": "describe", "action": "describe", "payload": {}})
-  proc = subprocess.run([str(fork_python(root)), PROVIDER, "--backend", "METAL"], cwd=root, input=line + "\n",
-                        capture_output=True, text=True, timeout=timeout_s, env={**os.environ, "PYTHONPATH": "."})
+def _ask(root:pathlib.Path, action:str, payload:Mapping[str, Any], timeout_s:float = 180.0) -> dict[str, Any]:
+  """One request to the fork's provider, in its own process; the result, or RuntimeError with the provider's words."""
+  line = json.dumps({"protocol": PROTOCOL, "request_id": action, "action": action, "payload": dict(payload)})
+  proc = subprocess.run([str(fork_python(root)), PROVIDER], cwd=root, input=line + "\n", capture_output=True, text=True,
+                        timeout=timeout_s, env={**os.environ, "PYTHONPATH": "."})
   reply = json.loads(proc.stdout.strip().splitlines()[-1]) if proc.stdout.strip() else {}
-  if reply.get("status") != "ok": raise RuntimeError(f"provider describe failed: {proc.stderr.strip()[-300:] or reply}")
+  if reply.get("status") != "ok":
+    why = (reply.get("error") or {}).get("message") or proc.stderr.strip()[-300:] or "no reply"
+    raise RuntimeError(f"provider {action} failed: {why}")
   return reply["result"]
 
 
-def _workload(role:str, quant:str, n:int, k:int, profile:str, model_sha:str, target:dict[str, Any]) -> dict[str, Any]:
-  return {"profile": profile, "model_sha256": model_sha, "phase": "decode", "role": role, "operation": "matmul",
-          "shape": {"m": 1, "n": n, "k": k},
-          "operands": {"a": {"dtype": "fp16", "layout": "row_major", "quantization": "none"},
-                       "b": {"dtype": quant.lower(), "layout": "transposed_row_major", "quantization": quant.lower()},
-                       "c": {"dtype": "fp16", "layout": "row_major", "quantization": "none"}},
-          "accumulator_dtype": "fp32", "target": target}
+def capability(root:pathlib.Path, devices:list[str]) -> dict[str, Any]:
+  """The provider's own account of the devices it can run: one row per named device, opened or with its reason."""
+  return _ask(root, "capability", {"devices": list(devices)})
 
 
-def route_request(route:Mapping[str, Any], *, model_id:str, target_id:str, observed:Mapping[str, Any], model_sha:str,
-                  provider_revision:str, boltbeam_revision:str | None, run_id:str, timestamp:str) -> dict[str, Any]:
-  """The search request for one route_policy row. Shape [N, K] is the GEMV: N output rows, K inputs."""
-  role, quant = str(route["role"]), str(route["quant"])
+def describe(root:pathlib.Path, device:str | None = None) -> dict[str, Any]:
+  return _ask(root, "describe", {"device": device} if device else {})
+
+
+def pick_device(backend:str | None, reply:Mapping[str, Any]) -> tuple[str | None, str | None]:
+  """(device, None) for the first of the backend's devices the provider opened, else (None, why)."""
+  row = runtime_row(backend)
+  if row is None:
+    return None, f"the search runtime table (data/search_runtime.json) has no row for {backend or 'an unknown backend'}"
+  rows = {str(r.get("device")).upper(): r for r in reply.get("devices") or [] if isinstance(r, Mapping)}
+  for name in row["tinygrad_devices"]:
+    got = rows.get(name.upper())
+    if got and got.get("opened"):
+      return str(got["device"]), None
+  said = "; ".join(f"{name}: {(rows.get(name.upper()) or {}).get('reason') or 'not reported'}" for name in row["tinygrad_devices"])
+  return None, f"the provider runs on none of this {backend} machine's devices ({said})"
+
+
+TOLERANCE = {"atol": 0.001, "rtol": 0.001}
+
+
+def semantic_workload(route:Mapping[str, Any], *, tensor_name:str, model_sha:str, target:Mapping[str, Any]) -> dict[str, Any]:
+  """The exact semantic workload of one role: the recorded tensor, its shape and packed format, the one-token GEMV."""
+  role, quant = str(route["role"]), str(route["quant"]).upper()
   n, k = (int(x) for x in route["shape"])
+  module = tensor_name[:-len(".weight")] if tensor_name.endswith(".weight") else tensor_name
+  identity = {"phase": "decode", "tensor_name": tensor_name, "module_path": module, "role": role, "logical_m": 1,
+              "logical_n": n, "logical_k": k, "source_quant_storage": quant, "source_layout": "transposed_row_major",
+              "module_representation": "gguf_packed", "input_dtype": "fp16", "output_dtype": "fp16", "accumulator_dtype": "fp32"}
+  return {"schema": "tinygrad.semantic_provider_workload.v1", "model_hash": model_sha, "target": dict(target),
+          "semantic_identity": identity, "operation": "matmul", "shape": {"m": 1, "n": n, "k": k},
+          "operands": {"a": {"dtype": "fp16"}, "b": {"quantization": quant, "layout": "transposed_row_major"}, "c": {"dtype": "fp16"}},
+          "tolerance": dict(TOLERANCE), "fixture_shape_substitution": "forbidden"}
+
+
+def propose(route:Mapping[str, Any], *, tensor_name:str, model:str, model_id:str, target_id:str, describe_result:Mapping[str, Any],
+            model_sha:str, run_id:str, timestamp:str) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+  """BubbleBeam, then the population, then FutureSight, for one role: (campaign request, population, FutureSight
+  evidence, the role's proposal inputs). The documented pipeline (docs/semantic-campaign.md) steps 1 to 3."""
+  from boltbeam.search.futuresight_adapter import assess_population, propose_request, target_facts
+  from boltbeam.search.semantic.semantic_population_export import export_population
+  observed = describe_result["target"]
   resolved = resolved_target_document(target_id, observed)
-  target = candidate_target(resolved)
-  slug = "".join(ch if ch.isalnum() else "_" for ch in model_id.lower()).strip("_")
-  profile = f"{slug}_{quant.lower().replace('_', '')}_{target_id}"
-  workload = _workload(role, quant, n, k, profile, model_sha, target)
-  seed = {"schema_version": "boltbeam.full_kernel_candidate.v2", "workload": workload,
-          "schedule": {"plan_kind": "tinygrad_opt_sequence.v1", "transforms": [], "tile": {"m": 1, "n": 32, "k": 32},
-                       "launch": {"threads": 1}, "mapping": {"lane_policy": "subgroup_contiguous"},
-                       "memory": {"a": {"space": "global", "vector_width": 1, "alignment": 2},
-                                  "b": {"space": "global", "vector_width": 4, "alignment": 16},
-                                  "c": {"space": "global", "vector_width": 1, "alignment": 2}},
-                       "pipeline": {"stage_count": 1}, "compute": {"family": "generic_matvec"},
-                       "numerical_mode": "fp16_acc_fp32"},
-          "static_constraints": {"max_local_memory_bytes": None, "max_registers_per_thread": None, "spill_policy": "unknown"},
-          "correctness": {"oracle": "canonical_packed_reference", "atol": 0.001, "rtol": 0.001},
-          "memory_budget": {"status": "unavailable", "bytes": None},
-          "provenance": {"generator_id": "bubblebeam_futuresight", "generator_revision": provider_revision,
-                         "schema_revision": "boltbeam.full_kernel_candidate.v2"},
-          "applicability": {"exact_shape": True, "profiles": [profile], "roles": [role],
-                            "targets": [f"{target_id}:subgroup{target['subgroup_size']}"]}}
-  request = {"schema": "boltbeam.full_kernel_search_request.v1",
-             "request_id": f"{run_id}-{role}-{quant.lower()}", "run_id": run_id, "timestamp": timestamp,
-             "candidate_space_status": "FINITE", "requested_provider_revision": provider_revision,
-             "require_control": True, "execution": {"shape_mode": "exact_workload", "warmups": 2, "samples": 7},
-             "target": target, "resolved_target": resolved,
-             "candidate_space": {"seed": seed, "rows": [dict(r) for r in ROWS]},
-             "workloads": [workload], "budget": {"max_candidates": len(ROWS)},
-             "objective": {"metric": "median_ns", "direction": "minimize", "tie_break": "candidate_hash"}}
-  if boltbeam_revision: request["requested_boltbeam_revision"] = boltbeam_revision
-  return request
+  workload = semantic_workload(route, tensor_name=tensor_name, model_sha=model_sha, target=candidate_target(resolved))
+  facts, _missing = target_facts(target_id, describe_result)
+  inputs = role_space.proposal_inputs(describe_result, facts, str(route["quant"]))
+  if inputs.get("why"):
+    raise ValueError(inputs["why"])
+  role, quant = str(route["role"]), str(route["quant"])
+  spec = {"semantic_workload": workload, "schedule": inputs["schedule"], "resolved_target": resolved, "gguf_path": str(model),
+          "execution": {"shape_mode": "exact_workload", "warmups": 2, "samples": 7},
+          "request_id": f"{run_id}-{role}-{quant.lower()}", "run_id": run_id, "timestamp": timestamp,
+          "budget": {"max_candidates": len(inputs["coupled_rows"]) + 2, "timeout_s": 600.0},
+          "axis_choices": inputs["axis_choices"], "coupled_rows": inputs["coupled_rows"]}
+  request, _missing = propose_request(spec, describe_result)          # 1. BubbleBeam
+  population = export_population(request)                           # 2. the population
+  evidence = assess_population(population)                           # 3. FutureSight
+  return request, population, evidence, inputs
 
 
 # --- reading a search result ----------------------------------------------------------------------------------
+
+def plan_text(schedule:Mapping[str, Any]) -> str:
+  """One plan in words: the default kernel, an Opt sequence, or an emitter with its schedule values."""
+  kind = str(schedule.get("plan_kind") or "")
+  if kind == DEFAULT_KIND: return "default kernel"
+  if kind == role_space.EMITTER_PLAN_KIND:
+    mem = schedule.get("memory") or {}
+    return (f"{(schedule.get('compute') or {}).get('family')}: {(schedule.get('launch') or {}).get('threads')} threads, "
+            f"{(schedule.get('tile') or {}).get('n')} rows a block, {((mem.get('b') or {}).get('vector_width'))}-byte weight loads, "
+            f"activation in {(mem.get('a') or {}).get('space')} memory, {(schedule.get('pipeline') or {}).get('stage_count')} accumulators")
+  return _plan_text(list(schedule.get("transforms") or []), kind)
+
 
 def _plan_text(transforms:list[Mapping[str, Any]], kind:str) -> str:
   if kind == DEFAULT_KIND: return "default kernel"
@@ -214,22 +260,37 @@ def _plan_text(transforms:list[Mapping[str, Any]], kind:str) -> str:
   return " ".join(f"{t['op']} {t['arg']}" + (f" on axis {t['axis']}" if t.get("axis") else "") for t in transforms)
 
 
-def summarize_search(result:Mapping[str, Any]) -> dict[str, Any]:
-  """Winner, the default kernel's time, and the counts, from one full-kernel search result."""
+def _median(r:Mapping[str, Any] | None) -> float | None:
+  return ((r or {}).get("measurement") or {}).get("median_ns")
+
+
+def kernel_record(row:Mapping[str, Any] | None) -> dict[str, Any] | None:
+  """The kernel the provider says it compiled for a population row: source, function, launch, buffers."""
+  compiled = (((row or {}).get("worker") or {}).get("provider") or {}).get("compile") or {}
+  record = (compiled.get("result") or {}).get("kernel") if isinstance(compiled, Mapping) else None
+  return dict(record) if isinstance(record, Mapping) else None
+
+
+def _entry(row:Mapping[str, Any]) -> dict[str, Any]:
+  sched = row["candidate"]["schedule"]
+  generated = (row.get("worker") or {}).get("generated") or {}
+  return {"candidate_hash": row["candidate_hash"], "plan_kind": sched["plan_kind"], "schedule": dict(sched),
+          "transforms": list(sched.get("transforms", [])), "plan": plan_text(sched), "plan_hash": generated.get("plan_hash"),
+          "median_ns": _median(row), "is_default": sched["plan_kind"] == DEFAULT_KIND}
+
+
+def summarize_search(result:Mapping[str, Any], installed:Mapping[str, Any] | None = None) -> dict[str, Any]:
+  """The provider's winner, the default kernel, the model's own kernel (the row the decode installs) and the counts,
+  from one full-kernel search result. Ranks and times here are the provider's claims."""
   measured = [r for r in result.get("population", []) if r.get("state") == "MEASURED"]
   measured.sort(key=lambda r: (r.get("rank") or 1 << 30))
-  def median(r): return (r.get("measurement") or {}).get("median_ns")
   default = next((r for r in measured if r["candidate"]["schedule"]["plan_kind"] == DEFAULT_KIND), None)
+  model = next((r for r in measured if role_space.is_row(r["candidate"], installed)), None)
   out = {"status": result.get("status"), "counts": dict(result.get("counts", {})), "winner": None,
-         "default_median_ns": median(default) if default else None}
+         "default_median_ns": _median(default), "model_kernel": _entry(model) if model else None}
   if measured:
-    best = measured[0]
-    sched = best["candidate"]["schedule"]
-    generated = (best.get("worker") or {}).get("generated") or {}
-    out["winner"] = {"candidate_hash": best["candidate_hash"], "plan_kind": sched["plan_kind"],
-                     "transforms": list(sched.get("transforms", [])), "plan": _plan_text(sched.get("transforms", []), sched["plan_kind"]),
-                     "plan_hash": generated.get("plan_hash"), "median_ns": median(best),
-                     "is_default": sched["plan_kind"] == DEFAULT_KIND}
+    out["winner"] = _entry(measured[0])
+    out["winner"]["is_model_kernel"] = model is not None and measured[0]["candidate_hash"] == model["candidate_hash"]
   return out
 
 
@@ -267,15 +328,23 @@ def role_losses(run:pathlib.Path) -> dict[tuple[str, str], dict[str, Any]]:
   return {(r["role"], r["quant"]): r for r in table["roles"]}  # an incomplete table has no roles
 
 
-def kernel_numbers(summary:Mapping[str, Any], in_model:Mapping[str, Any] | None = None) -> dict[str, Any] | None:
-  """Number one of two: the winning plan alone vs the search's reference kernel, at the role shape, same harness.
-  The reference is tinygrad's heuristic on the search fixture, not the kernel the model's decode runs (lm_head's
-  reference alone took longer than a whole decode token), so this is never read as faster or slower than the
-  model. Never a stand-in for the whole-model number."""
-  w, d = summary.get("winner"), summary.get("default_median_ns")
+def kernel_numbers(summary:Mapping[str, Any], in_model:Mapping[str, Any] | None = None,
+                   verify:Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+  """Number one of two: the winning plan alone, by BoltBeam's kernel timer (less the dispatch floor) when the check
+  ran, else the provider's claim, beside the model's own kernel. The model's per-call time is the role's kernel
+  inside the running model (tinygrad's role time). Never a stand-in for the whole-model number."""
+  w = summary.get("winner")
   if not w or w.get("median_ns") is None: return None
-  out = {"plan_us": w["median_ns"] / 1000.0, "reference_us": d / 1000.0 if d is not None else None,
-         "reference": "search fixture heuristic", "model_us_per_call": None, "faster_than_model": None}
+  mine = ((verify or {}).get("winner") or {}).get("boltbeam") or {}
+  model = ((verify or {}).get("model_kernel") or {}).get("boltbeam") or {}
+  plan_us = mine.get("us_less_floor") if mine.get("status") == "measured" else None
+  out = {"plan_us": plan_us if plan_us is not None else w["median_ns"] / 1000.0,
+         "plan_us_source": "BoltBeam's kernel timer, less the dispatch floor" if plan_us is not None else "the provider's claim",
+         "provider_plan_us": w["median_ns"] / 1000.0,
+         "reference_us": (summary.get("default_median_ns") or 0) / 1000.0 if summary.get("default_median_ns") is not None else None,
+         "reference": "search fixture heuristic (the provider's time)",
+         "model_kernel_us": model.get("us_less_floor") if model.get("status") == "measured" else None,
+         "model_us_per_call": None, "faster_than_model": None}
   if in_model and in_model.get("calls_per_token"):
     # the baseline: the role's own kernel inside the running model, GPU time per call at the same shape
     per_call = in_model["actual_ms"] * 1000.0 / in_model["calls_per_token"]
@@ -284,25 +353,88 @@ def kernel_numbers(summary:Mapping[str, Any], in_model:Mapping[str, Any] | None 
 
 
 def plan_id(role:str, quant:str, winner:Mapping[str, Any]) -> str:
-  return f"metal-plan:{role}:{quant}:{(winner.get('plan_hash') or winner['candidate_hash'])[:12]}"
+  return f"tinygrad-plan:{role}:{quant}:{(winner.get('plan_hash') or winner['candidate_hash'])[:12]}"
+
+
+# --- BoltBeam's own check of the provider's claims ------------------------------------------------------------
+
+def role_bytes(model:str, quant:str, rows:int, cols:int, tensor_name:str | None = None) -> tuple[str, bytes]:
+  """The role's own weight bytes from the model file (the tensor of this quant and shape)."""
+  from boltbeam.collectors import metal_native as native
+  from boltbeam.profile.gguf import read_gguf_layout
+  _, tensors, data_start = read_gguf_layout(pathlib.Path(model))
+  name, offset = native.tensor_for(quant, rows, cols, tensors, tensor_name)
+  size = rows * (cols // native.BLOCK_ELEMS[quant]) * native.BLOCK_BYTES[quant]
+  with open(model, "rb") as f:
+    f.seek(data_start + offset)
+    return name, f.read(size)
+
+
+class Checker:
+  """BoltBeam's bridge on this machine, its flush and dispatch floor, opened once for a run's roles."""
+
+  def __init__(self, backend:str, band:float, bridge=None):
+    from boltbeam.collectors import kernel_timer
+    self.backend, self.band = backend, band
+    self.bridge = bridge or kernel_timer.bridge_for(backend)
+    self.flusher = kernel_timer.Flusher(self.bridge, backend)
+    self.floor_us = self.flusher.floor_us()
+    self.libraries: dict[str, int] = {}
+
+  def facts(self) -> dict[str, Any]:
+    return provider_check.bridge_facts(self.bridge)
+
+  def __call__(self, summary:Mapping[str, Any], result:Mapping[str, Any], *, model:str, quant:str, rows:int, cols:int,
+               role:str, tensor_name:str | None = None) -> dict[str, Any]:
+    """Every candidate the provider measured correct, rebuilt and timed by BoltBeam on the role's own bytes, each
+    claim judged; BoltBeam's own winner is the fastest whose claim reproduced."""
+    from boltbeam.collectors import boltbeam_gemv
+    tensor, weights = role_bytes(model, quant, rows, cols, tensor_name)
+    x = boltbeam_gemv.vector(f"{role}:{quant}", cols)
+    out: dict[str, Any] = {"tensor": tensor, "floor_us": self.floor_us, "band": self.band, "candidates": []}
+    for row in sorted((r for r in result.get("population", []) if r.get("state") == "MEASURED"), key=lambda r: r.get("rank") or 1 << 30):
+      entry = _entry(row)
+      record = kernel_record(row)
+      if record is None:
+        mine = {"status": "not_rebuilt", "reason": "the provider returned no kernel source and launch for this candidate"}
+      else:
+        mine = provider_check.retime(self.bridge, self.flusher, self.floor_us, record, quant=quant, rows=rows, cols=cols,
+                                     weights=weights, x=x, label=entry["plan"], libraries=self.libraries)
+      out["candidates"].append({"candidate_hash": entry["candidate_hash"], "plan": entry["plan"], "provider_rank": row.get("rank"),
+                                "boltbeam": mine, **provider_check.judge(entry.get("median_ns"), mine, self.band)})
+    return out
+
+
+def checked(summary:Mapping[str, Any], verify:Mapping[str, Any]) -> dict[str, Any]:
+  """The provider's winner and the model's own kernel as BoltBeam judged them, and BoltBeam's own winner: the fastest
+  candidate BoltBeam measured correct (its time less the floor). Its claim must reproduce for any decision: a slower
+  candidate whose claim happened to reproduce never stands in for it, since that would refute plans BoltBeam itself
+  found faster."""
+  rows = {c["candidate_hash"]: c for c in verify.get("candidates") or []}
+  out = {k: rows.get((summary.get(k) or {}).get("candidate_hash")) for k in ("winner", "model_kernel")}
+  timed = [c for c in rows.values() if (c.get("boltbeam") or {}).get("status") == "measured"]
+  good = [c for c in rows.values() if c.get("verdict") == provider_check.REPRODUCED]
+  out["boltbeam_winner"] = min(timed, key=lambda c: c["boltbeam"]["us_less_floor"], default=None)
+  out["reproduced"], out["not_reproduced"] = len(good), len(rows) - len(good)
+  return out
 
 
 # --- the matched whole-model A/B ------------------------------------------------------------------------------
 
 def run_ab(root:pathlib.Path, model:str, *, transforms:list[Mapping[str, Any]], shape:tuple[int, int],
-           pairs:int = 3, timeout_s:float = 1800.0) -> dict[str, Any]:
+           pairs:int = 3, timeout_s:float = 1800.0, env:Mapping[str, str] | None = None) -> dict[str, Any]:
   """The driver loads the model once and alternates default and plan arms in that one process."""
   argv = [str(fork_python(root)), str(AB_DRIVER), "--model", str(model), "--opts", json.dumps(list(transforms)),
           "--shape", f"{shape[0]},{shape[1]}", "--pairs", str(pairs)]
   proc = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=timeout_s,
-                        env={**os.environ, "PYTHONPATH": ".", **RUNTIME_ENV})
+                        env={**os.environ, "PYTHONPATH": ".", **(env or {})})
   lines = [x for x in proc.stdout.splitlines() if x.startswith("{")]
   if proc.returncode != 0 or not lines:
     raise RuntimeError(f"decode A/B failed: {(proc.stderr or proc.stdout).strip()[-400:]}")
   return json.loads(lines[-1])
 
 
-def matched_ab(raw:Mapping[str, Any]) -> dict[str, Any]:
+def matched_ab(raw:Mapping[str, Any], env:Mapping[str, str] | None = None) -> dict[str, Any]:
   """Medians and noise from the interleaved arms. The plan counts as bound only when it reached decode calls:
   a plan applied to other kernels leaves both arms running the same decode."""
   b = [x for arm in raw["baseline"] for x in arm["tok_s_samples"]]
@@ -311,7 +443,7 @@ def matched_ab(raw:Mapping[str, Any]) -> dict[str, Any]:
   bm, cm = statistics.median(b), statistics.median(c)
   first = raw["baseline"][0]["tokens"]
   binding = dict(raw["binding"])
-  return {"timing_source": TIMING_SOURCE, "context": raw["context"], "runtime_env": dict(RUNTIME_ENV),
+  return {"timing_source": TIMING_SOURCE, "context": raw["context"], "runtime_env": dict(env or {}),
           "pairs": raw["pairs"], "baseline_tok_s": bm, "candidate_tok_s": cm, "delta_pct": (cm - bm) / bm * 100.0,
           # noise is the wider of the two sides' ranges; overlapping ranges mean no measurable change
           "spread_pct": max(max(b) - min(b), max(c) - min(c)) / bm * 100.0,
@@ -347,14 +479,15 @@ def decide(route:Mapping[str, Any], winner:Mapping[str, Any], ab:Mapping[str, An
 
 
 def default_wins(route:Mapping[str, Any], winner:Mapping[str, Any], *, model_id:str, target_id:str,
-                 search_path:str, search_sha:str) -> CandidateDecision:
-  """The isolated search already put the default kernel first: no plan to try, a firm refutation."""
+                 search_path:str, search_sha:str, model_kernel:bool = False) -> CandidateDecision:
+  """The search's fastest kernel is the reference or the model's own kernel: no plan to try, a firm refutation."""
   role, quant = str(route["role"]), str(route["quant"])
+  which = "the model's own kernel" if model_kernel else "the search reference kernel"
   ref = EvidenceRef(evidence_id=search_sha, path=search_path, kind="full_kernel_search", fingerprint=f"sha256:{search_sha}",
-                    claim=f"the search reference is the fastest measured {role} {quant} fixture kernel")
+                    claim=f"{which} is the fastest measured {role} {quant} kernel")
   return CandidateDecision(candidate_id=plan_id(role, quant, winner), model_id=model_id, target_id=target_id,
                            workload="decode", verdict=Verdict.REFUTE.value, evidence=(ref,),
-                           reason="no searched plan beat the search reference kernel alone",
+                           reason=f"no searched plan beat {which} alone",
                            next_action="keep the default kernel")
 
 
@@ -385,17 +518,29 @@ def _write(path:pathlib.Path, obj:Any) -> str:
   return hashlib.sha256(text.encode()).hexdigest()
 
 
+class ProviderRefused(RuntimeError):
+  """The provider's device is not the GPU BoltBeam reads, or the provider runs on none of this machine's devices."""
+
+
+def _target_band(target_id:str) -> float:
+  from boltbeam.target.targets import get_target
+  from boltbeam.workflow.screen import plausibility_band
+  return plausibility_band(get_target(target_id))
+
+
 def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callable[[str], None] = print,
                 search:Callable[..., dict[str, Any]] | None = None, ab_run:Callable[..., dict[str, Any]] | None = None,
-                describe_fn:Callable[[pathlib.Path], dict[str, Any]] | None = None,
-                only:set[str] | None = None, ab_only_if_faster:bool = False,
+                describe_fn:Callable[..., dict[str, Any]] | None = None,
+                capability_fn:Callable[[pathlib.Path, list[str]], dict[str, Any]] | None = None,
+                checker:Any = None, only:set[str] | None = None, ab_only_if_faster:bool = False,
                 step:Callable[[int, int], None] | None = None) -> dict[str, Any]:
   """Compare kernels for every route of one run and write the outcome into the run folder.
 
-  `search`, `ab_run` and `describe_fn` default to the real provider and driver; tests pass doubles.
-  ab_only_if_faster skips the whole-model A/B for a role whose best plan alone is not faster than the model's own
-  kernel per call (Run's search stage). step(done, total) is called after each role.
+  `search`, `ab_run`, `describe_fn`, `capability_fn` and `checker` default to the real provider, driver and BoltBeam
+  bridge; tests pass doubles. ab_only_if_faster skips the whole-model A/B for a role whose best plan alone is not
+  faster than the model's own kernel per call (Run's search stage). step(done, total) is called after each role.
   """
+  from boltbeam.target.targets import get_target
   from boltbeam.workflow.common import load_manifest, read_json, write_json
   root = pathlib.Path(root) if root else default_fork_root()
   manifest = load_manifest(run)
@@ -406,6 +551,20 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
   if search is None and (why := clean_refusal(root)):
     raise RuntimeError(why)
   target_id, model_id = str(manifest.get("target_id")), str(manifest.get("model_id"))
+  backend = get_target(target_id).backend
+  # the device: the first of this backend's devices the provider says it opened
+  row = runtime_row(backend)
+  reply = (capability_fn or capability)(root, list((row or {}).get("tinygrad_devices") or []))
+  device, why = pick_device(backend, reply)
+  if device is None:
+    raise ProviderRefused(why)
+  facts = (describe_fn or describe)(root, device)
+  # the provider's device against BoltBeam's own reading of this machine's GPU
+  if checker is None:
+    checker = Checker(backend, _target_band(target_id))
+  ident = provider_check.identity(facts.get("target") or {}, checker.facts())
+  if not ident["passed"]:
+    raise ProviderRefused(ident["reason"])
   policy = read_json(run / "route_policy.json")
   routes = [r for r in policy.get("routes", []) if r.get("role") and r.get("quant") and r.get("shape")]
   if only: routes = [r for r in routes if f"{r['role']}:{r['quant']}" in only]
@@ -413,66 +572,120 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
     say("role-time: start")
     time_roles(run, root=root)
   losses = role_losses(run)
+  profile = read_json(run / "model_profile.json") if (run / "model_profile.json").is_file() else {}
+  tensors = {(r.get("role"), r.get("quant")): r.get("tensor_name") for r in profile.get("roles", []) if r.get("tensor_name")}
   # the biggest loss first: that is where a better kernel can save the most
   routes.sort(key=lambda r: -losses.get((r["role"], r["quant"]), {}).get("lost_ms", float("-inf")))
-  facts = (describe_fn or describe)(root)
   provider_rev = (facts.get("provider_revision") or {}).get("revision")
   bb_rev, bb_dirty = _git_state(pathlib.Path(__file__).resolve().parents[2])
   model_sha = _sha256_file(pathlib.Path(model)) if search is None else "0" * 63 + "1"
   folder = run / FOLDER
   timestamp = _now()
+  env = decode_env(backend, device)
   if search is None:
-    def search(request):  # noqa: E306 - the real provider, one process per stage
-      worker = subprocess_worker([str(fork_python(root)), "-m", "extra.llm_research.search_provider"], cwd=str(root),
-                                 timeout_s=600.0, resolved_target=request["resolved_target"],
-                                 requested_provider_revision=request["requested_provider_revision"],
-                                 execution=request["execution"])
-      return run_full_kernel_search(request, worker, timeout_s=600.0)
+    def search(request, evidence):  # noqa: E306 - the documented campaign, one provider process per role
+      from boltbeam.search.full_kernel.tinygrad_full_kernel import PersistentJSONLSession
+      from boltbeam.search.semantic_campaign_cli import run_request
+      with PersistentJSONLSession((str(fork_python(root)), "-m", "extra.llm_research.search_provider"), cwd=str(root)) as session:
+        return run_request(request, provider_command=[], futuresight_evidence=evidence, provider_session=session,
+                           requested_provider_revision=provider_rev)
   if ab_run is None:
     def ab_run(transforms, shape):  # noqa: E306
-      return run_ab(root, model, transforms=transforms, shape=shape)
+      return run_ab(root, model, transforms=transforms, shape=shape, env=env)
   record = {"schema": SCHEMA, "run": run.name, "model_id": model_id, "target_id": target_id, "model_path": model,
             "model_sha256": model_sha, "provider_revision": provider_rev, "boltbeam_revision": bb_rev,
             "boltbeam_dirty": bb_dirty, "fork": str(root), "timestamp": timestamp, "timing_source": TIMING_SOURCE,
-            "note": "Every time here is a tinygrad Metal runtime time, not a llama.cpp time.", "roles": []}
+            "device": device, "capability": reply, "identity": ident, "band": checker.band, "runtime_env": env,
+            "note": "Kernel times are BoltBeam's kernel timer on the source the provider returned; whole-model times are "
+                    "tinygrad runtime times; none is a llama.cpp time. Provider times are claims, kept beside.",
+            "roles": []}
   ledger = LedgerStore(run / "route_ledger.jsonl")
-  say(f"compare roles: {len(routes)}")
+  say(f"compare roles: {len(routes)} on {device}")
   for route in routes:
     role, quant = str(route["role"]), str(route["quant"])
     key, stem = f"{role} {quant}", f"{role}-{quant.lower()}"
     n, k = (int(x) for x in route["shape"])
     say(f"role {key}: search")
-    request = route_request(route, model_id=model_id, target_id=target_id, observed=facts["target"], model_sha=model_sha,
-                            provider_revision=provider_rev, boltbeam_revision=None if bb_dirty else bb_rev,
-                            run_id=f"{run.name}-compare", timestamp=timestamp)
-    _write(folder / f"{stem}-search-request.json", request)
+    tensor_name = route.get("tensor_name") or tensors.get((role, quant))
     try:
-      result = search(request)
-    except Exception as exc:  # a provider failure blocks this role, not the others
-      result = {"status": "BLOCKED", "counts": {}, "population": [], "error": str(exc)}
+      request, population, evidence, inputs = propose(route, tensor_name=str(tensor_name), model=model, model_id=model_id,
+                                                      target_id=target_id, describe_result=facts, model_sha=model_sha,
+                                                      run_id=f"{run.name}-compare", timestamp=timestamp)
+    except Exception as exc:  # no space for this role: say why, the other roles go on
+      request, population, evidence, inputs = None, None, None, {"why": str(exc)}
+    if request is not None:
+      _write(folder / f"{stem}-search-request.json", request | {"futuresight_evidence": evidence})
+      _write(folder / f"{stem}-population.json", population)
+      try:
+        result = search(request, evidence)                           # 4. the campaign measures the survivors
+      except Exception as exc:  # a provider failure blocks this role, not the others
+        result = {"status": "BLOCKED", "counts": {}, "population": [], "error": str(exc),
+                  "futuresight_static_evidence": evidence}
+    else:
+      result = {"status": "BLOCKED", "counts": {}, "population": [], "error": inputs["why"]}
     search_sha = _write(folder / f"{stem}-search-result.json", result)
-    summary = summarize_search(result)
-    row: dict[str, Any] = {"role": role, "quant": quant, "shape": [n, k], "search": summary,
+    summary = summarize_search(result, inputs.get("installed_row"))
+    rejected = [r for r in (evidence or {}).get("rejections") or [] if "candidate_hash" in r]
+    row: dict[str, Any] = {"role": role, "quant": quant, "shape": [n, k], "search": summary, "space": {
+                             "binds_through": inputs.get("binds_through"), "family": inputs.get("family"), "generator": inputs.get("generator"),
+                             "proposed": len((population or {}).get("candidates") or []),
+                             "bubblebeam_rejected_rows": len((request or {}).get("rejected_coupled_rows") or []),
+                             "futuresight_rejected": len(rejected),
+                             "futuresight_reasons": sorted({str(r.get("reason")) for r in rejected})},
                            "search_result": f"{FOLDER}/{stem}-search-result.json", "ab": None, "decision": None}
     winner = summary["winner"]
     decision: CandidateDecision | None = None
+    verify, judged = None, None
+    if winner is not None:
+      say(f"role {key}: check")
+      try:
+        verify = checker(summary, result, model=model, quant=quant, rows=n, cols=k, role=role, tensor_name=tensor_name)
+      except Exception as exc:  # BoltBeam could not run its own check: nothing the provider says is taken
+        verify = {"error": f"{type(exc).__name__}: {exc}"[:400]}
+      _write(folder / f"{stem}-check.json", verify)
+      judged = checked(summary, verify) if "error" not in verify else {}
+      short = lambda v: {kk: v[kk] for kk in ("plan", "verdict", "provider_us", "boltbeam_us", "boltbeam_us_less_floor", "ratio", "band", "reason") if kk in v} if isinstance(v, dict) else v  # noqa: E731
+      row["check"] = {"winner": short(judged.get("winner")), "model_kernel": short(judged.get("model_kernel")),
+                      "boltbeam_winner": short(judged.get("boltbeam_winner")), "reproduced": judged.get("reproduced"),
+                      "not_reproduced": judged.get("not_reproduced"), "error": verify.get("error"), "tensor": verify.get("tensor"),
+                      "floor_us": verify.get("floor_us"), "chip_band": verify.get("band")}
+      row["check_result"] = f"{FOLDER}/{stem}-check.json"
+      if judged.get("boltbeam_winner"):  # BoltBeam's pick (its own fastest) replaces the provider's rank
+        pick = judged["boltbeam_winner"]["candidate_hash"]
+        row["provider_winner"] = winner
+        winner = next(_entry(r) for r in result["population"] if r.get("candidate_hash") == pick)
+        model_row = summary.get("model_kernel")
+        winner["is_model_kernel"] = bool(model_row) and model_row["candidate_hash"] == pick
+        summary["winner"] = winner
+        verify = {"winner": judged["boltbeam_winner"], "model_kernel": judged.get("model_kernel")}
+    reproduced = bool(verify) and (verify.get("winner") or {}).get("verdict") == provider_check.REPRODUCED
+    k_numbers = kernel_numbers(summary, losses.get((role, quant)), verify if reproduced else None)
     if winner is None:
       reason = result.get("error") or "no candidate compiled and passed the correctness check"
       row.update(status="blocked", reason=f"decided by the search: {reason}", decided_by="search")
-    elif winner["is_default"]:
+    elif not reproduced:
+      best = (verify or {}).get("winner") or {}
+      why = (verify or {}).get("error") or (f"BoltBeam's fastest candidate, {best.get('plan')}: {best.get('reason')}" if best
+                                            else "BoltBeam measured no candidate correct" if verify is not None else "BoltBeam's check did not run")
+      row.update(status="blocked", decided_by="check", reason=f"{provider_check.NOT_REPRODUCED}: {why}", not_reproduced=True)
+    elif winner["is_default"] or winner.get("is_model_kernel"):
       decision = default_wins(route, winner, model_id=model_id, target_id=target_id,
-                              search_path=row["search_result"], search_sha=search_sha)
-    elif ab_only_if_faster and not (kernel_numbers(summary, losses.get((role, quant))) or {}).get("faster_than_model"):
-      k = kernel_numbers(summary, losses.get((role, quant))) or {}
-      model_us = k.get("model_us_per_call")
+                              search_path=row["search_result"], search_sha=search_sha,
+                              model_kernel=bool(winner.get("is_model_kernel")))
+    elif ab_only_if_faster and not (k_numbers or {}).get("faster_than_model"):
+      model_us = (k_numbers or {}).get("model_us_per_call")
       row.update(status="blocked", decided_by="kernel alone",
-                 reason=f"decided by the kernel alone: the best plan took {k.get('plan_us', 0):.1f} µs per call, "
+                 reason=f"decided by the kernel alone: the best plan took {(k_numbers or {}).get('plan_us', 0):.1f} µs per call by BoltBeam's timer, "
                         + (f"the model's own kernel {model_us:.1f} µs; no whole-model A/B" if model_us is not None
                            else "with no model time to compare; no whole-model A/B"))
+    elif winner["plan_kind"] != "tinygrad_opt_sequence.v1":
+      row.update(status="blocked", decided_by="binding",
+                 reason="decided by binding: the whole-model A/B binds Opt sequences only; an emitter plan reaches the "
+                        "model through the fork's route admission, which the A/B driver does not install yet")
     else:
       say(f"role {key}: ab")
       try:
-        ab = matched_ab(ab_run(winner["transforms"], (n, k)))
+        ab = matched_ab(ab_run(winner["transforms"], (n, k)), env)
       except Exception as exc:
         ab = None
         row.update(status="blocked", reason=f"decided by the whole model: the A/B did not run: {exc}",
@@ -493,7 +706,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
                           "the A/B compared the default decode with itself")
       elif ab is not None:
         decision = decide(route, winner, ab, model_id=model_id, target_id=target_id, ab_path=row["ab_result"], ab_sha=ab_sha)
-    row["kernel"] = kernel_numbers(summary, losses.get((role, quant)))
+    row["kernel"] = k_numbers
     if row["kernel"] and row["kernel"]["model_us_per_call"] is not None:
       row["role_calls_per_token"] = losses[(role, quant)]["calls_per_token"]
     if decision is not None:
@@ -527,7 +740,8 @@ def _apply(route:dict[str, Any], row:Mapping[str, Any]) -> None:
                       "role_calls_per_token": row.get("role_calls_per_token"),
                       "measured_correct": row["search"]["counts"].get("measured_correct"),
                       "candidates": row["search"]["counts"].get("total"), "ab": row.get("ab"), "reason": row.get("reason"),
-                      "timing_source": TIMING_SOURCE}
+                      "timing_source": TIMING_SOURCE, "check": row.get("check"), "not_reproduced": bool(row.get("not_reproduced")),
+                      "space": row.get("space")}
 
 
 
@@ -535,16 +749,43 @@ def _apply(route:dict[str, Any], row:Mapping[str, Any]) -> None:
 
 STATUS_FILE = "search_status.json"
 STATUS_SCHEMA = "boltbeam.kernel_search_status.v1"
-VERDICTS = ("applied", "found_not_applied", "none_faster", "not_searched")
+VERDICTS = ("applied", "found_not_applied", "none_faster", "not_reproduced", "not_searched")
 
 
-def search_applies(backend:str, provider:str) -> str | None:
-  """Why Run's kernel search does not exist for this engine and chip, or None when it does."""
+def detect(backend:str | None) -> str | None:
+  """BoltBeam's own detection: can its bridge open a GPU of this backend here? None when it can, else why not."""
+  from boltbeam.collectors import kernel_timer
+  try:
+    bridge = kernel_timer.bridge_for(str(backend))
+  except Exception as exc:  # no driver, no device, no compiler: BoltBeam could not check the provider's claims here
+    return f"BoltBeam cannot open a {backend} GPU on this machine to check the provider: {exc}"
+  close = getattr(bridge, "close", None)
+  if close: close()
+  return None
+
+
+def search_applies(backend:str | None, provider:str, *, root:pathlib.Path | None = None,
+                   capability_fn:Callable[[pathlib.Path, list[str]], dict[str, Any]] | None = None,
+                   detect_fn:Callable[[str | None], str | None] | None = None) -> str | None:
+  """Why Run's kernel search does not exist for this engine and chip, or None when it does. Two answers decide it:
+  the provider's own capability (the devices it can run, asked with its capability action) and BoltBeam's own
+  detection of the GPU (its bridge opens one), never a list of backend names. Without the fork checked out the
+  provider cannot be asked; readiness() names the fix for that."""
   if provider != "tinygrad":
     return f"the kernel search runs in tinygrad only; this run used {provider}"
-  if backend.lower() not in COMPARE_BACKENDS:
-    return f"the kernel search runs on Metal only; this run is on {backend or 'an unknown backend'}"
-  return None
+  row = runtime_row(backend)
+  if row is None:
+    return f"the search runtime table (data/search_runtime.json) has no row for {backend or 'an unknown backend'}"
+  if why := (detect_fn or detect)(backend):
+    return why
+  root = pathlib.Path(root) if root else default_fork_root()
+  if capability_fn is None and not (root / PROVIDER).is_file():
+    return None
+  try:
+    reply = (capability_fn or capability)(root, list(row["tinygrad_devices"]))
+  except Exception as exc:
+    return f"the provider could not say which devices it runs: {exc}"
+  return pick_device(backend, reply)[1]
 
 
 def write_status(run:pathlib.Path, status:str, reason:str | None = None, seconds:float | None = None) -> None:
@@ -571,7 +812,7 @@ def search_stage(run:pathlib.Path, *, backend:str, provider:str, root:pathlib.Pa
   """Run's "Search faster kernels" stage: the per-role search where it exists, else a skip with its reason. A
   search that cannot start (no fork, a dirty fork) is a skip too: the run still ends with its results."""
   import time
-  if why := search_applies(backend, provider):
+  if why := search_applies(backend, provider, root=root):
     write_status(run, "skipped", why)
     say(f"search skipped: {why}")
     return {"status": "skipped", "reason": why}
@@ -585,7 +826,12 @@ def search_stage(run:pathlib.Path, *, backend:str, provider:str, root:pathlib.Pa
       say(f"search skipped: {why}")
       return {"status": "skipped", "reason": why}
   began = time.monotonic()
-  (compare or compare_run)(run, root=root, say=say, ab_only_if_faster=True, step=step)
+  try:
+    (compare or compare_run)(run, root=root, say=say, ab_only_if_faster=True, step=step)
+  except ProviderRefused as exc:  # BoltBeam refused the provider's device: nothing it would say is taken
+    write_status(run, "skipped", f"provider refused: {exc}")
+    say(f"search skipped: provider refused: {exc}")
+    return {"status": "skipped", "reason": f"provider refused: {exc}"}
   seconds = round(time.monotonic() - began, 1)
   write_status(run, "searched", None, seconds)
   return {"status": "searched", "reason": None, "seconds": seconds}
@@ -614,6 +860,8 @@ def role_verdict(route:Mapping[str, Any] | None, status:Mapping[str, Any] | None
             "calls_per_token": c.get("role_calls_per_token"),
             "text": f"{plan} · {x:.1f}x faster" if x and x > 1 else f"{plan} · not faster" if x else plan}
   searched = {"candidates": c.get("candidates"), "measured_correct": c.get("measured_correct")}
+  if c.get("not_reproduced"):  # BoltBeam's own check disagreed with the provider: never a finding
+    return {"best_found": None, "verdict": "not_reproduced", "verdict_reason": c.get("reason"), **searched}
   if k is None:
     return {"best_found": None, "verdict": "not_searched", "verdict_reason": c.get("reason") or "the search measured no kernel", **searched}
   if (route or {}).get("status") == "promoted":

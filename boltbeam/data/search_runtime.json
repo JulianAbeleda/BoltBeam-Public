@@ -1,0 +1,21 @@
+{
+  "schema": "boltbeam.search_runtime.v1",
+  "note": "Per BoltBeam target backend: the tinygrad devices the kernel search may serve on it, in order (the provider's capability action says which open), and the environment the matched whole-model A/B runs with. A new backend is a row here, never a branch in code.",
+  "backends": {
+    "Metal": {
+      "tinygrad_devices": ["METAL"],
+      "decode_env": {"METAL_HYBRID_REPLAY": "1"},
+      "decode_env_why": "The fork's default Metal replay cannot encode Qwen3-8B decode (an ICB offset over 32 bits); the fork's own EXP switch direct-encodes those calls. Both A/B arms run with it, so the comparison stays matched."
+    },
+    "CUDA": {
+      "tinygrad_devices": ["NV", "CUDA"],
+      "decode_env": {},
+      "decode_env_why": "No switch: the fork's NV runtime replays the 8B decode as built."
+    },
+    "AMD": {
+      "tinygrad_devices": ["AMD"],
+      "decode_env": {},
+      "decode_env_why": "No switch recorded."
+    }
+  }
+}

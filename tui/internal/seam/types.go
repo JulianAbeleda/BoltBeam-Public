@@ -396,8 +396,8 @@ type Route struct {
 	Compare       *RouteCompare `json:"compare"`
 }
 
-// RouteCompare is one role's kernel comparison (boltbeam/search/role_compare.py), nil before any ran. Every
-// time in it is a tinygrad Metal runtime time.
+// RouteCompare is one role's kernel comparison (boltbeam/search/role_compare.py), nil before any ran. Its kernel
+// times are BoltBeam's kernel timer on the provider's source; its whole-model times are tinygrad runtime times.
 type RouteCompare struct {
 	PlanID          *string      `json:"plan_id"`
 	Plan            *string      `json:"plan"`

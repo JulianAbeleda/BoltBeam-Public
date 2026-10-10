@@ -122,6 +122,10 @@ def _validate_ctx_range(ctx_range:tuple[int, int]) -> tuple[int, int]:
 
 FULL_KERNEL_CANDIDATE_SCHEMA_VERSION = "boltbeam.full_kernel_candidate.v1"
 FULL_KERNEL_CANDIDATE_V2_SCHEMA_VERSION = "boltbeam.full_kernel_candidate.v2"
+# The v2 plan kinds: tinygrad's scheduler (its heuristic, or an explicit Opt sequence) and the fork's decode emitters,
+# whose parameters ride in the schedule fields (tile, launch, memory, pipeline) and compute.family names the emitter.
+EMITTER_PLAN_KIND = "tinygrad_decode_emitter.v1"
+V2_PLAN_KINDS = frozenset({"tinygrad_heuristic.v1", "tinygrad_opt_sequence.v1", EMITTER_PLAN_KIND})
 FULL_KERNEL_CANDIDATE_V3_SCHEMA_VERSION = "boltbeam.full_kernel_candidate.v3"
 FULL_KERNEL_CANDIDATE_SCHEMA_VERSIONS = frozenset((FULL_KERNEL_CANDIDATE_SCHEMA_VERSION,
                                                    FULL_KERNEL_CANDIDATE_V2_SCHEMA_VERSION,
@@ -337,11 +341,13 @@ def _validate_v2_candidate(p:dict[str, Any]) -> None:
 
   schedule = p["schedule"]
   _strict_keys(schedule, {"plan_kind", "transforms", "tile", "launch", "mapping", "memory", "pipeline", "compute", "numerical_mode"}, "schedule")
-  if schedule["plan_kind"] not in {"tinygrad_heuristic.v1", "tinygrad_opt_sequence.v1"}:
-    raise ValueError("schedule.plan_kind must be tinygrad_heuristic.v1 or tinygrad_opt_sequence.v1")
+  if schedule["plan_kind"] not in V2_PLAN_KINDS:
+    raise ValueError("schedule.plan_kind must be one of " + ", ".join(sorted(V2_PLAN_KINDS)))
   if not isinstance(schedule["transforms"], list): raise ValueError("schedule.transforms must be an ordered list")
   if schedule["plan_kind"] == "tinygrad_heuristic.v1" and schedule["transforms"]:
     raise ValueError("tinygrad heuristic control cannot carry explicit transforms")
+  if schedule["plan_kind"] == EMITTER_PLAN_KIND and schedule["transforms"]:
+    raise ValueError("an emitter plan carries its geometry in the schedule fields, not transforms")
   for index, transform in enumerate(schedule["transforms"]):
     _strict_keys(transform, {"op", "axis", "arg"}, f"schedule.transforms[{index}]")
     _nonempty_str(transform["op"], f"schedule.transforms[{index}].op")

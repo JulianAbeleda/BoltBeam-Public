@@ -97,11 +97,13 @@ def samples(launch:Callable[[], float], *, warmups:int = WARMUPS, count:int = SA
 @dataclass
 class Check:
   """What the first launch's output must match: reference(i) is the expected value of output element i, for the
-  given indices, within rel_tol of the largest expected magnitude. Output elements are float32."""
+  given indices, within rel_tol of the largest expected magnitude. Output elements are float32 ("f"), or half
+  ("e") for a kernel that stores fp16."""
   indices: list[int]
   reference: Callable[[int], float]
   rel_tol: float
   words: str = "pure-Python dequantize and dot"
+  out_format: str = "f"
 
 
 @dataclass
@@ -198,7 +200,8 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
     launch = lambda: bridge.dispatch(pipeline["pso"], bound, spec.grid, spec.block, spec.shared_bytes)  # noqa: E731
     launch()
     if spec.check is not None and out_index is not None:
-      got = struct.unpack(f"<{out_len // 4}f", bridge.read(owned[out_index], out_len))
+      size = struct.calcsize(spec.check.out_format)
+      got = struct.unpack(f"<{out_len // size}{spec.check.out_format}", bridge.read(owned[out_index], out_len))
       ref = {i: spec.check.reference(i) for i in spec.check.indices}
       scale = max(abs(v) for v in ref.values()) or 1.0
       err = max(abs(got[i] - ref[i]) for i in spec.check.indices) / scale

@@ -444,7 +444,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
     state = out["search"].pop("state")
   by_key = {(r.get("role"), r.get("quant")): r for r in _optional(run, "route_policy.json").get("routes", []) or []}
   if shown != tinygrad_role_time.PROVIDER:  # the search compares tinygrad kernels; this table is another engine's
-    state, by_key = {"status": "skipped", "reason": role_compare.search_applies("metal", shown)}, {}
+    state, by_key = {"status": "skipped", "reason": role_compare.search_applies(None, shown)}, {}
   roles = [{**r, **role_compare.role_verdict(by_key.get((r["role"], r["quant"])), state)} for r in roles]
   out.update(roles=roles, role_rule=rule, not_attributed_ms=table["not_attributed_ms"], capture=capture,
              unpaired_roles=table.get("unpaired_roles") or [], not_timed=table.get("not_timed") or [],
@@ -726,10 +726,11 @@ def compare_ready(run:pathlib.Path, root:pathlib.Path | None = None) -> dict[str
   except SystemExit:
     out["runtime"] = None
   ready = role_compare.readiness(root, model=manifest.get("model_path"))
-  if backend.lower() not in role_compare.COMPARE_BACKENDS:
-    # timing each role works on any tinygrad device; the kernel search provider runs on Metal only
+  if role_compare.runtime_row(backend) is None:
+    # a fast seam: the search runtime table is the cheap answer; the stage asks the provider and the GPU itself
     return out | ready | {"applies": False,
-                          "compare_message": f"Comparing kernels per role runs on Metal only. This run is for {backend or 'an unknown backend'}."}
+                          "compare_message": f"Comparing kernels per role has no runtime row for {backend or 'an unknown backend'} "
+                                             "(boltbeam/data/search_runtime.json)."}
   return out | ready | {"applies": True, "compare_message": None}
 
 

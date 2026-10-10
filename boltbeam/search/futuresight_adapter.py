@@ -29,7 +29,7 @@ from boltbeam.target.targets import get_target
 # (proposal and static legality), and the flash builders' limits and per-launch reservation. The
 # subgroup size is not a target fact here: the flash builders read each candidate's own target block.
 TARGET_FACT_KEYS = ("compiler_transforms", "generic_control_plan_kind", MAX_LOCAL_MEMORY, MAX_THREADS,
-                    RESERVED_LOCAL_MEMORY, "supported_plan_kinds")
+                    RESERVED_LOCAL_MEMORY, "single_subgroup_families", "supported_plan_kinds")
 
 # A proposal spec is a campaign request before BubbleBeam runs: axis choices and coupled rows in,
 # dimensions and legal/rejected rows out. compiler_facts are not an input; this adapter builds them.

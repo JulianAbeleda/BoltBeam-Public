@@ -65,7 +65,7 @@ var plainMeasureStage = map[string]string{
 
 // plainVerdict words a role's kernel search verdict; report/html.py PLAIN_VERDICT says the same.
 var plainVerdict = map[string]string{"applied": "applied", "found_not_applied": "found, not applied",
-	"none_faster": "none faster", "not_searched": "not searched"}
+	"none_faster": "none faster", "not_reproduced": "provider claim not reproduced", "not_searched": "not searched"}
 
 // found is a role's best kernel found and its verdict, as two cells.
 func found(r seam.RoleLoss) (string, string) {

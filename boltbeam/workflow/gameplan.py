@@ -59,7 +59,7 @@ EMITTERS: tuple[tuple[str, tuple[str, ...] | None, str, str, str], ...] = (
   ("Q4_K", None, "q4k_g3_lanemap_gemv_kernel", 'rows={rows}, k={k}, lanes=32, epilogue=None, load_style="scalar"',
    "k % 1024 == 0 (Q4KGateUpLaneMap.validate: 256-element blocks in 4 block groups); the decode binding admits k % 1024 == 0 "
    "and rows % 32 == 0 (_Q4KDecodeCandidate)"),
-  ("Q6_K", None, "emit_q6k_gemv_kernel", 'Q6KGEMVRouteSpec(rows={rows}, k={k}, role="{role}", route_family="q6k_coop", row_tile=4, target="{target}")',
+  ("Q6_K", None, "emit_q6k_gemv_kernel", 'Q6KGEMVRouteSpec(rows={rows}, k={k}, role="{role}", route_family="q6k_coop", row_tile=q6k_coop_row_tile_for_target(backend, architecture), target="{target}")',
    "k % 256 == 0, rows % row_tile == 0, lane_extent 16 (Q6KGEMVRouteSpec.validate)"),
   ("*", NORM_ROLES, "emit_decode_rmsnorm_kernel", "DecodeRMSNormSpec(rows={rows}, dim={k}, eps=<the model's rms epsilon>)",
    "dim % 32 == 0, eps > 0 (DecodeRMSNormSpec.validate)"),
@@ -115,20 +115,25 @@ def _bubblebeam(stem:str, request:dict[str, Any] | None) -> dict[str, Any]:
   if request is None:
     return _layer("bubblebeam", False, [f"{NOT_RECORDED} in this run: no {file}"])
   space = request.get("candidate_space") or {}
-  dims = request.get("dimensions") or space.get("dimensions")
-  if not isinstance(dims, dict) or not dims:
+  dims = request.get("dimensions") if isinstance(request.get("dimensions"), dict) else space.get("dimensions")
+  coupled = request.get("legal_coupled_rows")
+  # a proposal is recorded when BubbleBeam wrote dimensions or split coupled rows (a proposal of rows alone has {})
+  if not isinstance(dims, dict) or (not dims and not isinstance(coupled, list)):
     rows = space.get("rows")
     how = (f"the search used a finite space of {len(rows)} rows ({file} candidate_space.rows), not a BubbleBeam proposal"
            if isinstance(rows, list) else f"no dimensions in {file}")
     return _layer("bubblebeam", False, [f"{NOT_RECORDED} in this run: {how}; a proposal would be {file} dimensions and legal_coupled_rows"],
                   {"finite_rows": len(rows) if isinstance(rows, list) else None},
                   [_ptr(file, "candidate_space.rows")] if isinstance(rows, list) else [])
-  where = "dimensions" if request.get("dimensions") else "candidate_space.dimensions"
+  where = "dimensions" if isinstance(request.get("dimensions"), dict) else "candidate_space.dimensions"
   size = 1
   for vals in dims.values():
     size *= max(len(vals), 1) if isinstance(vals, list) else 1
-  lines = ["legal dimensions: " + ", ".join(f"{path} {len(vals) if isinstance(vals, list) else 1} value{'s' if isinstance(vals, list) and len(vals) != 1 else ''}"
-                                             for path, vals in sorted(dims.items())) + f"; population up to {size} candidates"]
+  rows_n = len(coupled) if isinstance(coupled, list) else 0
+  size = (size if dims else 0) + rows_n + 2  # the independent axes, the legal coupled rows, the seed and the control
+  axes = ", ".join(f"{path} {len(vals) if isinstance(vals, list) else 1} value{'s' if isinstance(vals, list) and len(vals) != 1 else ''}"
+                   for path, vals in sorted(dims.items())) or "no independent axes (every value rides in a coupled row)"
+  lines = [f"legal dimensions: {axes}; population up to {size} candidates"]
   evidence = [_ptr(file, where)]
   legal, rejected = request.get("legal_coupled_rows"), request.get("rejected_coupled_rows")
   if isinstance(legal, list) or isinstance(rejected, list):
@@ -205,7 +210,7 @@ def _measured(stem:str, result:dict[str, Any] | None, route:dict[str, Any] | Non
       summary = m.get("summary_ns") if isinstance(m.get("summary_ns"), dict) else {}
       spread = (f"min {summary['min'] / 1000:.1f}, max {summary['max'] / 1000:.1f} µs over {m.get('samples') or m.get('sample_count') or '?'} samples"
                 if {"min", "max"} <= set(summary) else _nr(file_r, f"population[{i}].measurement.summary_ns"))
-      text = role_compare._plan_text(list(sched.get("transforms") or []), str(sched.get("plan_kind") or ""))
+      text = role_compare.plan_text(sched)
       lines.append(f"best plan alone: {text} at {_f(m.get('median_ns'), '{:.0f}', file_r, f'population[{i}].measurement.median_ns')} ns median "
                    f"({spread}); plan_kind {sched.get('plan_kind')}, transforms {json.dumps(sched.get('transforms') or [], sort_keys=True)}")
       ptrs.append(_ptr(file_r, f"population[{i}]"))
@@ -238,6 +243,18 @@ def _measured(stem:str, result:dict[str, Any] | None, route:dict[str, Any] | Non
       facts["ab"] = {k_: ab.get(k_) for k_ in ("baseline_tok_s", "candidate_tok_s", "delta_pct", "token_match", "route_bound")}
     elif result is not None or c.get("decided_by"):
       lines.append(f"whole-model A/B: {NOT_RECORDED} ({POLICY}: {where}.ab)" + (f"; decided by the {c['decided_by']}" if c.get("decided_by") else ""))
+    chk = c.get("check") if isinstance(c.get("check"), dict) else None
+    if chk:
+      for who in ("winner", "model_kernel"):
+        v = chk.get(who) if isinstance(chk.get(who), dict) else None
+        if v:
+          ours = v.get("boltbeam_us_less_floor")
+          lines.append(f"BoltBeam's check of the {'winner' if who == 'winner' else 'model kernel'}: provider "
+                       f"{_f(v.get('provider_us'), '{:.1f}', POLICY, where + f'.check.{who}.provider_us')} µs, BoltBeam "
+                       f"{_f(ours, '{:.1f}', POLICY, where + f'.check.{who}.boltbeam_us_less_floor')} µs less the floor: {v.get('verdict')}"
+                       + (f" ({v['reason']})" if v.get("reason") else ""))
+      ptrs.append(_ptr(POLICY, where + ".check"))
+      facts["check"] = chk
     if c.get("timing_source"):
       lines.append(f"every time here is a {c['timing_source']} time")
   if compare_index is not None:
@@ -276,6 +293,10 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
                  f"{_f(model_us, '{:.1f}', POLICY, where + '.kernel.model_us_per_call')} µs")
     ptrs.append(_ptr(POLICY, where))
     return _layer("promotion", True, lines, {**facts, "plan": "nothing to emit", "candidates": n, "plan_us": plan_us, "model_us": model_us}, ptrs)
+  if verdict == "not_reproduced":
+    lines.append("nothing to emit: BoltBeam's own check did not reproduce the provider's claim, so the plan is never promoted")
+    ptrs.append(_ptr(POLICY, where + ".check"))
+    return _layer("promotion", True, lines, {**facts, "plan": "nothing to emit"}, ptrs)
   if verdict == "not_searched":
     why = (status or {}).get("reason") or reason
     lines.append(NOT_SEARCHED + (f" ({why})" if why and why != reason else ""))  # the verdict line said it once
@@ -290,7 +311,10 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
   ptrs.append(_ptr(POLICY, where))
   if verdict == "found_not_applied":
     lines.append("found, not applied in this run" + (f": {c.get('reason')}" if c.get("reason") else ""))
-  emitter = _emitter(role, quant, rows, kk, str(target.get("target_id") or ""))
+  space = c.get("space") if isinstance(c.get("space"), dict) else {}
+  emitter = ({"name": space["family"], "args": f"the winner's schedule ({c.get('plan')})",
+              "pins": "the emitter's own validate on this shape (the search compiled it)", "module": "extra/llm_research/semantic_kernel_lowering.py"}
+             if space.get("family") else _emitter(role, quant, rows, kk, str(target.get("target_id") or "")))
   if emitter:
     lines.append(f"emit with {emitter['name']}({emitter['args']}) from {emitter['module']}; shape pins: {emitter['pins']}")
   else:
