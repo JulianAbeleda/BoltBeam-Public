@@ -178,11 +178,17 @@ a{color:var(--g3)}
 code{background:var(--glass-2);border:1px solid var(--edge);padding:1px 6px;border-radius:5px;font-family:var(--mono);
 font-size:12px;overflow-wrap:anywhere}
 .foot{color:var(--tx-3);font-size:11.5px;text-align:center}
+.ties{margin-top:18px;padding-top:14px;border-top:1px solid var(--edge)}
+.ties h3{margin:0 0 6px;font-size:13px;color:var(--tx)}
+.eq{overflow-x:auto;overflow-y:hidden;padding:4px 0}
+.eq math{width:max-content;margin:0 auto;font-family:"STIX Two Math","Cambria Math",math;font-size:17px;color:var(--tx)}
+.eq mtext.lab{font-family:var(--ui);font-size:11.5px;color:var(--tx-3)}
+.eq mtext.u{font-family:var(--ui);font-size:13px;color:var(--tx-2)}
 @media (max-width:640px){
 body{padding:16px 16px 40px}.card{padding:18px 16px}dl{grid-template-columns:1fr;gap:2px}dd{margin-bottom:8px}
 .role summary{grid-template-columns:minmax(0,1fr)}.rnum{text-align:left;white-space:normal}
 .rdet{grid-template-columns:repeat(2,minmax(0,1fr))}
-td.how{display:none}.stack span{font-size:10px}
+td.how{display:none}.eq math{font-size:13px}.eq mtext.lab{font-size:10px}.stack span{font-size:10px}
 .next li{padding-left:48px}.next li::before{left:12px}
 }
 .card .card{box-shadow:none;border-radius:12px;margin-top:16px;padding:0;overflow:hidden}
@@ -464,6 +470,92 @@ def _measured(loss:dict[str, Any]) -> dict[str, Any] | None:
   return next((r for r in runs if not r.get("per_role")), runs[0] if runs else None)
 
 
+# --- How this ties out: the headline, the limit and the bar as equations. MathML, not KaTeX: KaTeX inline with its
+# fonts is about 645 KB, MathML needs no assets and no JS. Each equation carries its LaTeX source as an annotation.
+# Every number is one the page already prints, at the same rounding; nothing is recomputed here.
+SHORT_LINE = (("weight kernels", "weight excess"), ("other kernels", "other kernels"), ("gaps", "gaps"),
+              ("kernels and gaps, not split", "kernels and gaps"), ("all kernels", "all kernels"),
+              ("kernels not timed", "not timed and gaps"))
+
+
+def _mn(v:float, fmt:str = "{:.1f}") -> str:
+  return f"<mn>{fmt.format(v)}</mn>"
+
+
+def _t(sub:str, arg:str = "") -> str:
+  """t with a text subscript, and an optional argument in parentheses: t_ideal(136)."""
+  base = f'<mrow><msub><mi>t</mi><mtext>{_e(sub)}</mtext></msub>'
+  return base + (f'<mo stretchy="false">(</mo><mn>{_e(arg)}</mn><mo stretchy="false">)</mo>' if arg else "") + "</mrow>"
+
+
+def _u(unit:str) -> str:
+  return f'<mspace width="0.25em"></mspace><mtext class="u">{_e(unit)}</mtext>'
+
+
+def _brace(num:str, label:str) -> str:
+  return (f'<munder><munder accentunder="true">{num}<mo stretchy="true">&#x23DF;</mo></munder>'
+          f'<mtext class="lab">{_e(label)}</mtext></munder>')
+
+
+def _eq(tex:str, mml:str) -> str:
+  return (f'<div class="eq"><math display="block"><semantics><mrow>{mml}</mrow>'
+          f'<annotation encoding="application/x-tex">{_e(tex)}</annotation></semantics></math></div>')
+
+
+def _short(label:str) -> str:
+  return next((s for p, s in SHORT_LINE if label.startswith(p)), label)
+
+
+def _ties(loss:dict[str, Any], results:dict[str, Any], m:dict[str, Any]) -> str:
+  """The equations behind section 1 and the bar in section 2."""
+  t = loss.get("tie_out") or {}
+  limit1 = loss.get("limit_ms")
+  if not limit1 or not m.get("ms") or not m.get("tok_s"):
+    return ""
+  inputs = {i.get("what", ""): i.get("value") for i in (loss.get("layout") or {}).get("inputs") or []}
+  ceil = results.get("ceiling") or {}
+  nbytes = inputs.get("weight bytes per token") or ceil.get("bytes_moved")
+  bw = next((v for k, v in inputs.items() if k.endswith("read bandwidth")), None) or ceil.get("peak_bandwidth_gbs")
+  eqs = [_eq(f"t_{{token}} = \\frac{{1000}}{{{m['tok_s']:.2f}\\ \\text{{tok/s}}}} = {m['ms']:.1f}\\ \\text{{ms}}",
+             _t("token") + f"<mo>=</mo><mfrac><mn>1000</mn><mrow>{_mn(m['tok_s'], '{:.2f}')}{_u('tok/s')}</mrow></mfrac>"
+             f"<mo>=</mo>{_mn(m['ms'])}{_u('ms')}")]
+  if nbytes and bw:
+    eqs.append(_eq(f"t_{{ideal}}(1) = \\frac{{{nbytes / 1e9:.2f}\\ \\text{{GB}}}}{{{bw:.1f}\\ \\text{{GB/s}}}} = {limit1:.1f}\\ \\text{{ms}}",
+                   _t("ideal", "1") + f"<mo>=</mo><mfrac><mrow>{_mn(nbytes / 1e9, '{:.2f}')}{_u('GB')}</mrow>"
+                   f"<mrow>{_mn(bw)}{_u('GB/s')}</mrow></mfrac><mo>=</mo>{_mn(limit1)}{_u('ms')}"))
+  ctx = f'{t["context"]:.0f}' if t.get("context") is not None else None
+  if ctx and t.get("limit_ms") is not None and t.get("kv_ms") is not None:
+    eqs.append(_eq(f"t_{{ideal}}({ctx}) = t_{{ideal}}(1) + t_{{KV}} = {limit1:.1f} + {t['kv_ms']:.1f} = {t['limit_ms']:.1f}\\ \\text{{ms}}",
+                   _t("ideal", ctx) + "<mo>=</mo>" + _t("ideal", "1") + "<mo>+</mo>" + _t("KV")
+                   + f"<mo>=</mo>{_mn(limit1)}<mo>+</mo>{_mn(t['kv_ms'])}<mo>=</mo>{_mn(t['limit_ms'])}{_u('ms')}"))
+  lines = t.get("lines") or []
+  same = t.get("token_ms") is not None and abs(t["token_ms"] - m["ms"]) < 1e-9
+  other = "" if same or t.get("token_ms") is None else (
+    f'The bar below splits a different token: {t["token_ms"]:.1f} ms, {t.get("token_source") or "the tie-out token"}.')
+  if same and lines and not t.get("refused"):
+    first, rest = lines[0], lines[1:]
+    head = [("ideal", first["ms"])] + [(_short(l["label"]), l["ms"]) for l in rest]
+    eqs.append(_eq(f"t_{{token}} = t_{{ideal}}" + (f"({ctx})" if ctx else "") + " + " + " + ".join(f"\\text{{{n}}}" for n, _ in head[1:]),
+                   _t("token") + "<mo>=</mo>" + _t("ideal", ctx or "") + "".join(f'<mo>+</mo><mtext>{_e(n)}</mtext>' for n, _ in head[1:])))
+    tex = f"{t['token_ms']:.1f} = " + " + ".join(f"\\underbrace{{{v:.1f}}}_{{\\text{{{n}}}}}" for n, v in head)
+    mml = f"{_mn(t['token_ms'])}<mo>=</mo>" + "<mo>+</mo>".join(
+      _brace(_mn(v), f"{n} ({ctx})" if i == 0 and ctx else n) for i, (n, v) in enumerate(head)) + _u("ms")
+    eqs.append(_eq(tex, mml))
+  pct = 100.0 * limit1 / m["ms"]
+  eqs.append(_eq(f"\\text{{lost}} = t_{{token}} - t_{{ideal}}(1) = {m['ms']:.1f} - {limit1:.1f} = {m['lost_ms']:.1f}\\ \\text{{ms}}",
+                 f'<mtext>lost</mtext><mo>=</mo>{_t("token")}<mo>&#x2212;</mo>{_t("ideal", "1")}<mo>=</mo>'
+                 f"{_mn(m['ms'])}<mo>&#x2212;</mo>{_mn(limit1)}<mo>=</mo>{_mn(m['lost_ms'])}{_u('ms')}"))
+  eqs.append(_eq(f"\\text{{roofline share}} = \\frac{{t_{{ideal}}(1)}}{{t_{{token}}}} = \\frac{{{limit1:.1f}}}{{{m['ms']:.1f}}} = {pct:.0f}\\%",
+                 f'<mtext>roofline share</mtext><mo>=</mo><mfrac>{_t("ideal", "1")}{_t("token")}</mfrac><mo>=</mo>'
+                 f"<mfrac>{_mn(limit1)}{_mn(m['ms'])}</mfrac><mo>=</mo><mn>{pct:.0f}</mn><mo>%</mo>"))
+  lead = (f"The headline is the time for one token. {m['tok_s']:.2f} tok/s rounds to {m['tok_s']:.1f}. "
+          "The limit is the weight bytes over the read bandwidth. The bar below splits the same token.")
+  if other:
+    lead = lead.replace(" The bar below splits the same token.", "")
+  tail = f'<p class="muted">{_e(other)}</p>' if other else ""
+  return f'<div class="ties"><h3>How this ties out</h3><p class="muted" style="margin:0 0 6px">{_e(lead)}</p>{"".join(eqs)}{tail}</div>'
+
+
 def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, Any] | None, source_run:str) -> str:
   loss = results.get("loss") or {}
   engine = results.get("engine") or {}
@@ -493,8 +585,18 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
   return _section(1, "The answer", who +
                   f'<div class="hero"><span class="big">{m["tok_s"]:.1f}</span><span class="big-u">tok/s measured</span>{lim}</div>'
                   + gauge +
+                  f'<p class="note">{m["tok_s"]:.1f} tok/s = {m["ms"]:.1f} ms per token.</p>'
                   f'<p class="note"><span class="lost">{m["lost_ms"]:.1f} ms per token lost</span> against the limit: '
-                  f'{m["ms"]:.1f} ms measured, {limit_ms:.1f} ms ideal. <span class="muted">{_e(m.get("note") or "")}</span></p>' + also)
+                  f'{m["ms"]:.1f} ms measured, {_ideal_words(loss, limit_ms)}. <span class="muted">{_e(m.get("note") or "")}</span></p>'
+                  + also + _ties(loss, results, m))
+
+
+def _ideal_words(loss:dict[str, Any], limit_ms:float) -> str:
+  """The ideal once, at context 1 and, when the bar uses another context, there too with the KV read."""
+  t = loss.get("tie_out") or {}
+  if t.get("limit_ms") is None or t.get("context") is None or f'{t["limit_ms"]:.1f}' == f"{limit_ms:.1f}":
+    return f"{limit_ms:.1f} ms ideal"
+  return f'{limit_ms:.1f} ms ideal at context 1, {t["limit_ms"]:.1f} ms at context {t["context"]:.0f} with the KV read'
 
 
 def _seg_class(line:dict[str, Any]) -> str:
@@ -523,7 +625,8 @@ def _where(loss:dict[str, Any]) -> str:
   for i, l in enumerate(t["lines"]):
     cls = _seg_class(l)
     w = _pct(max(l["ms"], 0.0), token)
-    segs.append(f'<span class="{cls}" style="width:{w:.2f}%" title="{_e(_line_label(l))}">{l["ms"]:.1f}</span>')
+    text = f'roofline {l["ms"]:.1f}' if i == 0 and l["how"] == "derived" else f'{l["ms"]:.1f}'
+    segs.append(f'<span class="{cls}" style="width:{w:.2f}%" title="{_e(_line_label(l))}">{text}</span>')
     tag = f' <span class="sub" style="display:inline">±{frac * 100:.1f}%</span>' if i == 0 and frac else ""
     rows.append(f'<tr><td><span class="sw {cls}"></span>{"" if i == 0 else "+ "}{_e(_line_label(l))}{tag}</td>'
                 f'<td>{l["ms"]:.3f}</td><td>{_pct(l["ms"], token):.0f}%</td><td class="how">{_e(l["how"])}</td></tr>')
@@ -532,7 +635,10 @@ def _where(loss:dict[str, Any]) -> str:
     ideal = t["lines"][0]["ms"]
     band = (f'<span class="band" style="left:{_pct(ideal * (1 - frac), token):.2f}%;'
             f'width:{_pct(2 * ideal * frac, token):.2f}%" title="band ±{frac * 100:.1f}%"></span>')
-  rows.append(f'<tr class="sum"><td>= measured token</td><td>{token:.3f}</td><td>100%</td>'
+  m = _measured(loss)
+  same = m is not None and m.get("tok_s") and abs(m["ms"] - token) < 1e-9
+  total = f'= measured token (the {m["tok_s"]:.1f} tok/s above)' if same else "= measured token"
+  rows.append(f'<tr class="sum"><td>{_e(total)}</td><td>{token:.3f}</td><td>100%</td>'
               f'<td class="how">{_e(t.get("token_source") or "")}</td></tr>')
   notes = []
   if t.get("untraced_ms") is not None and str(t.get("token_source", "")).startswith("the captured run"):
