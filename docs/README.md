@@ -9,6 +9,7 @@ articles cite, everything else, and the older working notes.
 - [architecture.md](architecture.md): how the pieces fit.
 - [../tui/README.md](../tui/README.md): the screen (Setup, Run, Saved runs) and its JSON mode for agents.
 - [linux.md](linux.md): Linux with an NVIDIA GPU, from a bare Ubuntu to the first report: CUDA on PATH, nsys, llama.cpp with CUDA, the model, the optional engines, `boltbeam doctor`, `boltbeam tui`.
+- [h100-pod.md](h100-pod.md): a rented H100 (RunPod) from the bare image to the first report with one command, `tools/pod-setup.sh`; what to rent, what comes back, the cost, what the multi-GPU session adds.
 - [kernel-timer.md](kernel-timer.md): the one kernel timing loop, its adapters (BoltBeam's GEMV, llama.cpp's Metal and CUDA kernels) and the bridges; the Air proof and the Ubuntu commands.
 - [maintaining.md](maintaining.md): for people who work on BoltBeam itself: install for development, scripts,
   the public mirror.

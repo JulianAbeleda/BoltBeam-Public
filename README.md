@@ -91,6 +91,7 @@ A stock macOS names Python 3.9 as `python3`. BoltBeam refuses it and says so. Na
 `python3.12`.
 
 On Linux with an NVIDIA GPU, [docs/linux.md](docs/linux.md) goes from a bare Ubuntu to the first report.
+On a rented H100, `tools/pod-setup.sh` does the same with one command ([docs/h100-pod.md](docs/h100-pod.md)).
 
 ## The screen (TUI)
 
