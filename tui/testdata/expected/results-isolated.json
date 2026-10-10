@@ -63,6 +63,7 @@
     },
     "cross_check": null,
     "estimate": {
+      "columns_words": "\u00b5s/call is the measured time, floor included; less floor, GB/s and % of peak are less the 1.9 \u00b5s dispatch floor per launch",
       "estimate": true,
       "floor_us": 1.8541468307375908,
       "floor_words": "less the 1.9 \u00b5s dispatch floor per launch",
@@ -76,8 +77,7 @@
       "scaled": false,
       "token_ms": 65.97641264076398,
       "weight_how": "as timed alone less the 1.9 \u00b5s dispatch floor per launch, fits inside the token",
-      "weight_ms": 53.78096201457083,
-      "columns_words": "\u00b5s/call is the measured time, floor included; less floor, GB/s and % of peak are less the 1.9 \u00b5s dispatch floor per launch"
+      "weight_ms": 53.78096201457083
     },
     "evidence": {
       "common": [
@@ -502,6 +502,7 @@
       "busy_ms": 54.25006116274744,
       "context": 128.0,
       "estimate": {
+        "columns_words": "\u00b5s/call is the measured time, floor included; less floor, GB/s and % of peak are less the 1.9 \u00b5s dispatch floor per launch",
         "estimate": true,
         "floor_us": 1.8541468307375908,
         "floor_words": "less the 1.9 \u00b5s dispatch floor per launch",
@@ -514,8 +515,7 @@
         "scaled": false,
         "token_ms": 65.97641264076398,
         "weight_how": "as timed alone less the 1.9 \u00b5s dispatch floor per launch, fits inside the token",
-        "weight_ms": 53.78096201457083,
-        "columns_words": "\u00b5s/call is the measured time, floor included; less floor, GB/s and % of peak are less the 1.9 \u00b5s dispatch floor per launch"
+        "weight_ms": 53.78096201457083
       },
       "isolated": true,
       "kv_ms": 0.19279231869254343,
@@ -543,7 +543,108 @@
       "untraced_context": 128,
       "untraced_ms": 65.97641264076398
     },
-    "unpaired_roles": []
+    "unpaired_roles": [],
+    "where_token_goes": {
+      "base_ms": 65.97641264076398,
+      "columns": [
+        "row",
+        "ms now",
+        "ms at limit",
+        "ms lost",
+        "share",
+        "tok/s if fixed",
+        "% of peak"
+      ],
+      "estimate": true,
+      "limit_ms": 47.95889617977529,
+      "lost_ms": 18.017516460988695,
+      "no_limit": "no limit",
+      "rows": [
+        {
+          "limit_ms": 0.19279231869254687,
+          "lost_ms": 12.002658307500603,
+          "name": "rest, not timed",
+          "now_ms": 12.19545062619315,
+          "pct_peak": null,
+          "share": 0.666166079741823,
+          "tok_s_if_fixed": 18.527523466784523,
+          "what": "rest"
+        },
+        {
+          "limit_ms": 20.845669458631257,
+          "lost_ms": 2.366829526599666,
+          "name": "ffn_gate_up Q4_K",
+          "now_ms": 23.212498985230923,
+          "pct_peak": 89.8,
+          "share": 0.13136269539280268,
+          "tok_s_if_fixed": 15.720901647873308,
+          "what": "role"
+        },
+        {
+          "limit_ms": 6.952572992849848,
+          "lost_ms": 1.1084373976702482,
+          "name": "attn_qo Q4_K",
+          "now_ms": 8.061010390520096,
+          "pct_peak": 86.2,
+          "share": 0.06151998806662523,
+          "tok_s_if_fixed": 15.415927447287888,
+          "what": "role"
+        },
+        {
+          "limit_ms": 7.597222308478039,
+          "lost_ms": 0.897277063840348,
+          "name": "ffn_down Q6_K",
+          "now_ms": 8.494499372318387,
+          "pct_peak": 89.4,
+          "share": 0.0498002633039421,
+          "tok_s_if_fixed": 15.36590784642489,
+          "what": "role"
+        },
+        {
+          "limit_ms": 1.3069963636363635,
+          "lost_ms": 0.7899986491983046,
+          "name": "attn_kv Q4_K",
+          "now_ms": 2.096995012834668,
+          "pct_peak": 62.3,
+          "share": 0.043846145550015175,
+          "tok_s_if_fixed": 15.34061990477629,
+          "what": "role"
+        },
+        {
+          "limit_ms": 5.211417364657814,
+          "lost_ms": 0.426332432075446,
+          "name": "ffn_down Q4_K",
+          "now_ms": 5.63774979673326,
+          "pct_peak": 92.4,
+          "share": 0.023662108648466382,
+          "tok_s_if_fixed": 15.25551146263055,
+          "what": "role"
+        },
+        {
+          "limit_ms": 0.63448253319714,
+          "lost_ms": 0.23776764749434065,
+          "name": "attn_kv Q6_K",
+          "now_ms": 0.8722501806914806,
+          "pct_peak": 72.7,
+          "share": 0.013196471778402547,
+          "tok_s_if_fixed": 15.211752540722136,
+          "what": "role"
+        },
+        {
+          "limit_ms": 5.217742839632279,
+          "lost_ms": 0.18821543660973905,
+          "name": "lm_head Q6_K",
+          "now_ms": 5.405958276242018,
+          "pct_peak": 96.5,
+          "share": 0.01044624751792295,
+          "tok_s_if_fixed": 15.20029492367446,
+          "what": "role"
+        }
+      ],
+      "title": "Where the token goes",
+      "token_ms": 65.97641264076398,
+      "words": "ms per token at context 128, worst first; tok/s if fixed is the 66.0 ms token (15.2 tok/s) less that row's lost ms. Estimate: each weight kernel was timed alone; the rest of the token (attention, norms, launches and gaps) is the difference (estimate from isolated times)."
+    }
   },
   "measured": true,
   "measurement": {

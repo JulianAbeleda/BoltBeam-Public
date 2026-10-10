@@ -396,3 +396,90 @@ def _isolated(out:dict[str, Any], table:dict[str, Any], token:float, limit:float
                      "other_ms": token - weight_est if weight_est is not None else None,
                      "other_how": OTHER_HOW_FLOOR if scaled else OTHER_HOW_DIFF.format(floor=f", {floor_words(floor_us)}" if floor_us is not None else "")}
   return out
+
+
+# --- where the token goes: the tie-out as one ranked table, read by every renderer ---------------------------------
+
+WHERE_TITLE = "Where the token goes"
+NO_LIMIT = "no limit"  # a row the roofline has no bytes for: all its time is above the limit
+GAPS_ROW = "gaps (GPU idle)"  # the tie-out's gaps line, short enough for an 80-column table
+REST_ROW = "other kernels, not named"  # kernel time no kind named
+# the part of the limit no row took: limit roles the capture did not split out. Their kernels' time is in the other
+# rows, so this row has no time now, a negative loss, and no tok/s if fixed: there is nothing to fix in it
+LIMIT_ROW = "limit of roles not split out"
+ESTIMATE_REST_ROW = "rest, not timed"  # attention, norms, launches and gaps: the token less the weight estimate
+WHERE_COLUMNS = ("row", "ms now", "ms at limit", "ms lost", "share", "tok/s if fixed", "% of peak")  # share: of all the ms lost
+
+
+def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> dict[str, Any] | None:
+  """The tie-out as one table of what each part costs the token, worst first. A row is a weight role, a kind of
+  other kernel, the weight kernels no role took, or the gaps (and LIMIT_ROW when the limit holds roles the capture
+  did not split out). Each row: ms per token now, ms at the limit (None: the
+  limit has no bytes for it, NO_LIMIT; 0 for the gaps), ms lost (now less the limit), its share of all the ms lost,
+  and tok/s if this row alone reached its limit (the headline token less this row's lost). Nothing is derived here:
+  the roles' times and losses (lost_ms, or est_ms and est_lost_ms for kernels timed alone) and the tie-out's lines
+  are read as they are. The rows sum to the tie-out's measured token, and the limits to its limit.
+
+  The headline token (measured_step, untraced) is the base for tok/s. When the tie-out's token is a captured run's
+  (tracing slows it), the rows sum to that one and the words say so. Kernels timed alone give an estimate, said."""
+  if not tie or tie.get("refused") or tie.get("token_ms") is None or not tie.get("lines"):
+    return None
+  token, limit = float(tie["token_ms"]), float(tie["limit_ms"])
+  base = float(tie["untraced_ms"]) if tie.get("untraced_ms") is not None else token  # measured_step's token
+  est = tie.get("estimate")
+  rows: list[dict[str, Any]] = []
+  add = lambda name, what, now, at, **kw: rows.append({"name": name, "what": what, "now_ms": now, "limit_ms": at, **kw})  # noqa: E731
+  lines = tie["lines"]
+  other = next((l for l in lines if l.get("parts") is not None), None)
+  if est and roles and est.get("weight_ms") is not None:  # kernels timed alone: the estimate's split, labelled
+    for r in roles:
+      add(f"{r['role']} {r['quant']}", "role", r["est_ms"], r["ideal_ms"], lost_ms=r["est_lost_ms"], pct_peak=r.get("pct_peak"))
+    add(ESTIMATE_REST_ROW, "rest", est["other_ms"], limit - sum(r["ideal_ms"] for r in roles))
+  elif other is not None and roles:  # in the model: every role, every kind of other kernel, the gaps
+    for r in roles:
+      add(f"{r['role']} {r['quant']}", "role", r["actual_ms"], r["ideal_ms"], lost_ms=r["lost_ms"], pct_peak=r.get("pct_peak"))
+    for l in lines:
+      if l.get("kernels"):
+        add(l["label"], "kernels", l["ms"], None)
+    kv = float(tie.get("kv_ms") or 0.0)
+    named = 0.0
+    for p in other["parts"]:
+      named += p["ms"]
+      if p["kind"] == "attention":  # the limit's KV read is attention's ideal
+        add(p["kind"], "kernels", p["ms"], kv)
+        kv = 0.0
+      else:
+        add(p["kind"], "kernels", p["ms"], None)
+    rest_now, rest_limit = other["busy_ms"] - named, other["ideal_ms"] - (float(tie.get("kv_ms") or 0.0) - kv)
+    if abs(rest_now) > 1e-9:
+      add(REST_ROW, "rest", rest_now, None)
+    if abs(rest_limit) > 1e-9:
+      add(LIMIT_ROW, "limit", 0.0, rest_limit)
+    gaps = lines[-1]
+    add(GAPS_ROW, "gaps", gaps["ms"], 0.0)
+  else:  # not split by role: the tie-out's own lines, the ideal on the first one that holds kernels
+    for i, l in enumerate(lines[1:]):
+      gaps = l["how"] == "difference" and len(lines) > 2
+      now = l["ms"] + (limit if i == 0 else 0.0)
+      add(l["label"].replace(" above the ideal", "").replace(" above their ideal", ""), "gaps" if gaps else "rest",
+          now, 0.0 if gaps else (limit if i == 0 else None))
+  for r in rows:
+    r.setdefault("lost_ms", r["now_ms"] - (r["limit_ms"] or 0.0))
+    r.setdefault("pct_peak", None)
+  total = sum(r["lost_ms"] for r in rows)
+  for r in rows:
+    r["share"] = r["lost_ms"] / total if total > 0 else None
+    r["tok_s_if_fixed"] = 1000.0 / (base - r["lost_ms"]) if base - r["lost_ms"] > 0 and r["what"] != "limit" else None
+  rows.sort(key=lambda r: (-r["lost_ms"], r["name"]))
+  words = [f"ms per token at context {tie['context']:.0f}, worst first; tok/s if fixed is the {base:.1f} ms token "
+           f"({1000.0 / base:.1f} tok/s) less that row's lost ms."]
+  if abs(base - token) > 1e-9:
+    words.append(f"The rows sum to the {token:.1f} ms token the kernels were measured in ({tie.get('token_source')}); "
+                 f"the headline token is {base:.1f} ms untraced.")
+    if token > base:
+      words.append(f"The gaps row includes the capture's own overhead, about {token - base:.1f} ms (the captured token less "
+                   "the untraced one), so the gaps' tok/s if fixed is an upper bound.")
+  if est:
+    words.append(f"Estimate: each weight kernel was timed alone; the rest of the token (attention, norms, launches and gaps) is the difference {ESTIMATE_LABEL}.")
+  return {"title": WHERE_TITLE, "estimate": bool(est), "token_ms": token, "base_ms": base, "limit_ms": limit,
+          "lost_ms": total, "columns": list(WHERE_COLUMNS), "no_limit": NO_LIMIT, "words": " ".join(words), "rows": rows}

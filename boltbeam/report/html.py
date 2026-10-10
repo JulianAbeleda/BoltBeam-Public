@@ -6,7 +6,8 @@ new: every number on the page is a measured or derived number from that seam, or
 
 Sections, in order (a measured run):
   1. The answer: model, chip, engine, batch, weight format; measured speed against the limit; ms per token lost.
-  2. Where the time goes: the tie-out from the limit to the measured token.
+  2. Where the time goes: the tie-out from the limit to the measured token; then Where the token goes, the same
+     token as one ranked table of what each part costs it (tie_out.where_token_goes).
   3. Per role, sorted by lost ms, in the TUI's words.
   4. What to try next, from the reasons by a stated rule table (NEXT_RULES, LINE_RULES): data, not code.
   5. Facts: chip profile, capture method, stages that ran, files in the run.
@@ -132,6 +133,8 @@ table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;marg
 td{padding:8px 6px;border-bottom:1px solid var(--edge);text-align:right;color:var(--tx-2);vertical-align:top}
 td:first-child{text-align:left;color:var(--tx)}
 td.how{color:var(--tx-3);font-size:12px;text-align:left;padding-left:16px}
+.where th{padding:6px;font-size:12px;font-weight:600;color:var(--tx-3);text-align:right;border-bottom:1px solid var(--edge)}
+.where th:first-child{text-align:left}.where td.lost{color:var(--tx);font-weight:700}
 tr.sum td{font-weight:800;color:var(--tx);border-bottom:0;border-top:2px solid var(--edge)}
 .sub{display:block;color:var(--tx-3);font-size:12px;font-weight:400}
 .note{color:var(--tx-2);font-size:13px;margin:10px 0 0}
@@ -662,6 +665,25 @@ def _where(loss:dict[str, Any]) -> str:
   return _section(2, "Where the time goes", body)
 
 
+def _where_token(loss:dict[str, Any]) -> str:
+  """tie_out.where_token_goes as a table: what each part costs the token, worst first. The numbers are the table's."""
+  w = loss.get("where_token_goes")
+  if not w:
+    return ""
+  head = "".join(f"<th>{_e(c)}</th>" for c in w["columns"])
+  rows = []
+  for r in w["rows"]:
+    at = f'{r["limit_ms"]:.2f}' if r["limit_ms"] is not None else _e(w["no_limit"])
+    rows.append(f'<tr><td>{_e(r["name"])}</td><td>{r["now_ms"]:.2f}</td><td>{at}</td><td class="lost">{r["lost_ms"]:.2f}</td>'
+                f'<td>{_f(None if r["share"] is None else 100 * r["share"], "{:.0f}%")}</td><td>{_f(r["tok_s_if_fixed"], "{:.1f}")}</td>'
+                f'<td>{_f(r["pct_peak"], "{:.1f}%")}</td></tr>')
+  rows.append(f'<tr class="sum"><td>= token</td><td>{w["token_ms"]:.2f}</td><td>{w["limit_ms"]:.2f}</td><td>{w["lost_ms"]:.2f}</td>'
+              f'<td>100%</td><td></td><td></td></tr>')
+  body = (f'<p class="muted" style="margin:0 0 10px">{_e(w["words"])}</p>'
+          f'<div class="tscroll"><table class="tie where"><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+  return _section(2, w["title"] + (" (estimate)" if w["estimate"] else ""), body)
+
+
 def _other_line(t:dict[str, Any]) -> dict[str, Any] | None:
   return next((l for l in t.get("lines") or [] if l.get("parts") is not None), None)
 
@@ -920,7 +942,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
   measured = _measured(loss) is not None
   sections = _answer(manifest, results, measure, source_run)
   if measured:
-    sections += _where(loss) + _per_role(loss) + _next(loss, policy)
+    sections += _where(loss) + _where_token(loss) + _per_role(loss) + _next(loss, policy)
   sections += _probe(results) + _facts(manifest, results, measure, gameplan)
   sections = _number(sections)
   return (

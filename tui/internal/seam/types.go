@@ -640,6 +640,37 @@ type Loss struct {
 	RoleSource      *string   `json:"role_source"`
 	RoleSourceWords *string   `json:"role_source_words"`
 	Estimate        *Estimate `json:"estimate"`
+	// WhereTokenGoes is the tie-out as one ranked table of what each part costs the token
+	// (workflow/tie_out.py where_token_goes); every renderer reads it, none recomputes it.
+	WhereTokenGoes *Where `json:"where_token_goes"`
+}
+
+// Where is "Where the token goes": rows worst first, summing to TokenMs (now) and LimitMs (at the limit).
+// BaseMs is the headline token tok/s if fixed is taken from; Estimate says the rows come from kernels timed alone.
+type Where struct {
+	Title    string     `json:"title"`
+	Estimate bool       `json:"estimate"`
+	TokenMs  float64    `json:"token_ms"`
+	BaseMs   float64    `json:"base_ms"`
+	LimitMs  float64    `json:"limit_ms"`
+	LostMs   float64    `json:"lost_ms"`
+	Columns  []string   `json:"columns"`
+	NoLimit  string     `json:"no_limit"`
+	Words    string     `json:"words"`
+	Rows     []WhereRow `json:"rows"`
+}
+
+// WhereRow is one part of the token. LimitMs is nil where the limit has no bytes for it ("no limit"); Share and
+// TokSIfFixed are nil when nothing is lost in all or the row's loss is the whole token; PctPeak is set for roles.
+type WhereRow struct {
+	Name        string   `json:"name"`
+	What        string   `json:"what"` // role | kernels | rest | limit | gaps
+	NowMs       float64  `json:"now_ms"`
+	LimitMs     *float64 `json:"limit_ms"`
+	LostMs      float64  `json:"lost_ms"`
+	Share       *float64 `json:"share"`
+	TokSIfFixed *float64 `json:"tok_s_if_fixed"`
+	PctPeak     *float64 `json:"pct_peak"`
 }
 
 // Estimate is an isolated run's scaled split of the token (workflow/tie_out.py _isolated). When the rows carry a

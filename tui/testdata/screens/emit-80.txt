@@ -11,14 +11,14 @@
 │   evidence: timing_trace.json › rows[0], machine_facts.json › gpus[0],       │
 │ measure_status.json                                                          │
 │                                                                              │
-│ Roles ordered by est_lost_ms (an estimate from isolated times), worst first. │
-│ Each role shows the search's lineage: BubbleBeam, FutureSight, Measured,     │
-│ Promotion.                                                                   │
+│ ## Where the token goes (estimate)                                           │
+│ ms per token at context 128, worst first; tok/s if fixed is the 55.1 ms      │
+│ token (18.1 tok/s) less that row's lost ms. Estimate: each weight kernel was │
+│ timed alone; the rest of the token (attention, norms, launches and gaps) is  │
+│ the difference (estimate from isolated times).                               │
 │                                                                              │
-│ ## 1. attn_kv Q4_K · 2.95 ms lost est.                                       │
-│ 1024 x 4096 · 2.4 MB per call · 54 calls per token · 91.5 µs/call · 25.9     │
-│ GB/s · 26.6% of peak (isolated) · too small to fill memory; noisy: ±20.4% ·  │
-│ not searched                                                                 │
+│ ```                                                                          │
+│ row              ms now ms at limit ms lost share tok/s if fixed % of peak   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │

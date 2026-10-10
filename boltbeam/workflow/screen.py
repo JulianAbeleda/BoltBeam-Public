@@ -383,7 +383,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
          "not_attributed_ms": None, "source": None, "missing": None, "refused": None,
          "provider": provider, "capture": plan, "roles_provider": None, "provider_missing": None, "others": [], "unpaired_roles": [],
          "not_timed": [], "tie_out": None, "role_rule": None, "step": step_facts(token), "latency": None, "cross_check": None,
-         "role_source": None, "role_source_words": None, "estimate": None}
+         "role_source": None, "role_source_words": None, "estimate": None, "where_token_goes": None}
   from boltbeam.workflow import tie_out as tie
   from boltbeam.workflow import evidence as ev
   profile, bw = _optional(run, "model_profile.json"), ceil.get("peak_bandwidth_gbs")
@@ -420,6 +420,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
     out["missing"] = out["provider_missing"]
     out["tie_out"] = tie.tie_out(run, provider=provider, table=None, trace=None, limit_ms=limit_ms, profile=profile,
                                  bandwidth_gbs=bw, missing=out["missing"])
+    out["where_token_goes"] = tie.where_token_goes(out["tie_out"], [])
     facts = ev.Facts(run, None)
     out["evidence"] = {"whole_step": facts.step4(), "other_kernels": [], "common": facts.common()}
     out["findings"] = ev.items(facts, out)
@@ -458,6 +459,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
     for r in runtimes:  # the isolated sum is not a token: it carries no "lost", it is said as a sum
       if r.get("capture") == engine_kernels.METHOD:
         r.update(isolated=True, lost_ms=None, note="the kernels' times summed, each timed alone; attention, norms and gaps are not in it")
+  out["where_token_goes"] = tie.where_token_goes(out["tie_out"], out["roles"])
   out["findings"] = ev.items(facts, out)
   taken = {(r["role"], r["quant"]) for r in roles}
   out["evidence"] = {"whole_step": facts.whole(), "other_kernels": facts.others(taken), "common": facts.common()}
@@ -1230,6 +1232,25 @@ def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | Non
 SAVE_RECORD = "save.json"
 
 
+def where_lines(w:dict[str, Any] | None) -> list[str]:
+  """"Where the token goes" (tie_out.where_token_goes) as plain text: one table, worst first, each column as wide as
+  its widest cell. The summary and the gameplan print these lines; the numbers are the table's, never recomputed."""
+  if not w:
+    return []
+  f = lambda v, fmt: fmt.format(v) if v is not None else ""  # noqa: E731
+  cells = [list(w["columns"])]
+  for r in w["rows"]:
+    cells.append([r["name"], f(r["now_ms"], "{:.2f}"), f(r["limit_ms"], "{:.2f}") or w["no_limit"], f(r["lost_ms"], "{:.2f}"),
+                  f(None if r["share"] is None else 100 * r["share"], "{:.0f}%"), f(r["tok_s_if_fixed"], "{:.1f}"),
+                  f(r["pct_peak"], "{:.1f}%")])
+  cells.append(["= token", f"{w['token_ms']:.2f}", f"{w['limit_ms']:.2f}", f"{w['lost_ms']:.2f}", "100%", "", ""])
+  width = [max(len(row[i]) for row in cells) for i in range(len(cells[0]))]
+  out = [w["title"] + (" (estimate)" if w["estimate"] else "") + ":", f"  {w['words']}"]
+  for row in cells:
+    out.append(("  " + row[0].ljust(width[0]) + " " + " ".join(c.rjust(width[i + 1]) for i, c in enumerate(row[1:]))).rstrip())
+  return out
+
+
 def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   """The tie-out and the per-role table as plain text, to paste into a message. why_no_roles is this machine's
   reason per-role time cannot be taken here; it replaces the generic "Run times each role" sentence."""
@@ -1270,6 +1291,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
       if l.get("parts"):
         lines.append("      " + ", ".join(f"{p['kind']} {p['ms']:.3f}" for p in l["parts"]))
     lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
+  lines += where_lines(loss.get("where_token_goes"))
   if t.get("band"):
     lines.append(f"Band: {t['band']}")
   roles = loss.get("roles") or []

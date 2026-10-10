@@ -146,7 +146,8 @@
         "untraced_context": null,
         "untraced_ms": null
       },
-      "unpaired_roles": []
+      "unpaired_roles": [],
+      "where_token_goes": null
     },
     "measured": false,
     "measurement": null,

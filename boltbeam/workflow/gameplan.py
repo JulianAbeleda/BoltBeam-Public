@@ -384,6 +384,7 @@ def gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None
     "limit_ms": loss.get("limit_ms"), "limit_tok_s": loss.get("limit_tok_s"),
     "pct_of_limit": (100.0 * loss["limit_ms"] / token["ms"]) if token and loss.get("limit_ms") and token.get("ms") else None,
     "lost_ms": token["lost_ms"] if token else None,
+    "where_token_goes": loss.get("where_token_goes"),
     "evidence": list((loss.get("step") or {}).get("evidence") or []) + list((loss.get("evidence") or {}).get("common") or []),
   }
   order = lambda r: -((r.get("est_lost_ms") if est else r.get("lost_ms")) or 0.0)  # noqa: E731
@@ -421,6 +422,7 @@ def _num(v:Any, fmt:str) -> str:
 
 
 def to_markdown(plan:dict[str, Any]) -> str:
+  from boltbeam.workflow.screen import where_lines
   h = plan["header"]
   out = [f"# Gameplan: {h.get('model_id')} on {h.get('target_id')}", "",
          f"Run {plan['id']} · {h.get('engine')} · batch {h.get('batch')} · {h.get('weight_format') or 'weights ' + NOT_RECORDED}"
@@ -435,6 +437,8 @@ def to_markdown(plan:dict[str, Any]) -> str:
     out.append(f"Per-role source: {h['role_source']}.")
   if fold := _fold(h.get("evidence") or []):
     out.append(f"  {fold}")
+  if where := where_lines(h.get("where_token_goes")):
+    out += ["", f"## {where[0].rstrip(':')}", where[1].strip(), "", "```", *(l[2:] for l in where[2:]), "```"]
   out += ["", f"Roles ordered by {plan['ordered_by']}, worst first. Each role shows the search's lineage: BubbleBeam, FutureSight, Measured, Promotion.", ""]
   for b in plan["roles"]:
     est = " est." if b.get("lost_is_estimate") else ""

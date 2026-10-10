@@ -14,6 +14,22 @@ The limit is 47.8 ms per token at context 1.
 ○ llama.cpp per role: 54.3 ms, the kernels timed alone and summed.
   Not a token: attention, norms and gaps are not in it.
 
+Where the token goes (estimate)
+ms per token at context 128, worst first; tok/s if fixed is the 66.0 ms
+token (15.2 tok/s) less that row's lost ms. Estimate: each weight kernel was
+timed alone; the rest of the token (attention, norms, launches and gaps) is
+the difference (estimate from isolated times).
+ROW               NOW ms  AT LIMIT  LOST ms  SHARE  TOK/S IF FIXED  % PEAK
+rest, not timed   12.20   0.19      12.00    67%    18.5            
+ffn_gate_up Q4_K  23.21   20.85     2.37     13%    15.7            89.8%
+attn_qo Q4_K      8.06    6.95      1.11     6%     15.4            86.2%
+ffn_down Q6_K     8.49    7.60      0.90     5%     15.4            89.4%
+attn_kv Q4_K      2.10    1.31      0.79     4%     15.3            62.3%
+ffn_down Q4_K     5.64    5.21      0.43     2%     15.3            92.4%
+attn_kv Q6_K      0.87    0.63      0.24     1%     15.2            72.7%
+lm_head Q6_K      5.41    5.22      0.19     1%     15.2            96.5%
+= token           65.98   47.96     18.02    100%                   
+
 Per role, estimated from isolated kernel times
 Each kernel timed alone by BoltBeam's kernel timer, cold (the cache swept by
 a read before every call), outside the engine: llama.cpp's own

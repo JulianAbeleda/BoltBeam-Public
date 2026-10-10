@@ -656,6 +656,62 @@ func tieOutBody(t *seam.TieOut) string {
 	return b.String()
 }
 
+// whereBody is "Where the token goes": what each part costs the token, worst first, read from the seam. On a
+// narrow page % OF PEAK goes first, then SHARE, so no row is cut.
+func whereBody(w *seam.Where) string {
+	if w == nil || len(w.Rows) == 0 {
+		return ""
+	}
+	title := w.Title
+	if w.Estimate {
+		title += " (estimate)"
+	}
+	var b strings.Builder
+	b.WriteString("\n" + stHeader.Render(title) + "\n")
+	b.WriteString(stMuted.Render(w.Words) + "\n")
+	for _, drop := range [][]string{nil, {"% PEAK"}, {"% PEAK", "SHARE"}} {
+		if t := whereTable(w, drop); maxWidth(t) <= tableWidth || len(drop) == 2 {
+			b.WriteString(t)
+			break
+		}
+	}
+	return b.String()
+}
+
+func whereTable(w *seam.Where, drop []string) string {
+	pct := func(v *float64, scale float64, f string) string {
+		if v == nil {
+			return ""
+		}
+		return fmt.Sprintf(f, *v*scale)
+	}
+	rows := [][]string{{"ROW", "NOW ms", "AT LIMIT", "LOST ms", "SHARE", "TOK/S IF FIXED", "% PEAK"}}
+	for _, r := range w.Rows {
+		at := w.NoLimit
+		if r.LimitMs != nil {
+			at = fmt.Sprintf("%.2f", *r.LimitMs)
+		}
+		rows = append(rows, []string{r.Name, fmt.Sprintf("%.2f", r.NowMs), at, fmt.Sprintf("%.2f", r.LostMs),
+			pct(r.Share, 100, "%.0f%%"), pct(r.TokSIfFixed, 1, "%.1f"), pct(r.PctPeak, 1, "%.1f%%")})
+	}
+	rows = append(rows, []string{"= token", fmt.Sprintf("%.2f", w.TokenMs), fmt.Sprintf("%.2f", w.LimitMs),
+		fmt.Sprintf("%.2f", w.LostMs), "100%", "", ""})
+	keep := []int{}
+	for i, h := range rows[0] {
+		if !slices.Contains(drop, h) {
+			keep = append(keep, i)
+		}
+	}
+	for j, row := range rows {
+		cut := []string{}
+		for _, i := range keep {
+			cut = append(cut, row[i])
+		}
+		rows[j] = cut
+	}
+	return table(rows)
+}
+
 // isolatedTieOut is the tie-out of a run whose kernels were timed alone: only what is measured, the ideal at
 // context 1 and at the attended context, the token, and their difference. The split is one estimate line.
 func isolatedTieOut(t *seam.TieOut) string {
@@ -800,6 +856,7 @@ func lossBodyAt(l seam.Loss, batch int) string {
 			b.WriteString("  " + stMuted.Render(r.Note) + "\n")
 		}
 	}
+	b.WriteString(whereBody(l.WhereTokenGoes))
 	if l.Refused != nil {
 		b.WriteString(stWarn.Render(glyphWarn+" Per role: not shown. ") + *l.Refused + "\n")
 		return b.String()

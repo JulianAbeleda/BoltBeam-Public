@@ -117,7 +117,38 @@
       "untraced_context": 128,
       "untraced_ms": 57.903879559930516
     },
-    "unpaired_roles": []
+    "unpaired_roles": [],
+    "where_token_goes": {
+      "base_ms": 57.903879559930516,
+      "columns": [
+        "row",
+        "ms now",
+        "ms at limit",
+        "ms lost",
+        "share",
+        "tok/s if fixed",
+        "% of peak"
+      ],
+      "estimate": false,
+      "limit_ms": 48.304279176954736,
+      "lost_ms": 9.59960038297578,
+      "no_limit": "no limit",
+      "rows": [
+        {
+          "limit_ms": 48.304279176954736,
+          "lost_ms": 9.59960038297578,
+          "name": "kernels and gaps, not split",
+          "now_ms": 57.903879559930516,
+          "pct_peak": null,
+          "share": 1.0,
+          "tok_s_if_fixed": 20.702099628413155,
+          "what": "rest"
+        }
+      ],
+      "title": "Where the token goes",
+      "token_ms": 57.903879559930516,
+      "words": "ms per token at context 128, worst first; tok/s if fixed is the 57.9 ms token (17.3 tok/s) less that row's lost ms."
+    }
   },
   "measured": true,
   "measurement": null,
