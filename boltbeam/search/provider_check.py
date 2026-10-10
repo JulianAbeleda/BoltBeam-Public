@@ -10,10 +10,13 @@ Three claims come back from the provider, and each is checked here with BoltBeam
                     (metal_native.reference_row) with the activation as the kernel reads it (fp16, the same rule as the
                     q8_1 vector of the CUDA engine adapter)
   timing            that kernel timed by BoltBeam's kernel timer (collectors/kernel_timer.py: one loop, a read sweep
-                    of the last-level cache before each sample, the dispatch floor beside it); the provider's median
-                    against BoltBeam's median less the floor, judged by the chip's band
+                    of the last-level cache before each sample, the dispatch floor beside it)
 
-A provider time outside the band is "provider claim not reproduced". The caller never promotes such a candidate.
+Every decision is taken on BoltBeam's own time (its median less the floor). The provider's median orders the search
+and is kept beside BoltBeam's with their ratio, as a note: on the RTX 5090 the two timers disagree by 2 to 9%, outside
+the chip's band, so a rule that needed them to agree could never promote anything (docs/kernel-search-fusion-20261010.md).
+A kernel BoltBeam could not rebuild, found incorrect, or read noisily is "not reproduced by BoltBeam", and the caller
+never promotes it.
 """
 from __future__ import annotations
 
@@ -24,7 +27,7 @@ from typing import Any
 from boltbeam.collectors import kernel_timer
 from boltbeam.collectors.kernel_timer import Check, KernelSpec
 
-NOT_REPRODUCED = "provider claim not reproduced"
+NOT_REPRODUCED = "not reproduced by BoltBeam"
 REPRODUCED = "reproduced"
 # a provider fact and the key BoltBeam's bridge reports the same quantity under
 IDENTITY_KEYS = (("sm_count", "sm_count"), ("l2_bytes", "l2_cache_bytes"), ("compute_capability", "compute_capability"),
@@ -128,29 +131,60 @@ def retime(bridge, flusher, floor_us:float | None, record:Mapping[str, Any], *, 
 
 
 def judge(provider_ns:float | None, mine:Mapping[str, Any], band:float) -> dict[str, Any]:
-  """The provider's median against BoltBeam's median less the dispatch floor (kernel_timer.less_floor_us), within the
-  chip's band. The less-floor figure is the kernel's own time: the fork's device timestamps bracket the kernel, a
-  CUDA event pair or a command buffer adds the launch (on the RTX 5090 the provider's emitter claims sat about one
-  4 µs floor under BoltBeam's measured times). A BoltBeam reading the tie-out calls noisy (tie_out.noisy_words, the
-  one rule) cannot confirm anything, so the claim is not reproduced: unknown is not pass."""
+  """BoltBeam's own reading of the kernel decides: a kernel it rebuilt, found correct and timed with a quiet reading
+  (not noisy by tie_out.noisy_words, the one rule) is reproduced, and its time less the floor is the time every
+  decision uses. The provider's median is kept beside it with the ratio and whether it sits inside the chip's band:
+  a note and the search's order, never a gate (on the RTX 5090 the fork's device timestamps sit 2 to 9% from
+  BoltBeam's time less the floor, outside the 1.4% band). Unknown is not pass: a noisy reading decides nothing."""
   from boltbeam.workflow.tie_out import noisy_words
   if mine.get("status") != "measured":
     return {"verdict": NOT_REPRODUCED, "reason": f"BoltBeam could not reproduce the kernel: {mine.get('reason')}"}
   ours = mine.get("us_less_floor") if mine.get("us_less_floor") is not None else mine["us"]
-  if provider_ns is None or not ours:
-    return {"verdict": NOT_REPRODUCED, "reason": "the provider reported no time to compare"}
-  theirs = provider_ns / 1000.0
-  ratio = theirs / ours
   noisy, _half, why = noisy_words(mine.get("spread_pct"), mine["us"], (mine.get("timing") or {}).get("dispatch_floor_us"))
-  ok = abs(ratio - 1.0) <= band and not noisy
-  reason = None
-  if noisy:
-    reason = f"BoltBeam's own reading of this kernel is noisy ({why}), so the provider's {theirs:.1f} µs cannot be confirmed"
-  elif not ok:
-    reason = (f"the provider's {theirs:.1f} µs is {ratio:.2f}x BoltBeam's {ours:.1f} µs (less the floor), "
-              f"outside the chip's ±{100 * band:.1f}% band")
-  return {"verdict": REPRODUCED if ok else NOT_REPRODUCED, "provider_us": theirs, "boltbeam_us": mine["us"],
-          "boltbeam_us_less_floor": ours, "ratio": ratio, "band": band, "noisy": noisy, "reason": reason}
+  theirs = provider_ns / 1000.0 if provider_ns is not None else None
+  ratio = theirs / ours if theirs is not None and ours else None
+  note = (f"the provider said {theirs:.1f} µs, {ratio:.2f}x BoltBeam's {ours:.1f} µs less the floor "
+          f"({'inside' if abs(ratio - 1.0) <= band else 'outside'} the chip's ±{100 * band:.1f}% band); used to order the search only"
+          if ratio is not None else "the provider reported no time; BoltBeam's own time is used")
+  reason = f"BoltBeam's own reading of this kernel is noisy ({why}), so nothing is decided on it" if noisy else None
+  return {"verdict": NOT_REPRODUCED if noisy else REPRODUCED, "provider_us": theirs, "boltbeam_us": mine["us"],
+          "boltbeam_us_less_floor": ours, "ratio": ratio, "band": band, "provider_in_band": ratio is not None and abs(ratio - 1.0) <= band,
+          "noisy": noisy, "reason": reason, "provider_note": note}
 
 
-__all__ = ["NOT_REPRODUCED", "REPRODUCED", "bridge_facts", "half_round", "identity", "judge", "retime", "spec_from_record"]
+def retime_labeled(bridge, flusher, floor_us:float | None, record:Mapping[str, Any], *, nodes:list[str], quant:str, rows:int,
+                   cols:int, weights:Mapping[str, bytes], seed:str, label:str, libraries:dict[str, int] | None = None) -> dict[str, Any]:
+  """A kernel whose buffers the provider labelled by operand ("out", "weight:<node>", "value:<name>"): a fused kernel
+  or one node's kernel alone. BoltBeam binds its own data to every label (search/fusion_space.bind) and checks the
+  output against the nodes computed one after another by BoltBeam (fusion_space.Reference), then times it."""
+  from boltbeam.collectors import metal_native as native
+  from boltbeam.search import fusion_space
+  try:
+    sink = fusion_space.adjacency(nodes)["sink"] if len(nodes) > 1 else nodes[0]
+    lengths = fusion_space.value_lengths(nodes, rows, cols)
+    args, bound, out_format = fusion_space.bind(record, weights={n: weights[n] for n in nodes if n in weights},
+                                                value_len={v: n for v, n in lengths.items() if v not in nodes}, rows=rows, seed=seed)
+    ref = fusion_space.Reference(nodes, quant, rows, cols, weights, bound)
+    check = Check(indices=native.check_rows(rows), reference=lambda r: ref.at(sink, r), rel_tol=native.TOLERANCE,
+                  words=f"BoltBeam computes {' then '.join(nodes)} itself: pure-Python dequantize and dot on the model's bytes",
+                  out_format=out_format)
+    block = (list(record.get("local_size") or []) + [1, 1, 1])[:3]
+    grid = (list(record.get("global_size") or []) + [1, 1, 1])[:3]
+    spec = KernelSpec(label=label, adapter="provider kernel, rebuilt by BoltBeam", source=str(record["source"]),
+                      kernel=str(record["function"]), args=args, grid=tuple(int(v) for v in grid), block=tuple(int(v) for v in block),
+                      bytes_read=sum(len(a) for a in args if isinstance(a, (bytes, bytearray))), check=check,
+                      record={"function": record["function"]})
+    got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries, floor_us=floor_us)
+  except Exception as exc:  # the provider's description or source: BoltBeam could not rebuild it
+    return {"status": "not_rebuilt", "reason": f"{type(exc).__name__}: {exc}"[:400]}
+  if not got["samples"]:
+    return {"status": "incorrect", "correctness": got["correctness"],
+            "reason": "BoltBeam's reference disagrees with the kernel's output"}
+  med = got["median_us"]
+  return {"status": "measured", "us": med, "us_less_floor": kernel_timer.less_floor_us(med, floor_us), "min_us": got["min_us"],
+          "spread_pct": got["spread_pct"], "samples": len(got["samples"]), "correctness": got["correctness"],
+          "timing": {**got["timing"], "dispatch_floor_us": floor_us}, "timed_by": f"BoltBeam's kernel timer: {label}"}
+
+
+__all__ = ["NOT_REPRODUCED", "REPRODUCED", "bridge_facts", "half_round", "identity", "judge", "retime", "retime_labeled",
+           "spec_from_record"]

@@ -15,8 +15,11 @@ device the candidates' target names (METAL, NV, CUDA, AMD); no `--backend` is ne
 Run's search stage (`boltbeam/search/role_compare.py`) runs these four steps per role, for the role's recorded
 tensor and shape on the run's target, then checks the provider's claims itself (`boltbeam/search/provider_check.py`):
 the device identity against BoltBeam's own bridge, and every measured kernel rebuilt from the source the provider
-returned, checked against BoltBeam's reference on the model's bytes and timed by the kernel timer. A provider time
-outside the chip's band is "provider claim not reproduced" and is never promoted. Emit's BubbleBeam, FutureSight
+returned, checked against BoltBeam's reference on the model's bytes and timed by the kernel timer. Every decision
+uses BoltBeam's own time; the provider's time only orders the search. A kernel BoltBeam cannot rebuild, finds
+incorrect or reads noisily is "not reproduced by BoltBeam" and is never promoted. After the roles, the same pipeline
+runs for fusion candidates: kernels that replace several adjacent decode-graph nodes with one launch
+(`boltbeam/search/fusion_space.py`, `docs/kernel-search-fusion-20261010.md`). Emit's BubbleBeam, FutureSight
 and Measured layers read the files these steps write in `kernel_compare/`. The dimensions come from what the
 provider's `describe` says the model's decode binds through (`boltbeam/search/role_space.py`): the fork's decode
 emitter rows, or Opt-sequence rows to the chip's thread limit. Runs before 2026-10-10 searched a fixed 13-row list

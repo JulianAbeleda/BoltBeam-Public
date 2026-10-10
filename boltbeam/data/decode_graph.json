@@ -1,0 +1,21 @@
+{
+  "schema": "boltbeam.decode_graph.v1",
+  "note": "The dataflow of one decoder layer at decode, as nodes and the values each reads. A weight node is named by its tensor's fine role (boltbeam/vocab.py RoleClass) and reads one value through its matrix; every other node is named by what it computes. A value is named by the node that produces it, or is the layer's input stream (residual). The fusion search (search/fusion_space.py) reads this table to say which nodes are adjacent, which values a set of nodes reads from outside, and how BoltBeam computes their output itself (the op column). A node whose op BoltBeam has no reference for (rms_norm, attention) cannot be inside a fusion BoltBeam checks.",
+  "inputs": {"residual": "the residual stream entering the layer"},
+  "nodes": {
+    "attn_norm": {"op": "rms_norm", "reads": ["residual"]},
+    "attention_q": {"op": "gemv", "reads": ["attn_norm"]},
+    "attention_k": {"op": "gemv", "reads": ["attn_norm"]},
+    "attention_v": {"op": "gemv", "reads": ["attn_norm"]},
+    "v_cache_store": {"op": "cast_fp16", "reads": ["attention_v"]},
+    "attention": {"op": "attention", "reads": ["attention_q", "attention_k", "v_cache_store"]},
+    "attention_o": {"op": "gemv", "reads": ["attention"]},
+    "attn_residual": {"op": "add", "reads": ["residual", "attention_o"]},
+    "ffn_norm": {"op": "rms_norm", "reads": ["attn_residual"]},
+    "ffn_gate": {"op": "gemv", "reads": ["ffn_norm"]},
+    "ffn_up": {"op": "gemv", "reads": ["ffn_norm"]},
+    "silu_mul": {"op": "silu_mul", "reads": ["ffn_gate", "ffn_up"]},
+    "ffn_down": {"op": "gemv", "reads": ["silu_mul"]},
+    "ffn_residual": {"op": "add", "reads": ["attn_residual", "ffn_down"]}
+  }
+}

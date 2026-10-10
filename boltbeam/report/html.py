@@ -318,7 +318,7 @@ def roofline_kernels(timing:dict[str, Any], context:Any = None) -> tuple[list[di
 NO_KERNEL_CHOICE = "No kernels compared yet. Every role runs the default kernel."
 # Plain words for a role's kernel search verdict (search/role_compare.py role_verdict); boltbeam-tui uses the same.
 PLAIN_VERDICT = {"applied": "applied", "found_not_applied": "found, not applied", "none_faster": "none faster",
-                 "not_reproduced": "provider claim not reproduced",
+                 "not_reproduced": "not reproduced by BoltBeam",
                  "not_searched": "not searched"}
 VERDICT_CLASS = {"applied": "r-ok", "found_not_applied": "r-slow", "none_faster": "", "not_reproduced": "r-slow", "not_searched": ""}
 

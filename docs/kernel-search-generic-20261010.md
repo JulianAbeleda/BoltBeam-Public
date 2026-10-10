@@ -35,6 +35,9 @@ trace shows. That is why the old A/B reported plans reaching 0 decode calls.
 
 ## BoltBeam's check
 
+Superseded the same day for the timing rule: decisions now use BoltBeam's own time, and the provider's time only
+orders the search (`docs/kernel-search-fusion-20261010.md`). The band rule below could never promote on NV.
+
 The check has three parts:
 
 - **Identity.** The provider's device facts are compared with BoltBeam's own bridge. On the 5090: SM count 170,

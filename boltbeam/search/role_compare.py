@@ -8,12 +8,17 @@ For every role in a run's route_policy.json this module
      the fork's decode emitters, or Opt sequences on tinygrad's scheduler), with BubbleBeam's proposal and
      FutureSight's static rejections recorded,
   4. runs it through the provider (`search-full-kernel`'s own runner),
-  5. rebuilds the winner and the model's own kernel from the source the provider returned, on the model's weight
-     bytes, checks them against BoltBeam's reference and times them with BoltBeam's kernel timer: a provider time
-     outside the chip's band is "provider claim not reproduced" and the role is never promoted,
+  5. rebuilds every candidate the provider measured from the source it returned, on the model's weight bytes, checks
+     it against BoltBeam's reference and times it with BoltBeam's kernel timer: BoltBeam's own time decides, the
+     provider's only ordered the search; a kernel BoltBeam cannot rebuild, finds incorrect or reads noisily is "not
+     reproduced by BoltBeam" and the role is never promoted,
   6. times the winner against the default in a matched whole-model decode A/B in tinygrad's runtime,
   7. turns that into a CandidateDecision with the existing evaluator, appends it to the run's route ledger, and
      writes the route's status into route_policy.json.
+
+Then the fusions (compare_fusions): kernels that replace several adjacent decode-graph nodes with one launch, proposed
+by BubbleBeam from the provider's fused emitters and BoltBeam's own decode graph (search/fusion_space.py), run through
+the same campaign and checked the same way, each judged on the in-model time of the tie-out rows it replaces.
 
 The provider's numbers are claims. The kernel numbers this module judges by are BoltBeam's own (the kernel timer);
 the whole-model numbers are tinygrad runtime times. None of them is a llama.cpp time.
@@ -181,8 +186,9 @@ def capability(root:pathlib.Path, devices:list[str]) -> dict[str, Any]:
   return _ask(root, "capability", {"devices": list(devices)})
 
 
-def describe(root:pathlib.Path, device:str | None = None) -> dict[str, Any]:
-  return _ask(root, "describe", {"device": device} if device else {})
+def describe(root:pathlib.Path, device:str | None = None, *, shapes:list[dict[str, int]] | None = None) -> dict[str, Any]:
+  """The provider's describe; with shapes ([{n, k}]), its fused emitters' validate verdicts at each shape too."""
+  return _ask(root, "describe", ({"device": device} if device else {}) | ({"shapes": list(shapes)} if shapes else {}))
 
 
 def pick_device(backend:str | None, reply:Mapping[str, Any]) -> tuple[str | None, str | None]:
@@ -331,10 +337,13 @@ def role_losses(run:pathlib.Path) -> dict[tuple[Any, ...], dict[str, Any]]:
 
 
 def kernel_numbers(summary:Mapping[str, Any], in_model:Mapping[str, Any] | None = None,
-                   verify:Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+                   verify:Mapping[str, Any] | None = None, tensors:int | None = None) -> dict[str, Any] | None:
   """Number one of two: the winning plan alone, by BoltBeam's kernel timer (less the dispatch floor) when the check
-  ran, else the provider's claim, beside the model's own kernel. The model's per-call time is the role's kernel
-  inside the running model (tinygrad's role time). Never a stand-in for the whole-model number."""
+  ran, else the provider's claim, beside the model's own kernel. The model's time is the role's kernels inside the
+  running model (tinygrad's role time), per tensor read: a plan reads one of the role's tensors a call, and the model
+  may read several in one call (a fused gate and up), so the role's in-model time is divided by its tensors per
+  token (the model profile's count) when that is known, else by its calls. Never a stand-in for the whole-model
+  number."""
   w = summary.get("winner")
   if not w or w.get("median_ns") is None: return None
   mine = ((verify or {}).get("winner") or {}).get("boltbeam") or {}
@@ -348,9 +357,14 @@ def kernel_numbers(summary:Mapping[str, Any], in_model:Mapping[str, Any] | None 
          "model_kernel_us": model.get("us_less_floor") if model.get("status") == "measured" else None,
          "model_us_per_call": None, "faster_than_model": None}
   if in_model and in_model.get("calls_per_token"):
-    # the baseline: the role's own kernel inside the running model, GPU time per call at the same shape
-    per_call = in_model["actual_ms"] * 1000.0 / in_model["calls_per_token"]
-    out.update(model_us_per_call=per_call, faster_than_model=out["plan_us"] < per_call)
+    # the baseline: the role's own kernels inside the running model, GPU time per tensor at the same shape
+    reads = tensors or in_model["calls_per_token"]
+    per_call = in_model["actual_ms"] * 1000.0 / reads
+    out.update(model_us_per_call=per_call, faster_than_model=out["plan_us"] < per_call, tensors_per_token=reads,
+               model_calls_per_token=in_model["calls_per_token"])
+    if tensors and abs(tensors - in_model["calls_per_token"]) > 1e-9:
+      out["per_tensor_note"] = (f"the model reads {tensors} tensors of this role per token in {in_model['calls_per_token']:.0f} "
+                                "calls; the plan reads one a call, so the model's time is divided per tensor")
   return out
 
 
@@ -404,6 +418,41 @@ class Checker:
                                      weights=weights, x=x, label=entry["plan"], libraries=self.libraries)
       out["candidates"].append({"candidate_hash": entry["candidate_hash"], "plan": entry["plan"], "provider_rank": row.get("rank"),
                                 "boltbeam": mine, **provider_check.judge(entry.get("median_ns"), mine, self.band)})
+    return out
+
+
+  def fusion(self, result:Mapping[str, Any], *, model:str, proposal:Mapping[str, Any]) -> dict[str, Any]:
+    """Every fused candidate the provider measured correct, rebuilt by BoltBeam on the fusion's own tensors, checked
+    against the covered nodes computed by BoltBeam and timed; then each covered node's kernel alone (the unfused
+    side, from the provider's compile of the fastest candidate), checked and timed the same way."""
+    from boltbeam.search import fusion_space
+    inst = proposal["instance"]
+    rows, cols = (int(x) for x in inst["shape"])
+    quant, order = str(proposal["quant"]), fusion_space.adjacency(proposal["covers"])["order"]
+    weights = {node: role_bytes(model, quant, rows, cols, name)[1] for node, name in inst["tensors"].items()}
+    out: dict[str, Any] = {"tensors": dict(inst["tensors"]), "floor_us": self.floor_us, "band": self.band, "candidates": [], "unfused": []}
+    measured = sorted((r for r in result.get("population", []) if r.get("state") == "MEASURED"), key=lambda r: r.get("rank") or 1 << 30)
+    for row in measured:
+      entry = _entry(row)
+      record = kernel_record(row)
+      mine = ({"status": "not_rebuilt", "reason": "the provider returned no kernel source and launch for this candidate"} if record is None
+              else provider_check.retime_labeled(self.bridge, self.flusher, self.floor_us, record, nodes=order, quant=quant, rows=rows,
+                                                 cols=cols, weights=weights, seed=proposal["name"], label=entry["plan"], libraries=self.libraries))
+      out["candidates"].append({"candidate_hash": entry["candidate_hash"], "plan": entry["plan"], "provider_rank": row.get("rank"),
+                                "boltbeam": mine, **provider_check.judge(entry.get("median_ns"), mine, self.band)})
+    timed = [c for c in out["candidates"] if c["boltbeam"].get("status") == "measured"]
+    pick = min(timed, key=lambda c: c["boltbeam"]["us_less_floor"], default=None)
+    source = next((r for r in measured if pick and r["candidate_hash"] == pick["candidate_hash"]), measured[0] if measured else None)
+    compiled = ((((source or {}).get("worker") or {}).get("provider") or {}).get("compile") or {}).get("result") or {}
+    for node in (compiled.get("fusion") or {}).get("unfused") or []:
+      name = str(node.get("node"))
+      if name not in order:
+        out["unfused"].append({"node": name, "boltbeam": {"status": "not_rebuilt", "reason": "not a node this fusion covers"}})
+        continue
+      mine = provider_check.retime_labeled(self.bridge, self.flusher, self.floor_us, node.get("kernel") or {}, nodes=[name], quant=quant,
+                                           rows=rows, cols=cols, weights=weights, seed=proposal["name"], label=f"{name} alone",
+                                           libraries=self.libraries)
+      out["unfused"].append({"node": name, "boltbeam": mine, **provider_check.judge(None, mine, self.band)})
     return out
 
 
@@ -535,11 +584,13 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
                 describe_fn:Callable[..., dict[str, Any]] | None = None,
                 capability_fn:Callable[[pathlib.Path, list[str]], dict[str, Any]] | None = None,
                 checker:Any = None, only:set[str] | None = None, ab_only_if_faster:bool = False,
-                step:Callable[[int, int], None] | None = None) -> dict[str, Any]:
+                step:Callable[[int, int], None] | None = None, fusions:bool = True,
+                tensors_of_model:list[tuple[str, tuple[int, ...], int, int]] | None = None) -> dict[str, Any]:
   """Compare kernels for every route of one run and write the outcome into the run folder.
 
   `search`, `ab_run`, `describe_fn`, `capability_fn` and `checker` default to the real provider, driver and BoltBeam
-  bridge; tests pass doubles. ab_only_if_faster skips the whole-model A/B for a role whose best plan alone is not
+  bridge; tests pass doubles (and `tensors_of_model`, the GGUF's tensor list, for the fusions). fusions=False skips
+  the fusion stage. ab_only_if_faster skips the whole-model A/B for a role whose best plan alone is not
   faster than the model's own kernel per call (Run's search stage). step(done, total) is called after each role.
   """
   from boltbeam.target.targets import get_target
@@ -576,6 +627,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
   losses = role_losses(run)
   profile = read_json(run / "model_profile.json") if (run / "model_profile.json").is_file() else {}
   tensors = {role_key(r): r.get("tensor_name") for r in profile.get("roles", []) if r.get("tensor_name")}
+  counts = {role_key(r): int(r["count"]) for r in profile.get("roles", []) if r.get("count")}
   # the biggest loss first: that is where a better kernel can save the most
   routes.sort(key=lambda r: -losses.get(role_key(r), {}).get("lost_ms", float("-inf")))
   provider_rev = (facts.get("provider_revision") or {}).get("revision")
@@ -662,7 +714,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
         summary["winner"] = winner
         verify = {"winner": judged["boltbeam_winner"], "model_kernel": judged.get("model_kernel")}
     reproduced = bool(verify) and (verify.get("winner") or {}).get("verdict") == provider_check.REPRODUCED
-    k_numbers = kernel_numbers(summary, losses.get(rk), verify if reproduced else None)
+    k_numbers = kernel_numbers(summary, losses.get(rk), verify if reproduced else None, counts.get(rk))
     if winner is None:
       reason = result.get("error") or "no candidate compiled and passed the correctness check"
       row.update(status="blocked", reason=f"decided by the search: {reason}", decided_by="search")
@@ -711,7 +763,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
         decision = decide(route, winner, ab, model_id=model_id, target_id=target_id, ab_path=row["ab_result"], ab_sha=ab_sha)
     row["kernel"] = k_numbers
     if row["kernel"] and row["kernel"]["model_us_per_call"] is not None:
-      row["role_calls_per_token"] = losses[rk]["calls_per_token"]
+      row["role_calls_per_token"] = row["kernel"]["tensors_per_token"]
     if decision is not None:
       by = "kernel alone" if row["ab"] is None else "whole model"
       row.update(status=route_status(decision.verdict), reason=f"decided by the {by}: {decision.reason}",
@@ -726,6 +778,21 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
     _write(folder / "compare.json", record)
     say(f"role {key}: done {row['status']}")
     if step: step(len(record["roles"]), len(routes))
+  if fusions:
+    try:
+      found = compare_fusions(run, facts=facts, describe_shapes=lambda shapes: ((describe_fn or describe)(root, device, shapes=shapes)
+                                                                                 .get("fusion_shape_verdicts") or []),
+                              search=search, checker=checker, model=model, model_sha=model_sha, target_id=target_id, losses=losses,
+                              timestamp=timestamp, say=say, tensors=tensors_of_model)
+    except Exception as exc:  # the fusions are their own stage: a failure there leaves the roles' results standing
+      found = {"schema": FUSIONS_SCHEMA, "run": run.name, "fusions": [], "error": f"{type(exc).__name__}: {exc}"[:400]}
+      _write(folder / FUSIONS_FILE, found)
+      say(f"compare fusions: failed: {found['error']}")
+    record["fusions"] = [{k: f.get(k) for k in ("name", "quant", "verdict", "reason", "in_model_ms", "lost_ms")} | {
+      "fused_ms": (f.get("fused") or {}).get("ms_per_token"), "unfused_ms": (f.get("unfused") or {}).get("ms_per_token")}
+      for f in found.get("fusions") or []]
+    record["fusions_result"] = f"{FOLDER}/{FUSIONS_FILE}"
+    _write(folder / "compare.json", record)
   say(f"compare done: {run}")
   return record
 
@@ -746,6 +813,167 @@ def _apply(route:dict[str, Any], row:Mapping[str, Any]) -> None:
                       "timing_source": TIMING_SOURCE, "check": row.get("check"), "not_reproduced": bool(row.get("not_reproduced")),
                       "space": row.get("space")}
 
+
+
+# --- fusions: one launch for several adjacent decode-graph nodes ------------------------------------------------
+
+FUSIONS_FILE = "fusions.json"
+FUSIONS_SCHEMA = "boltbeam.kernel_fusions.v1"
+
+
+def _fusion_stem(proposal:Mapping[str, Any]) -> str:
+  return f"fusion-{proposal['name'].replace('+', '-')}-{str(proposal['quant']).lower()}"
+
+
+def fusion_verdict(proposal:Mapping[str, Any], check:Mapping[str, Any] | None, losses:Mapping[tuple[str, str], Mapping[str, Any]],
+                   band:float) -> dict[str, Any]:
+  """One fusion's numbers and verdict. The bar is the in-model time of the tie-out rows it replaces (the "where the
+  token goes" rows), per token; BoltBeam's fused kernel alone (less the floor) times the launches per token must beat it
+  by more than the chip's band. It must also beat BoltBeam's unfused side timed the same way (each covered node's
+  kernel alone, less the floor; a lower bound when a node's reading was not reproduced): an isolated time against an
+  in-model one alone can show a gain that is only the difference between the two ways of timing. A covered node with
+  no row of its own counts 0 ms in the model (fusion_space.NOT_IN_MODEL)."""
+  from boltbeam.search import fusion_space
+  inst = proposal.get("instance") or {}
+  rows = [losses.get(tuple(r)) for r in inst.get("tie_out_rows") or []]
+  calls = inst.get("calls_per_token")
+  out: dict[str, Any] = {"in_model_ms": None, "lost_ms": None, "fused": None, "unfused": None}
+  if rows and all(rows):
+    out["in_model_ms"] = sum(r["actual_ms"] for r in rows)
+    out["lost_ms"] = sum(r["lost_ms"] for r in rows)
+    out["in_model_rows"] = [{"row": f"{r['role']} {r['quant']}", "ms": r["actual_ms"], "lost_ms": r["lost_ms"],
+                             "calls_per_token": r["calls_per_token"]} for r in rows]
+  weights = set(proposal.get("weights") or [])
+  zero = [n for n in proposal.get("covers") or [] if n not in weights]
+  if zero:
+    out["in_model_note"] = f"{', '.join(zero)} {fusion_space.NOT_IN_MODEL}"
+  if check is None or check.get("error"):
+    return out | {"verdict": "not_reproduced" if check else "not_searched",
+                  "reason": (check or {}).get("error") or "the search measured no fused candidate"}
+  good = [c for c in check.get("candidates") or [] if c.get("verdict") == provider_check.REPRODUCED]
+  if not good:
+    why = "; ".join(sorted({str(c.get("reason")) for c in check.get("candidates") or []})) or "the search measured no fused candidate"
+    return out | {"verdict": "not_reproduced", "reason": f"{provider_check.NOT_REPRODUCED}: {why}"}
+  best = min(good, key=lambda c: c["boltbeam_us_less_floor"])
+  fused_ms = best["boltbeam_us_less_floor"] * calls / 1000.0
+  out["fused"] = {"plan": best["plan"], "candidate_hash": best["candidate_hash"], "us_less_floor": best["boltbeam_us_less_floor"],
+                  "ms_per_token": fused_ms, "correctness": (best.get("boltbeam") or {}).get("correctness"),
+                  "provider_note": best.get("provider_note")}
+  alone = check.get("unfused") or []
+  good_alone = [u for u in alone if u.get("verdict") == provider_check.REPRODUCED]
+  every = bool(alone) and len(good_alone) == len(alone) and {u["node"] for u in alone} == set(proposal.get("covers") or [])
+  # the unfused side alone: its sum when BoltBeam reproduced every node; the reproduced nodes' sum is a lower bound
+  # otherwise (a node's time is never below 0), and like for like a fused kernel must beat even that
+  lower = sum(u["boltbeam_us_less_floor"] for u in good_alone) * calls / 1000.0 if good_alone else None
+  out["unfused"] = {"nodes": [{"node": u.get("node"), "verdict": u.get("verdict"), "us_less_floor": u.get("boltbeam_us_less_floor"),
+                               "reason": u.get("reason")} for u in alone],
+                    "ms_per_token": lower if every else None, "lower_bound_ms": lower}
+  if not every:
+    out["unfused"]["why"] = ("BoltBeam did not reproduce every covered node's kernel alone; the ones it did sum to a lower bound"
+                             if alone else "the provider returned no unfused kernels")
+  if out["in_model_ms"] is None:
+    return out | {"verdict": "none_faster", "reason": "the tie-out has no in-model time for the rows this fusion replaces"}
+  if lower is not None and fused_ms >= lower * (1.0 - band):
+    return out | {"verdict": "none_faster", "decided_by": "kernel alone",
+                  "reason": (f"decided by the kernel alone: BoltBeam's fastest fused kernel ({best['plan']}) takes {fused_ms:.3f} ms per token, "
+                             f"not faster than the nodes it replaces timed alone the same way ({lower:.3f} ms"
+                             f"{'' if every else ', a lower bound'}); the model's {out['in_model_ms']:.3f} ms in the model is not a like-for-like bar")}
+  if fused_ms < out["in_model_ms"] * (1.0 - band):
+    return out | {"verdict": "found_not_applied", "decided_by": "binding",
+                  "reason": (f"decided by binding: BoltBeam's fused kernel ({best['plan']}) takes {fused_ms:.3f} ms per token against "
+                             f"the model's {out['in_model_ms']:.3f} ms for these rows; the whole-model A/B does not install a fused emitter yet")}
+  return out | {"verdict": "none_faster", "decided_by": "kernel alone",
+                "reason": (f"decided by the kernel alone: BoltBeam's fastest fused kernel ({best['plan']}) takes {fused_ms:.3f} ms per token "
+                           f"against the model's {out['in_model_ms']:.3f} ms for these rows (the chip's band is ±{100 * band:.1f}%)")}
+
+
+def compare_fusions(run:pathlib.Path, *, facts:Mapping[str, Any], describe_shapes:Callable[[list[dict[str, int]]], list[dict[str, Any]]],
+                    search:Callable[..., dict[str, Any]], checker:Any, model:str, model_sha:str, target_id:str,
+                    losses:Mapping[tuple[str, str], Mapping[str, Any]], timestamp:str, say:Callable[[str], None],
+                    tensors:list[tuple[str, tuple[int, ...], int, int]] | None = None) -> dict[str, Any]:
+  """BubbleBeam proposes the fusions (fusion_space.propose), the population is exported, FutureSight assesses it, the
+  campaign measures it, BoltBeam checks and times both sides, and fusion_verdict judges. Writes
+  kernel_compare/fusion-<nodes>-<quant>-{search-request,population,search-result,check}.json and fusions.json."""
+  from boltbeam.search import fusion_space
+  from boltbeam.search.futuresight_adapter import assess_population, propose_request, target_facts
+  from boltbeam.search.semantic.semantic_population_export import export_population
+  folder = run / FOLDER
+  families = [f for f in facts.get("decode_fusions") or [] if isinstance(f, Mapping)]
+  record: dict[str, Any] = {"schema": FUSIONS_SCHEMA, "run": run.name, "timing_source": TIMING_SOURCE, "fusions": []}
+  if not families:
+    record["note"] = "the provider describes no fused emitter on this device"
+    _write(folder / FUSIONS_FILE, record)
+    return record
+  if tensors is None:
+    from boltbeam.profile.gguf import read_gguf_layout
+    tensors = read_gguf_layout(pathlib.Path(model))[1]
+  by_layer = fusion_space.layers(tensors)
+  first = fusion_space.propose(families, by_layer, set(losses))
+  shapes = sorted({tuple(p["instance"]["shape"]) for p in first if p.get("instance")})
+  verdicts = describe_shapes([{"n": n, "k": k} for n, k in shapes]) if shapes else []
+  proposals = fusion_space.propose(families, by_layer, set(losses), verdicts)
+  resolved = resolved_target_document(target_id, facts["target"])
+  target = candidate_target(resolved)
+  chip, _missing = target_facts(target_id, facts)
+  say(f"compare fusions: {len(proposals)} proposed by the provider's fused emitters")
+  for proposal in proposals:
+    stem = _fusion_stem(proposal)
+    row: dict[str, Any] = {"name": proposal["name"], "family": proposal["family"], "covers": proposal["covers"], "quant": proposal["quant"],
+                           "instance": proposal.get("instance"), "proposed_rows": len(proposal.get("rows") or []),
+                           "rejected_rows": proposal.get("rejected_rows") or [], "stem": stem}
+    if proposal.get("why"):
+      row.update(verdict="rejected", reason=f"rejected by BubbleBeam: {proposal['why']}", decided_by="proposal")
+      record["fusions"].append(row | fusion_verdict(proposal, None, losses, checker.band) | {"verdict": "rejected", "reason": row["reason"]})
+      say(f"fusion {proposal['name']} {proposal['quant']}: rejected ({proposal['why']})")
+      continue
+    say(f"fusion {proposal['name']} {proposal['quant']}: search")
+    work = fusion_space.workload(proposal, model_sha=model_sha, target=target, tolerance=TOLERANCE)
+    base = {"schedule.plan_kind": role_space.EMITTER_PLAN_KIND, "schedule.compute.family": proposal["family"]}
+    spec = {"semantic_workload": work, "schedule": dict(role_space.SEED_SCHEDULE), "resolved_target": resolved, "gguf_path": str(model),
+            "execution": {"shape_mode": "exact_workload", "warmups": 2, "samples": 7},
+            "request_id": f"{run.name}-{stem}", "run_id": f"{run.name}-compare", "timestamp": timestamp,
+            "budget": {"max_candidates": len(proposal["rows"]) + 2, "timeout_s": 600.0},
+            "axis_choices": {}, "coupled_rows": [{**base, **r} for r in proposal["rows"]]}
+    try:
+      request, _missing = propose_request(spec, facts)                                     # 1. BubbleBeam
+      request["rejected_coupled_rows"] = list(request["rejected_coupled_rows"]) + [
+        {"row": {**base, **r["row"]}, "reason": r["reason"]} for r in proposal.get("rejected_rows") or []]
+      population = export_population(request)                                              # 2. the population
+      evidence = assess_population(population)                                             # 3. FutureSight
+    except Exception as exc:  # no space for this fusion: say why, the others go on
+      row.update(verdict="not_searched", reason=f"no space: {exc}")
+      record["fusions"].append(row); continue
+    _write(folder / f"{stem}-search-request.json", request | {"futuresight_evidence": evidence})
+    _write(folder / f"{stem}-population.json", population)
+    row["futuresight_rejected"] = [{"candidate_hash": r.get("candidate_hash"), "reason": r.get("reason")}
+                                   for r in evidence.get("rejections") or [] if "candidate_hash" in r]
+    try:
+      result = search(request, evidence)                                                   # 4. the campaign
+    except Exception as exc:
+      result = {"status": "BLOCKED", "counts": {}, "population": [], "error": str(exc), "futuresight_static_evidence": evidence}
+    _write(folder / f"{stem}-search-result.json", result)
+    row["search"] = {"status": result.get("status"), "counts": dict(result.get("counts") or {}), "error": result.get("error"),
+                     "refused": [{"candidate_hash": r.get("candidate_hash"), "state": r.get("state"), "reason": r.get("reason"),
+                                  "plan": plan_text((r.get("candidate") or {}).get("schedule") or {})}
+                                 for r in result.get("population") or [] if r.get("state") != "MEASURED"]}
+    check = None
+    if any(r.get("state") == "MEASURED" for r in result.get("population") or []):
+      say(f"fusion {proposal['name']} {proposal['quant']}: check")
+      try:
+        check = checker.fusion(result, model=model, proposal=proposal)
+      except Exception as exc:  # BoltBeam could not run its own check: nothing the provider says is taken
+        check = {"error": f"{type(exc).__name__}: {exc}"[:400]}
+      _write(folder / f"{stem}-check.json", check)
+      row["check_result"] = f"{FOLDER}/{stem}-check.json"
+    judged = fusion_verdict(proposal, check, losses, checker.band)
+    if check is None:
+      judged.update(verdict="not_reproduced" if result.get("population") else "not_searched",
+                    reason=f"the provider measured no fused candidate: {result.get('error') or 'every candidate was refused'}")
+    row.update(judged, search_result=f"{FOLDER}/{stem}-search-result.json")
+    record["fusions"].append(row)
+    say(f"fusion {proposal['name']} {proposal['quant']}: done {row['verdict']}")
+  _write(folder / FUSIONS_FILE, record)
+  return record
 
 
 # --- the search as a stage of Run, and what the screens show per role -----------------------------------------

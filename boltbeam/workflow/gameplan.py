@@ -233,8 +233,8 @@ def _measured(stem:str, result:dict[str, Any] | None, route:dict[str, Any] | Non
     where = f"routes[{route_index}].compare" if route_index is not None else "routes[].compare"
     plan_us, model_us, calls = k.get("plan_us"), k.get("model_us_per_call"), c.get("role_calls_per_token")
     speed = f", {model_us / plan_us:.2f}x" if isinstance(plan_us, (int, float)) and isinstance(model_us, (int, float)) and plan_us else ""
-    lines.append(f"the model's own kernel: {_f(model_us, '{:.1f}', POLICY, where + '.kernel.model_us_per_call')} µs per call x "
-                 f"{_f(calls, '{:.0f}', POLICY, where + '.role_calls_per_token')} calls per token; the plan alone "
+    lines.append(f"the model's own kernels: {_f(model_us, '{:.1f}', POLICY, where + '.kernel.model_us_per_call')} µs per tensor x "
+                 f"{_f(calls, '{:.0f}', POLICY, where + '.role_calls_per_token')} tensors per token; the plan alone "
                  f"{_f(plan_us, '{:.1f}', POLICY, where + '.kernel.plan_us')} µs{speed}")
     ptrs.append(_ptr(POLICY, where))
     facts.update(model_us_per_call=model_us, plan_us=plan_us, calls_per_token=calls, timing_source=c.get("timing_source"))
@@ -343,6 +343,51 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
                                            "promotion_record": record, "check": {"correctness": oracle, "band": band, "plan_us": plan_us}}, ptrs)
 
 
+# --- fusions --------------------------------------------------------------------------------------------------------
+
+FUSIONS = f"{role_compare.FOLDER}/{role_compare.FUSIONS_FILE}"
+
+
+def _fusion_block(f:dict[str, Any], i:int) -> dict[str, Any]:
+  """One fusion as Emit shows it: the roles it replaces, their combined ms lost in the model, BoltBeam's fused and
+  unfused times per token, the proposal's rejections, the verdict. Read off kernel_compare/fusions.json only."""
+  where = f"fusions[{i}]"
+  name = " + ".join(f.get("covers") or [])
+  lines = [f"replaces {name} ({f.get('quant')}) with one launch, {_f((f.get('instance') or {}).get('calls_per_token'), '{}', FUSIONS, where + '.instance.calls_per_token')} launches per token"]
+  rows = f.get("in_model_rows") or []
+  if rows:
+    lines.append("in the model: " + ", ".join(f"{r['row']} {r['ms']:.3f} ms ({r['lost_ms']:.3f} ms lost)" for r in rows)
+                 + f"; combined {_f(f.get('in_model_ms'), '{:.3f}', FUSIONS, where + '.in_model_ms')} ms, "
+                 + f"{_f(f.get('lost_ms'), '{:.3f}', FUSIONS, where + '.lost_ms')} ms lost")
+  if f.get("in_model_note"):
+    lines.append(str(f["in_model_note"]))
+  fused, unfused = f.get("fused") or {}, f.get("unfused") or {}
+  if fused:
+    lines.append(f"BoltBeam's fastest fused kernel: {fused.get('plan')}, {_f(fused.get('us_less_floor'), '{:.1f}', FUSIONS, where + '.fused.us_less_floor')} µs "
+                 f"less the floor, {_f(fused.get('ms_per_token'), '{:.3f}', FUSIONS, where + '.fused.ms_per_token')} ms per token; "
+                 "checked against the unfused nodes computed by BoltBeam")
+  if unfused.get("ms_per_token") is not None:
+    lines.append("unfused, each node alone: " + ", ".join(f"{n['node']} {n['us_less_floor']:.1f} µs" for n in unfused.get("nodes") or [])
+                 + f" less the floor; {unfused['ms_per_token']:.3f} ms per token")
+  elif unfused.get("lower_bound_ms") is not None:
+    lines.append("unfused, each node alone: " + ", ".join(f"{n['node']} {n['us_less_floor']:.1f} µs" + ("" if n.get("verdict") == "reproduced" else " (noisy, not counted)")
+                                                    for n in unfused.get("nodes") or [] if n.get("us_less_floor") is not None)
+                 + f" less the floor; at least {unfused['lower_bound_ms']:.3f} ms per token")
+  elif unfused.get("why"):
+    lines.append(f"unfused: {unfused['why']}")
+  rejected = f.get("rejected_rows") or []
+  if rejected:
+    lines.append(f"rows the emitter refused: {len(rejected)} (" + "; ".join(sorted({str(r.get('reason')) for r in rejected})) + ")")
+  refused = (f.get("search") or {}).get("refused") or []
+  if refused:
+    lines.append(f"candidates refused in the search: {len(refused)} (" + "; ".join(sorted({f"{r.get('plan')}: {r.get('reason')}" for r in refused})[:3]) + ")")
+  lines.append(f"verdict: {PLAIN_VERDICT.get(str(f.get('verdict')), str(f.get('verdict')))}" + (f" ({f['reason']})" if f.get("reason") else ""))
+  return {"name": name, "covers": list(f.get("covers") or []), "quant": f.get("quant"), "family": f.get("family"),
+          "lost_ms": f.get("lost_ms"), "in_model_ms": f.get("in_model_ms"), "fused_ms": fused.get("ms_per_token"),
+          "unfused_ms": unfused.get("ms_per_token"), "verdict": f.get("verdict"), "lines": lines,
+          "evidence": [_ptr(FUSIONS, where)] + ([_ptr(f["check_result"])] if f.get("check_result") else [])}
+
+
 # --- the plan ----------------------------------------------------------------------------------------------------
 
 def _shape(route:dict[str, Any] | None, profile_role:dict[str, Any] | None) -> tuple[int | None, int | None]:
@@ -426,6 +471,9 @@ def gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None
   order = lambda r: -((r.get("est_lost_ms") if est else r.get("lost_ms")) or 0.0)  # noqa: E731
   ordered = sorted(roles, key=lambda r: (order(r), str(r["role"]), str(r["quant"])))
   blocks = [_role_block(files, r, i, est, policy, status, compare, band) for i, r in enumerate(ordered)]
+  found = files.get(FUSIONS) or {}
+  fusions = sorted((_fusion_block(f, i) for i, f in enumerate(found.get("fusions") or [])),
+                   key=lambda b: (-(b["lost_ms"] or 0.0), b["name"], str(b["quant"])))
   for name in ("model_profile.json", "measure_status.json", ev.MACHINE, ev.STEP4):
     if (run / name).is_file() and name not in files.read:
       files.read.append(name)
@@ -435,7 +483,7 @@ def gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None
   today = (now or _dt.date.today()).isoformat()
   return {"schema": SCHEMA, "kind": "gameplan", "id": run.name, "header": header,
           "ordered_by": "est_lost_ms (an estimate from isolated times)" if est else "lost_ms",
-          "roles": blocks,
+          "roles": blocks, "fusions": fusions,
           "footer": {"files_read": sorted(set(files.read)), "date": today, "sentence": CLOSING}}
 
 
@@ -492,6 +540,12 @@ def to_markdown(plan:dict[str, Any]) -> str:
         out.append(f"  {line}")
       if fold := _fold(layer.get("evidence") or []):
         out.append(f"  {fold}")
+    out.append("")
+  for b in plan.get("fusions") or []:
+    out.append(f"## Fusion: {b['name']} {b['quant']} · {_num(b.get('lost_ms'), '{:.3f}')} ms lost combined")
+    out += [f"- {line}" for line in b["lines"]]
+    if fold := _fold(b.get("evidence") or []):
+      out.append(f"  {fold}")
     out.append("")
   f = plan["footer"]
   out += ["---", f"Files read: {', '.join(f['files_read'])}.", f"Date: {f['date']}.", f["sentence"], ""]
