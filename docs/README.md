@@ -33,6 +33,7 @@ public mirror. Never move or rename them. The articles also cite files outside d
 Scopes, results and runbooks. Each one stays at its path. A dated doc is here because something links to it:
 another doc, the code, a branch, or the tinygrad fork's docs. An undated doc describes a part of the tool.
 
+- [tinygrad-vs-llama-kernels-m4-20261009.md](tinygrad-vs-llama-kernels-m4-20261009.md): tinygrad's emitted kernels read memory 14 to 30% slower than llama.cpp's on the Apple M4; the rest of the gap is idle time between kernels
 - [analyze-command-scope.md](analyze-command-scope.md): BoltBeam Analyze Command Scope
 - [attention-combine-closure-stress-test-20260701.md](attention-combine-closure-stress-test-20260701.md): Attention Combine Closure Stress Test
 - [attention-combine-reachability-audit-20260701.md](attention-combine-reachability-audit-20260701.md): Attention-Combine Reachability Audit (falsification pass 2)

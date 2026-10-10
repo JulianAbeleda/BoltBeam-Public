@@ -70,8 +70,34 @@ def default_fork_root() -> pathlib.Path:
   return pathlib.Path(__file__).resolve().parents[2].parent / "tinygrad-arkey-exp"
 
 
+PYTHON_ENV = "BOLTBEAM_TINYGRAD_PYTHON"  # the fork's interpreter, outside the checkout
+VENV_ENV = "BOLTBEAM_TINYGRAD_VENV"  # or the venv folder that holds it (bin/python)
+
+
 def fork_python(root:pathlib.Path) -> pathlib.Path:
+  """The fork's interpreter: $BOLTBEAM_TINYGRAD_PYTHON, else $BOLTBEAM_TINYGRAD_VENV/bin/python, else the fork's own
+  .venv folder when git ignores it. Never a link placed in the checkout: git counts that as an untracked file, the
+  provider then reports a dirty tree, and the search refuses every candidate."""
+  if env := os.environ.get(PYTHON_ENV):
+    return pathlib.Path(env).expanduser()
+  if env := os.environ.get(VENV_ENV):
+    return pathlib.Path(env).expanduser() / "bin" / "python"
   return root / ".venv" / "bin" / "python"
+
+
+def _venv_link(root:pathlib.Path) -> bool:
+  """The python would come from a .venv link inside the checkout (no env set)."""
+  return not (os.environ.get(PYTHON_ENV) or os.environ.get(VENV_ENV)) and (root / ".venv").is_symlink()
+
+
+def _has_numpy(python:pathlib.Path) -> bool:
+  venv = python.parent.parent
+  if any((venv / "lib").glob("python3*/site-packages/numpy")):
+    return True
+  try:
+    return subprocess.run([str(python), "-c", "import numpy"], capture_output=True, timeout=60).returncode == 0
+  except (OSError, subprocess.TimeoutExpired):
+    return False
 
 
 def readiness(root:pathlib.Path | None = None, model:str | None = None) -> dict[str, Any]:
@@ -82,14 +108,40 @@ def readiness(root:pathlib.Path | None = None, model:str | None = None) -> dict[
   if not (root / PROVIDER).is_file():
     return out | {"missing": "fork", "message": f"The tinygrad fork is not at {root}.",
                   "fix": f"git clone -b exp {FORK_URL} {root}"}
-  if not fork_python(root).is_file():
-    return out | {"missing": "venv", "message": f"The fork has no venv at {root / '.venv'}.", "fix": venv}
-  if not any((root / ".venv" / "lib").glob("python3*/site-packages/numpy")):
-    return out | {"missing": "numpy", "message": "The fork's venv has no numpy.",
-                  "fix": f"{fork_python(root)} -m pip install numpy"}
+  if _venv_link(root):
+    return out | {"missing": "venv", "message": f"{root / '.venv'} is a link. Git counts it as a change, so the "
+                  "search refuses every kernel.",
+                  "fix": f"rm {root / '.venv'} && export {PYTHON_ENV}={(root / '.venv').resolve() / 'bin' / 'python'}"}
+  python = fork_python(root)
+  if not python.is_file():
+    return out | {"missing": "venv", "message": f"The fork's python is not at {python}.", "fix": venv}
+  if not _has_numpy(python):
+    return out | {"missing": "numpy", "message": "The fork's python has no numpy.",
+                  "fix": f"{python} -m pip install numpy"}
   if model is not None and not pathlib.Path(model).expanduser().is_file():
     return out | {"missing": "model", "message": f"The model file is not at {model}.", "fix": None}
   return out | {"ready": True}
+
+
+def fork_changes(root:pathlib.Path) -> list[str]:
+  """The fork's uncommitted paths, as git status shows them. The provider refuses to search a checkout with any."""
+  try:
+    text = subprocess.run(["git", "-C", str(root), "status", "--porcelain"], capture_output=True, text=True,
+                          check=True).stdout
+  except (OSError, subprocess.CalledProcessError) as exc:
+    return [f"git status failed: {exc}"]
+  return [line[3:] for line in text.splitlines() if line.strip()]
+
+
+def clean_refusal(root:pathlib.Path) -> str | None:
+  """Why the search cannot run on this fork checkout, or None. Checked before the search, so one sentence says it
+  instead of every candidate being refused with provider_describe:dirty_or_missing_clean_evidence."""
+  changes = fork_changes(root)
+  if not changes:
+    return None
+  shown = ", ".join(changes[:5]) + (f" and {len(changes) - 5} more" if len(changes) > 5 else "")
+  hint = f" Put the venv outside the checkout and set {PYTHON_ENV}." if any(c.rstrip("/") == ".venv" for c in changes) else ""
+  return f"the tinygrad fork at {root} has uncommitted changes ({shown}); the search runs on a clean checkout only.{hint}"
 
 
 # --- the request for one role ---------------------------------------------------------------------------------
@@ -331,10 +383,13 @@ def _write(path:pathlib.Path, obj:Any) -> str:
 def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callable[[str], None] = print,
                 search:Callable[..., dict[str, Any]] | None = None, ab_run:Callable[..., dict[str, Any]] | None = None,
                 describe_fn:Callable[[pathlib.Path], dict[str, Any]] | None = None,
-                only:set[str] | None = None) -> dict[str, Any]:
+                only:set[str] | None = None, ab_only_if_faster:bool = False,
+                step:Callable[[int, int], None] | None = None) -> dict[str, Any]:
   """Compare kernels for every route of one run and write the outcome into the run folder.
 
   `search`, `ab_run` and `describe_fn` default to the real provider and driver; tests pass doubles.
+  ab_only_if_faster skips the whole-model A/B for a role whose best plan alone is not faster than the model's own
+  kernel per call (Run's search stage). step(done, total) is called after each role.
   """
   from boltbeam.workflow.common import load_manifest, read_json, write_json
   root = pathlib.Path(root) if root else default_fork_root()
@@ -343,6 +398,8 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
   ready = readiness(root, model) if search is None else {"ready": True}
   if not ready["ready"]:
     raise RuntimeError(f"{ready['message']} Fix: {ready['fix']}" if ready.get("fix") else ready["message"])
+  if search is None and (why := clean_refusal(root)):
+    raise RuntimeError(why)
   target_id, model_id = str(manifest.get("target_id")), str(manifest.get("model_id"))
   policy = read_json(run / "route_policy.json")
   routes = [r for r in policy.get("routes", []) if r.get("role") and r.get("quant") and r.get("shape")]
@@ -400,6 +457,13 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
     elif winner["is_default"]:
       decision = default_wins(route, winner, model_id=model_id, target_id=target_id,
                               search_path=row["search_result"], search_sha=search_sha)
+    elif ab_only_if_faster and not (kernel_numbers(summary, losses.get((role, quant))) or {}).get("faster_than_model"):
+      k = kernel_numbers(summary, losses.get((role, quant))) or {}
+      model_us = k.get("model_us_per_call")
+      row.update(status="blocked", decided_by="kernel alone",
+                 reason=f"decided by the kernel alone: the best plan took {k.get('plan_us', 0):.1f} µs per call, "
+                        + (f"the model's own kernel {model_us:.1f} µs; no whole-model A/B" if model_us is not None
+                           else "with no model time to compare; no whole-model A/B"))
     else:
       say(f"role {key}: ab")
       try:
@@ -440,6 +504,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
     write_json(run / "route_policy.json", policy)
     _write(folder / "compare.json", record)
     say(f"role {key}: done {row['status']}")
+    if step: step(len(record["roles"]), len(routes))
   say(f"compare done: {run}")
   return record
 
@@ -459,3 +524,117 @@ def _apply(route:dict[str, Any], row:Mapping[str, Any]) -> None:
                       "candidates": row["search"]["counts"].get("total"), "ab": row.get("ab"), "reason": row.get("reason"),
                       "timing_source": TIMING_SOURCE}
 
+
+
+# --- the search as a stage of Run, and what the screens show per role -----------------------------------------
+
+STATUS_FILE = "search_status.json"
+STATUS_SCHEMA = "boltbeam.kernel_search_status.v1"
+VERDICTS = ("applied", "found_not_applied", "none_faster", "not_searched")
+
+
+def search_applies(backend:str, provider:str) -> str | None:
+  """Why Run's kernel search does not exist for this engine and chip, or None when it does."""
+  if provider != "tinygrad":
+    return f"the kernel search runs in tinygrad only; this run used {provider}"
+  if backend.lower() not in COMPARE_BACKENDS:
+    return f"the kernel search runs on Metal only; this run is on {backend or 'an unknown backend'}"
+  return None
+
+
+def write_status(run:pathlib.Path, status:str, reason:str | None = None, seconds:float | None = None) -> None:
+  _write(run / FOLDER / STATUS_FILE, {"schema": STATUS_SCHEMA, "status": status, "reason": reason, "seconds": seconds})
+
+
+def read_status(run:pathlib.Path) -> dict[str, Any] | None:
+  path = run / FOLDER / STATUS_FILE
+  try:
+    return json.loads(path.read_text()) if path.is_file() else None
+  except (OSError, ValueError):
+    return None
+
+
+def skip(run:pathlib.Path, reason:str, say:Callable[[str], None] = print) -> dict[str, Any]:
+  write_status(run, "skipped", reason)
+  say(f"search skipped: {reason}")
+  return {"status": "skipped", "reason": reason}
+
+
+def search_stage(run:pathlib.Path, *, backend:str, provider:str, root:pathlib.Path | None = None,
+                 say:Callable[[str], None] = print, step:Callable[[int, int], None] | None = None,
+                 compare:Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
+  """Run's "Search faster kernels" stage: the per-role search where it exists, else a skip with its reason. A
+  search that cannot start (no fork, a dirty fork) is a skip too: the run still ends with its results."""
+  import time
+  if why := search_applies(backend, provider):
+    write_status(run, "skipped", why)
+    say(f"search skipped: {why}")
+    return {"status": "skipped", "reason": why}
+  root = pathlib.Path(root) if root else default_fork_root()
+  if compare is None:
+    ready = readiness(root, str((json.loads((run / "run_manifest.json").read_text())).get("model_path") or ""))
+    why = (f"{ready['message']} Fix: {ready['fix']}" if ready.get("fix") else ready["message"]) if not ready["ready"] \
+      else clean_refusal(root)
+    if why:
+      write_status(run, "skipped", why)
+      say(f"search skipped: {why}")
+      return {"status": "skipped", "reason": why}
+  began = time.monotonic()
+  (compare or compare_run)(run, root=root, say=say, ab_only_if_faster=True, step=step)
+  seconds = round(time.monotonic() - began, 1)
+  write_status(run, "searched", None, seconds)
+  return {"status": "searched", "reason": None, "seconds": seconds}
+
+
+def _speedup(kernel:Mapping[str, Any] | None) -> float | None:
+  if not kernel or not kernel.get("model_us_per_call") or not kernel.get("plan_us"):
+    return None
+  return float(kernel["model_us_per_call"]) / float(kernel["plan_us"])
+
+
+def role_verdict(route:Mapping[str, Any] | None, status:Mapping[str, Any] | None) -> dict[str, Any]:
+  """best_found and verdict for one role, from its route_policy.json compare record and the stage's status.
+  Only measured numbers: the plan alone and the model's own kernel per call, the binding count, the A/B."""
+  c = (route or {}).get("compare") if isinstance((route or {}).get("compare"), dict) else None
+  if c is None:
+    reason = (status or {}).get("reason") or ("the search found no route for this role" if status else
+                                              "the kernel search did not run for this run")
+    return {"best_found": None, "verdict": "not_searched", "verdict_reason": reason}
+  k = c.get("kernel") if isinstance(c.get("kernel"), dict) else None
+  x = _speedup(k)
+  plan = c.get("plan")
+  best = None
+  if k is not None and plan:
+    best = {"plan": plan, "plan_us": k.get("plan_us"), "model_us": k.get("model_us_per_call"), "speedup": x,
+            "calls_per_token": c.get("role_calls_per_token"),
+            "text": f"{plan} · {x:.1f}x faster" if x and x > 1 else f"{plan} · not faster" if x else plan}
+  if k is None:
+    return {"best_found": None, "verdict": "not_searched", "verdict_reason": c.get("reason") or "the search measured no kernel"}
+  if (route or {}).get("status") == "promoted":
+    return {"best_found": best, "verdict": "applied", "verdict_reason": c.get("reason")}
+  if not k.get("faster_than_model") or plan == "default kernel":
+    return {"best_found": best, "verdict": "none_faster", "verdict_reason": c.get("reason")}
+  return {"best_found": best, "verdict": "found_not_applied", "verdict_reason": c.get("reason")}
+
+
+def found_summary(routes:list[Mapping[str, Any]]) -> dict[str, Any] | None:
+  """The roles with a faster kernel found but not applied: ms per token saved if applied, the sum over roles of
+  (model µs - plan µs) x calls per token, and how many of those calls the plan reached in the whole-model A/B."""
+  rows, ms, reached, calls, ab_roles = [], 0.0, 0, 0.0, 0
+  for r in routes:
+    v = role_verdict(r, {"status": "searched"})
+    b = v["best_found"]
+    if v["verdict"] != "found_not_applied" or not b or b.get("calls_per_token") is None:
+      continue
+    ms += (b["model_us"] - b["plan_us"]) * b["calls_per_token"] / 1000.0
+    rows.append(f"{r.get('role')} {r.get('quant')}")
+    ab = (r.get("compare") or {}).get("ab") or {}
+    binding = ab.get("binding") if isinstance(ab.get("binding"), dict) else None
+    if binding is not None:
+      ab_roles += 1
+      reached += int(binding.get("calls_reached") or 0)
+      calls += float(b["calls_per_token"])
+  if not rows:
+    return None
+  return {"roles": rows, "ms": ms, "calls_reached": reached if ab_roles else None,
+          "calls": calls if ab_roles else None}

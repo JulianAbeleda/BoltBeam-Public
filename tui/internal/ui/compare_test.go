@@ -32,8 +32,8 @@ func measuredRun(t *testing.T) *seam.Run {
 	return &run
 }
 
-// Step 5 offers the action only when Python says this machine can compare; otherwise it says what is missing
-// and the one command that fixes it.
+// Step 5 never offers a separate compare action: the kernel search is part of Run. A machine without the fork is
+// told what is missing and the one command that fixes it.
 func TestCompareReadiness(t *testing.T) {
 	f := Facts{Path: "m.gguf", Run: measuredRun(t)}
 	f.Ready = &seam.CompareReady{Applies: true, Missing: sp("fork"), Message: sp("The tinygrad fork is not at /x."),
@@ -49,8 +49,8 @@ func TestCompareReadiness(t *testing.T) {
 		}
 	}
 	f.Ready = &seam.CompareReady{Applies: true, Ready: true}
-	if !hasLabel(resultActions(f), "Compare kernels per role") {
-		t.Fatal("a ready machine must offer the action")
+	if hasLabel(resultActions(f), "Compare kernels per role") {
+		t.Fatal("the kernel search is part of Run; there is no separate action")
 	}
 }
 
@@ -194,17 +194,17 @@ func TestRoleTimeNoteNamesTheRuntimeFromPython(t *testing.T) {
 	}
 }
 
-// Step 5 suggests comparing kernels only where the target can compare them.
-func TestNoCompareSuggestionWhereItCannotRun(t *testing.T) {
+// Step 5 never suggests a compare step: Run searches kernels itself.
+func TestNoCompareSuggestion(t *testing.T) {
 	f := Facts{Path: "m.gguf", Run: measuredRun(t), Ready: &seam.CompareReady{Ready: true, Applies: false,
 		CompareMessage: sp("Comparing kernels per role runs on Metal only. This run is for CUDA.")}}
 	body := plain(resultBody(f, 100))
-	if strings.Contains(body, compareNext) || !strings.Contains(body, noKernelChoice) {
+	if strings.Contains(body, "compare kernels per role") || !strings.Contains(body, noKernelChoice) {
 		t.Errorf("a CUDA run must not be told to compare kernels:\n%s", body)
 	}
 	f.Ready.Applies = true
-	if body := plain(resultBody(f, 100)); !strings.Contains(body, compareNext) {
-		t.Errorf("a Metal run keeps the next step:\n%s", body)
+	if body := plain(resultBody(f, 100)); strings.Contains(body, "compare kernels per role") {
+		t.Errorf("a Metal run is not told to run a separate step:\n%s", body)
 	}
 }
 
@@ -319,5 +319,59 @@ func TestOtherChipsAreReadOnlyFacts(t *testing.T) {
 	body := plain(otherChips(Facts{Others: &o}, "apple_m3_10c"))
 	if !strings.Contains(body, "On other chips") || !strings.Contains(body, "nvidia_sm120") || !strings.Contains(body, "362.1 tokens per second") || strings.Contains(body, "apple_m3_10c") {
 		t.Fatalf("other chips:\n%s", body)
+	}
+}
+
+// Run's kernel search shows per role (best found, verdict), the next step it found, and the sub-progress per role.
+func TestKernelSearchInTheRoleTable(t *testing.T) {
+	x := 1.4
+	roles := []seam.RoleLoss{
+		{Role: "ffn_down", Quant: "Q6_K", IdealMs: 1, ActualMs: 2, LostMs: 1, Share: 0.5, Reason: "slow kernel",
+			BestFound: &seam.BestFound{Plan: "LOCAL 32", Speedup: &x, Text: "LOCAL 32 · 1.4x faster"}, Verdict: sp("found_not_applied")},
+		{Role: "lm_head", Quant: "Q6_K", IdealMs: 1, ActualMs: 1.1, LostMs: 0.1, Share: 0.5, Reason: "at the limit",
+			Verdict: sp("not_searched"), VerdictReason: sp("the search measured no kernel")},
+	}
+	for _, w := range []int{200, 60} {
+		old := tableWidth
+		tableWidth = w
+		body := plain(roleTable(roles, nil))
+		tableWidth = old
+		for _, want := range []string{"BEST FOUND", "VERDICT", "LOCAL 32 · 1.4x faster", "found, not applied", "not searched"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("width %d: missing %q in:\n%s", w, want, body)
+			}
+		}
+	}
+	if body := plain(roleTable([]seam.RoleLoss{{Role: "lm_head", Quant: "Q6_K"}}, nil)); strings.Contains(body, "VERDICT") {
+		t.Errorf("a result without a search keeps the old table:\n%s", body)
+	}
+	next := plain(searchBody(&seam.Search{Status: "searched", Next: &seam.SearchNext{
+		What: "1 role has a faster kernel found: ~2.1 ms per token if applied", Ms: 2.1,
+		Do: "Applying needs the fork's plan to bind to the decode kernels (reached 0 of 36 calls)."}}))
+	if !strings.Contains(next, "~2.1 ms per token if applied") || !strings.Contains(next, "reached 0 of 36 calls") {
+		t.Errorf("next step:\n%s", next)
+	}
+	if s := plain(searchBody(&seam.Search{Status: "skipped", Reason: sp("the kernel search runs in tinygrad only; this run used llama.cpp")})); !strings.Contains(s, "Kernel search: skipped. the kernel search runs in tinygrad only") {
+		t.Errorf("skip:\n%s", s)
+	}
+	if stageWord("search") != "Search faster kernels" {
+		t.Errorf("stage word: %q", stageWord("search"))
+	}
+}
+
+// The screen names the evidence files only; each finding says its stats and its lever.
+func TestFindingsNameTheEvidenceFiles(t *testing.T) {
+	p := "rows[1]"
+	roles := []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", Evidence: []seam.Pointer{{File: "tinygrad_timing_trace.json", Path: &p}, {File: "machine_facts.json"}}}}
+	f := []seam.Finding{{Verdict: "unexplained", What: "Unexplained: 2.10 ms (ffn_down Q6_K 2.10 ms)", Ms: 2.1, Do: "Look at the kernel rows.",
+		Evidence: []seam.Pointer{{File: "tinygrad_timing_trace.json", Path: &p}}}}
+	body := plain(findingsBody(roles, f))
+	for _, want := range []string{"Evidence: tinygrad_timing_trace.json, machine_facts.json", "Unexplained: 2.10 ms", "Evidence: tinygrad_timing_trace.json"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "rows[1]") {
+		t.Errorf("the screen shows file names only:\n%s", body)
 	}
 }

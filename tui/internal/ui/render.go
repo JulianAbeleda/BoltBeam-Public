@@ -58,6 +58,23 @@ var plainLimit = map[string]string{"memory": "reading weights", "compute": "doin
 var plainMeasureStage = map[string]string{
 	"measure": "Can %s measure", "measure_probe": "Test blocks on the GPU",
 	"measure_timing": "Time the real decode",
+	"role_time":      "Time each role", "search": "Search faster kernels",
+}
+
+// plainVerdict words a role's kernel search verdict; report/html.py PLAIN_VERDICT says the same.
+var plainVerdict = map[string]string{"applied": "applied", "found_not_applied": "found, not applied",
+	"none_faster": "none faster", "not_searched": "not searched"}
+
+// found is a role's best kernel found and its verdict, as two cells.
+func found(r seam.RoleLoss) (string, string) {
+	best, verdict := "", ""
+	if r.BestFound != nil {
+		best = r.BestFound.Text
+	}
+	if r.Verdict != nil {
+		verdict = word(plainVerdict, *r.Verdict)
+	}
+	return best, verdict
 }
 
 // stageWord is the plain word for any pipeline stage key.
@@ -454,7 +471,7 @@ func maxWidth(s string) int {
 
 // roleTableWithout is the full table without the named columns.
 func roleTableWithout(roles []seam.RoleLoss, notAttributed *float64, drop []string) string {
-	rows := [][]string{{"ROLE", "QUANT", "IDEAL ms", "ACTUAL ms", "LOST ms", "SHARE OF LOSS", "% PEAK", "µs/CALL", "WHY"}}
+	rows := [][]string{{"ROLE", "QUANT", "IDEAL ms", "ACTUAL ms", "LOST ms", "SHARE OF LOSS", "% PEAK", "µs/CALL", "WHY", "BEST FOUND", "VERDICT"}}
 	for _, r := range roles {
 		pct, us := "", ""
 		if r.PctPeak != nil {
@@ -463,11 +480,15 @@ func roleTableWithout(roles []seam.RoleLoss, notAttributed *float64, drop []stri
 		if r.UsPerCall != nil {
 			us = fmt.Sprintf("%.1f", *r.UsPerCall)
 		}
+		best, verdict := found(r)
 		rows = append(rows, []string{word(plainRole, r.Role), r.Quant, fmt.Sprintf("%.2f", r.IdealMs),
-			fmt.Sprintf("%.2f", r.ActualMs), fmt.Sprintf("%.2f", r.LostMs), bar(r.Share, 5) + fmt.Sprintf(" %.0f%%", r.Share*100), pct, us, r.Reason})
+			fmt.Sprintf("%.2f", r.ActualMs), fmt.Sprintf("%.2f", r.LostMs), bar(r.Share, 5) + fmt.Sprintf(" %.0f%%", r.Share*100), pct, us, r.Reason, best, verdict})
 	}
 	if notAttributed != nil {
-		rows = append(rows, []string{"not attributed", "", "", fmt.Sprintf("%.2f", *notAttributed), "", "", "", "", ""})
+		rows = append(rows, []string{"not attributed", "", "", fmt.Sprintf("%.2f", *notAttributed), "", "", "", "", "", "", ""})
+	}
+	if !searched(roles) {
+		drop = append(drop, "BEST FOUND", "VERDICT")
 	}
 	keep := []int{}
 	for i, h := range rows[0] {
@@ -488,6 +509,7 @@ func roleTableWithout(roles []seam.RoleLoss, notAttributed *float64, drop []stri
 func roleTableNarrow(roles []seam.RoleLoss, notAttributed *float64) string {
 	main := [][]string{{"ROLE", "QUANT", "IDEAL", "ACTUAL", "LOST", "% PEAK"}}
 	why := [][]string{{"ROLE", "QUANT", "µs/CALL", "WHY"}}
+	search := [][]string{{"ROLE", "QUANT", "BEST FOUND", "VERDICT"}}
 	for _, r := range roles {
 		pct, us := "", ""
 		if r.PctPeak != nil {
@@ -500,11 +522,70 @@ func roleTableNarrow(roles []seam.RoleLoss, notAttributed *float64) string {
 		main = append(main, []string{name, r.Quant, fmt.Sprintf("%.2f", r.IdealMs), fmt.Sprintf("%.2f", r.ActualMs),
 			fmt.Sprintf("%.2f", r.LostMs), pct})
 		why = append(why, []string{name, r.Quant, us, r.Reason})
+		best, verdict := found(r)
+		search = append(search, []string{name, r.Quant, best, verdict})
 	}
 	if notAttributed != nil {
 		main = append(main, []string{"not attributed", "", "", fmt.Sprintf("%.2f", *notAttributed), "", ""})
 	}
-	return table(main) + "\n" + table(why)
+	out := table(main) + "\n" + table(why)
+	if searched(roles) {
+		out += "\n" + table(search)
+	}
+	return out
+}
+
+// searched says whether any role carries a kernel search verdict (older results carry none).
+func searched(roles []seam.RoleLoss) bool {
+	for _, r := range roles {
+		if r.Verdict != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// files is the file names a list of pointers names, once each, in order.
+func files(ptrs []seam.Pointer) string {
+	seen, out := map[string]bool{}, []string{}
+	for _, p := range ptrs {
+		if !seen[p.File] {
+			seen[p.File] = true
+			out = append(out, p.File)
+		}
+	}
+	return strings.Join(out, ", ")
+}
+
+// findingsBody is the verdicts read off the run's facts, one line each with its lever, and the files behind the
+// per-role table. The report links each pointer; the screen names the files only.
+func findingsBody(roles []seam.RoleLoss, findings []seam.Finding) string {
+	var b strings.Builder
+	all := []seam.Pointer{}
+	for _, r := range roles {
+		all = append(all, r.Evidence...)
+	}
+	if len(all) > 0 {
+		b.WriteString(stMuted.Render("Evidence: "+files(all)) + "\n")
+	}
+	for _, f := range findings {
+		fmt.Fprintf(&b, "%s %s · %.2f ms\n%s\n", stInfo.Render("next"), f.What, f.Ms, stMuted.Render(f.Do+" Evidence: "+files(f.Evidence)))
+	}
+	return b.String()
+}
+
+// searchBody is Run's kernel search under the per-role table: why it was skipped, or the next step it found.
+func searchBody(s *seam.Search) string {
+	if s == nil {
+		return ""
+	}
+	switch {
+	case s.Status == "skipped":
+		return stMuted.Render("Kernel search: skipped. "+deref(s.Reason)) + "\n"
+	case s.Next != nil:
+		return fmt.Sprintf("%s %s.\n%s\n", stInfo.Render("next"), s.Next.What, stMuted.Render(s.Next.Do))
+	}
+	return ""
 }
 
 // tieOutBody is the measured token line by line against the limit. The last line is the difference.
@@ -618,6 +699,8 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	if l.RoleRule != nil {
 		b.WriteString(stMuted.Render("Why: "+*l.RoleRule) + "\n")
 	}
+	b.WriteString(searchBody(l.Search))
+	b.WriteString(findingsBody(l.Roles, l.Findings))
 	if len(l.UnpairedRoles) > 0 {
 		names := []string{}
 		for _, u := range l.UnpairedRoles {
@@ -703,11 +786,7 @@ func compareBody(f Facts) string {
 		}
 	}
 	if len(res.Routes) > 0 && !compared {
-		text := noKernelChoice
-		if f.Ready != nil && f.Ready.Applies { // never suggest a step this target cannot run
-			text += "\n" + compareNext
-		}
-		b.WriteString("\n" + stMuted.Render(text) + "\n")
+		b.WriteString("\n" + stMuted.Render(noKernelChoice) + "\n")
 		return b.String()
 	}
 	if !compared {
@@ -751,9 +830,6 @@ func compareBody(f Facts) string {
 
 // noKernelChoice replaces the per-role table while no role has had kernels compared; report/html.py says the same.
 const noKernelChoice = "No kernels compared yet. Every role runs the default kernel."
-
-// compareNext is shown only where comparing can run (compare-ready "applies"); report/html.py COMPARE_NEXT.
-const compareNext = "Next step: compare kernels per role to go faster."
 
 // hereLoss says, in place of "pick Time each role", why this machine cannot time the run's provider per role.
 // The run's results never hold machine facts; this machine's provider row does.
@@ -971,6 +1047,9 @@ func runningBody(f Facts, width int) string {
 	now := "Starting"
 	if p.Current != "" && !p.Setup {
 		now = stageWord(p.Current)
+		if p.SubOf > 0 {
+			now += fmt.Sprintf(" (%d of %d)", min(p.Sub+1, p.SubOf), p.SubOf)
+		}
 	}
 	took := elapsed(f.Job)
 	if !f.stageAt.IsZero() && p.Over(clock().Sub(f.stageAt).Seconds()) {

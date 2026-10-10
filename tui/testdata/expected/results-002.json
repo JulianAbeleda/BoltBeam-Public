@@ -42,6 +42,12 @@
         "tok_s": 17.27
       }
     ],
+    "search": {
+      "next": null,
+      "reason": "the kernel search did not run for this run",
+      "seconds": null,
+      "status": "not_run"
+    },
     "source": null,
     "status": "modeled",
     "tie_out": {

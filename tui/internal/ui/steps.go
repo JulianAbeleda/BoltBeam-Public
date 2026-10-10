@@ -968,9 +968,6 @@ func resultActions(f Facts) []action {
 		if p := f.provider(name); p != nil && p.Available && p.Capture.Method != nil {
 			out = append(out, action{"Time each role in " + name, "roletime", ""})
 		}
-		if f.Ready != nil && f.Ready.Ready && f.Ready.Applies {
-			out = append(out, action{"Compare kernels per role", "compare", ""})
-		}
 	}
 	if f.Run != nil && f.Run.Report != nil {
 		out = append(out, action{"Open the full report (" + *f.Run.Report + ")", "report", ""})

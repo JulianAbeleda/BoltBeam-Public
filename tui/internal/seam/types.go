@@ -517,6 +517,8 @@ type Loss struct {
 	TieOut   *TieOut      `json:"tie_out"`
 	Layout   *LayoutLimit `json:"layout"`
 	RoleRule *string      `json:"role_rule"`
+	Search   *Search      `json:"search"`
+	Findings []Finding    `json:"findings"`
 }
 
 type TieOut struct {
@@ -576,4 +578,54 @@ type RoleLoss struct {
 	PctPeak       *float64 `json:"pct_peak"`
 	UsPerCall     *float64 `json:"us_per_call"`
 	Reason        string   `json:"reason"`
+	// BestFound and Verdict are Run's kernel search for the role (search/role_compare.py role_verdict): the best
+	// plan alone against the model's own kernel per call, and applied, found_not_applied, none_faster or
+	// not_searched with VerdictReason.
+	BestFound     *BestFound `json:"best_found"`
+	Verdict       *string    `json:"verdict"`
+	VerdictReason *string    `json:"verdict_reason"`
+	// Evidence points into the run's raw JSON (workflow/evidence.py): the kernel rows, the search, the machine.
+	Evidence []Pointer `json:"evidence"`
+}
+
+// Pointer is one place in the run folder: a file, and a path inside it (empty for the whole file).
+type Pointer struct {
+	File string  `json:"file"`
+	Path *string `json:"path"`
+}
+
+// Finding is a next-step item read off facts the run holds: its verdict, the stats, one lever, the pointers.
+type Finding struct {
+	Verdict  string    `json:"verdict"`
+	What     string    `json:"what"`
+	Ms       float64   `json:"ms"`
+	Do       string    `json:"do"`
+	Evidence []Pointer `json:"evidence"`
+}
+
+// BestFound is the fastest plan the kernel search measured for a role. Speedup is the model's own kernel per call
+// over the plan alone, both measured; nil when the model time is missing.
+type BestFound struct {
+	Plan    string   `json:"plan"`
+	PlanUs  *float64 `json:"plan_us"`
+	ModelUs *float64 `json:"model_us"`
+	Speedup *float64 `json:"speedup"`
+	Text    string   `json:"text"`
+}
+
+// Search is Run's kernel search stage for this run: searched, skipped (Reason says why) or not_run.
+type Search struct {
+	Status  string      `json:"status"`
+	Reason  *string     `json:"reason"`
+	Seconds *float64    `json:"seconds"`
+	Next    *SearchNext `json:"next"`
+}
+
+// SearchNext is the next-step item for roles with a faster kernel found but not applied. Ms is measured:
+// the sum of (model µs - plan µs) x calls per token.
+type SearchNext struct {
+	What     string    `json:"what"`
+	Ms       float64   `json:"ms"`
+	Do       string    `json:"do"`
+	Evidence []Pointer `json:"evidence"`
 }

@@ -141,14 +141,15 @@ gap:6px 14px;align-items:center;padding:10px 14px}
 .role summary::-webkit-details-marker{display:none}
 .rname{font-weight:600;overflow-wrap:anywhere}
 .rname .q{color:var(--tx-3);font-weight:500;font-size:12px;margin-left:6px}
-.rbar{height:12px;border-radius:6px;background:var(--track);overflow:hidden}
+.rbar{position:relative;height:12px;border-radius:6px;background:var(--track);overflow:hidden}
+.rbar::after{content:"";position:absolute;right:0;top:0;bottom:0;width:2px;background:var(--tx-2)}
 .rbar i{display:block;height:100%;border-radius:6px}
 .rnum{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .rnum b{color:var(--tx)}.rnum span{color:var(--tx-3);font-size:12px;margin-left:8px}
 .why{font-size:12px;font-weight:600}
 .r-ok{color:var(--ok)}.r-small{color:var(--excess)}.r-slow{color:var(--gaps)}
 .rdet{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px 12px;padding:0 14px 12px;font-size:12.5px;color:var(--tx-2)}
-.rdet div span{display:block;color:var(--tx-3);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase}
+.rdet div span{display:block;color:var(--tx-3);font-size:10.5px;letter-spacing:.06em}
 .next{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px;counter-reset:n}
 .next li{counter-increment:n;position:relative;padding:14px 16px 14px 56px;border-radius:12px;background:var(--glass-2);
 border:1px solid var(--edge)}
@@ -159,6 +160,8 @@ linear-gradient(90deg,var(--g1),var(--g2),var(--g3)) border-box}
 .next li.top::before{color:#fff;border:0;background:linear-gradient(135deg,var(--g1),var(--g2))}
 .next .what{font-weight:700;color:var(--tx)}
 .next .ms{color:var(--tx-2);font-variant-numeric:tabular-nums}
+.ev{display:block;margin-top:4px;font-size:12px;color:var(--tx-2);opacity:.8;overflow-wrap:anywhere}
+.ev a{color:inherit}
 .next .do{display:block;margin-top:4px;color:var(--tx-2)}
 .rules{margin-top:12px}
 .rules summary{cursor:pointer;color:var(--tx-3);font-size:12.5px}
@@ -275,9 +278,10 @@ def roofline_kernels(timing:dict[str, Any]) -> tuple[list[dict[str, Any]], Any]:
 
 # Shown instead of the per-role table while no role has had kernels compared; boltbeam-tui prints the same line.
 NO_KERNEL_CHOICE = "No kernels compared yet. Every role runs the default kernel."
-# Only where comparing can run (search/role_compare.py COMPARE_BACKENDS); a step the target cannot run is never
-# suggested.
-COMPARE_NEXT = "Next step: compare kernels per role to go faster."
+# Plain words for a role's kernel search verdict (search/role_compare.py role_verdict); boltbeam-tui uses the same.
+PLAIN_VERDICT = {"applied": "applied", "found_not_applied": "found, not applied", "none_faster": "none faster",
+                 "not_searched": "not searched"}
+VERDICT_CLASS = {"applied": "r-ok", "found_not_applied": "r-slow", "none_faster": "", "not_searched": ""}
 
 # Where every compare time comes from; boltbeam-tui prints the same sentence (render.go compareNote).
 COMPARE_NOTE = "Times are from tinygrad's Metal runtime, not llama.cpp."
@@ -319,9 +323,7 @@ def _routes_card(policy:dict[str, Any]) -> str:
     return _compare_card(policy) + _selected_routes(policy)
   rows = [r for r in routes if r.get("selected_route")]
   if not rows:
-    from boltbeam.search.role_compare import COMPARE_BACKENDS
-    backend = str((policy.get("target") or {}).get("backend") or "").lower()
-    text = NO_KERNEL_CHOICE + (" " + COMPARE_NEXT if backend in COMPARE_BACKENDS else "")
+    text = NO_KERNEL_CHOICE
     return _card("Kernel choice per role", "route_policy.json", f'<p class="empty">{_e(text)}</p>', cls="compact")
   return _selected_routes(policy)
 
@@ -348,11 +350,12 @@ def _selected_routes(policy:dict[str, Any]) -> str:
 
 # --- What to try next: the rule table (Prefer data over code). Each rule maps a measured reason or tie-out line
 # to one lever. The page states the rule beside its advice; it never adds a number the seam did not give.
-REASON_CLASS = {"at the limit": "r-ok", "too small to fill memory": "r-small", "slow kernel": "r-slow"}
+REASON_CLASS = {"at the limit": "r-ok", "too small to fill memory": "r-small", "slow kernel": "r-slow",
+                "compute bound": "r-small", "unexplained": "r-slow"}
 REASON_COLOR = {"at the limit": "var(--ok)", "too small to fill memory": "var(--excess)", "slow kernel": "var(--gaps)"}
 NEXT_RULES = {  # per-role reason word (tie_out.REASONS) to the lever; "at the limit" has nothing to gain
   "too small to fill memory": "Fuse it with the roles next to it (Q, K and V) or batch more tokens, so each call moves more bytes.",
-  "slow kernel": "Try other kernels for it: compare kernels per role.",
+  "slow kernel": "Try other kernels for it.",
 }
 GAPS_SHARE = 0.10  # gaps between kernels at or above this share of the token: launch fewer kernels
 GAPS_LEVER = "Launch fewer kernels: run the token as one graph (CUDA graphs or Metal command buffer reuse) or fuse kernels."
@@ -380,6 +383,41 @@ def _other_label(line:dict[str, Any] | None) -> str:
   """The other-kernels line in plain words, with its kinds inline when the capture named them."""
   kinds = [p["kind"] for p in (line or {}).get("parts") or []]
   return "Other kernels" + (f" ({', '.join(kinds)})" if kinds else "")
+
+
+def _dedupe(ptrs:list[dict[str, Any]]) -> list[dict[str, Any]]:
+  seen, out = set(), []
+  for p in ptrs:
+    key = (p.get("file"), p.get("path"))
+    if key not in seen:
+      seen.add(key)
+      out.append(p)
+  return out
+
+
+def _evidence(ptrs:list[dict[str, Any]] | None) -> str:
+  """A muted line of pointers into the run's raw JSON: file › path, each a relative link to the file."""
+  if not ptrs:
+    return ""
+  # One link per file. Its paths are folded into one bracket so a card never prints thirty links.
+  by_file:dict[str, list[str]] = {}
+  for ptr in _dedupe(ptrs):
+    by_file.setdefault(str(ptr["file"]), [])
+    if ptr.get("path"):
+      by_file[str(ptr["file"])].append(str(ptr["path"]))
+  links = []
+  for file, paths in by_file.items():
+    label = _e(file)
+    if paths:
+      heads = [m.group(1) for m in (re.match(r"^([a-z_]+)\[", x) for x in paths) if m]
+      inner = [x[x.index("[") + 1:-1] for x in paths if "[" in x and x.endswith("]")]
+      if heads and len(set(heads)) == 1 and len(inner) == len(paths):
+        more = f", +{len(inner) - 6} more" if len(inner) > 6 else ""
+        label += f" › {_e(heads[0])}[{_e(', '.join(inner[:6]))}{more}]"
+      else:
+        label += " › " + _e(", ".join(paths[:4])) + (f", +{len(paths) - 4} more" if len(paths) > 4 else "")
+    links.append(f'<a href="{_e(file)}">{label}</a>')
+  return f'<span class="ev">evidence: {", ".join(links)}</span>'
 
 
 def _section(n:int, title:str, body:str) -> str:
@@ -481,21 +519,33 @@ def _per_role(loss:dict[str, Any]) -> str:
   roles = sorted(loss.get("roles") or [], key=lambda r: (-r["lost_ms"], str(r["role"]), str(r["quant"])))
   if not roles:
     return ""
-  top = max(r["lost_ms"] for r in roles) or 1.0
   items = []
   for r in roles:
     why = r.get("reason") or ""
     det = "".join(f'<div><span>{k}</span>{v}</div>' for k, v in (
       ("ideal ms", f'{r["ideal_ms"]:.2f}'), ("actual ms", f'{r["actual_ms"]:.2f}'),
-      ("µs/call", _f(r.get("us_per_call"), "{:.1f}")), ("share of loss", f'{r["share"] * 100:.0f}%')))
+      ("µs/call", _f(r.get("us_per_call"), "{:.1f}")), ("share of loss", f'{r["share"] * 100:.0f}%'),
+      ("best found", _e((r.get("best_found") or {}).get("text") or "none")),
+      ("verdict", _e(PLAIN_VERDICT.get(str(r.get("verdict")), r.get("verdict") or "not searched")))))
+    if r.get("verdict_reason"):
+      det += f'<p class="muted wrap">{_e(r["verdict_reason"])}</p>'
+    det += _evidence(r.get("evidence"))
+    found = (r.get("best_found") or {}).get("text")
+    tag = (f'<span class="why {VERDICT_CLASS.get(str(r.get("verdict")), "")}">'
+           f'{_e(PLAIN_VERDICT.get(str(r.get("verdict")), ""))}{" · " + _e(found) if found else ""}</span>') if r.get("verdict") else ""
     items.append(
       f'<details class="role"><summary><span class="rname">{_role_name(r["role"], r["quant"])}</span>'
-      f'<span class="rbar"><i style="width:{_pct(max(r["lost_ms"], 0.0), top):.1f}%;background:{REASON_COLOR.get(why, "var(--ideal)")}"></i></span>'
+      f'<span class="rbar" title="{_f(r.get("pct_peak"), "{:.1f}%")} of the roofline"><i style="width:{_pct(r.get("pct_peak") or 0.0, 100.0):.1f}%;background:{REASON_COLOR.get(why, "var(--ideal)")}"></i></span>'
       f'<span class="rnum"><b>{r["lost_ms"]:.2f} ms</b><span>{_f(r.get("pct_peak"), "{:.1f}%")} of peak</span>'
-      f'<span class="why {REASON_CLASS.get(why, "")}">{_e(why)}</span></span></summary><div class="rdet">{det}</div></details>')
+      f'<span class="why {REASON_CLASS.get(why, "")}">{_e(why)}</span>{tag}</span></summary><div class="rdet">{det}</div></details>')
   t = loss.get("tie_out") or {}
-  body = f'<p class="muted" style="margin:0 0 10px">{_e(loss.get("source") or "")} · lost ms per token, longest first; open a row for its numbers</p>'
+  body = f'<p class="muted" style="margin:0 0 10px">{_e(loss.get("source") or "")} · lost ms per token, longest first; the bar is filled to the share of the roofline this role reaches; the empty part is its loss; open a row for its numbers</p>'
   body += f'<div class="roles">{"".join(items)}</div>'
+  search = loss.get("search") or {}
+  if search.get("status") == "skipped":
+    body += f'<p class="note">Kernel search: skipped. {_e(search.get("reason") or "")}</p>'
+  elif search.get("status") == "searched" and search.get("seconds") is not None:
+    body += f'<p class="muted">Kernel search: {search["seconds"]:.0f} s in this Run. Speedup is the best plan alone against the model\'s own kernel per call.</p>'
   if loss.get("not_attributed_ms") is not None:
     body += (f'<p class="note">{_e(_other_label(_other_line(t)))}: {loss["not_attributed_ms"]:.2f} ms of kernel time per token.</p>')
   unsplit = loss.get("unpaired_roles") or []
@@ -521,15 +571,21 @@ def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, 
     rs = sorted(rs, key=lambda r: -r["lost_ms"])
     ms = sum(r["lost_ms"] for r in rs)
     lever = NEXT_RULES[reason]
-    if reason == "slow kernel" and not compare_runs:
-      lever = "Try other kernels for it."
     out.append({"what": f"{reason.capitalize()}: " + ", ".join(
       f'{PLAIN_ROLE.get(r["role"], r["role"])} {r["quant"]} {r["lost_ms"]:.2f} ms' for r in rs),
-      "ms": ms, "share": ms / token, "do": lever, "rule": reason})
+      "ms": ms, "share": ms / token, "do": lever, "rule": reason,
+      "evidence": _dedupe([p for r in rs for p in r.get("evidence") or []])})
+  ev = loss.get("evidence") or {}
+  found_verdicts = {f.get("verdict") for f in loss.get("findings") or []}
+  out += [dict(f) for f in loss.get("findings") or []]
+  if (found := (loss.get("search") or {}).get("next")) and found.get("ms", 0) > 0:
+    out.append({"what": found["what"], "ms": found["ms"], "share": found["ms"] / token, "do": found["do"],
+                "rule": found.get("rule") or "a faster kernel found", "evidence": found.get("evidence") or []})
   for l in t.get("lines") or []:
-    if l["how"] == "difference" and l["label"].startswith("gaps between kernels (GPU idle)") and l["ms"] >= GAPS_SHARE * token:
+    if l["how"] == "difference" and l["label"].startswith("gaps between kernels (GPU idle)") and l["ms"] >= GAPS_SHARE * token \
+        and "launch_heavy" not in found_verdicts:
       out.append({"what": "Gaps between kernels (GPU idle)", "ms": l["ms"], "share": l["ms"] / token, "do": GAPS_LEVER,
-                  "rule": f"gaps ≥ {GAPS_SHARE:.0%} of the token"})
+                  "rule": f"gaps ≥ {GAPS_SHARE:.0%} of the token", "evidence": ev.get("whole_step") or []})
     if l.get("parts") is not None and l["ms"] >= OTHER_SHARE * token:
       parts = l.get("parts") or []
       fuse = [p["kind"] for p in parts if p["kind"] in FUSIBLE]
@@ -539,17 +595,16 @@ def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, 
       if fuse and lead not in FUSIBLE and lead:
         do = OTHER_LEVER_KERNEL.format(kind=lead) + " " + OTHER_LEVER_FUSE.format(kinds=", ".join(fuse))
       out.append({"what": _other_label(l) + " above their ideal", "ms": l["ms"], "share": l["ms"] / token, "do": do,
-                  "rule": f"other kernels ≥ {OTHER_SHARE:.0%} of the token"})
+                  "rule": f"other kernels ≥ {OTHER_SHARE:.0%} of the token", "evidence": ev.get("other_kernels") or []})
     if l["label"] == "kernels and gaps, not split" and loss.get("missing"):
       out.append({"what": "Kernels and gaps, not split", "ms": l["ms"], "share": l["ms"] / token,
-                  "do": SPLIT_LEVER.format(missing=loss["missing"]), "rule": "no per-role time"})
+                  "do": SPLIT_LEVER.format(missing=loss["missing"]), "rule": "no per-role time",
+                  "evidence": ev.get("whole_step") or []})
   return sorted(out, key=lambda x: (-x["ms"], x["what"]))
 
 
 def _next(loss:dict[str, Any], policy:dict[str, Any]) -> str:
-  from boltbeam.search.role_compare import COMPARE_BACKENDS
-  compare_runs = str((policy.get("target") or {}).get("backend") or "").lower() in COMPARE_BACKENDS
-  items = next_items(loss, compare_runs)
+  items = next_items(loss)
   routes = [r for r in policy.get("routes", []) or [] if isinstance(r, dict)]
   compared = any(r.get("status") not in (None, "unmeasured") and isinstance(r.get("compare"), dict) for r in routes)
   if not items and not compared:
@@ -557,7 +612,7 @@ def _next(loss:dict[str, Any], policy:dict[str, Any]) -> str:
   lis = "".join(
     f'<li class="{"top" if i == 0 else ""}"><span class="what">{_e(x["what"])}</span> '
     f'<span class="ms">· {x["ms"]:.2f} ms, {x["share"] * 100:.0f}% of the token</span>'
-    f'<span class="do">{_e(x["do"])}</span></li>' for i, x in enumerate(items))
+    f'<span class="do">{_e(x["do"])}</span>{_evidence(x.get("evidence"))}</li>' for i, x in enumerate(items))
   body = f'<ol class="next">{lis}</ol>' if lis else ""
   if compared:
     body += _routes_card(policy)

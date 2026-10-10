@@ -284,9 +284,6 @@ func (m Model) loadCompare(id string) tea.Cmd {
 	}
 }
 
-// startCompare starts step 5's kernel comparison as a detached job. Python runs it; this only starts it.
-func (m Model) startCompare() tea.Cmd { return m.startStep5(false) }
-
 // startStep5 starts one of step 5's jobs (compare, or time each role) in the step's one job slot.
 func (m Model) startStep5(timeOnly bool) tea.Cmd {
 	run := m.f.Run
@@ -1019,8 +1016,6 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, m.startRun(a.arg)
 	case "stop":
 		return m, m.stopRun()
-	case "compare":
-		return m, m.startCompare()
 	case "roletime":
 		return m, m.startStep5(true)
 	case "run":

@@ -45,6 +45,10 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
                                                `compare roles: N`, then `role ROLE QUANT: search|ab|done STATUS`,
                                                then `compare done: DIR` or `compare failed: REASON`. It writes the
                                                statuses into route_policy.json and refreshes the report.
+                                               Run (pipeline --analyze) runs the same search as its "search" stage
+                                               after per-role time, with `stage search: progress P/Q` per role;
+                                               --no-search skips it. Other engines and chips skip it with a reason
+                                               (kernel_compare/search_status.json, results loss.search).
 
 Nothing here computes a new kind of fact. The ceiling is `model_roofline` exactly as `roofline-theoretical`
 calls it, with tokens/s read off the floor (one token at context 1 for decode; the context's tokens for
@@ -367,6 +371,8 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], m
   from boltbeam.workflow import tie_out as tie
   profile, bw = _optional(run, "model_profile.json"), ceil.get("peak_bandwidth_gbs")
   out["layout"], out["machine"] = _layout_limit(run, profile, ceil)
+  out["search"] = search_block(run, provider)  # searched, skipped with its reason, or not run: said with or without roles
+  state = out["search"].pop("state")
   if out["layout"] and out["layout"].get("ms") and out["layout"]["gpus"] > 1:
     limit_ms = out["layout"]["ms"]  # the layout's limit is the one the measurement is compared with
     out.update(limit_ms=limit_ms, limit_tok_s=1000.0 / limit_ms)
@@ -398,12 +404,53 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], m
   if table["status"] != "measured":  # a floor broken: the reason is shown, the numbers never are
     out["refused"] = table["reason"]
     return out
-  roles, rule = tie.role_why(table["roles"], bw)
+  from boltbeam.workflow import evidence as ev
+  facts = ev.Facts(run, providers.TRACES[shown])
+  regimes = {(r["role"], r["quant"]): r.get("regime") for r in ceil.get("_roles") or []}
+  roles, rule = tie.role_why(table["roles"], bw, regimes=regimes, throttled=facts.throttle() is not None)
+  roles = [{**r, "evidence": facts.role(r["role"], r["quant"])} for r in roles]
+  if shown != provider:
+    out["search"] = search_block(run, shown)
+    state = out["search"].pop("state")
+  by_key = {(r.get("role"), r.get("quant")): r for r in _optional(run, "route_policy.json").get("routes", []) or []}
+  if shown != tinygrad_role_time.PROVIDER:  # the search compares tinygrad kernels; this table is another engine's
+    state, by_key = {"status": "skipped", "reason": role_compare.search_applies("metal", shown)}, {}
+  roles = [{**r, **role_compare.role_verdict(by_key.get((r["role"], r["quant"])), state)} for r in roles]
   out.update(roles=roles, role_rule=rule, not_attributed_ms=table["not_attributed_ms"], capture=capture,
              unpaired_roles=table.get("unpaired_roles") or [], source=_source(shown, capture, target))
   out["tie_out"] = tie.tie_out(run, provider=shown, table=table, trace=_optional(run, providers.TRACES[shown]),
                                limit_ms=limit_ms, profile=profile, bandwidth_gbs=bw,
                                missing=None if roles else "the capture could not split the kernels by role")
+  out["findings"] = ev.items(facts, out)
+  taken = {(r["role"], r["quant"]) for r in roles}
+  out["evidence"] = {"whole_step": facts.whole(), "other_kernels": facts.others(taken), "common": facts.common()}
+  if out["search"].get("next"):
+    out["search"]["next"]["evidence"] = [p for r in roles if f"{r['role']} {r['quant']}" in out["search"]["next"]["roles"]
+                                         for p in r["evidence"] if p["file"] == ev.COMPARE]
+  return out
+
+
+def search_block(run:pathlib.Path, provider:str) -> dict[str, Any]:
+  """Run's kernel search for this run: searched, skipped (with the reason) or not run, and the next-step item for
+  the roles where a faster kernel was found but not applied. Measured numbers only."""
+  state = role_compare.read_status(run)
+  routes = _optional(run, "route_policy.json").get("routes", []) or []
+  if state is None and any(isinstance(r.get("compare"), dict) for r in routes):
+    state = {"status": "searched", "reason": None, "seconds": None}  # `screen compare` ran before search was a stage
+  if state is None:
+    state = {"status": "not_run", "reason": "the kernel search did not run for this run", "seconds": None}
+  out = {"status": state["status"], "reason": state.get("reason"), "seconds": state.get("seconds"), "next": None,
+         "state": state}
+  if state["status"] == "searched" and provider == tinygrad_role_time.PROVIDER and (f := role_compare.found_summary(routes)):
+    n = len(f["roles"])
+    what = f"{n} {'role has' if n == 1 else 'roles have'} a faster kernel found: ~{f['ms']:.1f} ms per token if applied"
+    if f["calls"] is not None:
+      do = (f"Applying needs the fork's plan to bind to the decode kernels (reached {f['calls_reached']} of "
+            f"{f['calls']:.0f} calls).")
+    else:
+      do = "Applying needs the fork's plan to bind to the decode kernels; no whole-model A/B ran for these roles."
+    out["next"] = {"what": what, "ms": f["ms"], "do": do, "roles": f["roles"], "calls_reached": f["calls_reached"],
+                   "calls": f["calls"], "rule": "a faster kernel found, not applied"}
   return out
 
 
@@ -773,9 +820,20 @@ def pipeline(args, out=sys.stdout) -> int:
     steps.append(("analyze", lambda: analyze_run(args.run)))  # the plan and the report read the new evidence
   steps.append(("output", lambda: output_run(args.run)))
   can_time = plan and providers.capture_method(plan["provider"], get_target(args.target).backend)["method"]
-  if analyze_all and plan and not plan["reason"] and can_time:  # one press: per-role time, same engine, report again
+  if analyze_all and plan and not plan["reason"]:  # one press: per-role time, same engine, search, report again
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
-    steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root)))
+    if can_time:
+      steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root)))
+    if getattr(args, "no_search", False):
+      steps.append(("search", lambda: role_compare.skip(pathlib.Path(args.run), "skipped with --no-search", say)))
+    elif not can_time:
+      steps.append(("search", lambda: role_compare.skip(pathlib.Path(args.run), "no per-role time on this machine, "
+                                                        "so there is no kernel to compare with", say)))
+    else:  # search faster kernels per role where the search exists
+      backend = get_target(args.target).backend
+      steps.append(("search", lambda: role_compare.search_stage(pathlib.Path(args.run), backend=backend,
+                                                                provider=plan["provider"], root=root, say=say,
+                                                                step=progress.report)))
     steps.append(("output", lambda: output_run(args.run)))
   ids = progress.step_ids([key for key, _ in steps])
   flags = [counted(sid) for sid in ids]
@@ -936,10 +994,14 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     for r in roles:
       pct = f"{r['pct_peak']:.1f}%" if r.get("pct_peak") is not None else ""
       us = f"{r['us_per_call']:.1f}" if r.get("us_per_call") is not None else ""
+      found = (r.get("best_found") or {}).get("text")
+      verdict = (r.get("verdict") or "").replace("_", " ") + (f" ({found})" if found else "")
       lines.append(f"  {r['role']:<12} {r['quant']:<5} {r['ideal_ms']:7.3f} {r['actual_ms']:7.3f} {r['lost_ms']:6.3f} "
-                   f"{pct:>7} {us:>8}  {r.get('reason') or ''}")
+                   f"{pct:>7} {us:>8}  {r.get('reason') or ''}" + (f"; kernel search: {verdict}" if verdict else ""))
     if loss.get("not_attributed_ms") is not None:
       lines.append(f"  {'not attributed':<18} {'':>7} {loss['not_attributed_ms']:7.3f}")
+    if nxt := (loss.get("search") or {}).get("next"):
+      lines.append(f"Next: {nxt['what']}. {nxt['do']}")
   elif why_no_roles:
     lines.append(f"Per role: {why_no_roles}")
   elif loss.get("missing"):
@@ -1114,6 +1176,8 @@ def main(argv:list[str] | None = None) -> int:
                  help="one press: measure here, the machine's facts, then per-role time with the same engine")
   p.add_argument("--tinygrad-root", default=None, help="the tinygrad fork; default $BOLTBEAM_TINYGRAD_ROOT")
   p.add_argument("--batch", default="1", help="batch sizes to time, as 1,32; batch 1 is always timed")
+  p.add_argument("--no-search", action="store_true",
+                 help="with --analyze: skip the per-role kernel search (a quick run)")
   for name in ("providers", "gpu-free"):
     p = sub.add_parser(name)
     p.add_argument("--target", required=True)

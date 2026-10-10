@@ -312,6 +312,8 @@ type Pipeline struct {
 	Batch                                                                         string // batch sizes beside 1, as "8" or "8,32"
 	// Analyze is one press: measure, the machine's facts, then per-role time with the same engine
 	Analyze bool
+	// NoSearch skips Run's per-role kernel search (a quick run)
+	NoSearch bool
 }
 
 func (c Client) PipelineArgv(p Pipeline) []string {
@@ -323,6 +325,9 @@ func (c Client) PipelineArgv(p Pipeline) []string {
 	}
 	if p.Analyze {
 		argv = append(argv, "--analyze")
+	}
+	if p.Analyze && p.NoSearch {
+		argv = append(argv, "--no-search")
 	}
 	return argv
 }

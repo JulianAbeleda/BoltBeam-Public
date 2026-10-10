@@ -194,3 +194,25 @@ func TestPipelineProgress(t *testing.T) {
 		t.Fatalf("a log without the count line has total 0, got %d of %d", done, total)
 	}
 }
+
+// Run (Analyze) searches kernels by default; NoSearch adds --no-search, and only with --analyze.
+func TestPipelineArgvSearchFlag(t *testing.T) {
+	c := Client{Python: "py"}
+	has := func(argv []string, flag string) bool {
+		for _, a := range argv {
+			if a == flag {
+				return true
+			}
+		}
+		return false
+	}
+	if a := c.PipelineArgv(Pipeline{Model: "m", RunDir: "r", Target: "t", Analyze: true}); !has(a, "--analyze") || has(a, "--no-search") {
+		t.Errorf("default Run: %v", a)
+	}
+	if a := c.PipelineArgv(Pipeline{Model: "m", RunDir: "r", Target: "t", Analyze: true, NoSearch: true}); !has(a, "--no-search") {
+		t.Errorf("quick Run: %v", a)
+	}
+	if a := c.PipelineArgv(Pipeline{Model: "m", RunDir: "r", Target: "t", NoSearch: true}); has(a, "--no-search") {
+		t.Errorf("--no-search without --analyze: %v", a)
+	}
+}

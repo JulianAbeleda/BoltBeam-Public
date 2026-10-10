@@ -32,7 +32,8 @@ ROLE_RULE = {
   "fill_factor": 10.0,  # a call must move this many times B x L bytes to be able to reach about 90% of peak
 }
 OWN_TIMING = "tinygrad-profile-events"  # the engine's own profiling, not an outside capture
-REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slow": "slow kernel"}
+REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slow": "slow kernel",
+           "compute": "compute bound", "unexplained": "unexplained"}
 
 # what a kernel that is not a weight role is, by words in its name; for labels only, never for attribution
 KIND_WORDS = (("flash", "attention"), ("attention", "attention"), ("softmax", "attention"), ("rms_norm", "norm"),
@@ -94,8 +95,10 @@ def batch_limit(*, weight_ms:float, profile:dict[str, Any], context:float, batch
           "tok_s_total": batch * 1000.0 / step}
 
 
-def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float) -> tuple[list[dict[str, Any]], str]:
-  """Each role with % of peak, µs per call and its reason word; and the rule as one sentence with its numbers."""
+def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tuple[str, str], str] | None = None,
+             throttled:bool = False) -> tuple[list[dict[str, Any]], str]:
+  """Each role with % of peak, µs per call and its reason word; and the rule as one sentence with its numbers.
+  regimes is the roofline regime per (role, quant) at this context; throttled says the chip throttled while read."""
   in_flight = bandwidth_gbs * 1e9 * ROLE_RULE["latency_us"] * 1e-6  # bytes
   small = in_flight * ROLE_RULE["fill_factor"]
   out = []
@@ -109,14 +112,19 @@ def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float) -> tuple[list[dict
       why = REASONS["at_limit"]
     elif per_call_bytes is not None and per_call_bytes < small:
       why = REASONS["small"]
-    else:
+    elif str((regimes or {}).get((r["role"], r["quant"])) or "").startswith("compute"):
+      why = REASONS["compute"]
+    elif per_call_bytes is not None and not throttled:  # below the limit, big enough, memory bound, not throttled
       why = REASONS["slow"]
+    else:
+      why = REASONS["unexplained"]
     out.append({**r, "pct_peak": round(pct, 1) if pct is not None else None, "us_per_call": r["actual_ms"] * 1e3 / calls if calls else None,
                 "mb_per_call": per_call_bytes / 1e6 if per_call_bytes else None, "reason": why})
   rule = (f"At the limit: {ROLE_RULE['at_limit_pct']:.0f}% of peak or more. Too small to fill memory: a call moves "
           f"under {small / 1e6:.1f} MB, which is {ROLE_RULE['fill_factor']:.0f} x the {in_flight / 1e6:.2f} MB that must "
           f"be in flight ({bandwidth_gbs:.0f} GB/s x {ROLE_RULE['latency_us']:.1f} µs assumed latency, Little's law). "
-          "Slow kernel: anything else below the limit.")
+          "Compute bound: the roofline regime is compute. Slow kernel: below the limit, the call big enough, not "
+          "compute bound, the chip not throttled. Anything else: unexplained.")
   return out, rule
 
 
