@@ -625,6 +625,17 @@ func tieOutBody(t *seam.TieOut) string {
 			}
 			b.WriteString(stMuted.Render("  other kernels: "+strings.Join(parts, ", ")) + "\n")
 		}
+		if len(l.Kernels) > 0 {
+			names := []string{}
+			for _, k := range l.Kernels {
+				us := ""
+				if k.UsPerCall != nil {
+					us = fmt.Sprintf(", %.1f µs each", *k.UsPerCall)
+				}
+				names = append(names, fmt.Sprintf("%s (%.0f per token%s)", k.Kernel, k.CallsPerToken, us))
+			}
+			b.WriteString(stMuted.Render("  weight kernels no role took: "+strings.Join(names, "; ")) + "\n")
+		}
 	}
 	if t.BusyMs != nil && t.Isolated {
 		fmt.Fprintf(&b, "The weight kernels, timed alone, sum to %.3f ms of the %.3f ms token; the rest is attention, norms, the KV read and idle time, not timed.\n", *t.BusyMs, *t.TokenMs)
@@ -827,6 +838,9 @@ func lossBodyAt(l seam.Loss, batch int) string {
 			names = append(names, word(plainRole, u.Role)+" "+u.Quant)
 		}
 		b.WriteString(stMuted.Render("Not split out, so in not attributed: "+strings.Join(names, ", ")+".") + "\n")
+	}
+	for _, n := range l.NotTimed {
+		b.WriteString(stMuted.Render(fmt.Sprintf("%s %s: not timed: %s; left out of the floor rule and the sums.", word(plainRole, n.Role), n.Quant, deref(n.Reason))) + "\n")
 	}
 	if l.RoleSourceWords != nil {
 		b.WriteString(stMuted.Render("Per-role source: "+*l.RoleSourceWords) + "\n")

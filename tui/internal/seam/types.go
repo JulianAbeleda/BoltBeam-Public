@@ -622,6 +622,8 @@ type Loss struct {
 	Others          []OtherLoss `json:"others"`
 	// UnpairedRoles are roles the capture could not split out by calls and bytes; their time is in not attributed.
 	UnpairedRoles []UnpairedRole `json:"unpaired_roles"`
+	// NotTimed are limit roles the kernel timer had no adapter for, each with its reason.
+	NotTimed []NotTimedRole `json:"not_timed"`
 	// TieOut is the measured token line by line against the limit (workflow/tie_out.py); RoleRule is the
 	// sentence, with its numbers, behind each role's Reason.
 	TieOut     *TieOut      `json:"tie_out"`
@@ -685,6 +687,8 @@ type TieLine struct {
 	Ms    float64   `json:"ms"`
 	How   string    `json:"how"` // derived | measured | difference
 	Parts []TiePart `json:"parts"`
+	// Kernels are set on the "weight kernels, unattributed" line only: GEMVs no role took, named with their launches.
+	Kernels []TieKernel `json:"kernels"`
 }
 
 type TiePart struct {
@@ -692,10 +696,26 @@ type TiePart struct {
 	Ms   float64 `json:"ms"`
 }
 
+type TieKernel struct {
+	Kernel        string   `json:"kernel"`
+	CallsPerToken float64  `json:"calls_per_token"`
+	UsPerCall     *float64 `json:"us_per_call"`
+	Ms            float64  `json:"ms"`
+}
+
 type UnpairedRole struct {
 	Role  string `json:"role"`
 	Quant string `json:"quant"`
 	Count int    `json:"count"`
+}
+
+// NotTimedRole is a limit role the kernel timer had no adapter for: shown with its reason, left out of the floor
+// rule and the sums (collectors/tinygrad_role_time.py loss).
+type NotTimedRole struct {
+	Role   string  `json:"role"`
+	Quant  string  `json:"quant"`
+	Status string  `json:"status"`
+	Reason *string `json:"reason"`
 }
 
 type Runtime struct {

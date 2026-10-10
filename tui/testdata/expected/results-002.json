@@ -43,6 +43,7 @@
     "machine": null,
     "missing": "no per-role time yet: Run with llama.cpp times each role",
     "not_attributed_ms": null,
+    "not_timed": [],
     "others": [],
     "provider": "llama.cpp",
     "provider_missing": "no per-role time yet: Run with llama.cpp times each role",

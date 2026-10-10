@@ -25,6 +25,11 @@ ADAPTERS, one row per (engine, backend):
 tinygrad has no adapter: the fork generates its kernels per shape at run time inside a model graph, so there is no
 shipped source to compile; it keeps its own timing (collectors/tinygrad_role_time.py). Not cheap, so not built.
 
+Weight formats: the block layouts metal_native.BLOCK_ELEMS/BLOCK_BYTES and its reference know (Q4_K, Q6_K, Q8_0). A
+role in another format is a not_measured row saying "no <quant> adapter"; the table shows it as not timed, with the
+reason, and leaves it out of the floor rule and the sums (tinygrad_role_time.loss), so the roles that were timed
+are still measured.
+
 A result is labelled with the adapter and the kernel: "isolated, timed by BoltBeam's kernel timer: llama.cpp
 kernel_mul_mv_q4_K_f32". An isolated kernel reads from DRAM after a cache sweep, alone, whatever its size; in the
 model the same kernel runs between other kernels, which an in-model capture sees and this does not. The attention,
@@ -205,38 +210,51 @@ _KARGS = "<3i4x4Q3i4x4Q3i2h"  # ne00 ne01 ne02 | nb00..nb03 | ne10 ne11 ne12 | n
 METAL_RULE = ("ggml-metal-ops.cpp mul_mv for K-quants: grid ((ne01 + nr0*nsg - 1)/(nr0*nsg), ne11, ne12*ne13), "
               "threadgroup (32, nsg, 1), no threadgroup memory; args at index 0, src0 1, src1 2, dst 3; function "
               "constants FC_MUL_MV+0 nsg, +2 ne12, +3 r2, +4 r3")
+METAL_RULE_SHARED = ("ggml-metal-ops.cpp mul_mv for F32, F16, BF16 and Q8_0: grid ((ne01 + nr0 - 1)/nr0, ne11, ne12*ne13), "
+                     "threadgroup (32, nsg, 1), the nsg simdgroups share the nr0 rows and reduce through 32 x 4 x nr0 bytes "
+                     "of threadgroup memory (ggml-metal-device.cpp); args at index 0, src0 1, src1 2, dst 3; function "
+                     "constants FC_MUL_MV+0 nsg, +2 ne12, +3 r2, +4 r3")
 # the engine passes these to the runtime compiler (ggml-metal-device.m); BF16 is on for every M-series GPU
 GGML_MACROS = {"GGML_METAL_EMBED_LIBRARY": "1", "GGML_METAL_HAS_BF16": "1"}
+# Two dispatch rules in ggml-metal-ops.cpp mul_mv, by weight type. The K-quant kernels give each simdgroup its own
+# nr0 rows: ceil(ne01 / (nr0 x nsg)) threadgroups, no threadgroup memory. F32, F16, BF16 and Q8_0 split one row set
+# across the simdgroups: ceil(ne01 / nr0) threadgroups, reduced through 32 floats per row of threadgroup memory
+# (ggml-metal-device.cpp: smem = 32 x sizeof(float) x nr0). Neither file is in the shipped library, so the rule is
+# data here, keyed by the type, and recorded on the row (geometry.rule).
+METAL_ROWS_SHARED = ("F32", "F16", "BF16", "Q8_0")  # one row set per threadgroup, shared by its simdgroups
 
 
 def ggml_metal_spec(text:str, quant:str, rows:int, cols:int, weights:bytes, x:list[float]) -> KernelSpec:
   """ggml's Metal mul_mv kernel for one weight of rows x cols against one vector, dispatched as ggml does: the
-  argument struct, the function constants, the grid and the threadgroup. nsg and nr0 are the source's own
-  N_SG_/N_R0_ defines."""
+  argument struct, the function constants, the grid, the threadgroup and its memory (METAL_SMEM). nsg and nr0 are
+  the source's own N_SG_/N_R0_ defines."""
   from boltbeam.collectors import metal_native as native
   name = ggml_kernel(text, quant)
   if name is None:
     raise NoEngineSource(f"ggml's Metal source has no {quant} vector kernel")
   nsg, nr0, fc = _define(text, f"N_SG_{quant}"), _define(text, f"N_R0_{quant}"), _define(text, "FC_MUL_MV")
   block = native.BLOCK_BYTES[quant]
-  nb01 = (cols // 256) * block
+  nb01 = (cols // native.BLOCK_ELEMS[quant]) * block
+  shared = quant in METAL_ROWS_SHARED
+  smem = 32 * 4 * nr0 if shared else 0
   args = struct.pack(_KARGS, cols, rows, 1, block, nb01, nb01 * rows, nb01 * rows,
                      cols, 1, 1, 4, cols * 4, cols * 4, cols * 4, rows, 1, nr0, 1, 1)
-  per_group = nr0 * nsg
+  per_group = nr0 if shared else nr0 * nsg
   groups = (rows + per_group - 1) // per_group
   return KernelSpec(label=f"llama.cpp {name}", adapter="llama.cpp", source=text, kernel=name, macros=dict(GGML_MACROS),
                     constants={fc: ("short", nsg), fc + 2: ("short", 1), fc + 3: ("short", 1), fc + 4: ("short", 1)},
                     args=[("value", args), weights, struct.pack(f"<{cols}f", *x), rows * 4],
-                    grid=(groups, 1, 1), block=(32, nsg, 1), bytes_read=len(weights),
+                    grid=(groups, 1, 1), block=(32, nsg, 1), bytes_read=len(weights), shared_bytes=smem,
                     check=_reference(quant, rows, cols, weights, x),
                     record={"nsg": nsg, "nr0": nr0, "rows_per_threadgroup": per_group, "function_constant_base": fc,
-                            "threadgroups": groups, "threads_per_threadgroup": [32, nsg, 1], "rule": METAL_RULE})
+                            "threadgroups": groups, "threads_per_threadgroup": [32, nsg, 1], "threadgroup_bytes": smem,
+                            "rule": METAL_RULE_SHARED if shared else METAL_RULE})
 
 
 # --- llama.cpp on CUDA: ggml's CUDA backend ---------------------------------------------------------------------------
 
 _CUDA_CANDIDATES = ("~/env/llama.cpp/ggml/src/ggml-cuda", "~/llama.cpp/ggml/src/ggml-cuda", "/usr/local/src/llama.cpp/ggml/src/ggml-cuda")
-GGML_TYPE = {"Q4_K": 12, "Q6_K": 14}  # ggml.h enum values, the same ones metal_native.GGML_TYPES reads from GGUF
+GGML_TYPE = {"Q4_K": 12, "Q6_K": 14, "Q8_0": 8}  # ggml.h enum values, the same ones metal_native.GGML_TYPES reads from GGUF
 Q8_1_BLOCK, Q8_1_BYTES = 32, 36  # block_q8_1: half d, half s, 32 int8 (ggml-common.h)
 MATRIX_ROW_PADDING = 512  # ggml-cuda common.cuh: the quantized vector is padded to this many columns
 CUDA_RULE = ("ggml-cuda mmvq.cu mul_mat_vec_q<type, ncols_dst=1, has_fusion=false, small_k, halve_iters>: grid (ceil(rows / "
@@ -383,9 +401,11 @@ def ggml_cuda_geometry(text:str, vecdotq:str, common:str, quant:str, rows:int, c
   parameter table from get_device_table_id(cc) with common.cuh's GGML_CUDA_CC_* values, halve_iters from
   should_halve_iters. nwarps is read from the GENERIC case of calc_nwarps (the GB10 table starts from it); another
   table's own nwarps switch is not mirrored and the record says so."""
+  from boltbeam.collectors import metal_native as native
   vdr = _define(vecdotq, f"VDR_{quant}_Q8_1_MMVQ")
   qr = _define(common, f"QR{quant[1:]}")
-  qi = 256 // (4 * qr)
+  elems = native.BLOCK_ELEMS[quant]  # the block's weights: QK_K for the K-quants, QK8_0 for Q8_0 (ggml-common.h)
+  qi = elems // (4 * qr)
   nwarps = 4  # calc_nwarps(type, ncols_dst=1, MMVQ_PARAMETERS_GENERIC)
   m = re.search(r"MMVQ_PARAMETERS_GENERIC\)\s*\{\s*switch\s*\(ncols_dst\)\s*\{\s*case 1:(?:\s*case \d+:)*\s*return (\d+);", text)
   if m:
@@ -393,7 +413,7 @@ def ggml_cuda_geometry(text:str, vecdotq:str, common:str, quant:str, rows:int, c
   table, table_rule = ggml_cuda_table(text, cuda_common, cc)
   if table not in (GENERIC_TABLE, "MMVQ_PARAMETERS_GB10"):
     table_rule += f"; nwarps for {table} is not mirrored, the GENERIC value {nwarps} is used"
-  blocks_per_row = cols // 256
+  blocks_per_row = cols // elems
   per_warp = vdr * 32 // qi
   small_k = nwarps > 1 and blocks_per_row < nwarps * per_warp
   halve, nwarps_launch, halve_rule = (False, nwarps, "small_k launches take no halve_iters") if small_k else \
@@ -469,7 +489,7 @@ def ggml_cuda_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:
   source = text + f"\n// BoltBeam: instantiate the kernel the engine runs for {quant}, one vector\n" \
                   f"static const void* const bb_keep_{quant.lower()} = (const void*) {keep};\n"
   y = quantize_q8_1(x)
-  blocks_per_row = cols // 256
+  blocks_per_row = cols // native.BLOCK_ELEMS[quant]
   padded_blocks = len(y) // Q8_1_BYTES
   u32 = lambda v: ("value", struct.pack("<I", v))  # noqa: E731
   args = [weights, y, ("value", bytes(8)), ("value", bytes(48)), rows * 4,  # vx, vy (q8_1), ids = null, fusion = {}, dst
@@ -576,13 +596,17 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
       say(f"role {i} of {len(roles)}: {r['role']} {quant} {rows}x{cols}")
       row:dict[str, Any] = {"scope": "kernel", "role": r["role"], "quant": quant, "shape": [rows, cols], "calls": r["count"],
                             "role_source": ROLE_SOURCE, "tensor": r.get("tensor_name"), "time_source": METHOD}
-      if quant not in native.BLOCK_BYTES or cols % 256 or setup["kernel"](setup, quant) is None:
-        row.update(status="not_measured", wall_us=0.0,
-                   reason=f"{setup['engine']} has no {quant} vector kernel in its source" if quant in native.BLOCK_BYTES and cols % 256 == 0
-                   else f"BoltBeam has no block layout for {quant} with {cols} columns")
+      elems = native.BLOCK_ELEMS.get(quant)
+      if elems is None:  # the table shows such a row as "not timed: <reason>", outside the floor rule and the sums
+        row.update(status="not_measured", wall_us=0.0, reason=f"no {quant} adapter: BoltBeam's kernel timer has no {quant} block layout")
+      elif cols % elems:
+        row.update(status="not_measured", wall_us=0.0, reason=f"no {quant} adapter for {cols} columns: not whole {elems}-weight blocks")
+      elif setup["kernel"](setup, quant) is None:
+        row.update(status="not_measured", wall_us=0.0, reason=f"{setup['engine']} has no {quant} vector kernel in its source")
+      if row.get("status"):
         rows_out.append(row)
         continue
-      size = rows * (cols // 256) * native.BLOCK_BYTES[quant]
+      size = rows * (cols // elems) * native.BLOCK_BYTES[quant]
       if size + kernel_timer.FLUSH[backend]["bytes"] > bridge.working_set_bytes * native.WORKING_SET_SHARE:
         row.update(status="not_measured", reason=f"{size / 2**30:.1f} GiB of weights does not fit the GPU's working set", wall_us=0.0)
         rows_out.append(row)

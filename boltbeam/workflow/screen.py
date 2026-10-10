@@ -382,7 +382,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   out = {"status": "modeled", "limit_tok_s": ceil["tok_s"], "limit_ms": limit_ms, "runtimes": runtimes, "roles": [],
          "not_attributed_ms": None, "source": None, "missing": None, "refused": None,
          "provider": provider, "capture": plan, "roles_provider": None, "provider_missing": None, "others": [], "unpaired_roles": [],
-         "tie_out": None, "role_rule": None, "step": step_facts(token), "latency": None, "cross_check": None,
+         "not_timed": [], "tie_out": None, "role_rule": None, "step": step_facts(token), "latency": None, "cross_check": None,
          "role_source": None, "role_source_words": None, "estimate": None}
   from boltbeam.workflow import tie_out as tie
   from boltbeam.workflow import evidence as ev
@@ -443,7 +443,8 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
     state, by_key = {"status": "skipped", "reason": role_compare.search_applies("metal", shown)}, {}
   roles = [{**r, **role_compare.role_verdict(by_key.get((r["role"], r["quant"])), state)} for r in roles]
   out.update(roles=roles, role_rule=rule, not_attributed_ms=table["not_attributed_ms"], capture=capture,
-             unpaired_roles=table.get("unpaired_roles") or [], source=_source(shown, capture, target))
+             unpaired_roles=table.get("unpaired_roles") or [], not_timed=table.get("not_timed") or [],
+             source=_source(shown, capture, target))
   out["tie_out"] = tie.tie_out(run, provider=shown, table=table, trace=_optional(run, providers.TRACES[shown]),
                                limit_ms=limit_ms, profile=profile, bandwidth_gbs=bw,
                                missing=None if roles else "the capture could not split the kernels by role")
@@ -1264,6 +1265,10 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     lines.append(f"Tie-out, ms per token at context {t['context']:.0f}:")
     for i, l in enumerate(t["lines"]):
       lines.append(f"  {'  ' if i == 0 else '+ '}{l['label']:<48} {l['ms']:9.3f}  {l['how']}")
+      for k in l.get("kernels") or []:  # GEMVs no role took, named with their launches
+        lines.append(f"      {k['kernel']}: {k['calls_per_token']:.0f} per token, {k['us_per_call']:.1f} us each, {k['ms']:.3f} ms")
+      if l.get("parts"):
+        lines.append("      " + ", ".join(f"{p['kind']} {p['ms']:.3f}" for p in l["parts"]))
     lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
   if t.get("band"):
     lines.append(f"Band: {t['band']}")
@@ -1299,9 +1304,11 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
       lines.append(f"  {'not attributed':<18} {'':>7} {loss['not_attributed_ms']:7.3f}")
     if nxt := (loss.get("search") or {}).get("next"):
       lines.append(f"Next: {nxt['what']}. {nxt['do']}")
-  elif why_no_roles:
+  for n in loss.get("not_timed") or []:  # a limit role the timer had no adapter for: its own row, out of the floor rule and the sums
+    lines.append(f"  {n['role']:<12} {n['quant']:<5} not timed: {n.get('reason') or n.get('status')}; left out of the floor rule and the sums")
+  if not roles and why_no_roles:
     lines.append(f"Per role: {why_no_roles}")
-  elif loss.get("missing"):
+  elif not roles and loss.get("missing"):
     lines.append(f"Per role: {loss['missing']}")
   if (cc := loss.get("cross_check")) and cc.get("rows"):
     lines.append(f"Cross-check ({cc.get('words')}):")

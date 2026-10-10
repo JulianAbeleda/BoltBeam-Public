@@ -223,7 +223,10 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
          limit_ms:float | None = None, band:float | None = None) -> dict[str, Any] | None:
   """Per role: ideal ms (roofline), actual ms (in model), lost ms; sorted by lost ms. None without a trace.
   A table that breaks a floor beyond the chip's band (noise_band) comes back as {"status": "incomplete", "reason":
-  ...} with no numbers. A role inside the band is labelled at the limit and loses 0 ms."""
+  ...} with no numbers. A role inside the band is labelled at the limit and loses 0 ms. A kernel row with a status
+  other than measured (an isolated row the timer had no adapter for) is not a time: it is left out of the roles,
+  the floor rule and the sums, and listed in not_timed with its reason, so a 0 µs row never reads as below its floor
+  (the 27B's Q8_0 roles on the 5090 refused the whole table that way)."""
   chip = noise_band(band)
   if not trace: return None
   rows = trace.get("rows", [])
@@ -232,7 +235,11 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   tokens = whole.get("decode_tokens") or max(1, round(whole["wall_us"] * whole["tok_s"] / 1e6))
   actual: dict[tuple[str, str], dict[str, float]] = {}
   floor_us = None  # an isolated row's dispatch floor (kernel_timer.less_floor_us): one per trace, read off the rows
+  not_timed = []  # rows the timer could not time (no adapter for the quant, a failed check): no time, never a 0 ms
   for r in rows:
+    if r.get("scope") == "kernel" and r.get("status") not in (None, "measured"):
+      not_timed.append({"role": r.get("role"), "quant": r.get("quant"), "status": r["status"], "reason": r.get("reason")})
+      continue
     if r.get("scope") == "kernel" and r.get("role_source") in ROLE_SOURCES and r.get("role") and r.get("quant"):
       slot = actual.setdefault((r["role"], r["quant"]), {"us": 0.0, "us_less_floor": 0.0, "calls": 0, "spread_pct": None})
       slot["us"] += float(r["wall_us"]); slot["calls"] += int(r.get("calls", 1))
@@ -260,7 +267,9 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
            "tokens": tokens, "kernel_ms": whole_ms, "tok_s": whole["tok_s"], "roles": out,
            "isolated": whole.get("measurement_scope") == "summed_isolated_kernels", "floor_us": floor_us,
            "not_attributed_ms": whole_ms - sum(r["actual_ms"] for r in out), "token_ms": whole.get("token_ms"),
-           "unpaired_roles": list(trace.get("unpaired_roles") or []), "band": chip}
+           "unpaired_roles": list(trace.get("unpaired_roles") or []), "band": chip,
+           # a limit role the timer had no adapter for: its own row with the reason, outside the floor rule and the sums
+           "not_timed": [n for n in not_timed if (n["role"], n["quant"]) in {(c["role"], c["quant"]) for c in ceiling_roles}]}
   if reason := refusal(table, limit_ms):
     return {"status": "incomplete", "reason": reason, "tokens": tokens,
             "events": whole.get("launch_count"), "roles": []}

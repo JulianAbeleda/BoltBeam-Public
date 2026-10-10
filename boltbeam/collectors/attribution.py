@@ -15,7 +15,12 @@ Two facts tie a kernel group to a role:
 Kernels on several streams can run at once. Each launch then gets only its share of the GPU busy time
 (share_overlap: shared time split equally), so a token's kernel time is the union of its intervals, never the
 sum. A fused kernel (llama.cpp on CUDA runs ffn gate and up as one) makes 1/k of a role's calls and moves k
-calls' bytes each; those matches are tried after the exact ones.
+calls' bytes each.
+
+The pairing is one assignment over every role at once (PAIRING_RULE), not a walk that places one role and moves
+on: on the 27B hybrid, ffn_down and the fused gate+up kernel both run 64 times per token, and placing ffn_down
+first gave it the 100 MB launch (755 GB/s, plausible alone) and left the 50 MB launch to no one. Paired by bytes,
+more bytes per launch is more time per launch within one launch count, and both fit at 88 to 89% of peak.
 
 Time in groups no role takes is "not attributed". Nothing is guessed: a role with no matching group stays absent,
 and loss() (tinygrad_role_time.py) then applies the same floor rule as for every provider.
@@ -43,62 +48,105 @@ def groups(launches:Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
   return list(out.values())
 
 
+MAX_NODES = 200_000  # pairings the walk may visit before the table is refused as too many to tell apart
+PAIRING_RULE = ("a role takes a kernel group that runs its count of times per token, or 1/k of them for a fused kernel "
+                f"moving k calls' bytes (k up to {MAX_FUSED}), at no more than the chip's peak bandwidth; among groups with "
+                "one launch count, more bytes per launch is more time per launch; the assignment that places the most "
+                "roles wins, then the one with the fewest fused kernels, then the walk's order (more bytes first, an exact "
+                "group before a fused one, a slower group before a faster one); a group no role's bytes fit stays unattributed")
+
+
 def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], counts:dict[tuple[str, str], int],
               tokens:int, peak_gbs:float | None) -> dict[str, Any]:
-  """Pair kernel groups with roles. roles: the ceiling's decode roles (role, quant, bytes_moved, floor_ms).
-  counts: calls per token per (role, quant). Returns {"pairs": [...], "groups": every group with its role or None}.
-  Exact matches are tried before fused ones, and also the other way round; the pairing that places more roles is
-  kept (exact first on a tie). A fused gate and up kernel makes as many calls as ffn_down, so exact-first alone can
-  give it to ffn_down and leave gate and up with no kernel that could move their bytes."""
-  import copy
-  first = _attribute(copy.deepcopy(kernel_groups), roles, counts, tokens, peak_gbs, fused_first=False)
-  if not first["unpaired"]:
-    return first
-  other = _attribute(copy.deepcopy(kernel_groups), roles, counts, tokens, peak_gbs, fused_first=True)
-  return other if len(other["unpaired"]) < len(first["unpaired"]) else first
-
-
-def _attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], counts:dict[tuple[str, str], int],
-               tokens:int, peak_gbs:float | None, *, fused_first:bool) -> dict[str, Any]:
-  per_count: dict[int, list[dict[str, Any]]] = {}
-  for r in roles:
-    c = counts.get((r["role"], r["quant"]))
-    if c:
-      per_count.setdefault(int(c), []).append({**r, "count": int(c), "bytes_per_call": r["bytes_moved"] / c})
+  """Pair kernel groups with roles by PAIRING_RULE. roles: the ceiling's decode roles (role, quant, bytes_moved,
+  floor_ms). counts: calls per token per (role, quant). Returns {"pairs": [...], "groups": every group with its role
+  or None, "unpaired", "assembled", "ambiguous", "rule"}. Roles the one assignment leaves out are then tried by
+  assemble() from the groups left and their duration clusters."""
+  known = sorted([{**r, "count": int(counts[(r["role"], r["quant"])]), "bytes_per_call": r["bytes_moved"] / counts[(r["role"], r["quant"])]}
+                  for r in roles if counts.get((r["role"], r["quant"]))], key=lambda r: -r["bytes_per_call"])
   rows = []
   for g in kernel_groups:
     cpt = g["calls"] / tokens
     whole = round(cpt)
     rows.append({**g, "calls_per_token": cpt, "count": whole if whole and abs(cpt - whole) <= COUNT_TOLERANCE * whole
                  else None, "us_per_call": g["wall_us"] / g["calls"], "role": None, "quant": None})
+  choice, ambiguous = _pairing(known, [_candidates(r, rows, peak_gbs) for r in known], rows)
   pairs = []
-  paired: set[tuple[str, str]] = set()
-  # exact matches first, then fused kernels: a group that makes 1/k of a role's calls, each moving k calls' bytes
-  # (llama.cpp on CUDA runs ffn gate and up as one kernel: 36 calls per token for the role's 72)
-  for k in (range(MAX_FUSED, 0, -1) if fused_first else range(1, MAX_FUSED + 1)):
-    for count, rs in per_count.items():
-      if count % k:
+  for i, (gi, k) in sorted(choice.items()):
+    r, g = known[i], rows[gi]
+    gbs = k * r["bytes_per_call"] / (g["us_per_call"] * 1e3)
+    g.update(role=r["role"], quant=r["quant"], gbs=gbs, fused=k)
+    pairs.append({"role": r["role"], "quant": r["quant"], "key": g["key"], "count": r["count"], "fused": k, "gbs": gbs})
+  left = [r for i, r in enumerate(known) if i not in choice]
+  assembled, ambiguous_pieces = assemble(rows, left, tokens, peak_gbs) if left else ([], None)
+  built = {(a["role"], a["quant"]) for a in assembled}
+  unpaired = [{"role": r["role"], "quant": r["quant"], "count": r["count"]} for r in left if (r["role"], r["quant"]) not in built]
+  return {"pairs": pairs, "groups": rows, "unpaired": unpaired, "assembled": assembled,
+          "ambiguous": ambiguous or ambiguous_pieces, "rule": PAIRING_RULE}
+
+
+def _candidates(r:dict[str, Any], rows:list[dict[str, Any]], peak_gbs:float | None) -> list[tuple[int, int]]:
+  """The (group index, k) a role may take, in the walk's order: exact (k = 1) before fused, the slower group first.
+  A group is a candidate when its launches per token are the role's count over k and k calls' bytes over its time
+  per launch is no more than the peak (a faster pairing is physically impossible)."""
+  out = []
+  for k in range(1, MAX_FUSED + 1):
+    if r["count"] % k:
+      continue
+    fit = [(i, g) for i, g in enumerate(rows) if g["count"] == r["count"] // k]
+    for i, g in sorted(fit, key=lambda ig: -ig[1]["us_per_call"]):
+      if not peak_gbs or k * r["bytes_per_call"] / (g["us_per_call"] * 1e3) <= peak_gbs * PEAK_SLACK:
+        out.append((i, k))
+  return out
+
+
+class _TooMany(Exception):
+  pass
+
+
+def _pairing(known:list[dict[str, Any]], cands:list[list[tuple[int, int]]],
+             rows:list[dict[str, Any]]) -> tuple[dict[int, tuple[int, int]], dict[str, Any] | None]:
+  """The one assignment role index -> (group index, k) by PAIRING_RULE: a depth-first walk over the roles (more
+  bytes per call first), each trying its candidates in order and then going unpaired, keeping the first assignment
+  at the best score (roles placed, then fewest fused). Within one launch count the bytes per launch and the time
+  per launch must order the same way. A walk past MAX_NODES refuses the whole pairing, named."""
+  best:dict[str, Any] = {"score": (-1, 0), "choice": {}}
+  nodes = 0
+
+  def monotone(choice:dict[int, tuple[int, int]], i:int, gi:int, k:int) -> bool:
+    g, mine = rows[gi], k * known[i]["bytes_per_call"]
+    for j, (gj, kj) in choice.items():
+      h, theirs = rows[gj], kj * known[j]["bytes_per_call"]
+      if h["count"] == g["count"] and ((mine > theirs and g["us_per_call"] <= h["us_per_call"])
+                                       or (mine < theirs and g["us_per_call"] >= h["us_per_call"])):
+        return False
+    return True
+
+  def walk(i:int, choice:dict[int, tuple[int, int]], used:set[int], fused:int) -> None:
+    nonlocal nodes
+    nodes += 1
+    if nodes > MAX_NODES:
+      raise _TooMany
+    if len(choice) + (len(known) - i) < best["score"][0]:
+      return  # cannot place as many roles as the best found
+    if i == len(known):
+      if (len(choice), -fused) > best["score"]:
+        best.update(score=(len(choice), -fused), choice=dict(choice))
+      return
+    for gi, k in cands[i]:
+      if gi in used or not monotone(choice, i, gi, k):
         continue
-      cands = sorted((g for g in rows if g["count"] == count // k and g["role"] is None), key=lambda g: -g["us_per_call"])
-      at = 0
-      for r in sorted((r for r in rs if (r["role"], r["quant"]) not in paired), key=lambda r: -r["bytes_per_call"]):
-        for i in range(at, len(cands)):
-          g = cands[i]
-          gbs = k * r["bytes_per_call"] / (g["us_per_call"] * 1e3)
-          if peak_gbs and gbs > peak_gbs * PEAK_SLACK:
-            continue  # too fast to move this role's bytes; a later, smaller role may still fit it
-          g["role"], g["quant"], g["gbs"], g["fused"] = r["role"], r["quant"], gbs, k
-          pairs.append({"role": r["role"], "quant": r["quant"], "key": g["key"], "count": count, "fused": k, "gbs": gbs})
-          paired.add((r["role"], r["quant"]))
-          at = i + 1
-          break
-  left = [r for rs in per_count.values() for r in rs if (r["role"], r["quant"]) not in paired]
-  assembled, ambiguous = assemble(rows, left, tokens, peak_gbs) if left else ([], None)
-  for a in assembled:
-    paired.add((a["role"], a["quant"]))
-  unpaired = [{"role": r["role"], "quant": r["quant"], "count": r["count"]} for r in left
-              if (r["role"], r["quant"]) not in paired]
-  return {"pairs": pairs, "groups": rows, "unpaired": unpaired, "assembled": assembled, "ambiguous": ambiguous}
+      choice[i], _ = (gi, k), used.add(gi)
+      walk(i + 1, choice, used, fused + (k > 1))
+      del choice[i]
+      used.discard(gi)
+    walk(i + 1, choice, used, fused)
+
+  try:
+    walk(0, {}, set(), 0)
+  except _TooMany:
+    return {}, {"reason": f"more than {MAX_NODES} ways to pair {len(known)} roles with the kernel groups: too many to tell apart"}
+  return best["choice"], None
 
 
 # --- roles assembled from several groups or duration clusters -------------------------------------------------
@@ -329,6 +377,6 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
                      "batch": batch}]
                    + trace_rows(result, context=context, time_source=method),
            "pairs": result["pairs"], "unpaired_roles": result["unpaired"], "assembled_roles": result["assembled"],
-           "ambiguous": result["ambiguous"], "overlap": overlap}
+           "ambiguous": result["ambiguous"], "pairing_rule": result["rule"], "overlap": overlap}
   (pathlib.Path(run) / out).write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
   return trace

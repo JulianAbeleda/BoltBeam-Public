@@ -20,12 +20,19 @@ own statistic (best of N for a bandwidth).
 | adapter | module | what it times | source read from |
 |---|---|---|---|
 | 0 BoltBeam GEMV | `collectors/boltbeam_gemv.py` | BoltBeam's own Q4_K and Q6_K GEMV, Metal and CUDA | the module (BoltBeam's kernel) |
-| 1 llama.cpp Metal | `collectors/engine_kernels.py` | `kernel_mul_mv_<type>_f32` | the installed ggml library (`libggml-metal`, embedded `.metal` text) or a `ggml-metal.metal` file; `BOLTBEAM_GGML_METAL` names it |
+| 1 llama.cpp Metal | `collectors/engine_kernels.py` | `kernel_mul_mv_<type>_f32`, dispatched by the engine's two rules: the K-quants give each simdgroup its own `nr0` rows; F32, F16, BF16 and Q8_0 share one row set across the simdgroups and reduce through 32 × 4 × `nr0` bytes of threadgroup memory (`METAL_ROWS_SHARED`) | the installed ggml library (`libggml-metal`, embedded `.metal` text) or a `ggml-metal.metal` file; `BOLTBEAM_GGML_METAL` names it |
 | 1 llama.cpp CUDA | `collectors/engine_kernels.py` | `mul_mat_vec_q<type, 1, false, small_k, halve_iters>`: small_k and halve_iters decided as the engine decides them for this GPU's compute capability (below); the check reads the q8_1 vector | the installed llama.cpp source `ggml/src/ggml-cuda/mmvq.cu` and `common.cuh`; `BOLTBEAM_GGML_CUDA_SRC` names the folder |
 | 2 tinygrad | none | | the fork generates its kernels per shape at run time inside a model graph; there is no shipped source to compile. Not built. tinygrad keeps its own timing (`tinygrad_role_time.py`). |
 
 Adapter 0 is the building-block probe (`probe_evidence.json`). Its rows are "BoltBeam's own kernel (reference)".
 They are not the engine's kernel.
+
+Adapter 1 times the weight formats whose block layout and pure-Python reference `metal_native.py` holds: Q4_K, Q6_K
+and Q8_0 (`BLOCK_BYTES`, `BLOCK_ELEMS`, `DEQUANT`; the same figures as `data/quants.json`). A limit role in another
+format is a `not_measured` row saying "no <quant> adapter"; the table shows it as "not timed: <reason>", its own row,
+and leaves it out of the floor rule and the sums, so the roles that were timed are still a measured table
+(`tinygrad_role_time.loss`). Before that rule the 27B's two Q8_0 roles came back as 0 µs and the floor rule refused
+the whole table as "measured below their floor".
 
 Adapter 1 is the per-role time for llama.cpp on a Mac with no Xcode. The result is labelled
 `isolated, timed by BoltBeam's kernel timer: llama.cpp kernel_mul_mv_q4_K_f32`. On a machine with the vendor

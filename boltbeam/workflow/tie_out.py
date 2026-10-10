@@ -3,8 +3,11 @@
     limit at context N (ideal)            derived: weight bytes and the KV cache read at the measured context,
                                           over the chip's measured bandwidth
   + weight kernels above their ideal      measured: each attributed role's kernel time minus its ideal
+  + weight kernels, unattributed          measured, only when there are any: GEMVs no role took (UNATTRIBUTED),
+                                          named; the limit has no bytes for them, so all their time is above it
   + other kernels above their ideal       measured: attention, norms, quantize, rope, copies, minus their ideal
-                                          (the limit's KV read and any role that could not be split)
+                                          (the limit's KV read and any role that could not be split); a GEMV of a
+                                          profile role the limit leaves out is named after it here (ssm projection)
   + gaps between kernels (GPU idle)       the difference: the measured token minus everything above
   = measured token                        the captured run's own time per token
 
@@ -57,12 +60,16 @@ OTHER_HOW_FLOOR = "at least: KV reads at the limit; attention, norms, launches a
 OTHER_HOW_DIFF = "difference: the token less the kernels timed alone{floor}; attention, norms, launches and gaps were not timed"
 ROLE_SOURCE_ISOLATED, ROLE_SOURCE_IN_MODEL = "isolated", "in_model"
 
-# what a kernel that is not a weight role is, by words in its name; for labels only, never for attribution
+UNATTRIBUTED = "weight kernel, unattributed"  # a GEMV no role took: weight time outside the limit; the capture has no bytes for it
+UNATTRIBUTED_LABEL = "weight kernels, unattributed"  # its own tie-out line, the kernels named
+GEMV_WORDS = ("mul_mat_vec", "kernel_mul_mv", "gemv")  # the GEMV names the adapters know (collectors/engine_kernels.py)
+# what a kernel that is not a weight role is, by words in its name; for labels only, never for attribution. The GEMV
+# words come before the elementwise ones: "mul_mat_vec" holds "mul", and a 2 ms GEMV is not elementwise work
 KIND_WORDS = (("flash", "attention"), ("attention", "attention"), ("softmax", "attention"), ("rms_norm", "norm"),
               ("norm", "norm"), ("quantize", "quantize"), ("rope", "rope"), ("set_rows", "KV cache write"),
-              ("copy", "copy"), ("cpy", "copy"), ("COPY", "copy"), ("silu", "elementwise"), ("glu", "elementwise"),
-              ("add", "elementwise"), ("mul", "elementwise"))
-KINDS = ("attention", "norm", "quantize", "rope", "KV cache write", "copy", "elementwise", "reduce")
+              ("copy", "copy"), ("cpy", "copy"), ("COPY", "copy"), *((w, UNATTRIBUTED) for w in GEMV_WORDS),
+              ("silu", "elementwise"), ("glu", "elementwise"), ("add", "elementwise"), ("mul", "elementwise"))
+KINDS = ("attention", "norm", "quantize", "rope", "KV cache write", "copy", "elementwise", "reduce", UNATTRIBUTED)
 KIND_PREFIX = (("r_", "reduce"), ("E_", "elementwise"))  # tinygrad's generated kernel names
 
 
@@ -79,6 +86,29 @@ def kind_of(row:dict[str, Any]) -> str:
     if name.startswith(prefix):
       return kind
   return "other"
+
+
+def roles_outside_limit(profile:dict[str, Any] | None, limit_keys:set[tuple[str, str]]) -> dict[int, str]:
+  """The profile's matrix roles the limit has no bytes for, named by their calls per token: {48: "ssm projection"}.
+  A GEMV no role took that runs such a role's count of times per token is labelled with the role's name instead of
+  UNATTRIBUTED (a label only: its time stays in other kernels, nothing is attributed). A count two such roles share
+  names neither. A role whose quant the registry does not know (an F32 conv weight) is not a matrix role here."""
+  from boltbeam.quantization.quant import quant_capability
+  by_count: dict[int, set[str]] = {}
+  for r in (profile or {}).get("roles") or []:
+    if r.get("count") and r.get("rows") and r.get("cols") and (r.get("role"), r.get("quant")) not in limit_keys \
+        and quant_capability(str(r.get("quant"))) is not None:
+      by_count.setdefault(int(r["count"]), set()).add(str(r["role"]).replace("_", " "))
+  return {c: next(iter(names)) for c, names in by_count.items() if len(names) == 1}
+
+
+def kernel_words(name:str) -> str:
+  """A captured kernel's name cut to its template (runtime/cuda_device.kernel_name) with its launch grid kept, the
+  part that tells two launches of one program apart: `mul_mat_vec_q<(ggml_type)12, ...> grid=17408x1x1`."""
+  import re
+  from boltbeam.runtime.cuda_device import kernel_name
+  grid = re.search(r"grid=\S+", name)
+  return kernel_name(name.split(" grid=", 1)[0]) + (f" {grid.group(0)}" if grid else "")
 
 
 def kv_ms(profile:dict[str, Any], context:float, element_bytes:int, bandwidth_gbs:float) -> float:
@@ -283,16 +313,28 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   lines = [{"label": f"limit at context {context:.0f} (ideal)", "ms": limit, "how": "derived"}]
   if roles:
     taken = {(r["role"], r["quant"]) for r in roles}
+    outside = roles_outside_limit(profile, taken | {(u["role"], u["quant"]) for u in table.get("unpaired_roles") or []})
     parts: dict[str, float] = {}
+    loose = []  # GEMVs no role took and no outside role names: weight time the limit does not know, its own line
     tokens = table["tokens"]
     for r in (trace or {}).get("rows", []):
       if r.get("scope") == "kernel" and (r.get("role"), r.get("quant")) not in taken:
+        ms, calls = float(r["wall_us"]) / tokens / 1000.0, float(r.get("calls") or 0)
         k = kind_of(r)
-        parts[k] = parts.get(k, 0.0) + float(r["wall_us"]) / tokens / 1000.0
-    lines += [{"label": "weight kernels above their ideal", "ms": weight_above, "how": "measured"},
-              {"label": "other kernels above their ideal", "ms": other_busy - other_ideal, "how": "measured",
-               "busy_ms": other_busy, "ideal_ms": other_ideal,
-               "parts": [{"kind": k, "ms": v} for k, v in sorted(parts.items(), key=lambda kv_: -kv_[1])]}]
+        if k == UNATTRIBUTED:
+          k = outside.get(round(calls / tokens), UNATTRIBUTED)
+          if k == UNATTRIBUTED:
+            loose.append({"kernel": kernel_words(str(r.get("kernel") or "")), "calls_per_token": calls / tokens,
+                          "us_per_call": float(r["wall_us"]) / calls if calls else None, "ms": ms})
+            continue
+        parts[k] = parts.get(k, 0.0) + ms
+    loose_ms = sum(l["ms"] for l in loose)
+    lines.append({"label": "weight kernels above their ideal", "ms": weight_above, "how": "measured"})
+    if loose:
+      lines.append({"label": UNATTRIBUTED_LABEL, "ms": loose_ms, "how": "measured", "kernels": sorted(loose, key=lambda l: -l["ms"])})
+    lines.append({"label": "other kernels above their ideal", "ms": other_busy - loose_ms - other_ideal, "how": "measured",
+                  "busy_ms": other_busy - loose_ms, "ideal_ms": other_ideal,
+                  "parts": [{"kind": k, "ms": v} for k, v in sorted(parts.items(), key=lambda kv_: -kv_[1])]})
   else:
     lines.append({"label": "all kernels above the ideal, not split by role", "ms": busy - limit, "how": "measured"})
   gaps = token - limit - sum(l["ms"] for l in lines[1:])

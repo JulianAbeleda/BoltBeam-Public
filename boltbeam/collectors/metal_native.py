@@ -39,9 +39,12 @@ from boltbeam.workflow.common import load_manifest, read_json, run_dir
 
 COLLECTOR_ID = "metal-native"
 PROVIDER_ID = "boltbeam/metal-native"
-GGML_TYPES = {"Q4_K": 12, "Q6_K": 14}
-BLOCK_BYTES = {"Q4_K": 144, "Q6_K": 210}  # 256 weights per block
-METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18}  # Q4_K: d, dmin, 12 scale bytes. Q6_K: 16 int8 scales, d.
+GGML_TYPES = {"Q4_K": 12, "Q6_K": 14, "Q8_0": 8}
+# the block layouts the pure-Python reference can dequantize (DEQUANT): bytes per block and weights per block, the
+# same figures as data/quants.json's rows (block_bytes, block_elems) for these quants
+BLOCK_BYTES = {"Q4_K": 144, "Q6_K": 210, "Q8_0": 34}
+BLOCK_ELEMS = {"Q4_K": 256, "Q6_K": 256, "Q8_0": 32}
+METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18, "Q8_0": 2}  # Q4_K: d, dmin, 12 scale bytes. Q6_K: 16 int8 scales, d. Q8_0: d.
 WORKING_SET_SHARE = 0.8  # never ask for more than this share of Metal's recommended working set
 CHECK_ROWS = 9
 TOLERANCE = 1e-3  # max |gpu - cpu| over max |cpu|: float32 sums in a different order
@@ -94,16 +97,22 @@ def dequant_q6_k_block(blk:bytes) -> list[float]:
   return out
 
 
-DEQUANT: dict[str, Callable[[bytes], list[float]]] = {"Q4_K": dequant_q4_k_block, "Q6_K": dequant_q6_k_block}
+def dequant_q8_0_block(blk:bytes) -> list[float]:
+  d = _half(blk, 0)  # block_q8_0: half d, 32 int8 (ggml-common.h)
+  return [d * q for q in struct.unpack_from("<32b", blk, 2)]
+
+
+DEQUANT: dict[str, Callable[[bytes], list[float]]] = {"Q4_K": dequant_q4_k_block, "Q6_K": dequant_q6_k_block, "Q8_0": dequant_q8_0_block}
 
 
 def reference_row(weights:bytes, quant:str, row:int, cols:int, x:list[float]) -> float:
-  size, nb = BLOCK_BYTES[quant], cols // 256
+  size, elems = BLOCK_BYTES[quant], BLOCK_ELEMS[quant]
+  nb = cols // elems
   base = row * nb * size
   acc = 0.0
   for b in range(nb):
     vals = DEQUANT[quant](weights[base + b * size: base + (b + 1) * size])
-    xb = x[b * 256:(b + 1) * 256]
+    xb = x[b * elems:(b + 1) * elems]
     acc += sum(v * xv for v, xv in zip(vals, xb))
   return acc
 
@@ -217,12 +226,12 @@ def measure_probe(bridge, flusher, probe:dict[str, Any], model:pathlib.Path, dat
   quant = probe["quant"]
   row = {"probe_id": probe["probe_id"], "kind": "quant_gemv", "role": probe["role"], "quant": quant,
          "shape": [rows, cols]}
-  if quant not in KERNELS or cols % 256:
+  if quant not in KERNELS or cols % BLOCK_ELEMS[quant]:
     row["status"] = "not_measured"
     row["reason"] = f"BoltBeam has no {backend} kernel for {quant} with {cols} columns"
     return row
   name, offset = _tensor_for(probe, tensors)
-  size = rows * (cols // 256) * BLOCK_BYTES[quant]
+  size = rows * (cols // BLOCK_ELEMS[quant]) * BLOCK_BYTES[quant]
   if size + FLUSH_BYTES > bridge.working_set_bytes * WORKING_SET_SHARE:
     row["status"] = "not_measured"
     row["reason"] = f"{size / 2**30:.1f} GiB of weights does not fit the GPU's working set"

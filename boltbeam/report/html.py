@@ -641,6 +641,10 @@ def _where(loss:dict[str, Any]) -> str:
   notes = []
   if t.get("untraced_ms") is not None and str(t.get("token_source", "")).startswith("the captured run"):
     notes.append(f'Tracing slowed the token: {token:.3f} ms here, {t["untraced_ms"]:.3f} ms untraced.')
+  for l in t["lines"]:
+    if l.get("kernels"):  # GEMVs no role took: named, with their launches; the capture carries no bytes for them
+      notes.append("Weight kernels no role took (the limit has no bytes for them): " + "; ".join(
+        f'{k["kernel"]}, {k["calls_per_token"]:.0f} per token, {k["us_per_call"]:.1f} µs each' for k in l["kernels"]) + ".")
   if est := t.get("estimate"):
     up, least = ("up to ", "at least ") if est["scaled"] else ("", "")
     floor = f', {est["floor_words"]}' if est.get("floor_words") else ''
@@ -718,6 +722,9 @@ def _per_role(loss:dict[str, Any]) -> str:
   if unsplit:
     names = ", ".join(f'{PLAIN_ROLE.get(str(u.get("role")), u.get("role"))} {u.get("quant") or ""}'.strip() for u in unsplit)
     body += f'<p class="note">Roles that could not be split: {_e(names)}. Their time is inside other kernels.</p>'
+  for n in loss.get("not_timed") or []:  # a limit role the timer had no adapter for: its own row, out of the floor rule and the sums
+    body += (f'<p class="note">{_role_name(n.get("role"), n.get("quant"))}: not timed: {_e(n.get("reason") or n.get("status") or "")}. '
+             f'Left out of the floor rule and the sums.</p>')
   if cc := loss.get("cross_check"):
     body += _rate_table("Cross-check", cc.get("words") or "", cc.get("rows") or [], cc.get("reason"), cc.get("columns_words"))
   return _section(3, "Per role, estimated from isolated kernel times" if est else "Per role", body)
