@@ -7,7 +7,8 @@
       "quants": [
         "Q8_0",
         "Q5_0",
-        "Q4_0"
+        "Q4_0",
+        "Q5_K"
       ],
       "row_owner": "subgroup",
       "lane_split": "block_code_units",

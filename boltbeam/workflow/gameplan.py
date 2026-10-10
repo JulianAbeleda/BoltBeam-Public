@@ -65,7 +65,7 @@ EMITTERS: tuple[tuple[str, tuple[str, ...] | None, str, str, str], ...] = (
       'BlockQuantGEMVRouteSpec(rows={rows}, k={k}, quant=QUANT_FORMATS["' + q + '"], wave_size=<the device wave size>, '
       'lanes_per_block=<the winner\'s code bytes / memory.b.vector_width>, warps_per_cta=<the winner\'s tile.n>)',
       "k % block_elems == 0, rows >= 1, lanes_per_block divides the block's code units and the wave size, wave size a power of "
-      "two (BlockQuantGEMVRouteSpec.validate)") for q in ("Q8_0", "Q5_0", "Q4_0"))),
+      "two (BlockQuantGEMVRouteSpec.validate)") for q in ("Q8_0", "Q5_0", "Q4_0", "Q5_K"))),
   ("*", NORM_ROLES, "emit_decode_rmsnorm_kernel", "DecodeRMSNormSpec(rows={rows}, dim={k}, eps=<the model's rms epsilon>)",
    "dim % 32 == 0, eps > 0 (DecodeRMSNormSpec.validate)"),
 )
