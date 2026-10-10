@@ -136,7 +136,7 @@ tr.sum td{font-weight:800;color:var(--tx);border-bottom:0;border-top:2px solid v
 .muted{color:var(--tx-3);font-size:12.5px;margin:8px 0 0}
 .roles{display:flex;flex-direction:column;gap:6px}
 .role{border-radius:12px;background:var(--glass-2);border:1px solid var(--edge)}
-.role summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(150px,1.2fr) minmax(0,2fr) auto;
+.role summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:minmax(150px,1fr) minmax(0,2fr) 30ch;
 gap:6px 14px;align-items:center;padding:10px 14px}
 .role summary::-webkit-details-marker{display:none}
 .rname{font-weight:600;overflow-wrap:anywhere}
@@ -144,7 +144,9 @@ gap:6px 14px;align-items:center;padding:10px 14px}
 .rbar{position:relative;height:12px;border-radius:6px;background:var(--track);overflow:hidden}
 .rbar::after{content:"";position:absolute;right:0;top:0;bottom:0;width:2px;background:var(--tx-2)}
 .rbar i{display:block;height:100%;border-radius:6px}
-.rnum{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.q{margin-left:6px}
+.rnum{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;display:flex;flex-wrap:wrap;justify-content:flex-end;column-gap:8px;row-gap:2px;align-items:baseline}
+.rtags{white-space:normal;display:inline}
 .rnum b{color:var(--tx)}.rnum span{color:var(--tx-3);font-size:12px;margin-left:8px}
 .why{font-size:12px;font-weight:600}
 .r-ok{color:var(--ok)}.r-small{color:var(--excess)}.r-slow{color:var(--gaps)}
@@ -573,7 +575,7 @@ def _per_role(loss:dict[str, Any]) -> str:
       f'<details class="role"><summary><span class="rname">{_role_name(r["role"], r["quant"])}</span>'
       f'<span class="rbar" title="{_f(r.get("pct_peak"), "{:.1f}%")} of the roofline"><i style="width:{_pct(r.get("pct_peak") or 0.0, 100.0):.1f}%;background:{REASON_COLOR.get(why, "var(--ideal)")}"></i></span>'
       f'<span class="rnum"><b>{r["lost_ms"]:.2f} ms</b><span>{_f(r.get("pct_peak"), "{:.1f}%")} of peak</span>'
-      f'<span class="why {REASON_CLASS.get(why, "")}">{_e(why)}</span>{tag}</span></summary><div class="rdet">{det}</div></details>')
+      f'<span class="rtags"><span class="why {REASON_CLASS.get(why, "")}">{_e(why)}</span>{tag}</span></span></summary><div class="rdet">{det}</div></details>')
   t = loss.get("tie_out") or {}
   body = f'<p class="muted" style="margin:0 0 10px">{_e(loss.get("source") or "")} · lost ms per token, longest first; the bar is filled to the share of the roofline this role reaches; the empty part is its loss; open a row for its numbers</p>'
   body += f'<div class="roles">{"".join(items)}</div>'
@@ -588,8 +590,6 @@ def _per_role(loss:dict[str, Any]) -> str:
   if unsplit:
     names = ", ".join(f'{PLAIN_ROLE.get(str(u.get("role")), u.get("role"))} {u.get("quant") or ""}'.strip() for u in unsplit)
     body += f'<p class="note">Roles that could not be split: {_e(names)}. Their time is inside other kernels.</p>'
-  if loss.get("role_rule"):
-    body += f'<p class="muted">Reason rule: {_e(loss["role_rule"])}</p>'
   if cc := loss.get("cross_check"):
     body += _rate_table("Cross-check", cc.get("words") or "", cc.get("rows") or [], cc.get("reason"))
   return _section(3, "Per role", body)
