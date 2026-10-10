@@ -124,6 +124,7 @@ class KernelSpec:
   constants: dict[int, tuple[str, int]] = field(default_factory=dict)
   shared_bytes: int = 0
   record: dict[str, Any] = field(default_factory=dict)  # the geometry and its origin, kept with the result
+  keep_output: bool = False  # return the first launch's output bytes (a chained launch reads them as its input)
 
 
 class Flusher:
@@ -199,6 +200,8 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
   try:
     launch = lambda: bridge.dispatch(pipeline["pso"], bound, spec.grid, spec.block, spec.shared_bytes)  # noqa: E731
     launch()
+    if spec.keep_output and out_index is not None:
+      result["output"] = bytes(bridge.read(owned[out_index], out_len))
     if spec.check is not None and out_index is not None:
       size = struct.calcsize(spec.check.out_format)
       got = struct.unpack(f"<{out_len // size}{spec.check.out_format}", bridge.read(owned[out_index], out_len))

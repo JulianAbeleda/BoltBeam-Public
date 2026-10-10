@@ -78,6 +78,42 @@ Per-role search on the same 8B run, judged on BoltBeam's own time: ffn_gate_up Q
 18.1 µs per tensor (refuted); ffn_down Q4_K and lm_head refuted; ffn_down Q6_K and attn_kv Q6_K slower than the
 model; attn_qo Q4_K and attn_kv Q4_K not reproduced (BoltBeam's readings noisy).
 
+## Phase 2: flash decode, generic, as a fusion over a layer's attention
+
+The fork's flash decode now takes the model's attention shape (tinygrad-arkey `flash_decode_route_for`): the live-split
+kernel's own spec validate admits a shape (Hq % Hkv, Hd against the lane and pair widths, the query group, the warps),
+a measured tuning (the 32- and 40-head routes) is only a preference, and a shape the kernel refuses decodes on plain
+attention instead of raising. The load schedule's pins (36 blocks, 32 heads, 8 KV heads, head dim 128) are replaced by
+the wide substrate's own construction check.
+
+In the search, a flash candidate covers attention_score, attention_softmax and attention_pv: two launches (the split
+tile and the combine) per layer (`boltbeam/search/flash_space.py`, `role_compare.compare_flash`):
+
+- BubbleBeam proposes tiles for the model's attention shape (read from the profile) from the chip's facts: the lane
+  width from the subgroup size, stage widths 1, 2 and 4, the query groups the head ratio allows, both reduce
+  structures, the split count the decode installs. The installed geometry is the first candidate.
+- FutureSight applies the flash schema's legality (`build_flash_legality`) and orders the survivors.
+- The provider (`search_provider --live-flash`) compiles, checks and times each; its compile now returns both launches
+  with their buffers labelled, and its describe names the geometry the decode installs for the shape, or the kernel's
+  refusal in its own words.
+- BoltBeam rebuilds both launches, runs the tile then the combine on its own q and KV cache, checks the output against
+  attention it computes itself (softmax(q.k / sqrt(Hd)).v), and times both launches with the kernel timer.
+- The verdict needs two bars: the installed geometry timed the same way, and the in-model attention per token.
+
+Checks (the reduced GPU budget):
+
+| check | result |
+|---|---|
+| a model whose attention differs from the 8B's (the 0.6B, 16 query heads), logits against plain attention, d512, 8 tokens | the generic route admitted with no environment override; every token and argmax equal; max abs logit diff 0.015 (1.0e-3 relative) |
+| the 8B's route on the CPU | the same binding as before (G4: split 48, no query group, stage 1); the 40-head shape keeps G5 |
+| one search run, the 8B (its earlier in-model run reused) | 36 tiles proposed, 36 pass FutureSight, 36 measured; every output within 2.1e-7 of BoltBeam's attention; every BoltBeam reading noisy (each launch a few µs over the 4 µs floor, spread 11 to 17%): not reproduced by BoltBeam, nothing decided |
+
+In the model, attention takes 0.302 ms per token at context 128 (8.4 µs a layer); BoltBeam's fastest flash pair reads
+7.4 µs less the floor, noisy. A decision needs a longer context, where each launch is well over the floor.
+
+The first search run of this phase failed on two setup faults, both fixed: the fork's single-role families now carry
+`quants` (another change on exp) and the provider needs `BOLTBEAM_ROOT` to read BoltBeam's flash schema.
+
 ## Suspects
 
 Found here:
@@ -97,3 +133,11 @@ Found here:
    model.
 7. The provider's elementwise kernels alone (silu_mul, the residual add) are mostly dispatch floor: BoltBeam reads
    them noisy, so the unfused side is a lower bound.
+8. The fork's wide flash substrate and the single-stage candidate still pin Hd 128, 32 heads, 8 KV heads in their own
+   construction checks; the load schedule now asks them, so other shapes keep the live-split route only.
+9. The 32- and 40-head tunings (`FLASH_DECODE_TUNED`) are chosen by shape; the research leases keyed on the G4 tuning
+   (coarse split, adaptive split) now key on that route's identity.
+10. `_SHARED_Q8_LEASE` (blocks 1 to 12, 14 to 18 and 25) is a fixed block list on the q/k/v GEMV path, not on flash.
+11. The flash candidates' cache length is the next power of two at or above four times the context; the in-model
+    capture uses its own rule (at least 512).
+12. `tie_out.kv_ms` counts every layer as an attention layer; a hybrid model's attention row limit is overstated.

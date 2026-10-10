@@ -364,6 +364,8 @@ def _fusion_block(f:dict[str, Any], i:int) -> dict[str, Any]:
                  + f"{_f(f.get('lost_ms'), '{:.3f}', FUSIONS, where + '.lost_ms')} ms lost")
   if f.get("in_model_note"):
     lines.append(str(f["in_model_note"]))
+  if f.get("note"):
+    lines.append(str(f["note"]))
   fused, unfused = f.get("fused") or {}, f.get("unfused") or {}
   if fused:
     lines.append(f"BoltBeam's fastest fused kernel: {fused.get('plan')}, {_f(fused.get('us_less_floor'), '{:.1f}', FUSIONS, where + '.fused.us_less_floor')} µs "
@@ -372,6 +374,8 @@ def _fusion_block(f:dict[str, Any], i:int) -> dict[str, Any]:
   if unfused.get("ms_per_token") is not None:
     lines.append("unfused, each node alone: " + ", ".join(f"{n['node']} {n['us_less_floor']:.1f} µs" for n in unfused.get("nodes") or [])
                  + f" less the floor; {unfused['ms_per_token']:.3f} ms per token")
+  elif unfused.get("installed_ms") is not None:
+    lines.append(f"the geometry the model installs, timed the same way: {unfused.get('installed_plan')}, {unfused['installed_ms']:.3f} ms per token")
   elif unfused.get("lower_bound_ms") is not None:
     lines.append("unfused, each node alone: " + ", ".join(f"{n['node']} {n['us_less_floor']:.1f} µs" + ("" if n.get("verdict") == "reproduced" else " (noisy, not counted)")
                                                     for n in unfused.get("nodes") or [] if n.get("us_less_floor") is not None)

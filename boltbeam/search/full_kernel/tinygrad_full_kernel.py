@@ -122,9 +122,10 @@ class PersistentJSONLSession:
   """One campaign-scoped provider process; every request still has a hard deadline."""
   command: tuple[str, ...]; cwd: str | None = None
   proc: Any = None
+  env: Mapping[str, str] | None = None  # extra environment for the provider process
   _pending: str = ""
   def __enter__(self):
-    self.proc = subprocess.Popen(self.command, cwd=self.cwd, env={**os.environ, "PYTHONPATH": "."}, text=True,
+    self.proc = subprocess.Popen(self.command, cwd=self.cwd, env={**os.environ, "PYTHONPATH": ".", **dict(self.env or {})}, text=True,
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
     return self
   def __exit__(self, *_exc): self.close()
