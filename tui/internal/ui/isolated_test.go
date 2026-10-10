@@ -68,19 +68,20 @@ func TestInModelOvercountStillRefused(t *testing.T) {
 	}
 }
 
-// A role whose isolated samples spread wider than the chip's band carries "; noisy: ±N%" after its reason word
-// (tie_out.NOISY): the suffix shows in the in-model table, the narrow WHY table and the isolated table as the seam
-// sends it, with no second rule here.
+// A role whose isolated reading is not firm carries "; noisy: ±N%, F µs floor under a T µs kernel" after its
+// reason word (tie_out.NOISY, noisy_words): the suffix shows in the in-model table, the narrow WHY table and the
+// isolated table as the seam sends it, with no second rule here. The isolated table with a floor shows the measured
+// µs and the µs less the floor side by side, labelled.
 func TestNoisyReasonShowsInEveryRoleTable(t *testing.T) {
 	old := tableWidth
 	defer func() { tableWidth = old }()
-	noisy := "too small to fill memory; noisy: ±13.2%"
+	noisy := "too small to fill memory; noisy: ±13.2%, 4.1 µs floor under a 8.0 µs kernel"
 	roles := []seam.RoleLoss{
-		{Role: "attn_kv", Quant: "Q6_K", IdealMs: 0.04, ActualMs: 0.14, LostMs: 0.10, Share: 0.6, CallsPerToken: 18, PctPeak: fp(26.1),
-			UsPerCall: fp(7.97), MbPerCall: fp(3.4), Gbs: fp(432.0), EstMs: fp(0.07), EstLostMs: fp(0.03), Reason: noisy,
+		{Role: "attn_kv", Quant: "Q6_K", IdealMs: 0.04, ActualMs: 0.14, LostMs: 0.10, Share: 0.6, CallsPerToken: 18, PctPeak: fp(51.9),
+			UsPerCall: fp(7.97), UsPerCallLessFloor: fp(3.87), MbPerCall: fp(3.4), Gbs: fp(879.0), EstMs: fp(0.07), EstLostMs: fp(0.03), Reason: noisy,
 			ReasonWord: sp("too small to fill memory"), Noisy: true, SpreadPct: fp(26.3)},
-		{Role: "lm_head", Quant: "Q6_K", IdealMs: 0.30, ActualMs: 0.31, LostMs: 0.01, Share: 0.4, CallsPerToken: 1, PctPeak: fp(98.6),
-			UsPerCall: fp(305.4), MbPerCall: fp(510.5), Gbs: fp(1671.0), EstMs: fp(0.30), EstLostMs: fp(0.0), Reason: "at the limit",
+		{Role: "lm_head", Quant: "Q6_K", IdealMs: 0.30, ActualMs: 0.31, LostMs: 0.01, Share: 0.4, CallsPerToken: 1, PctPeak: fp(100.0),
+			UsPerCall: fp(305.4), UsPerCallLessFloor: fp(301.3), MbPerCall: fp(510.5), Gbs: fp(1694.0), EstMs: fp(0.30), EstLostMs: fp(0.0), Reason: "at the limit",
 			ReasonWord: sp("at the limit"), SpreadPct: fp(0.7)},
 	}
 	var b strings.Builder
@@ -91,7 +92,7 @@ func TestNoisyReasonShowsInEveryRoleTable(t *testing.T) {
 	}
 	tableWidth = 200
 	b.WriteString("-- isolated table --\n")
-	b.WriteString(plain(isoRoleTable(roles)))
+	b.WriteString(plain(isoRoleTable(roles, true)))
 	got := b.String()
 	if strings.Count(got, noisy) != 3 || !strings.Contains(got, "at the limit") {
 		t.Fatalf("the noisy suffix must show in all three tables:\n%s", got)

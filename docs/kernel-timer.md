@@ -58,13 +58,27 @@ is 30 to 130% of the small roles' time, so the floor is never left implicit: eac
 `us_per_call_less_floor` beside the measured `us_per_call`, and the tie-out's estimate is made from the less-floor
 times and says "less the N µs dispatch floor" where it does. The measured number is never replaced.
 
+The per-role rule judges an isolated row on the same less-floor time (`tie_out.role_why`): its GB/s and % of peak
+are on the time less the floor, the figure that matched nsys within 5% per role on the 5090, while `us_per_call`
+stays the measured time with the floor in it and `us_per_call_less_floor` sits beside it. Judged on the measured
+time, the 5090's ffn_down Q4_K read 73% of peak and "too small to fill memory" while nsys inside the model had it at
+87%, "at the limit"; less the floor it reads 89%. The seam says once which column is which (`estimate.columns_words`,
+"µs/call is the measured time, floor included; less floor, GB/s and % of peak are less the N µs dispatch floor") and
+the text summary, the HTML report and the TUI print that sentence over the table. The cross-check rows beside an
+in-model table follow the same rule. In-model rows carry no floor and are untouched.
+
 A kernel under 3 times the floor is mostly floor, and the floor's own jitter is most of its spread (attn_kv Q6_K on
 the 5090 read 8.05 then 10.30 µs between two passes). The timer samples such a kernel 60 times instead of 20
 (`kernel_timer.more_samples`, one rule for both backends; `timing.more_samples` on the row says when it fired) and
-every isolated row carries `spread_pct` (P90 less P10 over the median). The tie-out reads it: a role whose spread,
-halved as a ± figure, is wider than the chip's plausibility band gets its reason word followed by "; noisy: ±N%"
-(`tie_out.NOISY`) and `reason_word` keeps the firm word for the readers that key on it. The text summary, the HTML
-report and the TUI show the suffix as the seam sends it; no renderer has a rule of its own.
+every isolated row carries `spread_pct` (P90 less P10 over the median). The tie-out reads it (`tie_out.noisy_words`,
+one rule for both backends): a role is noisy when its spread, halved as a ± figure, is over ±10% (the gap between
+"at the limit" at 85% and a clearly slow row), or when the dispatch floor is over a third of its measured time. The
+reason word is followed by "; noisy: ±N%, F µs floor under a T µs kernel" (`tie_out.NOISY`; the floor part only when
+the floor rule fired) and `reason_word` keeps the firm word for the readers that key on it. The chip's run-to-run
+plausibility band is not the yardstick: it is a different statistic, and against the 5090's ±1.4% band six of seven
+roles read "noisy", lm_head-sized ones at ±1.4 to ±5% among them. Under this rule the 5090 flags the three attention
+rows (floor 36 to 56% of their time) and the M3 (floor 1.9 µs) flags attn_kv Q4_K alone (±20%). The text summary,
+the HTML report and the TUI show the suffix as the seam sends it; no renderer has a rule of its own.
 
 ## Which `mul_mat_vec_q` the engine launches on this GPU
 

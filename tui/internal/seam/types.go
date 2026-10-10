@@ -511,13 +511,16 @@ type Probe struct {
 	Rows            []RateRow `json:"rows"`
 }
 
-// RateRow is one role's kernel read rate: µs per call, GB/s and the share of the chip's peak.
+// RateRow is one role's kernel read rate: µs per call, GB/s and the share of the chip's peak. A cross-check row
+// timed with a dispatch floor also carries UsPerCallLessFloor, and its Gbs and PctPeak are on that time
+// (workflow/screen.py cross_check, the same rule as the isolated per-role table).
 type RateRow struct {
-	Role      string   `json:"role"`
-	Quant     string   `json:"quant"`
-	UsPerCall *float64 `json:"us_per_call"`
-	Gbs       *float64 `json:"gbs"`
-	PctPeak   *float64 `json:"pct_peak"`
+	Role               string   `json:"role"`
+	Quant              string   `json:"quant"`
+	UsPerCall          *float64 `json:"us_per_call"`
+	UsPerCallLessFloor *float64 `json:"us_per_call_less_floor"`
+	Gbs                *float64 `json:"gbs"`
+	PctPeak            *float64 `json:"pct_peak"`
 }
 
 // Step is THE measured token (tie_out.measured_step): the row every headline reads, with the engine's own account
@@ -540,9 +543,10 @@ type AlsoAt struct {
 
 // CrossCheck is the engine's kernels timed alone beside an in-model capture.
 type CrossCheck struct {
-	Words  string    `json:"words"`
-	Reason *string   `json:"reason"`
-	Rows   []RateRow `json:"rows"`
+	Words        string    `json:"words"`
+	Reason       *string   `json:"reason"`
+	Rows         []RateRow `json:"rows"`
+	ColumnsWords *string   `json:"columns_words"` // which column the rates are on, when the rows carry a floor
 }
 
 // Latency is the figure the reason rule's Little's law uses, and where it came from (measured floor or assumed).
@@ -620,7 +624,8 @@ type Loss struct {
 
 // Estimate is an isolated run's scaled split of the token (workflow/tie_out.py _isolated). When the rows carry a
 // dispatch floor, the estimate is made from the times less that floor (IsolatedSumLessFloorMs) and FloorWords
-// says so ("less the 3.9 µs dispatch floor per launch"); IsolatedSumMs stays the measured sum.
+// says so ("less the 3.9 µs dispatch floor per launch"); IsolatedSumMs stays the measured sum. ColumnsWords then
+// says once which per-role columns are measured and which are less the floor (tie_out.ISOLATED_COLUMNS).
 type Estimate struct {
 	Label                  string   `json:"label"`
 	Method                 string   `json:"method"`
@@ -629,6 +634,7 @@ type Estimate struct {
 	IsolatedSumLessFloorMs *float64 `json:"isolated_sum_less_floor_ms"`
 	FloorUs                *float64 `json:"floor_us"`
 	FloorWords             *string  `json:"floor_words"`
+	ColumnsWords           *string  `json:"columns_words"`
 	TokenMs                float64  `json:"token_ms"`
 	WeightMs               float64  `json:"weight_ms"`
 	OtherMs                float64  `json:"other_ms"`
@@ -694,14 +700,18 @@ type RoleLoss struct {
 	Share         float64  `json:"share"`
 	CallsPerToken float64  `json:"calls_per_token"`
 	PctPeak       *float64 `json:"pct_peak"`
-	UsPerCall     *float64 `json:"us_per_call"`
-	MbPerCall     *float64 `json:"mb_per_call"`
-	Gbs           *float64 `json:"gbs"`
-	EstMs         *float64 `json:"est_ms"`      // isolated runs: the role's time scaled to the token, an estimate
-	EstLostMs     *float64 `json:"est_lost_ms"` // EstMs minus the ideal, an estimate
-	// Reason is the rule's word for the role; when the role's own isolated samples spread wider than the chip's
-	// band it carries the suffix "; noisy: ±N%" (tie_out.NOISY) and ReasonWord keeps the firm word. SpreadPct is
-	// that spread (P90 - P10 over the median, %), from the kernel timer's rows; nil for an in-model capture.
+	UsPerCall     *float64 `json:"us_per_call"` // isolated runs: the measured time, floor included
+	// UsPerCallLessFloor is an isolated row's time less the dispatch floor (tie_out.role_why): the time the rule
+	// judges, so PctPeak and Gbs are on it; nil for an in-model capture or a trace with no floor.
+	UsPerCallLessFloor *float64 `json:"us_per_call_less_floor"`
+	MbPerCall          *float64 `json:"mb_per_call"`
+	Gbs                *float64 `json:"gbs"`
+	EstMs              *float64 `json:"est_ms"`      // isolated runs: the role's time scaled to the token, an estimate
+	EstLostMs          *float64 `json:"est_lost_ms"` // EstMs minus the ideal, an estimate
+	// Reason is the rule's word for the role; when an isolated role's reading is not firm (its samples spread more
+	// than ±10%, or the dispatch floor is over a third of its measured time: tie_out.noisy_words) it carries the
+	// suffix "; noisy: ±N%, F µs floor under a T µs kernel" (tie_out.NOISY) and ReasonWord keeps the firm word.
+	// SpreadPct is that spread (P90 - P10 over the median, %), from the kernel timer's rows; nil for an in-model capture.
 	Reason     string   `json:"reason"`
 	ReasonWord *string  `json:"reason_word"`
 	Noisy      bool     `json:"noisy"`

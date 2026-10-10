@@ -672,8 +672,12 @@ def _per_role(loss:dict[str, Any]) -> str:
   for r in roles:
     why = r.get("reason") or ""  # shown as it is; the class, the colour and the rules key on the firm word
     word = r.get("reason_word") or why
-    nums = (("bytes/call", _f(r.get("mb_per_call"), "{:.1f} MB")), ("µs/call (isolated)", _f(r.get("us_per_call"), "{:.1f}")),
-            ("GB/s (isolated)", _f(r.get("gbs"), "{:.1f}")), ("% of peak (isolated)", _f(r.get("pct_peak"), "{:.1f}%")),
+    floor = bool(est and est.get("columns_words"))  # the rows carry a dispatch floor: the rate columns are less it
+    rate = " (less floor)" if floor else " (isolated)"
+    nums = (("bytes/call", _f(r.get("mb_per_call"), "{:.1f} MB")),
+            ("µs/call (measured, floor included)" if floor else "µs/call (isolated)", _f(r.get("us_per_call"), "{:.1f}")))
+    nums += (("µs/call less floor", _f(r.get("us_per_call_less_floor"), "{:.1f}")),) if floor else ()
+    nums = nums + (("GB/s" + rate, _f(r.get("gbs"), "{:.1f}")), ("% of peak" + rate, _f(r.get("pct_peak"), "{:.1f}%")),
             ("ideal ms", f'{r["ideal_ms"]:.2f}'), ("est. ms in token", f'{r["est_ms"]:.2f}'),
             ("est. lost ms", f'{r["est_lost_ms"]:.2f}')) if est else (
       ("ideal ms", f'{r["ideal_ms"]:.2f}'), ("actual ms", f'{r["actual_ms"]:.2f}'),
@@ -691,14 +695,15 @@ def _per_role(loss:dict[str, Any]) -> str:
     items.append(
       f'<details class="role"><summary><span class="rname">{_role_name(r["role"], r["quant"])}</span>'
       f'<span class="rbar" title="{_f(r.get("pct_peak"), "{:.1f}%")} of the roofline"><i style="width:{_pct(r.get("pct_peak") or 0.0, 100.0):.1f}%;background:{REASON_COLOR.get(word, "var(--ideal)")}"></i></span>'
-      f'<span class="rnum"><b>{lost(r):.2f} ms{" est." if est else ""}</b><span>{_f(r.get("pct_peak"), "{:.1f}%")} of peak{" (isolated)" if est else ""}</span>'
+      f'<span class="rnum"><b>{lost(r):.2f} ms{" est." if est else ""}</b><span>{_f(r.get("pct_peak"), "{:.1f}%")} of peak{rate if est else ""}</span>'
       f'<span class="rtags"><span class="why {REASON_CLASS.get(word, "")}">{_e(why)}</span>{tag}</span></span></summary><div class="rdet">{det}</div></details>')
   t = loss.get("tie_out") or {}
   if est:
     from boltbeam.workflow.screen import estimate_how
+    columns = f' {_e(est["columns_words"])}.' if est.get("columns_words") else ""
     body = (f'<p class="note">{_e(est["method"])}</p>'
             f'<p class="muted" style="margin:0 0 10px">est. lost ms per token {_e(est["label"])}, {_e(estimate_how(est))}; '
-            f'the bar is filled to the isolated share of peak; open a row for its numbers</p>')
+            f'the bar is filled to the {"less-floor" if est.get("columns_words") else "isolated"} share of peak; open a row for its numbers.{columns}</p>')
   else:
     body = f'<p class="muted" style="margin:0 0 10px">{_e(loss.get("source") or "")} · lost ms per token, longest first; the bar is filled to the share of the roofline this role reaches; the empty part is its loss; open a row for its numbers</p>'
   body += f'<div class="roles">{"".join(items)}</div>'
@@ -714,18 +719,23 @@ def _per_role(loss:dict[str, Any]) -> str:
     names = ", ".join(f'{PLAIN_ROLE.get(str(u.get("role")), u.get("role"))} {u.get("quant") or ""}'.strip() for u in unsplit)
     body += f'<p class="note">Roles that could not be split: {_e(names)}. Their time is inside other kernels.</p>'
   if cc := loss.get("cross_check"):
-    body += _rate_table("Cross-check", cc.get("words") or "", cc.get("rows") or [], cc.get("reason"))
+    body += _rate_table("Cross-check", cc.get("words") or "", cc.get("rows") or [], cc.get("reason"), cc.get("columns_words"))
   return _section(3, "Per role, estimated from isolated kernel times" if est else "Per role", body)
 
 
-def _rate_table(title:str, words:str, rows:list[dict[str, Any]], reason:str | None = None) -> str:
-  """A labelled row group of GB/s and share of peak per role: the probe's reference kernel, or an isolated cross-check."""
-  cells = "".join(f'<tr><td>{_role_name(r["role"], r["quant"])}</td><td>{_f(r.get("us_per_call"), "{:.1f}")}</td>'
+def _rate_table(title:str, words:str, rows:list[dict[str, Any]], reason:str | None = None, columns_words:str | None = None) -> str:
+  """A labelled row group of GB/s and share of peak per role: the probe's reference kernel, or an isolated
+  cross-check. Rows that carry a time less the dispatch floor get that column, and columns_words says once which
+  column the rates are on."""
+  floor = any(r.get("us_per_call_less_floor") is not None for r in rows)
+  less = (lambda r: f'<td>{_f(r.get("us_per_call_less_floor"), "{:.1f}")}</td>') if floor else (lambda r: "")  # noqa: E731
+  cells = "".join(f'<tr><td>{_role_name(r["role"], r["quant"])}</td><td>{_f(r.get("us_per_call"), "{:.1f}")}</td>{less(r)}'
                   f'<td>{_f(r.get("gbs"), "{:.1f}")}</td><td>{_f(r.get("pct_peak"), "{:.0f}%")}</td></tr>'
                   for r in rows)
-  head = '<tr><td>role</td><td>µs/call</td><td>GB/s</td><td>of peak</td></tr>'
+  head = f'<tr><td>role</td><td>µs/call{" (measured)" if floor else ""}</td>{"<td>less floor</td>" if floor else ""}<td>GB/s</td><td>of peak</td></tr>'
   table = f'<table class="tie"><tbody>{head}{cells}</tbody></table>' if rows else f'<p class="empty">{_e(reason or "no rows")}</p>'
-  return f'<div class="card"><div class="card-hd"><h2 class="card-ttl">{_e(title)}</h2><span class="card-sub">{_e(words)}</span></div>{table}</div>'
+  note = f'<p class="muted">{_e(columns_words)}.</p>' if columns_words and rows else ""
+  return f'<div class="card"><div class="card-hd"><h2 class="card-ttl">{_e(title)}</h2><span class="card-sub">{_e(words)}</span></div>{table}{note}</div>'
 
 
 def _probe(results:dict[str, Any]) -> str:

@@ -76,7 +76,8 @@
       "scaled": false,
       "token_ms": 65.97641264076398,
       "weight_how": "as timed alone less the 1.9 \u00b5s dispatch floor per launch, fits inside the token",
-      "weight_ms": 53.78096201457083
+      "weight_ms": 53.78096201457083,
+      "columns_words": "\u00b5s/call is the measured time, floor included; less floor, GB/s and % of peak are less the 1.9 \u00b5s dispatch floor per launch"
     },
     "evidence": {
       "common": [
@@ -152,7 +153,7 @@
     "provider": "llama.cpp",
     "provider_missing": null,
     "refused": null,
-    "role_rule": "At the limit: 85% of peak or more. Too small to fill memory: a call moves under 1.8 MB, which is 10 x the 0.18 MB that must be in flight (98 GB/s x 1.9 \u00b5s latency, the dispatch floor the probe measured on this GPU, Little's law). Compute bound: the roofline regime is compute. Slow kernel: below the limit, the call big enough, not compute bound, the chip not throttled. Anything else: unexplained.",
+    "role_rule": "At the limit: 85% of peak or more. Too small to fill memory: a call moves under 1.8 MB, which is 10 x the 0.18 MB that must be in flight (98 GB/s x 1.9 \u00b5s latency, the dispatch floor the probe measured on this GPU, Little's law). Compute bound: the roofline regime is compute. Slow kernel: below the limit, the call big enough, not compute bound, the chip not throttled. Anything else: unexplained. Timed alone: % of peak and GB/s are on the time less the 1.9 \u00b5s dispatch floor per launch; \u00b5s/call is the measured time with the floor in it. Noisy: the role's own samples spread more than \u00b110% (half of P90 - P10 over the median), or the dispatch floor is over 33% of its measured time (the kernel is mostly floor), so the word is not firm.",
     "role_source": "isolated",
     "role_source_words": "isolated (BoltBeam kernel timer, llama.cpp kernels from ggml 0.19.0 at /opt/homebrew/opt/ggml/libexec/libggml-metal.so)",
     "roles": [
@@ -180,18 +181,19 @@
             "file": "measure_status.json"
           }
         ],
-        "gbs": 87.41502842247348,
+        "gbs": 87.91776539434485,
         "ideal_ms": 20.845669458631257,
         "label": null,
         "less_floor_ms": 23.212498985230923,
         "lost_ms": 2.5003280984127727,
         "mb_per_call": 28.344320000000003,
-        "pct_peak": 89.3,
+        "pct_peak": 89.8,
         "quant": "Q4_K",
         "reason": "at the limit",
         "role": "ffn_gate_up",
         "share": 0.38561760697758357,
         "us_per_call": 324.24996607005596,
+        "us_per_call_less_floor": 322.39581923931837,
         "verdict": "not_searched",
         "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
         "within_noise": false
@@ -220,18 +222,19 @@
             "file": "measure_status.json"
           }
         ],
-        "gbs": 83.06256044489069,
+        "gbs": 84.43816135015355,
         "ideal_ms": 6.952572992849848,
         "label": null,
         "less_floor_ms": 8.061010390520096,
         "lost_ms": 1.2419359694833547,
         "mb_per_call": 9.453568000000002,
-        "pct_peak": 84.8,
+        "pct_peak": 86.2,
         "quant": "Q4_K",
-        "reason": "slow kernel",
+        "reason": "at the limit",
         "role": "attn_qo",
         "share": 0.19153981306516282,
         "us_per_call": 113.81262447685003,
+        "us_per_call_less_floor": 111.95847764611244,
         "verdict": "not_searched",
         "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
         "within_noise": false
@@ -260,18 +263,19 @@
             "file": "measure_status.json"
           }
         ],
-        "gbs": 87.21611771797578,
+        "gbs": 87.55878732815833,
         "ideal_ms": 7.597222308478039,
         "label": null,
         "less_floor_ms": 8.494499372318387,
         "lost_ms": 0.9306517067936246,
         "mb_per_call": 41.320448000000006,
-        "pct_peak": 89.1,
+        "pct_peak": 89.4,
         "quant": "Q6_K",
         "reason": "at the limit",
         "role": "ffn_down",
         "share": 0.14353143666672316,
         "us_per_call": 473.77077862620354,
+        "us_per_call_less_floor": 471.91663179546595,
         "verdict": "not_searched",
         "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
         "within_noise": false
@@ -300,18 +304,19 @@
             "file": "measure_status.json"
           }
         ],
-        "gbs": 58.2376045155373,
+        "gbs": 61.018239536503984,
         "ideal_ms": 1.3069963636363635,
         "label": null,
         "less_floor_ms": 2.096995012834668,
         "lost_ms": 0.8901225780581346,
         "mb_per_call": 2.3695360000000005,
-        "pct_peak": 59.5,
+        "pct_peak": 62.3,
         "quant": "Q4_K",
         "reason": "slow kernel",
         "role": "attn_kv",
         "share": 0.13728075874737836,
         "us_per_call": 40.68738780915737,
+        "us_per_call_less_floor": 38.83324097841978,
         "verdict": "not_searched",
         "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
         "within_noise": false
@@ -340,18 +345,19 @@
             "file": "measure_status.json"
           }
         ],
-        "gbs": 89.96412711906574,
+        "gbs": 90.49670141367913,
         "ideal_ms": 5.211417364657814,
         "label": null,
         "less_floor_ms": 5.63774979673326,
         "lost_ms": 0.45970707502872266,
         "mb_per_call": 28.344320000000003,
-        "pct_peak": 91.9,
+        "pct_peak": 92.4,
         "quant": "Q4_K",
         "reason": "at the limit",
         "role": "ffn_down",
         "share": 0.07089915211358604,
         "us_per_call": 315.06246887147427,
+        "us_per_call_less_floor": 313.2083220407367,
         "verdict": "not_searched",
         "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
         "within_noise": false
@@ -380,18 +386,19 @@
             "file": "measure_status.json"
           }
         ],
-        "gbs": 68.58893261119985,
+        "gbs": 71.21333004569557,
         "ideal_ms": 0.63448253319714,
         "label": null,
         "less_floor_ms": 0.8722501806914806,
         "lost_ms": 0.2711422904476173,
         "mb_per_call": 3.4508800000000006,
-        "pct_peak": 70.1,
+        "pct_peak": 72.7,
         "quant": "Q6_K",
         "reason": "slow kernel",
         "role": "attn_kv",
         "share": 0.04181740838700522,
         "us_per_call": 50.312490202486515,
+        "us_per_call_less_floor": 48.458343371748924,
         "verdict": "not_searched",
         "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
         "within_noise": false
@@ -420,7 +427,7 @@
             "file": "measure_status.json"
           }
         ],
-        "gbs": 94.45908697213103,
+        "gbs": 94.49148474654847,
         "ideal_ms": 5.217742839632279,
         "label": null,
         "less_floor_ms": 5.405958276242018,
@@ -432,6 +439,7 @@
         "role": "lm_head",
         "share": 0.029313824042560832,
         "us_per_call": 5407.812423072755,
+        "us_per_call_less_floor": 5405.958276242018,
         "verdict": "not_searched",
         "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
         "within_noise": false
@@ -506,7 +514,8 @@
         "scaled": false,
         "token_ms": 65.97641264076398,
         "weight_how": "as timed alone less the 1.9 \u00b5s dispatch floor per launch, fits inside the token",
-        "weight_ms": 53.78096201457083
+        "weight_ms": 53.78096201457083,
+        "columns_words": "\u00b5s/call is the measured time, floor included; less floor, GB/s and % of peak are less the 1.9 \u00b5s dispatch floor per launch"
       },
       "isolated": true,
       "kv_ms": 0.19279231869254343,

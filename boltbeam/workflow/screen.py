@@ -425,7 +425,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   facts = ev.Facts(run, providers.TRACES[shown])
   regimes = {(r["role"], r["quant"]): r.get("regime") for r in ceil.get("_roles") or []}
   roles, rule = tie.role_why(table["roles"], bw, regimes=regimes, throttled=facts.throttle() is not None, latency_us=floor_us,
-                             band=(table.get("band") or {}).get("band"))
+                             floor_us=table.get("floor_us"))
   out["cross_check"] = cross_check(run, bw)
   roles = [{**r, "evidence": facts.role(r["role"], r["quant"])} for r in roles]
   if shown != provider:
@@ -640,16 +640,29 @@ def step_facts(token:dict[str, Any] | None) -> dict[str, Any] | None:
 
 def cross_check(run:pathlib.Path, bandwidth_gbs:float | None) -> dict[str, Any] | None:
   """The engine's kernels timed alone beside an in-model capture (providers.CROSS_CHECK), as rows a screen shows:
-  role, quant, µs per call, GB/s and the share of peak; None when the run has none."""
+  role, quant, µs per call (measured, floor included), the same less the dispatch floor, GB/s and the share of peak;
+  None when the run has none. The same rule as the isolated per-role table (tie_out.role_why): GB/s and the share of
+  peak are on the time less the floor when the row carries one; columns_words says so once."""
+  from boltbeam.workflow import tie_out as tie
   trace = _optional(run, providers.CROSS_CHECK)
   if not trace:
     return None
   cap = trace.get("capture") or {}
-  rows = [{"role": r["role"], "quant": r["quant"], "us_per_call": r.get("us_per_call"), "gbs": r.get("gbs"),
-           "pct_peak": (100.0 * r["gbs"] / bandwidth_gbs) if r.get("gbs") and bandwidth_gbs else None,
-           "evidence": [{"file": providers.CROSS_CHECK, "path": f"rows[{i}]"}]}
-          for i, r in enumerate(trace.get("rows") or []) if r.get("scope") == "kernel" and r.get("status") == "measured"]
-  return {"method": cap.get("method"), "words": _capture_words(cap.get("method")), "reason": cap.get("reason"), "rows": rows}
+  rows, floor_us = [], None
+  for i, r in enumerate(trace.get("rows") or []):
+    if r.get("scope") != "kernel" or r.get("status") != "measured":
+      continue
+    less = r.get("us_per_call_less_floor")
+    if less is not None:
+      floor_us = (r.get("timing") or {}).get("dispatch_floor_us", floor_us)
+      gbs = r["bytes"] / (less * 1e3) if less > 0 and r.get("bytes") else None
+    else:
+      gbs = r.get("gbs")
+    rows.append({"role": r["role"], "quant": r["quant"], "us_per_call": r.get("us_per_call"), "us_per_call_less_floor": less,
+                 "gbs": gbs, "pct_peak": (100.0 * gbs / bandwidth_gbs) if gbs and bandwidth_gbs else None,
+                 "evidence": [{"file": providers.CROSS_CHECK, "path": f"rows[{i}]"}]})
+  return {"method": cap.get("method"), "words": _capture_words(cap.get("method")), "reason": cap.get("reason"), "rows": rows,
+          "columns_words": tie.ISOLATED_COLUMNS.format(floor_words=tie.floor_words(floor_us)) if floor_us is not None else None}
 
 
 def probe_rows(run:pathlib.Path, bandwidth_gbs:float | None) -> dict[str, Any]:
@@ -1224,14 +1237,18 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     lines.append("Per role, estimated from isolated kernel times:")
     lines.append(f"  {est['method']}")
     lines.append(f"  est. columns {est['label']}; " + estimate_how(est))
-    lines.append(f"  {'role':<12} {'quant':<5} {'MB/call':>8} {'us/call':>8} {'GB/s':>6} {'% peak':>7} {'ideal':>7} "
-                 f"{'est. ms in token':>16} {'est. lost':>9}  why")
+    floor = est.get("columns_words") is not None  # the rows carry a dispatch floor: a less-floor column, said once
+    if floor:
+      lines.append(f"  {est['columns_words']}")
+    lines.append(f"  {'role':<12} {'quant':<5} {'MB/call':>8} {'us/call':>8}{' less floor' if floor else ''} {'GB/s':>6} {'% peak':>7} "
+                 f"{'ideal':>7} {'est. ms in token':>16} {'est. lost':>9}  why")
     for r in roles:
       mb = f"{r['mb_per_call']:.1f}" if r.get("mb_per_call") is not None else ""
       us = f"{r['us_per_call']:.1f}" if r.get("us_per_call") is not None else ""
+      less = (f" {r['us_per_call_less_floor']:10.1f}" if r.get("us_per_call_less_floor") is not None else f" {'':>10}") if floor else ""
       g = f"{r['gbs']:.1f}" if r.get("gbs") is not None else ""
       pct = f"{r['pct_peak']:.1f}%" if r.get("pct_peak") is not None else ""
-      lines.append(f"  {r['role']:<12} {r['quant']:<5} {mb:>8} {us:>8} {g:>6} {pct:>7} {r['ideal_ms']:7.3f} "
+      lines.append(f"  {r['role']:<12} {r['quant']:<5} {mb:>8} {us:>8}{less} {g:>6} {pct:>7} {r['ideal_ms']:7.3f} "
                    f"{r['est_ms']:16.3f} {r['est_lost_ms']:9.3f}  {r.get('reason') or ''}")
   elif roles:
     lines.append(f"Per role ({loss.get('source') or ''}):")
@@ -1253,8 +1270,12 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     lines.append(f"Per role: {loss['missing']}")
   if (cc := loss.get("cross_check")) and cc.get("rows"):
     lines.append(f"Cross-check ({cc.get('words')}):")
+    if cc.get("columns_words"):
+      lines.append(f"  {cc['columns_words']}")
     for r in cc["rows"]:
-      lines.append(f"  {r['role']:<12} {r['quant']:<5} {r['us_per_call']:8.1f} us {r['gbs']:6.1f} GB/s")
+      less = f" {r['us_per_call_less_floor']:8.1f} us less floor" if r.get("us_per_call_less_floor") is not None else ""
+      g = f" {r['gbs']:6.1f} GB/s" if r.get("gbs") is not None else ""
+      lines.append(f"  {r['role']:<12} {r['quant']:<5} {r['us_per_call']:8.1f} us{less}{g}")
   probe = res.get("probe") or {}
   if probe.get("rows"):
     lines.append(f"{probe.get('label')}:")

@@ -37,10 +37,19 @@ OWN_TIMING = "tinygrad-profile-events"  # the engine's own profiling, not an out
 from boltbeam.collectors.engine_kernels import METHOD as ISOLATED  # the engine's kernels timed alone by BoltBeam's kernel timer
 REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slow": "slow kernel",
            "compute": "compute bound", "unexplained": "unexplained"}
-# a role whose own sample spread (half of P90 - P10 over the median, as ±) is wider than the chip's band gets this
-# suffix after its reason word: the word is the rule's reading, the suffix says the reading is not firm. One rule
-# for both backends; reason_word keeps the firm word for the readers that key on it (the HTML rule tables).
-NOISY = "{word}; noisy: ±{pct:.1f}%"
+# a role timed alone whose reading is not firm gets this suffix after its reason word: the word is the rule's
+# reading, the suffix says why it is not firm (noisy_words). One rule for both backends; reason_word keeps the firm
+# word for the readers that key on it (the HTML rule tables).
+NOISY = "{word}; noisy: {why}"
+NOISY_RULE = {
+  "spread_pct": 10.0,  # ± (half of P90 - P10 over the median) above this can move the word: 85% is at the limit, 75% clearly slow
+  "floor_share": 1 / 3,  # the dispatch floor over the measured time above this: the kernel is mostly floor, the floor's jitter is its spread
+}
+NOISY_FLOOR = "{floor:.1f} µs floor under a {us:.1f} µs kernel"
+# an isolated row's rule time: its time less the dispatch floor, the figure that matched nsys per role on the 5090
+# (docs/in-model-vs-generic-rtx5090-20261010.md); the measured time, floor included, stays in the row as us_per_call
+ISOLATED_COLUMNS = "µs/call is the measured time, floor included; less floor, GB/s and % of peak are {floor_words}"
+ISOLATED_RULE = " Timed alone: % of peak and GB/s are on the time {floor_words}; µs/call is the measured time with the floor in it."
 # the isolated tie-out: only the ideal and the token are compared; the split is an estimate, labelled so
 NOT_SPLIT_LABEL = "kernels and gaps, not split"
 ESTIMATE_LABEL = "(estimate from isolated times)"
@@ -111,30 +120,41 @@ def batch_limit(*, weight_ms:float, profile:dict[str, Any], context:float, batch
           "tok_s_total": batch * 1000.0 / step}
 
 
-def noisy_words(spread_pct:float | None, band:float | None) -> tuple[bool, float | None]:
-  """Whether a role's isolated samples are noisier than the chip's band: (noisy, ±pct). spread_pct is P90 - P10
-  over the median in percent; as a ± figure that is half of it. band is the chip's plausibility band as a
-  fraction (screen.plausibility_band). Nothing without a spread or a band."""
-  if spread_pct is None or band is None:
-    return False, None
-  half = float(spread_pct) / 2.0
-  return half > 100.0 * float(band), half
+def noisy_words(spread_pct:float | None, us_per_call:float | None = None, floor_us:float | None = None) -> tuple[bool, float | None, str | None]:
+  """Whether a role's isolated reading is firm: (noisy, ±pct, why). The problem flagged is a kernel too short for
+  the clock: on a 5090 a 3 MB kernel under a 4 µs floor swings 8 to 10 µs between passes while the chip's
+  run-to-run band is ±1.4%, so the band is the wrong yardstick (a sample spread and a run-to-run band are two
+  different statistics). Noisy when the samples' half-spread (P90 - P10 over the median, halved, as ±) is over
+  NOISY_RULE["spread_pct"], the gap between "at the limit" and a clearly slow row; or when the dispatch floor is over
+  NOISY_RULE["floor_share"] of the measured time. why names what fired: "±14.0%", "4.1 µs floor under a 7.5 µs
+  kernel", or both joined by a comma. Nothing without a spread or a floor (an in-model row)."""
+  half = float(spread_pct) / 2.0 if spread_pct is not None else None
+  wide = half is not None and half > NOISY_RULE["spread_pct"]
+  floored = floor_us is not None and us_per_call is not None and us_per_call > 0 and floor_us > NOISY_RULE["floor_share"] * us_per_call
+  if not (wide or floored):
+    return False, half, None
+  why = ([f"±{half:.1f}%"] if half is not None else []) + ([NOISY_FLOOR.format(floor=floor_us, us=us_per_call)] if floored else [])
+  return True, half, ", ".join(why)
 
 
 def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tuple[str, str], str] | None = None,
-             throttled:bool = False, latency_us:float | None = None, band:float | None = None) -> tuple[list[dict[str, Any]], str]:
+             throttled:bool = False, latency_us:float | None = None, floor_us:float | None = None) -> tuple[list[dict[str, Any]], str]:
   """Each role with % of peak, µs per call and its reason word; and the rule as one sentence with its numbers.
   regimes is the roofline regime per (role, quant) at this context; throttled says the chip throttled while read.
   latency_us is the dispatch floor the run's probe measured on this GPU; without one the assumed figure is used,
-  and the sentence says which. band is the chip's plausibility band: a role whose isolated sample spread is wider
-  than it carries the NOISY suffix, and reason_word keeps the firm word."""
+  and the sentence says which. An isolated row (less_floor_ms set) is judged on its time less the dispatch floor:
+  % of peak and GB/s are on that time, us_per_call stays the measured time and us_per_call_less_floor joins it.
+  floor_us is the dispatch floor the rows carry: a role whose reading is not firm (noisy_words) carries the NOISY
+  suffix, and reason_word keeps the firm word."""
   latency, latency_source = (latency_us, LATENCY_MEASURED) if latency_us else (ROLE_RULE["latency_us"], LATENCY_ASSUMED)
   in_flight = bandwidth_gbs * 1e9 * latency * 1e-6  # bytes
   small = in_flight * ROLE_RULE["fill_factor"]
   out = []
   for r in roles:
     calls = r.get("calls_per_token") or 0
-    pct = 100.0 * r["ideal_ms"] / r["actual_ms"] if r["actual_ms"] > 0 else None
+    isolated = r.get("less_floor_ms") is not None
+    rule_ms = r["less_floor_ms"] if isolated else r["actual_ms"]  # the time the rule judges
+    pct = 100.0 * r["ideal_ms"] / rule_ms if rule_ms > 0 else None
     per_call_bytes = r["ideal_ms"] * 1e-3 * bandwidth_gbs * 1e9 / calls if calls else None
     if r.get("within_noise"):  # below its floor, inside the chip's plausibility band (tinygrad_role_time.loss)
       why = r.get("label") or REASONS["at_limit"]
@@ -148,19 +168,24 @@ def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tu
       why = REASONS["slow"]
     else:
       why = REASONS["unexplained"]
-    noisy, half = noisy_words(r.get("spread_pct"), band)
-    out.append({**r, "pct_peak": round(pct, 1) if pct is not None else None, "us_per_call": r["actual_ms"] * 1e3 / calls if calls else None,
+    us = r["actual_ms"] * 1e3 / calls if calls else None  # measured, floor included
+    noisy, half, why_noisy = noisy_words(r.get("spread_pct"), us, floor_us if isolated else None)
+    out.append({**r, "pct_peak": round(pct, 1) if pct is not None else None, "us_per_call": us,
+                "us_per_call_less_floor": rule_ms * 1e3 / calls if calls and isolated else None,
                 "mb_per_call": per_call_bytes / 1e6 if per_call_bytes else None,
-                "gbs": per_call_bytes / (r["actual_ms"] * 1e6 / calls) if per_call_bytes and r["actual_ms"] > 0 else None,
-                "reason": NOISY.format(word=why, pct=half) if noisy else why, "reason_word": why, "noisy": noisy})
+                "gbs": per_call_bytes / (rule_ms * 1e6 / calls) if per_call_bytes and rule_ms > 0 else None,
+                "reason": NOISY.format(word=why, why=why_noisy) if noisy else why, "reason_word": why, "noisy": noisy})
   rule = (f"At the limit: {ROLE_RULE['at_limit_pct']:.0f}% of peak or more. Too small to fill memory: a call moves "
           f"under {small / 1e6:.1f} MB, which is {ROLE_RULE['fill_factor']:.0f} x the {in_flight / 1e6:.2f} MB that must "
           f"be in flight ({bandwidth_gbs:.0f} GB/s x {latency:.1f} µs latency, {latency_source}, Little's law). "
           "Compute bound: the roofline regime is compute. Slow kernel: below the limit, the call big enough, not "
           "compute bound, the chip not throttled. Anything else: unexplained.")
-  if band is not None and any(r.get("spread_pct") is not None for r in roles):
-    rule += (f" Noisy: the role's own samples spread wider than this chip's ±{100 * band:.1f}% band (half of P90 - P10 over "
-             "the median), so the word is not firm.")
+  if any(r.get("less_floor_ms") is not None for r in roles):
+    rule += ISOLATED_RULE.format(floor_words=floor_words(floor_us) or "less the dispatch floor")
+  if floor_us is not None or any(r.get("spread_pct") is not None for r in roles):
+    rule += (f" Noisy: the role's own samples spread more than ±{NOISY_RULE['spread_pct']:.0f}% (half of P90 - P10 over the "
+             f"median), or the dispatch floor is over {100 * NOISY_RULE['floor_share']:.0f}% of its measured time (the kernel is "
+             "mostly floor), so the word is not firm.")
   return out, rule
 
 
@@ -319,6 +344,7 @@ def _isolated(out:dict[str, Any], table:dict[str, Any], token:float, limit:float
   floor = f" {floor_words(floor_us)}" if floor_us is not None else ""  # in weight_how; other_how formats its own
   out["estimate"] = {"estimate": True, "label": ESTIMATE_LABEL, "scale": scale, "isolated_sum_ms": weight_iso, "token_ms": token,
                      "floor_us": floor_us, "floor_words": floor_words(floor_us) or None,
+                     "columns_words": ISOLATED_COLUMNS.format(floor_words=floor_words(floor_us)) if floor_us is not None else None,
                      "isolated_sum_less_floor_ms": weight_base if floor_us is not None else None,
                      "weight_ms": weight_est, "scaled": scaled,
                      "weight_how": (f"upper bound: the token less the KV-read floor" if scaled else

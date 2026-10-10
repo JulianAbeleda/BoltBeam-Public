@@ -1,16 +1,16 @@
 -- role table at 200 --
 ROLE                       QUANT  IDEAL ms  ACTUAL ms  LOST ms  SHARE OF LOSS  % PEAK  µs/CALL  WHY
-attention keys and values  Q6_K   0.04      0.14       0.10     ███░░ 60%      26.1%   8.0      too small to fill memory; noisy: ±13.2%
-vocabulary output          Q6_K   0.30      0.31       0.01     ██░░░ 40%      98.6%   305.4    at the limit
+attention keys and values  Q6_K   0.04      0.14       0.10     ███░░ 60%      51.9%   8.0      too small to fill memory; noisy: ±13.2%, 4.1 µs floor under a 8.0 µs kernel
+vocabulary output          Q6_K   0.30      0.31       0.01     ██░░░ 40%      100.0%  305.4    at the limit
 -- role table at 76 --
 ROLE                       QUANT  IDEAL  ACTUAL  LOST  % PEAK
-attention keys and values  Q6_K   0.04   0.14    0.10  26.1%
-vocabulary output          Q6_K   0.30   0.31    0.01  98.6%
+attention keys and values  Q6_K   0.04   0.14    0.10  51.9%
+vocabulary output          Q6_K   0.30   0.31    0.01  100.0%
 
 ROLE                       QUANT  µs/CALL  WHY
-attention keys and values  Q6_K   8.0      too small to fill memory; noisy: ±13.2%
+attention keys and values  Q6_K   8.0      too small to fill memory; noisy: ±13.2%, 4.1 µs floor under a 8.0 µs kernel
 vocabulary output          Q6_K   305.4    at the limit
 -- isolated table --
-ROLE                       QUANT  BYTES/CALL  µs/CALL  GB/s    % PEAK  IDEAL  EST. ms IN TOKEN  EST. LOST  WHY
-attention keys and values  Q6_K   3.4 MB      8.0      432.0   26.1%   0.04   0.07              0.03       too small to fill memory; noisy: ±13.2%
-vocabulary output          Q6_K   510.5 MB    305.4    1671.0  98.6%   0.30   0.30              0.00       at the limit
+ROLE                       QUANT  µs/CALL MEASURED  LESS FLOOR  GB/s    % PEAK  IDEAL  EST. ms IN TOKEN  EST. LOST  WHY
+attention keys and values  Q6_K   8.0               3.9         879.0   51.9%   0.04   0.07              0.03       too small to fill memory; noisy: ±13.2%, 4.1 µs floor under a 8.0 µs kernel
+vocabulary output          Q6_K   305.4             301.3       1694.0  100.0%  0.30   0.30              0.00       at the limit

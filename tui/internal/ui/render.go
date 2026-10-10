@@ -687,9 +687,14 @@ func estimateHow(e *seam.Estimate) string {
 }
 
 // isoRoleTable is an isolated run's per-role table: what was measured alone (µs per call, GB/s, the share of
-// peak) and the estimated split of the token. At a narrow page BYTES/CALL goes first, then IDEAL.
-func isoRoleTable(roles []seam.RoleLoss) string {
+// peak) and the estimated split of the token. When the rows carry a dispatch floor (lessFloor) the measured µs
+// column is labelled so and the time less the floor stands beside it; GB/s and % PEAK are on that time, as the
+// seam's columns_words says once. At a narrow page BYTES/CALL goes first, then IDEAL.
+func isoRoleTable(roles []seam.RoleLoss, lessFloor bool) string {
 	head := []string{"ROLE", "QUANT", "BYTES/CALL", "µs/CALL", "GB/s", "% PEAK", "IDEAL", "EST. ms IN TOKEN", "EST. LOST", "WHY"}
+	if lessFloor {
+		head = []string{"ROLE", "QUANT", "BYTES/CALL", "µs/CALL MEASURED", "LESS FLOOR", "GB/s", "% PEAK", "IDEAL", "EST. ms IN TOKEN", "EST. LOST", "WHY"}
+	}
 	f := func(v *float64, format string) string {
 		if v == nil {
 			return ""
@@ -698,8 +703,12 @@ func isoRoleTable(roles []seam.RoleLoss) string {
 	}
 	all := [][]string{head}
 	for _, r := range roles {
-		all = append(all, []string{word(plainRole, r.Role), r.Quant, f(r.MbPerCall, "%.1f MB"), f(r.UsPerCall, "%.1f"),
-			f(r.Gbs, "%.1f"), f(r.PctPeak, "%.1f%%"), fmt.Sprintf("%.2f", r.IdealMs), f(r.EstMs, "%.2f"), f(r.EstLostMs, "%.2f"), r.Reason})
+		row := []string{word(plainRole, r.Role), r.Quant, f(r.MbPerCall, "%.1f MB"), f(r.UsPerCall, "%.1f")}
+		if lessFloor {
+			row = append(row, f(r.UsPerCallLessFloor, "%.1f"))
+		}
+		all = append(all, append(row, f(r.Gbs, "%.1f"), f(r.PctPeak, "%.1f%%"), fmt.Sprintf("%.2f", r.IdealMs), f(r.EstMs, "%.2f"),
+			f(r.EstLostMs, "%.2f"), r.Reason))
 	}
 	only := func(keep ...string) string {
 		rows := [][]string{}
@@ -722,8 +731,14 @@ func isoRoleTable(roles []seam.RoleLoss) string {
 			return t
 		}
 	}
-	// still too wide: the estimate in one table, what was measured alone and why in the next, so no row is cut
-	return only("ROLE", "QUANT", "% PEAK", "EST. ms IN TOKEN", "EST. LOST") + "\n" + only("ROLE", "QUANT", "µs/CALL", "GB/s", "WHY")
+	// still too wide: the estimate in one table, what was measured alone and why in the next, so no row is cut.
+	// With a floor the two µs columns take GB/s's place: % PEAK in the first table already carries the rate.
+	measured := []string{"ROLE", "QUANT", "µs/CALL", "GB/s", "WHY"}
+	if lessFloor {
+		head[3] = "µs/CALL"
+		measured = []string{"ROLE", "QUANT", "µs/CALL", "LESS FLOOR", "WHY"}
+	}
+	return only("ROLE", "QUANT", "% PEAK", "EST. ms IN TOKEN", "EST. LOST") + "\n" + only(measured...)
 }
 
 // lossBody is the end result for the run's provider: its speed against the limit and where it loses time.
@@ -794,7 +809,10 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	if e := l.Estimate; e != nil {
 		b.WriteString("\n" + stHeader.Render("Per role, estimated from isolated kernel times") + "\n" + e.Method + "\n")
 		b.WriteString(stMuted.Render(fmt.Sprintf("EST. columns %s: %s.", e.Label, estimateHow(e))) + "\n")
-		b.WriteString(isoRoleTable(l.Roles))
+		if e.ColumnsWords != nil {
+			b.WriteString(stMuted.Render(*e.ColumnsWords+".") + "\n")
+		}
+		b.WriteString(isoRoleTable(l.Roles, e.ColumnsWords != nil))
 	} else {
 		b.WriteString("\nWhere " + shown + " loses time, " + deref(l.Source) + ":\n" + roleTable(l.Roles, l.NotAttributedMs))
 	}
@@ -814,21 +832,34 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		b.WriteString(stMuted.Render("Per-role source: "+*l.RoleSourceWords) + "\n")
 	}
 	if cc := l.CrossCheck; cc != nil && len(cc.Rows) > 0 {
-		b.WriteString("\n" + stHeader.Render("Cross-check: "+cc.Words) + "\n" + rateTable(cc.Rows))
+		b.WriteString("\n" + stHeader.Render("Cross-check: "+cc.Words) + "\n")
+		if cc.ColumnsWords != nil {
+			b.WriteString(stMuted.Render(*cc.ColumnsWords+".") + "\n")
+		}
+		b.WriteString(rateTable(cc.Rows))
 	}
 	b.WriteString(othersBody(l.Others, shown))
 	return b.String()
 }
 
-// rateTable is a labelled row group of read rates per role: µs per call, GB/s and the share of peak.
+// rateTable is a labelled row group of read rates per role: µs per call, GB/s and the share of peak. Rows that
+// carry a time less the dispatch floor get that column beside the measured one; GB/s and OF PEAK are then on it.
 func rateTable(rows []seam.RateRow) string {
+	lessFloor := slices.ContainsFunc(rows, func(r seam.RateRow) bool { return r.UsPerCallLessFloor != nil })
 	t := [][]string{{"ROLE", "QUANT", "µs/CALL", "GB/s", "OF PEAK"}}
+	if lessFloor {
+		t = [][]string{{"ROLE", "QUANT", "µs/CALL MEASURED", "LESS FLOOR", "GB/s", "OF PEAK"}}
+	}
 	for _, r := range rows {
 		pct := num(r.PctPeak)
 		if r.PctPeak != nil {
 			pct = fmt.Sprintf("%.0f%%", *r.PctPeak)
 		}
-		t = append(t, []string{word(plainRole, r.Role), r.Quant, us(r.UsPerCall), num(r.Gbs), pct})
+		row := []string{word(plainRole, r.Role), r.Quant, us(r.UsPerCall)}
+		if lessFloor {
+			row = append(row, us(r.UsPerCallLessFloor))
+		}
+		t = append(t, append(row, num(r.Gbs), pct))
 	}
 	return table(t)
 }
