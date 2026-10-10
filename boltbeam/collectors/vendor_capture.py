@@ -169,12 +169,17 @@ def plan(backend:str, find:Callable[[str], str | None] | None = None) -> dict[st
 def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 1800.0, cwd:pathlib.Path | None = None,
             env:dict[str, str] | None = None, flush_ms:int | None = None) -> list[dict[str, Any]]:
   """Run argv under the vendor tool and return its kernel launches. NoCapture when there is no tool here.
-  flush_ms asks the tool to flush its buffers on a timer, where it can (nsys)."""
+  flush_ms asks the tool to flush its buffers on a timer, where it can (nsys). The program runs in `cwd`, by default
+  the capture folder `out`: whatever it drops into its working directory (an old llama.cpp build writes a 421 KB
+  llama_decode.dot graph dump on every decode) lands beside its capture, not in the caller's folder. Callers pass
+  absolute paths in argv."""
   p = plan(backend)
   if p["tool"] is None:
     raise NoCapture(p["reason"])
   _, _, wrap, read, _ = VENDORS[backend]
+  out = pathlib.Path(out).absolute()  # the tool's own output paths must survive the cwd below
   out.mkdir(parents=True, exist_ok=True)
+  cwd = cwd or out
   log = out / "capture.log"
   with open(log, "w") as fh:
     wrapped = wrap(p["tool"], argv, out, env or {}, flush_ms) if backend == "CUDA" else wrap(p["tool"], argv, out, env or {})

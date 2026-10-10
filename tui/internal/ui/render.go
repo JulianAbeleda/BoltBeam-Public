@@ -669,6 +669,23 @@ func isolatedTieOut(t *seam.TieOut) string {
 	return b.String()
 }
 
+// estimateHow is how the estimate's numbers were made from the isolated times (workflow/screen.py estimate_how,
+// the same words): the scale and its inputs, or "not scaled" with the sum that fits; the sum is the one less the
+// dispatch floor when the rows carry one, said so.
+func estimateHow(e *seam.Estimate) string {
+	base, floor := e.IsolatedSumMs, ""
+	if e.FloorUs != nil && e.IsolatedSumLessFloorMs != nil {
+		base = *e.IsolatedSumLessFloorMs
+		if e.FloorWords != nil {
+			floor = " " + *e.FloorWords
+		}
+	}
+	if e.Scaled {
+		return fmt.Sprintf("scale %.3f = (%.1f - %.1f) / %.1f%s", e.Scale, e.TokenMs, e.OtherMs, base, floor)
+	}
+	return fmt.Sprintf("not scaled: %.1f ms alone%s fits the %.1f ms token", base, floor, e.TokenMs)
+}
+
 // isoRoleTable is an isolated run's per-role table: what was measured alone (µs per call, GB/s, the share of
 // peak) and the estimated split of the token. At a narrow page BYTES/CALL goes first, then IDEAL.
 func isoRoleTable(roles []seam.RoleLoss) string {
@@ -776,11 +793,7 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	}
 	if e := l.Estimate; e != nil {
 		b.WriteString("\n" + stHeader.Render("Per role, estimated from isolated kernel times") + "\n" + e.Method + "\n")
-		how := fmt.Sprintf("not scaled: %.1f ms alone fits the %.1f ms token", e.IsolatedSumMs, e.TokenMs)
-		if e.Scaled {
-			how = fmt.Sprintf("scale %.3f = (%.1f - %.1f) / %.1f", e.Scale, e.TokenMs, e.OtherMs, e.IsolatedSumMs)
-		}
-		b.WriteString(stMuted.Render(fmt.Sprintf("EST. columns %s: %s.", e.Label, how)) + "\n")
+		b.WriteString(stMuted.Render(fmt.Sprintf("EST. columns %s: %s.", e.Label, estimateHow(e))) + "\n")
 		b.WriteString(isoRoleTable(l.Roles))
 	} else {
 		b.WriteString("\nWhere " + shown + " loses time, " + deref(l.Source) + ":\n" + roleTable(l.Roles, l.NotAttributedMs))

@@ -201,10 +201,14 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   if not whole or not whole.get("tok_s") or not whole.get("wall_us"): return None
   tokens = whole.get("decode_tokens") or max(1, round(whole["wall_us"] * whole["tok_s"] / 1e6))
   actual: dict[tuple[str, str], dict[str, float]] = {}
+  floor_us = None  # an isolated row's dispatch floor (kernel_timer.less_floor_us): one per trace, read off the rows
   for r in rows:
     if r.get("scope") == "kernel" and r.get("role_source") in ROLE_SOURCES and r.get("role") and r.get("quant"):
-      slot = actual.setdefault((r["role"], r["quant"]), {"us": 0.0, "calls": 0})
+      slot = actual.setdefault((r["role"], r["quant"]), {"us": 0.0, "us_less_floor": 0.0, "calls": 0})
       slot["us"] += float(r["wall_us"]); slot["calls"] += int(r.get("calls", 1))
+      slot["us_less_floor"] += float(r.get("wall_us_less_floor", r["wall_us"]))
+      if r.get("wall_us_less_floor") is not None:
+        floor_us = (r.get("timing") or {}).get("dispatch_floor_us", floor_us)
   out = []
   for c in ceiling_roles:
     got = actual.get((c["role"], c["quant"]))
@@ -213,6 +217,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
     noise = ms < c["floor_ms"] and ms >= c["floor_ms"] * (1 - chip["band"])
     out.append({"role": c["role"], "quant": c["quant"], "ideal_ms": c["floor_ms"], "actual_ms": ms,
                 "lost_ms": 0.0 if noise else ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens,
+                "less_floor_ms": got["us_less_floor"] / tokens / 1000.0 if floor_us is not None else None,
                 "within_noise": noise, "label": AT_LIMIT_NOISE.format(pct=100 * chip["band"]) if noise else None})
   total_lost = sum(max(r["lost_ms"], 0.0) for r in out)
   for r in out: r["share"] = (max(r["lost_ms"], 0.0) / total_lost) if total_lost > 0 else 0.0
@@ -220,7 +225,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   whole_ms = whole["wall_us"] / tokens / 1000.0
   table = {"status": "measured", "source": "measured in tinygrad's runtime", "device": trace.get("target_id"),
            "tokens": tokens, "kernel_ms": whole_ms, "tok_s": whole["tok_s"], "roles": out,
-           "isolated": whole.get("measurement_scope") == "summed_isolated_kernels",
+           "isolated": whole.get("measurement_scope") == "summed_isolated_kernels", "floor_us": floor_us,
            "not_attributed_ms": whole_ms - sum(r["actual_ms"] for r in out), "token_ms": whole.get("token_ms"),
            "unpaired_roles": list(trace.get("unpaired_roles") or []), "band": chip}
   if reason := refusal(table, limit_ms):

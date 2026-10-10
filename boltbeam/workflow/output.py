@@ -46,9 +46,31 @@ def _missing_runner_outputs(primitive:dict[str, Any], timing:dict[str, Any]) -> 
   return missing
 
 
+def measured_line(report:dict[str, Any], res:dict[str, Any], measure:dict[str, Any]) -> str | None:
+  """The run's measured status in one line, from measure_status.json and the results: "measured, in-model (nsys):
+  7 of 7 weight roles timed". None when the run measured nothing; the analysis report's route status is then the
+  status to show."""
+  if measure.get("status") != "measured":
+    return None
+  from boltbeam.collectors import engine_kernels
+  cap = measure.get("capture") or {}
+  label = (cap.get("measurement") or {}).get("label") or cap.get("method") or "whole step"
+  method = cap.get("method")  # the vendor tool is named beside "in-model"; the kernel timer's label already says itself
+  how = f"{label} ({method})" if method and method != engine_kernels.METHOD and method not in label else label
+  roles = (res.get("loss") or {}).get("roles") or []
+  total = report.get("role_count") or len(roles)
+  per_role = f": {len(roles)} of {total} weight roles timed" if roles else ": the whole step only, no per-role time"
+  return f"measured, {how}{per_role}"
+
+
 def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str, Any],
                 plan:dict[str, Any], primitive:dict[str, Any], timing:dict[str, Any],
-                runner:dict[str, Any], probe:dict[str, Any] | None = None, measure:dict[str, Any] | None = None) -> str:
+                runner:dict[str, Any], res:dict[str, Any] | None = None, measure:dict[str, Any] | None = None) -> str:
+  from boltbeam.workflow.screen import summary_text
+  res, measure = res or {}, measure or {}
+  probe = res.get("probe")
+  measured = measured_line(report, res, measure)
+  roles = (res.get("loss") or {}).get("roles") or []
   lines = [
     f"# BoltBeam Run Summary: {manifest.get('model_id', profile.get('model_id', 'unknown'))}",
     "",
@@ -57,13 +79,16 @@ def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str
     f"- Target: `{manifest.get('target_id', 'unknown')}`",
     f"- Workload: `{manifest.get('workload', 'unknown')}`",
     f"- Architecture: `{profile.get('architecture_class', 'unknown')}`",
-    f"- Analysis status: `{report.get('status', 'not_analyzed')}`",
+    # a run that measured says so; the analysis report's status is the route policy's (no kernel compared yet)
+    f"- Measurement: {measured}" if measured else f"- Analysis status: `{report.get('status', 'not_analyzed')}`",
     "",
     "## Next Step",
     "",
   ]
   lines.append(next_step(report, plan, probe, measure))  # the one ladder (report/html.py), the same words everywhere
-  if timing:
+  if roles:  # the measured per-role table, the same text the screen and the TUI print (screen.summary_text)
+    lines += ["", "## Measured", "", "```", summary_text(res).rstrip(), "```"]
+  if timing and not roles:  # the whole-step profile's buckets say something only before a per-role table exists
     lines += ["", "## Timing Profile", ""]
     lines.append(f"- Dominant bucket: `{timing.get('dominant_timing_bucket', 'timing_inconclusive')}`")
     for action in timing.get("next_actions", [])[:3]:
@@ -82,10 +107,16 @@ def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str
   regimes = primitive.get("quant_gemv_regimes", [])
   if regimes:
     lines += ["", "## Quant GEMV Regimes", ""]
-    for row in regimes[:12]:
-      lines.append(_regime_label(row))
-    if len(regimes) > 12:
-      lines.append(f"- ... {len(regimes) - 12} more regimes in `primitive_profile.json`")
+    absent = (probe or {}).get("absent") or {}
+    only_missing = all(r.get("classification") == "inconclusive" and r.get("visible_bottleneck") == "missing_evidence" for r in regimes)
+    if only_missing and absent:  # the probe's own record says this GPU never gives those fields: one line, not a row per role
+      lines.append(f"- {len(regimes)} roles probed, none classified: the regime needs fields this GPU does not report "
+                   f"({'; '.join(sorted(set(absent.values())))}). The measured table above is the per-role result.")
+    else:
+      for row in regimes[:12]:
+        lines.append(_regime_label(row))
+      if len(regimes) > 12:
+        lines.append(f"- ... {len(regimes) - 12} more regimes in `primitive_profile.json`")
   lines += ["", "## Artifacts", ""]
   for artifact in manifest.get("artifacts", []):
     lines.append(f"- `{artifact}`")
@@ -174,7 +205,7 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   from boltbeam.workflow.screen import results as screen_results
   res = screen_results(out)
   measure = _load_optional(out, "measure_status.json")
-  (out / "summary.md").write_text(_summary_md(manifest, profile, report, plan, primitive, timing, runner, res.get("probe"), measure),
+  (out / "summary.md").write_text(_summary_md(manifest, profile, report, plan, primitive, timing, runner, res, measure),
                                   encoding="utf-8")
   (out / "rollback.md").write_text(_rollback_md(policy), encoding="utf-8")
   final = update_manifest(out, stage="output", artifacts=list(OUTPUT_ARTIFACTS))

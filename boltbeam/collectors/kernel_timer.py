@@ -16,10 +16,17 @@ launches with `samples` too: there is no second warm-and-time loop in the tree. 
 Flushing: before each timed sample a kernel sweeps a buffer larger than the chip's last-level cache, so the timed
 kernel reads its weights from DRAM. The sizes are per backend (FLUSH): 64 MiB on Apple (the system level cache),
 256 MiB on NVIDIA (a 5090's L2 is 96 MiB; a copy-engine copy does not evict it, a kernel does). The sweep READS on
-Apple: a store leaves dirty lines that drain into DRAM during the next kernel, about 60 us per launch on an M4,
-which made a 2.4 MB kernel 2 to 4 times slower and a 28 MB kernel 20% slower than inside the model
-(docs/in-model-vs-generic-m4-20261010.md). A read evicts without that. On NVIDIA the sweep still STORES: the read
-sweep has not been measured on a 5090 yet. Either way the weight is evicted, whatever its size.
+both: a store leaves dirty lines that drain into DRAM during the next kernel. On an M4 that was a fixed cost of about
+60 us per launch, which made a 2.4 MB kernel 2 to 4 times slower and a 28 MB kernel 20% slower than inside the model
+(docs/in-model-vs-generic-m4-20261010.md). On a 5090 the cost grew with the bytes the kernel pulled through the L2:
+7 to 12% on the 3 to 41 MB roles and 22 us on lm_head (docs/in-model-vs-generic-rtx5090-20261010.md). A read evicts
+without that: the sum of the read-sweep times, less the dispatch floor, lands within 4% of the engine's own token on
+both chips. "No flush" is impossible by design: a 96 MiB L2 makes every weight under it an L2 hit between warmup and
+sample (117 to 149% of DRAM peak on the 5090), and that is not the number a model sees.
+
+The dispatch floor (an empty kernel between the same two timestamps) is measured beside every row and recorded as
+timing.dispatch_floor_us. It is never subtracted silently: a row keeps us_per_call as measured and carries
+us_per_call_less_floor (less_floor_us, the one rule) for the tie-out, which says when it uses it.
 """
 from __future__ import annotations
 
@@ -40,11 +47,21 @@ kernel void sweep(device const float* b [[buffer(0)]], device float* o [[buffer(
   if (b[i] == 12345.0f) o[0] = 1.0f; }
 kernel void empty(device float* b [[buffer(0)]], uint i [[thread_position_in_grid]]) { if (i == 0xFFFFFFFF) b[0] = 0.0f; }
 """},
-  "CUDA": {"bytes": 256 << 20, "kernel": "flush", "mode": "store", "empty": "empty", "threads": 256, "source": """
-extern "C" __global__ void flush(float* b) { unsigned i = blockIdx.x * blockDim.x + threadIdx.x; b[i] = b[i] * 0.5f + 1.0f; }
+  "CUDA": {"bytes": 256 << 20, "kernel": "sweep", "mode": "read", "empty": "empty", "threads": 256, "source": """
+extern "C" __global__ void sweep(const float* b, float* o) {
+  unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (b[i] == 12345.0f) o[0] = 1.0f; }
 extern "C" __global__ void empty(float* b) { if (blockIdx.x * blockDim.x + threadIdx.x == 0xFFFFFFFFu) b[0] = 0.0f; }
 """},
 }
+
+
+def less_floor_us(us:float, floor_us:float | None) -> float | None:
+  """A launch's time less the dispatch floor measured beside it, never below 0; None without a floor. The one rule
+  for every "less the floor" number: the row writes it, the tie-out reads it and says so."""
+  if floor_us is None:
+    return None
+  return max(0.0, us - floor_us)
 
 
 def bridge_for(backend:str, **kw:Any):

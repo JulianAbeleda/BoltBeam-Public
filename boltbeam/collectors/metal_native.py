@@ -179,15 +179,33 @@ def _percentile(values:list[float], q:float) -> float:
   return ordered[min(len(ordered) - 1, max(0, round(q * (len(ordered) - 1))))]
 
 
-def _absent(probe_quant:str) -> dict[str, str]:
-  why = "Metal reports no per-dispatch hardware counters without Instruments"
-  return {
-    "latency_concurrency.memory_latency_ns": why, "latency_concurrency.active_waves": why,
-    "latency_concurrency.in_flight_groups": why, "latency_concurrency.occupancy_pct": why,
+# What each backend's probe cannot report, by the field the full-probe schema asks for. Said in the row's `absent`
+# so the next-step ladder never asks this GPU for it (report/html.py next_step).
+_ABSENT = {
+  "Metal": {
+    "counters": "Metal reports no per-dispatch hardware counters without Instruments",
     "isa.instruction_histogram": "Metal does not export the compiled AGX ISA",
     "isa.vector_load_bits": "the compiled load width is not visible; the source loads are in kernel.source",
     "resources.registers": "MTLComputePipelineState does not report registers",
     "resources.scratch_bytes": "MTLComputePipelineState does not report scratch",
+  },
+  "CUDA": {
+    "counters": "the CUDA bridge reads no per-dispatch hardware counters (that is Nsight Compute's)",
+    "isa.instruction_histogram": "the cubin's SASS is not disassembled by BoltBeam",
+    "isa.vector_load_bits": "the compiled load width is not visible; the source loads are in kernel.source",
+    "resources.registers": "the CUDA bridge does not read cuFuncGetAttribute(NUM_REGS)",
+    "resources.scratch_bytes": "the CUDA bridge does not read cuFuncGetAttribute(LOCAL_SIZE_BYTES)",
+  },
+}
+
+
+def _absent(probe_quant:str, backend:str = "Metal") -> dict[str, str]:
+  words = _ABSENT.get(backend) or {k: f"{backend} is not read by BoltBeam's probe" for k in _ABSENT["Metal"]}
+  why = words["counters"]
+  return {
+    "latency_concurrency.memory_latency_ns": why, "latency_concurrency.active_waves": why,
+    "latency_concurrency.in_flight_groups": why, "latency_concurrency.occupancy_pct": why,
+    **{k: v for k, v in words.items() if k != "counters"},
   }
 
 
@@ -233,7 +251,7 @@ def measure_probe(bridge, flusher, probe:dict[str, Any], model:pathlib.Path, dat
     "resources": {"lds_bytes": got["pipeline"]["static_threadgroup_memory_bytes"]},
     "kernel": gemv.facts(got, spec),
     "timed_by": spec.label,
-    "absent": _absent(quant),
+    "absent": _absent(quant, backend),
   })
   return row
 
@@ -331,7 +349,7 @@ def collect_timing_trace(run:pathlib.Path, evidence:dict[str, Any], *, llama_ben
   progress.report(0, parts)
   for ctx in contexts:
     say(f"decode at depth {ctx}: llama-bench")
-    bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx))
+    bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), cwd=run)
     progress.report(len(bench), parts)
   from boltbeam.workflow.screen import run_bandwidth
   peak_gbs, peak_source = run_bandwidth(run, facts["target"])

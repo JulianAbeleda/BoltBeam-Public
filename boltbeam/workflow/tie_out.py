@@ -41,7 +41,7 @@ REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slo
 NOT_SPLIT_LABEL = "kernels and gaps, not split"
 ESTIMATE_LABEL = "(estimate from isolated times)"
 OTHER_HOW_FLOOR = "at least: KV reads at the limit; attention, norms, launches and gaps were not timed"
-OTHER_HOW_DIFF = "difference: the token less the kernels timed alone; attention, norms, launches and gaps were not timed"
+OTHER_HOW_DIFF = "difference: the token less the kernels timed alone{floor}; attention, norms, launches and gaps were not timed"
 ROLE_SOURCE_ISOLATED, ROLE_SOURCE_IN_MODEL = "isolated", "in_model"
 
 # what a kernel that is not a weight role is, by words in its name; for labels only, never for attribution
@@ -259,34 +259,51 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
 
 
 def scale_roles(roles:list[dict[str, Any]], weight_ms:float | None, isolated_sum_ms:float) -> tuple[list[dict[str, Any]], float | None]:
-  """An isolated run's estimated split: each role's isolated time scaled by weight_ms / isolated sum (1.0 when the
-  sum fits the token). est_ms and est_lost_ms carry estimate: True. The isolated times stay as they are, measured."""
+  """An isolated run's estimated split: each role's isolated time, less the dispatch floor where the rows carry one
+  (less_floor_ms), scaled by weight_ms / that sum (1.0 when the sum fits the token). est_ms and est_lost_ms carry
+  estimate: True. The isolated times stay as they are, measured."""
   if not weight_ms or not isolated_sum_ms:
     return roles, None
   k = weight_ms / isolated_sum_ms
-  return [{**r, "est_ms": r["actual_ms"] * k, "est_lost_ms": r["actual_ms"] * k - r["ideal_ms"], "estimate": True}
+  base = lambda r: r["less_floor_ms"] if r.get("less_floor_ms") is not None else r["actual_ms"]  # noqa: E731
+  return [{**r, "est_ms": base(r) * k, "est_lost_ms": base(r) * k - r["ideal_ms"], "estimate": True}
           for r in roles], k
+
+
+def floor_words(floor_us:float | None) -> str:
+  """"less the 3.9 µs dispatch floor per launch", or nothing when the rows carry no floor."""
+  return f"less the {floor_us:.1f} µs dispatch floor per launch" if floor_us is not None else ""
 
 
 def _isolated(out:dict[str, Any], table:dict[str, Any], token:float, limit:float, context:float) -> dict[str, Any]:
   """The tie-out for kernels timed alone. Only what is measured is tied out: the ideal and the token, with their
   difference as one line. No floor or over-count refusal runs. The split by role is an estimate, said once,
   labelled. The timer times weight kernels only, so the rest of the token (attention, norms, launches, gaps) is
-  never 0. When the isolated sum fits inside the token the times stand as they are and the rest is the
-  difference. When it over-counts (alone and cold can be slower than inside the token) the times are scaled
-  down to the token less the KV reads at the limit, the one part of the rest the roofline knows."""
+  never 0. The estimate takes each row's time less the dispatch floor the run measured (a 4 µs event floor on a
+  5090 is 30 to 130% of a small role's time; on an M3 2.4 µs barely moves it): the measured times stay as measured
+  and the words say "less the N µs dispatch floor" wherever the estimate uses them. When that sum fits inside the
+  token the times stand and the rest is the difference. When it over-counts (alone and cold can be slower than
+  inside the token) the times are scaled down to the token less the KV reads at the limit, the one part of the rest
+  the roofline knows."""
+  floor_us = table.get("floor_us")
+  base = (lambda r: r["less_floor_ms"]) if floor_us is not None else (lambda r: r["actual_ms"])
   weight_iso = sum(r["actual_ms"] for r in table["roles"])
+  weight_base = sum(base(r) for r in table["roles"])
   other_floor = max(0.0, limit - sum(r["ideal_ms"] for r in table["roles"]))
   room = max(0.0, token - other_floor)
-  scale = min(1.0, room / weight_iso) if weight_iso else None
-  weight_est = weight_iso * scale if scale is not None else None
+  scale = min(1.0, room / weight_base) if weight_base else None
+  weight_est = weight_base * scale if scale is not None else None
   out["show_both"] = True
   out["lines"] = [{"label": f"limit at context {context:.0f} (ideal)", "ms": limit, "how": "derived"},
                   {"label": NOT_SPLIT_LABEL, "ms": token - limit, "how": "difference"}]
   scaled = scale is not None and scale < 1.0
+  floor = f" {floor_words(floor_us)}" if floor_us is not None else ""  # in weight_how; other_how formats its own
   out["estimate"] = {"estimate": True, "label": ESTIMATE_LABEL, "scale": scale, "isolated_sum_ms": weight_iso, "token_ms": token,
+                     "floor_us": floor_us, "floor_words": floor_words(floor_us) or None,
+                     "isolated_sum_less_floor_ms": weight_base if floor_us is not None else None,
                      "weight_ms": weight_est, "scaled": scaled,
-                     "weight_how": "upper bound: the token less the KV-read floor" if scaled else "as timed alone, fits inside the token",
+                     "weight_how": (f"upper bound: the token less the KV-read floor" if scaled else
+                                    f"as timed alone{floor}, fits inside the token"),
                      "other_ms": token - weight_est if weight_est is not None else None,
-                     "other_how": OTHER_HOW_FLOOR if scaled else OTHER_HOW_DIFF}
+                     "other_how": OTHER_HOW_FLOOR if scaled else OTHER_HOW_DIFF.format(floor=f", {floor_words(floor_us)}" if floor_us is not None else "")}
   return out

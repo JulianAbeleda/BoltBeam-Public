@@ -12,7 +12,8 @@ import (
 
 // An isolated run (each kernel timed alone by BoltBeam's kernel timer, qwen3-8b on the M3, run 005): its sum
 // (63.7 ms) is more than the token (55.1 ms). That is expected, so nothing says "Not tied out"; the screen says
-// how it was measured and labels the split by role an estimate. Golden at 80 and 110 columns.
+// how it was measured and labels the split by role an estimate. The estimate takes each row's time less the
+// 1.9 µs dispatch floor and says so beside the measured sum. Golden at 80 and 110 columns.
 func TestIsolatedLossSaysHowItWasMeasured(t *testing.T) {
 	var res seam.Results
 	load(t, "results-isolated", &res)
@@ -23,12 +24,13 @@ func TestIsolatedLossSaysHowItWasMeasured(t *testing.T) {
 		got := ansi.Strip(wrapText(lossBody(res.Loss), cols-4))
 		for _, want := range []string{
 			"Each kernel timed alone by BoltBeam's kernel timer, cold (the cache swept by a read",
-			"Sum alone: 54.3 ms; the real token: 66.0 ms.",
+			"Sum alone: 54.3 ms, less the 1.9 µs dispatch floor per launch: 53.8 ms (the estimate uses this); the real token: 66.0 ms.",
 			"Per role, estimated from isolated kernel times",
 			"EST. ms IN TOKEN", "(estimate from isolated times)",
 			"kernels and gaps, not split", "limit at context 1 (ideal)",
-			"Estimated split (isolated): weight kernels 54.3 ms, other and gaps 11.7 ms.",
-			"(difference: the token less the kernels timed alone; attention, norms, launches and gaps were not timed)",
+			"Estimated split (isolated): weight kernels 53.8 ms, other and gaps 12.2 ms.",
+			"(difference: the token less the kernels timed alone, less the 1.9 µs dispatch floor per launch; attention, norms, launches and gaps were not timed)",
+			"not scaled: 53.8 ms alone less the 1.9 µs dispatch floor per launch fits the 66.0 ms token",
 			"Per-role source: isolated (BoltBeam kernel timer, llama.cpp kernels",
 			"slow kernel", "at the limit",
 		} {

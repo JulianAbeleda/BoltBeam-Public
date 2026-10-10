@@ -64,16 +64,19 @@
     "cross_check": null,
     "estimate": {
       "estimate": true,
+      "floor_us": 1.8541468307375908,
+      "floor_words": "less the 1.9 \u00b5s dispatch floor per launch",
+      "isolated_sum_less_floor_ms": 53.78096201457083,
       "isolated_sum_ms": 54.25006116274744,
       "label": "(estimate from isolated times)",
-      "method": "Each kernel timed alone by BoltBeam's kernel timer, cold (the cache swept by a read before every call), outside the engine: llama.cpp's own kernel_mul_mv_q4_K_f32 etc., from the installed ggml source. Alone and cold is slower than inside the token, where the cache is warm and launches overlap. Sum alone: 54.3 ms; the real token: 66.0 ms. Measurement: generic (kernel timer), chosen in Setup.",
-      "other_how": "difference: the token less the kernels timed alone; attention, norms, launches and gaps were not timed",
-      "other_ms": 11.72635147801654,
+      "method": "Each kernel timed alone by BoltBeam's kernel timer, cold (the cache swept by a read before every call), outside the engine: llama.cpp's own kernel_mul_mv_q4_K_f32 and others, from the installed ggml source. Alone and cold is slower than inside the token, where the cache is warm and launches overlap. Sum alone: 54.3 ms, less the 1.9 \u00b5s dispatch floor per launch: 53.8 ms (the estimate uses this); the real token: 66.0 ms. Measurement: generic (kernel timer), chosen in Setup.",
+      "other_how": "difference: the token less the kernels timed alone, less the 1.9 \u00b5s dispatch floor per launch; attention, norms, launches and gaps were not timed",
+      "other_ms": 12.19545062619315,
       "scale": 1.0,
       "scaled": false,
       "token_ms": 65.97641264076398,
-      "weight_how": "as timed alone, fits inside the token",
-      "weight_ms": 54.25006116274744
+      "weight_how": "as timed alone less the 1.9 \u00b5s dispatch floor per launch, fits inside the token",
+      "weight_ms": 53.78096201457083
     },
     "evidence": {
       "common": [
@@ -157,8 +160,8 @@
         "actual_ms": 23.34599755704403,
         "best_found": null,
         "calls_per_token": 72.0,
-        "est_lost_ms": 2.5003280984127727,
-        "est_ms": 23.34599755704403,
+        "est_lost_ms": 2.366829526599666,
+        "est_ms": 23.212498985230923,
         "estimate": true,
         "evidence": [
           {
@@ -180,6 +183,7 @@
         "gbs": 87.41502842247348,
         "ideal_ms": 20.845669458631257,
         "label": null,
+        "less_floor_ms": 23.212498985230923,
         "lost_ms": 2.5003280984127727,
         "mb_per_call": 28.344320000000003,
         "pct_peak": 89.3,
@@ -196,8 +200,8 @@
         "actual_ms": 8.194508962333202,
         "best_found": null,
         "calls_per_token": 72.0,
-        "est_lost_ms": 1.2419359694833547,
-        "est_ms": 8.194508962333202,
+        "est_lost_ms": 1.1084373976702482,
+        "est_ms": 8.061010390520096,
         "estimate": true,
         "evidence": [
           {
@@ -219,6 +223,7 @@
         "gbs": 83.06256044489069,
         "ideal_ms": 6.952572992849848,
         "label": null,
+        "less_floor_ms": 8.061010390520096,
         "lost_ms": 1.2419359694833547,
         "mb_per_call": 9.453568000000002,
         "pct_peak": 84.8,
@@ -235,8 +240,8 @@
         "actual_ms": 8.527874015271664,
         "best_found": null,
         "calls_per_token": 18.0,
-        "est_lost_ms": 0.9306517067936246,
-        "est_ms": 8.527874015271664,
+        "est_lost_ms": 0.897277063840348,
+        "est_ms": 8.494499372318387,
         "estimate": true,
         "evidence": [
           {
@@ -258,6 +263,7 @@
         "gbs": 87.21611771797578,
         "ideal_ms": 7.597222308478039,
         "label": null,
+        "less_floor_ms": 8.494499372318387,
         "lost_ms": 0.9306517067936246,
         "mb_per_call": 41.320448000000006,
         "pct_peak": 89.1,
@@ -274,8 +280,8 @@
         "actual_ms": 2.197118941694498,
         "best_found": null,
         "calls_per_token": 54.0,
-        "est_lost_ms": 0.8901225780581346,
-        "est_ms": 2.197118941694498,
+        "est_lost_ms": 0.7899986491983046,
+        "est_ms": 2.096995012834668,
         "estimate": true,
         "evidence": [
           {
@@ -297,6 +303,7 @@
         "gbs": 58.2376045155373,
         "ideal_ms": 1.3069963636363635,
         "label": null,
+        "less_floor_ms": 2.096995012834668,
         "lost_ms": 0.8901225780581346,
         "mb_per_call": 2.3695360000000005,
         "pct_peak": 59.5,
@@ -313,8 +320,8 @@
         "actual_ms": 5.671124439686537,
         "best_found": null,
         "calls_per_token": 18.0,
-        "est_lost_ms": 0.45970707502872266,
-        "est_ms": 5.671124439686537,
+        "est_lost_ms": 0.426332432075446,
+        "est_ms": 5.63774979673326,
         "estimate": true,
         "evidence": [
           {
@@ -336,6 +343,7 @@
         "gbs": 89.96412711906574,
         "ideal_ms": 5.211417364657814,
         "label": null,
+        "less_floor_ms": 5.63774979673326,
         "lost_ms": 0.45970707502872266,
         "mb_per_call": 28.344320000000003,
         "pct_peak": 91.9,
@@ -352,8 +360,8 @@
         "actual_ms": 0.9056248236447573,
         "best_found": null,
         "calls_per_token": 18.0,
-        "est_lost_ms": 0.2711422904476173,
-        "est_ms": 0.9056248236447573,
+        "est_lost_ms": 0.23776764749434065,
+        "est_ms": 0.8722501806914806,
         "estimate": true,
         "evidence": [
           {
@@ -375,6 +383,7 @@
         "gbs": 68.58893261119985,
         "ideal_ms": 0.63448253319714,
         "label": null,
+        "less_floor_ms": 0.8722501806914806,
         "lost_ms": 0.2711422904476173,
         "mb_per_call": 3.4508800000000006,
         "pct_peak": 70.1,
@@ -391,8 +400,8 @@
         "actual_ms": 5.407812423072755,
         "best_found": null,
         "calls_per_token": 1.0,
-        "est_lost_ms": 0.19006958344047664,
-        "est_ms": 5.407812423072755,
+        "est_lost_ms": 0.18821543660973905,
+        "est_ms": 5.405958276242018,
         "estimate": true,
         "evidence": [
           {
@@ -414,6 +423,7 @@
         "gbs": 94.45908697213103,
         "ideal_ms": 5.217742839632279,
         "label": null,
+        "less_floor_ms": 5.405958276242018,
         "lost_ms": 0.19006958344047664,
         "mb_per_call": 510.81702400000006,
         "pct_peak": 96.5,
@@ -485,15 +495,18 @@
       "context": 128.0,
       "estimate": {
         "estimate": true,
+        "floor_us": 1.8541468307375908,
+        "floor_words": "less the 1.9 \u00b5s dispatch floor per launch",
+        "isolated_sum_less_floor_ms": 53.78096201457083,
         "isolated_sum_ms": 54.25006116274744,
         "label": "(estimate from isolated times)",
-        "other_how": "difference: the token less the kernels timed alone; attention, norms, launches and gaps were not timed",
-        "other_ms": 11.72635147801654,
+        "other_how": "difference: the token less the kernels timed alone, less the 1.9 \u00b5s dispatch floor per launch; attention, norms, launches and gaps were not timed",
+        "other_ms": 12.19545062619315,
         "scale": 1.0,
         "scaled": false,
         "token_ms": 65.97641264076398,
-        "weight_how": "as timed alone, fits inside the token",
-        "weight_ms": 54.25006116274744
+        "weight_how": "as timed alone less the 1.9 \u00b5s dispatch floor per launch, fits inside the token",
+        "weight_ms": 53.78096201457083
       },
       "isolated": true,
       "kv_ms": 0.19279231869254343,

@@ -643,9 +643,10 @@ def _where(loss:dict[str, Any]) -> str:
     notes.append(f'Tracing slowed the token: {token:.3f} ms here, {t["untraced_ms"]:.3f} ms untraced.')
   if est := t.get("estimate"):
     up, least = ("up to ", "at least ") if est["scaled"] else ("", "")
+    floor = f', {est["floor_words"]}' if est.get("floor_words") else ''
     notes.append(f'Estimated split (isolated): weight kernels {up}{est["weight_ms"]:.1f} ms, other and gaps {least}'
-                 f'{est["other_ms"]:.1f} ms ({_e(est["other_how"])}). Not measured in the token: each weight kernel was timed alone'
-                 + (f', and the times are scaled by {est["scale"]:.3f} to fit the token less that floor.' if est["scaled"] else '.'))
+                 f'{est["other_ms"]:.1f} ms ({_e(est["other_how"])}). Not measured in the token: each weight kernel was timed alone{_e(floor)}'
+                 + (f', and the times are scaled by {est["scale"]:.3f} to fit the token less the KV-read floor.' if est["scaled"] else '.'))
   if t.get("show_both"):
     notes.append(f'The limit is {t["limit_ms_ctx1"]:.3f} ms at context 1 and {t["limit_ms"]:.3f} ms at context {t["context"]:.0f}.')
   body = (f'<p class="muted" style="margin:0 0 10px">ms per token at context {t["context"]:.0f}</p>'
@@ -693,10 +694,9 @@ def _per_role(loss:dict[str, Any]) -> str:
       f'<span class="rtags"><span class="why {REASON_CLASS.get(why, "")}">{_e(why)}</span>{tag}</span></span></summary><div class="rdet">{det}</div></details>')
   t = loss.get("tie_out") or {}
   if est:
-    how = (f'scale {est["scale"]:.3f} = ({est["token_ms"]:.1f} - {est["other_ms"]:.1f}) / {est["isolated_sum_ms"]:.1f}' if est["scaled"]
-           else f'not scaled: {est["isolated_sum_ms"]:.1f} ms alone fits the {est["token_ms"]:.1f} ms token')
+    from boltbeam.workflow.screen import estimate_how
     body = (f'<p class="note">{_e(est["method"])}</p>'
-            f'<p class="muted" style="margin:0 0 10px">est. lost ms per token {_e(est["label"])}, {how}; '
+            f'<p class="muted" style="margin:0 0 10px">est. lost ms per token {_e(est["label"])}, {_e(estimate_how(est))}; '
             f'the bar is filled to the isolated share of peak; open a row for its numbers</p>')
   else:
     body = f'<p class="muted" style="margin:0 0 10px">{_e(loss.get("source") or "")} · lost ms per token, longest first; the bar is filled to the share of the roofline this role reaches; the empty part is its loss; open a row for its numbers</p>'

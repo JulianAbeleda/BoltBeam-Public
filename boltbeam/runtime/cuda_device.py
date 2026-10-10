@@ -12,9 +12,9 @@ No Python CUDA package is needed: libcuda ships with the driver, nvcc with the t
 calls libcuda or nvcc (cuda_bandwidth.py and cubin_launch.py go through it). The ctypes calls sit in _Driver, one
 reviewed boundary; tests pass a fake driver and a fake compiler.
 
-Not run on a GPU yet: built on a Mac against the driver API's documented signatures (the same calls
-cubin_launch.py made before this module existed), unit-tested with fakes. The first run on the RTX 5090 is the
-proof; its commands are in docs/kernel-timer.md.
+First run on an RTX 5090 on 2026-10-10 (docs/in-model-vs-generic-rtx5090-20261010.md): the bridge, the events and
+the cubin load worked as built; the symbol matcher needed the prefix rule above, because that mmvq.cu carries a fifth
+template parameter the adapter does not name.
 """
 from __future__ import annotations
 
@@ -104,15 +104,72 @@ def demangle(names:list[str], filt:str | None = None) -> dict[str, str]:
   return {n: (lines[i] if i < len(lines) and lines[i] else n) for i, n in enumerate(names)}
 
 
+def normalise_symbol(name:str) -> str:
+  """A demangled name as the matcher compares it: no spaces, no scalar casts, bools as 0 and 1. cu++filt prints a
+  template's non-type arguments with casts and bools as (bool)0: `mul_mat_vec_q<(ggml_type)12, (int)1, (bool)0,
+  (bool)0, (bool)0>`; the adapter writes `mul_mat_vec_q<(ggml_type)12, 1, false, false>`."""
+  s = re.sub(r"\s+", "", name)
+  s = re.sub(r"\((?:int|unsigned|long|short|char|bool)\)", "", s)
+  return s.replace("true", "1").replace("false", "0")
+
+
+def template_arity(name:str) -> int | None:
+  """How many template arguments a demangled name carries at its top level; None for a plain name."""
+  if "<" not in name:
+    return None
+  depth, count, inner = 0, 0, name[name.index("<") + 1:]
+  for ch in inner:
+    if ch == "<" or ch == "(":
+      depth += 1
+    elif ch == ">" or ch == ")":
+      if depth == 0:
+        break
+      depth -= 1
+    elif ch == "," and depth == 0:
+      count += 1
+  return count + 1
+
+
 def match_symbol(wanted:str, demangled:dict[str, str]) -> str | None:
-  """The mangled symbol whose demangled name is `wanted`, spaces ignored, with or without the parameter list."""
-  norm = lambda s: re.sub(r"\s+", "", s)  # noqa: E731
-  w = norm(wanted)
-  for mangled, plain in demangled.items():
-    p = norm(plain)
-    if mangled == wanted or p == w or w in p:
-      return mangled
-  return None
+  """The mangled symbol for `wanted`, a plain name or a template instantiation, compared on the normalised names
+  (normalise_symbol), with or without the parameter list. A template instantiation also matches as a prefix:
+  `f<a, b>` matches `f<a, b, c>`, so an engine source with one more defaulted template parameter (mmvq.cu's
+  `halve_iters`) is still found; the caller records which symbol was matched."""
+  w = normalise_symbol(wanted)
+  prefix = w[:-1] + "," if w.endswith(">") else None
+  exact = next((m for m, plain in demangled.items() if m == wanted or normalise_symbol(plain) == w or w in normalise_symbol(plain)), None)
+  if exact or prefix is None:
+    return exact
+  # several instantiations can share the prefix (mmvq.cu's halve_iters true and false): the smallest normalised
+  # name is taken, the same one every run, which for bool and int tails is the all-false, all-zero one
+  near = sorted(((normalise_symbol(plain), m) for m, plain in demangled.items() if prefix in normalise_symbol(plain)))
+  return near[0][1] if near else None
+
+
+def kernel_name(plain:str) -> str:
+  """A demangled symbol without its return type and parameter list: `void f<(T)1, (bool)0>(void const*)` is
+  `f<(T)1, (bool)0>`. The cut is after the template's closing `>`, not at the first `(`, which a cast inside the
+  template arguments would hit."""
+  name = re.sub(r"^void\s+", "", plain)
+  if "<" not in name:
+    return name.split("(", 1)[0]
+  depth = 0
+  for i, ch in enumerate(name):
+    if ch == "<":
+      depth += 1
+    elif ch == ">":
+      depth -= 1
+      if depth == 0:
+        return name[:i + 1]
+  return name
+
+
+def kernel_candidates(wanted:str, demangled:dict[str, str], limit:int = 8) -> list[str]:
+  """The kernels in a module that share `wanted`'s name before any `<`, for an error message; compiler helpers
+  ($__internal...) are left out. Sorted, at most `limit`."""
+  stem = wanted.split("<", 1)[0].strip()
+  names = sorted({kernel_name(plain) for plain in demangled.values() if "$__internal" not in plain and stem in plain})
+  return names[:limit]
 
 
 class _Driver:
@@ -275,19 +332,26 @@ class Cuda:
 
   def pipeline(self, lib:int, name:str, constants:dict[int, tuple[str, int]] | None = None) -> dict[str, Any]:
     """The kernel by name: an extern "C" name as is, or a template instantiation ("mul_mat_vec_q<(ggml_type)12, 1,
-    false, false>") by its demangled symbol. CUDA has no function constants: an adapter instantiates in source."""
+    false, false>") by its demangled symbol (match_symbol). `symbol` records what was matched: the mangled name and
+    the demangled one, so a row can say which instantiation it timed. CUDA has no function constants: an adapter
+    instantiates in source."""
     if constants:
       raise ValueError("CUDA kernels take no function constants; instantiate the template in the source")
     fn = self.driver.get_function(lib, name)
+    symbol = {"mangled": name, "demangled": name}
     if fn is None:
       symbols = demangle(elf_symbols(self._modules.get(lib, b"")))
       mangled = match_symbol(name, symbols)
       fn = self.driver.get_function(lib, mangled) if mangled else None
       if fn is None:
-        raise RuntimeError(f"CUDA module has no kernel {name!r}; it has {sorted(symbols.values())[:8]}")
+        near = kernel_candidates(name, symbols)
+        raise RuntimeError(f"CUDA module has no kernel {name!r}; " + (f"its kernels of that name: {near}" if near else
+                                                                      f"it has {sorted(symbols.values())[:8]}"))
+      symbol = {"mangled": mangled, "demangled": kernel_name(symbols[mangled])}
     return {"pso": fn, "thread_execution_width": self.driver.attribute(ATTRIBUTES["warp_size"], self.dev) or 32,
             "max_threads_per_threadgroup": self.driver.func_attribute(fn, _CU_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK),
-            "static_threadgroup_memory_bytes": self.driver.func_attribute(fn, _CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES)}
+            "static_threadgroup_memory_bytes": self.driver.func_attribute(fn, _CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES),
+            "symbol": symbol}
 
   def buffer(self, data:bytes | None = None, *, length:int | None = None) -> int:
     n = len(data) if data is not None else int(length or 0)

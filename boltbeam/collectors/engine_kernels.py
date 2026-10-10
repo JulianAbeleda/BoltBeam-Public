@@ -12,7 +12,11 @@ ADAPTERS, one row per (engine, backend):
     ("llama.cpp", "CUDA")    ggml's CUDA backend: mmvq.cu from the llama.cpp source tree; mul_mat_vec_q<type,1,
                              false,false> with the vector quantized to q8_1 the way quantize_q8_1 does. The kernel
                              is `static` in that file: the one word is dropped from the text in memory so the cubin
-                             exports it (recorded). Not yet compiled on a GPU: built against the source, unit-tested.
+                             exports it (recorded). The check's reference reads the q8_1 vector the kernel reads
+                             (dequantized), not the f32 one: against f32 every role misses by 2e-3 to 5e-3, against
+                             q8_1 by 1e-7 (the 5090, 2026-10-10). A source with template parameters past small_k
+                             (mmvq.cu's halve_iters) has them named at their declared defaults, so the instantiation
+                             compiled and the symbol found are one; the matched symbol and a note go on the row.
 tinygrad has no adapter: the fork generates its kernels per shape at run time inside a model graph, so there is no
 shipped source to compile; it keeps its own timing (collectors/tinygrad_role_time.py). Not cheap, so not built.
 
@@ -47,10 +51,12 @@ class NoEngineSource(RuntimeError):
   """The engine's shader source is not on this machine, so its kernels cannot be timed here."""
 
 
-def _reference(quant:str, rows:int, cols:int, weights:bytes, x:list[float]) -> Check:
+def _reference(quant:str, rows:int, cols:int, weights:bytes, x:list[float], words:str | None = None) -> Check:
+  """The check against the pure-Python dot on `x`: the vector as the kernel reads it (f32 on Metal, the dequantized
+  q8_1 vector on CUDA), said in `words`."""
   from boltbeam.collectors import metal_native as native
   return Check(indices=native.check_rows(rows), reference=lambda r: native.reference_row(weights, quant, r, cols, x),
-               rel_tol=native.TOLERANCE)
+               rel_tol=native.TOLERANCE, **({"words": words} if words else {}))
 
 
 # --- llama.cpp on Metal: ggml's Metal backend ------------------------------------------------------------------------
@@ -94,7 +100,49 @@ def _file_record(path:pathlib.Path) -> dict[str, Any]:
     i = parts.index("Cellar")
     version = f"{parts[i + 1]} {parts[i + 2]}" if len(parts) > i + 2 else None
   return {"path": str(path), "real_path": str(real), "version": version, "bytes": real.stat().st_size,
-          "sha256": hashlib.sha256(real.read_bytes()).hexdigest()}
+          "sha256": hashlib.sha256(real.read_bytes()).hexdigest(), "mtime": _mtime(real)}
+
+
+def _mtime(path:pathlib.Path) -> str:
+  import datetime
+  return datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def source_vs_binary(source:dict[str, Any], bench:str | None) -> dict[str, Any]:
+  """The source checkout the adapter compiled against (its commit and the file's mtime) beside the traced binary
+  (path, sha256, mtime): recorded, not judged. Nothing here proves the binary was built from that source; the
+  record lets a reader see when they differ (a 2026-08-20 binary against a 2026-10-05 source on the 5090)."""
+  out = dict(source)
+  if bench and pathlib.Path(bench).is_file():
+    real = pathlib.Path(bench).resolve()
+    out["binary"] = {"path": str(bench), "bytes": real.stat().st_size, "sha256": hashlib.sha256(real.read_bytes()).hexdigest(),
+                     "mtime": _mtime(real)}
+  else:
+    out["binary"] = None
+  return out
+
+
+def symbol_note(wanted:str, symbol:dict[str, str] | None, source:dict[str, Any],
+                defaulted:list[dict[str, Any]] | None = None) -> str | None:
+  """A note for a row whose kernel is not simply the four-parameter instantiation the adapter describes: the engine's
+  source declares template parameters past small_k (kept at their defaults, named), or the symbol was matched as a
+  prefix of a longer name. The adapter's geometry is its reading of that source; whether the engine's own launch on
+  this GPU picks the same values is not mirrored. None when there is nothing to say."""
+  from boltbeam.runtime.cuda_device import template_arity
+  binary = source.get("binary") or {}
+  when = (f"; the traced binary is from {binary['mtime'][:10]}, the source file from {source['mtime'][:10]}"
+          if binary.get("mtime") and source.get("mtime") else "")
+  if defaulted:
+    kept = ", ".join(f"{d['name']} = {d['value']}" for d in defaulted)
+    return (f"the source's mul_mat_vec_q has {len(defaulted)} template parameter{'s' if len(defaulted) > 1 else ''} past small_k, "
+            f"kept at the declared default ({kept}); the adapter's geometry is read from this source, and whether the engine's "
+            f"launch on this GPU picks another value is not mirrored{when}")
+  if not symbol or template_arity(symbol["demangled"]) == template_arity(wanted):
+    return None
+  return (f"the source instantiates {symbol['demangled']} ({template_arity(symbol['demangled'])} template parameters); the "
+          f"adapter named {wanted} ({template_arity(wanted)}) and matched it as a prefix, the rest at their defaults. "
+          f"The adapter's geometry is read from this source; whether the traced binary launches the same instantiation is "
+          f"not checked{when}")
 
 
 GGML_LIBRARY_MARK = b"#ifndef GGML_METAL_IMPL"  # every embedded library begins with ggml-metal-impl.h
@@ -206,6 +254,24 @@ def ggml_cuda_source_dir() -> dict[str, Any]:
                        f"Set {GGML_CUDA_ENV} to llama.cpp/ggml/src/ggml-cuda")
 
 
+def template_parameters(text:str) -> list[tuple[str, str, str | None]]:
+  """The kernel's template parameters as the source declares them, (type, name, default): the `template <...>`
+  line right before `__global__ void mul_mat_vec_q(`. The adapter sets the first four (type, ncols_dst, has_fusion,
+  small_k) and names any further ones at their declared defaults, so the instantiation it compiles and the symbol
+  it looks for are the same one, whatever the source's arity."""
+  m = re.search(r"template\s*<([^>]*)>\s*(?:__launch_bounds__\([^\n]*\)\s*)?(?:static\s+)?__global__\s+void\s+mul_mat_vec_q\(", text)
+  if not m:
+    return []
+  out = []
+  for part in m.group(1).split(","):
+    decl, _, default = part.partition("=")
+    words = decl.split()
+    if len(words) < 2:
+      continue
+    out.append((" ".join(words[:-1]), words[-1], default.strip() or None))
+  return out
+
+
 def ggml_cuda_text(src_dir:pathlib.Path) -> str:
   """mmvq.cu as the engine ships it, with the kernel's `static` dropped so the cubin exports it (LINKAGE_NOTE)."""
   text = (pathlib.Path(src_dir) / "mmvq.cu").read_text()
@@ -261,6 +327,19 @@ def quantize_q8_1(x:list[float]) -> bytes:
   return bytes(out)
 
 
+def dequantize_q8_1(y:bytes, n:int) -> list[float]:
+  """The first n values of a q8_1 vector as the kernel sees them: d x q per block (the half-precision d, the int8 q).
+  The reference for the CUDA check reads this, not the f32 vector, because the kernel does."""
+  out:list[float] = []
+  for b in range(0, len(y), Q8_1_BYTES):
+    d = struct.unpack_from("<e", y, b)[0]
+    out += [d * q for q in struct.unpack_from("<32b", y, b + 4)]
+  return out[:n]
+
+
+Q8_1_WORDS = "pure-Python dequantize and dot, x quantized to q8_1 as the kernel reads it"
+
+
 def ggml_cuda_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:bytes, x:list[float]) -> KernelSpec:
   """ggml's CUDA mul_mat_vec_q for one weight of rows x cols against one vector, every parameter as
   ggml_cuda_mul_mat_vec_q passes it (ids null, no fusion, one channel, one sample)."""
@@ -270,8 +349,13 @@ def ggml_cuda_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:
   vecdotq, common = (src_dir / "vecdotq.cuh").read_text(), (src_dir.parent / "ggml-common.h").read_text()
   geo = ggml_cuda_geometry(text, vecdotq, common, quant, rows, cols)
   gt = GGML_TYPE[quant]
-  inst = f"mul_mat_vec_q<(ggml_type){gt}, 1, false, {'true' if geo['small_k'] else 'false'}>"
-  keep = (f"mul_mat_vec_q<GGML_TYPE_{quant}, 1, false, {'true' if geo['small_k'] else 'false'}>")
+  params = template_parameters(text)
+  extra = params[4:]  # parameters past the four the adapter sets, at their declared defaults (mmvq.cu's halve_iters)
+  if any(d is None for _, _, d in extra):
+    raise NoEngineSource("mmvq.cu's mul_mat_vec_q has a template parameter without a default past small_k: this ggml-cuda is not the version the adapter reads")
+  tail = "".join(f", {d}" for _, _, d in extra)
+  inst = f"mul_mat_vec_q<(ggml_type){gt}, 1, false, {'true' if geo['small_k'] else 'false'}{tail}>"
+  keep = (f"mul_mat_vec_q<GGML_TYPE_{quant}, 1, false, {'true' if geo['small_k'] else 'false'}{tail}>")
   source = text + f"\n// BoltBeam: instantiate the kernel the engine runs for {quant}, one vector\n" \
                   f"static const void* const bb_keep_{quant.lower()} = (const void*) {keep};\n"
   y = quantize_q8_1(x)
@@ -286,10 +370,12 @@ def ggml_cuda_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:
           u32(0)]  # ids_stride
   return KernelSpec(label=f"llama.cpp {inst}", adapter="llama.cpp", source=source, kernel=inst,
                     args=args, grid=geo["grid"], block=geo["block"], bytes_read=len(weights),
-                    check=_reference(quant, rows, cols, weights, x),
+                    check=_reference(quant, rows, cols, weights, dequantize_q8_1(y, cols), Q8_1_WORDS),
                     record={**{k: geo[k] for k in ("vdr", "qi", "nwarps", "small_k", "rows_per_block")},
                             "threadgroups": geo["grid"][0], "threads_per_threadgroup": list(geo["block"]), "rule": CUDA_RULE,
-                            "linkage": LINKAGE_NOTE, "includes": cuda_includes(src_dir), "bytes_q8_1_vector": len(y)})
+                            "linkage": LINKAGE_NOTE, "includes": cuda_includes(src_dir), "bytes_q8_1_vector": len(y),
+                            "template_parameters": [{"type": t, "name": n, "default": d} for t, n, d in params],
+                            "defaulted": [{"name": n, "value": d} for _, n, d in extra]})
 
 
 # --- the adapters, one row per (engine, backend) --------------------------------------------------------------------------
@@ -368,6 +454,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
   try:
     flusher = kernel_timer.Flusher(bridge, backend)
     floor_us = flusher.floor_us()
+    source = source_vs_binary(setup["source"], bench)
     say(f"compiling {setup['engine']} shaders: {setup['source']['path']}")
     libraries:dict[str, int] = {}
     for i, r in enumerate(roles, start=1):
@@ -394,16 +481,22 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
       x = boltbeam_gemv.vector(f"{r['role']}:{quant}", cols)
       spec = setup["spec"](setup, quant, rows, cols, weights, x)
       got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries)
+      symbol = got["pipeline"].get("symbol")
       row.update(kernel=spec.kernel, tensor=tensor, bytes=size, correctness=got["correctness"], timed_by=f"{WORDS}: {spec.label}",
                  geometry={**spec.record, "thread_execution_width": got["pipeline"]["thread_execution_width"],
-                           "max_threads_per_threadgroup": got["pipeline"]["max_threads_per_threadgroup"]})
+                           "max_threads_per_threadgroup": got["pipeline"]["max_threads_per_threadgroup"],
+                           **({"symbol": symbol} if symbol else {})})
+      if note := symbol_note(spec.kernel, symbol, source, spec.record.get("defaulted")):
+        row["note"] = note
       if not got["samples"]:
         row.update(status="correctness_failed", wall_us=0.0)
         rows_out.append(row)
         continue
       med = got["median_us"]
-      row.update(status="measured", us_per_call=med, min_us=got["min_us"], samples=len(got["samples"]), spread_pct=got["spread_pct"],
-                 wall_us=med * r["count"], gbs=size / (med * 1e3), timing={**got["timing"], "dispatch_floor_us": floor_us})
+      less = kernel_timer.less_floor_us(med, floor_us)  # shown beside the measured time, never in its place
+      row.update(status="measured", us_per_call=med, us_per_call_less_floor=less, min_us=got["min_us"], samples=len(got["samples"]),
+                 spread_pct=got["spread_pct"], wall_us=med * r["count"], wall_us_less_floor=less * r["count"], gbs=size / (med * 1e3),
+                 timing={**got["timing"], "dispatch_floor_us": floor_us})
       rows_out.append(row)
       if step:
         step(i, len(roles))
@@ -413,15 +506,18 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
   measured = [r for r in rows_out if r.get("status") == "measured"]
   kernel_us = sum(r["wall_us"] for r in measured)
   whole = {"scope": "whole_step", "decode_tokens": 1, "wall_us": kernel_us, "measurement_scope": "summed_isolated_kernels",
+           "wall_us_less_floor": sum(r["wall_us_less_floor"] for r in measured), "dispatch_floor_us": floor_us,
            "time_source": METHOD, "context": token["context"] if token else None,
            "tok_s": token["tok_s"] if token else None, "token_source": "step 4, the untraced whole step" if token else None}
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest.get("model_id"), "target_id": manifest.get("target_id"),
            "workload": "decode", "provider_id": provider, "capture": {"method": METHOD, "reason": None},
            "timing_source": f"{setup['engine']} kernels timed alone by BoltBeam's kernel timer ({bridge.CLOCK})",
-           "engine": {"name": setup["engine"], "source": setup["source"], "macros": GGML_MACROS if backend == "Metal" else {}},
+           "engine": {"name": setup["engine"], "source": source, "macros": GGML_MACROS if backend == "Metal" else {}},
            "peak_gbs": peak_gbs, "peak_source": peak_source, "rows": [whole, *rows_out],
            "measured": ["kernel.us_per_call (median of the timed flushed launches)", "kernel.correctness against the pure-Python reference",
-                        "whole_step.wall_us (the sum of the measured kernels per token)"],
+                        "whole_step.wall_us (the sum of the measured kernels per token)",
+                        "timing.dispatch_floor_us (an empty kernel between the same two timestamps); us_per_call_less_floor and "
+                        "wall_us_less_floor take it off, the tie-out's estimate uses them and says so"],
            "absent": ["attention, norm, RoPE and KV cache kernels: not timed alone; their time is the tie-out's difference line",
                       "in-model time: the kernel ran alone, not between the model's other kernels"],
            "notes": [WORDS, f"each kernel alone after a {kernel_timer.FLUSH[backend]['mode']} sweep of "

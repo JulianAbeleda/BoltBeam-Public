@@ -618,17 +618,22 @@ type Loss struct {
 	Estimate        *Estimate `json:"estimate"`
 }
 
-// Estimate is an isolated run's scaled split of the token (workflow/tie_out.py _isolated).
+// Estimate is an isolated run's scaled split of the token (workflow/tie_out.py _isolated). When the rows carry a
+// dispatch floor, the estimate is made from the times less that floor (IsolatedSumLessFloorMs) and FloorWords
+// says so ("less the 3.9 µs dispatch floor per launch"); IsolatedSumMs stays the measured sum.
 type Estimate struct {
-	Label         string  `json:"label"`
-	Method        string  `json:"method"`
-	Scale         float64 `json:"scale"`
-	IsolatedSumMs float64 `json:"isolated_sum_ms"`
-	TokenMs       float64 `json:"token_ms"`
-	WeightMs      float64 `json:"weight_ms"`
-	OtherMs       float64 `json:"other_ms"`
-	OtherHow      string  `json:"other_how"`
-	Scaled        bool    `json:"scaled"`
+	Label                  string   `json:"label"`
+	Method                 string   `json:"method"`
+	Scale                  float64  `json:"scale"`
+	IsolatedSumMs          float64  `json:"isolated_sum_ms"`
+	IsolatedSumLessFloorMs *float64 `json:"isolated_sum_less_floor_ms"`
+	FloorUs                *float64 `json:"floor_us"`
+	FloorWords             *string  `json:"floor_words"`
+	TokenMs                float64  `json:"token_ms"`
+	WeightMs               float64  `json:"weight_ms"`
+	OtherMs                float64  `json:"other_ms"`
+	OtherHow               string   `json:"other_how"`
+	Scaled                 bool     `json:"scaled"`
 }
 
 type TieOut struct {

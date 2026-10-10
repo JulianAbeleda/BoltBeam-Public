@@ -4,9 +4,10 @@ Tie-out, ms per token at context 128
   limit at context 128 (ideal)  47.959  derived
 + kernels and gaps, not split   18.018  difference
 = measured token                65.976  the untraced whole step at context …
-Estimated split (isolated): weight kernels 54.3 ms, other and gaps 11.7 ms.
-  (difference: the token less the kernels timed alone; attention, norms,
-launches and gaps were not timed)
+Estimated split (isolated): weight kernels 53.8 ms, other and gaps 12.2 ms.
+  (difference: the token less the kernels timed alone, less the 1.9 µs
+dispatch floor per launch; attention, norms, launches and gaps were not
+timed)
 The limit is 47.8 ms per token at context 1.
 ○ llama.cpp: 15.2 tokens per second, 66.0 ms per token, 18.2 ms lost.
   whole step, measured untraced, at context 128
@@ -16,19 +17,20 @@ The limit is 47.8 ms per token at context 1.
 Per role, estimated from isolated kernel times
 Each kernel timed alone by BoltBeam's kernel timer, cold (the cache swept by
 a read before every call), outside the engine: llama.cpp's own
-kernel_mul_mv_q4_K_f32 etc., from the installed ggml source. Alone and cold
-is slower than inside the token, where the cache is warm and launches
-overlap. Sum alone: 54.3 ms; the real token: 66.0 ms. Measurement: generic
+kernel_mul_mv_q4_K_f32 and others, from the installed ggml source. Alone and
+cold is slower than inside the token, where the cache is warm and launches
+overlap. Sum alone: 54.3 ms, less the 1.9 µs dispatch floor per launch: 53.8
+ms (the estimate uses this); the real token: 66.0 ms. Measurement: generic
 (kernel timer), chosen in Setup.
-EST. columns (estimate from isolated times): not scaled: 54.3 ms alone fits
-the 66.0 ms token.
+EST. columns (estimate from isolated times): not scaled: 53.8 ms alone less
+the 1.9 µs dispatch floor per launch fits the 66.0 ms token.
 ROLE                        QUANT  % PEAK  EST. ms IN TOKEN  EST. LOST
-feed-forward in             Q4_K   89.3%   23.35             2.50
-attention query and output  Q4_K   84.8%   8.19              1.24
-feed-forward out            Q6_K   89.1%   8.53              0.93
-attention keys and values   Q4_K   59.5%   2.20              0.89
-feed-forward out            Q4_K   91.9%   5.67              0.46
-attention keys and values   Q6_K   70.1%   0.91              0.27
+feed-forward in             Q4_K   89.3%   23.21             2.37
+attention query and output  Q4_K   84.8%   8.06              1.11
+feed-forward out            Q6_K   89.1%   8.49              0.90
+attention keys and values   Q4_K   59.5%   2.10              0.79
+feed-forward out            Q4_K   91.9%   5.64              0.43
+attention keys and values   Q6_K   70.1%   0.87              0.24
 vocabulary output           Q6_K   96.5%   5.41              0.19
 
 ROLE                        QUANT  µs/CALL  GB/s  WHY

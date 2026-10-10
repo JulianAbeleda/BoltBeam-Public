@@ -80,7 +80,7 @@ def batched_argv(binary:str, model:pathlib.Path | str, context:int, tokens:int, 
                  extra:list[str] | None = None) -> list[str]:
   """B streams, each with its own context-token prompt, then `tokens` decode steps; the KV cache holds them all."""
   n_kv = max(batches) * (context + tokens) + 16
-  return [binary, "-m", str(model), "-c", str(n_kv), "-b", "2048", "-ub", "512", "-npp", str(context),
+  return [binary, "-m", str(pathlib.Path(model).absolute()), "-c", str(n_kv), "-b", "2048", "-ub", "512", "-npp", str(context),
           "-ntg", str(tokens), "-npl", ",".join(map(str, batches)), "-ngl", "99", "--output-format", "jsonl",
           *(extra or [])]
 
@@ -107,9 +107,9 @@ def batched_points(text:str, tokens:int) -> list[dict[str, Any]]:
 
 
 def bench_batched(binary:str, model:pathlib.Path, context:int, batches:list[int], layout_args:list[str] | None = None,
-                  env:dict[str, str] | None = None, tokens:int = GEN_TOKENS) -> list[dict[str, Any]]:
+                  env:dict[str, str] | None = None, tokens:int = GEN_TOKENS, cwd:pathlib.Path | None = None) -> list[dict[str, Any]]:
   cmd = batched_argv(binary, model, context, tokens, batches, layout_args)
-  proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env={**os.environ, **(env or {})})
+  proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env={**os.environ, **(env or {})}, cwd=cwd)
   if proc.returncode != 0:
     raise RuntimeError(f"llama-batched-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
   got = batched_points(proc.stdout, tokens)
@@ -127,8 +127,9 @@ def available(env:dict[str, str] | None = None) -> str | None:
 
 def decode_argv(llama_bench:str, model:pathlib.Path | str, depth:int, tokens:int, extra:list[str] | None = None) -> list[str]:
   """One decode of `tokens` tokens after a `depth`-token context: no warmup, one repetition, so a capture of
-  this command holds exactly that work."""
-  return [llama_bench, "-m", str(model), "-p", "0", "-n", str(tokens), "-d", str(depth), "-ngl", "99", "-r", "1",
+  this command holds exactly that work. The model path is made absolute: a capture runs the program in its own
+  capture folder (vendor_capture.capture)."""
+  return [llama_bench, "-m", str(pathlib.Path(model).absolute()), "-p", "0", "-n", str(tokens), "-d", str(depth), "-ngl", "99", "-r", "1",
           "--no-warmup", "-o", "json", *(extra or [])]
 
 
@@ -188,10 +189,12 @@ def bench_tok_s(text:str) -> float | None:
 
 
 def bench_decode(llama_bench:str, model:pathlib.Path, depth:int, layout_args:list[str] | None = None,
-                 env:dict[str, str] | None = None) -> dict[str, Any]:
-  cmd = [llama_bench, "-m", str(model), "-p", "0", "-n", str(GEN_TOKENS), "-d", str(depth), "-ngl", "99",
+                 env:dict[str, str] | None = None, cwd:pathlib.Path | None = None) -> dict[str, Any]:
+  """The untraced whole step. The program runs in `cwd`, the run folder: an old llama.cpp build drops a
+  llama_decode.dot graph dump into its working directory on every decode, and it belongs with the run."""
+  cmd = [llama_bench, "-m", str(pathlib.Path(model).absolute()), "-p", "0", "-n", str(GEN_TOKENS), "-d", str(depth), "-ngl", "99",
          "-r", str(BENCH_REPS), "-o", "json", *(layout_args or [])]
-  proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env={**os.environ, **(env or {})})
+  proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env={**os.environ, **(env or {})}, cwd=cwd)
   if proc.returncode != 0:
     raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
   rows = json.loads(proc.stdout[proc.stdout.find("["):])
@@ -242,7 +245,8 @@ def build_timing_trace(manifest:dict[str, Any], bench:dict[int, dict[str, Any]],
 
 
 def batch_points(bench:dict[int, dict[str, Any]], model:pathlib.Path, batches, *, say:Callable[[str], None] = lambda _: None,
-                 layout_args:list[str] | None = None, env:dict[str, str] | None = None) -> list[dict[str, Any]]:
+                 layout_args:list[str] | None = None, env:dict[str, str] | None = None,
+                 cwd:pathlib.Path | None = None) -> list[dict[str, Any]]:
   """Every timed point: batch 1 from the llama-bench decodes, then each batch > 1 per depth from
   llama-batched-bench. Reports progress as the second half of the stage (the first half is the decodes)."""
   from boltbeam.workflow import progress
@@ -257,7 +261,7 @@ def batch_points(bench:dict[int, dict[str, Any]], model:pathlib.Path, batches, *
                         f"export {BATCHED_ENV}=/path/to/llama-batched-bench")
   for i, ctx in enumerate(sorted(bench)):
     say(f"decode at depth {ctx}, batches {wide}: llama-batched-bench")
-    points += bench_batched(batched, model, ctx, wide, layout_args, env)
+    points += bench_batched(batched, model, ctx, wide, layout_args, env, cwd=cwd)
     progress.report(len(bench) + i + 1, 2 * len(bench))
   return points
 
@@ -279,13 +283,13 @@ def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_be
   progress.report(0, parts)
   for ctx in contexts:
     say(f"decode at depth {ctx}: llama-bench")
-    bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), layout_args, layout_env)
+    bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), layout_args, layout_env, cwd=run)
     progress.report(len(bench), parts)
   from boltbeam.workflow.screen import run_bandwidth
   trace = build_timing_trace(manifest, bench, run_bandwidth(run, facts["target"])[0])
   trace["aux_sources"] = {"llama_bench": {str(k): v for k, v in bench.items()}}
   trace["provider"] = PROVIDER
-  trace["batches"] = batch_points(bench, facts["model"], batches, say=say, layout_args=layout_args, env=layout_env)
+  trace["batches"] = batch_points(bench, facts["model"], batches, say=say, layout_args=layout_args, env=layout_env, cwd=run)
   out = timing_out or run / "timing_trace.json"
   out.parent.mkdir(parents=True, exist_ok=True)
   out.write_text(pretty_json(trace))

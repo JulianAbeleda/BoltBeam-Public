@@ -34,6 +34,7 @@ public mirror. Never move or rename them. The articles also cite files outside d
 Scopes, results and runbooks. Each one stays at its path. A dated doc is here because something links to it:
 another doc, the code, a branch, or the tinygrad fork's docs. An undated doc describes a part of the tool.
 
+- [in-model-vs-generic-rtx5090-20261010.md](in-model-vs-generic-rtx5090-20261010.md): the same comparison on the RTX 5090; the store flush drains there too (7 to 12%, one rule: read sweep); the 4 µs event floor must come off; read sweep less floor matches nsys within 4% on 6 of 7 roles; the CUDA adapter needed a prefix symbol match and a q8_1 reference
 - [in-model-vs-generic-m4-20261010.md](in-model-vs-generic-m4-20261010.md): in-model vs generic timing of the same llama.cpp kernels on the Apple M4; the kernel timer's store flush adds ~60 µs per launch (cold sum 1.24× the token, warm 0.96×); xctrace cannot split llama.cpp on Metal; ggml 0.26 embeds 35 metallibs
 - [tinygrad-vs-llama-kernels-m4-20261009.md](tinygrad-vs-llama-kernels-m4-20261009.md): tinygrad's emitted kernels read memory 14 to 30% slower than llama.cpp's on the Apple M4; the rest of the gap is idle time between kernels
 - [analyze-command-scope.md](analyze-command-scope.md): BoltBeam Analyze Command Scope

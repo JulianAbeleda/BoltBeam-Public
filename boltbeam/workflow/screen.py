@@ -442,8 +442,9 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   trace = _optional(run, providers.TRACES[shown])
   out["role_source"], out["role_source_words"] = role_source(trace, capture)
   est = out["tie_out"].get("estimate")
-  if out["role_source"] == tie.ROLE_SOURCE_ISOLATED and est:
-    out["roles"], _ = tie.scale_roles(out["roles"], est["weight_ms"], est["isolated_sum_ms"])
+  if out["role_source"] == tie.ROLE_SOURCE_ISOLATED and est:  # scaled from the sum the estimate was made of: less the floor when the rows carry one
+    base = est["isolated_sum_less_floor_ms"] if est.get("floor_us") is not None else est["isolated_sum_ms"]
+    out["roles"], _ = tie.scale_roles(out["roles"], est["weight_ms"], base)
     out["estimate"] = {**est, "method": method_line(trace, est, measurement_of(run))}
     for r in runtimes:  # the isolated sum is not a token: it carries no "lost", it is said as a sum
       if r.get("capture") == engine_kernels.METHOD:
@@ -581,16 +582,29 @@ def measurement_words(m:dict[str, Any] | None) -> str | None:
   return f"Measurement: {m['label']}" + (", chosen in Setup." if m.get("choice") not in (None, "auto") else ".")
 
 
+def estimate_how(est:dict[str, Any]) -> str:
+  """How the estimate's numbers were made from the isolated times, in one clause: the scale and its inputs, or "not
+  scaled" with the sum that fits; the sum is the one less the dispatch floor when the rows carry one, said so.
+  summary_text, report/html.py and boltbeam-tui (render.go estimateHow) print the same words."""
+  base = est.get("isolated_sum_less_floor_ms") if est.get("floor_us") is not None else est["isolated_sum_ms"]
+  floor = f" {est['floor_words']}" if est.get("floor_words") else ""
+  if est["scaled"]:
+    return f"scale {est['scale']:.3f} = ({est['token_ms']:.1f} - {est['other_ms']:.1f}) / {base:.1f}{floor}"
+  return f"not scaled: {base:.1f} ms alone{floor} fits the {est['token_ms']:.1f} ms token"
+
+
 def method_line(trace:dict[str, Any], est:dict[str, Any], measurement:dict[str, Any] | None = None) -> str:
   """How an isolated per-role table was measured, in one short paragraph, with the run's two sums."""
   names = _kernel_names(trace)
   src = ((trace.get("engine") or {}).get("source") or {})
   where = f", from the installed {src['version'].split()[0]} source" if src.get("version") else ""
-  kernels = ", ".join(names[:1]) + (" etc." if len(names) > 1 else "")
+  kernels = ", ".join(names[:1]) + (" and others" if len(names) > 1 else "")
   return (f"Each kernel timed alone by BoltBeam's kernel timer, cold (the cache swept by a read before every call), outside the engine: "
           f"{trace.get('provider_id') or 'the engine'}'s own {kernels}{where}. Alone and cold is slower than inside the token, "
-          f"where the cache is warm and launches overlap. Sum alone: {est['isolated_sum_ms']:.1f} ms; "
-          f"the real token: {est['token_ms']:.1f} ms." + (f" {w}" if (w := measurement_words(measurement)) else ""))
+          f"where the cache is warm and launches overlap. Sum alone: {est['isolated_sum_ms']:.1f} ms"
+          + (f", {est['floor_words']}: {est['isolated_sum_less_floor_ms']:.1f} ms (the estimate uses this)"
+             if est.get("floor_words") else "")
+          + f"; the real token: {est['token_ms']:.1f} ms." + (f" {w}" if (w := measurement_words(measurement)) else ""))
 
 
 def _capture_words(method:str | None) -> str:
@@ -1208,9 +1222,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   if roles and est:
     lines.append("Per role, estimated from isolated kernel times:")
     lines.append(f"  {est['method']}")
-    lines.append(f"  est. columns {est['label']}; " + (f"scale {est['scale']:.3f} = ({est['token_ms']:.1f} - {est['other_ms']:.1f}) / "
-                 f"{est['isolated_sum_ms']:.1f}" if est["scaled"] else f"not scaled: {est['isolated_sum_ms']:.1f} ms alone fits the "
-                 f"{est['token_ms']:.1f} ms token"))
+    lines.append(f"  est. columns {est['label']}; " + estimate_how(est))
     lines.append(f"  {'role':<12} {'quant':<5} {'MB/call':>8} {'us/call':>8} {'GB/s':>6} {'% peak':>7} {'ideal':>7} "
                  f"{'est. ms in token':>16} {'est. lost':>9}  why")
     for r in roles:
