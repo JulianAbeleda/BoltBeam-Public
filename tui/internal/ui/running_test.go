@@ -247,3 +247,30 @@ func TestProgressLongerThanLastTime(t *testing.T) {
 		t.Fatalf("running body:\n%s", got)
 	}
 }
+
+// A first run has no history: the pipeline sends its default table and says so, the bar weighs steps by it (the
+// search stage is most of a tinygrad run), the percent carries an estimate mark and no step is "longer than last time".
+func TestFirstRunWeightsAreAnEstimate(t *testing.T) {
+	lines := []string{"pipeline steps: 3", "pipeline expect: 130.0,40.0,350.0", "pipeline expect source: default",
+		"stage measure_timing: start", "stage measure_timing: done", "stage role_time: start", "stage role_time: done",
+		"stage search: start", "stage search: progress 1/7"}
+	p := seam.ReadProgress(lines)
+	if !p.Estimate || p.Done != 2 || p.Current != "search" {
+		t.Fatalf("%+v", p)
+	}
+	if got := p.Fraction(0); got < 0.42 || got > 0.43 { // (130 + 40 + 350/7) / 520
+		t.Fatalf("fraction %v", got)
+	}
+	if p.Over(1000) {
+		t.Fatal("a default weight is not a last time to be over")
+	}
+	f := Facts{Job: &jobs.Job{ID: "a", Alive: true, StartedAt: "2026-10-10T01:00:00Z"}, Tail: lines}
+	f.advance(clock())
+	if body := runningBody(f, 80); !strings.Contains(body, "~") || !strings.Contains(body, "3 of 3") {
+		t.Fatalf("the percent is not marked an estimate:\n%s", body)
+	}
+	hist := seam.ReadProgress(append([]string{"pipeline steps: 1", "pipeline expect: 10", "pipeline expect source: history"}, "stage search: start"))
+	if hist.Estimate || !hist.Over(11) {
+		t.Fatalf("history weights are real last times: %+v", hist)
+	}
+}

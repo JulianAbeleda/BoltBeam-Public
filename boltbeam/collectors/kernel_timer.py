@@ -1,0 +1,178 @@
+"""The one kernel timing loop: a kernel, its real buffers, a correctness check, warm launches, timed launches after a
+cache flush, the median. Every isolated kernel time BoltBeam reports comes from here.
+
+    spec = KernelSpec(...)                 what to run: source, kernel, arguments, grid, block, what the output must match
+    bridge = bridge_for(backend)           Metal (runtime/metal_device.py) or CUDA (runtime/cuda_device.py), the same surface
+    result = time_spec(bridge, spec)       correctness, samples, median µs, GB/s
+
+Adapters only produce KernelSpecs, one per role: BoltBeam's own GEMVs (collectors/boltbeam_gemv.py), the engine's
+shipped kernels (collectors/engine_kernels.py: llama.cpp from ggml's Metal and CUDA sources). The loop knows no
+model and no engine; the spec carries its label ("llama.cpp kernel_mul_mv_q4_K_f32") into every result.
+
+The bandwidth probes (metal_bandwidth.py, cuda_bandwidth.py) and the cubin replay (cubin_launch.py) time their
+launches with `samples` too: there is no second warm-and-time loop in the tree. They keep their own statistic
+(best of N for a bandwidth), stated where they use it.
+
+Flushing: before each timed sample a store kernel rewrites a buffer larger than the chip's last-level cache, so the
+timed kernel reads from DRAM. The sizes are per backend (FLUSH): 64 MiB on Apple (the system level cache), 256 MiB
+on NVIDIA (a 5090's L2 is 96 MiB; a copy-engine copy does not evict it, a store kernel does). A weight smaller than
+the cache still stays resident between the warmups and the sample; the adapter marks such rows, this loop does not
+guess.
+"""
+from __future__ import annotations
+
+import statistics
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+SAMPLES, WARMUPS = 20, 10  # warmups let the GPU clock ramp up before the first timed sample
+FLOOR_SAMPLES = 20  # launches of an empty kernel: the fixed cost of one dispatch on this GPU
+
+# the flush kernel per backend: a store over a buffer larger than the last-level cache, run before each timed sample
+FLUSH = {
+  "Metal": {"bytes": 64 << 20, "kernel": "flush", "empty": "empty", "threads": 256, "source": """
+#include <metal_stdlib>
+using namespace metal;
+kernel void flush(device float* b [[buffer(0)]], uint i [[thread_position_in_grid]]) { b[i] = b[i] * 0.5f + 1.0f; }
+kernel void empty(device float* b [[buffer(0)]], uint i [[thread_position_in_grid]]) { if (i == 0xFFFFFFFF) b[0] = 0.0f; }
+"""},
+  "CUDA": {"bytes": 256 << 20, "kernel": "flush", "empty": "empty", "threads": 256, "source": """
+extern "C" __global__ void flush(float* b) { unsigned i = blockIdx.x * blockDim.x + threadIdx.x; b[i] = b[i] * 0.5f + 1.0f; }
+extern "C" __global__ void empty(float* b) { if (blockIdx.x * blockDim.x + threadIdx.x == 0xFFFFFFFFu) b[0] = 0.0f; }
+"""},
+}
+
+
+def bridge_for(backend:str, **kw:Any):
+  """The GPU bridge for a target backend; the same surface on both: library, pipeline, buffer, read, dispatch,
+  release, close, name, working_set_bytes."""
+  if backend == "Metal":
+    from boltbeam.runtime.metal_device import Metal
+    return Metal(**kw)
+  if backend == "CUDA":
+    from boltbeam.runtime.cuda_device import Cuda
+    return Cuda(**kw)
+  raise RuntimeError(f"BoltBeam has no kernel bridge for {backend}; Metal and CUDA have one")
+
+
+def samples(launch:Callable[[], float], *, warmups:int = WARMUPS, count:int = SAMPLES,
+            before:Callable[[], Any] | None = None) -> list[float]:
+  """THE loop: `warmups` launches not counted, then `count` timed launches, `before()` (a flush) ahead of each.
+  Returns the µs of each timed launch; the caller picks its statistic (median for a kernel, best for a bandwidth)."""
+  for _ in range(warmups):
+    launch()
+  out = []
+  for _ in range(count):
+    if before is not None:
+      before()
+    out.append(launch())
+  return out
+
+
+@dataclass
+class Check:
+  """What the first launch's output must match: reference(i) is the expected value of output element i, for the
+  given indices, within rel_tol of the largest expected magnitude. Output elements are float32."""
+  indices: list[int]
+  reference: Callable[[int], float]
+  rel_tol: float
+  words: str = "pure-Python dequantize and dot"
+
+
+@dataclass
+class KernelSpec:
+  """One kernel to time. args in order: bytes ("in": uploaded), an int ("out": a zeroed buffer of that many bytes)
+  or ("value", bytes) for an argument passed by value (a struct or scalar). On Metal a value is setBytes at that
+  index; on CUDA it is the kernel parameter's own bytes."""
+  label: str  # "llama.cpp kernel_mul_mv_q4_K_f32": the adapter and the kernel, as results name their source
+  adapter: str
+  source: str
+  kernel: str
+  args: list[Any]
+  grid: tuple[int, int, int]
+  block: tuple[int, int, int]
+  bytes_read: int  # the bytes one launch reads: GB/s = bytes_read / time
+  check: Check | None = None
+  macros: dict[str, str] = field(default_factory=dict)
+  constants: dict[int, tuple[str, int]] = field(default_factory=dict)
+  shared_bytes: int = 0
+  record: dict[str, Any] = field(default_factory=dict)  # the geometry and its origin, kept with the result
+
+
+class Flusher:
+  """The backend's flush kernel and empty kernel, compiled once on a bridge."""
+
+  def __init__(self, bridge, backend:str):
+    row = FLUSH[backend]
+    self.row = row
+    lib = bridge.library(row["source"])
+    self.flush_pso = bridge.pipeline(lib, row["kernel"])["pso"]
+    self.empty_pso = bridge.pipeline(lib, row["empty"])["pso"]
+    self.buf = bridge.buffer(length=row["bytes"])
+    self.small = bridge.buffer(length=16)
+    self.bridge = bridge
+    self.groups = row["bytes"] // 4 // row["threads"]
+
+  def __call__(self) -> float:
+    return self.bridge.dispatch(self.flush_pso, [self.buf], (self.groups, 1, 1), (self.row["threads"], 1, 1))
+
+  def floor_us(self, count:int = FLOOR_SAMPLES) -> float:
+    """The fixed GPU cost of one dispatch, the median over `count` empty launches: reported beside every time."""
+    launch = lambda: self.bridge.dispatch(self.empty_pso, [self.small], (1, 1, 1), (32, 1, 1))  # noqa: E731
+    return statistics.median(samples(launch, warmups=0, count=count))
+
+
+def _percentile(values:list[float], q:float) -> float:
+  ordered = sorted(values)
+  return ordered[min(len(ordered) - 1, max(0, round(q * (len(ordered) - 1))))]
+
+
+def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:int = WARMUPS, count:int = SAMPLES,
+              libraries:dict[str, int] | None = None) -> dict[str, Any]:
+  """Compile (a library per source is reused through `libraries`), bind, check the first output, then time.
+  Returns {"correctness", "samples", "median_us", "min_us", "spread_pct", "gbs", "pipeline", "label"}; with a
+  failed check the samples are empty and nothing was timed."""
+  import struct
+  libraries = libraries if libraries is not None else {}
+  key = spec.source
+  if key not in libraries:
+    libraries[key] = bridge.library(spec.source, spec.macros or None)
+  pipeline = bridge.pipeline(libraries[key], spec.kernel, spec.constants or None)
+  bound, owned, out_index, out_len = [], [], None, 0
+  for i, arg in enumerate(spec.args):
+    if isinstance(arg, tuple) and arg[0] == "value":
+      bound.append(bytes(arg[1]))
+    elif isinstance(arg, (bytes, bytearray)):
+      buf = bridge.buffer(bytes(arg))
+      owned.append(buf)
+      bound.append(buf)
+    else:  # an output buffer of this many bytes
+      buf = bridge.buffer(length=int(arg))
+      owned.append(buf)
+      bound.append(buf)
+      out_index, out_len = len(owned) - 1, int(arg)
+  result:dict[str, Any] = {"label": spec.label, "adapter": spec.adapter, "kernel": spec.kernel, "samples": [],
+                           "correctness": None, "pipeline": {k: v for k, v in pipeline.items() if k != "pso"}}
+  try:
+    launch = lambda: bridge.dispatch(pipeline["pso"], bound, spec.grid, spec.block, spec.shared_bytes)  # noqa: E731
+    launch()
+    if spec.check is not None and out_index is not None:
+      got = struct.unpack(f"<{out_len // 4}f", bridge.read(owned[out_index], out_len))
+      ref = {i: spec.check.reference(i) for i in spec.check.indices}
+      scale = max(abs(v) for v in ref.values()) or 1.0
+      err = max(abs(got[i] - ref[i]) for i in spec.check.indices) / scale
+      result["correctness"] = {"checked_rows": list(spec.check.indices), "reference": spec.check.words, "max_rel_err": err,
+                               "tolerance": spec.check.rel_tol, "passed": err <= spec.check.rel_tol}
+      if err > spec.check.rel_tol:
+        return result
+    result["samples"] = samples(launch, warmups=warmups, count=count, before=flush)
+  finally:
+    for buf in owned:
+      bridge.release(buf)
+  med = statistics.median(result["samples"])
+  result.update(median_us=med, min_us=min(result["samples"]),
+                spread_pct=100.0 * (_percentile(result["samples"], 0.9) - _percentile(result["samples"], 0.1)) / med,
+                gbs=spec.bytes_read / (med * 1e3), warmups=warmups,
+                timing={"warmups": warmups, "samples": count, "cache": "flushed" if flush else "not flushed",
+                        "flush_bytes": flush.row["bytes"] if flush else 0, "clock": bridge.CLOCK})
+  return result

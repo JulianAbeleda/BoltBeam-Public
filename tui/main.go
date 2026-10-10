@@ -206,7 +206,8 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 			fmt.Fprintln(errOut, "ceiling needs MODEL and --target")
 			return 2
 		}
-		_, raw, err := client.Ceiling(args[0], *target, *context, false)
+		// with a runs folder, the newest machine facts there set the memory speed: the same limit a run compares with
+		_, raw, err := client.Ceiling(args[0], *target, *context, client.Root != "")
 		if err != nil {
 			return fail(out, err)
 		}

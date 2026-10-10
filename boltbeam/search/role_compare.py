@@ -64,8 +64,10 @@ def _now() -> str:
 # --- readiness: what the screen says before anything starts ---------------------------------------------------
 
 def default_fork_root() -> pathlib.Path:
-  """$BOLTBEAM_TINYGRAD_ROOT, else tinygrad-arkey-exp next to this BoltBeam checkout."""
-  if env := os.environ.get("BOLTBEAM_TINYGRAD_ROOT"):
+  """$BOLTBEAM_TINYGRAD_ROOT (or the older TINYGRAD_ROOT; target/tinygrad_root.py reads both), else tinygrad-arkey-exp
+  next to this BoltBeam checkout."""
+  from boltbeam.target.tinygrad_root import configured_root
+  if env := configured_root():
     return pathlib.Path(env).expanduser()
   return pathlib.Path(__file__).resolve().parents[2].parent / "tinygrad-arkey-exp"
 
@@ -608,13 +610,14 @@ def role_verdict(route:Mapping[str, Any] | None, status:Mapping[str, Any] | None
     best = {"plan": plan, "plan_us": k.get("plan_us"), "model_us": k.get("model_us_per_call"), "speedup": x,
             "calls_per_token": c.get("role_calls_per_token"),
             "text": f"{plan} · {x:.1f}x faster" if x and x > 1 else f"{plan} · not faster" if x else plan}
+  searched = {"candidates": c.get("candidates"), "measured_correct": c.get("measured_correct")}
   if k is None:
-    return {"best_found": None, "verdict": "not_searched", "verdict_reason": c.get("reason") or "the search measured no kernel"}
+    return {"best_found": None, "verdict": "not_searched", "verdict_reason": c.get("reason") or "the search measured no kernel", **searched}
   if (route or {}).get("status") == "promoted":
-    return {"best_found": best, "verdict": "applied", "verdict_reason": c.get("reason")}
+    return {"best_found": best, "verdict": "applied", "verdict_reason": c.get("reason"), **searched}
   if not k.get("faster_than_model") or plan == "default kernel":
-    return {"best_found": best, "verdict": "none_faster", "verdict_reason": c.get("reason")}
-  return {"best_found": best, "verdict": "found_not_applied", "verdict_reason": c.get("reason")}
+    return {"best_found": best, "verdict": "none_faster", "verdict_reason": c.get("reason"), **searched}
+  return {"best_found": best, "verdict": "found_not_applied", "verdict_reason": c.get("reason"), **searched}
 
 
 def found_summary(routes:list[Mapping[str, Any]]) -> dict[str, Any] | None:

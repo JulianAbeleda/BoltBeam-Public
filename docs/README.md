@@ -8,6 +8,7 @@ articles cite, everything else, and the older working notes.
 - [CLI.md](CLI.md): the command line end to end, from reading a model file to the ledger.
 - [architecture.md](architecture.md): how the pieces fit.
 - [../tui/README.md](../tui/README.md): the screen (Setup, Run, Saved runs) and its JSON mode for agents.
+- [kernel-timer.md](kernel-timer.md): the one kernel timing loop, its adapters (BoltBeam's GEMV, llama.cpp's Metal and CUDA kernels) and the bridges; the Air proof and the Ubuntu commands.
 - [maintaining.md](maintaining.md): for people who work on BoltBeam itself: install for development, scripts,
   the public mirror.
 - [branch-flow.md](branch-flow.md): what each branch holds and how the trunk reaches the others.

@@ -1,40 +1,36 @@
-"""Read-only GPU memory speed of one NVIDIA GPU, with a small native CUDA kernel.
+"""Read-only GPU memory speed of one NVIDIA GPU, with a small native CUDA kernel through BoltBeam's CUDA bridge.
 
     python -m boltbeam.collectors.cuda_bandwidth [--device N] [--gib 1] [--reps 10]
 
 Decode reads the weights once per token, so the speed limit needs the READ rate. tinygrad's sum reaches only about
 22% of a 5090's bandwidth (382 GB/s against about 1,700), so it is no measure of bandwidth. This kernel reads a
-buffer of at least 1 GiB with 16-byte vector loads in a grid-stride loop and writes one value per block. The program
-is compiled at run time with nvcc (from PATH or /usr/local/cuda/bin) for the GPU it runs on (-arch=native), timed
-with CUDA events, and keeps the best of N runs per launch shape, the rule metal_bandwidth.py and the targets
-registry use for every measured bandwidth.
+buffer of at least 1 GiB with 16-byte vector loads in a grid-stride loop and writes one value per block. The kernel
+is compiled at run time by the bridge (runtime/cuda_device.py: nvcc -cubin -arch=native, cached) and each launch is
+timed between CUDA events there; the launches run through the one loop (collectors/kernel_timer.py samples) and
+this probe keeps the best of N per launch shape, the rule metal_bandwidth.py and the targets registry use for every
+measured bandwidth.
 
 measure_matrix_tflops is the compute side of a chip profile: fp16 WMMA 16x16x16 multiply-accumulate into fp32 on
 fragments held in registers, so no memory is read. It is a lower bound on the tensor cores (WMMA, not the newest
-instructions), and it only bounds prefill: decode is memory-bound. The same program prints the driver's device facts
-(SM count, shared memory per SM, L2, clocks, bus width), each read with cudaDeviceGetAttribute.
+instructions), and it only bounds prefill: decode is memory-bound. The driver's device facts (SM count, shared
+memory per SM, L2, clocks, bus width) come from the bridge's facts().
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import os
-import pathlib
-import shutil
-import subprocess
+import struct
 import sys
-import tempfile
 from typing import Any
 
-CUDA_SRC = r"""
-#include <cstdio>
-#include <cstdlib>
-#include <cuda_runtime.h>
+from boltbeam.collectors.kernel_timer import samples
+from boltbeam.runtime.cuda_device import Cuda, find_nvcc  # noqa: F401  (find_nvcc: the one place nvcc is looked up)
 
-__global__ void readsum(const int4* __restrict__ a, size_t n4, float* out) {
+CUDA_SRC = r"""
+extern "C" __global__ void readsum(const int4* __restrict__ a, unsigned long long n4, float* out) {
   int acc = 0;
-  for (size_t i = blockIdx.x * (size_t)blockDim.x + threadIdx.x; i < n4; i += (size_t)gridDim.x * blockDim.x) {
+  for (unsigned long long i = blockIdx.x * (unsigned long long)blockDim.x + threadIdx.x; i < n4;
+       i += (unsigned long long)gridDim.x * blockDim.x) {
     int4 v = a[i];
     acc ^= v.x ^ v.y ^ v.z ^ v.w;
   }
@@ -47,72 +43,14 @@ __global__ void readsum(const int4* __restrict__ a, size_t n4, float* out) {
     out[blockIdx.x] = (float)r;  // one write per block, so nothing is optimised away
   }
 }
-
-#define CK(x) do { cudaError_t e = (x); if (e != cudaSuccess) { printf("{\"error\": \"%s\"}\n", cudaGetErrorString(e)); return 1; } } while (0)
-
-int main(int argc, char** argv) {
-  int dev = argc > 1 ? atoi(argv[1]) : 0;
-  size_t bytes = argc > 2 ? strtoull(argv[2], 0, 10) : (1ull << 30);
-  int reps = argc > 3 ? atoi(argv[3]) : 10;
-  CK(cudaSetDevice(dev));
-  cudaDeviceProp p; CK(cudaGetDeviceProperties(&p, dev));
-  size_t n4 = bytes / 16;
-  int4* a; float* out;
-  CK(cudaMalloc(&a, n4 * 16));
-  CK(cudaMemset(a, 1, n4 * 16));
-  int shapes[][2] = {{256, 4}, {256, 8}, {256, 16}, {512, 4}, {512, 8}, {1024, 2}, {1024, 4}};  // threads, blocks per SM
-  CK(cudaMalloc(&out, 1024 * 64 * p.multiProcessorCount * sizeof(float)));
-  cudaEvent_t t0, t1; CK(cudaEventCreate(&t0)); CK(cudaEventCreate(&t1));
-  double best = 0; int bt = 0, bb = 0;
-  printf("{\"device\": %d, \"name\": \"%s\", \"bytes\": %zu, \"reps\": %d, \"shapes\": [", dev, p.name, n4 * 16, reps);
-  for (int s = 0; s < 7; s++) {
-    int threads = shapes[s][0], blocks = shapes[s][1] * p.multiProcessorCount;
-    readsum<<<blocks, threads>>>(a, n4, out);  // warm-up, not counted
-    CK(cudaDeviceSynchronize());
-    float ms_best = 1e30f;
-    for (int r = 0; r < reps; r++) {
-      CK(cudaEventRecord(t0));
-      readsum<<<blocks, threads>>>(a, n4, out);
-      CK(cudaEventRecord(t1));
-      CK(cudaEventSynchronize(t1));
-      float ms; CK(cudaEventElapsedTime(&ms, t0, t1));
-      if (ms < ms_best) ms_best = ms;
-    }
-    double gbs = (double)(n4 * 16) / (ms_best * 1e-3) / 1e9;
-    printf("%s{\"threads\": %d, \"blocks\": %d, \"best_ms\": %.4f, \"gbs\": %.1f}", s ? ", " : "", threads, blocks, ms_best, gbs);
-    if (gbs > best) { best = gbs; bt = threads; bb = blocks; }
-  }
-  // sustained: the best shape read back to back for SUSTAIN_S seconds, as a decode reads (the clocks settle under
-  // continuous load); each launch is one sample
-  double sustain_s = argc > 4 ? atof(argv[4]) : 5.0;
-  int n = 0; double s_best = 0, s_sum = 0, s_min = 1e30, elapsed = 0;
-  while (elapsed < sustain_s * 1e3) {
-    CK(cudaEventRecord(t0));
-    readsum<<<bb, bt>>>(a, n4, out);
-    CK(cudaEventRecord(t1));
-    CK(cudaEventSynchronize(t1));
-    float ms; CK(cudaEventElapsedTime(&ms, t0, t1));
-    double g = (double)(n4 * 16) / (ms * 1e-3) / 1e9;
-    if (g > s_best) s_best = g;
-    if (g < s_min) s_min = g;
-    s_sum += g; elapsed += ms; n++;
-  }
-  printf("], \"read_gbs\": %.1f, \"best_shape\": {\"threads\": %d, \"blocks\": %d}, "
-         "\"sustained\": {\"seconds\": %.2f, \"launches\": %d, \"best_gbs\": %.1f, \"mean_gbs\": %.1f, \"min_gbs\": %.1f}}\n",
-         best, bt, bb, elapsed / 1e3, n, s_best, s_sum / n, s_min);
-  return 0;
-}
 """
 MATRIX_SRC = r"""
-#include <cstdio>
-#include <cstdlib>
 #include <cuda_fp16.h>
-#include <cuda_runtime.h>
 #include <mma.h>
 using namespace nvcuda;
 #define ACC 8
 
-__global__ void mmaloop(float* out, int iters) {
+extern "C" __global__ void mmaloop(float* out, int iters) {
   wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;
   wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b;
   wmma::fragment<wmma::accumulator, 16, 16, 16, float> c[ACC];
@@ -130,90 +68,17 @@ __global__ void mmaloop(float* out, int iters) {
     for (int t = 0; t < c[k].num_elements; t++) s += c[k].x[t];
   out[blockIdx.x * blockDim.x + threadIdx.x] = s;  // every result is kept, so nothing is optimised away
 }
-
-#define CK(x) do { cudaError_t e = (x); if (e != cudaSuccess) { printf("{\"error\": \"%s\"}\n", cudaGetErrorString(e)); return 1; } } while (0)
-
-static int attr(cudaDeviceAttr a, int dev) { int v = -1; if (cudaDeviceGetAttribute(&v, a, dev) != cudaSuccess) v = -1; return v; }
-
-int main(int argc, char** argv) {
-  int dev = argc > 1 ? atoi(argv[1]) : 0;
-  int iters = argc > 2 ? atoi(argv[2]) : 8192;
-  int reps = argc > 3 ? atoi(argv[3]) : 5;
-  CK(cudaSetDevice(dev));
-  cudaDeviceProp p; CK(cudaGetDeviceProperties(&p, dev));
-  int sms = attr(cudaDevAttrMultiProcessorCount, dev);
-  int shapes[][2] = {{128, 4}, {256, 2}, {256, 4}, {512, 2}};  // threads, blocks per SM
-  float* out; CK(cudaMalloc(&out, (size_t)512 * 8 * sms * sizeof(float)));
-  cudaEvent_t t0, t1; CK(cudaEventCreate(&t0)); CK(cudaEventCreate(&t1));
-  double best = 0;
-  printf("{\"device\": %d, \"name\": \"%s\", \"sm_count\": %d, \"shared_mem_per_sm_bytes\": %d, "
-         "\"l2_cache_bytes\": %d, \"clock_khz\": %d, \"memory_clock_khz\": %d, \"memory_bus_bits\": %d, "
-         "\"total_global_mem_bytes\": %zu, \"iters\": %d, \"reps\": %d, \"shapes\": [",
-         dev, p.name, sms, attr(cudaDevAttrMaxSharedMemoryPerMultiprocessor, dev), attr(cudaDevAttrL2CacheSize, dev),
-         attr(cudaDevAttrClockRate, dev), attr(cudaDevAttrMemoryClockRate, dev), attr(cudaDevAttrGlobalMemoryBusWidth, dev),
-         p.totalGlobalMem, iters, reps);
-  for (int s = 0; s < 4; s++) {
-    int threads = shapes[s][0], blocks = shapes[s][1] * sms;
-    mmaloop<<<blocks, threads>>>(out, iters);  // warm-up, not counted
-    CK(cudaGetLastError());
-    CK(cudaDeviceSynchronize());
-    float ms_best = 1e30f;
-    for (int r = 0; r < reps; r++) {
-      CK(cudaEventRecord(t0));
-      mmaloop<<<blocks, threads>>>(out, iters);
-      CK(cudaEventRecord(t1));
-      CK(cudaEventSynchronize(t1));
-      float ms; CK(cudaEventElapsedTime(&ms, t0, t1));
-      if (ms < ms_best) ms_best = ms;
-    }
-    double flop = (double)blocks * (threads / 32) * iters * ACC * 2.0 * 16 * 16 * 16;
-    double tf = flop / (ms_best * 1e-3) / 1e12;
-    printf("%s{\"threads\": %d, \"blocks\": %d, \"best_ms\": %.4f, \"tflops\": %.2f}", s ? ", " : "", threads, blocks, ms_best, tf);
-    if (tf > best) best = tf;
-  }
-  printf("], \"tflops\": %.2f}\n", best);
-  return 0;
-}
 """
+READ_SHAPES = ((256, 4), (256, 8), (256, 16), (512, 4), (512, 8), (1024, 2), (1024, 4))  # threads, blocks per SM
+MATRIX_SHAPES = ((128, 4), (256, 2), (256, 4), (512, 2))
+MATRIX_ACC = 8
 MATRIX_NOTE = "lower bound, prefill only; decode is memory-bound"
 MATRIX_METHOD = ("BoltBeam cuda_bandwidth: native CUDA WMMA 16x16x16 fp16 multiply-accumulate into fp32, 8 accumulators "
                  "in registers, {iters} steps, best of {reps} per launch shape")
 METHOD = "BoltBeam cuda_bandwidth: native CUDA read-only kernel, 16-byte loads over {gib} GiB, best of {reps} per launch shape"
-
-
-def find_nvcc(env:dict[str, str] | None = None) -> str | None:
-  env = os.environ if env is None else env
-  if env.get("BOLTBEAM_NVCC"):
-    return env["BOLTBEAM_NVCC"]
-  return shutil.which("nvcc") or next((p for p in ("/usr/local/cuda/bin/nvcc",) if pathlib.Path(p).is_file()), None)
-
-
-def build(nvcc:str, cache:pathlib.Path | None = None, *, source:str = CUDA_SRC, stem:str = "readbw") -> pathlib.Path:
-  """Compile a probe once per source and nvcc; the binary is cached."""
-  cache = cache or pathlib.Path(tempfile.gettempdir()) / "boltbeam-cuda-bandwidth"
-  cache.mkdir(parents=True, exist_ok=True)
-  key = hashlib.sha256((source + nvcc).encode()).hexdigest()[:12]
-  exe = cache / f"{stem}-{key}"
-  if not exe.exists():
-    src = cache / f"{stem}-{key}.cu"
-    src.write_text(source)
-    proc = subprocess.run([nvcc, "-O3", "-arch=native", "-o", str(exe), str(src)], capture_output=True, text=True, timeout=600)
-    if proc.returncode != 0:
-      raise RuntimeError(f"nvcc failed: {(proc.stderr or proc.stdout).strip()[-300:]}")
-  return exe
-
-
-def parse(stdout:str) -> dict[str, Any]:
-  line = next((l for l in reversed(stdout.splitlines()) if l.startswith("{")), None)
-  if line is None:
-    raise RuntimeError(f"the CUDA probe printed no result: {stdout.strip()[-200:]}")
-  out = json.loads(line)
-  if "error" in out:
-    raise RuntimeError(f"CUDA: {out['error']}")
-  return out
-
-
 SUSTAIN_S = 5.0  # about the length of a decode capture
+FACT_KEYS = ("sm_count", "shared_mem_per_sm_bytes", "l2_cache_bytes", "clock_khz", "memory_clock_khz", "memory_bus_bits",
+             "total_global_mem_bytes")
 
 
 def plausibility(cold:float, shapes:list[float], sustained:float | None) -> dict[str, Any]:
@@ -229,37 +94,65 @@ def plausibility(cold:float, shapes:list[float], sustained:float | None) -> dict
           "spread": round(spread, 4), "drift": round(drift, 4), "band": round(max(spread, drift, 0.01), 4)}
 
 
-def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | None = None,
-                     run=subprocess.run, sustain_s:float = SUSTAIN_S) -> dict[str, Any]:
-  nvcc = nvcc or find_nvcc()
-  if not nvcc:
-    raise RuntimeError("nvcc is not installed (set BOLTBEAM_NVCC or put /usr/local/cuda/bin on PATH)")
-  exe = build(nvcc)
-  proc = run([str(exe), str(device), str(gib << 30), str(reps), str(sustain_s)], capture_output=True, text=True, timeout=600)
-  if proc.returncode != 0:
-    raise RuntimeError(f"the CUDA probe exited {proc.returncode}: {(proc.stdout + proc.stderr).strip()[-300:]}")
-  out = parse(proc.stdout)
-  sustained = (out.get("sustained") or {}).get("best_gbs")
-  out.update(plausibility(out["read_gbs"], [r["gbs"] for r in out.get("shapes") or []], sustained))
-  out.update(schema="boltbeam.cuda_read_bandwidth.v1", method=METHOD.format(gib=gib, reps=reps) +
-             f"; then the best shape back to back for {sustain_s:.0f} s (sustained)")
-  return out
+def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | None = None, bridge=None,
+                     sustain_s:float = SUSTAIN_S) -> dict[str, Any]:
+  """Read bandwidth of one GPU: best of `reps` per launch shape, then the best shape back to back for sustain_s."""
+  cuda = bridge or Cuda(device, nvcc=nvcc)
+  try:
+    pso = cuda.pipeline(cuda.library(CUDA_SRC), "readsum")["pso"]
+    sms = cuda.facts()["sm_count"] or 1
+    nbytes = (gib << 30) // 16 * 16
+    a, out = cuda.buffer(length=nbytes), cuda.buffer(length=1024 * 64 * sms * 4)
+    n4 = struct.pack("<Q", nbytes // 16)
+    rows = []
+    for threads, per_sm in READ_SHAPES:
+      blocks = per_sm * sms
+      launch = lambda: cuda.dispatch(pso, [a, n4, out], (blocks, 1, 1), (threads, 1, 1))  # noqa: E731
+      best = min(samples(launch, warmups=1, count=reps))  # the one loop; a bandwidth keeps its best launch
+      rows.append({"threads": threads, "blocks": blocks, "best_ms": best / 1000.0, "gbs": nbytes / (best * 1e-6) / 1e9})
+    best = max(rows, key=lambda r: r["gbs"])
+    # sustained: the best shape back to back for sustain_s seconds, as a decode reads (the clocks settle under load)
+    series, done = [], 0.0
+    while not series or done < sustain_s * 1e6:  # at least one launch, then until the seconds are up
+      us = cuda.dispatch(pso, [a, n4, out], (best["blocks"], 1, 1), (best["threads"], 1, 1))
+      series.append(nbytes / (us * 1e-6) / 1e9)
+      done += us
+    result = {"device": device, "name": cuda.name, "bytes": nbytes, "reps": reps, "shapes": rows,
+              "best_shape": {"threads": best["threads"], "blocks": best["blocks"]},
+              "sustained": {"seconds": done / 1e6, "launches": len(series), "best_gbs": round(max(series), 1),
+                            "mean_gbs": round(sum(series) / len(series), 1), "min_gbs": round(min(series), 1)}}
+  finally:
+    if bridge is None:
+      cuda.close()
+  result.update(plausibility(round(best["gbs"], 1), [r["gbs"] for r in rows], result["sustained"]["best_gbs"]))
+  result.update(schema="boltbeam.cuda_read_bandwidth.v1", method=METHOD.format(gib=gib, reps=reps) +
+                f"; then the best shape back to back for {sustain_s:.0f} s (sustained)")
+  return result
 
 
-def measure_matrix_tflops(device:int = 0, *, iters:int = 8192, reps:int = 5, nvcc:str | None = None,
-                          run=subprocess.run) -> dict[str, Any]:
-  """fp16 tensor-core rate in TFLOP/s (a lower bound) and the driver's device facts, from one native program."""
-  nvcc = nvcc or find_nvcc()
-  if not nvcc:
-    raise RuntimeError("nvcc is not installed (set BOLTBEAM_NVCC or put /usr/local/cuda/bin on PATH)")
-  exe = build(nvcc, source=MATRIX_SRC, stem="mma")
-  proc = run([str(exe), str(device), str(iters), str(reps)], capture_output=True, text=True, timeout=600)
-  if proc.returncode != 0:
-    raise RuntimeError(f"the CUDA matrix probe exited {proc.returncode}: {(proc.stdout + proc.stderr).strip()[-300:]}")
-  out = parse(proc.stdout)
-  out.update(schema="boltbeam.cuda_matrix_peak.v1", dtype="fp16", note=MATRIX_NOTE,
-             method=MATRIX_METHOD.format(iters=iters, reps=reps))
-  return out
+def measure_matrix_tflops(device:int = 0, *, iters:int = 8192, reps:int = 5, nvcc:str | None = None, bridge=None) -> dict[str, Any]:
+  """fp16 tensor-core rate in TFLOP/s (a lower bound) and the driver's device facts, through the bridge."""
+  cuda = bridge or Cuda(device, nvcc=nvcc)
+  try:
+    pso = cuda.pipeline(cuda.library(MATRIX_SRC), "mmaloop")["pso"]
+    facts = cuda.facts()
+    sms = facts["sm_count"] or 1
+    out = cuda.buffer(length=512 * 8 * sms * 4)
+    rows = []
+    for threads, per_sm in MATRIX_SHAPES:
+      blocks = per_sm * sms
+      launch = lambda: cuda.dispatch(pso, [out, struct.pack("<i", iters)], (blocks, 1, 1), (threads, 1, 1))  # noqa: E731
+      best = min(samples(launch, warmups=1, count=reps))
+      flop = blocks * (threads // 32) * iters * MATRIX_ACC * 2.0 * 16 * 16 * 16
+      rows.append({"threads": threads, "blocks": blocks, "best_ms": best / 1000.0, "tflops": flop / (best * 1e-6) / 1e12})
+    result = {"device": device, "name": cuda.name, **{k: facts.get(k) for k in FACT_KEYS}, "iters": iters, "reps": reps,
+              "shapes": rows, "tflops": round(max(r["tflops"] for r in rows), 2)}
+  finally:
+    if bridge is None:
+      cuda.close()
+  result.update(schema="boltbeam.cuda_matrix_peak.v1", dtype="fp16", note=MATRIX_NOTE,
+                method=MATRIX_METHOD.format(iters=iters, reps=reps))
+  return result
 
 
 def main(argv:list[str] | None = None) -> int:

@@ -206,15 +206,28 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
           "uuids": [d.get("uuid") for d in devs]}
 
 
+def run_places_of(run:pathlib.Path) -> list[pathlib.Path]:
+  """Every folder a run of the same root can live in: the root, its .work and its saved folder (screen.run_places),
+  whichever of them this run is under. One machine is measured once per root, not once per folder."""
+  parent = run.parent
+  root = parent.parent if parent.name in (".work", "saved") else parent
+  return [root, root / ".work", root / "saved"]
+
+
 def cached_machine(run:pathlib.Path, devs:list[dict[str, Any]]) -> dict[str, Any] | None:
-  """The machine facts in this run, or in the newest sibling run of the same GPUs (same uuids)."""
+  """The machine facts in this run, or the newest facts of the same GPUs (same uuids) in any run under the same
+  root: the one measurement every run of this machine then uses, until an explicit remeasure."""
   uuids = [d.get("uuid") for d in devs]
-  for p in [run / MACHINE, *sorted(run.parent.glob(f"*/{MACHINE}"), reverse=True)]:
+  found = []
+  for p in [run / MACHINE, *(q for folder in run_places_of(run) if folder.is_dir() for q in folder.glob(f"*/{MACHINE}"))]:
     if p.exists():
-      facts = json.loads(p.read_text())
+      try:
+        facts = json.loads(p.read_text())
+      except (OSError, ValueError):
+        continue
       if facts.get("uuids") == uuids:
-        return facts
-  return None
+        found.append((str(facts.get("measured_at") or ""), p.stat().st_mtime, facts))
+  return max(found, key=lambda f: (f[0], f[1]))[2] if found else None
 
 
 # --- the limits ------------------------------------------------------------------------------------------------------

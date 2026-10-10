@@ -25,7 +25,7 @@ TRACE = "tinygrad_timing_trace.json"
 RAW = "kernel_compare/role_time"
 ROLE_SOURCE = "captured_program_semantics"
 # the role sources loss() accepts: the model's own metadata (tinygrad) and bytes-and-count attribution (any provider)
-ROLE_SOURCES = (ROLE_SOURCE, "attributed_by_bytes_and_count")
+ROLE_SOURCES = (ROLE_SOURCE, "attributed_by_bytes_and_count", "isolated_by_shape")  # the last: engine_kernels.py
 
 
 PROVIDER = "tinygrad"  # the provider adapter's name (collectors/providers.py)
@@ -60,6 +60,7 @@ def whole_step(*, root:pathlib.Path, python:pathlib.Path, model:str, target, con
   import tempfile
   # JIT=1 replays graphs, as a user runs it. The fork's Metal graph cannot hold an 8B model's buffers
   # ("Metal ICB offset exceeds 0xffffffff"); then the same decode runs without graphs (JIT=2) and says so.
+  graph_error = None
   for jit in ("1", "2"):
     with tempfile.TemporaryDirectory() as tmp:
       argv = [str(python), str(DRIVER), "--model", model, "--context", str(context), "--tokens", str(tokens),
@@ -70,9 +71,11 @@ def whole_step(*, root:pathlib.Path, python:pathlib.Path, model:str, target, con
     if proc.returncode == 0 and lines:
       out = json.loads(lines[-1])
       return {"tok_s": out["tok_s"], "tokens": out["tokens"], "wall_s": out["wall_s"], "device": device,
-              "jit": "graphs" if jit == "1" else "no graphs (graph replay failed)"}
+              "jit": "graphs" if jit == "1" else "no graphs (graph replay failed)", "graph_error": graph_error}
     if "GraphException" not in (proc.stderr or ""):
       break
+    # the engine's own words for why the graph did not replay (the last GraphException line), kept with the row
+    graph_error = next((l.strip()[-240:] for l in reversed(proc.stderr.splitlines()) if "GraphException" in l), None)
   raise RuntimeError(f"tinygrad decode failed: {(proc.stderr or proc.stdout).strip()[-400:]}")
 
 
@@ -128,8 +131,10 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
   if proc.returncode != 0 or not lines:
     raise RuntimeError(f"in-model profile failed: {(proc.stderr or proc.stdout).strip()[-400:]}")
   summary = json.loads(lines[-1])
-  # the peak is the ceiling's own: the target's measured bandwidth (workflow/screen.py ceiling), one source
-  peak = {"peak_gbs": target.memory_bandwidth_gbs} if target.memory_bandwidth_gbs else {}
+  # the peak is the run's one read bandwidth (workflow/screen.py run_bandwidth): the limit's number, one source
+  from boltbeam.workflow.screen import run_bandwidth
+  peak_gbs, peak_source = run_bandwidth(run, target)
+  peak = {"peak_gbs": peak_gbs} if peak_gbs else {}
   trace = decode_profile_events(load_profile_events(events, tinygrad_root=root), model_id=model_id,
                                 target_id=target.target_id, workload="decode", context=context,
                                 decode_tokens=summary["tokens"], program_census=json.loads(census.read_text()),
@@ -140,6 +145,7 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
     if row.get("scope") == "whole_step" and summary.get("wall_s"):
       row["token_ms"] = summary["wall_s"] * 1000.0 / summary["tokens"]
   trace["capture"] = {"method": OWN_TIMING, "reason": OWN_TIMING_REASON.get(target.backend)}
+  trace["peak_source"] = peak_source
   (run / TRACE).write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
   return trace
 
@@ -169,7 +175,8 @@ def refusal(table:dict[str, Any], limit_ms:float | None) -> str | None:
     return (f"{OVERCOUNTED}: {table['kernel_ms']:.2f} ms of GPU time per token is more than the "
             f"{token_ms:.2f} ms the captured run took per token by more than ±{100 * total['band']:.1f}%, so the "
             "capture counted work outside the decode tokens or kernels that overlap")
-  if limit_ms and table["kernel_ms"] < limit_ms * (1 - total["band"]):
+  if limit_ms and not table.get("isolated") and table["kernel_ms"] < limit_ms * (1 - total["band"]):
+    # (an isolated table sums only the weight kernels it timed, so the whole-token floor does not bound it)
     return (f"{INCOMPLETE}: {table['kernel_ms']:.2f} ms of GPU time per token is below the limit's floor of "
             f"{limit_ms:.2f} ms by more than ±{100 * total['band']:.1f}%, so the "
             "capture missed kernels or counted tokens wrong")
@@ -196,8 +203,9 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   actual: dict[tuple[str, str], dict[str, float]] = {}
   for r in rows:
     if r.get("scope") == "kernel" and r.get("role_source") in ROLE_SOURCES and r.get("role") and r.get("quant"):
-      slot = actual.setdefault((r["role"], r["quant"]), {"us": 0.0, "calls": 0})
+      slot = actual.setdefault((r["role"], r["quant"]), {"us": 0.0, "calls": 0, "cache": False})
       slot["us"] += float(r["wall_us"]); slot["calls"] += int(r.get("calls", 1))
+      slot["cache"] = slot["cache"] or bool(r.get("cache"))  # an isolated read that stayed in cache (engine_kernels)
   out = []
   for c in ceiling_roles:
     got = actual.get((c["role"], c["quant"]))
@@ -206,13 +214,15 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
     noise = ms < c["floor_ms"] and ms >= c["floor_ms"] * (1 - chip["band"])
     out.append({"role": c["role"], "quant": c["quant"], "ideal_ms": c["floor_ms"], "actual_ms": ms,
                 "lost_ms": 0.0 if noise else ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens,
-                "within_noise": noise, "label": AT_LIMIT_NOISE.format(pct=100 * chip["band"]) if noise else None})
+                "within_noise": noise, "label": AT_LIMIT_NOISE.format(pct=100 * chip["band"]) if noise else None,
+                "cache": got["cache"]})
   total_lost = sum(max(r["lost_ms"], 0.0) for r in out)
   for r in out: r["share"] = (max(r["lost_ms"], 0.0) / total_lost) if total_lost > 0 else 0.0
   out.sort(key=lambda r: -r["lost_ms"])
   whole_ms = whole["wall_us"] / tokens / 1000.0
   table = {"status": "measured", "source": "measured in tinygrad's runtime", "device": trace.get("target_id"),
            "tokens": tokens, "kernel_ms": whole_ms, "tok_s": whole["tok_s"], "roles": out,
+           "isolated": whole.get("measurement_scope") == "summed_isolated_kernels",
            "not_attributed_ms": whole_ms - sum(r["actual_ms"] for r in out), "token_ms": whole.get("token_ms"),
            "unpaired_roles": list(trace.get("unpaired_roles") or []), "band": chip}
   if reason := refusal(table, limit_ms):

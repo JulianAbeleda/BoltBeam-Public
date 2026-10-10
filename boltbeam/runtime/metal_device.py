@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import struct
 import sys
 from typing import Any
 
 _METAL = "/System/Library/Frameworks/Metal.framework/Metal"
 _SHARED = 0  # MTLResourceStorageModeShared: CPU and GPU see the same bytes on unified memory
 _COMPLETED = 4  # MTLCommandBufferStatusCompleted
+# MTLDataType codes (Metal's MTLArgument.h) and the struct packing of each, for function constants
+MTL_DATA_TYPES = {"int": (29, "<i"), "short": (37, "<h"), "bool": (53, "<?")}
 
 
 class MetalUnavailable(RuntimeError):
@@ -30,6 +33,8 @@ class _Size(ctypes.Structure):
 
 class Metal:
   """The default Metal device with a command queue. Every object it returns is released by `close`."""
+
+  CLOCK = "command buffer GPUStartTime/GPUEndTime"
 
   def __init__(self) -> None:
     if sys.platform != "darwin":
@@ -94,36 +99,72 @@ class Metal:
 
   # --- kernels and buffers ---------------------------------------------------------------------------------
 
-  def compile(self, source:str, names:list[str]) -> dict[str, dict[str, Any]]:
-    """Compile MSL source and build one pipeline per kernel name, with what the pipeline reports about itself."""
+  def _new(self, class_name:str) -> int:
+    return self.send(self.send(self._objc.objc_getClass(class_name.encode()), "alloc"), "init")
+
+  def library(self, source:str, macros:dict[str, str] | None = None) -> int:
+    """Compile MSL source into a library. macros are preprocessor definitions (MTLCompileOptions), the same way an
+    engine passes its own build flags to the runtime compiler."""
     pool = self._objc.objc_autoreleasePoolPush()
     try:
+      options = None
+      if macros:
+        prep = self.send(self._objc.objc_getClass(b"NSMutableDictionary"), "dictionary")
+        for key, value in macros.items():
+          self.send(prep, "setObject:forKey:", self.nsstring(value), self.nsstring(key),
+                    argtypes=(ctypes.c_void_p, ctypes.c_void_p), restype=None)
+        options = self._new("MTLCompileOptions")
+        self.send(options, "setPreprocessorMacros:", prep, argtypes=(ctypes.c_void_p,), restype=None)
       err = ctypes.c_void_p(0)
-      lib = self.send(self.device, "newLibraryWithSource:options:error:", self.nsstring(source), None, ctypes.byref(err),
+      lib = self.send(self.device, "newLibraryWithSource:options:error:", self.nsstring(source), options, ctypes.byref(err),
                       argtypes=(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p))
       if not lib:
         raise RuntimeError(f"Metal shader compile failed: {self._error(err)}")
-      self._own(lib)
-      out = {}
-      for name in names:
-        fn = self._own(self.send(lib, "newFunctionWithName:", self.nsstring(name), argtypes=(ctypes.c_void_p,)))
-        if not fn:
-          raise RuntimeError(f"Metal library has no kernel {name!r}")
-        err = ctypes.c_void_p(0)
-        pso = self.send(self.device, "newComputePipelineStateWithFunction:error:", fn, ctypes.byref(err),
-                        argtypes=(ctypes.c_void_p, ctypes.c_void_p))
-        if not pso:
-          raise RuntimeError(f"Metal pipeline for {name!r} failed: {self._error(err)}")
-        self._own(pso)
-        out[name] = {
-          "pso": pso,
-          "thread_execution_width": int(self.send(pso, "threadExecutionWidth", restype=ctypes.c_ulong)),
-          "max_threads_per_threadgroup": int(self.send(pso, "maxTotalThreadsPerThreadgroup", restype=ctypes.c_ulong)),
-          "static_threadgroup_memory_bytes": int(self.send(pso, "staticThreadgroupMemoryLength", restype=ctypes.c_ulong)),
-        }
-      return out
+      return self._own(lib)
     finally:
       self._objc.objc_autoreleasePoolPop(pool)
+
+  def pipeline(self, lib:int, name:str, constants:dict[int, tuple[str, int]] | None = None) -> dict[str, Any]:
+    """One compute pipeline for a kernel in the library, with what it reports about itself. constants are Metal
+    function constants by index: {index: ("short" | "int" | "bool", value)}, the values a kernel's
+    [[function_constant(n)]] declarations take at specialization."""
+    pool = self._objc.objc_autoreleasePoolPush()
+    try:
+      err = ctypes.c_void_p(0)
+      if constants:
+        values = self._new("MTLFunctionConstantValues")
+        for index, (kind, value) in constants.items():
+          code, fmt = MTL_DATA_TYPES[kind]
+          raw = struct.pack(fmt, value)
+          self.send(values, "setConstantValue:type:atIndex:", raw, code, index,
+                    argtypes=(ctypes.c_char_p, ctypes.c_ulong, ctypes.c_ulong), restype=None)
+        fn = self.send(lib, "newFunctionWithName:constantValues:error:", self.nsstring(name), values, ctypes.byref(err),
+                       argtypes=(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p))
+      else:
+        fn = self.send(lib, "newFunctionWithName:", self.nsstring(name), argtypes=(ctypes.c_void_p,))
+      if not fn:
+        raise RuntimeError(f"Metal library has no kernel {name!r}" + (f": {self._error(err)}" if constants else ""))
+      self._own(fn)
+      err = ctypes.c_void_p(0)
+      pso = self.send(self.device, "newComputePipelineStateWithFunction:error:", fn, ctypes.byref(err),
+                      argtypes=(ctypes.c_void_p, ctypes.c_void_p))
+      if not pso:
+        raise RuntimeError(f"Metal pipeline for {name!r} failed: {self._error(err)}")
+      self._own(pso)
+      return {
+        "pso": pso,
+        "thread_execution_width": int(self.send(pso, "threadExecutionWidth", restype=ctypes.c_ulong)),
+        "max_threads_per_threadgroup": int(self.send(pso, "maxTotalThreadsPerThreadgroup", restype=ctypes.c_ulong)),
+        "static_threadgroup_memory_bytes": int(self.send(pso, "staticThreadgroupMemoryLength", restype=ctypes.c_ulong)),
+      }
+    finally:
+      self._objc.objc_autoreleasePoolPop(pool)
+
+  def compile(self, source:str, names:list[str], *, macros:dict[str, str] | None = None,
+              constants:dict[int, tuple[str, int]] | None = None) -> dict[str, dict[str, Any]]:
+    """Compile MSL source and build one pipeline per kernel name (library, then pipeline)."""
+    lib = self.library(source, macros)
+    return {name: self.pipeline(lib, name, constants) for name in names}
 
   def buffer(self, data:bytes | None = None, *, length:int | None = None) -> int:
     if data is not None:
@@ -136,19 +177,30 @@ class Metal:
     return ctypes.string_at(self.send(buf, "contents"), length)
 
   def run(self, pso:int, buffers:list[int], constants:list[bytes], groups:int, threads:int) -> float:
-    """One dispatch in its own command buffer, waited for. Returns the GPU interval in microseconds."""
+    """One 1-D dispatch: buffers at indices 0.., then constants as bytes after them (dispatch does the work)."""
+    return self.dispatch(pso, [*buffers, *constants], (groups, 1, 1), (threads, 1, 1))
+
+  def dispatch(self, pso:int, bound:list[int | bytes], groups:tuple[int, int, int], threads:tuple[int, int, int],
+               threadgroup_bytes:int = 0) -> float:
+    """One dispatch in its own command buffer, waited for. bound is the kernel's arguments by index: a buffer
+    handle (int) is bound with setBuffer, raw bytes with setBytes (an argument struct). groups and threads are the
+    3-D grid. Returns the GPU interval in microseconds."""
     pool = self._objc.objc_autoreleasePoolPush()
     try:
       cb = self.send(self.queue, "commandBuffer")
       enc = self.send(cb, "computeCommandEncoder")
       self.send(enc, "setComputePipelineState:", pso, argtypes=(ctypes.c_void_p,), restype=None)
-      for i, buf in enumerate(buffers):
-        self.send(enc, "setBuffer:offset:atIndex:", buf, 0, i, argtypes=(ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong),
-                  restype=None)
-      for j, raw in enumerate(constants, start=len(buffers)):
-        self.send(enc, "setBytes:length:atIndex:", raw, len(raw), j, argtypes=(ctypes.c_char_p, ctypes.c_ulong, ctypes.c_ulong),
-                  restype=None)
-      self.send(enc, "dispatchThreadgroups:threadsPerThreadgroup:", _Size(groups, 1, 1), _Size(threads, 1, 1),
+      for i, arg in enumerate(bound):
+        if isinstance(arg, (bytes, bytearray)):
+          self.send(enc, "setBytes:length:atIndex:", bytes(arg), len(arg), i,
+                    argtypes=(ctypes.c_char_p, ctypes.c_ulong, ctypes.c_ulong), restype=None)
+        else:
+          self.send(enc, "setBuffer:offset:atIndex:", arg, 0, i, argtypes=(ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong),
+                    restype=None)
+      if threadgroup_bytes:
+        self.send(enc, "setThreadgroupMemoryLength:atIndex:", threadgroup_bytes, 0,
+                  argtypes=(ctypes.c_ulong, ctypes.c_ulong), restype=None)
+      self.send(enc, "dispatchThreadgroups:threadsPerThreadgroup:", _Size(*groups), _Size(*threads),
                 argtypes=(_Size, _Size), restype=None)
       self.send(enc, "endEncoding", restype=None)
       self.send(cb, "commit", restype=None)

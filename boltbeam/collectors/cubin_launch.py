@@ -18,13 +18,11 @@ With ``--label ROLE:M`` exactly one launch is bracketed by cuProfilerStart/Stop 
 """
 from __future__ import annotations
 
-import argparse, ctypes, hashlib, json, pathlib, sys
+import argparse, hashlib, json, pathlib
 from typing import Any, Mapping
 
 CAPTURE_SCHEMA = "tinygrad.nv_cubin_capture.v1"
 SCHEMA = "boltbeam.cubin_launch.v1"
-_CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES = 8
-_CU_STREAM_NON_BLOCKING = 1
 
 
 def launch_spec_from_capture(capture:Mapping[str, Any], kernel:str, call:int=0) -> dict[str, Any]:
@@ -45,70 +43,40 @@ def launch_spec_from_capture(capture:Mapping[str, Any], kernel:str, call:int=0) 
           "vals": [int(v) for v in c.get("vals", ())], "val_groups": [1] * len(c.get("vals", ()))}
 
 
-def _check(lib, name:str, *args) -> None:
-  rc = getattr(lib, name)(*args)
-  if rc != 0: raise RuntimeError(f"{name} failed with CUresult {rc}")
-
-
 def launch(spec:Mapping[str, Any], *, reps:int=3, warmup:int=20, condition_mib:int=0, profile_one:bool=False,
-           libcuda:str="libcuda.so.1") -> dict[str, Any]:
-  """Warm up, time ``reps`` launches with events; with ``profile_one`` also bracket exactly one launch in
-  cuProfilerStart/Stop (the collector runs ncu with --profile-from-start off)."""
+           libcuda:str="libcuda.so.1", bridge=None) -> dict[str, Any]:
+  """Warm up, time ``reps`` launches with events (runtime/cuda_device.py, the one loop in collectors/kernel_timer.py);
+  with ``profile_one`` also bracket exactly one launch in cuProfilerStart/Stop (the collector runs ncu with
+  --profile-from-start off). ``condition_mib`` rewrites that many MiB before each timed launch to evict L2."""
+  from boltbeam.collectors.kernel_timer import samples
+  from boltbeam.runtime.cuda_device import Cuda, _Driver
   blob = pathlib.Path(spec["cubin_path"]).read_bytes()
   sha = hashlib.sha256(blob).hexdigest()
   if spec.get("cubin_sha256") and spec["cubin_sha256"] != sha: raise ValueError("cubin bytes do not match the captured sha256")
-  cu = ctypes.CDLL(libcuda)
-  ptr, handle = ctypes.c_uint64, ctypes.c_void_p
-  _check(cu, "cuInit", 0)
-  dev, ctx, module, fn, stream = ctypes.c_int(), handle(), handle(), handle(), handle()
-  _check(cu, "cuDeviceGet", ctypes.byref(dev), 0)
-  _check(cu, "cuDevicePrimaryCtxRetain", ctypes.byref(ctx), dev)   # cuMemAlloc rejects a non-primary context here
-  bufs: list[ctypes.c_uint64] = []
+  vals, groups = spec["vals"], spec.get("val_groups") or [1] * len(spec["vals"])
+  if sum(groups) != len(vals): raise ValueError("val_groups do not cover vals")
+  cuda = bridge or Cuda(0, driver=_Driver(libcuda))
   try:
-    _check(cu, "cuCtxSetCurrent", ctx)
-    _check(cu, "cuModuleLoadData", ctypes.byref(module), ctypes.c_char_p(blob))
-    _check(cu, "cuModuleGetFunction", ctypes.byref(fn), module, spec["symbol"].encode())
-    if spec["shared_mem"]: _check(cu, "cuFuncSetAttribute", fn, _CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES, spec["shared_mem"])
-    for size in spec["buf_sizes"]:
-      p = ptr(); _check(cu, "cuMemAlloc_v2", ctypes.byref(p), ctypes.c_size_t(size)); bufs.append(p)
-      _check(cu, "cuMemsetD8_v2", p, ctypes.c_ubyte(0), ctypes.c_size_t(size))
-    vals, groups = spec["vals"], spec.get("val_groups") or [1] * len(spec["vals"])
-    if sum(groups) != len(vals): raise ValueError("val_groups do not cover vals")
+    fn = cuda.pipeline(cuda.module(blob), spec["symbol"])["pso"]
+    bufs = [cuda.buffer(length=size) for size in spec["buf_sizes"]]
     holders, cursor = [], 0
     for width in groups:
-      holders.append((ctypes.c_int32 * width)(*vals[cursor:cursor + width])); cursor += width
-    params = (ctypes.c_void_p * (len(bufs) + len(holders)))(
-      *[ctypes.cast(ctypes.pointer(b), ctypes.c_void_p) for b in bufs], *[ctypes.cast(h, ctypes.c_void_p) for h in holders])
-    _check(cu, "cuStreamCreate", ctypes.byref(stream), _CU_STREAM_NON_BLOCKING)
-    flush = ptr()
-    if condition_mib: _check(cu, "cuMemAlloc_v2", ctypes.byref(flush), ctypes.c_size_t(condition_mib << 20)); bufs.append(flush)
-    (gx, gy, gz), (bx, by, bz) = spec["grid"], spec["block"]
-    def once():
-      _check(cu, "cuLaunchKernel", fn, gx, gy, gz, bx, by, bz, spec["shared_mem"], stream, params, None)
-      if condition_mib:
-        _check(cu, "cuMemsetD8Async", flush, ctypes.c_ubyte(1), ctypes.c_size_t(condition_mib << 20), stream)
-        _check(cu, "cuLaunchKernel", fn, gx, gy, gz, bx, by, bz, spec["shared_mem"], stream, params, None)
-    for _ in range(warmup): once()
-    _check(cu, "cuStreamSynchronize", stream)
+      holders.append(("value", b"".join(int(v).to_bytes(4, "little", signed=True) for v in vals[cursor:cursor + width]))); cursor += width
+    bound = [*bufs, *[h[1] for h in holders]]
+    grid, block = tuple(spec["grid"]), tuple(spec["block"])
+    once = lambda: cuda.dispatch(fn, bound, grid, block, spec["shared_mem"])  # noqa: E731
+    flush = cuda.buffer(length=condition_mib << 20) if condition_mib else None
+    before = (lambda: cuda.driver.memset(flush, 1, condition_mib << 20)) if flush else None
     if profile_one:
-      _check(cu, "cuProfilerStart")
-      _check(cu, "cuLaunchKernel", fn, gx, gy, gz, bx, by, bz, spec["shared_mem"], stream, params, None)
-      _check(cu, "cuStreamSynchronize", stream)
-      _check(cu, "cuProfilerStop")
-    begin, end, ms = handle(), handle(), ctypes.c_float()
-    _check(cu, "cuEventCreate", ctypes.byref(begin), 0); _check(cu, "cuEventCreate", ctypes.byref(end), 0)
-    _check(cu, "cuEventRecord", begin, stream)
-    for _ in range(reps): once()
-    _check(cu, "cuEventRecord", end, stream); _check(cu, "cuEventSynchronize", end)
-    _check(cu, "cuEventElapsedTime", ctypes.byref(ms), begin, end)
-    cu.cuEventDestroy_v2(begin); cu.cuEventDestroy_v2(end); cu.cuStreamDestroy_v2(stream)
+      samples(once, warmups=warmup, count=0)  # warm first, then exactly one profiled launch
+      cuda.profiler(True); once(); cuda.profiler(False)
+      warmup = 0
+    us = samples(once, warmups=warmup, count=reps, before=before)
   finally:
-    for b in bufs: cu.cuMemFree_v2(b)
-    if module.value: cu.cuModuleUnload(module)
-    cu.cuDevicePrimaryCtxRelease(dev)
+    if bridge is None: cuda.close()
   return {"schema": SCHEMA, **{k: spec[k] for k in ("symbol", "grid", "block", "shared_mem", "buf_sizes", "vals", "val_groups")},
           "cubin": str(spec["cubin_path"]), "cubin_sha256": sha, "reps": reps, "warmup": warmup, "condition_mib": condition_mib,
-          "event_us_per_launch": 1000.0 * ms.value / reps, "verdict": "CUDA_LAUNCH_OK"}
+          "event_us_per_launch": sum(us) / len(us), "verdict": "CUDA_LAUNCH_OK"}
 
 
 def _ints(text:str | None) -> list[int]: return [int(x) for x in text.split(",")] if text else []

@@ -19,6 +19,23 @@
   "kind": "results",
   "loss": {
     "capture": null,
+    "cross_check": null,
+    "evidence": {
+      "common": [],
+      "other_kernels": [],
+      "whole_step": [
+        {
+          "file": "timing_trace.json",
+          "path": "rows[0]"
+        }
+      ]
+    },
+    "findings": [],
+    "latency": {
+      "evidence": [],
+      "source": "assumed",
+      "us": 1.0
+    },
     "layout": null,
     "limit_ms": 48.110098436213995,
     "limit_tok_s": 20.78565690996941,
@@ -36,7 +53,7 @@
       {
         "lost_ms": 9.79378112371652,
         "ms": 57.903879559930516,
-        "note": "whole step, measured untraced",
+        "note": "whole step, measured untraced, at context 128",
         "per_role": false,
         "provider": "llama.cpp",
         "tok_s": 17.27
@@ -50,10 +67,27 @@
     },
     "source": null,
     "status": "modeled",
+    "step": {
+      "also": [],
+      "context": 128,
+      "evidence": [
+        {
+          "file": "timing_trace.json",
+          "path": "rows[0]"
+        }
+      ],
+      "graph_error": null,
+      "graph_failed": false,
+      "ms": 57.903879559930516,
+      "rule": "the smallest context",
+      "source": null,
+      "tok_s": 17.27
+    },
     "tie_out": {
       "batch": 1,
       "busy_ms": null,
       "context": 128.0,
+      "isolated": false,
       "kv_ms": 0.19418074074074074,
       "kv_source": "KV cache read at context 128: 2 bytes per element, llama-bench's default KV cache type, f16",
       "limit_ms": 48.304279176954736,
@@ -83,6 +117,12 @@
   },
   "measured": true,
   "model_id": "Qwen3-8B",
+  "probe": {
+    "absent": {},
+    "reason": "the run holds no probe evidence",
+    "rows": [],
+    "status": "absent"
+  },
   "regimes": [
     {
       "classification": "streaming_bound",
@@ -218,6 +258,7 @@
   "schema": "boltbeam.tui.v1",
   "target_id": "apple_m3_10c",
   "timing": {
+    "also": [],
     "context": 128,
     "dominant_bucket": "elementwise_dilution",
     "kernels": [

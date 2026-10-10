@@ -19,9 +19,12 @@ COMPARE = "kernel_compare/compare.json"
 MACHINE = "machine_facts.json"
 MEASURE = "measure_status.json"
 PROFILE = "model_profile.json"
+STEP4 = "timing_trace.json"  # step 4's whole step: THE measured token (tie_out.measured_step)
 
 LEVERS = {
   "launch_heavy": "Launch fewer kernels: run the token as one graph or fuse kernels.",
+  # the engine said its graph did not replay: the lever is the graph path, not a new kernel
+  "graph_failed": "Fix the graph path first: graph replay failed on this run, so the token ran as single launches.",
   "kv_dominated": "Read less KV cache: a smaller KV type (8 or 4 bit) or a shorter context.",
   "throttled": "Measure again with the chip cool and on power; the bandwidth limit moves while it throttles.",
   "cannot_split": "Split them first: a capture that names each kernel's role (tinygrad's own timing does).",
@@ -71,6 +74,29 @@ class Facts:
     self.machine = _read(run, MACHINE)
     self.measure = _read(run, MEASURE)
     self.profile = _read(run, PROFILE)
+    self.trace4 = _read(run, STEP4)
+
+  def step4_row(self, provider:str | None = None) -> tuple[int, dict[str, Any]] | None:
+    """THE measured token's row in step 4's trace, with its index: the same pick as tie_out.measured_step."""
+    from boltbeam.workflow.tie_out import measured_step
+    prov = provider or (self.measure.get("provider") or "llama.cpp")
+    token = measured_step(self.trace4, prov)
+    return (token["index"], self.trace4["rows"][token["index"]]) if token else None
+
+  def step4(self) -> list[dict[str, Any]]:
+    got = self.step4_row()
+    return [_ptr(STEP4, f"rows[{got[0]}]")] if got else []
+
+  def graph_failure(self) -> dict[str, Any] | None:
+    """The engine's own account that its graph did not replay in step 4 (tinygrad whole_step source / graph_error),
+    with the pointer; None when the run says nothing of the kind."""
+    got = self.step4_row()
+    if not got:
+      return None
+    i, row = got
+    if "graph replay failed" not in str(row.get("source") or "") and not row.get("graph_error"):
+      return None
+    return {"source": row.get("source"), "error": row.get("graph_error"), "evidence": [_ptr(STEP4, f"rows[{i}]")]}
 
   def common(self) -> list[dict[str, Any]]:
     out = []
@@ -90,6 +116,8 @@ class Facts:
     return out + self.common()
 
   def whole(self) -> list[dict[str, Any]]:
+    if not self.trace_file:
+      return self.step4()
     return [_ptr(self.trace_file, f"rows[{i}]") for i, r in enumerate(self.trace.get("rows") or [])
             if r.get("scope") == "whole_step"][:1]
 
@@ -122,10 +150,19 @@ def items(facts:Facts, loss:dict[str, Any]) -> list[dict[str, Any]]:
   roles = loss.get("roles") or []
   launches = facts.launches_per_token()
   gaps = next((l for l in t.get("lines") or [] if l.get("how") == "difference"), None)
+  graph = facts.graph_failure()
   if launches is not None and launches > LAUNCH_HEAVY and gaps:
-    out.append({"verdict": "launch_heavy", "what": f"Launch heavy: {launches:.0f} kernel launches per token",
-                "ms": max(gaps["ms"], 0.0), "do": LEVERS["launch_heavy"],
-                "rule": f"launches per token above {LAUNCH_HEAVY}", "evidence": facts.whole()})
+    what, do, ev = f"Launch heavy: {launches:.0f} kernel launches per token", LEVERS["launch_heavy"], facts.whole()
+    if graph:  # the engine said so itself: the lever is the graph path, never "run it as one graph" again
+      why = f" ({graph['error']})" if graph.get("error") else ""
+      what = f"Launch heavy: graph replay failed on this run{why}, so the token ran as {launches:.0f} launches"
+      do, ev = LEVERS["graph_failed"], graph["evidence"] + facts.whole()
+    out.append({"verdict": "launch_heavy", "what": what, "ms": max(gaps["ms"], 0.0), "do": do,
+                "rule": f"launches per token above {LAUNCH_HEAVY}", "evidence": ev})
+  elif graph and gaps:  # no launch count, but the engine still says its graph failed: said, with its row
+    out.append({"verdict": "graph_failed", "what": "Graph replay failed on this run" + (f" ({graph['error']})" if graph.get("error") else ""),
+                "ms": max(gaps["ms"], 0.0), "do": LEVERS["graph_failed"], "rule": "the engine's own trace row says so",
+                "evidence": graph["evidence"]})
   if t.get("kv_ms") and t.get("limit_ms") and t["kv_ms"] / t["limit_ms"] > KV_SHARE:
     out.append({"verdict": "kv_dominated", "what": f"KV dominated: KV read is {100 * t['kv_ms'] / t['limit_ms']:.0f}% "
                 f"of the ideal token at context {t.get('context', 0):.0f}", "ms": t["kv_ms"], "do": LEVERS["kv_dominated"],

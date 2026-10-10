@@ -88,6 +88,18 @@
     "kind": "results",
     "loss": {
       "capture": null,
+      "cross_check": null,
+      "evidence": {
+        "common": [],
+        "other_kernels": [],
+        "whole_step": []
+      },
+      "findings": [],
+      "latency": {
+        "evidence": [],
+        "source": "assumed",
+        "us": 1.0
+      },
       "layout": null,
       "limit_ms": 48.110098436213995,
       "limit_tok_s": 20.78565690996941,
@@ -110,10 +122,12 @@
       },
       "source": null,
       "status": "modeled",
+      "step": null,
       "tie_out": {
         "batch": 1,
         "busy_ms": null,
         "context": 1.0,
+        "isolated": false,
         "kv_ms": 0.001517037037037037,
         "kv_source": "KV cache read at context 1: 2 bytes per element, llama-bench's default KV cache type, f16",
         "limit_ms": 48.111615473251035,
@@ -132,6 +146,12 @@
     },
     "measured": false,
     "model_id": "Qwen3-8B",
+    "probe": {
+      "absent": {},
+      "reason": "the run holds no probe evidence",
+      "rows": [],
+      "status": "absent"
+    },
     "regimes": [],
     "report": "report.html",
     "routes": [
@@ -244,6 +264,7 @@
     "schema": "boltbeam.tui.v1",
     "target_id": "apple_m3_10c",
     "timing": {
+      "also": [],
       "context": null,
       "dominant_bucket": null,
       "kernels": [],

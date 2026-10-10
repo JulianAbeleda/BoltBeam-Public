@@ -6,7 +6,8 @@ import pathlib
 from collections.abc import Mapping
 
 
-TINYGRAD_ROOT_ENV = "TINYGRAD_ROOT"
+TINYGRAD_ROOT_ENV = "TINYGRAD_ROOT"  # the older name, still read
+BOLTBEAM_TINYGRAD_ROOT_ENV = "BOLTBEAM_TINYGRAD_ROOT"  # the documented name (README): read first
 _SIBLING_NAMES = ("tinygrad-arkey", "tinygrad-arkey-exp", "tinygrad")
 # What a generated command carries when no checkout is configured. A shell expands it, and a reader can
 # see that the path was never known, which is the thing the refusal below exists to prevent.
@@ -15,6 +16,13 @@ UNRESOLVED_PLACEHOLDER = f"${TINYGRAD_ROOT_ENV}"
 
 def _is_checkout(path:pathlib.Path) -> bool:
   return path.is_dir() and (path / "tinygrad" / "__init__.py").is_file()
+
+
+def configured_root(environ:Mapping[str, str] | None = None) -> str | None:
+  """The checkout the environment names: BOLTBEAM_TINYGRAD_ROOT, else the older TINYGRAD_ROOT. One reader for both,
+  so the CLI and the screens agree."""
+  env = os.environ if environ is None else environ
+  return env.get(BOLTBEAM_TINYGRAD_ROOT_ENV) or env.get(TINYGRAD_ROOT_ENV) or None
 
 
 def resolve_tinygrad_root(value:str | pathlib.Path | None = None, *, environ:Mapping[str, str] | None = None,
@@ -33,7 +41,7 @@ def resolve_tinygrad_root(value:str | pathlib.Path | None = None, *, environ:Map
   letting the commands that need no checkout run without one.
   """
   env = os.environ if environ is None else environ
-  configured = value or env.get(TINYGRAD_ROOT_ENV)
+  configured = value or configured_root(env)
   if configured:
     # Preserve the caller's path spelling (notably macOS /tmp -> /private/tmp)
     # while still making relative configuration unambiguous.
@@ -51,4 +59,4 @@ def resolve_tinygrad_root(value:str | pathlib.Path | None = None, *, environ:Map
   return path
 
 
-__all__ = ["TINYGRAD_ROOT_ENV", "UNRESOLVED_PLACEHOLDER", "resolve_tinygrad_root"]
+__all__ = ["TINYGRAD_ROOT_ENV", "BOLTBEAM_TINYGRAD_ROOT_ENV", "UNRESOLVED_PLACEHOLDER", "configured_root", "resolve_tinygrad_root"]

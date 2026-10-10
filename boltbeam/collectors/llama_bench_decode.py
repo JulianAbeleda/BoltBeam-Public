@@ -281,7 +281,8 @@ def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_be
     say(f"decode at depth {ctx}: llama-bench")
     bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), layout_args, layout_env)
     progress.report(len(bench), parts)
-  trace = build_timing_trace(manifest, bench, facts["target"].memory_bandwidth_gbs)
+  from boltbeam.workflow.screen import run_bandwidth
+  trace = build_timing_trace(manifest, bench, run_bandwidth(run, facts["target"])[0])
   trace["aux_sources"] = {"llama_bench": {str(k): v for k, v in bench.items()}}
   trace["provider"] = PROVIDER
   trace["batches"] = batch_points(bench, facts["model"], batches, say=say, layout_args=layout_args, env=layout_env)

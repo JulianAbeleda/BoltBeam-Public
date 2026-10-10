@@ -707,6 +707,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case jobMsg:
 		m.f.Job, m.f.Tail = msg.job, msg.tail
 		m.f.advance(clock())
+		if msg.job != nil && !msg.job.Alive && strings.HasPrefix(m.note, "Started ") {
+			m.note = "" // the run ended: the Run line says how; "Started …" would be stale
+		}
 		if !m.opened { // on start: Setup, unless the newest run is still going, then its Run screen; decided once
 			m.opened = true
 			if m.f.alive() && m.cursor == pageSetup {

@@ -9,7 +9,7 @@
 │ = measured token                57.904  the untraced whole step at context … │
 │ The limit is 48.1 ms per token at context 1.                                 │
 │ ○ llama.cpp: 17.3 tokens per second, 57.9 ms per token, 9.8 ms lost.         │
-│   whole step, measured untraced                                              │
+│   whole step, measured untraced, at context 128                              │
 │ Per role: Not possible on this Mac: metal-system-trace is not installed.     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮

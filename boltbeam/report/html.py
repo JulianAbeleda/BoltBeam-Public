@@ -208,6 +208,14 @@ _JS = """
 """
 
 
+_NUM = "\x00n\x00"  # the section number placeholder, filled in order at the end
+
+
+def _number(sections:str) -> str:
+  parts = sections.split(_NUM)
+  return "".join(p + (str(i + 1) if i < len(parts) - 1 else "") for i, p in enumerate(parts))
+
+
 def _e(value:Any) -> str:
   """Escape any value for HTML text/attribute context. Kernel names come from provider traces — untrusted."""
   return html.escape("" if value is None else str(value), quote=True)
@@ -249,28 +257,45 @@ def stage_state(key:str, entry:Any, measure:dict[str, Any] | None) -> tuple[str,
     return "not_needed", NOT_NEEDED[key]
   return "open", None
 
-def next_step(report:dict[str, Any], plan:dict[str, Any]) -> str:
-  """Same decision ladder as workflow/output.py::_summary_md, so the two reports never disagree."""
+def next_step(report:dict[str, Any], plan:dict[str, Any], probe:dict[str, Any] | None = None,
+              measure:dict[str, Any] | None = None) -> str:
+  """The one next-step ladder, plain text with `code` in backticks; summary.md (workflow/output.py), the screen
+  (workflow/screen.py show) and this page all print it, so they never disagree. A probe the run already took, or
+  one this GPU cannot give (measure_status probe absent), is never asked for again: its own record is read."""
+  probe, measure = probe or {}, measure or {}
+  if probe.get("status") == "measured":
+    absent = probe.get("absent") or {}
+    missing = "; ".join(sorted({v for v in absent.values()})) if absent else ""
+    head = f"The building-block probe ran: {len(probe.get('rows') or [])} roles timed with BoltBeam's own kernel (reference)."
+    return head + (f" Not reported by this GPU: {missing}." if missing else "")
+  if measure.get("probe") == "absent":
+    return f"No building-block probe here: {measure.get('probe_reason') or 'this chip has none'}."
   if plan.get("timing_profile", {}).get("status") == "requested":
-    return ("Run an external timing trace from <code>trace_request.json</code>, ingest "
-            "<code>boltbeam.timing_trace.v1</code>, then re-run <code>boltbeam analyze</code>.")
+    return ("Run an external timing trace from `trace_request.json`, ingest `boltbeam.timing_trace.v1`, then re-run "
+            "`boltbeam analyze`.")
   if plan.get("primitive_profile", {}).get("status") == "requested":
-    return ("Run an external probe from <code>probe_request.json</code>, ingest "
-            "<code>boltbeam.probe_evidence.v1</code>, then re-run <code>boltbeam analyze</code>.")
+    return ("Run an external probe from `probe_request.json`, ingest `boltbeam.probe_evidence.v1`, then re-run "
+            "`boltbeam analyze`.")
   if report.get("status") == "policy_seeded":
-    return ("Review <code>route_policy.json</code>; selected routes still require normalized evidence before "
-            "promotion unless already ledgered.")
+    return "Review `route_policy.json`; selected routes still require normalized evidence before promotion unless already ledgered."
   if plan:
-    return ("Run or translate <code>measurement_plan.json</code> through a provider adapter, then ingest "
-            "normalized evidence and re-analyze.")
-  return "Run <code>boltbeam analyze --run &lt;run&gt;</code> to build the search and measurement plan."
+    return "Run or translate `measurement_plan.json` through a provider adapter, then ingest normalized evidence and re-analyze."
+  return "Run `boltbeam analyze --run <run>` to build the search and measurement plan."
 
 
-def roofline_kernels(timing:dict[str, Any]) -> tuple[list[dict[str, Any]], Any]:
-  """Hottest per-kernel rows from the widest context summary, plus that context. Deterministic tie-break."""
+def _code(text:str) -> str:
+  """Plain text with `backticks` as an HTML fragment with <code>."""
+  parts = text.split("`")
+  return "".join(_e(p) if i % 2 == 0 else f"<code>{_e(p)}</code>" for i, p in enumerate(parts))
+
+
+def roofline_kernels(timing:dict[str, Any], context:Any = None) -> tuple[list[dict[str, Any]], Any]:
+  """Hottest per-kernel rows at one context, plus that context: the measured token's context when given
+  (tie_out.measured_step picks it), else the widest summary. Deterministic tie-break."""
   summaries = [s for s in timing.get("context_summaries", []) or [] if isinstance(s, dict)]
-  if not summaries: return [], None
-  chosen = max(summaries, key=lambda s: (s.get("context") or 0, str(s.get("dominant_timing_bucket") or "")))
+  if not summaries: return [], context
+  at = [s for s in summaries if context is not None and s.get("context") == context]
+  chosen = at[0] if at else max(summaries, key=lambda s: (s.get("context") or 0, str(s.get("dominant_timing_bucket") or "")))
   kernels = [k for k in (chosen.get("roofline", {}) or {}).get("kernels", []) or [] if isinstance(k, dict)]
   kernels.sort(key=lambda k: (-(k.get("us") or 0.0), str(k.get("name") or "")))
   return kernels, chosen.get("context")
@@ -351,14 +376,19 @@ def _selected_routes(policy:dict[str, Any]) -> str:
 # --- What to try next: the rule table (Prefer data over code). Each rule maps a measured reason or tie-out line
 # to one lever. The page states the rule beside its advice; it never adds a number the seam did not give.
 REASON_CLASS = {"at the limit": "r-ok", "too small to fill memory": "r-small", "slow kernel": "r-slow",
-                "compute bound": "r-small", "unexplained": "r-slow"}
-REASON_COLOR = {"at the limit": "var(--ok)", "too small to fill memory": "var(--excess)", "slow kernel": "var(--gaps)"}
+                "compute bound": "r-small", "unexplained": "r-slow", "inconclusive, cache": "r-small"}
+REASON_COLOR = {"at the limit": "var(--ok)", "too small to fill memory": "var(--excess)", "slow kernel": "var(--gaps)",
+                "inconclusive, cache": "var(--ideal)"}
 NEXT_RULES = {  # per-role reason word (tie_out.REASONS) to the lever; "at the limit" has nothing to gain
   "too small to fill memory": "Fuse it with the roles next to it (Q, K and V) or batch more tokens, so each call moves more bytes.",
   "slow kernel": "Try other kernels for it.",
 }
+# a slow kernel whose search found nothing faster: the lever is the kernel itself, never "try other kernels" again
+SEARCHED_LEVER = "{n} searched, none faster than the model's kernel; the kernel itself is the lever: write a better one for this shape."
 GAPS_SHARE = 0.10  # gaps between kernels at or above this share of the token: launch fewer kernels
 GAPS_LEVER = "Launch fewer kernels: run the token as one graph (CUDA graphs or Metal command buffer reuse) or fuse kernels."
+NOT_TIMED_LEVER = ("These kernels ran in the model but were not timed alone. An in-model capture (Metal System Trace, with "
+                   "Xcode; nsys on NVIDIA) splits attention, norms and idle time.")
 OTHER_SHARE = 0.05  # other kernels above their ideal at or above this share of the token get an item
 FUSIBLE = ("quantize", "norm", "elementwise", "rope", "copy")  # kernels small enough to fold into a neighbour
 OTHER_LEVER_FUSE = "Fuse {kinds} into the weight kernels next to them."
@@ -420,8 +450,10 @@ def _evidence(ptrs:list[dict[str, Any]] | None) -> str:
   return f'<span class="ev">evidence: {", ".join(links)}</span>'
 
 
-def _section(n:int, title:str, body:str) -> str:
-  return f'<section class="card"><h2><span class="n">{n}</span>{_e(title)}</h2>{body}</section>'
+def _section(n:Any, title:str, body:str) -> str:
+  """A numbered card. n is a placeholder here; render_run_html numbers the sections it keeps, in order, so a
+  section that has nothing to say never leaves a gap in the numbers."""
+  return f'<section class="card"><h2><span class="n">{_NUM}</span>{_e(title)}</h2>{body}</section>'
 
 
 def _measured(loss:dict[str, Any]) -> dict[str, Any] | None:
@@ -453,11 +485,14 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
   gauge = (f'<div class="gauge" role="img" aria-label="{pct:.0f}% of roofline"><i style="width:{_pct(pct, 100):.1f}%"></i><s></s></div>'
            f'<div class="gauge-l"><span><b>{pct:.0f}%</b> of roofline</span><span>roofline {limit_ms:.1f} ms per token</span></div>'
            if pct is not None else "")
+  step = loss.get("step") or {}
+  also = "".join(f'<p class="muted">Also measured at context {a["context"]}: {a["tok_s"]:.1f} tok/s. Not the headline: the headline '
+                 f'is the row the tie-out uses ({_e(step.get("rule") or "")}).</p>' for a in step.get("also") or [])
   return _section(1, "The answer", who +
                   f'<div class="hero"><span class="big">{m["tok_s"]:.1f}</span><span class="big-u">tok/s measured</span>{lim}</div>'
                   + gauge +
                   f'<p class="note"><span class="lost">{m["lost_ms"]:.1f} ms per token lost</span> against the limit: '
-                  f'{m["ms"]:.1f} ms measured, {limit_ms:.1f} ms ideal. <span class="muted">{_e(m.get("note") or "")}</span></p>')
+                  f'{m["ms"]:.1f} ms measured, {limit_ms:.1f} ms ideal. <span class="muted">{_e(m.get("note") or "")}</span></p>' + also)
 
 
 def _seg_class(line:dict[str, Any]) -> str:
@@ -526,7 +561,8 @@ def _per_role(loss:dict[str, Any]) -> str:
       ("ideal ms", f'{r["ideal_ms"]:.2f}'), ("actual ms", f'{r["actual_ms"]:.2f}'),
       ("µs/call", _f(r.get("us_per_call"), "{:.1f}")), ("share of loss", f'{r["share"] * 100:.0f}%'),
       ("best found", _e((r.get("best_found") or {}).get("text") or "none")),
-      ("verdict", _e(PLAIN_VERDICT.get(str(r.get("verdict")), r.get("verdict") or "not searched")))))
+      ("verdict", _e(PLAIN_VERDICT.get(str(r.get("verdict")), r.get("verdict") or "not searched"))
+       + (f' ({r["candidates"]} plans searched)' if r.get("candidates") else ""))))
     if r.get("verdict_reason"):
       det += f'<p class="muted wrap">{_e(r["verdict_reason"])}</p>'
     det += _evidence(r.get("evidence"))
@@ -552,7 +588,38 @@ def _per_role(loss:dict[str, Any]) -> str:
   if unsplit:
     names = ", ".join(f'{PLAIN_ROLE.get(str(u.get("role")), u.get("role"))} {u.get("quant") or ""}'.strip() for u in unsplit)
     body += f'<p class="note">Roles that could not be split: {_e(names)}. Their time is inside other kernels.</p>'
+  if loss.get("role_rule"):
+    body += f'<p class="muted">Reason rule: {_e(loss["role_rule"])}</p>'
+  if cc := loss.get("cross_check"):
+    body += _rate_table("Cross-check", cc.get("words") or "", cc.get("rows") or [], cc.get("reason"))
   return _section(3, "Per role", body)
+
+
+def _rate_table(title:str, words:str, rows:list[dict[str, Any]], reason:str | None = None) -> str:
+  """A labelled row group of GB/s and share of peak per role: the probe's reference kernel, or an isolated cross-check."""
+  cells = "".join(f'<tr><td>{_role_name(r["role"], r["quant"])}</td><td>{_f(r.get("us_per_call"), "{:.1f}")}</td>'
+                  f'<td>{_f(r.get("gbs"), "{:.1f}")}</td><td>{_f(r.get("pct_peak"), "{:.0f}%")}{" · cache" if r.get("cache") else ""}</td></tr>'
+                  for r in rows)
+  head = '<tr><td>role</td><td>µs/call</td><td>GB/s</td><td>of peak</td></tr>'
+  table = f'<table class="tie"><tbody>{head}{cells}</tbody></table>' if rows else f'<p class="empty">{_e(reason or "no rows")}</p>'
+  return f'<div class="card"><div class="card-hd"><h2 class="card-ttl">{_e(title)}</h2><span class="card-sub">{_e(words)}</span></div>{table}</div>'
+
+
+def _probe(results:dict[str, Any]) -> str:
+  """BoltBeam's own kernel (reference) per role: GB/s and share of peak. Clearly not the engine's kernel."""
+  probe = results.get("probe") or {}
+  if probe.get("status") != "measured":
+    return ""
+  rows = probe.get("rows") or []
+  body = (f'<p class="muted" style="margin:0 0 10px">{_e(probe.get("label") or "")}. A plain correct GEMV on the model\'s real '
+          f'bytes, timed alone after a cache flush: what this GPU reads for each role\'s shape, not what the engine reads.</p>'
+          + _rate_table("BoltBeam's own kernel (reference)", "collectors/boltbeam_gemv.py through the kernel timer", rows))
+  absent = probe.get("absent") or {}
+  if absent:
+    body += f'<p class="muted">Not reported by this GPU: {_e("; ".join(sorted(set(absent.values()))))}.</p>'
+  if probe.get("dispatch_floor_us") is not None:
+    body += f'<p class="muted">Dispatch floor measured here: {probe["dispatch_floor_us"]:.1f} µs per launch.</p>'
+  return _section(0, "Building blocks", body)
 
 
 def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, Any]]:
@@ -569,12 +636,20 @@ def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, 
       groups.setdefault(r["reason"], []).append(r)
   for reason, rs in groups.items():
     rs = sorted(rs, key=lambda r: -r["lost_ms"])
-    ms = sum(r["lost_ms"] for r in rs)
-    lever = NEXT_RULES[reason]
-    out.append({"what": f"{reason.capitalize()}: " + ", ".join(
-      f'{PLAIN_ROLE.get(r["role"], r["role"])} {r["quant"]} {r["lost_ms"]:.2f} ms' for r in rs),
-      "ms": ms, "share": ms / token, "do": lever, "rule": reason,
-      "evidence": _dedupe([p for r in rs for p in r.get("evidence") or []])})
+    # a slow kernel already searched with nothing faster found gets its own item: the search result is the fact
+    searched = [r for r in rs if reason == "slow kernel" and r.get("verdict") == "none_faster"]
+    for part, lever in ((searched, None), ([r for r in rs if r not in searched], NEXT_RULES[reason])):
+      if not part:
+        continue
+      ms = sum(r["lost_ms"] for r in part)
+      if lever is None:
+        counts = [int(r.get("candidates") or 0) for r in part if r.get("candidates")]
+        n = (f"{counts[0]} plans per role" if len(set(counts)) == 1 and len(counts) > 1 else f"{sum(counts)} plans") if counts else "the kernel search"
+        lever = SEARCHED_LEVER.format(n=n)
+      out.append({"what": f"{reason.capitalize()}: " + ", ".join(
+        f'{PLAIN_ROLE.get(r["role"], r["role"])} {r["quant"]} {r["lost_ms"]:.2f} ms' for r in part),
+        "ms": ms, "share": ms / token, "do": lever, "rule": reason if part is not searched else f"{reason}, searched: none faster",
+        "evidence": _dedupe([p for r in part for p in r.get("evidence") or []])})
   ev = loss.get("evidence") or {}
   found_verdicts = {f.get("verdict") for f in loss.get("findings") or []}
   out += [dict(f) for f in loss.get("findings") or []]
@@ -599,6 +674,10 @@ def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, 
     if l["label"] == "kernels and gaps, not split" and loss.get("missing"):
       out.append({"what": "Kernels and gaps, not split", "ms": l["ms"], "share": l["ms"] / token,
                   "do": SPLIT_LEVER.format(missing=loss["missing"]), "rule": "no per-role time",
+                  "evidence": (ev.get("whole_step") or []) + (ev.get("common") or [])})
+    if l["how"] == "difference" and l["label"].startswith("kernels not timed and gaps") and l["ms"] > 0:
+      out.append({"what": "Not timed: attention, norms, KV read and gaps", "ms": l["ms"], "share": l["ms"] / token,
+                  "do": NOT_TIMED_LEVER, "rule": "isolated kernels: the rest of the token is their difference",
                   "evidence": ev.get("whole_step") or []})
   return sorted(out, key=lambda x: (-x["ms"], x["what"]))
 
@@ -647,12 +726,21 @@ def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, An
     rows.append(("Limit", f'{loss["layout"]["formula"]} ({loss["layout"].get("label") or ""})'))
   elif ceil.get("bytes_moved"):
     rows.append(("Limit", f'{ceil["bytes_moved"] / 1e9:.2f} GB of weights per token over {bw:.1f} GB/s'))
+  step = loss.get("step") or {}
+  if step:
+    graph = ""
+    if step.get("graph_failed"):
+      graph = " Graph replay failed on this run" + (f' ({step["graph_error"]})' if step.get("graph_error") else "") + ": the token ran without graphs."
+    rows.append(("Measured token", f'context {step["context"]}, {step["tok_s"]:.1f} tok/s ({step.get("rule") or ""}); '
+                 f'{step.get("source") or "step 4"}.{graph}'))
   cap = loss.get("capture") or {}
   if cap.get("method"):
     from boltbeam.workflow.screen import CAPTURE_WORDS
     rows.append(("Capture", CAPTURE_WORDS.get(cap["method"], cap["method"]) + (f'; {cap["reason"]}' if cap.get("reason") else "")))
   elif loss.get("runtimes"):
-    rows.append(("Capture", "whole step only, untraced"))
+    rows.append(("Capture", "whole step only, untraced" + (f'; per role: {loss["missing"]}' if loss.get("missing") else "")))
+  if lat := loss.get("latency"):
+    rows.append(("Latency in the reason rule", f'{lat["us"]:.1f} µs, {lat["source"]}'))
   if (loss.get("tie_out") or {}).get("kv_source"):
     rows.append(("KV cache", loss["tie_out"]["kv_source"]))
   if measure and measure.get("status"):
@@ -681,7 +769,8 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
   sections = _answer(manifest, results, measure, source_run)
   if measured:
     sections += _where(loss) + _per_role(loss) + _next(loss, policy)
-  sections += _facts(manifest, results, measure)
+  sections += _probe(results) + _facts(manifest, results, measure)
+  sections = _number(sections)
   return (
     "<!doctype html>\n"
     '<html lang="en"><head><meta charset="utf-8">'

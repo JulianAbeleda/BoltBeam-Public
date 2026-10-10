@@ -25,8 +25,6 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-import random
-import statistics
 import struct
 import sys
 from typing import Any, Callable
@@ -44,93 +42,15 @@ PROVIDER_ID = "boltbeam/metal-native"
 GGML_TYPES = {"Q4_K": 12, "Q6_K": 14}
 BLOCK_BYTES = {"Q4_K": 144, "Q6_K": 210}  # 256 weights per block
 METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18}  # Q4_K: d, dmin, 12 scale bytes. Q6_K: 16 int8 scales, d.
-FLUSH_BYTES = 64 << 20  # larger than the M-series system level cache
-ROWS_PER_GROUP = 4  # simdgroups per threadgroup; one simdgroup owns one output row
-SAMPLES, WARMUPS = 20, 10  # warmups let the GPU clock ramp up before the first timed sample
+WORKING_SET_SHARE = 0.8  # never ask for more than this share of Metal's recommended working set
 CHECK_ROWS = 9
 TOLERANCE = 1e-3  # max |gpu - cpu| over max |cpu|: float32 sums in a different order
-WORKING_SET_SHARE = 0.8  # never ask for more than this share of Metal's recommended working set
-
-MSL = r"""
-#include <metal_stdlib>
-using namespace metal;
-
-static inline void scale_min_k4(uint j, device const uchar* q, thread float& sc, thread float& mn) {
-  if (j < 4) { sc = float(q[j] & 63); mn = float(q[j + 4] & 63); }
-  else { sc = float((q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4)); mn = float((q[j + 4] >> 4) | ((q[j] >> 6) << 4)); }
-}
-
-kernel void gemv_q4_k(device const uchar* w [[buffer(0)]], device const float* x [[buffer(1)]],
-                      device float* y [[buffer(2)]], constant uint& rows [[buffer(3)]], constant uint& cols [[buffer(4)]],
-                      uint tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
-                      uint lane [[thread_index_in_simdgroup]], uint nsg [[simdgroups_per_threadgroup]]) {
-  uint row = tg * nsg + sg;
-  if (row >= rows) return;
-  uint nb = cols / 256;
-  device const uchar* rp = w + ulong(row) * nb * 144;
-  float acc = 0.0f;
-  for (uint b = 0; b < nb; b++) {
-    device const uchar* blk = rp + b * 144;
-    float d = float(*(device const half*)(blk));
-    float dmin = float(*(device const half*)(blk + 2));
-    // lane owns qs bytes 4*lane..4*lane+3: one 32-bit load, one scale pair per block
-    uint j = lane / 8, i0 = (lane % 8) * 4;
-    float s0, m0, s1, m1;
-    scale_min_k4(2 * j, blk + 4, s0, m0);
-    scale_min_k4(2 * j + 1, blk + 4, s1, m1);
-    uint q = *(device const uint*)(blk + 16 + 4 * lane);
-    float4 lo = *(device const float4*)(x + b * 256 + 64 * j + i0);
-    float4 hi = *(device const float4*)(x + b * 256 + 64 * j + 32 + i0);
-    float4 ql = float4(q & 0xF, (q >> 8) & 0xF, (q >> 16) & 0xF, (q >> 24) & 0xF);
-    float4 qh = float4((q >> 4) & 0xF, (q >> 12) & 0xF, (q >> 20) & 0xF, (q >> 28) & 0xF);
-    acc += d * s0 * dot(ql, lo) - dmin * m0 * (lo.x + lo.y + lo.z + lo.w);
-    acc += d * s1 * dot(qh, hi) - dmin * m1 * (hi.x + hi.y + hi.z + hi.w);
-  }
-  acc = simd_sum(acc);
-  if (lane == 0) y[row] = acc;
-}
-
-kernel void gemv_q6_k(device const uchar* w [[buffer(0)]], device const float* x [[buffer(1)]],
-                      device float* y [[buffer(2)]], constant uint& rows [[buffer(3)]], constant uint& cols [[buffer(4)]],
-                      uint tg [[threadgroup_position_in_grid]], uint sg [[simdgroup_index_in_threadgroup]],
-                      uint lane [[thread_index_in_simdgroup]], uint nsg [[simdgroups_per_threadgroup]]) {
-  uint row = tg * nsg + sg;
-  if (row >= rows) return;
-  uint nb = cols / 256;
-  device const uchar* rp = w + ulong(row) * nb * 210;
-  float acc = 0.0f;
-  uint is = lane / 16;
-  for (uint b = 0; b < nb; b++) {
-    device const uchar* blk = rp + b * 210;
-    float d = float(*(device const half*)(blk + 208));
-    device const float* xb = x + b * 256;
-    for (uint n = 0; n < 2; n++) {
-      device const uchar* ql = blk + 64 * n;
-      device const uchar* qh = blk + 128 + 32 * n;
-      device const char* sc = (device const char*)(blk + 192 + 8 * n);
-      uchar h = qh[lane];
-      int q1 = int((ql[lane] & 0xF) | ((h & 3) << 4)) - 32;
-      int q2 = int((ql[lane + 32] & 0xF) | (((h >> 2) & 3) << 4)) - 32;
-      int q3 = int((ql[lane] >> 4) | (((h >> 4) & 3) << 4)) - 32;
-      int q4 = int((ql[lane + 32] >> 4) | (((h >> 6) & 3) << 4)) - 32;
-      device const float* xh = xb + 128 * n;
-      acc += d * float(sc[is]) * float(q1) * xh[lane];
-      acc += d * float(sc[is + 2]) * float(q2) * xh[lane + 32];
-      acc += d * float(sc[is + 4]) * float(q3) * xh[lane + 64];
-      acc += d * float(sc[is + 6]) * float(q4) * xh[lane + 96];
-    }
-  }
-  acc = simd_sum(acc);
-  if (lane == 0) y[row] = acc;
-}
-
-kernel void flush(device float* b [[buffer(0)]], uint i [[thread_position_in_grid]]) { b[i] = b[i] * 0.5f + 1.0f; }
-
-kernel void empty(device float* b [[buffer(0)]], uint i [[thread_position_in_grid]]) { if (i == 0xFFFFFFFF) b[0] = 0.0f; }
-"""
-KERNELS = {"Q4_K": "gemv_q4_k", "Q6_K": "gemv_q6_k"}
-# the kernel's source-level facts: what BoltBeam wrote, not what the compiler emitted
-KERNEL_SOURCE = {"loads": "Q4_K: one 32-bit load per lane per block; Q6_K: bytes", "rows_per_simdgroup": 1, "reduction": "simd_sum"}
+# the kernels are adapter 0 of the one kernel timer (collectors/boltbeam_gemv.py); the loop is kernel_timer's
+from boltbeam.collectors import boltbeam_gemv as gemv  # noqa: E402
+from boltbeam.collectors import kernel_timer  # noqa: E402
+MSL, KERNELS, ROWS_PER_GROUP, KERNEL_SOURCE = gemv.MSL, gemv.KERNELS, gemv.ROWS_PER_GROUP, gemv.KERNEL_SOURCE
+SAMPLES, WARMUPS = kernel_timer.SAMPLES, kernel_timer.WARMUPS
+FLUSH_BYTES = kernel_timer.FLUSH["Metal"]["bytes"]
 
 
 # --- the CPU reference: pure Python, the GGUF block layouts written out once more ---------------------------
@@ -232,14 +152,21 @@ def _run_facts(run:pathlib.Path, **kw:Any) -> dict[str, Any]:
 
 # --- probe evidence ----------------------------------------------------------------------------------------
 
-def _tensor_for(probe:dict[str, Any], tensors:list[tuple[str, tuple[int, ...], int, int]]) -> tuple[str, int]:
-  rows, cols = (int(v) for v in probe["shape"])
-  want = GGML_TYPES.get(probe["quant"])
+def tensor_for(quant:str, rows:int, cols:int, tensors:list[tuple[str, tuple[int, ...], int, int]],
+               tensor_name:str | None = None) -> tuple[str, int]:
+  """The model tensor of this quant and shape (the named one when it is among them): its name and data offset.
+  Shared by every collector that binds real weight bytes (the probes here, collectors/engine_kernels.py)."""
+  want = GGML_TYPES.get(quant)
   matches = [(name, off) for name, dims, typ, off in tensors if typ == want and tuple(dims) == (cols, rows)]
   if not matches:
-    raise ValueError(f"no {probe['quant']} tensor of shape {rows}x{cols} in the model")
-  named = [m for m in matches if m[0] == probe.get("tensor_name")]
+    raise ValueError(f"no {quant} tensor of shape {rows}x{cols} in the model")
+  named = [m for m in matches if m[0] == tensor_name]
   return (named or matches)[0]
+
+
+def _tensor_for(probe:dict[str, Any], tensors:list[tuple[str, tuple[int, ...], int, int]]) -> tuple[str, int]:
+  rows, cols = (int(v) for v in probe["shape"])
+  return tensor_for(probe["quant"], rows, cols, tensors, probe.get("tensor_name"))
 
 
 def _percentile(values:list[float], q:float) -> float:
@@ -259,109 +186,88 @@ def _absent(probe_quant:str) -> dict[str, str]:
   }
 
 
-def measure_probe(metal:Any, kernels:dict[str, Any], probe:dict[str, Any], model:pathlib.Path, data_start:int,
-                  tensors:list, flush_buf:int, flush_groups:int, floor_us:float, target_gbs:float | None) -> dict[str, Any]:
+def measure_probe(bridge, flusher, probe:dict[str, Any], model:pathlib.Path, data_start:int, tensors:list,
+                  floor_us:float, target_gbs:float | None, *, backend:str = "Metal",
+                  libraries:dict[str, int] | None = None) -> dict[str, Any]:
+  """One probe row: BoltBeam's GEMV (adapter 0) on the role's real tensor bytes, timed by the one kernel timer."""
   rows, cols = (int(v) for v in probe["shape"])
   quant = probe["quant"]
   row = {"probe_id": probe["probe_id"], "kind": "quant_gemv", "role": probe["role"], "quant": quant,
          "shape": [rows, cols]}
   if quant not in KERNELS or cols % 256:
     row["status"] = "not_measured"
-    row["reason"] = f"BoltBeam has no Metal kernel for {quant} with {cols} columns"
+    row["reason"] = f"BoltBeam has no {backend} kernel for {quant} with {cols} columns"
     return row
   name, offset = _tensor_for(probe, tensors)
   size = rows * (cols // 256) * BLOCK_BYTES[quant]
-  if size + FLUSH_BYTES > metal.working_set_bytes * WORKING_SET_SHARE:
+  if size + FLUSH_BYTES > bridge.working_set_bytes * WORKING_SET_SHARE:
     row["status"] = "not_measured"
-    row["reason"] = f"{size / 2**30:.1f} GiB of weights does not fit the Metal working set"
+    row["reason"] = f"{size / 2**30:.1f} GiB of weights does not fit the GPU's working set"
     return row
   with open(model, "rb") as f:
     f.seek(data_start + offset)
     weights = f.read(size)
-  rng = random.Random(f"{probe['probe_id']}")
-  x = [rng.uniform(-1.0, 1.0) for _ in range(cols)]
-  w_buf, x_buf, y_buf = metal.buffer(weights), metal.buffer(struct.pack(f"<{cols}f", *x)), metal.buffer(length=rows * 4)
-  try:
-    k = kernels[KERNELS[quant]]
-    groups, threads = (rows + ROWS_PER_GROUP - 1) // ROWS_PER_GROUP, ROWS_PER_GROUP * 32
-    consts = [struct.pack("<I", rows), struct.pack("<I", cols)]
-    launch = lambda: metal.run(k["pso"], [w_buf, x_buf, y_buf], consts, groups, threads)  # noqa: E731
-    launch()
-    gpu = struct.unpack(f"<{rows}f", metal.read(y_buf, rows * 4))
-    checked = check_rows(rows)
-    ref = {r: reference_row(weights, quant, r, cols, x) for r in checked}
-    scale = max(abs(v) for v in ref.values()) or 1.0
-    err = max(abs(gpu[r] - ref[r]) for r in checked) / scale
-    row["correctness"] = {"checked_rows": checked, "reference": "pure-Python dequantize and dot", "max_rel_err": err,
-                          "tolerance": TOLERANCE, "passed": err <= TOLERANCE}
-    if err > TOLERANCE:
-      row["status"] = "correctness_failed"
-      return row
-    for _ in range(WARMUPS):
-      launch()
-    samples = []
-    for _ in range(SAMPLES):
-      metal.run(kernels["flush"]["pso"], [flush_buf], [], flush_groups, 256)
-      samples.append(launch())
-  finally:
-    for buf in (w_buf, x_buf, y_buf):
-      metal.release(buf)
-  med = statistics.median(samples)
+  x = gemv.vector(f"{probe['probe_id']}", cols)
+  spec = gemv.spec(backend, quant, rows, cols, weights, x)
+  got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries)
+  row["correctness"] = got["correctness"]
+  if not got["samples"]:
+    row["status"] = "correctness_failed"
+    return row
+  med = got["median_us"]
   metadata = rows * (cols // 256) * METADATA_BYTES[quant]
   activation = cols * 4 + rows * 4
-  total = size + activation
   row.update({
     "status": "measured", "tensor": name,
-    "timing": {"candidate_us": med, "spread_pct": 100.0 * (_percentile(samples, 0.9) - _percentile(samples, 0.1)) / med,
-               "min_us": min(samples), "samples": len(samples), "warmups": WARMUPS, "cache": "flushed",
-               "flush_bytes": FLUSH_BYTES, "clock": "command buffer GPUStartTime/GPUEndTime",
-               "dispatch_floor_us": floor_us},
+    "timing": {"candidate_us": med, "spread_pct": got["spread_pct"], "min_us": got["min_us"], "samples": len(got["samples"]),
+               **got["timing"], "dispatch_floor_us": floor_us},
     "bytes": {"physical_weight_bytes": size - metadata, "metadata_bytes": metadata, "activation_bytes": activation},
-    "throughput": {"achieved_gbs": total / (med * 1e3), "target_gbs": target_gbs},
+    "throughput": {"achieved_gbs": got["gbs"], "target_gbs": target_gbs},
     "latency_concurrency": {},
     "isa": {},
-    "resources": {"lds_bytes": k["static_threadgroup_memory_bytes"]},
-    "kernel": {"name": KERNELS[quant], "threadgroup_threads": threads, "threadgroups": groups,
-               "thread_execution_width": k["thread_execution_width"],
-               "max_threads_per_threadgroup": k["max_threads_per_threadgroup"], "source": KERNEL_SOURCE},
+    "resources": {"lds_bytes": got["pipeline"]["static_threadgroup_memory_bytes"]},
+    "kernel": gemv.facts(got, spec),
+    "timed_by": spec.label,
     "absent": _absent(quant),
   })
   return row
 
 
 def collect_probe_evidence(run:pathlib.Path, say:Callable[[str], None] = lambda _: None) -> dict[str, Any]:
-  from boltbeam.runtime.metal_device import Metal, MetalUnavailable
+  """probe_request.json -> probe_evidence.json on this machine's GPU (Metal or CUDA): BoltBeam's own GEMV per role
+  on the model's real bytes. The peak every row is measured against is the run's one read bandwidth."""
+  from boltbeam.workflow.screen import run_bandwidth
   facts = _run_facts(run, need_bench=False)
   request = read_json(run / "probe_request.json")
   _, tensors, data_start = read_gguf_layout(facts["model"])
+  backend = facts["target"].backend
   try:
-    metal = Metal()
-  except MetalUnavailable as exc:
-    raise CannotMeasure(str(exc), "measure on a Mac with a Metal GPU") from exc
+    bridge = kernel_timer.bridge_for(backend)
+  except RuntimeError as exc:  # MetalUnavailable, CudaUnavailable: this machine has no such GPU or no compiler
+    raise CannotMeasure(str(exc), f"measure on a machine with a {backend} GPU") from exc
   try:
-    kernels = metal.compile(MSL, [*KERNELS.values(), "flush", "empty"])
-    flush_buf = metal.buffer(length=FLUSH_BYTES)
-    flush_groups = FLUSH_BYTES // 4 // 256
-    empty_buf = metal.buffer(length=16)
-    floor_us = statistics.median(metal.run(kernels["empty"]["pso"], [empty_buf], [], 1, 32) for _ in range(SAMPLES))
-    target_gbs = facts["target"].memory_bandwidth_gbs
+    flusher = kernel_timer.Flusher(bridge, backend)
+    floor_us = flusher.floor_us()
+    target_gbs, target_source = run_bandwidth(run, facts["target"])
     rows = []
+    libraries:dict[str, int] = {}
     for i, probe in enumerate(request.get("probes", []), start=1):
       say(f"probe {i} of {len(request['probes'])}: {probe['role']} {probe['quant']} {probe['shape'][0]}x{probe['shape'][1]}")
-      rows.append(measure_probe(metal, kernels, probe, facts["model"], data_start, tensors, flush_buf, flush_groups,
-                                floor_us, target_gbs))
+      rows.append(measure_probe(bridge, flusher, probe, facts["model"], data_start, tensors, floor_us, target_gbs,
+                                backend=backend, libraries=libraries))
   finally:
-    metal.close()
+    bridge.close()
   manifest = facts["manifest"]
   return {
     "schema": SCHEMA_PROBE_EVIDENCE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
     "workload": manifest["workload"], "provider_id": PROVIDER_ID, "collector_id": COLLECTOR_ID,
-    "device": metal.name, "dispatch_floor_us": floor_us, "probes": rows,
+    "device": bridge.name, "dispatch_floor_us": floor_us, "probes": rows, "peak_source": target_source,
     "measured": ["timing", "throughput.achieved_gbs", "resources.lds_bytes", "correctness"],
-    "derived": ["bytes (from the GGUF block layout)", "throughput.target_gbs (from the target registry)"],
-    "notes": ["Kernels are BoltBeam's MSL GEMVs on the model's real tensor bytes, not llama.cpp's kernels.",
-              "Each timed sample follows a flush of a buffer larger than the system level cache.",
-              "The command-buffer interval includes dispatch_floor_us of fixed GPU start cost; it is not subtracted."],
+    "derived": ["bytes (from the GGUF block layout)", f"throughput.target_gbs ({target_source})"],
+    "notes": [f"Kernels are BoltBeam's own {backend} GEMVs on the model's real tensor bytes (collectors/boltbeam_gemv.py), "
+              "not the engine's kernels.",
+              "Each timed sample follows a flush of a buffer larger than the last-level cache.",
+              "The timed interval includes dispatch_floor_us of fixed GPU start cost; it is not subtracted."],
   }
 
 
@@ -422,7 +328,10 @@ def collect_timing_trace(run:pathlib.Path, evidence:dict[str, Any], *, llama_ben
     say(f"decode at depth {ctx}: llama-bench")
     bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx))
     progress.report(len(bench), parts)
-  trace = build_timing_trace(facts["manifest"], request, evidence, bench, facts["target"].memory_bandwidth_gbs)
+  from boltbeam.workflow.screen import run_bandwidth
+  peak_gbs, peak_source = run_bandwidth(run, facts["target"])
+  trace = build_timing_trace(facts["manifest"], request, evidence, bench, peak_gbs)
+  trace["peak_source"] = peak_source
   trace["aux_sources"] = {"llama_bench": {str(k): v for k, v in bench.items()}}
   trace["batches"] = llama_bench_decode.batch_points(bench, facts["model"], batches, say=say)
   return trace

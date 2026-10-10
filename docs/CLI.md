@@ -129,7 +129,8 @@ python3 -m boltbeam.cli analyze MODEL --target apple_m3_10c --out-dir out/
 That writes `model_profile.json`, `search_space.json`, `route_policy.seed.json`,
 `next_measurement_plan.json`, `fixture_manifest.json`, `analysis_manifest.json`, and
 `tinygrad_commands.md`, which is the list of commands to run on the compiler side. Those commands
-begin `cd $TINYGRAD_ROOT`. Set that variable, or pass `--tinygrad-root`, and they are ready to paste.
+begin `cd $TINYGRAD_ROOT`. Set `BOLTBEAM_TINYGRAD_ROOT` (the older `TINYGRAD_ROOT` is still read), or pass
+`--tinygrad-root`, and they are ready to paste.
 You do not need a checkout to produce them.
 
 ## 4. A run folder, when you are doing this properly

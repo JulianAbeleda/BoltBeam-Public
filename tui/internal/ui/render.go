@@ -435,6 +435,8 @@ var captureWords = map[string]string{
 	"nsys":                    "captured with nsys",
 	"rocprofv3":               "captured with rocprofv3",
 	"metal-system-trace":      "captured with Metal System Trace",
+	// collectors/engine_kernels.py METHOD and WORDS: the engine's own kernels, timed alone by BoltBeam's kernel timer
+	"boltbeam-kernel-timer-isolated": "isolated, timed by BoltBeam's kernel timer",
 }
 
 // lossTitle is step 5's heading: the provider and how its roles were timed.
@@ -621,7 +623,9 @@ func tieOutBody(t *seam.TieOut) string {
 			b.WriteString(stMuted.Render("  other kernels: "+strings.Join(parts, ", ")) + "\n")
 		}
 	}
-	if t.BusyMs != nil {
+	if t.BusyMs != nil && t.Isolated {
+		fmt.Fprintf(&b, "The weight kernels, timed alone, sum to %.3f ms of the %.3f ms token; the rest is attention, norms, the KV read and idle time, not timed.\n", *t.BusyMs, *t.TokenMs)
+	} else if t.BusyMs != nil {
 		fmt.Fprintf(&b, "All kernels sum to %.3f ms against the real token of %.3f ms; the gap is their difference.\n", *t.BusyMs, *t.TokenMs)
 	}
 	if t.ShowBoth {
@@ -683,6 +687,7 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	}
 	if l.Missing != nil {
 		b.WriteString(stMuted.Render("Per role: "+*l.Missing) + "\n")
+		b.WriteString(findingsBody(nil, l.Findings)) // what the run's own facts say (a failed graph replay) stands without roles
 		return b.String() + othersBody(l.Others, provider)
 	}
 	if len(l.Roles) == 0 {
@@ -708,8 +713,28 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		}
 		b.WriteString(stMuted.Render("Not split out, so in not attributed: "+strings.Join(names, ", ")+".") + "\n")
 	}
+	if cc := l.CrossCheck; cc != nil && len(cc.Rows) > 0 {
+		b.WriteString("\n" + stHeader.Render("Cross-check: "+cc.Words) + "\n" + rateTable(cc.Rows))
+	}
 	b.WriteString(othersBody(l.Others, shown))
 	return b.String()
+}
+
+// rateTable is a labelled row group of read rates per role: µs per call, GB/s, the share of peak, and whether the
+// read stayed in cache.
+func rateTable(rows []seam.RateRow) string {
+	t := [][]string{{"ROLE", "QUANT", "µs/CALL", "GB/s", "OF PEAK"}}
+	for _, r := range rows {
+		pct := num(r.PctPeak)
+		if r.PctPeak != nil {
+			pct = fmt.Sprintf("%.0f%%", *r.PctPeak)
+		}
+		if r.Cache {
+			pct += " · cache"
+		}
+		t = append(t, []string{word(plainRole, r.Role), r.Quant, us(r.UsPerCall), num(r.Gbs), pct})
+	}
+	return table(t)
 }
 
 // othersBody is the other provider's numbers, each labelled with its provider and, for another run, its run.
@@ -839,13 +864,14 @@ func hereLoss(f Facts, l seam.Loss) seam.Loss {
 		return l
 	}
 	why := "Not possible on " + here() + ": " + deref(p.Capture.Reason) + "."
-	if l.Missing != nil {
+	generic := func(s *string) bool { return s != nil && strings.Contains(*s, "Run with") } // the run recorded no reason of its own
+	if generic(l.Missing) {
 		l.Missing = &why
 	}
-	if l.ProviderMissing != nil {
+	if generic(l.ProviderMissing) {
 		l.ProviderMissing = &why
 	}
-	if l.TieOut != nil && l.TieOut.Missing != nil {
+	if l.TieOut != nil && generic(l.TieOut.Missing) {
 		t := *l.TieOut
 		t.Missing = &why
 		l.TieOut = &t
@@ -865,6 +891,16 @@ func resultBody(f Facts, width int) string {
 		fmt.Fprintf(&b, "%s %s measured. The limit is %.1f.\n", stAccent.Render(glyphBolt),
 			stHeader.Render(fmt.Sprintf("%.1f tokens per second", *res.Timing.TokS)), *res.Ceiling.TokS)
 		fmt.Fprintf(&b, "%s %.0f%% of the limit\n", bar(ratio, 20), ratio*100)
+		for _, a := range res.Timing.Also { // one headline: the other contexts are listed, labelled, never mixed in
+			fmt.Fprintf(&b, "%s\n", stMuted.Render(fmt.Sprintf("Also measured at context %s: %.1f tokens per second (not the headline).", count(a.Context), a.TokS)))
+		}
+		if s := res.Loss.Step; s != nil && s.GraphFailed {
+			why := ""
+			if s.GraphError != nil {
+				why = " (" + *s.GraphError + ")"
+			}
+			fmt.Fprintf(&b, "%s\n", stWarn.Render(glyphWarn+" Graph replay failed on this run"+why+": the token ran without graphs."))
+		}
 	case res.Ceiling.TokS != nil:
 		fmt.Fprintf(&b, "%s %.1f tokens per second at best. Nothing measured yet.\n", stAccent.Render(glyphBolt), *res.Ceiling.TokS)
 	default:
@@ -901,7 +937,13 @@ func resultBody(f Facts, width int) string {
 	for _, g := range res.Regimes {
 		clear = clear || g.Classification != "inconclusive"
 	}
-	if len(res.Regimes) > 0 && !clear {
+	if p := res.Probe; p != nil && p.Status == "measured" && len(p.Rows) > 0 {
+		// the probe's measured rates stand on their own: BoltBeam's reference kernel per role, labelled so
+		fmt.Fprintf(&b, "\n%s\n%s", stHeader.Render(p.Label), rateTable(p.Rows))
+		if p.DispatchFloorUs != nil {
+			fmt.Fprintf(&b, "%s\n", stMuted.Render(fmt.Sprintf("Dispatch floor measured here: %.1f µs per launch.", *p.DispatchFloorUs)))
+		}
+	} else if len(res.Regimes) > 0 && !clear {
 		fmt.Fprintf(&b, "\n%s\n", stMuted.Render(fmt.Sprintf("The building-block tests ran on %d roles. None could be classified:\n"+
 			"this GPU does not report the counters the test needs.", len(res.Regimes))))
 	}
@@ -967,6 +1009,8 @@ func DetailActions(f Facts, i, row, width, maxRows int) string {
 	switch {
 	case i == pageSetup:
 		title = "Setup"
+	case i == pageSaved:
+		title = "Saved runs"
 	case picker(i):
 		title = "Choose"
 	}
@@ -993,6 +1037,11 @@ func DetailView(f Facts, i, row, width, height int, scroll *viewport.Model) stri
 	if i == pageSetup { // Setup is its rows only: one box, padded to the screen
 		actions := DetailActions(f, i, row, width, height-2)
 		return actions + strings.Repeat("\n", max(height-lipgloss.Height(actions), 0))
+	}
+	if i == pageSaved { // the list is the page: the rows take the big box on top, the hint sits below
+		hint := box("What next", steps[i].body(f, width-4), width, false)
+		actions := DetailActions(f, i, row, width, max(height-lipgloss.Height(hint)-3, 6))
+		return actions + strings.Repeat("\n", max(height-lipgloss.Height(actions)-lipgloss.Height(hint), 0)) + "\n" + hint
 	}
 	actions := DetailActions(f, i, row, width, max(height*2/3-3, 6)) // the rows take up to two thirds of the screen
 	scroll.Width, scroll.Height = width-4, max(height-lipgloss.Height(actions)-3, 1)
@@ -1042,6 +1091,9 @@ func runningBody(f Facts, width int) string {
 		count = fmt.Sprintf("%d of %d", min(p.Done+1, p.Total), p.Total)
 	}
 	pct := fmt.Sprintf("%3.0f%%", f.Frac*100)
+	if p.Estimate { // a first run: the weights are the pipeline's default table, so the percent is an estimate
+		pct = fmt.Sprintf("~%.0f%%", f.Frac*100)
+	}
 	barW := max(width-4-lipgloss.Width(pct)-lipgloss.Width(count)-4, 10)
 	fmt.Fprintf(&b, "  %s  %s  %s\n", bar(f.Frac, barW), pct, count)
 	now := "Starting"

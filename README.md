@@ -76,14 +76,19 @@ cd tui && go build -o boltbeam-tui .
 It has three screens:
 
 1. **Setup.** Pick a model, a chip and an engine (llama.cpp or tinygrad). The chip starts as this machine.
-   Setup shows the speed limit for that model on that chip. Press **Run**.
-2. **Run.** Run finds the speed limit, checks the GPU is free, measures with the engine, and times each
-   role. When it ends, it shows the measured tokens per second against the limit, and where the time went.
-   **Save run** keeps it.
+   Press **Run**.
+2. **Run.** Run finds the speed limit, checks the GPU is free, runs the building-block probe, measures with the
+   engine, times each role and writes the report. When it ends, it shows the measured tokens per second against
+   the limit, where the time went, and what to try next. **Save run** keeps it.
 3. **Saved runs.** Every run you saved. Open one to see its results again.
 
 On a chip that is not this machine, Run gives the speed limit only. Measuring needs the chip itself.
-[tui/README.md](tui/README.md) has the keys and the JSON mode for agents.
+[tui/README.md](tui/README.md) has the keys, the environment and the JSON mode for agents.
+
+Per-role time needs no Xcode: BoltBeam compiles the engine's own shipped kernels and times them alone through
+its Metal bridge ([docs/kernel-timer.md](docs/kernel-timer.md)). The tinygrad engine needs the fork:
+`BOLTBEAM_TINYGRAD_ROOT` names its checkout (default `../tinygrad-arkey-exp`), `BOLTBEAM_TINYGRAD_VENV` its venv
+folder, or `BOLTBEAM_TINYGRAD_PYTHON` its interpreter. The older name `TINYGRAD_ROOT` is still read.
 
 ## The core commands
 

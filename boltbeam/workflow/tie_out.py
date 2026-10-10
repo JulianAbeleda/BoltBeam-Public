@@ -28,12 +28,17 @@ SHOW_BOTH_SHARE = 0.01  # show the limit at context 1 beside context N when the 
 # filling and draining the pipe, so it cannot get near peak however good its code is.
 ROLE_RULE = {
   "at_limit_pct": 85.0,  # at or above this share of peak bandwidth: at the limit
-  "latency_us": 1.0,  # assumed DRAM round trip plus launch ramp; not measured on these chips
+  "latency_us": 1.0,  # assumed DRAM round trip plus launch ramp, used only when the run measured no dispatch floor
   "fill_factor": 10.0,  # a call must move this many times B x L bytes to be able to reach about 90% of peak
 }
+LATENCY_ASSUMED = "assumed"
+LATENCY_MEASURED = "the dispatch floor the probe measured on this GPU"
 OWN_TIMING = "tinygrad-profile-events"  # the engine's own profiling, not an outside capture
+from boltbeam.collectors.engine_kernels import METHOD as ISOLATED  # the engine's kernels timed alone by BoltBeam's kernel timer
 REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slow": "slow kernel",
-           "compute": "compute bound", "unexplained": "unexplained"}
+           "compute": "compute bound", "unexplained": "unexplained", "cache": "inconclusive, cache"}
+# the isolated tie-out's difference line: what the isolated kernels do not cover
+NOT_TIMED_LABEL = "kernels not timed and gaps (attention, norms, KV read, idle)"
 
 # what a kernel that is not a weight role is, by words in its name; for labels only, never for attribution
 KIND_WORDS = (("flash", "attention"), ("attention", "attention"), ("softmax", "attention"), ("rms_norm", "norm"),
@@ -75,9 +80,12 @@ def attended_context(trace:dict[str, Any], provider:str) -> float | None:
   whole = next((r for r in trace.get("rows", []) if r.get("scope") == "whole_step"), None)
   if not whole or whole.get("context") is None:
     return None
+  method = (trace.get("capture") or {}).get("method")
+  if method == ISOLATED:  # the kernels ran alone: the context is step 4's, as the row carries it
+    return float(whole["context"])
   n = whole.get("decode_tokens") or 1
   base = float(whole["context"]) + (TINYGRAD_WARM if provider == "tinygrad" else 0)
-  captured = (trace.get("capture") or {}).get("method") not in (None, "tinygrad-profile-events")
+  captured = method not in (None, OWN_TIMING)
   return base + ((n + 3) / 2 if captured else (n + 1) / 2)
 
 
@@ -96,17 +104,22 @@ def batch_limit(*, weight_ms:float, profile:dict[str, Any], context:float, batch
 
 
 def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tuple[str, str], str] | None = None,
-             throttled:bool = False) -> tuple[list[dict[str, Any]], str]:
+             throttled:bool = False, latency_us:float | None = None) -> tuple[list[dict[str, Any]], str]:
   """Each role with % of peak, µs per call and its reason word; and the rule as one sentence with its numbers.
-  regimes is the roofline regime per (role, quant) at this context; throttled says the chip throttled while read."""
-  in_flight = bandwidth_gbs * 1e9 * ROLE_RULE["latency_us"] * 1e-6  # bytes
+  regimes is the roofline regime per (role, quant) at this context; throttled says the chip throttled while read.
+  latency_us is the dispatch floor the run's probe measured on this GPU; without one the assumed figure is used,
+  and the sentence says which."""
+  latency, latency_source = (latency_us, LATENCY_MEASURED) if latency_us else (ROLE_RULE["latency_us"], LATENCY_ASSUMED)
+  in_flight = bandwidth_gbs * 1e9 * latency * 1e-6  # bytes
   small = in_flight * ROLE_RULE["fill_factor"]
   out = []
   for r in roles:
     calls = r.get("calls_per_token") or 0
     pct = 100.0 * r["ideal_ms"] / r["actual_ms"] if r["actual_ms"] > 0 else None
     per_call_bytes = r["ideal_ms"] * 1e-3 * bandwidth_gbs * 1e9 / calls if calls else None
-    if r.get("within_noise"):  # below its floor, inside the chip's plausibility band (tinygrad_role_time.loss)
+    if r.get("cache"):  # an isolated read that stayed in cache: not a DRAM number, so no rule applies to it
+      why = REASONS["cache"]
+    elif r.get("within_noise"):  # below its floor, inside the chip's plausibility band (tinygrad_role_time.loss)
       why = r.get("label") or REASONS["at_limit"]
     elif pct is not None and round(pct, 1) >= ROLE_RULE["at_limit_pct"]:
       why = REASONS["at_limit"]
@@ -122,10 +135,36 @@ def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tu
                 "mb_per_call": per_call_bytes / 1e6 if per_call_bytes else None, "reason": why})
   rule = (f"At the limit: {ROLE_RULE['at_limit_pct']:.0f}% of peak or more. Too small to fill memory: a call moves "
           f"under {small / 1e6:.1f} MB, which is {ROLE_RULE['fill_factor']:.0f} x the {in_flight / 1e6:.2f} MB that must "
-          f"be in flight ({bandwidth_gbs:.0f} GB/s x {ROLE_RULE['latency_us']:.1f} µs assumed latency, Little's law). "
+          f"be in flight ({bandwidth_gbs:.0f} GB/s x {latency:.1f} µs latency, {latency_source}, Little's law). "
           "Compute bound: the roofline regime is compute. Slow kernel: below the limit, the call big enough, not "
-          "compute bound, the chip not throttled. Anything else: unexplained.")
+          "compute bound, the chip not throttled. Inconclusive, cache: an isolated read that stayed in cache. "
+          "Anything else: unexplained.")
   return out, rule
+
+
+def measured_step(trace:dict[str, Any] | None, provider:str, near:float | None = None) -> dict[str, Any] | None:
+  """THE measured token of step 4: one whole-step row, picked by one rule for every reader (the headline, the Run
+  line, the tie-out, summary.txt, results.json). Rows of another provider never count: one engine's kernels never
+  tie out against another's token. With a per-role capture, the row nearest the context that capture attended
+  (near); without one, the row at the smallest context, the token closest to the context-1 limit. The other rows
+  are "also measured", labelled, never the headline."""
+  if not trace:
+    return None
+  measured_by = trace.get("provider") or ("tinygrad" if str(trace.get("provider_id", "")).startswith("tinygrad")
+                                          else "llama.cpp")
+  if measured_by != provider:
+    return None
+  rows = [r for r in trace.get("rows", []) if r.get("scope") == "whole_step" and r.get("tok_s")]
+  if not rows:
+    return None
+  key = (lambda r: abs(float(r.get("context") or 0) - near)) if near is not None else (lambda r: float(r.get("context") or 0))
+  row = min(rows, key=key)
+  index = trace["rows"].index(row)
+  return {"context": row.get("context"), "tok_s": row["tok_s"], "ms": 1000.0 / row["tok_s"], "wall_us": row.get("wall_us"),
+          "source": row.get("source"),
+          "graph_error": row.get("graph_error"), "index": index, "decode_tokens": row.get("decode_tokens"),
+          "rule": "nearest the context the per-role capture attended" if near is not None else "the smallest context",
+          "also": [{"context": r.get("context"), "tok_s": r["tok_s"], "ms": 1000.0 / r["tok_s"]} for r in rows if r is not row]}
 
 
 def _step4(run:pathlib.Path, context:float | None, provider:str) -> tuple[float | None, int | None]:
@@ -134,16 +173,8 @@ def _step4(run:pathlib.Path, context:float | None, provider:str) -> tuple[float 
   p = run / "timing_trace.json"
   if not p.exists():
     return None, None
-  trace = json.loads(p.read_text())
-  measured_by = trace.get("provider") or ("tinygrad" if str(trace.get("provider_id", "")).startswith("tinygrad")
-                                          else "llama.cpp")
-  if measured_by != provider:
-    return None, None
-  rows = [r for r in trace.get("rows", []) if r.get("scope") == "whole_step" and r.get("tok_s")]
-  if not rows:
-    return None, None
-  row = min(rows, key=lambda r: abs(r["context"] - (context or 0)))
-  return 1000.0 / row["tok_s"], row["context"]
+  token = measured_step(json.loads(p.read_text()), provider, near=context)
+  return (token["ms"], token["context"]) if token else (None, None)
 
 
 def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trace:dict[str, Any] | None,
@@ -164,7 +195,8 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
          "batch": batch,
          "kv_source": f"KV cache read at context {context:.0f}{streams}: {element} bytes per element, {element_source}",
          "show_both": kv >= SHOW_BOTH_SHARE * limit_ms, "untraced_ms": untraced, "untraced_context": untraced_ctx,
-         "lines": [], "token_ms": None, "token_source": None, "busy_ms": None, "missing": missing, "refused": None}
+         "lines": [], "token_ms": None, "token_source": None, "busy_ms": None, "missing": missing, "refused": None,
+         "isolated": (trace or {}).get("capture", {}).get("method") == ISOLATED}
   whole = next((r for r in (trace or {}).get("rows", []) if r.get("scope") == "whole_step"), {})
   if table is None:  # no kernel view here: the whole step from step 4 is the token
     if untraced is None:
@@ -200,6 +232,16 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   other_busy = busy - sum(r["actual_ms"] for r in roles)
   other_ideal = limit - weight_ideal
   lines = [{"label": f"limit at context {context:.0f} (ideal)", "ms": limit, "how": "derived"}]
+  if out["isolated"]:
+    # The weight kernels were timed alone: their sum is measured. Everything else in the token (attention, norms,
+    # the KV read, idle time) was not timed and is one difference line, named for what it holds. Below 0 means the
+    # isolated kernels, each reading cold DRAM alone, sum to more than the token: in the model some reads hit cache
+    # and kernels overlap. The number is shown as it is.
+    rest = token - limit - weight_above
+    label = NOT_TIMED_LABEL if rest >= 0 else NOT_TIMED_LABEL + " (below 0)"  # the sentence under the table says why
+    out["lines"] = lines + [{"label": "weight kernels above their ideal (isolated)", "ms": weight_above, "how": "measured"},
+                            {"label": label, "ms": rest, "how": "difference"}]
+    return out
   if roles:
     taken = {(r["role"], r["quant"]) for r in roles}
     parts: dict[str, float] = {}

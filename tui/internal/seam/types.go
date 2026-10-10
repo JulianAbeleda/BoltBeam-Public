@@ -422,6 +422,7 @@ type Timing struct {
 	Context        *int         `json:"context"`
 	TotalUs        *float64     `json:"total_us"`
 	TokS           *float64     `json:"tok_s"`
+	Also           []AlsoAt     `json:"also"` // the other contexts step 4 measured, labelled, never the headline
 	Roles          []RoleTiming `json:"roles"`
 	Kernels        []Kernel     `json:"kernels"`
 }
@@ -461,6 +462,59 @@ type Results struct {
 	Blocked  []Need     `json:"blocked"`
 	Report   *string    `json:"report"`
 	Batches  []BatchRow `json:"batches"`
+	// Probe is BoltBeam's own kernel (reference) per role: GB/s and share of peak, not the engine's kernel.
+	Probe *Probe `json:"probe"`
+}
+
+// Probe is the building-block probe's rows (workflow/screen.py probe_rows): "measured" with rows, or "absent".
+type Probe struct {
+	Status          string    `json:"status"`
+	Reason          *string   `json:"reason"`
+	Label           string    `json:"label"`
+	DispatchFloorUs *float64  `json:"dispatch_floor_us"`
+	Rows            []RateRow `json:"rows"`
+}
+
+// RateRow is one role's kernel read rate: µs per call, GB/s and the share of the chip's peak; Cache marks an
+// isolated read that stayed in cache.
+type RateRow struct {
+	Role      string   `json:"role"`
+	Quant     string   `json:"quant"`
+	UsPerCall *float64 `json:"us_per_call"`
+	Gbs       *float64 `json:"gbs"`
+	PctPeak   *float64 `json:"pct_peak"`
+	Cache     bool     `json:"cache"`
+}
+
+// Step is THE measured token (tie_out.measured_step): the row every headline reads, with the engine's own account
+// of how it ran (Source) and its graph state, and the other contexts measured (Also, never the headline).
+type Step struct {
+	Context     *int     `json:"context"`
+	TokS        float64  `json:"tok_s"`
+	Ms          float64  `json:"ms"`
+	Source      *string  `json:"source"`
+	Rule        string   `json:"rule"`
+	GraphFailed bool     `json:"graph_failed"`
+	GraphError  *string  `json:"graph_error"`
+	Also        []AlsoAt `json:"also"`
+}
+
+type AlsoAt struct {
+	Context *int    `json:"context"`
+	TokS    float64 `json:"tok_s"`
+}
+
+// CrossCheck is the engine's kernels timed alone beside an in-model capture.
+type CrossCheck struct {
+	Words  string    `json:"words"`
+	Reason *string   `json:"reason"`
+	Rows   []RateRow `json:"rows"`
+}
+
+// Latency is the figure the reason rule's Little's law uses, and where it came from (measured floor or assumed).
+type Latency struct {
+	Us     float64 `json:"us"`
+	Source string  `json:"source"`
 }
 
 // BatchRow is one measured point of step 4 beside its own limit (tie_out.batch_limit).
@@ -514,11 +568,14 @@ type Loss struct {
 	UnpairedRoles []UnpairedRole `json:"unpaired_roles"`
 	// TieOut is the measured token line by line against the limit (workflow/tie_out.py); RoleRule is the
 	// sentence, with its numbers, behind each role's Reason.
-	TieOut   *TieOut      `json:"tie_out"`
-	Layout   *LayoutLimit `json:"layout"`
-	RoleRule *string      `json:"role_rule"`
-	Search   *Search      `json:"search"`
-	Findings []Finding    `json:"findings"`
+	TieOut     *TieOut      `json:"tie_out"`
+	Layout     *LayoutLimit `json:"layout"`
+	RoleRule   *string      `json:"role_rule"`
+	Search     *Search      `json:"search"`
+	Findings   []Finding    `json:"findings"`
+	Step       *Step        `json:"step"`
+	CrossCheck *CrossCheck  `json:"cross_check"`
+	Latency    *Latency     `json:"latency"`
 }
 
 type TieOut struct {
@@ -537,6 +594,7 @@ type TieOut struct {
 	Lines           []TieLine `json:"lines"`
 	Missing         *string   `json:"missing"`
 	Refused         *string   `json:"refused"`
+	Isolated        bool      `json:"isolated"` // the kernels were timed alone: the last line is what was not timed
 }
 
 type TieLine struct {
@@ -584,6 +642,7 @@ type RoleLoss struct {
 	BestFound     *BestFound `json:"best_found"`
 	Verdict       *string    `json:"verdict"`
 	VerdictReason *string    `json:"verdict_reason"`
+	Candidates    *int       `json:"candidates"` // plans the kernel search measured for this role
 	// Evidence points into the run's raw JSON (workflow/evidence.py): the kernel rows, the search, the machine.
 	Evidence []Pointer `json:"evidence"`
 }

@@ -7,7 +7,7 @@ Tie-out, ms per token at context 128
 = measured token                57.904  the untraced whole step at context 128
 The limit is 48.1 ms per token at context 1.
 ○ llama.cpp: 17.3 tokens per second, 57.9 ms per token, 9.8 ms lost.
-  whole step, measured untraced
+  whole step, measured untraced, at context 128
 Per role: no per-role time yet: Run with llama.cpp times each role
 
 BATCH  CONTEXT  PER STREAM  TOTAL tok/s  LIMIT tok/s  OF LIMIT  BOUND BY

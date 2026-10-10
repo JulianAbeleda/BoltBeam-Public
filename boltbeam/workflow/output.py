@@ -3,7 +3,7 @@ from __future__ import annotations
 import pathlib
 from typing import Any
 
-from boltbeam.report.html import render_run_html
+from boltbeam.report.html import next_step, render_run_html
 from boltbeam.vocab import SCHEMA_OUTPUT_MANIFEST
 from boltbeam.workflow.common import load_manifest, read_json, run_dir, update_manifest, write_json
 
@@ -48,7 +48,7 @@ def _missing_runner_outputs(primitive:dict[str, Any], timing:dict[str, Any]) -> 
 
 def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str, Any],
                 plan:dict[str, Any], primitive:dict[str, Any], timing:dict[str, Any],
-                runner:dict[str, Any]) -> str:
+                runner:dict[str, Any], probe:dict[str, Any] | None = None, measure:dict[str, Any] | None = None) -> str:
   lines = [
     f"# BoltBeam Run Summary: {manifest.get('model_id', profile.get('model_id', 'unknown'))}",
     "",
@@ -62,16 +62,7 @@ def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str
     "## Next Step",
     "",
   ]
-  if plan.get("timing_profile", {}).get("status") == "requested":
-    lines.append("Run an external timing trace from `trace_request.json`, ingest `boltbeam.timing_trace.v1`, then re-run `boltbeam analyze --run <run>`.")
-  elif plan.get("primitive_profile", {}).get("status") == "requested":
-    lines.append("Run an external probe from `probe_request.json`, ingest `boltbeam.probe_evidence.v1`, then re-run `boltbeam analyze --run <run>`.")
-  elif report.get("status") == "policy_seeded":
-    lines.append("Review `route_policy.json`; selected routes still require normalized evidence before promotion unless already ledgered.")
-  elif plan:
-    lines.append("Run or translate `measurement_plan.json` through a provider adapter, then ingest normalized evidence and re-analyze.")
-  else:
-    lines.append("Run `boltbeam analyze --run <run>` to build the search and measurement plan.")
+  lines.append(next_step(report, plan, probe, measure))  # the one ladder (report/html.py), the same words everywhere
   if timing:
     lines += ["", "## Timing Profile", ""]
     lines.append(f"- Dominant bucket: `{timing.get('dominant_timing_bucket', 'timing_inconclusive')}`")
@@ -180,7 +171,11 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   }
   write_json(out / "provider_plan.json", provider_plan)
   write_json(out / "output_manifest.json", output_manifest)
-  (out / "summary.md").write_text(_summary_md(manifest, profile, report, plan, primitive, timing, runner), encoding="utf-8")
+  from boltbeam.workflow.screen import results as screen_results
+  res = screen_results(out)
+  measure = _load_optional(out, "measure_status.json")
+  (out / "summary.md").write_text(_summary_md(manifest, profile, report, plan, primitive, timing, runner, res.get("probe"), measure),
+                                  encoding="utf-8")
   (out / "rollback.md").write_text(_rollback_md(policy), encoding="utf-8")
   final = update_manifest(out, stage="output", artifacts=list(OUTPUT_ARTIFACTS))
   # report.html renders the same staged facts as summary.md, standalone and self-contained (no server, no CDN).
@@ -188,10 +183,8 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   # a second `boltbeam output` over an unchanged run reproduces the file byte for byte.
   # The headline reads the speed limit and measured tokens/s from screen.results: the same function the TUI reads,
   # so the page and the TUI cannot disagree. Imported here because screen imports this module.
-  from boltbeam.workflow.screen import results as screen_results
   (out / "report.html").write_text(
     render_run_html(manifest=final, profile=profile, report=report, plan=plan, policy=policy,
                     providers=providers, primitive=primitive, timing=timing, runner=runner,
-                    source_run=str(out), results=screen_results(out),
-                    measure=_load_optional(out, "measure_status.json")), encoding="utf-8")
+                    source_run=str(out), results=screen_results(out), measure=measure), encoding="utf-8")
   return final

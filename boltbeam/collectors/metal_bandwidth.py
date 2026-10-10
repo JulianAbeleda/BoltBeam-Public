@@ -16,6 +16,7 @@ import json
 import struct
 import sys
 
+from boltbeam.collectors.kernel_timer import samples
 from boltbeam.runtime.metal_device import Metal
 
 _SRC = """
@@ -45,8 +46,8 @@ def measure_read_gbs(nbytes:int = 1 << 30, reps:int = 5, sustain_s:float = SUSTA
     rows = []
     for threads, groups in SHAPES:
       out = metal.buffer(length=groups * threads // 32 * 4)
-      metal.run(pso, [src, out], [struct.pack("I", nbytes // 16)], groups, threads)  # warm-up, not counted
-      us = [metal.run(pso, [src, out], [struct.pack("I", nbytes // 16)], groups, threads) for _ in range(reps)]
+      launch = lambda: metal.run(pso, [src, out], [struct.pack("I", nbytes // 16)], groups, threads)  # noqa: E731
+      us = samples(launch, warmups=1, count=reps)  # the one loop; a bandwidth keeps its best launch
       rows.append({"threads": threads, "groups": groups, "best_us": min(us), "gbs": nbytes / (min(us) * 1e-6) / 1e9})
     best = max(rows, key=lambda r: r["gbs"])
     # sustained: the best shape back to back for sustain_s seconds, as a decode reads
@@ -100,8 +101,8 @@ def measure_matrix_tflops(iters:int = 4096, reps:int = 5) -> dict:
     rows = []
     for threads, groups in MMA_SHAPES:
       out = metal.buffer(length=groups * threads // 32 * 64 * 4)
-      metal.run(pso, [out], [struct.pack("I", iters)], groups, threads)  # warm-up, not counted
-      us = min(metal.run(pso, [out], [struct.pack("I", iters)], groups, threads) for _ in range(reps))
+      launch = lambda: metal.run(pso, [out], [struct.pack("I", iters)], groups, threads)  # noqa: E731
+      us = min(samples(launch, warmups=1, count=reps))
       flop = groups * threads // 32 * iters * MMA_ACCUMULATORS * MMA_FLOP
       rows.append({"threads": threads, "groups": groups, "best_us": us, "tflops": flop / (us * 1e-6) / 1e12})
     best = max(rows, key=lambda r: r["tflops"])

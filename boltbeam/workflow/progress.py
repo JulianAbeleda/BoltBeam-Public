@@ -12,6 +12,16 @@ from boltbeam.target.targets import chips_dir
 STAGE_TIMES = "stage_times.json"
 SCHEMA = "boltbeam.stage_times.v1"
 
+# A first run has no history: these are the expected seconds per step, from runs on the M3 (2026-10-09), so the bar
+# is weighted by time from the start and the percent is marked an estimate. A key may hold one figure or one per
+# engine. Anything not listed is quick: DEFAULT_SECONDS.
+DEFAULTS:dict[str, float | dict[str, float]] = {
+  "measure_timing": {"tinygrad": 130.0, "llama.cpp": 22.0},
+  "role_time": {"tinygrad": 40.0, "llama.cpp": 25.0},
+  "search": {"tinygrad": 350.0, "llama.cpp": 1.0},  # the kernel search exists for tinygrad on Metal; others skip it
+}
+DEFAULT_SECONDS = 1.0
+
 _report: Callable[[int, int], None] = lambda done, total: None  # noqa: E731
 
 
@@ -48,15 +58,29 @@ def _history() -> dict:
     return {}
 
 
-def expected(where:str, ids:list[str]) -> list[float] | None:
-  """The last run's seconds per step for this chip and engine, or None on a first run. A step the last run did
-  not have takes the median of the ones it did."""
+def engine_of(where:str) -> str:
+  """The engine in a history key "chip|engine|batch N"."""
+  parts = where.split("|")
+  return parts[1] if len(parts) > 1 else ""
+
+
+def default_seconds(step_id:str, engine:str) -> float:
+  row = DEFAULTS.get(step_id.split("#")[0], DEFAULT_SECONDS)
+  if isinstance(row, dict):
+    return float(row.get(engine, min(row.values())))
+  return float(row)
+
+
+def expected(where:str, ids:list[str]) -> tuple[list[float], str]:
+  """Seconds per step for the bar, and where they come from: "history" (the last finished run for this chip and
+  engine; a step that run did not have takes the median of the ones it did) or "default" (a first run: the
+  DEFAULTS table, so a long stage is never drawn as 1/N of the bar)."""
   last = _history().get(where) or {}
   known = sorted(float(v) for k, v in last.items() if k in ids)
   if not known:
-    return None
+    return [default_seconds(i, engine_of(where)) for i in ids], "default"
   mid = known[len(known) // 2]
-  return [max(float(last.get(i, mid)), 0.1) for i in ids]
+  return [max(float(last.get(i, mid)), 0.1) for i in ids], "history"
 
 
 def save(run:pathlib.Path | None, where:str, times:dict[str, float], *, finished:bool) -> None:

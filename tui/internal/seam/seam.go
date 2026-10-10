@@ -459,7 +459,8 @@ type Progress struct {
 	Done, Total int       // counted steps only: the quick setup stages are not steps
 	Setup       bool      // a setup stage runs now, or no counted step has started yet
 	Counted     []bool    // one flag per stage line, in order ("pipeline counted: 0,0,1,…"); nil in an older log
-	Expect      []float64 // seconds per step from this machine's last run ("pipeline expect: a,b,…"); nil on a first run
+	Expect      []float64 // seconds per step ("pipeline expect: a,b,…"): the last run's, or defaults on a first run
+	Estimate    bool      // "pipeline expect source: default": no history, the weights are a table, the percent is an estimate
 	Current     string    // the stage running now, or ""
 	Sub, SubOf  int       // "stage X: progress p/q" inside the current stage
 	Finished    bool      // "pipeline done"
@@ -489,6 +490,10 @@ func ReadProgress(lines []string) Progress {
 			for _, s := range strings.Split(list, ",") {
 				p.Counted = append(p.Counted, strings.TrimSpace(s) == "1")
 			}
+			continue
+		}
+		if src, ok := strings.CutPrefix(line, "pipeline expect source: "); ok {
+			p.Estimate = strings.TrimSpace(src) == "default"
 			continue
 		}
 		if list, ok := strings.CutPrefix(line, "pipeline expect: "); ok {
@@ -540,8 +545,9 @@ func ReadProgress(lines []string) Progress {
 // SetupShare is the most of the bar the setup stages fill, over their first two seconds.
 const SetupShare = 0.02
 
-// Fraction is how far the pipeline is, 0 to 1. Each step weighs its expected seconds (equal weights on a first
-// run); the current step adds the time spent in it, or its own p of q when larger, never past its weight.
+// Fraction is how far the pipeline is, 0 to 1. Each step weighs its expected seconds (the last run's, or the
+// pipeline's default table on a first run, marked Estimate; equal weights only for an old log with no expect line);
+// the current step adds the time spent in it, or its own p of q when larger, never past its weight.
 // It stays under 0.99 until "pipeline done".
 func (p Progress) Fraction(inStage float64) float64 {
 	if p.Finished {
@@ -557,7 +563,7 @@ func (p Progress) Fraction(inStage float64) float64 {
 	if len(w) != p.Total {
 		w = make([]float64, p.Total)
 		for i := range w {
-			w[i] = 30 // a first run: every step the same
+			w[i] = 30 // an old log with no expect line: every step the same
 		}
 	}
 	sum, done := 0.0, 0.0
@@ -581,7 +587,8 @@ func (p Progress) Fraction(inStage float64) float64 {
 	return min(done/sum, 0.99)
 }
 
-// Over says the current step has run longer than the last run's time for it. False on a first run.
+// Over says the current step has run longer than the last run's time for it. False on a first run: a default
+// weight is an estimate, not a last time.
 func (p Progress) Over(inStage float64) bool {
-	return p.Current != "" && !p.Setup && len(p.Expect) == p.Total && p.Done < len(p.Expect) && inStage > p.Expect[p.Done]
+	return p.Current != "" && !p.Setup && !p.Estimate && len(p.Expect) == p.Total && p.Done < len(p.Expect) && inStage > p.Expect[p.Done]
 }

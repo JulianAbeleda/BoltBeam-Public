@@ -1,24 +1,24 @@
 ⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Saved runs                                                                   │
-│ A run is temporary until you save it. Saving keeps the run, its report,      │
-│ results.json and summary.txt.                                                │
-│ Enter opens a saved run. Press d twice to delete one.                        │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭──────────────────────────────────────────────────────────────────────────────╮
-│ What next                                                                    │
 │ 2 saved runs in /home/u/runs/saved                                           │
 │ ▸ Qwen3-8B · apple_m3_10c · tinygrad · 2026-10-09 12:10 · 60% of limit       │
 │   Qwen3-8B · apple_m3_10c · llama.cpp · 2026-10-09 11:20 · 82% of limit      │
 │   [ Back to setup ]                                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ A run is temporary until you save it. Saving keeps the run, its report, res… │
+│ Enter opens a saved run. Press d twice to delete one.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ move · enter open run · d delete run · esc setup · q quit

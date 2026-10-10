@@ -24,7 +24,7 @@ import re
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 from boltbeam.collectors import (llama_bench_decode, ollama_decode, tinygrad_role_time, trtllm_decode, vendor_capture,
                                  vllm_decode)
@@ -96,15 +96,22 @@ def reads(provider:str, model:str | pathlib.Path) -> str | None:
 
 
 def capture_method(provider:str, backend:str) -> dict[str, Any]:
-  """How step 5 times roles for this provider here: {"method", "reason"}. method None: whole step only."""
+  """How step 5 times roles for this provider here: {"method", "reason", "cross_check"}. method None: whole step
+  only, and reason says why. On Metal with no vendor tool (a Mac without Xcode), the engine's own kernels are
+  timed alone by BoltBeam (collectors/engine_kernels.py); with the tool, that isolated timing is the cross_check
+  shown beside the in-model capture."""
+  from boltbeam.collectors import engine_kernels
   p = vendor_capture.plan(backend)
   if provider == tinygrad_role_time.PROVIDER:
     if backend in tinygrad_role_time.CAPTURED_BACKENDS and p["tool"]:
-      return {"method": p["method"], "reason": None}
-    return {"method": tinygrad_role_time.OWN_TIMING, "reason": tinygrad_role_time.OWN_TIMING_REASON.get(backend)}
+      return {"method": p["method"], "reason": None, "cross_check": None}
+    return {"method": tinygrad_role_time.OWN_TIMING, "reason": tinygrad_role_time.OWN_TIMING_REASON.get(backend), "cross_check": None}
+  isolated = engine_kernels.available(provider, backend, llama_bench_decode.find(llama_bench_decode.DEFAULT))
   if p["tool"] is None:
-    return {"method": None, "reason": p["reason"]}
-  return {"method": p["method"], "reason": None}
+    if isolated is None:
+      return {"method": engine_kernels.METHOD, "reason": None, "cross_check": None}
+    return {"method": None, "reason": f"{isolated}; and {p['reason']}", "cross_check": None}
+  return {"method": p["method"], "reason": None, "cross_check": engine_kernels.METHOD if isolated is None else None}
 
 
 def _why(name:str, target, tinygrad_root:pathlib.Path | None) -> str | None:
@@ -245,14 +252,18 @@ def measure_tinygrad(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pa
     got = tinygrad_role_time.whole_step(root=root, python=role_compare.fork_python(root), model=str(manifest["model_path"]),
                                         target=target, context=int(ctx), tokens=TINYGRAD_TOKENS)
     rows.append({"scope": "whole_step", "context": int(ctx), "wall_us": 1e6 / got["tok_s"], "tok_s": got["tok_s"],
-                 "decode_tokens": got["tokens"], "source": f"tinygrad decode on {got['device']}, JIT with {got['jit']}, no profiling"})
+                 "decode_tokens": got["tokens"], "source": f"tinygrad decode on {got['device']}, JIT with {got['jit']}, no profiling",
+                 # the engine's own account of its graph state: a reader shows it, never infers it (TH: hidden failure)
+                 "jit": got["jit"], "graph_error": got.get("graph_error")})
+  from boltbeam.workflow.screen import run_bandwidth
+  peak_gbs, peak_source = run_bandwidth(run, target)
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
            "workload": manifest["workload"], "provider_id": tinygrad_role_time.PROVIDER, "collector_id": "tinygrad-decode",
            "timing_source": "tinygrad whole step", "contexts": [r["context"] for r in rows], "rows": rows,
            "measured": ["whole_step.tok_s (tinygrad decode, wall clock over the decode tokens)"],
-           "absent": ["kernel rows: per role is step 5"]}
-  if target.memory_bandwidth_gbs:
-    trace["peak_gbs"] = target.memory_bandwidth_gbs
+           "absent": ["kernel rows: per role is step 5"], "peak_source": peak_source}
+  if peak_gbs:
+    trace["peak_gbs"] = peak_gbs
   out = run / "timing_trace.json"
   out.write_text(pretty_json(trace))
   return out
@@ -301,8 +312,9 @@ def measure_engine(run:pathlib.Path, provider:str, *, batches:list[int] | tuple[
   points = m.whole_step(model, contexts, sorted({1, *batches}), tokens=tokens,
                         log=run / "kernel_compare" / f"{provider}_whole_step.log")
   profile = read_json(run / "model_profile.json") if (run / "model_profile.json").exists() else {}
+  from boltbeam.workflow.screen import run_bandwidth
   trace = engine_trace(manifest, provider=provider, provider_id=m.PROVIDER_ID, collector_id=collector(provider, target.backend),
-                       points=points, weights=weight_format(profile), peak_gbs=target.memory_bandwidth_gbs)
+                       points=points, weights=weight_format(profile), peak_gbs=run_bandwidth(run, target)[0])
   out = run / "timing_trace.json"
   out.write_text(pretty_json(trace))
   return out
@@ -316,10 +328,15 @@ def _layout(run:pathlib.Path) -> tuple[str, int]:
   return m.get("layout") or "one", int(m.get("gpus") or 1)
 
 
+CROSS_CHECK = "isolated_timing_trace.json"  # the engine's kernels timed alone, beside an in-model capture
+
+
 def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None, batch:int = 1,
-              context:int = 128) -> dict[str, Any]:
+              context:int = 128, say:Callable[[str], None] = lambda _: None,
+              step:Callable[[int, int], None] | None = None) -> dict[str, Any]:
   """Per-role time for one provider, refused under the same floor rule for every provider. batch > 1 captures
-  one decode step of that many streams (driven engines and llama.cpp's batched bench)."""
+  one decode step of that many streams (driven engines and llama.cpp's batched bench). say and step report
+  progress for the stages that have parts (the isolated kernel timer, one role at a time)."""
   from boltbeam.search import role_compare
   from boltbeam.target.targets import get_target
   from boltbeam.workflow.common import load_manifest
@@ -335,7 +352,10 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
   if how["method"] is None:
     raise RuntimeError(f"{provider} per role is not possible here: {how['reason']}")
   model, model_id = str(manifest.get("model_path")), str(manifest.get("model_id"))
-  if provider in DRIVEN:
+  from boltbeam.collectors import engine_kernels
+  if how["method"] == engine_kernels.METHOD:  # no vendor tool here: the engine's own kernels, timed alone
+    trace = engine_kernels.collect(run, provider, say=say, step=step)
+  elif provider in DRIVEN:
     if why := ENGINES[provider].available(target) or reads(provider, model):
       raise RuntimeError(why)
     trace = ENGINES[provider].role_time(run, target=target, model=model, model_id=model_id, context=context, batch=batch)
@@ -349,6 +369,11 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
     layout, gpus = _layout(run)
     trace = llama_bench_decode.role_time(run, target=target, model=model, model_id=model_id, layout=layout, gpus=gpus,
                                          context=context, batch=batch)
+  if how.get("cross_check") == engine_kernels.METHOD:  # the in-model capture stands; the isolated numbers sit beside it
+    try:
+      engine_kernels.collect(run, provider, say=say, step=step, out=CROSS_CHECK)
+    except Exception as exc:  # the cross-check is extra evidence: its failure is recorded, never the run's
+      (run / CROSS_CHECK).write_text(json.dumps({"capture": {"method": engine_kernels.METHOD, "reason": f"failed: {exc}"}, "rows": []}))
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
   ceil = _measured_vs_ceiling(manifest, _optional(run, "model_profile.json"))
   table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), ceil.get("band"))
