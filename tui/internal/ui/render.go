@@ -972,7 +972,11 @@ func runningBody(f Facts, width int) string {
 	if p.Current != "" {
 		now = stageWord(p.Current)
 	}
-	fmt.Fprintf(&b, "  %s…   %s\n", now, stMuted.Render(elapsed(f.Job)))
+	took := elapsed(f.Job)
+	if !f.stageAt.IsZero() && p.Over(clock().Sub(f.stageAt).Seconds()) {
+		took += " (longer than last time)"
+	}
+	fmt.Fprintf(&b, "  %s…   %s\n", now, stMuted.Render(took))
 	if f.ShowLog {
 		tail, room := p.Lines, 20
 		if f.logRoom > 0 {

@@ -84,6 +84,9 @@ func (f *Facts) advance(now time.Time) {
 		}
 	}
 	f.Frac = max(f.Frac, p.Fraction(now.Sub(f.stageAt).Seconds()))
+	if !p.Finished {
+		f.Frac = min(f.Frac, 0.99) // only "pipeline done" shows 100%
+	}
 }
 
 // goos is the platform the screen runs on; a variable so a test can draw the Linux screen on a Mac.

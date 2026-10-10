@@ -137,3 +137,68 @@ func TestBatchResults(t *testing.T) {
 		}
 	}
 }
+
+// twelveSteps is a tinygrad run 1 s into step 6: five steps done, measure_timing started.
+func twelveSteps(expect string) []string {
+	lines := []string{"pipeline steps: 12"}
+	if expect != "" {
+		lines = append(lines, "pipeline expect: "+expect)
+	}
+	for _, k := range []string{"load", "autoscan", "analyze", "machine", "measure_probe"} {
+		lines = append(lines, "stage "+k+": start", "stage "+k+": done")
+	}
+	return append(lines, "stage measure_timing: start")
+}
+
+// No time for this engine: equal weights. 6 of 12 with 1 s in step 6 is about 42%, never 100.
+func TestProgressEqualWeights(t *testing.T) {
+	p := seam.ReadProgress(twelveSteps(""))
+	if p.Expect != nil || p.Done != 5 || p.Total != 12 {
+		t.Fatalf("%+v", p)
+	}
+	if got := p.Fraction(1); got < 0.40 || got > 0.47 {
+		t.Fatalf("fraction %v", got)
+	}
+	if got := p.Fraction(10000); got > 0.5 {
+		t.Fatalf("one step never fills past its weight: %v", got)
+	}
+}
+
+// The log keeps every run of a run id. Before the new run prints its steps, the old run's
+// "pipeline done" must not count: that showed 100% at 6 of 12 and the bar never moves back.
+func TestProgressIgnoresTheLastJob(t *testing.T) {
+	old := append([]string{"=== old start", "pipeline steps: 9"}, "stage load: start", "stage load: done", "pipeline done: r")
+	p := seam.ReadProgress(append(append([]string{}, old...), "=== new start"))
+	if p.Finished || p.Total != 0 {
+		t.Fatalf("the old run leaked in: %+v", p)
+	}
+	f := Facts{Job: &jobs.Job{ID: "a", Alive: true, StartedAt: clock().Format(time.RFC3339)}, Tail: append(append([]string{}, old...), "=== new start")}
+	f.advance(clock())
+	f.Tail = append(f.Tail, twelveSteps("")...)
+	f.advance(clock().Add(32 * time.Second))
+	if f.Frac >= 0.99 || f.Frac < 0.4 {
+		t.Fatalf("bar %v", f.Frac)
+	}
+}
+
+// A step that runs past the last run's time holds at its weight, the total stays at 99% at most,
+// and the step line says so.
+func TestProgressLongerThanLastTime(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	tail := twelveSteps("0.1,0.1,0.1,0.1,1.3,22.6,0.1,0.1,0.1,0.1,0.1,0.1")
+	p := seam.ReadProgress(tail)
+	if got := p.Fraction(500); got > 0.99 || false {
+		t.Fatalf("fraction %v", got)
+	}
+	start := clock().Add(-40 * time.Second)
+	f := Facts{Job: &jobs.Job{ID: "a", Alive: true, StartedAt: start.Format(time.RFC3339)}, Tail: tail}
+	f.advance(start)
+	f.advance(clock())
+	if f.Frac > 0.99 {
+		t.Fatalf("bar %v", f.Frac)
+	}
+	got := runningBody(f, 80)
+	if !strings.Contains(got, "(longer than last time)") || strings.Contains(got, "100%") {
+		t.Fatalf("running body:\n%s", got)
+	}
+}

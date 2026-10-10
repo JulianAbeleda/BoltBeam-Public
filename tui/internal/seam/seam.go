@@ -455,7 +455,8 @@ func PipelineProgress(lines []string) (done, total int) {
 }
 
 // Progress is the current pipeline's own account of itself, read from the lines after its last
-// "pipeline steps: N" line, so an older run in the same log does not leak in.
+// "pipeline steps: N" line, so an older run in the same log does not leak in. A job start line ("=== ")
+// after that line means a new job has begun and has not printed its steps yet: nothing is known.
 type Progress struct {
 	Done, Total int
 	Expect      []float64 // seconds per step from this machine's last run ("pipeline expect: a,b,…"); nil on a first run
@@ -471,7 +472,7 @@ type Progress struct {
 func ReadProgress(lines []string) Progress {
 	start := 0
 	for i, line := range lines {
-		if strings.HasPrefix(line, "pipeline steps: ") {
+		if strings.HasPrefix(line, "pipeline steps: ") || strings.HasPrefix(line, "=== ") {
 			start = i
 		}
 	}
@@ -558,4 +559,9 @@ func (p Progress) Fraction(inStage float64) float64 {
 		return 0
 	}
 	return min(done/sum, 0.99)
+}
+
+// Over says the current step has run longer than the last run's time for it. False on a first run.
+func (p Progress) Over(inStage float64) bool {
+	return p.Current != "" && len(p.Expect) == p.Total && p.Done < len(p.Expect) && inStage > p.Expect[p.Done]
 }
