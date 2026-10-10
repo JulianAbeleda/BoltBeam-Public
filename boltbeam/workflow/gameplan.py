@@ -318,6 +318,9 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
   if verdict == "found_not_applied":
     lines.append("found, not applied in this run" + (f": {c.get('reason')}" if c.get("reason") else ""))
   space = c.get("space") if isinstance(c.get("space"), dict) else {}
+  families = str(space.get("family") or "").split("+")
+  won = str(c.get("plan") or "").split(":", 1)[0]  # plan_text names the winner's family first
+  if space.get("family"): space = {**space, "family": won if won in families else space["family"]}
   emitter = ({"name": space["family"], "args": f"the winner's schedule ({c.get('plan')})",
               "pins": "the emitter's own validate on this shape (the search compiled it)", "module": "extra/llm_research/semantic_kernel_lowering.py"}
              if space.get("family") else _emitter(role, quant, rows, kk, str(target.get("target_id") or "")))

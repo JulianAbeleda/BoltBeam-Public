@@ -65,6 +65,7 @@ def build_static_legality(workload_facts: Mapping[str, Any], target_facts: Mappi
   # each format's code bytes per block, both BoltBeam's own facts (futuresight_adapter.boltbeam_emitter_facts)
   row_owner = frozenset(target_facts.get("subgroup_row_families") or ())
   block_code_bytes = dict(target_facts.get("block_code_bytes") or {})
+  cta_rows = frozenset(target_facts.get("cta_row_families") or ())
 
   def check(candidate: CanonicalCandidate) -> str | None:
     schedule = candidate.get("schedule", {})
@@ -83,6 +84,9 @@ def build_static_legality(workload_facts: Mapping[str, Any], target_facts: Mappi
     # a kernel family that reduces inside one subgroup (the compiler says which) cannot launch more threads than one
     family, width = _at_path(candidate, "schedule.compute.family"), _at_path(candidate, "workload.target.subgroup_size")
     if family in one_subgroup and _positive_int(width) and threads > width: return "threads_exceed_one_subgroup"
+    if family in cta_rows:  # one row a CTA of whole subgroups
+      if _at_path(candidate, "schedule.tile.n") != 1: return "cta_owns_one_row"
+      if _positive_int(width) and threads % width: return "threads_not_whole_subgroups"
     if family in row_owner:  # a coupled row alone carries no workload: each rule runs once its facts are present
       quant, lane = _at_path(candidate, "workload.operands.b.quantization"), _at_path(candidate, "schedule.memory.b.vector_width")
       code = block_code_bytes.get(str(quant)) if quant is not None else None

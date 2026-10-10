@@ -66,7 +66,8 @@ def boltbeam_emitter_facts() -> dict[str, Any]:
   from boltbeam.search.role_space import emitter_kinds
   kinds = [k for k in emitter_kinds().values() if k.get("row_owner") == "subgroup"]
   return {"subgroup_row_families": sorted(k["family"] for k in kinds),
-          "block_code_bytes": {q: native.code_bytes(q) for k in kinds for q in k["quants"]}}
+          "block_code_bytes": {q: native.code_bytes(q) for k in kinds for q in k["quants"]},
+          "cta_row_families": sorted(k["family"] for k in emitter_kinds().values() if k.get("row_owner") == "cta")}
 
 
 def propose_request(spec:Mapping[str, Any], describe:Mapping[str, Any] | None = None) -> tuple[dict[str, Any], tuple[str, ...]]:

@@ -57,13 +57,34 @@ def binds_through(describe:Mapping[str, Any]) -> str:
 
 
 def emitter_family(describe:Mapping[str, Any], quant:str) -> dict[str, Any] | None:
-  """The provider's decode emitter for this weight format, or None."""
+  """The provider's first decode emitter for this weight format, or None."""
+  found = emitter_families(describe, quant)
+  return found[0] if found else None
+
+
+def emitter_families(describe:Mapping[str, Any], quant:str) -> list[dict[str, Any]]:
+  """Every decode emitter the provider lists for this weight format, in its order."""
+  out = []
   for family in describe.get("decode_emitters") or []:
     if not isinstance(family, Mapping): continue
     quants = family.get("quants") if isinstance(family.get("quants"), list) else [family.get("quant", "")]
     if any(_norm(str(q)) == _norm(quant) for q in quants):
-      return dict(family)
-  return None
+      out.append(dict(family))
+  return out
+
+
+def cta_k_sweep_space(family:Mapping[str, Any], quant:str, *, subgroup_size:int | None, max_threads:int | None) -> dict[str, Any]:
+  """BoltBeam's own rows for a one-row-a-CTA, k-sweep family (bubblebeam.cta_row_k_sweep_rows), or why none."""
+  from boltbeam.collectors import metal_native as native
+  from boltbeam.search.bubblebeam import cta_row_k_sweep_rows
+  q = _canon_quant(quant)
+  lanes, block = family.get("lanes_per_block_slice"), family.get("block_elems")
+  if q not in native.BLOCK_ELEMS or block != native.BLOCK_ELEMS[q] or not isinstance(lanes, int):
+    return {"why": f"the provider's {q} slice layout (block {block}, {lanes} lanes) disagrees with BoltBeam's {native.BLOCK_ELEMS.get(q)}-element block"}
+  if not isinstance(subgroup_size, int) or subgroup_size < 1 or subgroup_size % lanes:
+    return {"why": "the target's subgroup does not hold whole block slices"}
+  return {"why": None, "rows": cta_row_k_sweep_rows(block_elems=block, lanes_per_block_slice=lanes, subgroup_size=subgroup_size,
+                                                    max_threads=max_threads), "installed_row": None}
 
 
 def _canon_quant(quant:str) -> str:
@@ -112,25 +133,35 @@ def proposal_inputs(describe:Mapping[str, Any], facts:Mapping[str, Any], quant:s
   installs (to find the model's own kernel among the measured), or why the role has no space."""
   kind = binds_through(describe)
   if kind == EMITTER_PLAN_KIND:
-    family = emitter_family(describe, quant)
-    if family is None:
+    families = emitter_families(describe, quant)
+    if not families:
       return {"why": f"the decode binds this device's roles through the fork's emitters and the fork has no {quant} emitter",
               "binds_through": kind}
-    base = {"schedule.plan_kind": EMITTER_PLAN_KIND, "schedule.compute.family": family["family"]}
-    own = emitter_kinds().get(family["family"])
-    if own is not None:
-      space = block_unit_space(family, own, quant, subgroup_size=subgroup_size, max_threads=facts.get("max_threads_per_threadgroup"),
-                               shape=shape, sm_count=sm_count)
-      if space["why"]: return {"why": space["why"], "binds_through": kind}
-      rows = [{**base, **row} for row in space["rows"]]
-      installed = {**base, **space["installed_row"]} if space["installed_row"] else None
-      generator = f"BubbleBeam block-unit rows from the chip's facts ({family['family']})"
-    else:
-      rows = [{**base, **dict(row)} for row in family.get("coupled_rows") or []]
-      installed = {**base, **dict(family["installed_row"])} if isinstance(family.get("installed_row"), Mapping) else None
-      generator = f"provider emitter rows ({family['family']})"
-    return {"schedule": dict(SEED_SCHEDULE), "axis_choices": {}, "coupled_rows": rows, "family": family["family"],
-            "installed_row": installed, "binds_through": kind, "why": None, "generator": generator}
+    rows, installed, generators, names, whys = [], None, [], [], []
+    for family in families:
+      base = {"schedule.plan_kind": EMITTER_PLAN_KIND, "schedule.compute.family": family["family"]}
+      own = emitter_kinds().get(family["family"])
+      if own is not None:
+        mt = facts.get("max_threads_per_threadgroup")
+        space = (block_unit_space(family, own, quant, subgroup_size=subgroup_size, max_threads=mt, shape=shape, sm_count=sm_count)
+                 if own.get("row_owner") == "subgroup" else cta_k_sweep_space(family, quant, subgroup_size=subgroup_size, max_threads=mt))
+        if space["why"]:
+          whys.append(f"{family['family']}: {space['why']}")
+          continue
+        mine = [{**base, **row} for row in space["rows"]]
+        here = {**base, **space["installed_row"]} if space["installed_row"] else None
+        generators.append(f"BubbleBeam rows from the chip's facts ({family['family']})")
+      else:
+        mine = [{**base, **dict(row)} for row in family.get("coupled_rows") or []]
+        here = {**base, **dict(family["installed_row"])} if isinstance(family.get("installed_row"), Mapping) else None
+        generators.append(f"provider emitter rows ({family['family']})")
+      rows += mine
+      names.append(family["family"])
+      installed = installed or here
+    if not rows: return {"why": "; ".join(whys), "binds_through": kind}
+    return {"schedule": dict(SEED_SCHEDULE), "axis_choices": {}, "coupled_rows": rows, "family": "+".join(names),
+            "installed_row": installed, "binds_through": kind, "why": None, "generator": "; ".join(generators),
+            "refused_families": whys}
   limit = facts.get("max_threads_per_threadgroup") or 1 << 30
   powers, n = [], SMALLEST_LOCAL
   while n <= min(limit, 1 << 16):
@@ -155,5 +186,6 @@ def is_row(candidate:Mapping[str, Any], row:Mapping[str, Any] | None) -> bool:
   return True
 
 
-__all__ = ["HEURISTIC", "OPT_SEQUENCE", "SEED_SCHEDULE", "binds_through", "block_unit_space", "emitter_family", "emitter_kinds",
+__all__ = ["HEURISTIC", "OPT_SEQUENCE", "SEED_SCHEDULE", "binds_through", "block_unit_space", "cta_k_sweep_space", "emitter_families",
+           "emitter_family", "emitter_kinds",
            "is_row", "proposal_inputs"]

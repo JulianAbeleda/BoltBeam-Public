@@ -167,5 +167,20 @@ def subgroup_row_block_unit_rows(*, code_bytes:int, unit_bytes:int, block_elems:
   return rows
 
 
-__all__ = ["JSONValue", "LegalDimensionProposal", "ScheduleVocabulary", "dimension_mapping", "propose_legal_dimensions",
-           "subgroup_row_block_unit_rows", "target_schedule_vocabulary"]
+def cta_row_k_sweep_rows(*, block_elems:int, lanes_per_block_slice:int, subgroup_size:int,
+                         max_threads:int | None) -> list[dict[str, JSONValue]]:
+  """Coupled rows for an emitter that gives each output row one CTA of whole subgroups, each subgroup holding
+  subgroup_size / lanes_per_block_slice slices that each read one block (data/emitter_kinds.json: row_owner cta,
+  lane_split k_sweep). Subgroups per CTA are powers of two within the chip's thread limit; tile.k is one sweep of the
+  CTA over k, so FutureSight's divisibility rule refuses a k that is not whole sweeps."""
+  for name, value in (("block_elems", block_elems), ("lanes_per_block_slice", lanes_per_block_slice), ("subgroup_size", subgroup_size)):
+    if not _positive_int(value): raise ValueError(f"{name} must be a positive int, got {value!r}")
+  if subgroup_size % lanes_per_block_slice: raise ValueError("a subgroup must hold whole block slices")
+  slices = subgroup_size // lanes_per_block_slice
+  warps = _powers_of_two(max_threads // subgroup_size) if _positive_int(max_threads) else [1]
+  return [{"schedule.launch.threads": w * subgroup_size, "schedule.tile.n": 1, "schedule.tile.k": block_elems * w * slices,
+           "schedule.memory.b.vector_width": 2, "schedule.memory.a.space": "global", "schedule.pipeline.stage_count": 1} for w in warps]
+
+
+__all__ = ["JSONValue", "LegalDimensionProposal", "ScheduleVocabulary", "cta_row_k_sweep_rows", "dimension_mapping",
+           "propose_legal_dimensions", "subgroup_row_block_unit_rows", "target_schedule_vocabulary"]
