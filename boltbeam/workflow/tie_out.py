@@ -36,9 +36,13 @@ LATENCY_MEASURED = "the dispatch floor the probe measured on this GPU"
 OWN_TIMING = "tinygrad-profile-events"  # the engine's own profiling, not an outside capture
 from boltbeam.collectors.engine_kernels import METHOD as ISOLATED  # the engine's kernels timed alone by BoltBeam's kernel timer
 REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slow": "slow kernel",
-           "compute": "compute bound", "unexplained": "unexplained", "cache": "inconclusive, cache"}
-# the isolated tie-out's difference line: what the isolated kernels do not cover
-NOT_TIMED_LABEL = "kernels not timed and gaps (attention, norms, KV read, idle)"
+           "compute": "compute bound", "unexplained": "unexplained"}
+# the isolated tie-out: only the ideal and the token are compared; the split is an estimate, labelled so
+NOT_SPLIT_LABEL = "kernels and gaps, not split"
+ESTIMATE_LABEL = "(estimate from isolated times)"
+OTHER_HOW_FLOOR = "at least: KV reads at the limit; attention, norms, launches and gaps were not timed"
+OTHER_HOW_DIFF = "difference: the token less the kernels timed alone; attention, norms, launches and gaps were not timed"
+ROLE_SOURCE_ISOLATED, ROLE_SOURCE_IN_MODEL = "isolated", "in_model"
 
 # what a kernel that is not a weight role is, by words in its name; for labels only, never for attribution
 KIND_WORDS = (("flash", "attention"), ("attention", "attention"), ("softmax", "attention"), ("rms_norm", "norm"),
@@ -117,9 +121,7 @@ def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tu
     calls = r.get("calls_per_token") or 0
     pct = 100.0 * r["ideal_ms"] / r["actual_ms"] if r["actual_ms"] > 0 else None
     per_call_bytes = r["ideal_ms"] * 1e-3 * bandwidth_gbs * 1e9 / calls if calls else None
-    if r.get("cache"):  # an isolated read that stayed in cache: not a DRAM number, so no rule applies to it
-      why = REASONS["cache"]
-    elif r.get("within_noise"):  # below its floor, inside the chip's plausibility band (tinygrad_role_time.loss)
+    if r.get("within_noise"):  # below its floor, inside the chip's plausibility band (tinygrad_role_time.loss)
       why = r.get("label") or REASONS["at_limit"]
     elif pct is not None and round(pct, 1) >= ROLE_RULE["at_limit_pct"]:
       why = REASONS["at_limit"]
@@ -132,13 +134,14 @@ def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tu
     else:
       why = REASONS["unexplained"]
     out.append({**r, "pct_peak": round(pct, 1) if pct is not None else None, "us_per_call": r["actual_ms"] * 1e3 / calls if calls else None,
-                "mb_per_call": per_call_bytes / 1e6 if per_call_bytes else None, "reason": why})
+                "mb_per_call": per_call_bytes / 1e6 if per_call_bytes else None,
+                "gbs": per_call_bytes / (r["actual_ms"] * 1e6 / calls) if per_call_bytes and r["actual_ms"] > 0 else None,
+                "reason": why})
   rule = (f"At the limit: {ROLE_RULE['at_limit_pct']:.0f}% of peak or more. Too small to fill memory: a call moves "
           f"under {small / 1e6:.1f} MB, which is {ROLE_RULE['fill_factor']:.0f} x the {in_flight / 1e6:.2f} MB that must "
           f"be in flight ({bandwidth_gbs:.0f} GB/s x {latency:.1f} µs latency, {latency_source}, Little's law). "
           "Compute bound: the roofline regime is compute. Slow kernel: below the limit, the call big enough, not "
-          "compute bound, the chip not throttled. Inconclusive, cache: an isolated read that stayed in cache. "
-          "Anything else: unexplained.")
+          "compute bound, the chip not throttled. Anything else: unexplained.")
   return out, rule
 
 
@@ -219,6 +222,8 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   if token is None:
     out["refused"] = f"no measured token for {provider} in this run to tie the kernels out against"
     return out
+  if out["isolated"]:
+    return _isolated(out, table, token, limit, context)
   band = float((table.get("band") or {}).get("band") or 0.01)
   if busy > token * (1 + band):  # idle time cannot be negative beyond noise: the two numbers are not comparable
     numbers = (f"profiled kernels do not fit the real token: they sum to {busy:.3f} ms, more than the "
@@ -232,16 +237,6 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   other_busy = busy - sum(r["actual_ms"] for r in roles)
   other_ideal = limit - weight_ideal
   lines = [{"label": f"limit at context {context:.0f} (ideal)", "ms": limit, "how": "derived"}]
-  if out["isolated"]:
-    # The weight kernels were timed alone: their sum is measured. Everything else in the token (attention, norms,
-    # the KV read, idle time) was not timed and is one difference line, named for what it holds. Below 0 means the
-    # isolated kernels, each reading cold DRAM alone, sum to more than the token: in the model some reads hit cache
-    # and kernels overlap. The number is shown as it is.
-    rest = token - limit - weight_above
-    label = NOT_TIMED_LABEL if rest >= 0 else NOT_TIMED_LABEL + " (below 0)"  # the sentence under the table says why
-    out["lines"] = lines + [{"label": "weight kernels above their ideal (isolated)", "ms": weight_above, "how": "measured"},
-                            {"label": label, "ms": rest, "how": "difference"}]
-    return out
   if roles:
     taken = {(r["role"], r["quant"]) for r in roles}
     parts: dict[str, float] = {}
@@ -260,4 +255,38 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   lines.append({"label": "gaps between kernels (GPU idle)" if gaps >= 0 else
                 f"gaps between kernels (below 0, within ±{100 * band:.1f}%)", "ms": gaps, "how": "difference"})
   out["lines"] = lines
+  return out
+
+
+def scale_roles(roles:list[dict[str, Any]], weight_ms:float | None, isolated_sum_ms:float) -> tuple[list[dict[str, Any]], float | None]:
+  """An isolated run's estimated split: each role's isolated time scaled by weight_ms / isolated sum (1.0 when the
+  sum fits the token). est_ms and est_lost_ms carry estimate: True. The isolated times stay as they are, measured."""
+  if not weight_ms or not isolated_sum_ms:
+    return roles, None
+  k = weight_ms / isolated_sum_ms
+  return [{**r, "est_ms": r["actual_ms"] * k, "est_lost_ms": r["actual_ms"] * k - r["ideal_ms"], "estimate": True}
+          for r in roles], k
+
+
+def _isolated(out:dict[str, Any], table:dict[str, Any], token:float, limit:float, context:float) -> dict[str, Any]:
+  """The tie-out for kernels timed alone. Only what is measured is tied out: the ideal and the token, with their
+  difference as one line. No floor or over-count refusal runs. The split by role is an estimate, said once,
+  labelled. The timer times weight kernels only, so the rest of the token (attention, norms, launches, gaps) is
+  never 0. When the isolated sum fits inside the token the times stand as they are and the rest is the
+  difference. When it over-counts (alone and cold can be slower than inside the token) the times are scaled
+  down to the token less the KV reads at the limit, the one part of the rest the roofline knows."""
+  weight_iso = sum(r["actual_ms"] for r in table["roles"])
+  other_floor = max(0.0, limit - sum(r["ideal_ms"] for r in table["roles"]))
+  room = max(0.0, token - other_floor)
+  scale = min(1.0, room / weight_iso) if weight_iso else None
+  weight_est = weight_iso * scale if scale is not None else None
+  out["show_both"] = True
+  out["lines"] = [{"label": f"limit at context {context:.0f} (ideal)", "ms": limit, "how": "derived"},
+                  {"label": NOT_SPLIT_LABEL, "ms": token - limit, "how": "difference"}]
+  scaled = scale is not None and scale < 1.0
+  out["estimate"] = {"estimate": True, "label": ESTIMATE_LABEL, "scale": scale, "isolated_sum_ms": weight_iso, "token_ms": token,
+                     "weight_ms": weight_est, "scaled": scaled,
+                     "weight_how": "upper bound: the token less the KV-read floor" if scaled else "as timed alone, fits inside the token",
+                     "other_ms": token - weight_est if weight_est is not None else None,
+                     "other_how": OTHER_HOW_FLOOR if scaled else OTHER_HOW_DIFF}
   return out

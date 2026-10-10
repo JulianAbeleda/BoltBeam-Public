@@ -203,9 +203,8 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   actual: dict[tuple[str, str], dict[str, float]] = {}
   for r in rows:
     if r.get("scope") == "kernel" and r.get("role_source") in ROLE_SOURCES and r.get("role") and r.get("quant"):
-      slot = actual.setdefault((r["role"], r["quant"]), {"us": 0.0, "calls": 0, "cache": False})
+      slot = actual.setdefault((r["role"], r["quant"]), {"us": 0.0, "calls": 0})
       slot["us"] += float(r["wall_us"]); slot["calls"] += int(r.get("calls", 1))
-      slot["cache"] = slot["cache"] or bool(r.get("cache"))  # an isolated read that stayed in cache (engine_kernels)
   out = []
   for c in ceiling_roles:
     got = actual.get((c["role"], c["quant"]))
@@ -214,8 +213,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
     noise = ms < c["floor_ms"] and ms >= c["floor_ms"] * (1 - chip["band"])
     out.append({"role": c["role"], "quant": c["quant"], "ideal_ms": c["floor_ms"], "actual_ms": ms,
                 "lost_ms": 0.0 if noise else ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens,
-                "within_noise": noise, "label": AT_LIMIT_NOISE.format(pct=100 * chip["band"]) if noise else None,
-                "cache": got["cache"]})
+                "within_noise": noise, "label": AT_LIMIT_NOISE.format(pct=100 * chip["band"]) if noise else None})
   total_lost = sum(max(r["lost_ms"], 0.0) for r in out)
   for r in out: r["share"] = (max(r["lost_ms"], 0.0) / total_lost) if total_lost > 0 else 0.0
   out.sort(key=lambda r: -r["lost_ms"])

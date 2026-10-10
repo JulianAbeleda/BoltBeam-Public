@@ -214,17 +214,17 @@ func TestSetupHasThreeSectionsAndRun(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
 	acts := setupActions(facts(program(s, nil, nil, nil, 80, 24)))
-	want := []string{"page|Model    Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K\t›", "page|Chip     apple_m3_10c · this Mac · 97.2 GB/s\t›",
-		"page|Engine   llama.cpp\t›", "page|Batch    1\t›", "head|", "analyze|[ Run ]", "page|Saved runs (0)\t›"}
+	want := []string{"page|Model       Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K\t›", "page|Chip        apple_m3_10c · this Mac · 97.2 GB/s\t›",
+		"page|Engine      llama.cpp\t›", "page|Batch       1\t›", "page|Measurement auto\t›", "head|", "analyze|[ Run ]", "page|Saved runs (0)\t›"}
 	if got := rows(acts); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
-	if acts[0].arg != "3" || acts[1].arg != "4" || acts[2].arg != "5" || acts[3].arg != "6" {
+	if acts[0].arg != "3" || acts[1].arg != "4" || acts[2].arg != "5" || acts[3].arg != "6" || acts[4].arg != "7" {
 		t.Fatalf("each line opens its picker: %+v", acts[:3])
 	}
 	none := New(seam.Client{}, jobs.Store{}, "", "", 512)
 	got := rows(setupActions(none.f))
-	if got[0] != "page|Model    not chosen\t›" || got[5] != "|[ Run ] needs a model, a chip, an engine" {
+	if got[0] != "page|Model       not chosen\t›" || got[6] != "|[ Run ] needs a model, a chip, an engine" {
 		t.Fatalf("empty:\n%s", strings.Join(got, "\n"))
 	}
 	what := facts(program(s, nil, nil, nil, 80, 24))

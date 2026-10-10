@@ -1,14 +1,14 @@
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Setup                                                                        │
-│ ▸ Model    Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K                       › │
-│   Chip     apple_m3_10c · this Mac · 97.2 GB/s                             › │
-│   Engine   llama.cpp                                                       › │
-│   Batch    1                                                               › │
+│ ▸ Model       Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K                    › │
+│   Chip        apple_m3_10c · this Mac · 97.2 GB/s                          › │
+│   Engine      llama.cpp                                                    › │
+│   Batch       1                                                            › │
+│   Measurement auto                                                         › │
 │                                                                              │
 │   [ Run ]                                                                    │
 │   Saved runs (2)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

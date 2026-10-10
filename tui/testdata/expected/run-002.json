@@ -74,6 +74,7 @@
     "loss": {
       "capture": null,
       "cross_check": null,
+      "estimate": null,
       "evidence": {
         "common": [],
         "other_kernels": [],
@@ -101,6 +102,8 @@
       "provider_missing": "no per-role time yet: Run with llama.cpp times each role",
       "refused": null,
       "role_rule": null,
+      "role_source": null,
+      "role_source_words": null,
       "roles": [],
       "roles_provider": null,
       "runtimes": [
@@ -170,6 +173,7 @@
       "unpaired_roles": []
     },
     "measured": true,
+    "measurement": null,
     "model_id": "Qwen3-8B",
     "probe": {
       "absent": {},

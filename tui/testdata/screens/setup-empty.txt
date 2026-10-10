@@ -1,15 +1,15 @@
 ⚡ BoltBeam                                                             (˘ω˘) zz
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Setup                                                                        │
-│ ▸ Model    not chosen                                                      › │
-│   Chip     not chosen                                                      › │
-│   Engine   not chosen                                                      › │
-│   Batch    1                                                               › │
+│ ▸ Model       not chosen                                                   › │
+│   Chip        not chosen                                                   › │
+│   Engine      not chosen                                                   › │
+│   Batch       1                                                            › │
+│   Measurement auto                                                         › │
 │                                                                              │
 │   [ Run ] needs a model, a chip, an engine                                   │
 │   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

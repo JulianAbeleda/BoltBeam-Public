@@ -310,6 +310,7 @@ func (c Client) Results(id string) (*Results, []byte, int, error) {
 type Pipeline struct {
 	Model, RunDir, Target, Workload, ID, Probe, Timing, Measure, Provider, Layout string
 	Batch                                                                         string // batch sizes beside 1, as "8" or "8,32"
+	RoleTime                                                                      string // how roles are timed: in-model, generic or auto (empty: auto)
 	// Analyze is one press: measure, the machine's facts, then per-role time with the same engine
 	Analyze bool
 	// NoSearch skips Run's per-role kernel search (a quick run)
@@ -318,7 +319,7 @@ type Pipeline struct {
 
 func (c Client) PipelineArgv(p Pipeline) []string {
 	argv := []string{c.Python, "-m", "boltbeam.workflow.screen", "pipeline", p.Model, "--run", p.RunDir, "--target", p.Target}
-	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider, "--layout": p.Layout, "--batch": p.Batch} {
+	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider, "--layout": p.Layout, "--batch": p.Batch, "--role-time": p.RoleTime} {
 		if value != "" {
 			argv = append(argv, flag, value)
 		}

@@ -13,11 +13,13 @@ The bandwidth probes (metal_bandwidth.py, cuda_bandwidth.py) and the cubin repla
 launches with `samples` too: there is no second warm-and-time loop in the tree. They keep their own statistic
 (best of N for a bandwidth), stated where they use it.
 
-Flushing: before each timed sample a store kernel rewrites a buffer larger than the chip's last-level cache, so the
-timed kernel reads from DRAM. The sizes are per backend (FLUSH): 64 MiB on Apple (the system level cache), 256 MiB
-on NVIDIA (a 5090's L2 is 96 MiB; a copy-engine copy does not evict it, a store kernel does). A weight smaller than
-the cache still stays resident between the warmups and the sample; the adapter marks such rows, this loop does not
-guess.
+Flushing: before each timed sample a kernel sweeps a buffer larger than the chip's last-level cache, so the timed
+kernel reads its weights from DRAM. The sizes are per backend (FLUSH): 64 MiB on Apple (the system level cache),
+256 MiB on NVIDIA (a 5090's L2 is 96 MiB; a copy-engine copy does not evict it, a kernel does). The sweep READS on
+Apple: a store leaves dirty lines that drain into DRAM during the next kernel, about 60 us per launch on an M4,
+which made a 2.4 MB kernel 2 to 4 times slower and a 28 MB kernel 20% slower than inside the model
+(docs/in-model-vs-generic-m4-20261010.md). A read evicts without that. On NVIDIA the sweep still STORES: the read
+sweep has not been measured on a 5090 yet. Either way the weight is evicted, whatever its size.
 """
 from __future__ import annotations
 
@@ -28,15 +30,17 @@ from typing import Any, Callable
 SAMPLES, WARMUPS = 20, 10  # warmups let the GPU clock ramp up before the first timed sample
 FLOOR_SAMPLES = 20  # launches of an empty kernel: the fixed cost of one dispatch on this GPU
 
-# the flush kernel per backend: a store over a buffer larger than the last-level cache, run before each timed sample
+# the flush kernel per backend: a sweep over a buffer larger than the last-level cache, run before each timed sample;
+# "mode" says what the sweep does to the cache lines: "read" leaves them clean, "store" leaves them dirty
 FLUSH = {
-  "Metal": {"bytes": 64 << 20, "kernel": "flush", "empty": "empty", "threads": 256, "source": """
+  "Metal": {"bytes": 64 << 20, "kernel": "sweep", "mode": "read", "empty": "empty", "threads": 256, "source": """
 #include <metal_stdlib>
 using namespace metal;
-kernel void flush(device float* b [[buffer(0)]], uint i [[thread_position_in_grid]]) { b[i] = b[i] * 0.5f + 1.0f; }
+kernel void sweep(device const float* b [[buffer(0)]], device float* o [[buffer(1)]], uint i [[thread_position_in_grid]]) {
+  if (b[i] == 12345.0f) o[0] = 1.0f; }
 kernel void empty(device float* b [[buffer(0)]], uint i [[thread_position_in_grid]]) { if (i == 0xFFFFFFFF) b[0] = 0.0f; }
 """},
-  "CUDA": {"bytes": 256 << 20, "kernel": "flush", "empty": "empty", "threads": 256, "source": """
+  "CUDA": {"bytes": 256 << 20, "kernel": "flush", "mode": "store", "empty": "empty", "threads": 256, "source": """
 extern "C" __global__ void flush(float* b) { unsigned i = blockIdx.x * blockDim.x + threadIdx.x; b[i] = b[i] * 0.5f + 1.0f; }
 extern "C" __global__ void empty(float* b) { if (blockIdx.x * blockDim.x + threadIdx.x == 0xFFFFFFFFu) b[0] = 0.0f; }
 """},
@@ -100,7 +104,8 @@ class KernelSpec:
 
 
 class Flusher:
-  """The backend's flush kernel and empty kernel, compiled once on a bridge."""
+  """The backend's sweep kernel and empty kernel, compiled once on a bridge. A "read" sweep binds a 16-byte sink as
+  its second buffer so the compiler cannot drop the loads."""
 
   def __init__(self, bridge, backend:str):
     row = FLUSH[backend]
@@ -114,7 +119,8 @@ class Flusher:
     self.groups = row["bytes"] // 4 // row["threads"]
 
   def __call__(self) -> float:
-    return self.bridge.dispatch(self.flush_pso, [self.buf], (self.groups, 1, 1), (self.row["threads"], 1, 1))
+    bufs = [self.buf, self.small] if self.row["mode"] == "read" else [self.buf]
+    return self.bridge.dispatch(self.flush_pso, bufs, (self.groups, 1, 1), (self.row["threads"], 1, 1))
 
   def floor_us(self, count:int = FLOOR_SAMPLES) -> float:
     """The fixed GPU cost of one dispatch, the median over `count` empty launches: reported beside every time."""
@@ -179,6 +185,7 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
   result.update(median_us=med, min_us=min(result["samples"]),
                 spread_pct=100.0 * (_percentile(result["samples"], 0.9) - _percentile(result["samples"], 0.1)) / med,
                 gbs=spec.bytes_read / (med * 1e3), warmups=warmups,
-                timing={"warmups": warmups, "samples": count, "cache": "flushed" if flush else "not flushed",
-                        "flush_bytes": flush.row["bytes"] if flush else 0, "clock": bridge.CLOCK})
+                timing={"warmups": warmups, "samples": count, "cache": f"swept ({flush.row['mode']})" if flush else "not flushed",
+                        "flush_bytes": flush.row["bytes"] if flush else 0, "flush_mode": flush.row["mode"] if flush else None,
+                        "clock": bridge.CLOCK})
   return result

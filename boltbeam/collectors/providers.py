@@ -95,13 +95,60 @@ def reads(provider:str, model:str | pathlib.Path) -> str | None:
           f"{pathlib.Path(model).name} is {fmt or 'not a model BoltBeam reads'}")
 
 
-def capture_method(provider:str, backend:str) -> dict[str, Any]:
+# The Setup choice of how roles are timed. Python decides which can run here and the default.
+MEASUREMENTS = ("in_model", "generic")
+MEASUREMENT_LABEL = {"in_model": "in-model", "generic": "generic (kernel timer)"}
+MEASUREMENT_ABOUT = {
+  "in_model": "the real token, split by role when the engine labels its kernels (tinygrad, nsys); llama.cpp on a Mac: whole step only",
+  "generic": "each kernel alone, cold, any engine, any chip; compares kernels, the token split is an estimate"}
+IN_MODEL_NEEDS = {"Metal": "in-model needs Xcode's Metal System Trace on this Mac", "CUDA": "in-model needs nsys",
+                  "AMD": "in-model needs rocprofv3"}
+GENERIC_NEEDS = "generic needs the engine's kernel source"
+
+
+def measurement_options(provider:str, backend:str) -> dict[str, Any]:
+  """The two ways to time roles for this engine on this chip, whether each can run here (reason when not), and
+  the default: in-model when it can run, else generic. fallback says why in-model was not the default."""
+  from boltbeam.collectors import engine_kernels
+  p = vendor_capture.plan(backend)
+  if provider == tinygrad_role_time.PROVIDER:  # tinygrad's own events are in-model; it ships no kernel source
+    in_model, generic = None, f"{GENERIC_NEEDS}: tinygrad generates its kernels at run time"
+  else:
+    in_model = None if p["tool"] else IN_MODEL_NEEDS.get(backend, f"in-model needs a capture tool: {p['reason']}")
+    why = engine_kernels.available(provider, backend, llama_bench_decode.find(llama_bench_decode.DEFAULT))
+    generic = None if why is None else f"{GENERIC_NEEDS}: {why}"
+  reasons = {"in_model": in_model, "generic": generic}
+  default = "in_model" if in_model is None else "generic" if generic is None else None
+  return {"default": default, "fallback": in_model if default != "in_model" else None,
+          "options": [{"id": m, "label": MEASUREMENT_LABEL[m], "about": MEASUREMENT_ABOUT[m], "available": reasons[m] is None,
+                       "reason": reasons[m]} for m in MEASUREMENTS]}
+
+
+def resolve_measurement(provider:str, backend:str, choice:str = "auto") -> dict[str, Any]:
+  """The measurement a run uses: the choice ("in_model", "generic"; "auto" is the default), with the fallback
+  reason when auto fell back to generic, and the reason when the choice cannot run here."""
+  opts = measurement_options(provider, backend)
+  chosen = opts["default"] if choice in (None, "auto") else choice.replace("-", "_")
+  row = next((o for o in opts["options"] if o["id"] == chosen), None)
+  return {"choice": choice or "auto", "chosen": chosen, "label": MEASUREMENT_LABEL.get(chosen or "", None),
+          "fallback": opts["fallback"] if choice in (None, "auto") else None,
+          "reason": None if row and row["available"] else (row or {}).get("reason") or "no way to time roles here"}
+
+
+def capture_method(provider:str, backend:str, measurement:str = "auto") -> dict[str, Any]:
   """How step 5 times roles for this provider here: {"method", "reason", "cross_check"}. method None: whole step
   only, and reason says why. On Metal with no vendor tool (a Mac without Xcode), the engine's own kernels are
   timed alone by BoltBeam (collectors/engine_kernels.py); with the tool, that isolated timing is the cross_check
   shown beside the in-model capture."""
   from boltbeam.collectors import engine_kernels
   p = vendor_capture.plan(backend)
+  if measurement not in (None, "auto"):  # the Setup choice: that kind only, or no per-role time with its reason
+    got = resolve_measurement(provider, backend, measurement)
+    if got["reason"]:
+      return {"method": None, "reason": got["reason"], "cross_check": None}
+    if got["chosen"] == "generic":
+      return {"method": engine_kernels.METHOD, "reason": None, "cross_check": None}
+    return capture_method(provider, backend)
   if provider == tinygrad_role_time.PROVIDER:
     if backend in tinygrad_role_time.CAPTURED_BACKENDS and p["tool"]:
       return {"method": p["method"], "reason": None, "cross_check": None}
@@ -141,6 +188,7 @@ def available(target, *, tinygrad_root:pathlib.Path | None = None) -> list[dict[
     why = _why(name, target, tinygrad_root)
     out.append({"provider": name, "available": why is None, "state": state(name, target, why), "reason": why, "formats": list(FORMATS[name]),
                 "capture": capture_method(name, target.backend),
+                "measurement": measurement_options(name, target.backend),
                 "batch_over_one": name != tinygrad_role_time.PROVIDER})  # tinygrad's decode runs one stream
   return out
 
@@ -333,7 +381,7 @@ CROSS_CHECK = "isolated_timing_trace.json"  # the engine's kernels timed alone, 
 
 def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None, batch:int = 1,
               context:int = 128, say:Callable[[str], None] = lambda _: None,
-              step:Callable[[int, int], None] | None = None) -> dict[str, Any]:
+              step:Callable[[int, int], None] | None = None, measurement:str = "auto") -> dict[str, Any]:
   """Per-role time for one provider, refused under the same floor rule for every provider. batch > 1 captures
   one decode step of that many streams (driven engines and llama.cpp's batched bench). say and step report
   progress for the stages that have parts (the isolated kernel timer, one role at a time)."""
@@ -346,7 +394,7 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
   gpu = gpu_free(target.backend)
   if not gpu["free"]:
     raise RuntimeError(f"not measured: {gpu['reason']}")
-  how = capture_method(provider, target.backend)
+  how = capture_method(provider, target.backend, measurement)
   if provider == tinygrad_role_time.PROVIDER and how["method"] == tinygrad_role_time.OWN_TIMING:
     return role_compare.time_roles(run, root=root)
   if how["method"] is None:

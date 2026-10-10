@@ -17,10 +17,10 @@ tinygrad has no adapter: the fork generates its kernels per shape at run time in
 shipped source to compile; it keeps its own timing (collectors/tinygrad_role_time.py). Not cheap, so not built.
 
 A result is labelled with the adapter and the kernel: "isolated, timed by BoltBeam's kernel timer: llama.cpp
-kernel_mul_mv_q4_K_f32". An isolated kernel reads from DRAM after a flush, alone; in the model the same kernel runs
-between other kernels, which an in-model capture sees and this does not. A weight under CACHE_BYTES stays in the
-last-level cache between the warmups and the sample: those rows are "cache", not a DRAM number. The attention, norm
-and KV cache kernels are not timed here; the tie-out names their time, with the GPU's idle time, as one difference.
+kernel_mul_mv_q4_K_f32". An isolated kernel reads from DRAM after a cache sweep, alone, whatever its size; in the
+model the same kernel runs between other kernels, which an in-model capture sees and this does not. The attention,
+norm and KV cache kernels are not timed here; the tie-out names their time, with the GPU's idle time, as one
+difference.
 """
 from __future__ import annotations
 
@@ -39,7 +39,6 @@ from boltbeam.collectors.kernel_timer import Check, KernelSpec
 METHOD = "boltbeam-kernel-timer-isolated"  # the capture method id every reader keys on (providers.capture_method)
 WORDS = "isolated, timed by BoltBeam's kernel timer"  # a row adds ": <engine> <kernel>"
 ROLE_SOURCE = "isolated_by_shape"  # the kernel row's role_source: the role is the shape it was run at
-CACHE_BYTES = {"Metal": 4 << 20, "CUDA": 96 << 20}  # under this, a weight stays in the last-level cache (M-series SLC; a 5090's L2)
 GGML_LIBRARY_ENV = "BOLTBEAM_GGML_METAL"  # a ggml Metal library or ggml-metal.metal file, when not under Homebrew
 GGML_CUDA_ENV = "BOLTBEAM_GGML_CUDA_SRC"  # the ggml-cuda source folder (llama.cpp/ggml/src/ggml-cuda)
 
@@ -98,16 +97,28 @@ def _file_record(path:pathlib.Path) -> dict[str, Any]:
           "sha256": hashlib.sha256(real.read_bytes()).hexdigest()}
 
 
+GGML_LIBRARY_MARK = b"#ifndef GGML_METAL_IMPL"  # every embedded library begins with ggml-metal-impl.h
+
+
 def ggml_source(path:str | pathlib.Path) -> str:
-  """The shader text: a .metal file as is; from a library, the embedded C string that holds the mul_mv kernels
-  (ggml builds with GGML_METAL_EMBED_LIBRARY: the whole source, common header included, is one string)."""
+  """The shader text: a .metal file as is; from a library, the embedded source that holds the K-quant mul_mv kernels.
+  ggml builds with GGML_METAL_EMBED_LIBRARY. Up to 0.19 that is one C string, the whole source. From 0.26 the blob
+  is one string holding 35 libraries back to back, each a complete source that begins with ggml-metal-impl.h
+  (llama-bench says "loaded 35 libraries from embedded data"); the one with the mul_mv_q4_K kernel is returned,
+  cut at the next library's start, so the compiler sees one library, as the engine does."""
   raw = pathlib.Path(path).read_bytes()
   if str(path).endswith(".metal"):
     return raw.decode()
-  i = raw.find(b"kernel void kernel_mul_mv")
+  i = raw.find(b'host_name("kernel_mul_mv_q4_K_f32")')
+  if i < 0:
+    i = raw.find(b"kernel void kernel_mul_mv")
   if i < 0:
     raise NoEngineSource(f"{path} embeds no Metal source with mul_mv kernels")
   start, end = raw.rfind(b"\x00", 0, i) + 1, raw.find(b"\x00", i)
+  if raw.count(GGML_LIBRARY_MARK, start, end) > 1:
+    start = raw.rfind(GGML_LIBRARY_MARK, start, i)
+    nxt = raw.find(GGML_LIBRARY_MARK, i, end)
+    end = nxt if nxt > 0 else end
   return raw[start:end].decode()
 
 
@@ -354,7 +365,6 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
     raise NoEngineSource(str(exc)) from exc
   _, tensors, data_start = read_gguf_layout(model)
   rows_out = []
-  cache_bytes = CACHE_BYTES.get(backend, 0)
   try:
     flusher = kernel_timer.Flusher(bridge, backend)
     floor_us = flusher.floor_us()
@@ -393,10 +403,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
         continue
       med = got["median_us"]
       row.update(status="measured", us_per_call=med, min_us=got["min_us"], samples=len(got["samples"]), spread_pct=got["spread_pct"],
-                 wall_us=med * r["count"], gbs=size / (med * 1e3), cache=size < cache_bytes,
-                 cache_note=(f"{size / 2**20:.1f} MB stays in the last-level cache between warmup and sample: not a DRAM "
-                             "read" if size < cache_bytes else None),
-                 timing={**got["timing"], "dispatch_floor_us": floor_us})
+                 wall_us=med * r["count"], gbs=size / (med * 1e3), timing={**got["timing"], "dispatch_floor_us": floor_us})
       rows_out.append(row)
       if step:
         step(i, len(roles))
@@ -417,7 +424,8 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
                         "whole_step.wall_us (the sum of the measured kernels per token)"],
            "absent": ["attention, norm, RoPE and KV cache kernels: not timed alone; their time is the tie-out's difference line",
                       "in-model time: the kernel ran alone, not between the model's other kernels"],
-           "notes": [WORDS, f"cache rows: a weight under {cache_bytes >> 20} MB is a cache read, not a DRAM read"]}
+           "notes": [WORDS, f"each kernel alone after a {kernel_timer.FLUSH[backend]['mode']} sweep of "
+                            f"{kernel_timer.FLUSH[backend]['bytes'] >> 20} MiB: a DRAM read whatever the weight's size"]}
   path = run / (out or providers.TRACES[provider])
   path.write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
   return trace

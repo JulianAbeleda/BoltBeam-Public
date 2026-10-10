@@ -38,12 +38,15 @@ the version and the sha256 of the file it read, and for the CUDA source the one 
 
 ## What an isolated time means
 
-The kernel runs alone after a flush of a buffer larger than the last-level cache (64 MiB on Apple, 256 MiB on
-NVIDIA). Its weights come from DRAM. In the model the same kernel runs between other kernels. An in-model capture
-sees that; this does not.
+The kernel runs alone after a sweep of a buffer larger than the last-level cache (64 MiB on Apple, 256 MiB on
+NVIDIA), so its weights come from DRAM whatever their size. In the model the same kernel runs between other
+kernels. An in-model capture sees that; this does not.
 
-A weight smaller than the cache (4 MB on an M-series GPU, 96 MiB on a 5090) stays resident between the warmups and
-the sample. Those rows are "inconclusive, cache". Their time is a cache read, not a DRAM read.
+The sweep reads on Apple. Until 2026-10-10 it stored, and a store leaves dirty lines that drain into DRAM during the
+next kernel: about 60 µs per launch on an M4, which made a 2.4 MB kernel 2 to 4 times slower and a 28 MB kernel 20%
+slower than inside the model, and the isolated sum 1.24 times the token. A read sweep evicts without that penalty
+and the sum lands within about 4% of the token (docs/in-model-vs-generic-m4-20261010.md). On NVIDIA the sweep still
+stores: the read sweep has not been measured on a 5090. `timing.flush_mode` in every row says which ran.
 
 The tie-out for an isolated table has three lines: the limit, the weight kernels above their ideal (isolated), and
 one difference line named for what it holds: kernels not timed and gaps (attention, norms, KV read, idle).
@@ -51,17 +54,22 @@ one difference line named for what it holds: kernels not timed and gaps (attenti
 ## Proof on the Air (Apple M3, no Xcode), 2026-10-10
 
 ggml 0.19.0 from `/opt/homebrew/opt/ggml/libexec/libggml-metal.so`. nsg 2, nr0 2, FC_MUL_MV 600, all read from the
-embedded source. Outputs matched the reference on every role.
+embedded source. Outputs matched the reference on every role. These are read-sweep numbers from 2026-10-10
+(peak 97.9 GB/s by the Metal read probe, dispatch floor 2.4 µs); the store-flush numbers taken earlier that day
+were 1% (lm_head) to 41% (attn_kv Q6_K) higher, and the small rows carried a "cache" tag that was wrong.
 
-| role | kernel | threadgroups x (32, nsg) | µs/call | GB/s of 97.4 |
-|---|---|---|---|---|
-| ffn_gate_up Q4_K 12288x4096 | kernel_mul_mv_q4_K_f32 | 3072 x (32, 2) | 356 | 79 |
-| ffn_down Q6_K 4096x12288 | kernel_mul_mv_q6_K_f32 | 1024 x (32, 2) | 496 | 83 |
-| ffn_down Q4_K 4096x12288 | kernel_mul_mv_q4_K_f32 | 1024 x (32, 2) | 350 | 81 |
-| attn_qo Q4_K 4096x4096 | kernel_mul_mv_q4_K_f32 | 1024 x (32, 2) | 149 | 63 |
-| lm_head Q6_K 151936x4096 | kernel_mul_mv_q6_K_f32 | 37984 x (32, 2) | 5468 | 93 |
-| attn_kv Q4_K 1024x4096 | kernel_mul_mv_q4_K_f32 | 256 x (32, 2) | 51 | 46, cache |
-| attn_kv Q6_K 1024x4096 | kernel_mul_mv_q6_K_f32 | 256 x (32, 2) | 71 | 49, cache |
+| role | kernel | threadgroups x (32, nsg) | µs/call | GB/s of 97.9 | % of peak |
+|---|---|---|---|---|---|
+| ffn_gate_up Q4_K 12288x4096 | kernel_mul_mv_q4_K_f32 | 3072 x (32, 2) | 324 | 87.4 | 89 |
+| ffn_down Q6_K 4096x12288 | kernel_mul_mv_q6_K_f32 | 1024 x (32, 2) | 474 | 87.2 | 89 |
+| ffn_down Q4_K 4096x12288 | kernel_mul_mv_q4_K_f32 | 1024 x (32, 2) | 315 | 90.0 | 92 |
+| attn_qo Q4_K 4096x4096 | kernel_mul_mv_q4_K_f32 | 1024 x (32, 2) | 114 | 83.1 | 85 |
+| lm_head Q6_K 151936x4096 | kernel_mul_mv_q6_K_f32 | 37984 x (32, 2) | 5408 | 94.5 | 96 |
+| attn_kv Q4_K 1024x4096 | kernel_mul_mv_q4_K_f32 | 256 x (32, 2) | 41 | 58.2 | 60 |
+| attn_kv Q6_K 1024x4096 | kernel_mul_mv_q6_K_f32 | 256 x (32, 2) | 50 | 68.6 | 70 |
+
+The isolated sum was 54.3 ms against a 66.0 ms token: the kernels fit inside it, with 11.7 ms left for
+attention, norms, launches and gaps. Under the store flush the sum was 62.9 ms against 59.8 ms.
 
 ## NVIDIA: built, unit-tested, not yet run on the 5090
 

@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Measurement                                                                  │
+│ Measurement is how BoltBeam times each role. In-model watches the real token │
+│ and splits it exactly. Generic times each kernel alone with BoltBeam's       │
+│ kernel timer: it compares kernels across engines and chips, and its split of │
+│ the token is an estimate.                                                    │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Choose                                                                       │
+│     in-model · in-model needs Xcode's Metal System Trace on this Mac         │
+│       the real token, split by role when the engine labels its kernels       │
+│       (tinygrad, nsys); llama.cpp on a Mac: whole step only                  │
+│   ● generic (kernel timer)                                                   │
+│       each kernel alone, cold, any engine, any chip; compares kernels,       │
+│       the token split is an estimate                                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · enter pick · esc setup · q quit

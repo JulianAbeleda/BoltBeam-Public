@@ -37,7 +37,7 @@ commands (each prints one JSON object):
                                                up in RUNS/<id>, then RUNS/.work/<id>, then --saved/<id>
   results <id>                                 what won per role and the timing against the ceiling (exit 3: nothing measured)
   start MODEL --target ID [--workload W] [--id RUN] [--probe FILE] [--timing FILE] [--provider P]
-        [--analyze [--no-search]]
+        [--analyze [--no-search]] [--role-time auto|in-model|generic]
                                                run the pipeline in the background; log under --state
   stop <id>                                    SIGTERM the pipeline started here
   delete <id>                                  remove a run folder that is not running
@@ -252,6 +252,7 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 		fs.StringVar(&p.Measure, "measure", "auto", "auto: measure here when this machine can; none: plan only")
 		fs.StringVar(&p.Provider, "provider", "", "llama.cpp or tinygrad: the runtime that decodes in step 4 (default llama.cpp)")
 		fs.StringVar(&p.Batch, "batch", "", "batch sizes to time beside 1, as 8 or 8,32")
+		fs.StringVar(&p.RoleTime, "role-time", "", "how roles are timed: in-model, generic or auto (default auto)")
 		fs.BoolVar(&p.Analyze, "analyze", false, "one press like the Run screen: measure, time each role, search faster kernels")
 		fs.BoolVar(&p.NoSearch, "no-search", false, "with --analyze: skip the per-role kernel search")
 		runID := fs.String("run", "", "run folder name (default: <model>-<chip>-NNN)")
@@ -284,6 +285,14 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 			return fail(out, err)
 		}
 		raw, _ := json.Marshal(job)
+		var withChoice map[string]any // the job, plus how its roles are timed (additive)
+		if json.Unmarshal(raw, &withChoice) == nil {
+			withChoice["measurement"] = map[string]string{"in-model": "in_model", "generic": "generic"}[p.RoleTime]
+			if withChoice["measurement"] == "" {
+				withChoice["measurement"] = "auto"
+			}
+			raw, _ = json.Marshal(withChoice)
+		}
 		return emit(out, raw)
 	case "delete":
 		if !need(1) {

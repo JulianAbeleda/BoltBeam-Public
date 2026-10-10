@@ -3,14 +3,14 @@
 │ Setup                                                                        │
 │ ▸ Model       Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K                    › │
 │   Chip        apple_m3_10c · this Mac · 97.2 GB/s                          › │
-│   Engine      not chosen                                                   › │
+│   Engine      llama.cpp                                                    › │
 │   Batch       1                                                            › │
-│   Measurement auto                                                         › │
+│   Measurement generic (kernel timer)                                       › │
+│     (in-model not available here: needs Xcode's Metal System Trace)          │
 │                                                                              │
-│   [ Run ] needs an engine                                                    │
-│   Saved runs (2)                                                           › │
+│   [ Run ]                                                                    │
+│   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

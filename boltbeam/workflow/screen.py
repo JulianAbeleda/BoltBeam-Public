@@ -375,7 +375,8 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   out = {"status": "modeled", "limit_tok_s": ceil["tok_s"], "limit_ms": limit_ms, "runtimes": runtimes, "roles": [],
          "not_attributed_ms": None, "source": None, "missing": None, "refused": None,
          "provider": provider, "capture": plan, "roles_provider": None, "provider_missing": None, "others": [], "unpaired_roles": [],
-         "tie_out": None, "role_rule": None, "step": step_facts(token), "latency": None, "cross_check": None}
+         "tie_out": None, "role_rule": None, "step": step_facts(token), "latency": None, "cross_check": None,
+         "role_source": None, "role_source_words": None, "estimate": None}
   from boltbeam.workflow import tie_out as tie
   from boltbeam.workflow import evidence as ev
   profile, bw = _optional(run, "model_profile.json"), ceil.get("peak_bandwidth_gbs")
@@ -438,6 +439,15 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   out["tie_out"] = tie.tie_out(run, provider=shown, table=table, trace=_optional(run, providers.TRACES[shown]),
                                limit_ms=limit_ms, profile=profile, bandwidth_gbs=bw,
                                missing=None if roles else "the capture could not split the kernels by role")
+  trace = _optional(run, providers.TRACES[shown])
+  out["role_source"], out["role_source_words"] = role_source(trace, capture)
+  est = out["tie_out"].get("estimate")
+  if out["role_source"] == tie.ROLE_SOURCE_ISOLATED and est:
+    out["roles"], _ = tie.scale_roles(out["roles"], est["weight_ms"], est["isolated_sum_ms"])
+    out["estimate"] = {**est, "method": method_line(trace, est, measurement_of(run))}
+    for r in runtimes:  # the isolated sum is not a token: it carries no "lost", it is said as a sum
+      if r.get("capture") == engine_kernels.METHOD:
+        r.update(isolated=True, lost_ms=None, note="the kernels' times summed, each timed alone; attention, norms and gaps are not in it")
   out["findings"] = ev.items(facts, out)
   taken = {(r["role"], r["quant"]) for r in roles}
   out["evidence"] = {"whole_step": facts.whole(), "other_kernels": facts.others(taken), "common": facts.common()}
@@ -531,6 +541,58 @@ CAPTURE_WORDS = {tinygrad_role_time.OWN_TIMING: "tinygrad's own timing", "nsys":
                  engine_kernels.METHOD: engine_kernels.WORDS}
 
 
+IN_MODEL_TOOL = {tinygrad_role_time.OWN_TIMING: "tinygrad events", "nsys": "nsys", "rocprofv3": "rocprofv3",
+                 "metal-system-trace": "xctrace"}
+
+
+def _kernel_names(trace:dict[str, Any]) -> list[str]:
+  names = []
+  for r in trace.get("rows") or []:
+    if r.get("scope") == "kernel" and r.get("kernel") and r["kernel"] not in names:
+      names.append(r["kernel"])
+  return names
+
+
+def role_source(trace:dict[str, Any], capture:dict[str, Any]) -> tuple[str | None, str | None]:
+  """Which kind of per-role measurement this is, and its words for the Facts: "isolated (BoltBeam kernel timer,
+  llama.cpp kernels from ggml 0.19.0 at <path>)" or "in-model (xctrace|nsys|tinygrad events)"."""
+  method = (capture or {}).get("method")
+  if method == engine_kernels.METHOD:
+    src = (trace.get("engine") or {}).get("source") or {}
+    where = " from " + " at ".join(x for x in (src.get("version"), src.get("path")) if x) if src.get("version") or src.get("path") else ""
+    return "isolated", f"isolated (BoltBeam kernel timer, {trace.get('provider_id') or 'engine'} kernels{where})"
+  if method is None and not trace:
+    return None, None
+  return "in_model", f"in-model ({IN_MODEL_TOOL.get(method or tinygrad_role_time.OWN_TIMING, method)})"
+
+
+def measurement_of(run:pathlib.Path) -> dict[str, Any] | None:
+  """The run's measurement choice (providers.resolve_measurement) as measure_status.json recorded it; None for a
+  run from before the choice existed."""
+  return ((_optional(run, MEASURE_STATUS).get("capture") or {}).get("measurement")) or None
+
+
+def measurement_words(m:dict[str, Any] | None) -> str | None:
+  """"Measurement: generic (kernel timer), chosen in Setup." or, after a fallback, "(in-model not available here: ...)"."""
+  if not m or not m.get("label"):
+    return None
+  if m.get("fallback"):
+    return f"Measurement: {m['label']} (in-model not available here: {m['fallback']})."
+  return f"Measurement: {m['label']}" + (", chosen in Setup." if m.get("choice") not in (None, "auto") else ".")
+
+
+def method_line(trace:dict[str, Any], est:dict[str, Any], measurement:dict[str, Any] | None = None) -> str:
+  """How an isolated per-role table was measured, in one short paragraph, with the run's two sums."""
+  names = _kernel_names(trace)
+  src = ((trace.get("engine") or {}).get("source") or {})
+  where = f", from the installed {src['version'].split()[0]} source" if src.get("version") else ""
+  kernels = ", ".join(names[:1]) + (" etc." if len(names) > 1 else "")
+  return (f"Each kernel timed alone by BoltBeam's kernel timer, cold (the cache swept by a read before every call), outside the engine: "
+          f"{trace.get('provider_id') or 'the engine'}'s own {kernels}{where}. Alone and cold is slower than inside the token, "
+          f"where the cache is warm and launches overlap. Sum alone: {est['isolated_sum_ms']:.1f} ms; "
+          f"the real token: {est['token_ms']:.1f} ms." + (f" {w}" if (w := measurement_words(measurement)) else ""))
+
+
 def _capture_words(method:str | None) -> str:
   return CAPTURE_WORDS.get(method or "", method or "no capture")
 
@@ -570,7 +632,7 @@ def cross_check(run:pathlib.Path, bandwidth_gbs:float | None) -> dict[str, Any] 
   cap = trace.get("capture") or {}
   rows = [{"role": r["role"], "quant": r["quant"], "us_per_call": r.get("us_per_call"), "gbs": r.get("gbs"),
            "pct_peak": (100.0 * r["gbs"] / bandwidth_gbs) if r.get("gbs") and bandwidth_gbs else None,
-           "cache": bool(r.get("cache")), "evidence": [{"file": providers.CROSS_CHECK, "path": f"rows[{i}]"}]}
+           "evidence": [{"file": providers.CROSS_CHECK, "path": f"rows[{i}]"}]}
           for i, r in enumerate(trace.get("rows") or []) if r.get("scope") == "kernel" and r.get("status") == "measured"]
   return {"method": cap.get("method"), "words": _capture_words(cap.get("method")), "reason": cap.get("reason"), "rows": rows}
 
@@ -662,6 +724,7 @@ def results_core(run:pathlib.Path, beside:bool = False) -> dict[str, Any]:
     "measured": bool(timing) or bool(primitive),
     "ceiling": {k: v for k, v in ceil.items() if not k.startswith("_")},
     "loss": loss_block(run, manifest, ceil, token, beside=beside),
+    "measurement": measurement_of(run),  # the Setup choice of how roles were timed, as the run recorded it
     "probe": probe_rows(run, ceil.get("peak_bandwidth_gbs")),
     "routes": [{"role": r.get("role"), "quant": r.get("quant"), "shape": r.get("shape"),
                 "selected_route": r.get("selected_route"), "status": r.get("status"),
@@ -771,7 +834,7 @@ def _collectors() -> dict[str, Any]:
 
 def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEFAULT, *,
                  tinygrad_root:pathlib.Path | None = None, gpu=None, layout:str = "one",
-                 devs:list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                 devs:list[dict[str, Any]] | None = None, measurement:str = "auto") -> dict[str, Any]:
   """Which collector measures this target with this provider on this machine, or why none can. Decided before
   the run starts, so the step count is right from the first line. A GPU another program holds is refused."""
   from boltbeam.collectors.llama_bench_decode import CannotMeasure
@@ -785,7 +848,9 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
   devs = devs if devs is not None else lay.devices(_hardware_profile()["gpu"])
   out = {"collector": cid, "provider": provider, "reason": None, "command": None, "layout": layout, "gpus": max(len(devs), 1),
          # the per-role capture this machine has for the engine: recorded in the run (measure_status.json)
-         "capture": providers.capture_method(provider, target.backend)}
+         # with the Setup choice of measurement (in-model, generic, or auto), resolved here and recorded with it
+         "capture": {**providers.capture_method(provider, target.backend, measurement),
+                     "measurement": providers.resolve_measurement(provider, target.backend, measurement)}}
   offered = {l["id"]: l for l in lay.layouts(len(devs), provider)}
   if layout not in offered or not offered[layout]["available"]:
     why = offered[layout]["reason"] if layout in offered else f"{lay.LAYOUTS.get(layout, layout)} needs more than one GPU"
@@ -926,7 +991,8 @@ def pipeline(args, out=sys.stdout) -> int:
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
     plan = measure_plan(args.target, str(pathlib.Path(args.model).expanduser().resolve()), args.run,
                         getattr(args, "provider", None) or providers.DEFAULT, tinygrad_root=root,
-                        layout=getattr(args, "layout", None) or "one")
+                        layout=getattr(args, "layout", None) or "one",
+                        measurement=_role_time_arg(args))
     if analyze_all and not plan["reason"]:  # the machine's measured facts, reused when this machine has them
       steps.append(("machine", lambda: machine(pathlib.Path(args.run), root=root)))
     steps += _measure_steps(args, plan)
@@ -944,7 +1010,7 @@ def pipeline(args, out=sys.stdout) -> int:
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
     if can_time:
       steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say,
-                                                             step=progress.report)))
+                                                             step=progress.report, measurement=_role_time_arg(args))))
     if getattr(args, "no_search", False):
       steps.append(("search", lambda: role_compare.skip(pathlib.Path(args.run), "skipped with --no-search", say)))
     elif not can_time:
@@ -988,6 +1054,11 @@ def pipeline(args, out=sys.stdout) -> int:
   return 0
 
 
+def _role_time_arg(args) -> str:
+  """--role-time in-model|generic|auto as the measurement id: in_model, generic or auto."""
+  return str(getattr(args, "role_time", None) or "auto").replace("-", "_")
+
+
 def role_time(args, out=sys.stdout) -> int:
   """Time every role inside a real decode in tinygrad's runtime, then refresh the report."""
   def say(text:str) -> None:
@@ -998,7 +1069,7 @@ def role_time(args, out=sys.stdout) -> int:
     provider = getattr(args, "provider", None) or run_provider(run)
     say(f"role-time: start {provider}")
     providers.role_time(run, provider, root=pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None,
-                        batch=int(getattr(args, "batch", None) or 1), say=say)
+                        batch=int(getattr(args, "batch", None) or 1), say=say, measurement=_role_time_arg(args))
     output_run(run)
   except Exception as exc:  # application boundary: the reason is the fact the reader needs
     say(f"role-time failed: {exc}")
@@ -1115,8 +1186,17 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     lines.append(f"Also measured at context {a['context']}: {a['tok_s']:.1f} tok/s (not the headline: {step.get('rule')})")
   if step.get("graph_failed"):
     lines.append("Graph replay failed on this run: the token ran without graphs" + (f" ({step['graph_error']})" if step.get("graph_error") else ""))
+  est = loss.get("estimate")
   if t.get("refused"):
     lines.append(f"Not tied out: {t['refused']}")
+  elif est and t.get("token_ms") is not None:
+    lines.append(f"Tie-out, ms per token at context {t['context']:.0f} (only what is measured):")
+    lines.append(f"    {'limit at context 1 (ideal)':<48} {t['limit_ms_ctx1']:9.3f}  derived")
+    for i, l in enumerate(t["lines"]):
+      lines.append(f"  {'  ' if i == 0 else '+ '}{l['label']:<48} {l['ms']:9.3f}  {l['how']}")
+    lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
+    lines.append(f"  estimated split (isolated): weight kernels {'up to ' if est['scaled'] else ''}{est['weight_ms']:.1f} ms, "
+                 f"other and gaps {'at least ' if est['scaled'] else ''}{est['other_ms']:.1f} ms ({est['other_how']})")
   elif t.get("lines") and t.get("token_ms") is not None:
     lines.append(f"Tie-out, ms per token at context {t['context']:.0f}:")
     for i, l in enumerate(t["lines"]):
@@ -1125,7 +1205,22 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   if t.get("band"):
     lines.append(f"Band: {t['band']}")
   roles = loss.get("roles") or []
-  if roles:
+  if roles and est:
+    lines.append("Per role, estimated from isolated kernel times:")
+    lines.append(f"  {est['method']}")
+    lines.append(f"  est. columns {est['label']}; " + (f"scale {est['scale']:.3f} = ({est['token_ms']:.1f} - {est['other_ms']:.1f}) / "
+                 f"{est['isolated_sum_ms']:.1f}" if est["scaled"] else f"not scaled: {est['isolated_sum_ms']:.1f} ms alone fits the "
+                 f"{est['token_ms']:.1f} ms token"))
+    lines.append(f"  {'role':<12} {'quant':<5} {'MB/call':>8} {'us/call':>8} {'GB/s':>6} {'% peak':>7} {'ideal':>7} "
+                 f"{'est. ms in token':>16} {'est. lost':>9}  why")
+    for r in roles:
+      mb = f"{r['mb_per_call']:.1f}" if r.get("mb_per_call") is not None else ""
+      us = f"{r['us_per_call']:.1f}" if r.get("us_per_call") is not None else ""
+      g = f"{r['gbs']:.1f}" if r.get("gbs") is not None else ""
+      pct = f"{r['pct_peak']:.1f}%" if r.get("pct_peak") is not None else ""
+      lines.append(f"  {r['role']:<12} {r['quant']:<5} {mb:>8} {us:>8} {g:>6} {pct:>7} {r['ideal_ms']:7.3f} "
+                   f"{r['est_ms']:16.3f} {r['est_lost_ms']:9.3f}  {r.get('reason') or ''}")
+  elif roles:
     lines.append(f"Per role ({loss.get('source') or ''}):")
     lines.append(f"  {'role':<12} {'quant':<5} {'ideal':>7} {'actual':>7} {'lost':>6} {'% peak':>7} {'us/call':>8}  why")
     for r in roles:
@@ -1146,13 +1241,17 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   if (cc := loss.get("cross_check")) and cc.get("rows"):
     lines.append(f"Cross-check ({cc.get('words')}):")
     for r in cc["rows"]:
-      lines.append(f"  {r['role']:<12} {r['quant']:<5} {r['us_per_call']:8.1f} us {r['gbs']:6.1f} GB/s" + (" cache" if r.get("cache") else ""))
+      lines.append(f"  {r['role']:<12} {r['quant']:<5} {r['us_per_call']:8.1f} us {r['gbs']:6.1f} GB/s")
   probe = res.get("probe") or {}
   if probe.get("rows"):
     lines.append(f"{probe.get('label')}:")
     for r in probe["rows"]:
       pct = f"{r['pct_peak']:.0f}%" if r.get("pct_peak") is not None else ""
       lines.append(f"  {r['role']:<12} {r['quant']:<5} {r['gbs']:6.1f} GB/s {pct:>5} of peak")
+  if loss.get("role_source_words"):
+    lines.append(f"Per-role source: {loss['role_source_words']}")
+  if words := measurement_words(res.get("measurement")):
+    lines.append(words)
   if lat := loss.get("latency"):
     lines.append(f"Latency in the reason rule: {lat['us']:.1f} us, {lat['source']}")
   return "\n".join(lines) + "\n"
@@ -1325,6 +1424,9 @@ def main(argv:list[str] | None = None) -> int:
                  help="one press: measure here, the machine's facts, then per-role time with the same engine")
   p.add_argument("--tinygrad-root", default=None, help="the tinygrad fork; default $BOLTBEAM_TINYGRAD_ROOT")
   p.add_argument("--batch", default="1", help="batch sizes to time, as 1,32; batch 1 is always timed")
+  p.add_argument("--role-time", default="auto", choices=["auto", "in-model", "generic"],
+                 help="how roles are timed: in-model (a capture of the real token), generic (BoltBeam's kernel timer, "
+                      "each kernel alone) or auto (in-model when this machine has it, else generic)")
   p.add_argument("--no-search", action="store_true",
                  help="with --analyze: skip the per-role kernel search (a quick run)")
   for name in ("providers", "gpu-free"):
@@ -1339,6 +1441,7 @@ def main(argv:list[str] | None = None) -> int:
       p.add_argument("--provider", default=None, choices=list(providers.NAMES),
                      help="default: the provider step 4 measured the run with")
       p.add_argument("--batch", type=int, default=1, help="capture one decode step of this many streams")
+      p.add_argument("--role-time", default="auto", choices=["auto", "in-model", "generic"])
   args = parser.parse_args(argv)
   if args.command == "pipeline":
     return pipeline(args)

@@ -258,6 +258,38 @@ type MeasureStatus struct {
 	Provider *string `json:"provider"`
 	// Batches are the batch sizes timed; 1 is always among them.
 	Batches []int `json:"batches"`
+	// Capture is the per-role capture the measuring machine had, with the Setup choice of measurement.
+	Capture *MeasureCapture `json:"capture"`
+}
+
+// MeasureCapture is measure_status.json's capture; Measurement is nil for runs from before the choice existed.
+type MeasureCapture struct {
+	Measurement *Measurement `json:"measurement"`
+}
+
+// Measurement is how a run timed its roles (providers.resolve_measurement): the choice made in Setup
+// ("auto", "in_model", "generic"), what it resolved to, and why in-model was not used when auto fell back.
+type Measurement struct {
+	Choice   string  `json:"choice"`
+	Chosen   *string `json:"chosen"`
+	Label    *string `json:"label"`
+	Fallback *string `json:"fallback"`
+	Reason   *string `json:"reason"`
+}
+
+// MeasurementOptions are the two ways to time roles for one engine here (providers.measurement_options).
+type MeasurementOptions struct {
+	Default  *string             `json:"default"`
+	Fallback *string             `json:"fallback"`
+	Options  []MeasurementOption `json:"options"`
+}
+
+type MeasurementOption struct {
+	ID        string  `json:"id"` // in_model | generic
+	Label     string  `json:"label"`
+	About     string  `json:"about"`
+	Available bool    `json:"available"`
+	Reason    *string `json:"reason"`
 }
 
 // Capture is how a provider's per-role time was taken: "nsys", "rocprofv3", "metal-system-trace" or
@@ -278,6 +310,8 @@ type ProviderRow struct {
 	Layouts []LayoutRow `json:"layouts"`
 	// BatchOverOne says the engine decodes more than one stream; nil from an older Python means yes.
 	BatchOverOne *bool `json:"batch_over_one"`
+	// Measurement is how this engine's roles can be timed here; nil from an older Python.
+	Measurement *MeasurementOptions `json:"measurement"`
 }
 
 type Providers struct {
@@ -456,12 +490,14 @@ type Results struct {
 	Measured bool       `json:"measured"`
 	Ceiling  CeilingRef `json:"ceiling"`
 	Loss     Loss       `json:"loss"`
-	Routes   []Route    `json:"routes"`
-	Timing   Timing     `json:"timing"`
-	Regimes  []Regime   `json:"regimes"`
-	Blocked  []Need     `json:"blocked"`
-	Report   *string    `json:"report"`
-	Batches  []BatchRow `json:"batches"`
+	// Measurement is how this run timed its roles, as chosen in Setup; nil for older runs.
+	Measurement *Measurement `json:"measurement"`
+	Routes      []Route      `json:"routes"`
+	Timing      Timing       `json:"timing"`
+	Regimes     []Regime     `json:"regimes"`
+	Blocked     []Need       `json:"blocked"`
+	Report      *string      `json:"report"`
+	Batches     []BatchRow   `json:"batches"`
 	// Probe is BoltBeam's own kernel (reference) per role: GB/s and share of peak, not the engine's kernel.
 	Probe *Probe `json:"probe"`
 }
@@ -475,15 +511,13 @@ type Probe struct {
 	Rows            []RateRow `json:"rows"`
 }
 
-// RateRow is one role's kernel read rate: µs per call, GB/s and the share of the chip's peak; Cache marks an
-// isolated read that stayed in cache.
+// RateRow is one role's kernel read rate: µs per call, GB/s and the share of the chip's peak.
 type RateRow struct {
 	Role      string   `json:"role"`
 	Quant     string   `json:"quant"`
 	UsPerCall *float64 `json:"us_per_call"`
 	Gbs       *float64 `json:"gbs"`
 	PctPeak   *float64 `json:"pct_peak"`
-	Cache     bool     `json:"cache"`
 }
 
 // Step is THE measured token (tie_out.measured_step): the row every headline reads, with the engine's own account
@@ -576,6 +610,25 @@ type Loss struct {
 	Step       *Step        `json:"step"`
 	CrossCheck *CrossCheck  `json:"cross_check"`
 	Latency    *Latency     `json:"latency"`
+	// RoleSource is "isolated" (each kernel timed alone by BoltBeam's kernel timer) or "in_model" (a capture of
+	// the real token); RoleSourceWords names it for the Facts. Estimate is set for an isolated table only: the
+	// token split by role is the isolated times scaled to the token, labelled an estimate.
+	RoleSource      *string   `json:"role_source"`
+	RoleSourceWords *string   `json:"role_source_words"`
+	Estimate        *Estimate `json:"estimate"`
+}
+
+// Estimate is an isolated run's scaled split of the token (workflow/tie_out.py _isolated).
+type Estimate struct {
+	Label         string  `json:"label"`
+	Method        string  `json:"method"`
+	Scale         float64 `json:"scale"`
+	IsolatedSumMs float64 `json:"isolated_sum_ms"`
+	TokenMs       float64 `json:"token_ms"`
+	WeightMs      float64 `json:"weight_ms"`
+	OtherMs       float64 `json:"other_ms"`
+	OtherHow      string  `json:"other_how"`
+	Scaled        bool    `json:"scaled"`
 }
 
 type TieOut struct {
@@ -594,7 +647,8 @@ type TieOut struct {
 	Lines           []TieLine `json:"lines"`
 	Missing         *string   `json:"missing"`
 	Refused         *string   `json:"refused"`
-	Isolated        bool      `json:"isolated"` // the kernels were timed alone: the last line is what was not timed
+	Isolated        bool      `json:"isolated"` // the kernels were timed alone: only the ideal and the token are tied out
+	Estimate        *Estimate `json:"estimate"`
 }
 
 type TieLine struct {
@@ -623,6 +677,7 @@ type Runtime struct {
 	PerRole  bool    `json:"per_role"`
 	Note     string  `json:"note"`
 	Capture  *string `json:"capture"`
+	Isolated bool    `json:"isolated"` // a sum of kernels each timed alone: not a token, so no "lost"
 }
 
 type RoleLoss struct {
@@ -635,6 +690,10 @@ type RoleLoss struct {
 	CallsPerToken float64  `json:"calls_per_token"`
 	PctPeak       *float64 `json:"pct_peak"`
 	UsPerCall     *float64 `json:"us_per_call"`
+	MbPerCall     *float64 `json:"mb_per_call"`
+	Gbs           *float64 `json:"gbs"`
+	EstMs         *float64 `json:"est_ms"`      // isolated runs: the role's time scaled to the token, an estimate
+	EstLostMs     *float64 `json:"est_lost_ms"` // EstMs minus the ideal, an estimate
 	Reason        string   `json:"reason"`
 	// BestFound and Verdict are Run's kernel search for the role (search/role_compare.py role_verdict): the best
 	// plan alone against the model's own kernel per call, and applied, found_not_applied, none_faster or

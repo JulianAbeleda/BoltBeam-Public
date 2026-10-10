@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -57,6 +58,7 @@ type Facts struct {
 	Confirm     string    // the run id waiting for a second enter before it is deleted
 	Batch       int       // streams decoded at once; 0 means 1
 	BatchTyped  string    // digits typed on the batch picker
+	Measurement string    // how roles are timed, as picked: in_model or generic; "" is Python's default here
 	ShowLog     bool      // l: the running screen shows the raw log
 	Frac        float64   // the bar, 0 to 1; it never goes back while one job runs
 	fracJob     string    // the job Frac belongs to
@@ -129,6 +131,7 @@ const (
 	pageChip
 	pageEngine
 	pageBatch
+	pageMeasurement
 )
 
 func none(Facts) string { return "" }
@@ -141,10 +144,11 @@ var steps = []step{
 	{"Chip", "", none, chipLine, chipPickerBody, chipActions},
 	{"Engine", "", none, engineLine, engineBody, engineActions},
 	{"Batch", "", none, batchLine, batchBody, batchActions},
+	{"Measurement", "", none, func(Facts) (string, string) { return "", "" }, measurementBody, measurementActions},
 }
 
 // picker reports whether a page is one of the three pickers Setup opens.
-func picker(page int) bool { return page >= pageModel && page <= pageBatch }
+func picker(page int) bool { return page >= pageModel && page <= pageMeasurement }
 
 // engineRow is this machine's provider row for the chosen engine, or nil.
 func (f Facts) engineRow() *seam.ProviderRow { return f.provider(f.Engine) }
@@ -196,7 +200,7 @@ func chipPickerBody(f Facts, width int) string {
 }
 
 // summary is one Setup line: the name, the chosen value, and a mark that enter opens its picker.
-func summary(name, value string) string { return fmt.Sprintf("%-8s %s\t›", name, value) }
+func summary(name, value string) string { return fmt.Sprintf("%-11s %s\t›", name, value) }
 
 // notChosen is the value of a Setup line before anything is chosen.
 var notChosen = stMuted.Render("not chosen")
@@ -248,13 +252,16 @@ func setupActions(f Facts) []action {
 		{summary("Chip", chipValue(f)), "page", fmt.Sprint(pageChip)},
 		{summary("Engine", engineValue(f)), "page", fmt.Sprint(pageEngine)},
 		{summary("Batch", fmt.Sprint(f.batch())), "page", fmt.Sprint(pageBatch)},
-		head(""),
+		{summary("Measurement", measurementValue(f)), "page", fmt.Sprint(pageMeasurement)},
 	}
+	out = append(append(out, measurementFallback(f)...), head(""))
 	switch m := f.missing(); {
 	case f.alive():
 		out = append(out, action{"[ Running… ] show the progress", "page", fmt.Sprint(pageRun)})
 	case len(m) > 0:
 		out = append(out, action{stMuted.Render("[ Run ] needs " + strings.Join(m, ", ")), "", ""})
+	case f.measurementBlocked() != "":
+		out = append(out, action{stMuted.Render("[ Run ] " + f.measurementBlocked()), "", ""})
 	default:
 		out = append(out, action{stAccent.Render("[ Run ]"), "analyze", ""})
 	}
@@ -1020,6 +1027,100 @@ func batchActions(f Facts) []action {
 			typed = stMuted.Render("type a number")
 		}
 		out = append(out, action{"  Other: " + typed, "batch", f.BatchTyped})
+	}
+	return out
+}
+
+// --- Measurement --------------------------------------------------------------------------------------------
+
+// measurementOptions are the chosen engine's two ways to time roles here, from Python; nil before it answers.
+func (f Facts) measurementOptions() *seam.MeasurementOptions {
+	if p := f.engineRow(); p != nil {
+		return p.Measurement
+	}
+	return nil
+}
+
+// measurementOption is the option the Run will use: the pick, else Python's default for this engine and chip.
+func (f Facts) measurementOption() *seam.MeasurementOption {
+	o := f.measurementOptions()
+	if o == nil {
+		return nil
+	}
+	id := f.Measurement
+	if id == "" && o.Default != nil {
+		id = *o.Default
+	}
+	for i := range o.Options {
+		if o.Options[i].ID == id {
+			return &o.Options[i]
+		}
+	}
+	return nil
+}
+
+// roleTimeArg is the pipeline's --role-time for the pick: in-model or generic; "" leaves Python's auto.
+func (f Facts) roleTimeArg() string {
+	return map[string]string{"in_model": "in-model", "generic": "generic"}[f.Measurement]
+}
+
+// measurementBlocked is why Run cannot start with the picked measurement; "" when it can.
+func (f Facts) measurementBlocked() string {
+	if o := f.measurementOption(); f.Measurement != "" && o != nil && !o.Available {
+		return deref(o.Reason)
+	}
+	return ""
+}
+
+// measurementValue is the Setup line: the method the Run uses, and when Python fell back, why.
+func measurementValue(f Facts) string {
+	o := f.measurementOption()
+	if o == nil { // an older Python, or no engine yet: the pipeline's own default
+		return "auto"
+	}
+	if !o.Available {
+		return stMuted.Render(o.Label + " (cannot run here)")
+	}
+	return o.Label
+}
+
+// measurementFallback is the muted row under the Setup line when Python fell back from in-model; nil otherwise.
+func measurementFallback(f Facts) []action {
+	opts, o := f.measurementOptions(), f.measurementOption()
+	if f.Measurement != "" || opts == nil || opts.Fallback == nil || o == nil || o.ID == "in_model" {
+		return nil
+	}
+	return []action{note("  (in-model not available here: " + strings.TrimSuffix(strings.TrimPrefix(*opts.Fallback, "in-model "), " on this Mac") + ")")}
+}
+
+func measurementBody(f Facts, width int) string {
+	return "Measurement is how BoltBeam times each role. In-model watches the real token and splits it exactly. " +
+		"Generic times each kernel alone with BoltBeam's kernel timer: it compares kernels across engines and chips, " +
+		"and its split of the token is an estimate."
+}
+
+// measurementActions are the two rows, the one in use marked; a row that cannot run here is muted with why.
+// Each row carries its one-line description under it.
+func measurementActions(f Facts) []action {
+	opts := f.measurementOptions()
+	if opts == nil {
+		return []action{note("  Pick an engine first.")}
+	}
+	in := f.measurementOption()
+	out := []action{}
+	for _, o := range opts.Options {
+		chosen := "  "
+		if in != nil && in.ID == o.ID {
+			chosen = stAccent.Render("● ")
+		}
+		if o.Available {
+			out = append(out, action{chosen + o.Label, "measurement", o.ID})
+		} else {
+			out = append(out, note("  "+o.Label+" · "+deref(o.Reason)))
+		}
+		for _, l := range strings.Split(ansi.Wordwrap(o.About, 66, " "), "\n") { // fits an 80-column screen
+			out = append(out, note("    "+l))
+		}
 	}
 	return out
 }

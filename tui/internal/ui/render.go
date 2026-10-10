@@ -604,6 +604,9 @@ func tieOutBody(t *seam.TieOut) string {
 	if t.TokenMs == nil {
 		return b.String()
 	}
+	if t.Estimate != nil {
+		return b.String() + isolatedTieOut(t)
+	}
 	rows := [][]string{}
 	for i, l := range t.Lines {
 		sign := "+ "
@@ -640,6 +643,72 @@ func tieOutBody(t *seam.TieOut) string {
 	return b.String()
 }
 
+// isolatedTieOut is the tie-out of a run whose kernels were timed alone: only what is measured, the ideal at
+// context 1 and at the attended context, the token, and their difference. The split is one estimate line.
+func isolatedTieOut(t *seam.TieOut) string {
+	var b strings.Builder
+	rows := [][]string{{"  limit at context 1 (ideal)", fmt.Sprintf("%.3f", t.LimitMsCtx1), "derived"}}
+	for i, l := range t.Lines {
+		sign := "+ "
+		if i == 0 {
+			sign = "  "
+		}
+		rows = append(rows, []string{sign + l.Label, fmt.Sprintf("%.3f", l.Ms), l.How})
+	}
+	rows = append(rows, []string{"= measured token", fmt.Sprintf("%.3f", *t.TokenMs), deref(t.TokenSource)})
+	b.WriteString(table(rows))
+	e := t.Estimate
+	up, least := "", ""
+	if e.Scaled {
+		up, least = "up to ", "at least "
+	}
+	fmt.Fprintf(&b, "Estimated split (isolated): weight kernels %s%.1f ms, other and gaps %s%.1f ms.\n", up, e.WeightMs, least, e.OtherMs)
+	if e.OtherHow != "" {
+		fmt.Fprintf(&b, "  (%s)\n", e.OtherHow)
+	}
+	return b.String()
+}
+
+// isoRoleTable is an isolated run's per-role table: what was measured alone (µs per call, GB/s, the share of
+// peak) and the estimated split of the token. At a narrow page BYTES/CALL goes first, then IDEAL.
+func isoRoleTable(roles []seam.RoleLoss) string {
+	head := []string{"ROLE", "QUANT", "BYTES/CALL", "µs/CALL", "GB/s", "% PEAK", "IDEAL", "EST. ms IN TOKEN", "EST. LOST", "WHY"}
+	f := func(v *float64, format string) string {
+		if v == nil {
+			return ""
+		}
+		return fmt.Sprintf(format, *v)
+	}
+	all := [][]string{head}
+	for _, r := range roles {
+		all = append(all, []string{word(plainRole, r.Role), r.Quant, f(r.MbPerCall, "%.1f MB"), f(r.UsPerCall, "%.1f"),
+			f(r.Gbs, "%.1f"), f(r.PctPeak, "%.1f%%"), fmt.Sprintf("%.2f", r.IdealMs), f(r.EstMs, "%.2f"), f(r.EstLostMs, "%.2f"), r.Reason})
+	}
+	only := func(keep ...string) string {
+		rows := [][]string{}
+		for _, row := range all {
+			cut := []string{}
+			for i, h := range head {
+				if slices.Contains(keep, h) {
+					cut = append(cut, row[i])
+				}
+			}
+			rows = append(rows, cut)
+		}
+		return table(rows)
+	}
+	without := func(drop ...string) []string {
+		return slices.DeleteFunc(slices.Clone(head), func(h string) bool { return slices.Contains(drop, h) })
+	}
+	for _, drop := range [][]string{nil, {"BYTES/CALL"}, {"BYTES/CALL", "IDEAL"}} {
+		if t := only(without(drop...)...); maxWidth(t) <= tableWidth {
+			return t
+		}
+	}
+	// still too wide: the estimate in one table, what was measured alone and why in the next, so no row is cut
+	return only("ROLE", "QUANT", "% PEAK", "EST. ms IN TOKEN", "EST. LOST") + "\n" + only("ROLE", "QUANT", "µs/CALL", "GB/s", "WHY")
+}
+
 // lossBody is the end result for the run's provider: its speed against the limit and where it loses time.
 // Another provider's numbers for the same run are shown after it, each labelled with its provider.
 func lossBody(l seam.Loss) string { return lossBodyAt(l, 1) }
@@ -669,6 +738,11 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	fmt.Fprintf(&b, "The limit is %.1f ms per token at context 1.\n", *l.LimitMs)
 	for _, r := range l.Runtimes {
 		what := fmt.Sprintf("%.1f tokens per second, %.1f ms per token", r.TokS, r.Ms)
+		if r.Isolated { // a sum of kernels timed alone is not a token: it has no "lost"
+			fmt.Fprintf(&b, "%s %s per role: %.1f ms, the kernels timed alone and summed.\n", mark("open"), r.Provider, r.Ms)
+			b.WriteString("  " + stMuted.Render("Not a token: attention, norms and gaps are not in it.") + "\n")
+			continue
+		}
 		if r.PerRole {
 			what = fmt.Sprintf("%.1f ms of GPU time per token", r.Ms)
 		}
@@ -700,7 +774,17 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	if shown != provider && l.ProviderMissing != nil {
 		b.WriteString(stMuted.Render("Per role for "+provider+": "+*l.ProviderMissing) + "\n")
 	}
-	b.WriteString("\nWhere " + shown + " loses time, " + deref(l.Source) + ":\n" + roleTable(l.Roles, l.NotAttributedMs))
+	if e := l.Estimate; e != nil {
+		b.WriteString("\n" + stHeader.Render("Per role, estimated from isolated kernel times") + "\n" + e.Method + "\n")
+		how := fmt.Sprintf("not scaled: %.1f ms alone fits the %.1f ms token", e.IsolatedSumMs, e.TokenMs)
+		if e.Scaled {
+			how = fmt.Sprintf("scale %.3f = (%.1f - %.1f) / %.1f", e.Scale, e.TokenMs, e.OtherMs, e.IsolatedSumMs)
+		}
+		b.WriteString(stMuted.Render(fmt.Sprintf("EST. columns %s: %s.", e.Label, how)) + "\n")
+		b.WriteString(isoRoleTable(l.Roles))
+	} else {
+		b.WriteString("\nWhere " + shown + " loses time, " + deref(l.Source) + ":\n" + roleTable(l.Roles, l.NotAttributedMs))
+	}
 	if l.RoleRule != nil {
 		b.WriteString(stMuted.Render("Why: "+*l.RoleRule) + "\n")
 	}
@@ -713,6 +797,9 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		}
 		b.WriteString(stMuted.Render("Not split out, so in not attributed: "+strings.Join(names, ", ")+".") + "\n")
 	}
+	if l.RoleSourceWords != nil {
+		b.WriteString(stMuted.Render("Per-role source: "+*l.RoleSourceWords) + "\n")
+	}
 	if cc := l.CrossCheck; cc != nil && len(cc.Rows) > 0 {
 		b.WriteString("\n" + stHeader.Render("Cross-check: "+cc.Words) + "\n" + rateTable(cc.Rows))
 	}
@@ -720,17 +807,13 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	return b.String()
 }
 
-// rateTable is a labelled row group of read rates per role: µs per call, GB/s, the share of peak, and whether the
-// read stayed in cache.
+// rateTable is a labelled row group of read rates per role: µs per call, GB/s and the share of peak.
 func rateTable(rows []seam.RateRow) string {
 	t := [][]string{{"ROLE", "QUANT", "µs/CALL", "GB/s", "OF PEAK"}}
 	for _, r := range rows {
 		pct := num(r.PctPeak)
 		if r.PctPeak != nil {
 			pct = fmt.Sprintf("%.0f%%", *r.PctPeak)
-		}
-		if r.Cache {
-			pct += " · cache"
 		}
 		t = append(t, []string{word(plainRole, r.Role), r.Quant, us(r.UsPerCall), num(r.Gbs), pct})
 	}
@@ -909,6 +992,9 @@ func resultBody(f Facts, width int) string {
 	batch := 1
 	if ms := f.Run.Measure; ms != nil {
 		batch = slices.Max(append([]int{1}, ms.Batches...))
+	}
+	if s := measurementSentence(res.Measurement); s != "" && res.Loss.Estimate == nil { // the method line says it otherwise
+		b.WriteString(stMuted.Render(s) + "\n")
 	}
 	b.WriteString(lossBodyAt(hereLoss(f, res.Loss), batch))
 	b.WriteString(batchTable(res.Batches))
@@ -1141,7 +1227,39 @@ func runHeadline(f Facts) string {
 	if engine := jobEngine(f); engine != "" {
 		line += " with " + engine
 	}
+	if m := jobMeasurement(f); m != "" {
+		line += " · " + m
+	}
 	return line
+}
+
+// jobMeasurement is how the job times roles: its --role-time, else (auto) what Setup resolves to, as the picker words it.
+func jobMeasurement(f Facts) string {
+	if f.Job != nil {
+		for i, a := range f.Job.Argv {
+			if a == "--role-time" && i+1 < len(f.Job.Argv) {
+				return map[string]string{"in-model": "in-model", "generic": "generic (kernel timer)"}[f.Job.Argv[i+1]]
+			}
+		}
+	}
+	if o := f.measurementOption(); o != nil {
+		return o.Label
+	}
+	return ""
+}
+
+// measurementSentence is the results line for how the run timed its roles, from the run's own record.
+func measurementSentence(m *seam.Measurement) string {
+	if m == nil || m.Label == nil {
+		return ""
+	}
+	if m.Fallback != nil {
+		return "Measurement: " + *m.Label + " (in-model not available here: " + *m.Fallback + ")."
+	}
+	if m.Choice != "auto" {
+		return "Measurement: " + *m.Label + ", chosen in Setup."
+	}
+	return "Measurement: " + *m.Label + "."
 }
 
 // jobEngine is the engine the job was started with (--provider), else the chosen one.

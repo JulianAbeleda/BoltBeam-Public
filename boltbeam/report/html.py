@@ -384,9 +384,8 @@ def _selected_routes(policy:dict[str, Any]) -> str:
 # --- What to try next: the rule table (Prefer data over code). Each rule maps a measured reason or tie-out line
 # to one lever. The page states the rule beside its advice; it never adds a number the seam did not give.
 REASON_CLASS = {"at the limit": "r-ok", "too small to fill memory": "r-small", "slow kernel": "r-slow",
-                "compute bound": "r-small", "unexplained": "r-slow", "inconclusive, cache": "r-small"}
-REASON_COLOR = {"at the limit": "var(--ok)", "too small to fill memory": "var(--excess)", "slow kernel": "var(--gaps)",
-                "inconclusive, cache": "var(--ideal)"}
+                "compute bound": "r-small", "unexplained": "r-slow"}
+REASON_COLOR = {"at the limit": "var(--ok)", "too small to fill memory": "var(--excess)", "slow kernel": "var(--gaps)"}
 NEXT_RULES = {  # per-role reason word (tie_out.REASONS) to the lever; "at the limit" has nothing to gain
   "too small to fill memory": "Fuse it with the roles next to it (Q, K and V) or batch more tokens, so each call moves more bytes.",
   "slow kernel": "Try other kernels for it.",
@@ -395,8 +394,8 @@ NEXT_RULES = {  # per-role reason word (tie_out.REASONS) to the lever; "at the l
 SEARCHED_LEVER = "{n} searched, none faster than the model's kernel; the kernel itself is the lever: write a better one for this shape."
 GAPS_SHARE = 0.10  # gaps between kernels at or above this share of the token: launch fewer kernels
 GAPS_LEVER = "Launch fewer kernels: run the token as one graph (CUDA graphs or Metal command buffer reuse) or fuse kernels."
-NOT_TIMED_LEVER = ("These kernels ran in the model but were not timed alone. An in-model capture (Metal System Trace, with "
-                   "Xcode; nsys on NVIDIA) splits attention, norms and idle time.")
+NOT_TIMED_LEVER = ("The kernels were timed alone, so this time is not split by kernel. An in-model capture (Metal System "
+                   "Trace, with Xcode; nsys on NVIDIA) splits it into weight kernels, attention, norms and idle time.")
 OTHER_SHARE = 0.05  # other kernels above their ideal at or above this share of the token get an item
 FUSIBLE = ("quantize", "norm", "elementwise", "rope", "copy")  # kernels small enough to fold into a neighbour
 OTHER_LEVER_FUSE = "Fuse {kinds} into the weight kernels next to them."
@@ -474,8 +473,7 @@ def _measured(loss:dict[str, Any]) -> dict[str, Any] | None:
 # fonts is about 645 KB, MathML needs no assets and no JS. Each equation carries its LaTeX source as an annotation.
 # Every number is one the page already prints, at the same rounding; nothing is recomputed here.
 SHORT_LINE = (("weight kernels", "weight excess"), ("other kernels", "other kernels"), ("gaps", "gaps"),
-              ("kernels and gaps, not split", "kernels and gaps"), ("all kernels", "all kernels"),
-              ("kernels not timed", "not timed and gaps"))
+              ("kernels and gaps, not split", "kernels and gaps"), ("all kernels", "all kernels"))
 
 
 def _mn(v:float, fmt:str = "{:.1f}") -> str:
@@ -643,6 +641,11 @@ def _where(loss:dict[str, Any]) -> str:
   notes = []
   if t.get("untraced_ms") is not None and str(t.get("token_source", "")).startswith("the captured run"):
     notes.append(f'Tracing slowed the token: {token:.3f} ms here, {t["untraced_ms"]:.3f} ms untraced.')
+  if est := t.get("estimate"):
+    up, least = ("up to ", "at least ") if est["scaled"] else ("", "")
+    notes.append(f'Estimated split (isolated): weight kernels {up}{est["weight_ms"]:.1f} ms, other and gaps {least}'
+                 f'{est["other_ms"]:.1f} ms ({_e(est["other_how"])}). Not measured in the token: each weight kernel was timed alone'
+                 + (f', and the times are scaled by {est["scale"]:.3f} to fit the token less that floor.' if est["scaled"] else '.'))
   if t.get("show_both"):
     notes.append(f'The limit is {t["limit_ms_ctx1"]:.3f} ms at context 1 and {t["limit_ms"]:.3f} ms at context {t["context"]:.0f}.')
   body = (f'<p class="muted" style="margin:0 0 10px">ms per token at context {t["context"]:.0f}</p>'
@@ -659,15 +662,21 @@ def _other_line(t:dict[str, Any]) -> dict[str, Any] | None:
 def _per_role(loss:dict[str, Any]) -> str:
   if loss.get("refused"):
     return _section(3, "Per role", f'<p class="note">Per role: not shown. {_e(loss["refused"])}</p>')
-  roles = sorted(loss.get("roles") or [], key=lambda r: (-r["lost_ms"], str(r["role"]), str(r["quant"])))
+  est = loss.get("estimate")
+  lost = (lambda r: r["est_lost_ms"]) if est else (lambda r: r["lost_ms"])
+  roles = sorted(loss.get("roles") or [], key=lambda r: (-lost(r), str(r["role"]), str(r["quant"])))
   if not roles:
     return ""
   items = []
   for r in roles:
     why = r.get("reason") or ""
-    det = "".join(f'<div><span>{k}</span>{v}</div>' for k, v in (
+    nums = (("bytes/call", _f(r.get("mb_per_call"), "{:.1f} MB")), ("µs/call (isolated)", _f(r.get("us_per_call"), "{:.1f}")),
+            ("GB/s (isolated)", _f(r.get("gbs"), "{:.1f}")), ("% of peak (isolated)", _f(r.get("pct_peak"), "{:.1f}%")),
+            ("ideal ms", f'{r["ideal_ms"]:.2f}'), ("est. ms in token", f'{r["est_ms"]:.2f}'),
+            ("est. lost ms", f'{r["est_lost_ms"]:.2f}')) if est else (
       ("ideal ms", f'{r["ideal_ms"]:.2f}'), ("actual ms", f'{r["actual_ms"]:.2f}'),
-      ("µs/call", _f(r.get("us_per_call"), "{:.1f}")), ("share of loss", f'{r["share"] * 100:.0f}%'),
+      ("µs/call", _f(r.get("us_per_call"), "{:.1f}")), ("share of loss", f'{r["share"] * 100:.0f}%'))
+    det = "".join(f'<div><span>{k}</span>{v}</div>' for k, v in nums + (
       ("best found", _e((r.get("best_found") or {}).get("text") or "none")),
       ("verdict", _e(PLAIN_VERDICT.get(str(r.get("verdict")), r.get("verdict") or "not searched"))
        + (f' ({r["candidates"]} plans searched)' if r.get("candidates") else ""))))
@@ -680,10 +689,17 @@ def _per_role(loss:dict[str, Any]) -> str:
     items.append(
       f'<details class="role"><summary><span class="rname">{_role_name(r["role"], r["quant"])}</span>'
       f'<span class="rbar" title="{_f(r.get("pct_peak"), "{:.1f}%")} of the roofline"><i style="width:{_pct(r.get("pct_peak") or 0.0, 100.0):.1f}%;background:{REASON_COLOR.get(why, "var(--ideal)")}"></i></span>'
-      f'<span class="rnum"><b>{r["lost_ms"]:.2f} ms</b><span>{_f(r.get("pct_peak"), "{:.1f}%")} of peak</span>'
+      f'<span class="rnum"><b>{lost(r):.2f} ms{" est." if est else ""}</b><span>{_f(r.get("pct_peak"), "{:.1f}%")} of peak{" (isolated)" if est else ""}</span>'
       f'<span class="rtags"><span class="why {REASON_CLASS.get(why, "")}">{_e(why)}</span>{tag}</span></span></summary><div class="rdet">{det}</div></details>')
   t = loss.get("tie_out") or {}
-  body = f'<p class="muted" style="margin:0 0 10px">{_e(loss.get("source") or "")} · lost ms per token, longest first; the bar is filled to the share of the roofline this role reaches; the empty part is its loss; open a row for its numbers</p>'
+  if est:
+    how = (f'scale {est["scale"]:.3f} = ({est["token_ms"]:.1f} - {est["other_ms"]:.1f}) / {est["isolated_sum_ms"]:.1f}' if est["scaled"]
+           else f'not scaled: {est["isolated_sum_ms"]:.1f} ms alone fits the {est["token_ms"]:.1f} ms token')
+    body = (f'<p class="note">{_e(est["method"])}</p>'
+            f'<p class="muted" style="margin:0 0 10px">est. lost ms per token {_e(est["label"])}, {how}; '
+            f'the bar is filled to the isolated share of peak; open a row for its numbers</p>')
+  else:
+    body = f'<p class="muted" style="margin:0 0 10px">{_e(loss.get("source") or "")} · lost ms per token, longest first; the bar is filled to the share of the roofline this role reaches; the empty part is its loss; open a row for its numbers</p>'
   body += f'<div class="roles">{"".join(items)}</div>'
   search = loss.get("search") or {}
   if search.get("status") == "skipped":
@@ -698,13 +714,13 @@ def _per_role(loss:dict[str, Any]) -> str:
     body += f'<p class="note">Roles that could not be split: {_e(names)}. Their time is inside other kernels.</p>'
   if cc := loss.get("cross_check"):
     body += _rate_table("Cross-check", cc.get("words") or "", cc.get("rows") or [], cc.get("reason"))
-  return _section(3, "Per role", body)
+  return _section(3, "Per role, estimated from isolated kernel times" if est else "Per role", body)
 
 
 def _rate_table(title:str, words:str, rows:list[dict[str, Any]], reason:str | None = None) -> str:
   """A labelled row group of GB/s and share of peak per role: the probe's reference kernel, or an isolated cross-check."""
   cells = "".join(f'<tr><td>{_role_name(r["role"], r["quant"])}</td><td>{_f(r.get("us_per_call"), "{:.1f}")}</td>'
-                  f'<td>{_f(r.get("gbs"), "{:.1f}")}</td><td>{_f(r.get("pct_peak"), "{:.0f}%")}{" · cache" if r.get("cache") else ""}</td></tr>'
+                  f'<td>{_f(r.get("gbs"), "{:.1f}")}</td><td>{_f(r.get("pct_peak"), "{:.0f}%")}</td></tr>'
                   for r in rows)
   head = '<tr><td>role</td><td>µs/call</td><td>GB/s</td><td>of peak</td></tr>'
   table = f'<table class="tie"><tbody>{head}{cells}</tbody></table>' if rows else f'<p class="empty">{_e(reason or "no rows")}</p>'
@@ -737,7 +753,8 @@ def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, 
     return []
   out = []
   groups: dict[str, list[dict[str, Any]]] = {}
-  for r in loss.get("roles") or []:
+  roles = [{**r, "lost_ms": r["est_lost_ms"]} if r.get("estimate") else r for r in loss.get("roles") or []]
+  for r in roles:
     if r.get("reason") in NEXT_RULES and r["lost_ms"] > 0:
       groups.setdefault(r["reason"], []).append(r)
   for reason, rs in groups.items():
@@ -781,9 +798,9 @@ def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, 
       out.append({"what": "Kernels and gaps, not split", "ms": l["ms"], "share": l["ms"] / token,
                   "do": SPLIT_LEVER.format(missing=loss["missing"]), "rule": "no per-role time",
                   "evidence": (ev.get("whole_step") or []) + (ev.get("common") or [])})
-    if l["how"] == "difference" and l["label"].startswith("kernels not timed and gaps") and l["ms"] > 0:
-      out.append({"what": "Not timed: attention, norms, KV read and gaps", "ms": l["ms"], "share": l["ms"] / token,
-                  "do": NOT_TIMED_LEVER, "rule": "isolated kernels: the rest of the token is their difference",
+    if l["how"] == "difference" and l["label"] == "kernels and gaps, not split" and loss.get("estimate") and l["ms"] > 0:
+      out.append({"what": "Kernels and gaps above the ideal, not split (isolated timing)", "ms": l["ms"], "share": l["ms"] / token,
+                  "do": NOT_TIMED_LEVER, "rule": "isolated kernels: the token minus the ideal is one difference",
                   "evidence": ev.get("whole_step") or []})
   return sorted(out, key=lambda x: (-x["ms"], x["what"]))
 
@@ -845,6 +862,11 @@ def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, An
     rows.append(("Capture", CAPTURE_WORDS.get(cap["method"], cap["method"]) + (f'; {cap["reason"]}' if cap.get("reason") else "")))
   elif loss.get("runtimes"):
     rows.append(("Capture", "whole step only, untraced" + (f'; per role: {loss["missing"]}' if loss.get("missing") else "")))
+  if loss.get("role_source_words"):
+    rows.append(("Per-role source", loss["role_source_words"]))
+  from boltbeam.workflow.screen import measurement_words
+  if words := measurement_words(results.get("measurement")):
+    rows.append(("Measurement", words.removeprefix("Measurement: ")))
   if lat := loss.get("latency"):
     rows.append(("Latency in the reason rule", f'{lat["us"]:.1f} µs, {lat["source"]}'))
   if (loss.get("tie_out") or {}).get("kv_source"):
