@@ -41,7 +41,7 @@ BATCHED_ENV = "BOLTBEAM_LLAMA_BATCHED_BENCH"
 BATCHED = "llama-batched-bench"
 KV_ELEMENT = (2, "llama-bench's default KV cache type, f16")
 GEN_TOKENS, BENCH_REPS = 32, 3
-PROBE_ABSENT = ("no building-block probe for this chip: BoltBeam's probe kernels are Metal only, "
+PROBE_ABSENT = ("no building-block probe in this run: this provider's path does not run BoltBeam's probe kernels, "
                 "and no fork path writes probe evidence")
 
 

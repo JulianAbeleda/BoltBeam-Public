@@ -132,6 +132,7 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
   """Compile (a library per source is reused through `libraries`), bind, check the first output, then time.
   Returns {"correctness", "samples", "median_us", "min_us", "spread_pct", "gbs", "pipeline", "label"}; with a
   failed check the samples are empty and nothing was timed."""
+  import math
   import struct
   libraries = libraries if libraries is not None else {}
   key = spec.source
@@ -161,9 +162,14 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
       ref = {i: spec.check.reference(i) for i in spec.check.indices}
       scale = max(abs(v) for v in ref.values()) or 1.0
       err = max(abs(got[i] - ref[i]) for i in spec.check.indices) / scale
+      passed = math.isfinite(err) and err <= spec.check.rel_tol  # NaN compares False both ways: fail closed
       result["correctness"] = {"checked_rows": list(spec.check.indices), "reference": spec.check.words, "max_rel_err": err,
-                               "tolerance": spec.check.rel_tol, "passed": err <= spec.check.rel_tol}
-      if err > spec.check.rel_tol:
+                               "tolerance": spec.check.rel_tol, "passed": passed}
+      if not all(math.isfinite(v) for v in ref.values()):
+        result["correctness"]["reason"] = "the reference is not finite: the input bytes hold inf or NaN scales"
+      elif not math.isfinite(err):
+        result["correctness"]["reason"] = "the kernel's output is not finite"
+      if not passed:
         return result
     result["samples"] = samples(launch, warmups=warmups, count=count, before=flush)
   finally:

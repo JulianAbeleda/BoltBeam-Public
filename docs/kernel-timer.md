@@ -77,12 +77,11 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 
 # 2. the bridge alone: BoltBeam's own GEMV on a synthetic Q4_K block, correctness and a time
 .venv/bin/python - <<'EOF'
-import random, struct
 from boltbeam.collectors import boltbeam_gemv as gemv, kernel_timer as kt, metal_native as mn
 from boltbeam.runtime.cuda_device import Cuda
 rows, cols = 64, 4096
-rng = random.Random(1)
-weights = bytes(rng.getrandbits(8) for _ in range(rows * cols // 256 * 144))
+# valid blocks, never raw random bytes: 1 in 32 random fp16 scales is inf or NaN and the reference goes NaN
+weights = gemv.synthetic("Q4_K", rows, cols, "nv")
 x = gemv.vector("nv", cols)
 cuda = Cuda(0)
 print(cuda.name, cuda.facts())

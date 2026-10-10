@@ -123,6 +123,11 @@ def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path
               llama_bench:str = "llama-bench", here:Callable[[], str | None] = this_machine_target) -> dict[str, Any]:
   """What the measurement will use, or CannotMeasure with the reason and the command to run instead."""
   target = get_target(target_id)
+  if target.backend == "CUDA" and not need_bench:  # the probe alone: adapter 0 runs through the CUDA bridge
+    path = pathlib.Path(model).expanduser()
+    if not path.is_file():
+      raise CannotMeasure(f"the model file is gone: {path}", "measure again with the model file in place")
+    return {"target": target, "model": path, "llama_bench": None}
   if target.backend != "Metal":
     raise CannotMeasure(f"{target_id} is a {target.backend} chip; BoltBeam measures by itself on Metal only",
                         f"on a machine with {target_id}: boltbeam collect-hw-trace --provider llama --run {run}")

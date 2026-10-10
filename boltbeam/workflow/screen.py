@@ -853,16 +853,33 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
                               command=again, provider=provider, layout=layout, gpus=gpus, capture=capture)
         raise
       if last:
-        _write_measure_status(args.run, "measured", collector=plan["collector"], probe=probe,
-                              probe_reason=probe_reason, provider=provider, layout=layout, gpus=gpus, batches=batches,
+        got = probe_state or {"probe": probe, "reason": probe_reason}
+        _write_measure_status(args.run, "measured", collector=plan["collector"], probe=got["probe"],
+                              probe_reason=got["reason"], provider=provider, layout=layout, gpus=gpus, batches=batches,
                               capture=capture)
     return (f"measure_{key}", step)
 
   out_dir = lambda: metal_native.run_dir(args.run)  # noqa: E731
-  is_metal = get_target(args.target).backend == "Metal"
-  # the building-block probes are BoltBeam's own Metal kernels: they belong to no provider, so both take them
-  probe = [guarded("probe", lambda: metal_native.measure(out_dir(), only="probe"), probe="measured", last=False)] \
-    if is_metal else []
+  backend = get_target(args.target).backend
+  is_metal = backend == "Metal"
+  # the building-block probes are BoltBeam's own kernels (adapter 0, Metal and CUDA): they belong to no provider.
+  # On CUDA a machine without the driver or nvcc records the probe absent with its reason; the timing still runs.
+  probe_state:dict[str, Any] = {}
+
+  def cuda_probe():
+    try:
+      metal_native.measure(out_dir(), only="probe")
+    except llama_bench_decode.CannotMeasure as exc:
+      probe_state.update(probe="absent", reason=f"no building-block probe: {exc.reason}")
+      return
+    probe_state.update(probe="measured", reason=None)
+
+  if is_metal:
+    probe = [guarded("probe", lambda: metal_native.measure(out_dir(), only="probe"), probe="measured", last=False)]
+  elif backend == "CUDA":
+    probe = [guarded("probe", cuda_probe, probe="measured", last=False)]
+  else:
+    probe = []
   if provider == tinygrad_role_time.PROVIDER:
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
     timing = guarded("timing", lambda: providers.measure_tinygrad(out_dir(), root=root),
@@ -913,8 +930,9 @@ def pipeline(args, out=sys.stdout) -> int:
     if analyze_all and not plan["reason"]:  # the machine's measured facts, reused when this machine has them
       steps.append(("machine", lambda: machine(pathlib.Path(args.run), root=root)))
     steps += _measure_steps(args, plan)
-  if args.probe:
-    steps.append(("ingest_probe", lambda: ingest_probe_run(args.run, args.probe)))
+  if args.probe:  # a CUDA probe with no GPU on this machine wrote no evidence: nothing to ingest
+    steps.append(("ingest_probe", lambda: ingest_probe_run(args.run, args.probe)
+                  if pathlib.Path(args.probe).exists() else None))
   if args.timing:
     steps.append(("ingest_timing", lambda: ingest_timing_run(args.run, args.timing)))
   if args.probe or args.timing:

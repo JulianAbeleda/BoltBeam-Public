@@ -179,6 +179,22 @@ def vector(seed:str, cols:int) -> list[float]:
   return [rng.uniform(-1.0, 1.0) for _ in range(cols)]
 
 
+def synthetic(quant:str, rows:int, cols:int, seed:str = "synthetic") -> bytes:
+  """Valid GGUF blocks for a bridge check without a model: random quants, finite fp16 scales. Raw random bytes are
+  not a weight: about 1 in 32 random fp16 values is inf or NaN, so most rows of a random Q4_K tensor dot to NaN."""
+  if quant not in KERNELS or cols % 256:
+    raise ValueError(f"no synthetic {quant} blocks for {cols} columns")
+  rng = random.Random(seed)
+  blocks = []
+  for _ in range(rows * cols // 256):
+    if quant == "Q4_K":  # d, dmin, 12 scale bytes, 128 quant bytes
+      blocks.append(struct.pack("<ee", rng.uniform(0.001, 0.05), rng.uniform(0.0, 0.02)) + rng.randbytes(140))
+    else:  # Q6_K: 128 ql, 64 qh, 16 int8 scales, d
+      blocks.append(rng.randbytes(192) + struct.pack("<16b", *(rng.randrange(-64, 64) for _ in range(16)))
+                    + struct.pack("<e", rng.uniform(0.001, 0.05)))
+  return b"".join(blocks)
+
+
 def spec(backend:str, quant:str, rows:int, cols:int, weights:bytes, x:list[float], *, label:str | None = None) -> KernelSpec:
   """BoltBeam's GEMV for one weight of rows x cols in this quant, on these real bytes, as a KernelSpec. bytes_read
   counts the weights and the activation vector and the output, as the probe always has."""
