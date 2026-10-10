@@ -933,8 +933,8 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.f.BatchTyped = m.f.BatchTyped[:len(m.f.BatchTyped)-1]
 	case key.Matches(msg, keyQuit):
 		return m, tea.Quit
-	case key.Matches(msg, keyLog) && m.cursor == pageRun && m.f.alive():
-		m.f.ShowLog = !m.f.ShowLog
+	case key.Matches(msg, keyLog) && m.cursor == pageRun && (m.f.alive() || m.f.failedStage() != ""):
+		m.f.ShowLog = !m.f.ShowLog // the log while it runs; the details behind a failure's sentence after
 	case key.Matches(msg, keyBack):
 		if m.cursor != pageSetup {
 			m.backToSetup()
@@ -1101,11 +1101,13 @@ func (m Model) mood() string {
 	return faceIdle
 }
 
-func footer(back, onRun, running bool) string {
+func footer(back, onRun, running, failed bool) string {
 	pairs := [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"q", "quit"}}
 	switch {
 	case running:
 		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"l", "log"}, {"esc", "setup"}, {"q", "quit"}}
+	case failed:
+		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"l", "details"}, {"esc", "setup"}, {"q", "quit"}}
 	case onRun:
 		pairs = [][2]string{{"↑↓", "move"}, {"pgup/pgdn", "page"}, {"enter", "open run"}, {"d", "delete run"}, {"esc", "setup"}, {"q", "quit"}}
 	case back:
@@ -1128,5 +1130,5 @@ func (m Model) View() string {
 	room := m.height - 3
 	view := m.view
 	body := DetailView(m.f, m.cursor, m.row, m.width, room, &view)
-	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.cursor != pageSetup, m.runRow() != "", m.cursor == pageRun && m.f.alive())
+	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.cursor != pageSetup, m.runRow() != "", m.cursor == pageRun && m.f.alive(), m.cursor == pageRun && m.f.failedStage() != "")
 }

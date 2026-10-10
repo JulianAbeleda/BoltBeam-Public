@@ -466,11 +466,13 @@ type Progress struct {
 	Sub, SubOf  int       // "stage X: progress p/q" inside the current stage
 	Finished    bool      // "pipeline done"
 	Failed      string    // the stage that failed, or ""
-	Reason      string    // what it said
+	Reason      string    // what it said: one sentence
+	Details     []string  // what stands behind the sentence ("stage X: detail: …" lines): an engine's traceback
 	Lines       []string  // this pipeline's lines
 }
 
-// ReadProgress reads the pipeline's lines: steps, expected seconds, stage start, progress, done and failed.
+// ReadProgress reads the pipeline's lines: steps, expected seconds, stage start, progress, done, failed and the
+// detail lines behind a failure.
 func ReadProgress(lines []string) Progress {
 	start := 0
 	for i, line := range lines {
@@ -537,6 +539,8 @@ func ReadProgress(lines []string) Progress {
 		case strings.HasPrefix(event, "failed"):
 			p.Failed, p.Current = key, ""
 			p.Reason = strings.TrimPrefix(strings.TrimPrefix(event, "failed"), ": ")
+		case strings.HasPrefix(event, "detail: "):
+			p.Details = append(p.Details, strings.TrimPrefix(event, "detail: "))
 		}
 	}
 	p.Setup = !p.Finished && p.Failed == "" && p.Done == 0 && (p.Current == "" || !isCounted)

@@ -420,7 +420,7 @@ func resultsBody(f Facts, width int) string {
 		return runningBody(f, width)
 	}
 	if f.failedStage() != "" {
-		return failedBody(f)
+		return failedBody(f, width)
 	}
 	var b strings.Builder
 	if f.Run.Measure != nil && f.Run.Measure.Status != "measured" {

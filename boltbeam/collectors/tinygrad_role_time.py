@@ -15,7 +15,7 @@ the reason; it never shows it as a result.
 """
 from __future__ import annotations
 
-import json, os, pathlib, subprocess
+import json, os, pathlib, re, subprocess
 from typing import Any
 
 from boltbeam.artifacts.tinygrad_profile_events import decode_profile_events, load_profile_events
@@ -76,7 +76,37 @@ def whole_step(*, root:pathlib.Path, python:pathlib.Path, model:str, target, con
       break
     # the engine's own words for why the graph did not replay (the last GraphException line), kept with the row
     graph_error = next((l.strip()[-240:] for l in reversed(proc.stderr.splitlines()) if "GraphException" in l), None)
-  raise RuntimeError(f"tinygrad decode failed: {(proc.stderr or proc.stdout).strip()[-400:]}")
+  raise DecodeFailed("tinygrad decode failed", proc.stderr or proc.stdout, root)
+
+
+class DecodeFailed(RuntimeError):
+  """The fork's decode did not run. str() is one sentence: the engine's own last line (the exception's message)
+  and where inside the fork it was raised, e.g. "tinygrad decode failed: ffn_down_resadd epilogue requires
+  rows=4096, got rows=5120 (ValueError inside the tinygrad fork at tinygrad/llm/decode_kernels.py:246)".
+  details is the traceback, the fork's stderr tail, for a reader who asks for it; a screen keeps it behind
+  "Show details" and the run's measure_status.json carries it."""
+  DETAIL_LINES = 40
+
+  def __init__(self, what:str, output:str | None, root:pathlib.Path | None = None):
+    lines = [l.rstrip() for l in (output or "").splitlines() if l.strip()]
+    self.details = "\n".join(lines[-self.DETAIL_LINES:])
+    last = lines[-1].strip() if lines else "no output"
+    kind, sep, message = last.partition(": ")
+    # a python error's last line is "Kind: message"; anything else (a signal, a shell line) is the fact itself
+    message = message if sep and kind.replace(".", "").isidentifier() else last
+    where = ""
+    if frame := next((l for l in reversed(lines) if l.lstrip().startswith('File "')), None):
+      m = re.match(r'\s*File "(.*?)", line (\d+)', frame)
+      if m:
+        path, inside = m.group(1), ""
+        if root is not None:
+          try:  # a frame inside the fork is named by its path in the fork; any other frame by its own path
+            path = str(pathlib.Path(path).resolve().relative_to(pathlib.Path(root).resolve()))
+            inside = "inside the tinygrad fork "
+          except ValueError:
+            pass
+        where = f" ({kind if sep else 'error'} {inside}at {path}:{m.group(2)})"
+    super().__init__(f"{what}: {message}{where}")
 
 
 def decode_argv(python:pathlib.Path, model:str, context:int, tokens:int, raw:pathlib.Path) -> list[str]:
@@ -129,7 +159,7 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
                         env={**os.environ, "PYTHONPATH": ".", "DEV": device, "JIT": "2", "PROFILE": "1", "VIZ": "0"})
   lines = [x for x in proc.stdout.splitlines() if x.startswith("{")]
   if proc.returncode != 0 or not lines:
-    raise RuntimeError(f"in-model profile failed: {(proc.stderr or proc.stdout).strip()[-400:]}")
+    raise DecodeFailed("in-model profile failed", proc.stderr or proc.stdout, root)
   summary = json.loads(lines[-1])
   # the peak is the run's one read bandwidth (workflow/screen.py run_bandwidth): the limit's number, one source
   from boltbeam.workflow.screen import run_bandwidth

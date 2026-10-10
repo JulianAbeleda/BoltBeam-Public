@@ -31,10 +31,40 @@ func TestRunningScreens(t *testing.T) {
 	dead.Alive = false
 	failed := page(program(s, &s.planned, &dead, append(append([]string{}, s.tail...), "stage measure_timing: failed: llama-bench exited 1"), 80, 24), pageRun)
 	golden(t, "run-failed.txt", failed.View())
-	for _, want := range []string{"failed", "llama-bench exited 1", "Back to setup"} {
+	for _, want := range []string{"failed", "llama-bench exited 1", "Back to setup", "Show details: l"} {
 		if !strings.Contains(failed.View(), want) {
 			t.Fatalf("the failed screen lacks %q", want)
 		}
+	}
+}
+
+// An engine's own error is one sentence in the box: what it said and where inside the engine it was raised. The
+// traceback behind it (the pipeline's "detail:" lines) and the log wait behind l, "Show details".
+func TestFailedScreenKeepsTheTracebackBehindDetails(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	s := loadSample(t)
+	dead := *s.job
+	dead.Alive = false
+	tail := append(append([]string{}, s.tail...),
+		"stage measure_timing: failed: tinygrad decode failed: ffn_down_resadd epilogue requires rows=4096, got rows=5120 (ValueError inside the tinygrad fork at tinygrad/llm/decode_kernels.py:223)",
+		"stage measure_timing: detail: Traceback (most recent call last):",
+		"stage measure_timing: detail:   File \"tinygrad/llm/decode_kernels.py\", line 223, in validate",
+		"stage measure_timing: detail:     raise ValueError(f\"{self.kind} epilogue requires rows=4096, got rows={rows}\")",
+		"stage measure_timing: detail: ValueError: ffn_down_resadd epilogue requires rows=4096, got rows=5120")
+	failed := page(program(s, &s.planned, &dead, tail, 80, 24), pageRun)
+	golden(t, "run-failed-engine.txt", failed.View())
+	v := failed.View()
+	if !strings.Contains(v, "rows=5120") || !strings.Contains(v, "inside the tinygrad fork at") || strings.Contains(v, "Traceback") || strings.Contains(v, "stage load: done") {
+		t.Fatal("the box shows the sentence only; the traceback and the log wait behind l")
+	}
+	if !strings.Contains(v, "l details") {
+		t.Fatal("the footer offers l for the details")
+	}
+	shown := press(failed, "l")
+	golden(t, "run-failed-engine-details.txt", shown.View())
+	body := failedBody(shown.(Model).f, 76)
+	if !strings.Contains(shown.View(), "Traceback (most recent call last)") || !strings.Contains(body, "Last lines of the log") {
+		t.Fatal("l shows the traceback and the log")
 	}
 }
 

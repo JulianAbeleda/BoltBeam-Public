@@ -4,11 +4,11 @@
 │ Qwen3-8B on apple_m3_10c with llama.cpp                                      │
 │                                                                              │
 │ ✗ Time the real decode failed                                                │
-│ llama-bench exited 1                                                         │
+│ tinygrad decode failed: ffn_down_resadd epilogue requires rows=4096, got     │
+│ rows=5120 (ValueError inside the tinygrad fork at                            │
+│ tinygrad/llm/decode_kernels.py:223)                                          │
 │                                                                              │
 │ Show details: l                                                              │
-│                                                                              │
-│                                                                              │
 │                                                                              │
 │                                                                              │
 │                                                                              │

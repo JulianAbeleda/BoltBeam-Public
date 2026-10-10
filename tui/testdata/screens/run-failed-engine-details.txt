@@ -4,17 +4,17 @@
 │ Qwen3-8B on apple_m3_10c with llama.cpp                                      │
 │                                                                              │
 │ ✗ Time the real decode failed                                                │
-│ llama-bench exited 1                                                         │
+│ tinygrad decode failed: ffn_down_resadd epilogue requires rows=4096, got     │
+│ rows=5120 (ValueError inside the tinygrad fork at                            │
+│ tinygrad/llm/decode_kernels.py:223)                                          │
 │                                                                              │
-│ Show details: l                                                              │
+│ Details                                                                      │
+│ Traceback (most recent call last):                                           │
+│   File "tinygrad/llm/decode_kernels.py", line 223, in validate               │
+│     raise ValueError(f"{self.kind} epilogue requires rows=4096, got rows={r… │
+│ ValueError: ffn_down_resadd epilogue requires rows=4096, got rows=5120       │
 │                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
+│ Last lines of the log                                                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │

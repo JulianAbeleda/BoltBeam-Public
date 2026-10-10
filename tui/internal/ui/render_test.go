@@ -349,7 +349,7 @@ func TestSavedRunsListAndDeleteAsksTwice(t *testing.T) {
 	if got := plain(savedActions(f)[0].label); !strings.HasPrefix(got, "Press d again to delete saved run qwen3-8b-apple_m3_10c-002") {
 		t.Fatalf("the confirm row is %q", got)
 	}
-	if !strings.Contains(ansi.Strip(footer(true, true, false)), "d delete run") {
+	if !strings.Contains(ansi.Strip(footer(true, true, false, false)), "d delete run") {
 		t.Fatal("the footer does not name d on a saved run row")
 	}
 }

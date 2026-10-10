@@ -184,6 +184,19 @@ func TestLiveSeamMatchesPinnedContract(t *testing.T) {
 	}
 }
 
+// A failed stage's "detail:" lines are kept apart from its one-line reason.
+func TestReadProgressKeepsFailureDetails(t *testing.T) {
+	p := ReadProgress([]string{"pipeline steps: 2", "stage load: start", "stage load: done", "stage measure_timing: start",
+		"stage measure_timing: failed: tinygrad decode failed: x (ValueError inside the tinygrad fork at a.py:1)",
+		"stage measure_timing: detail: Traceback (most recent call last):", "stage measure_timing: detail: ValueError: x"})
+	if p.Failed != "measure_timing" || p.Reason != "tinygrad decode failed: x (ValueError inside the tinygrad fork at a.py:1)" {
+		t.Fatalf("failed %q reason %q", p.Failed, p.Reason)
+	}
+	if len(p.Details) != 2 || p.Details[0] != "Traceback (most recent call last):" || p.Details[1] != "ValueError: x" {
+		t.Fatalf("details %q", p.Details)
+	}
+}
+
 func TestPipelineProgress(t *testing.T) {
 	lines := []string{"=== start", "pipeline steps: 4", "stage load: start", "stage load: done", "stage autoscan: start",
 		"stage autoscan: done", "stage analyze: start"}

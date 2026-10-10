@@ -839,10 +839,12 @@ def show(run:pathlib.Path) -> dict[str, Any]:
 def _write_measure_status(run:str | pathlib.Path, status:str, *, collector:str | None = None, reason:str | None = None,
                           command:str | None = None, probe:str | None = None, probe_reason:str | None = None,
                           provider:str | None = None, layout:str = "one", gpus:int = 1,
-                          batches:list[int] | None = None, capture:dict[str, Any] | None = None) -> None:
+                          batches:list[int] | None = None, capture:dict[str, Any] | None = None,
+                          details:str | None = None) -> None:
   """probe says whether this collector takes the building-block tests: "measured" or "absent" (with probe_reason).
   Every run is labelled with its engine (provider) and its weight format, read off the run's model profile, and
-  with the per-role capture the measuring machine had (capture: providers.capture_method), a fact of the run."""
+  with the per-role capture the measuring machine had (capture: providers.capture_method), a fact of the run.
+  A failed status keeps reason to one sentence; details is what stands behind it (an engine's traceback)."""
   from boltbeam.workflow.common import run_dir, update_manifest, write_json
   out = run_dir(run)
   profile = _optional(out, "model_profile.json")
@@ -850,7 +852,7 @@ def _write_measure_status(run:str | pathlib.Path, status:str, *, collector:str |
                                     "reason": reason, "command": command, "probe": probe, "probe_reason": probe_reason,
                                     "provider": provider or providers.DEFAULT, "layout": layout, "gpus": gpus,
                                     "weight_format": providers.weight_format(profile) if profile else None,
-                                    "batches": sorted({1, *(batches or [])}), "capture": capture})
+                                    "batches": sorted({1, *(batches or [])}), "capture": capture, "details": details})
   update_manifest(out, stage="measure", artifacts=[MEASURE_STATUS])
 
 
@@ -943,7 +945,8 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
         work()
       except Exception as exc:  # the reason must outlive the log: a reopened screen reads it from the run
         _write_measure_status(args.run, "failed", collector=plan["collector"], reason=f"{key}: {exc}",
-                              command=again, provider=provider, layout=layout, gpus=gpus, capture=capture)
+                              command=again, provider=provider, layout=layout, gpus=gpus, capture=capture,
+                              details=failure_details(exc))
         raise
       if last:
         got = probe_state or {"probe": probe, "reason": probe_reason}
@@ -1070,7 +1073,8 @@ def pipeline(args, out=sys.stdout) -> int:
     try:
       step()
     except Exception as exc:  # application boundary: the stage's own message is the fact the reader needs
-      say(f"stage {key}: failed: {exc}")
+      for line in failure_lines(key, exc):
+        say(line)
       return 1
     finally:
       progress.listen(lambda done, total: None)
@@ -1080,6 +1084,21 @@ def pipeline(args, out=sys.stdout) -> int:
   progress.save(run_path, where, times, finished=plan is not None)
   say(f"pipeline done: {args.run}")
   return 0
+
+
+def failure_details(exc:BaseException) -> str | None:
+  """What stands behind a stage's one-line failure: an engine's own traceback (tinygrad_role_time.DecodeFailed
+  carries it as details). None when the exception's message is all there is."""
+  details = getattr(exc, "details", None)
+  return str(details) if details else None
+
+
+def failure_lines(key:str, exc:BaseException) -> list[str]:
+  """The log lines for a failed stage: one "failed:" line with the sentence a screen shows in its box, then one
+  "detail:" line per line of what stands behind it (the traceback), which a screen keeps behind "Show details"."""
+  out = [f"stage {key}: failed: {exc}"]
+  out += [f"stage {key}: detail: {line}" for line in (failure_details(exc) or "").splitlines()]
+  return out
 
 
 def _role_time_arg(args) -> str:

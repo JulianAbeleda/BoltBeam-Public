@@ -1347,8 +1347,9 @@ func elapsed(j *jobs.Job) string {
 	return fmt.Sprintf("%02d:%02d", m, s)
 }
 
-// failedBody is a run that stopped: the step that failed, why, and the last lines of its log.
-func failedBody(f Facts) string {
+// failedBody is a run that stopped: the step that failed and why, in one sentence. What stands behind the
+// sentence (the engine's own traceback, then the last lines of the log) waits behind l, "Show details".
+func failedBody(f Facts, width int) string {
 	p := seam.ReadProgress(f.Tail)
 	var b strings.Builder
 	b.WriteString(runHeadline(f) + "\n\n")
@@ -1356,13 +1357,30 @@ func failedBody(f Facts) string {
 	if p.Reason != "" {
 		b.WriteString(p.Reason + "\n")
 	}
+	if !f.ShowLog {
+		b.WriteString("\n" + stMuted.Render("Show details: l") + "\n")
+		return b.String()
+	}
+	if len(p.Details) > 0 {
+		b.WriteString("\n" + stHeader.Render("Details") + "\n")
+		b.WriteString(stMuted.Render(strings.Join(fit(p.Details, width), "\n")) + "\n")
+	}
 	tail := p.Lines
 	if len(tail) > 10 {
 		tail = tail[len(tail)-10:]
 	}
 	b.WriteString("\n" + stHeader.Render("Last lines of the log") + "\n")
-	b.WriteString(stMuted.Render(strings.Join(tail, "\n")))
+	b.WriteString(stMuted.Render(strings.Join(fit(tail, width), "\n")))
 	return b.String()
+}
+
+// fit is each line cut to the width: one log line, one screen line (a style pads a block to its widest line).
+func fit(lines []string, width int) []string {
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = truncate(l, width)
+	}
+	return out
 }
 
 // batchTable is step 4's points beside their own limit, when more than batch 1 was timed: tokens per second per
