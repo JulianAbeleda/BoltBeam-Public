@@ -93,6 +93,9 @@ def ggml_library(bench:str | None = None) -> dict[str, Any]:
       tried.append(str(p))
       if p.is_file():
         return _file_record(p)
+  from boltbeam.collectors import engine_scan
+  if kept := engine_scan.saved(GGML_LIBRARY_ENV):  # what the engine scan found and saved (engine_scan.py)
+    return _file_record(pathlib.Path(kept))
   raise NoEngineSource("ggml's Metal shader source was not found (libggml-metal or ggml-metal.metal); looked in "
                        + ", ".join(tried[:4]) + f", ... Set {GGML_LIBRARY_ENV} to the file")
 
@@ -248,9 +251,12 @@ LINKAGE_NOTE = ("mul_mat_vec_q is `static` in mmvq.cu; that one word is removed 
 
 
 def ggml_cuda_source_dir() -> dict[str, Any]:
-  """The installed llama.cpp's ggml-cuda source folder: $BOLTBEAM_GGML_CUDA_SRC or a known checkout."""
+  """The installed llama.cpp's ggml-cuda source folder: $BOLTBEAM_GGML_CUDA_SRC, a known checkout, or what the
+  engine scan saved (engine_scan.py)."""
+  from boltbeam.collectors import engine_scan
   tried = []
-  for cand in ([os.environ[GGML_CUDA_ENV]] if os.environ.get(GGML_CUDA_ENV) else []) + list(_CUDA_CANDIDATES):
+  kept = engine_scan.saved(GGML_CUDA_ENV)
+  for cand in ([os.environ[GGML_CUDA_ENV]] if os.environ.get(GGML_CUDA_ENV) else []) + list(_CUDA_CANDIDATES) + ([kept] if kept else []):
     p = pathlib.Path(cand).expanduser()
     tried.append(str(p))
     if (p / "mmvq.cu").is_file():

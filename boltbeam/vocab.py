@@ -428,6 +428,8 @@ SCHEMA_SAME_RUN_PARITY = "boltbeam.same_run_parity.v1"
 SCHEMA_QUANT_COMPARISON_PREPARATION = "boltbeam.quant_comparison_preparation.v1"
 SCHEMA_SAME_RUN_MEASUREMENT = "boltbeam.same_run_measurement.v1"
 SCHEMA_SAME_RUN_PREPARATION = "boltbeam.same_run_preparation.v1"
+SCHEMA_DOCTOR = "boltbeam.doctor.v1"  # cli/doctor.py: the machine report
+SCHEMA_ENGINES = "boltbeam.engines.v1"  # collectors/engine_scan.py: the saved engine scan
 
 
 def enum_values(enum_cls:type[Enum]) -> list[str]:

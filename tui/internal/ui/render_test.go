@@ -93,7 +93,7 @@ func press(m tea.Model, k string) tea.Model {
 func program(s sample, run *seam.Run, job *jobs.Job, tail []string, width, height int) tea.Model {
 	var m tea.Model = New(seam.Client{}, jobs.Store{}, "/models/Qwen3-8B.gguf", "", 512)
 	for _, msg := range []tea.Msg{targetsMsg{&s.targets, nil}, detectMsg{id: "apple_m3_10c", count: 1}, profileMsg{&s.profile, nil},
-		ceilingMsg{&s.ceiling, nil}, runsMsg{&s.runs, nil}, providersMsg{"apple_m3_10c", engines()},
+		ceilingMsg{&s.ceiling, nil}, runsMsg{&s.runs, nil}, enginesMsg{&seam.Engines{}, nil}, providersMsg{"apple_m3_10c", engines()},
 		tea.WindowSizeMsg{Width: width, Height: height}} {
 		m, _ = m.Update(msg)
 	}

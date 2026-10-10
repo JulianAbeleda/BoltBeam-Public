@@ -130,7 +130,8 @@ func TestEngineActions(t *testing.T) {
 		{Provider: "tinygrad", State: "not_here", Reason: sp("The tinygrad fork is not at /x.")},
 		{Provider: "vllm", State: "not_compatible", Reason: sp("BoltBeam runs vLLM on NVIDIA GPUs only")}}}}
 	got := rows(engineActions(f))
-	want := []string{"engine|● llama.cpp", "note|tinygrad       not here", "note|vllm           not compatible"}
+	want := []string{"engine|● llama.cpp", "note|tinygrad       not here", "note|vllm           not compatible",
+		"engines-scan|[ Scan again ] look for engines in the usual folders"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}

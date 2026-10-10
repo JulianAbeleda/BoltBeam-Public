@@ -25,26 +25,29 @@ RUNTIME = pathlib.Path(__file__).resolve().parents[1] / "runtime"
 
 
 def find_program(env_var:str, names:tuple[str, ...], env:dict[str, str] | None = None) -> str | None:
-  """The engine's program: $env_var when set (it must exist), else the first name on PATH."""
+  """The engine's program: $env_var when set (it must exist), else the first name on PATH, else what the engine
+  scan saved for that env var (collectors/engine_scan.py)."""
+  from boltbeam.collectors import engine_scan
   env = os.environ if env is None else env
   if env.get(env_var):
     path = pathlib.Path(env[env_var]).expanduser()
     return str(path) if path.is_file() else None
-  return next((p for p in (shutil.which(n) for n in names) if p), None)
+  return next((p for p in (shutil.which(n) for n in names) if p), None) or engine_scan.saved(env_var)
 
 
 def python_with(env_var:str, entry:str, env:dict[str, str] | None = None) -> str | None:
   """The python an engine is installed in: $env_var, else the python next to the engine's entry point on PATH
-  (a venv's bin folder holds both)."""
+  (a venv's bin folder holds both), else what the engine scan saved for that env var."""
+  from boltbeam.collectors import engine_scan
   env = os.environ if env is None else env
   if env.get(env_var):
     path = pathlib.Path(env[env_var]).expanduser()
     return str(path) if path.is_file() else None
   exe = shutil.which(entry)
   if not exe:
-    return None
+    return engine_scan.saved(env_var)
   py = pathlib.Path(exe).parent / "python"
-  return str(py) if py.is_file() else None
+  return str(py) if py.is_file() else engine_scan.saved(env_var)
 
 
 def venv_env(python:str) -> dict[str, str]:

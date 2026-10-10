@@ -130,6 +130,12 @@ type providersMsg struct {
 	target    string
 	providers *seam.Providers
 }
+
+// enginesMsg is the answer of the engine scan: what was found and saved, or why the scan failed.
+type enginesMsg struct {
+	scan *seam.Engines
+	err  error
+}
 type noteMsg string
 
 // emitMsg is the answer of Emit: the gameplan Python wrote, or why it could not.
@@ -147,7 +153,7 @@ func New(client seam.Client, store jobs.Store, modelPath, target string, context
 	in := textinput.New()
 	in.Prompt = ""
 	in.SetValue(modelPath)
-	return Model{client: client, store: store, f: Facts{Path: modelPath, Reading: modelPath != "", ByFlag: target != ""}, context: context,
+	return Model{client: client, store: store, f: Facts{Path: modelPath, Reading: modelPath != "", ByFlag: target != "", EngineScan: true}, context: context,
 		wantChip: target, chipSet: target != "", open: true, input: in, started: time.Now().Format("2006-01-02T15:04:05"), width: 80, height: 24, view: viewport.New(80, 21),
 		spin: spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(stAccent))}
 }
@@ -159,11 +165,17 @@ func Start(client seam.Client, store jobs.Store, modelPath, target string, conte
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.loadRuns(), m.findFiles(), m.loadSaved(), m.spin.Tick}
+	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.scanEngines(), m.loadRuns(), m.findFiles(), m.loadSaved(), m.spin.Tick}
 	if m.f.Path != "" {
 		cmds = append(cmds, m.inspect())
 	}
 	return tea.Batch(cmds...)
+}
+
+// scanEngines looks for every engine in the usual folders and saves what was found (Python: screen engines). It
+// runs at boot, in the background, so the Engine line fills on its own; opening Engine never starts a scan.
+func (m Model) scanEngines() tea.Cmd {
+	return func() tea.Msg { e, _, err := m.client.Engines(); return enginesMsg{e, err} }
 }
 
 // loadProviders asks Python which runtimes can measure the chip on this machine.
@@ -631,7 +643,7 @@ func (m *Model) followMeasured() tea.Cmd {
 func (m *Model) chipChanged() tea.Cmd {
 	m.f.Ceiling, m.f.CeilErr, m.f.Providers = nil, "", nil
 	cmds := []tea.Cmd{m.follow()}
-	if t := m.f.target(); t != nil {
+	if t := m.f.target(); t != nil && !m.f.EngineScan { // during the scan, enginesMsg loads the providers
 		cmds = append(cmds, m.loadProviders(t.ID))
 	}
 	if m.f.Profile != nil {
@@ -736,6 +748,14 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		if reload != nil {
 			return m, reload
+		}
+	case enginesMsg:
+		m.f.EngineScan = false
+		if msg.err != nil { // the Engine line shows what was found; only a failure needs words
+			m.note = "The engine scan failed: " + msg.err.Error() + " (env vars still work)"
+		}
+		if t := m.f.target(); t != nil {
+			return m, m.loadProviders(t.ID)
 		}
 	case providersMsg:
 		if t := m.f.target(); t != nil && t.ID == msg.target {
@@ -1110,6 +1130,12 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, nil
 	case "analyze":
 		return m, m.startRun(m.f.Engine)
+	case "engines-scan":
+		if m.f.EngineScan {
+			return m, nil
+		}
+		m.f.EngineScan, m.f.Providers, m.note = true, nil, ""
+		return m, m.scanEngines()
 	case "autoscan":
 		if m.f.Scanning {
 			return m, nil

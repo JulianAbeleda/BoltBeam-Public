@@ -26,6 +26,16 @@ python3 -m boltbeam.cli --help
 
 `pip install -e .` also installs a `boltbeam` command, which is the same thing.
 
+Two commands say where this machine stands and open the screen:
+
+```
+boltbeam doctor      # what this machine has (Python, GPU, engines, capture tool, Go) and the one fix per gap; exit 0
+boltbeam tui         # the screen; builds boltbeam-tui into ~/.cache/boltbeam first when needed
+```
+
+`doctor` looks for the engines in the usual folders and remembers them (`~/.boltbeam/engines.json`); set an env var
+only when it misses. On Linux with an NVIDIA GPU, [linux.md](linux.md) is the page to follow.
+
 Most commands take a GGUF model and a `--target`, and write JSON to stdout or to `--out`.
 
 ## The chips it knows
@@ -214,7 +224,7 @@ GPU time. The first two run on the main processor and need no hardware.
 
 ## On a screen, or as JSON for an agent
 
-`tui/` holds `boltbeam-tui`, a Go program over the same commands: the model's roles, the speed limit for a
+`boltbeam tui` opens the screen: `tui/` holds `boltbeam-tui`, a Go program over the same commands: the model's roles, the speed limit for a
 chip, the run stages with live status, and the results with measured speed against the limit. `boltbeam-tui
 --json <command>` prints the same facts as one JSON object for an agent. Both read through one seam,
 `python3 -m boltbeam.workflow.screen`, which is the only Python this adds. See [`tui/README.md`](../tui/README.md).

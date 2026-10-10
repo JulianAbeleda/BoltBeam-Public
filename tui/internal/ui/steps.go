@@ -31,6 +31,7 @@ type Facts struct {
 	Detected    bool           // the detect call answered (ThisMachine "" then means no registered chip matched)
 	NewChip     string         // this GPU's name when no chip profile fits it yet: autoscan measures one
 	Scanning    bool           // an autoscan is running
+	EngineScan  bool           // the engine scan is running (at boot, and on [ Scan again ]); Providers waits for it
 	ByFlag      bool           // --target chose the chip: shown as chosen by flag, not detected
 	Picked      bool           // detection failed and the user picked the closest registered chip
 	Others      *seam.Ceilings // this model's limit on every registered chip, read-only (step 3)
@@ -242,8 +243,11 @@ func chipValue(f Facts) string {
 	return text
 }
 
-// engineValue is the chosen engine as Setup shows it: its name only.
+// engineValue is the chosen engine as Setup shows it: its name only; while the boot scan looks for engines, that.
 func engineValue(f Facts) string {
+	if f.EngineScan || (f.Providers == nil && f.target() != nil) { // the scan, then Python's provider list
+		return strings.TrimSpace(f.Spin + " looking for engines…")
+	}
 	if p := f.engineRow(); p != nil && p.Available {
 		return p.Provider
 	}
@@ -396,8 +400,8 @@ func contains(xs []string, x string) bool {
 func engineLine(f Facts) (string, string) {
 	p := f.engineRow()
 	switch {
-	case f.Providers == nil:
-		return "run", "reading the engines on " + here() + "…"
+	case f.EngineScan || f.Providers == nil:
+		return "run", "looking for engines on " + here() + "…"
 	case p == nil:
 		return "open", "pick an engine"
 	case !p.Available:
@@ -411,11 +415,12 @@ func engineLine(f Facts) (string, string) {
 }
 
 func engineBody(f Facts, width int) string {
-	if f.Providers == nil {
-		return stMuted.Render("Reading the engines on " + here() + "…")
+	if f.EngineScan || f.Providers == nil {
+		return stMuted.Render("Looking for engines on " + here() + "… (the usual folders, no env vars needed)")
 	}
 	var b strings.Builder
-	b.WriteString("The engine is the runtime that decodes the model. Only engines found on " + here() + " can be picked.\n\n")
+	b.WriteString("The engine is the runtime that decodes the model. Only engines found on " + here() + " can be picked. " +
+		"They are looked for at start; an env var (BOLTBEAM_LLAMA_BENCH, BOLTBEAM_TINYGRAD_ROOT, …) overrides what was found.\n\n")
 	for _, p := range f.Providers.Providers {
 		if !p.Available {
 			continue // the picker lists these, with why, under one row
@@ -431,6 +436,9 @@ func engineBody(f Facts, width int) string {
 }
 
 func engineActions(f Facts) []action {
+	if f.EngineScan {
+		return []action{note("  " + f.Spin + " looking for engines…")}
+	}
 	if f.Providers == nil {
 		return nil
 	}
@@ -446,7 +454,7 @@ func engineActions(f Facts) []action {
 			out = append(out, note(fmt.Sprintf("  %-14s %s", p.Provider, stateWords(p))))
 		}
 	}
-	return out
+	return append(out, action{"  [ Scan again ] look for engines in the usual folders", "engines-scan", ""})
 }
 
 // stateWords is an engine that cannot run here in two words; the sentence why stays in --json.

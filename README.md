@@ -35,14 +35,40 @@ More reading: [docs/CLI.md](docs/CLI.md) walks the command line end to end.
 
 ## Install
 
-Python 3.10 or newer. No dependencies.
+Python 3.10 or newer. No dependencies. Three commands:
 
 ```bash
 git clone https://github.com/JulianAbeleda/BoltBeam-Public.git
 cd BoltBeam-Public
 python3 -m pip install .
-boltbeam selfcheck
+boltbeam doctor
+boltbeam tui
 ```
+
+`boltbeam doctor` says what this machine has for BoltBeam, one row each, and the one thing to do for each gap:
+the Python, the GPU and its chip profile, each engine (llama.cpp, tinygrad, vLLM, Ollama, TensorRT-LLM) with the
+path it was found at, the kernel source, the capture tool (xctrace on a Mac, nsys on NVIDIA), Go and the screen
+binary. It ends with `ready to run` or `N things to set up`. It is a report: exit 0 either way; `--json` for agents.
+
+```text
+python         found      3.12.13 (/usr/local/bin/python3.12)
+GPU            found      Apple M3
+chip profile   found      apple_m3_10c (built in)
+llama.cpp      found      /opt/homebrew/bin/llama-bench (path); per-role time: boltbeam-kernel-timer-isolated
+tinygrad       found      ../tinygrad-arkey-exp (scan: ..); per-role time: tinygrad-profile-events
+ollama         not found  ollama was not found in $BOLTBEAM_OLLAMA or on PATH
+                          -> install it, or export BOLTBEAM_OLLAMA=<its path>; the next scan finds the usual places
+capture tool   not found  metal-system-trace is not installed
+                          -> install Xcode (xctrace comes with it)
+Go             found      go1.26.5 at /opt/homebrew/bin/go
+boltbeam-tui   found      ~/.cache/boltbeam/boltbeam-tui
+2 things to set up
+```
+
+Engines are found, not configured. `doctor` and the screen look in the usual places (PATH, Homebrew, `~/env`,
+`~/storage/*`, the fork next to the checkout, venvs under `~/env` and `~/storage`) and remember what they found in
+`~/.boltbeam/engines.json`. Set an env var (`BOLTBEAM_LLAMA_BENCH`, `BOLTBEAM_TINYGRAD_ROOT`, `BOLTBEAM_VLLM_PYTHON`,
+`BOLTBEAM_OLLAMA`, `BOLTBEAM_TRTLLM_PYTHON`, `BOLTBEAM_GGML_CUDA_SRC`) only when the scan misses; an env var always wins.
 
 `boltbeam selfcheck` builds a tiny synthetic model and runs the core path on it. It needs no GPU, no network
 and no model file. It prints PASS or FAIL for each step and exits 1 on any failure:
@@ -64,14 +90,21 @@ Without installing, `python3 -m boltbeam.cli <command>` does the same as `boltbe
 A stock macOS names Python 3.9 as `python3`. BoltBeam refuses it and says so. Name a newer one, for example
 `python3.12`.
 
+On Linux with an NVIDIA GPU, [docs/linux.md](docs/linux.md) goes from a bare Ubuntu to the first report.
+
 ## The screen (TUI)
 
 The screen is a Go program in [tui/](tui/README.md). It reads BoltBeam through the same commands as below.
 
 ```bash
-cd tui && go build -o boltbeam-tui .
-./boltbeam-tui
+boltbeam tui                 # the screens
+boltbeam tui --json chips    # any boltbeam-tui command, as one JSON object, for agents
 ```
+
+`boltbeam tui` builds `boltbeam-tui` into `~/.cache/boltbeam/` (or `$BOLTBEAM_TUI_DIR`) the first time and again when
+the Go source changes, then runs it with `--repo` set to this checkout and `--python` set to the interpreter that
+ran it. It needs Go at the version `tui/go.mod` names; without one it prints the install line (go.dev/dl) and exits 2.
+It downloads nothing.
 
 It has three screens:
 

@@ -54,14 +54,16 @@ class CannotMeasure(RuntimeError):
 
 
 def find(llama_bench:str = DEFAULT, env:dict[str, str] | None = None) -> str | None:
-  """The llama-bench to run: an explicit path, then $BOLTBEAM_LLAMA_BENCH, then PATH. None when there is none."""
+  """The llama-bench to run: an explicit path, then $BOLTBEAM_LLAMA_BENCH, then PATH, then what the engine scan
+  saved (collectors/engine_scan.py). None when there is none."""
+  from boltbeam.collectors import engine_scan
   env = os.environ if env is None else env
   if llama_bench != DEFAULT:
     return llama_bench if pathlib.Path(llama_bench).expanduser().is_file() else shutil.which(llama_bench)
   if env.get(ENV):
     path = pathlib.Path(env[ENV]).expanduser()
     return str(path) if path.is_file() else None
-  return shutil.which(DEFAULT)
+  return shutil.which(DEFAULT) or engine_scan.saved(ENV)
 
 
 def find_batched(env:dict[str, str] | None = None) -> str | None:
@@ -73,7 +75,8 @@ def find_batched(env:dict[str, str] | None = None) -> str | None:
   bench = find(DEFAULT, env)
   if bench and (pathlib.Path(bench).parent / BATCHED).is_file():
     return str(pathlib.Path(bench).parent / BATCHED)
-  return shutil.which(BATCHED)
+  from boltbeam.collectors import engine_scan
+  return shutil.which(BATCHED) or engine_scan.saved(BATCHED_ENV)
 
 
 def batched_argv(binary:str, model:pathlib.Path | str, context:int, tokens:int, batches:list[int],

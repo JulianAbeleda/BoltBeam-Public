@@ -64,6 +64,24 @@ type ChipScan struct {
 	Reason   *string `json:"reason"`
 }
 
+// Engines is `screen engines`: the engine scan, run now and saved (collectors/engine_scan.py). One row per item
+// looked for, with its path and how it was found (env, path, scan: <dir>), or neither.
+type Engines struct {
+	File      string        `json:"file"`
+	ScannedAt string        `json:"scanned_at"`
+	Seconds   float64       `json:"seconds"`
+	Engines   []EngineFound `json:"engines"`
+}
+
+type EngineFound struct {
+	Item    string  `json:"item"`
+	Env     string  `json:"env"`
+	Engine  string  `json:"engine"`
+	Path    *string `json:"path"`
+	How     *string `json:"how"`
+	Skipped *string `json:"skipped"`
+}
+
 // Detected is `screen detect`: autoscan's GPU probe cut to what a screen shows.
 type Detected struct {
 	Status     string  `json:"status"`

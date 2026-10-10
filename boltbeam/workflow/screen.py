@@ -37,6 +37,9 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
                                                (default), tinygrad, vllm, ollama or tensorrt-llm picks the engine;
                                                an engine that cannot read the model's weight format is refused, and
                                                so is a busy GPU. --batch 1,32 also times a decode step of 32 streams.
+    engines                                    look for every engine on this machine now and save what was found
+                                               (collectors/engine_scan.py, ~/.boltbeam/engines.json); the screen runs
+                                               it at boot, and `providers` reads the saved paths after env and PATH
     providers --target T                       the engines that can measure here (collectors/providers.ENGINES),
                                                each with the reason when it cannot, the weight formats it reads,
                                                and how step 5 times its roles
@@ -1157,6 +1160,15 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
           "gpu_count": n, "providers": rows}
 
 
+def engines() -> dict[str, Any]:
+  """Look for every engine on this machine now and save what was found (collectors/engine_scan.py): one row per
+  item with its path and how it was found. The screen runs this at boot; `providers` then sees the saved paths."""
+  from boltbeam.collectors import engine_scan
+  got = engine_scan.scan_and_save()
+  return {"schema": SCHEMA, "kind": "engines", "file": got["file"], "scanned_at": got["scanned_at"],
+          "seconds": got["seconds"], "engines": engine_scan.rows(got)}
+
+
 DEVICE_PREFIX = {"CUDA": "NV", "AMD": "AMD"}  # tinygrad's device name per backend, for the per-GPU probe
 _PROBE_WORDS = {"Metal": "BoltBeam's Metal read probe", "CUDA": "BoltBeam's native CUDA read probe"}
 
@@ -1490,6 +1502,7 @@ def main(argv:list[str] | None = None) -> int:
     p = sub.add_parser(name)
     p.add_argument("--target", required=True)
     p.add_argument("--tinygrad-root", default=None)
+  sub.add_parser("engines", help="look for every engine on this machine now and save what was found")
   for name in ("compare", "compare-ready", "role-time"):
     p = sub.add_parser(name)
     p.add_argument("--run", required=True)
@@ -1521,6 +1534,8 @@ def main(argv:list[str] | None = None) -> int:
       out = detect()
     elif args.command == "providers":
       out = provider_list(_target_arg(args.target), pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None)
+    elif args.command == "engines":
+      out = engines()
     elif args.command == "gpu-free":
       out = gpu_free(_target_arg(args.target))
     elif args.command == "ceiling":

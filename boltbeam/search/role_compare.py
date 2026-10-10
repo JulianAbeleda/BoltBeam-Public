@@ -64,11 +64,14 @@ def _now() -> str:
 # --- readiness: what the screen says before anything starts ---------------------------------------------------
 
 def default_fork_root() -> pathlib.Path:
-  """$BOLTBEAM_TINYGRAD_ROOT (or the older TINYGRAD_ROOT; target/tinygrad_root.py reads both), else tinygrad-arkey-exp
-  next to this BoltBeam checkout."""
-  from boltbeam.target.tinygrad_root import configured_root
+  """$BOLTBEAM_TINYGRAD_ROOT (or the older TINYGRAD_ROOT; target/tinygrad_root.py reads both), else the fork the
+  engine scan saved (collectors/engine_scan.py), else tinygrad-arkey-exp next to this BoltBeam checkout."""
+  from boltbeam.collectors import engine_scan
+  from boltbeam.target.tinygrad_root import BOLTBEAM_TINYGRAD_ROOT_ENV, configured_root
   if env := configured_root():
     return pathlib.Path(env).expanduser()
+  if kept := engine_scan.saved(BOLTBEAM_TINYGRAD_ROOT_ENV):
+    return pathlib.Path(kept)
   return pathlib.Path(__file__).resolve().parents[2].parent / "tinygrad-arkey-exp"
 
 

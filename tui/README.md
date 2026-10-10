@@ -13,15 +13,27 @@ folder and its expected JSON, pinned by a test on each side.
 ## Quickstart (human)
 
 ```bash
-cd tui && go build -o boltbeam-tui .           # Go 1.26
+boltbeam tui                                   # from the checkout; builds boltbeam-tui once, then runs it
 export BOLTBEAM_MODEL=~/models/Qwen3-8B.gguf    # optional: Setup opens with it
 export BOLTBEAM_RUNS=/path/to/runs              # the folder that holds runs (default: <repo>/runs)
-./boltbeam-tui
 ```
 
-The interpreter is `BOLTBEAM_PYTHON`, else the first of `python3.13`, `python3.12`, `python3.11`, `python3.10`,
-`python3` on PATH (a stock macOS names a 3.9 `python3`, which BoltBeam refuses). The checkout is found by
-walking up from the working directory or the binary; `--repo` or `BOLTBEAM_REPO` names it.
+`boltbeam tui` (boltbeam/cli/tui.py) is the way in. It finds the checkout (`$BOLTBEAM_REPO`, else walking up from the
+working folder), builds `boltbeam-tui` into `~/.cache/boltbeam/` (`$BOLTBEAM_TUI_DIR`) when it is missing or the Go
+source changed (a hash of the sources sits beside the binary), then runs it with `--repo` and `--python` set and
+every flag passed through: `boltbeam tui --json chips`. It needs Go at the version `tui/go.mod` names (`go 1.26.5`);
+without it the one install line is printed and it exits 2. Nothing is downloaded (`GOTOOLCHAIN=local`).
+
+By hand, the same thing is `cd tui && go build -o boltbeam-tui . && ./boltbeam-tui`.
+
+The interpreter is `--python`, else `BOLTBEAM_PYTHON`, else the first of `python3.13`, `python3.12`, `python3.11`,
+`python3.10`, `python3` on PATH (a stock macOS names a 3.9 `python3`, which BoltBeam refuses). The checkout is found
+by walking up from the working directory or the binary; `--repo` or `BOLTBEAM_REPO` names it.
+
+At start the screen looks for the engines in the background (`screen engines`: PATH, Homebrew, `~/env`, `~/storage/*`,
+the fork next to the checkout, venvs; collectors/engine_scan.py) and remembers them in `~/.boltbeam/engines.json`. The
+Engine line says `looking for engines…` until it answers. Opening Engine never starts a scan; `[ Scan again ]` in the
+picker does. An env var always wins over what was found.
 
 Keys: `↑` `↓` (or `j` `k`) move, `enter` picks, `esc` goes back to Setup, `x` stops the run started here, `l` shows
 the log while a run goes, `d` (twice) deletes a saved run, `q` quits.
@@ -104,6 +116,7 @@ boltbeam-tui [--json] [--root RUNS] [--saved DIR] [--repo DIR] [--python PY] [--
 | `targets` | the chips BoltBeam knows, and which carry a speed limit | 0 |
 | `chips` | the chips in Setup's groups: this machine, measured, not measured yet, families | 0 |
 | `autoscan [--remeasure]` | use the chip profile that fits this GPU, or measure and save a new one | 0 / 1 |
+| `engines` | look for every engine in the usual folders now and save what was found (`~/.boltbeam/engines.json`); the path and how each was found | 0 |
 | `inspect MODEL` | the model profile (`boltbeam inspect`, bytes unchanged) | 0 / 1 |
 | `ceiling MODEL --target ID [--context N]` | the roofline: best tokens/s for decode and prefill; with machine facts in the runs folders, the memory speed measured on this GPU | 0, 1 when the chip has no ceiling |
 | `runs` | every run: `RUNS/<id>`, `RUNS/.work/<id>` and the saved runs, each marked where it lives | 0 |
@@ -143,6 +156,9 @@ folder keeps what landed.
 | `BOLTBEAM_TINYGRAD_VENV` | the fork's venv folder (its `bin/python` runs the fork) |
 | `BOLTBEAM_TINYGRAD_PYTHON` | the fork's interpreter, when it is not in a venv under the fork |
 | `BOLTBEAM_GGML_METAL`, `BOLTBEAM_GGML_CUDA_SRC` | llama.cpp's Metal library or CUDA source, when not where Homebrew or `~/env/llama.cpp` put them |
+| `BOLTBEAM_LLAMA_BENCH`, `BOLTBEAM_VLLM_PYTHON`, `BOLTBEAM_OLLAMA`, `BOLTBEAM_TRTLLM_PYTHON` | an engine the scan missed; each wins over the saved scan |
+| `BOLTBEAM_ENGINES_FILE` | where the engine scan is saved (default `~/.boltbeam/engines.json`) |
+| `BOLTBEAM_TUI_DIR` | where `boltbeam tui` builds the binary (default `~/.cache/boltbeam`) |
 
 ## Tests
 

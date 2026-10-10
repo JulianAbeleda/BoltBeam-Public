@@ -29,6 +29,8 @@ commands (each prints one JSON object):
   chips                                        the chips in Setup's groups: this machine, measured, not measured yet,
                                                families
   autoscan [--remeasure]                       use the chip profile that fits this GPU, or measure and save a new one
+  engines                                      look for every engine in the usual folders now and save what was found
+                                               (~/.boltbeam/engines.json): the path and how each was found
   inspect MODEL                                the model profile: roles, shapes, quants (boltbeam inspect, bytes unchanged)
   ceiling MODEL --target ID [--context N]      the roofline: best tokens/s for decode (one token) and prefill (N tokens)
   runs                                         every run: RUNS/<id>, RUNS/.work/<id> and the saved runs, each marked
@@ -183,6 +185,12 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 		return emit(out, raw)
 	case "autoscan":
 		_, raw, err := client.Autoscan(len(args) > 0 && args[0] == "--remeasure")
+		if err != nil {
+			return fail(out, err)
+		}
+		return emit(out, raw)
+	case "engines":
+		_, raw, err := client.Engines()
 		if err != nil {
 			return fail(out, err)
 		}

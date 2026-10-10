@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import textwrap
 
-from boltbeam.cli import analysis, gemm, ncu, search, profile, roofline, selfcheck, workflow, lifecycle
+from boltbeam.cli import analysis, doctor, gemm, ncu, search, profile, roofline, selfcheck, tui, workflow, lifecycle
 
-_MODULES = (analysis, search, profile, roofline, workflow, gemm, ncu, lifecycle, selfcheck)
+_MODULES = (analysis, search, profile, roofline, workflow, gemm, ncu, lifecycle, selfcheck, doctor, tui)
 
 # The core group `boltbeam --help` shows first, in the order a reader uses them.
 # Every other command still runs. Scripts and papers call them by name. --help lists them after the core group.
 CORE: tuple[tuple[str, tuple[str, ...]], ...] = (
-  ("Check the install", ("selfcheck",)),
+  ("Check the install", ("selfcheck", "doctor")),
+  ("Open the screen", ("tui",)),
   ("Read a model (no GPU)", ("inspect", "roofline-theoretical")),
   ("Run the pipeline", ("load", "autoscan", "analyze", "output")),
   ("Bring in measurements", ("ingest-timing", "ingest-probe", "collect-hw-trace", "import-hw-trace",
@@ -65,6 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv:list[str] | None=None) -> int:
+  argv = list(sys.argv[1:] if argv is None else argv)
+  if argv[:1] == ["tui"] and argv[1:2] not in (["-h"], ["--help"]):
+    return tui.run(argv[1:])  # every flag passes through to boltbeam-tui; argparse would claim the dashes
   args = build_parser().parse_args(argv)
   return args.fn(args)
 

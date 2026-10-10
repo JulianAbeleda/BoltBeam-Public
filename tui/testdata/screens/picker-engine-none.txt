@@ -2,9 +2,8 @@
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Engine                                                                       │
 │ The engine is the runtime that decodes the model. Only engines found on this │
-│ Mac can be picked.                                                           │
-│                                                                              │
-│                                                                              │
+│ Mac can be picked. They are looked for at start; an env var                  │
+│ (BOLTBEAM_LLAMA_BENCH, BOLTBEAM_TINYGRAD_ROOT, …) overrides what was found.  │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -19,6 +18,7 @@
 │ pick an engine                                                               │
 │     llama.cpp      not here                                                  │
 │     tinygrad       not here                                                  │
+│     [ Scan again ] look for engines in the usual folders                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit
