@@ -79,6 +79,7 @@ from boltbeam.cli.roofline import peak_flops_status, resolve_peak_flops
 from boltbeam.core.canonical import pretty_json
 from boltbeam.kernel_analysis.theoretical_roofline import model_roofline
 from boltbeam.profile.loaders import profile_from_model
+from boltbeam.profile import weight_ledger
 from boltbeam.report.html import STAGES, next_step, roofline_kernels, stage_state
 from boltbeam.search import role_compare
 from boltbeam.collectors import providers, tinygrad_role_time
@@ -207,6 +208,8 @@ def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "f
     "peak_bandwidth_gbs": bw, "bandwidth_source": (read or {}).get("short"), "band": plausibility_band(target, read), "peak_tflops": peak_flops / 1e12, "truth_status": decode["truth_status"],
     "ridge_intensity": decode["ridge_intensity"], "assumptions": decode["assumptions"],
     "decode": _block(decode, 1), "prefill": _block(prefill, context),
+    # what the limit counts and what it excludes, with reasons (profile/weight_ledger.py)
+    "weights": weight_ledger.facts((profile.get("metadata") or {}).get("weights")),
   }
 
 

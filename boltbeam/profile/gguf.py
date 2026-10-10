@@ -9,6 +9,7 @@ from typing import Any
 from boltbeam.profile.ir import ModelProfile, TensorRole
 from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
 from boltbeam.profile.architecture import classify_architecture
+from boltbeam.profile import weight_ledger
 from boltbeam.vocab import is_ssm_role
 
 GGML_TYPE_NAMES = {
@@ -91,7 +92,7 @@ def read_gguf(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tuple[str, 
 
 def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> ModelProfile:
   p = pathlib.Path(path).expanduser()
-  kv, tensors = read_gguf(p)
+  kv, tensors, data_start = read_gguf_layout(p)
   arch = kv.get("general.architecture")
   hidden = kv.get(f"{arch}.embedding_length") if arch else None
   ffn = kv.get(f"{arch}.feed_forward_length") if arch else None
@@ -127,12 +128,17 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
                            ggml_type=typ, quant=GGML_TYPE_NAMES.get(typ, f"GGML_{typ}"), count=len(names),
                            role_class=classify_tensor_role(names[0]).value, n_expert=n_expert)
                 for (role, rows, cols, typ, n_expert), names in sorted(grouped.items()))
+  # every tensor counted in the limit or excluded with a reason; refused here when the two do not add up
+  ledger = weight_ledger.build(kv, tensors, arch=arch, data_bytes=p.stat().st_size - data_start,
+                               alignment=int(kv.get("general.alignment", 32)))
+  weight_ledger.check(ledger, roles)
   architecture_class, arch_signals = classify_architecture(kv, tensors, arch)
   metadata = {
     "gguf_architecture": arch,
     "tensor_count": len(tensors),
     "quant_types": sorted({GGML_TYPE_NAMES.get(typ, f"GGML_{typ}") for _, _, typ, _ in tensors}),
     "architecture_signals": arch_signals,
+    "weights": ledger,
     "attention": {k: v for k, v in {
       "head_count": head_count,
       "head_count_kv": head_count_kv,

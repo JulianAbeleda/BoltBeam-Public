@@ -892,6 +892,13 @@ def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, An
     rows.append(("Limit", f'{loss["layout"]["formula"]} ({loss["layout"].get("label") or ""})'))
   elif ceil.get("bytes_moved"):
     rows.append(("Limit", f'{ceil["bytes_moved"] / 1e9:.2f} GB of weights per token over {bw:.1f} GB/s'))
+  if w := ceil.get("weights"):  # every tensor counted or excluded with a reason (profile/weight_ledger.py)
+    rows.append(("Weights", w["line"]))
+    for u in w["unclassified"]:
+      rows.append(("Not classified, counted", f'{u["pattern"]} {u["quant"]} x{u["tensors"]}: {u["bytes"] / 1e9:.3f} GB per token'))
+    if w["excluded"]:
+      rows.append(("Excluded from the limit", "; ".join(f'{x["pattern"]} x{x["tensors"]} {x["bytes"] / 1e6:.2f} MB ({x["reason"]})'
+                                                      for x in w["excluded"])))
   step = loss.get("step") or {}
   if step:
     graph = ""

@@ -37,6 +37,9 @@ def _register_inspect(sub) -> None:
 def cmd_inspect(args) -> int:
   profile, _target = _profile(args)
   _write(profile.to_json(), args.out)
+  if ledger := profile.metadata.get("weights"):  # what the limit counts and what it leaves out, said every time
+    from boltbeam.profile import weight_ledger
+    sys.stderr.write("\n".join([weight_ledger.summary_line(ledger), *weight_ledger.detail_lines(ledger)]) + "\n")
   return 0
 
 def _register_emit_search(sub) -> None:

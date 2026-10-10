@@ -143,15 +143,21 @@ class RoleRoofline:
             **self.point.to_json()}
 
 
+def limit_roles(profile: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+  """The rows of the limit, the one list both rooflines read: the profile's limit roles, then every other weight the
+  decode reads per token as the weight ledger counted it ("unclassified weight: <pattern>", its bytes and reads per
+  token; profile/weight_ledger.py). A tensor the classifier cannot name never drops out of the limit."""
+  named = [r for r in profile.get("roles") or [] if isinstance(r, Mapping) and r.get("role") in _GEMM_ROLES]
+  return named + list((((profile.get("metadata") or {}).get("weights")) or {}).get("unclassified") or [])
+
+
 def model_roofline(profile: Mapping[str, Any], *, peak_flops: float, peak_bw_bytes_s: float,
                    context: int = 512) -> dict[str, Any]:
   """Theoretical per-role + whole-model roofline for a model profile on a device. No runtime, no weights read."""
-  roles = profile.get("roles") or []
   # One row per (role, shape, quant). A role stored in two formats (Q4_K_M keeps half of ffn_down in
   # Q6_K) is two rows: keying by role name alone dropped the second format and its bytes.
   variants: dict[tuple[Any, ...], dict[str, Any]] = {}
-  for role in roles:
-    if not isinstance(role, Mapping) or role.get("role") not in _GEMM_ROLES: continue
+  for role in limit_roles(profile):
     key = (role["role"], int(role.get("rows") or 0), int(role.get("cols") or 0), role.get("quant"), role.get("ggml_type"))
     row = variants.setdefault(key, {**role, "count": 0})
     row["count"] += int(role.get("count") or 1)
@@ -399,10 +405,8 @@ def tiered_model_roofline(profile: Mapping[str, Any], *, peak_flops: float, tier
   cache reuse count is therefore ceil(M/tile_M), supplied by execution evidence. Missing tile evidence gets no
   cache-reuse credit (one compulsory stream), rather than inventing M rereads. Mixed quant variants are preserved.
   """
-  roles = profile.get("roles") or []
   grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
-  for role in roles:
-    if not isinstance(role, Mapping) or role.get("role") not in _GEMM_ROLES: continue
+  for role in limit_roles(profile):
     name = str(role["role"])
     n, k = int(role.get("rows") or 0), int(role.get("cols") or 0)
     if n <= 0 or k <= 0: continue

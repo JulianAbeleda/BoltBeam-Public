@@ -30,6 +30,8 @@ LEVERS = {
   "cannot_split": "Split them first: a capture that names each kernel's role (tinygrad's own timing does).",
   "compute_bound": "Use the chip's matrix units for it, or fewer flops per byte.",
   "unexplained": "Look at the kernel rows in the evidence: no rule here assigns this time.",
+  # counted in the limit already (profile/weight_ledger.py); the lever is a name, so its kernel gets a per-role row
+  "unclassified_weights": "Name them: add their tensor name patterns to profile/roles.py as limit roles.",
 }
 
 
@@ -191,6 +193,15 @@ def items(facts:Facts, loss:dict[str, Any]) -> list[dict[str, Any]]:
     out.append({"verdict": verdict, "what": what, "ms": ms, "do": LEVERS[verdict],
                 "rule": "no rule assigns it" if verdict == "unexplained" else "the roofline regime is compute",
                 "evidence": [p for r in rs for p in r.get("evidence") or []]})
+  ledger = (facts.profile.get("metadata") or {}).get("weights") or {}
+  if ledger.get("unclassified_tensors"):  # counted in the limit, never dropped: said so, with what they are
+    from boltbeam.profile.weight_ledger import summary_line
+    share = ledger["unclassified_bytes"] / ledger["counted_bytes"] if ledger.get("counted_bytes") else 0.0
+    names = ", ".join(f"{r['pattern']} {r['quant']}" for r in ledger["unclassified"])
+    out.append({"verdict": "unclassified_weights", "what": f"Not classified: {names}. "
+                + summary_line(ledger).split("; ", 1)[1], "ms": share * float(loss.get("limit_ms") or 0.0),
+                "do": LEVERS["unclassified_weights"], "rule": "a weight tensor no limit role names, counted by its bytes",
+                "evidence": [_ptr(PROFILE, "metadata.weights.unclassified")]})
   for x in out:
     x["share"] = x["ms"] / token if token else 0.0
   return out
