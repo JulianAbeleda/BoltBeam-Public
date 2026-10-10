@@ -49,6 +49,8 @@ var plainRegime = map[string]string{
 var plainRole = map[string]string{
 	"attn_kv": "attention keys and values", "attn_qo": "attention query and output", "ffn_gate_up": "feed-forward in",
 	"ffn_down": "feed-forward out", "lm_head": "vocabulary output", "embed": "token embedding",
+	"attn_qkv": "attention query, keys and values, fused", "attn_gate": "attention output gate",
+	"ssm_out": "state-space output", "ssm_alpha_beta": "state-space decay and update gates",
 }
 
 var plainLimit = map[string]string{"memory": "reading weights", "compute": "doing sums"}

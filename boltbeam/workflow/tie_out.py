@@ -7,7 +7,8 @@
                                           named; the limit has no bytes for them, so all their time is above it
   + other kernels above their ideal       measured: attention, norms, quantize, rope, copies, minus their ideal
                                           (the limit's KV read and any role that could not be split); a GEMV of a
-                                          profile role the limit leaves out is named after it here (ssm projection)
+                                          profile role the limit leaves out (an `ssm_in`, a MoE router) is named
+                                          after it here
   + gaps between kernels (GPU idle)       the difference: the measured token minus everything above
   = measured token                        the captured run's own time per token
 
@@ -89,7 +90,8 @@ def kind_of(row:dict[str, Any]) -> str:
 
 
 def roles_outside_limit(profile:dict[str, Any] | None, limit_keys:set[tuple[str, str]]) -> dict[int, str]:
-  """The profile's matrix roles the limit has no bytes for, named by their calls per token: {48: "ssm projection"}.
+  """The profile's matrix roles the limit has no bytes for (not in vocab.WEIGHT_GEMV_ROLES: an `ssm_in` kept as
+  `ssm_projection`, a MoE router), named by their calls per token: {48: "ssm projection"}.
   A GEMV no role took that runs such a role's count of times per token is labelled with the role's name instead of
   UNATTRIBUTED (a label only: its time stays in other kernels, nothing is attributed). A count two such roles share
   names neither. A role whose quant the registry does not know (an F32 conv weight) is not a matrix role here."""

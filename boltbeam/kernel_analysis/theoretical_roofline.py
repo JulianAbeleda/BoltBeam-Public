@@ -16,10 +16,10 @@ from typing import Any, Mapping
 from boltbeam.math.roofline import amdahl_whole_gain
 from boltbeam.perf.mem_tier import effective_bandwidth_gbs
 from boltbeam.profile.decode_roles import GGML_BITS_PER_WEIGHT
-from boltbeam.vocab import SCHEMA_THEORETICAL_ROOFLINE
+from boltbeam.vocab import SCHEMA_THEORETICAL_ROOFLINE, WEIGHT_GEMV_ROLES
 from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
 
-_GEMM_ROLES = ("attn_qo", "attn_kv", "ffn_gate_up", "ffn_down", "lm_head")
+_GEMM_ROLES = WEIGHT_GEMV_ROLES  # the roles of the limit: every weight the decode reads once per token (vocab)
 _ACT_BYTES = 2.0  # fp16 activations
 
 

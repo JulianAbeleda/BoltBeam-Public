@@ -98,3 +98,54 @@ does list `ssm_out` (5120x6144) and `ssm_alpha`/`ssm_beta` (48x5120) as `ssm_pro
 Q8_0 under one role name, and the per-role machinery keys on (role, quant), so they cannot join the limit as two rows
 yet. Until the taxonomy names the in-projections and roles key on shape as well, the ssm projections stay out of the
 ideal and are named in other kernels (3.9 ms per token here). That is the next piece, under `[profile]`.
+
+## Fixed, 2026-10-10: the delta-net in-projections and the ssm matrices are limit roles
+
+b11 (main d6c4567 and after). Every weight the decode reads once per token is a role of the limit, named by what it
+is and keyed so two tensors never collapse: `vocab.WEIGHT_GEMV_ROLES` names the roles of the limit in one place and
+`profile/roles.py` gives the hybrid's tensors their names by pattern. `attn_qkv.weight` is `attn_qkv` (one fused
+projection, the tensor's own bytes), `attn_gate.weight` is `attn_gate`, and the ssm family is split by tensor:
+`ssm_out`, and `ssm_alpha` with `ssm_beta` as `ssm_alpha_beta` (one shape, two launches of one program, grouped as k
+and v are). What the patterns do not name (`ssm_in`, `gated_delta_proj`) stays `ssm_projection`, outside the limit,
+and the tie-out's label rule still names its GEMV in other kernels. The same classifier now serves `decode_roles.py`,
+which had its own copy that said `other`. No GPU was needed: `inspect` and the ceiling on the real file, and
+`results` re-read against the b10 capture with its window re-paired by `collectors/attribution.attribute`.
+
+The limit, on the real file at 1,693.3 GB/s: before 7.288 ms at context 1, 137.2 tok/s, 12.34 GB per token; after
+10.779 ms, 92.8 tok/s, 18.25 GB. The roles before and after (MB per call, calls per token, ideal ms per token):
+
+| role | quant | shape | calls/token | MB/call | ideal ms | before |
+|---|---|---|---|---|---|---|
+| attn_qkv | Q8_0 | 10240x5120 | 48 | 55.7 | 1.580 | `other`, dropped |
+| attn_gate | Q8_0 | 6144x5120 | 48 | 33.4 | 0.948 | `other`, dropped |
+| ssm_out | Q8_0 | 5120x6144 | 48 | 33.4 | 0.948 | `ssm_projection`, not in the limit |
+| ssm_alpha_beta | Q8_0 | 48x5120 | 96 | 0.3 | 0.015 | `ssm_projection`, not in the limit |
+| ffn_gate_up Q4_K, ffn_down Q4_K, attn_qo Q8_0 and Q6_K, attn_kv Q8_0, lm_head Q6_K | | | | | 7.288 | unchanged |
+
+In-model (nsys), the b10 capture re-paired, 71.6 tok/s, token 16.960 ms, limit at context 161 10.800 ms, 77% of
+roofline (was 52%), 3.2 ms per token lost (was 6.7):
+
+| role | calls/token | MB/call | µs/call | GB/s | % peak | reason |
+|---|---|---|---|---|---|---|
+| ffn_gate_up Q4_K | 64 launches, gate and up fused | 100.4 | 66.4 | 1,512 | 89.2 | at the limit |
+| ffn_down Q4_K | 64 | 50.2 | 33.5 | 1,497 | 88.4 | at the limit |
+| ssm_alpha_beta Q8_0 | 96 | 0.3 | 1.9 | 141 | 8.3 | too small to fill memory |
+| attn_qkv Q8_0 | 48 | 55.7 | 35.3 | 1,578 | 93.2 | at the limit |
+| attn_gate Q8_0 | 48 | 33.4 | 21.4 | 1,567 | 92.5 | at the limit |
+| ssm_out Q8_0 | 48 | 33.4 | 21.2 | 1,577 | 93.1 | at the limit |
+| attn_qo Q6_K | 16 | 25.8 | 19.3 | 1,338 | 79.0 | too small to fill memory |
+| attn_kv Q8_0 | 32 | 5.6 | 4.7 | 1,199 | 70.8 | too small to fill memory |
+| attn_qo Q8_0 | 16 | 66.9 | 41.8 | 1,601 | 94.5 | at the limit |
+| lm_head Q6_K | 1 | 1,043.5 | 614.2 | 1,699 | 100.3 | at the limit (within ±1.4%) |
+
+Tie-out: limit 10.800; weight kernels above their ideal 1.283 (was 0.850); other kernels above their ideal 1.511
+(was 5.434: other 0.518, quantize 0.388, norm 0.361, elementwise 0.106, copy 0.066, rope 0.041, attention 0.032, KV
+cache write 0.024; the "ssm projection 3.923" line is gone); gaps 3.366, unchanged; token 16.960. Not attributed
+1.536 ms (was 5.459). attn_gate and ssm_out move the same bytes at the same count, so the pairing rule's last clause
+(the walk's order) decides which takes the 21.4 µs group and which the 21.2; the two readings differ by 1%.
+
+Two things the replay shows that are not fixed here. The cross-check rows of a run keep the names of the code that
+measured them (`ssm_projection Q8_0` twice in this run's isolated trace); a re-measure names them `ssm_out` and
+`ssm_alpha_beta`. And `results` reads the pairing a capture stored, so a run captured before this change keeps its
+old pairing and its old `model_profile.json` until it is captured again; the replay above re-paired the stored
+window itself. The 8B's profile and limit are byte-identical before and after (M3: 48.11 ms, 20.8 tok/s).

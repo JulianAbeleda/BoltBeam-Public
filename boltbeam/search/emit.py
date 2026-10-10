@@ -4,7 +4,7 @@ import json
 import pathlib
 from typing import Any
 
-from boltbeam.vocab import QuantSupport, RoleGroup, Verdict, is_ssm_role
+from boltbeam.vocab import QuantSupport, RoleGroup, Verdict, is_ssm_role, is_weight_gemv_role
 from boltbeam.quantization.quant import quant_capability
 from boltbeam.search.families import family_knobs, moe_families, ssm_families
 from boltbeam.profile.ir import ModelProfile, TargetProfile, TensorRole
@@ -76,8 +76,10 @@ def _quant_families(role:TensorRole, target:TargetProfile) -> list[dict[str, Any
 def _route_families(role:TensorRole, target:TargetProfile, top_k:int | None = None) -> list[dict[str, Any]]:
   """All route families for a role. The router is purely MoE (top-k), no quant GEMV; routed expert weights get
   the quant GEMV family PLUS MoE batched-GEMV/layout/dispatch families; dense and shared-expert roles get the
-  quant GEMV family only (audit A5 — a MoE model is not searched as if it were dense FFN)."""
-  if is_ssm_role(role.role):
+  quant GEMV family only (audit A5 — a MoE model is not searched as if it were dense FFN). An ssm matrix the
+  decode reads once per token (`ssm_out`, `ssm_alpha_beta`: vocab.WEIGHT_GEMV_ROLES) is a quant GEMV like the
+  attention and FFN weights and takes the quant families; conv, state and scan tensors take the ssm families."""
+  if is_ssm_role(role.role) and not is_weight_gemv_role(role.role):
     return ssm_families(role, target)
   if role.role == RoleGroup.MOE_ROUTER.value:
     return moe_families(role, target, top_k)

@@ -64,7 +64,9 @@ SEVERITY = {
   # timing_hot / timing_observed say how big a role is, not whether it is healthy: no colour.
 }
 PLAIN_ROLE = {"attn_kv": "attention keys and values", "attn_qo": "attention query and output", "ffn_gate_up": "feed-forward in",
-              "ffn_down": "feed-forward out", "lm_head": "vocabulary output", "embed": "token embedding"}
+              "ffn_down": "feed-forward out", "lm_head": "vocabulary output", "embed": "token embedding",
+              "attn_qkv": "attention query, keys and values, fused", "attn_gate": "attention output gate",
+              "ssm_out": "state-space output", "ssm_alpha_beta": "state-space decay and update gates"}
 
 _CSS = """
 /* Glass over a gradient. Cards keep an opaque enough fill that text reads without backdrop-filter (print, old

@@ -41,6 +41,17 @@ produces `hybrid_moe_decoder`. Hybrid profiles inherit the dense route surface
 for ordinary attention/FFN roles, hybrid-MoE profiles also inherit MoE expert
 families, and SSM tensors get their own `ssm_*` route families.
 
+Every weight the decode reads once per token is a role of the roofline limit,
+named by what it is (`vocab.WEIGHT_GEMV_ROLES`): the dense roles, a fused
+`attn_qkv` projection, the `attn_gate` beside it, and the SSM matrices split by
+tensor (`ssm_out`; `ssm_alpha` and `ssm_beta` grouped as `ssm_alpha_beta`, as k
+and v are). The per-role tables key on (role, quant), so two different tensors
+of one quant are two names, never one row. These SSM matrices are quant GEMVs
+and take the quant route families; conv, state and scan tensors keep the
+`ssm_*` families. An SSM matrix the patterns do not name (`ssm_in`) stays
+`ssm_projection`, outside the limit, and the tie-out names its GEMV after it in
+other kernels.
+
 ## Why Not Generate A Full Synthetic GGUF First?
 
 Synthetic GGUFs are useful for loader and route-policy testing, but the fastest

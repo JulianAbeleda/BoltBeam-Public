@@ -12,6 +12,10 @@ from dataclasses import asdict, dataclass
 import collections, pathlib, struct
 from typing import Any
 
+# one classifier for every reader (profile/roles.py): a second copy here said `other` for the hybrid's
+# `attn_qkv`, `attn_gate` and ssm matrices, and the roofline inventory then held 5.9 GB per token under that word
+from boltbeam.profile.roles import role_from_tensor_name as _role_from_tensor_name
+
 GGML_TYPE_NAMES = {
   0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1", 8: "Q8_0",
   12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 18: "IQ3_XXS", 21: "IQ3_S", 22: "IQ2_S",
@@ -124,16 +128,6 @@ def read_gguf_metadata(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tu
     return kv, infos
   finally:
     r.f.close()
-
-
-def _role_from_tensor_name(name:str) -> str:
-  if name == "output.weight": return "lm_head"
-  if "ffn_gate" in name or "ffn_up" in name: return "ffn_gate_up"
-  if "ffn_down" in name: return "ffn_down"
-  if "attn_output" in name or "attn_q.weight" in name: return "attn_qo"
-  if "attn_k.weight" in name or "attn_v.weight" in name: return "attn_kv"
-  if "token_embd" in name: return "embedding"
-  return "other"
 
 
 def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> DecodeRoleProfile:

@@ -1273,6 +1273,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   if t.get("band"):
     lines.append(f"Band: {t['band']}")
   roles = loss.get("roles") or []
+  w = max([12] + [len(str(r["role"])) for r in roles] + [len(str(n.get("role") or "")) for n in loss.get("not_timed") or []])  # the role column fits its longest name
   if roles and est:
     lines.append("Per role, estimated from isolated kernel times:")
     lines.append(f"  {est['method']}")
@@ -1288,24 +1289,24 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
       less = (f" {r['us_per_call_less_floor']:10.1f}" if r.get("us_per_call_less_floor") is not None else f" {'':>10}") if floor else ""
       g = f"{r['gbs']:.1f}" if r.get("gbs") is not None else ""
       pct = f"{r['pct_peak']:.1f}%" if r.get("pct_peak") is not None else ""
-      lines.append(f"  {r['role']:<12} {r['quant']:<5} {mb:>8} {us:>8}{less} {g:>6} {pct:>7} {r['ideal_ms']:7.3f} "
+      lines.append(f"  {r['role']:<{w}} {r['quant']:<5} {mb:>8} {us:>8}{less} {g:>6} {pct:>7} {r['ideal_ms']:7.3f} "
                    f"{r['est_ms']:16.3f} {r['est_lost_ms']:9.3f}  {r.get('reason') or ''}")
   elif roles:
     lines.append(f"Per role ({loss.get('source') or ''}):")
-    lines.append(f"  {'role':<12} {'quant':<5} {'ideal':>7} {'actual':>7} {'lost':>6} {'% peak':>7} {'us/call':>8}  why")
+    lines.append(f"  {'role':<{w}} {'quant':<5} {'ideal':>7} {'actual':>7} {'lost':>6} {'% peak':>7} {'us/call':>8}  why")
     for r in roles:
       pct = f"{r['pct_peak']:.1f}%" if r.get("pct_peak") is not None else ""
       us = f"{r['us_per_call']:.1f}" if r.get("us_per_call") is not None else ""
       found = (r.get("best_found") or {}).get("text")
       verdict = (r.get("verdict") or "").replace("_", " ") + (f" ({found})" if found else "")
-      lines.append(f"  {r['role']:<12} {r['quant']:<5} {r['ideal_ms']:7.3f} {r['actual_ms']:7.3f} {r['lost_ms']:6.3f} "
+      lines.append(f"  {r['role']:<{w}} {r['quant']:<5} {r['ideal_ms']:7.3f} {r['actual_ms']:7.3f} {r['lost_ms']:6.3f} "
                    f"{pct:>7} {us:>8}  {r.get('reason') or ''}" + (f"; kernel search: {verdict}" if verdict else ""))
     if loss.get("not_attributed_ms") is not None:
-      lines.append(f"  {'not attributed':<18} {'':>7} {loss['not_attributed_ms']:7.3f}")
+      lines.append(f"  {'not attributed':<{w + 6}} {'':>7} {loss['not_attributed_ms']:7.3f}")
     if nxt := (loss.get("search") or {}).get("next"):
       lines.append(f"Next: {nxt['what']}. {nxt['do']}")
   for n in loss.get("not_timed") or []:  # a limit role the timer had no adapter for: its own row, out of the floor rule and the sums
-    lines.append(f"  {n['role']:<12} {n['quant']:<5} not timed: {n.get('reason') or n.get('status')}; left out of the floor rule and the sums")
+    lines.append(f"  {n['role']:<{w}} {n['quant']:<5} not timed: {n.get('reason') or n.get('status')}; left out of the floor rule and the sums")
   if not roles and why_no_roles:
     lines.append(f"Per role: {why_no_roles}")
   elif not roles and loss.get("missing"):

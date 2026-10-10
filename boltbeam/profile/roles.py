@@ -9,6 +9,12 @@ Ordering matters: MoE tensor names are supersets of dense names (`ffn_gate_exps`
 `ffn_gate_shexp` all contain `ffn_gate`), so MoE patterns are matched before the dense fallbacks. Attention
 patterns are anchored on `.weight` so per-head norms (`attn_q_norm.weight`) fall through to `norm`, exactly
 as the shipped dense classifier did.
+
+Every weight a decode reads once per token is named by what it is, never left as `other`: a fused `attn_qkv`
+projection is one role with that tensor's bytes, the `attn_gate` beside it another, and the ssm family is split by
+tensor (`ssm_out`; `ssm_alpha` and `ssm_beta`, one shape, grouped as k and v are) so that two different tensors of
+one quant never share a (role, quant) row in the limit (vocab.WEIGHT_GEMV_ROLES). What the ssm patterns do not
+name (`ssm_in`, `gated_delta_proj`) stays `ssm_projection`.
 """
 from __future__ import annotations
 
@@ -28,7 +34,18 @@ def _ssm_role(name:str) -> RoleClass | None:
     return RoleClass.SSM_STATE
   if "scan" in n:
     return RoleClass.SSM_SCAN
+  for token, rc in _SSM_MATRIX_PATTERNS:
+    if token in n:
+      return rc
   return RoleClass.SSM_PROJECTION
+
+
+# ssm matrices named by tensor (checked in order inside _ssm_role, after conv, state and scan)
+_SSM_MATRIX_PATTERNS: tuple[tuple[str, RoleClass], ...] = (
+  ("ssm_out", RoleClass.SSM_OUT),
+  ("ssm_alpha", RoleClass.SSM_ALPHA),
+  ("ssm_beta", RoleClass.SSM_BETA),
+)
 
 # (substring, RoleClass) checked in order; first match wins.
 _PATTERNS: tuple[tuple[str, RoleClass], ...] = (
@@ -48,6 +65,8 @@ _PATTERNS: tuple[tuple[str, RoleClass], ...] = (
   ("up_proj", RoleClass.FFN_UP),
   ("down_proj", RoleClass.FFN_DOWN),
   # --- attention (anchored so *_norm falls through) ---
+  ("attn_qkv.weight", RoleClass.ATTENTION_QKV),
+  ("attn_gate.weight", RoleClass.ATTENTION_GATE),
   ("attn_q.weight", RoleClass.ATTENTION_Q),
   ("attn_k.weight", RoleClass.ATTENTION_K),
   ("attn_v.weight", RoleClass.ATTENTION_V),

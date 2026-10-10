@@ -86,6 +86,8 @@ class RoleClass(str, Enum):
   ATTENTION_K = "attention_k"
   ATTENTION_V = "attention_v"
   ATTENTION_O = "attention_o"
+  ATTENTION_QKV = "attention_qkv"    # one fused q, k and v projection (`attn_qkv`): one tensor, one GEMV
+  ATTENTION_GATE = "attention_gate"  # the output gate projection beside it (`attn_gate`, gated attention / delta net)
   FFN_GATE = "ffn_gate"
   FFN_UP = "ffn_up"
   FFN_DOWN = "ffn_down"
@@ -99,7 +101,10 @@ class RoleClass(str, Enum):
   MOE_SHARED_EXPERT_GATE = "moe_shared_expert_gate"
   MOE_SHARED_EXPERT_UP = "moe_shared_expert_up"
   MOE_SHARED_EXPERT_DOWN = "moe_shared_expert_down"
-  SSM_PROJECTION = "ssm_projection"
+  SSM_PROJECTION = "ssm_projection"  # an ssm matrix not named below (`ssm_in`, `gated_delta_proj`)
+  SSM_OUT = "ssm_out"                # the state-space output projection
+  SSM_ALPHA = "ssm_alpha"            # the decay gate projection of a gated delta net
+  SSM_BETA = "ssm_beta"              # the update gate projection beside it, the same shape
   SSM_CONV = "ssm_conv"
   SSM_STATE = "ssm_state"
   SSM_SCAN = "ssm_scan"
@@ -112,6 +117,8 @@ class RoleGroup(str, Enum):
   taxonomy (MoE groups added by A5)."""
   ATTN_QO = "attn_qo"
   ATTN_KV = "attn_kv"
+  ATTN_QKV = "attn_qkv"
+  ATTN_GATE = "attn_gate"
   FFN_GATE_UP = "ffn_gate_up"
   FFN_DOWN = "ffn_down"
   LM_HEAD = "lm_head"
@@ -123,6 +130,8 @@ class RoleGroup(str, Enum):
   MOE_SHARED_EXPERT_GATE_UP = "moe_shared_expert_gate_up"
   MOE_SHARED_EXPERT_DOWN = "moe_shared_expert_down"
   SSM_PROJECTION = "ssm_projection"
+  SSM_OUT = "ssm_out"
+  SSM_ALPHA_BETA = "ssm_alpha_beta"  # alpha and beta collapse as k and v do: two launches of one program, one shape
   SSM_CONV = "ssm_conv"
   SSM_STATE = "ssm_state"
   SSM_SCAN = "ssm_scan"
@@ -136,6 +145,8 @@ ROLE_GROUP_OF: dict[str, str] = {
   RoleClass.ATTENTION_O.value: RoleGroup.ATTN_QO.value,
   RoleClass.ATTENTION_K.value: RoleGroup.ATTN_KV.value,
   RoleClass.ATTENTION_V.value: RoleGroup.ATTN_KV.value,
+  RoleClass.ATTENTION_QKV.value: RoleGroup.ATTN_QKV.value,
+  RoleClass.ATTENTION_GATE.value: RoleGroup.ATTN_GATE.value,
   RoleClass.FFN_GATE.value: RoleGroup.FFN_GATE_UP.value,
   RoleClass.FFN_UP.value: RoleGroup.FFN_GATE_UP.value,
   RoleClass.FFN_DOWN.value: RoleGroup.FFN_DOWN.value,
@@ -150,11 +161,33 @@ ROLE_GROUP_OF: dict[str, str] = {
   RoleClass.MOE_SHARED_EXPERT_UP.value: RoleGroup.MOE_SHARED_EXPERT_GATE_UP.value,
   RoleClass.MOE_SHARED_EXPERT_DOWN.value: RoleGroup.MOE_SHARED_EXPERT_DOWN.value,
   RoleClass.SSM_PROJECTION.value: RoleGroup.SSM_PROJECTION.value,
+  RoleClass.SSM_OUT.value: RoleGroup.SSM_OUT.value,
+  RoleClass.SSM_ALPHA.value: RoleGroup.SSM_ALPHA_BETA.value,
+  RoleClass.SSM_BETA.value: RoleGroup.SSM_ALPHA_BETA.value,
   RoleClass.SSM_CONV.value: RoleGroup.SSM_CONV.value,
   RoleClass.SSM_STATE.value: RoleGroup.SSM_STATE.value,
   RoleClass.SSM_SCAN.value: RoleGroup.SSM_SCAN.value,
   RoleClass.OTHER.value: RoleGroup.OTHER.value,
 }
+
+
+# The coarse roles whose weights a decode reads once per token as one matrix-vector product each: the roles of the
+# roofline limit (kernel_analysis/theoretical_roofline.model_roofline), of the per-role tables and of the pairing by
+# bytes and count (collectors/attribution.py). Those tables key on (role, quant), so two different tensors of one
+# quant must be two names here: the 27B hybrid's `ssm_out` (5120x6144) and `ssm_alpha`/`ssm_beta` (48x5120) are both
+# Q8_0 and collapsed into one row while both were `ssm_projection`. A rank-one or non-matrix ssm tensor (conv, state,
+# scan) is not here; an ssm matrix this list does not name (`ssm_in`) stays `ssm_projection`, outside the limit, and
+# the tie-out names its GEMV after it in other kernels (workflow/tie_out.roles_outside_limit).
+WEIGHT_GEMV_ROLES: tuple[str, ...] = (
+  RoleGroup.ATTN_QO.value, RoleGroup.ATTN_KV.value, RoleGroup.ATTN_QKV.value, RoleGroup.ATTN_GATE.value,
+  RoleGroup.FFN_GATE_UP.value, RoleGroup.FFN_DOWN.value, RoleGroup.LM_HEAD.value,
+  RoleGroup.SSM_OUT.value, RoleGroup.SSM_ALPHA_BETA.value,
+)
+
+
+def is_weight_gemv_role(role:str) -> bool:
+  """True for a coarse role the decode reads once per token as a matrix-vector product (WEIGHT_GEMV_ROLES)."""
+  return role in WEIGHT_GEMV_ROLES
 
 
 def role_group_of(role_class:str) -> str:
