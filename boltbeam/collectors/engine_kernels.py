@@ -17,6 +17,11 @@ ADAPTERS, one row per (engine, backend):
                              q8_1 by 1e-7 (the 5090, 2026-10-10). A source with template parameters past small_k
                              (mmvq.cu's halve_iters) has them named at their declared defaults, so the instantiation
                              compiled and the symbol found are one; the matched symbol and a note go on the row.
+                             halve_iters is mirrored, not defaulted: the engine picks it in should_halve_iters from
+                             the parameter table its host get_device_table_id(cc) chooses for the GPU's compute
+                             capability. The adapter reads both from the source, evaluates them for the cc the bridge
+                             reports (cuda_device.ggml_compute_capability), instantiates what the engine would launch
+                             and records which rule fired (geometry.table, geometry.halve_rule).
 tinygrad has no adapter: the fork generates its kernels per shape at run time inside a model graph, so there is no
 shipped source to compile; it keeps its own timing (collectors/tinygrad_role_time.py). Not cheap, so not built.
 
@@ -123,20 +128,23 @@ def source_vs_binary(source:dict[str, Any], bench:str | None) -> dict[str, Any]:
 
 
 def symbol_note(wanted:str, symbol:dict[str, str] | None, source:dict[str, Any],
-                defaulted:list[dict[str, Any]] | None = None) -> str | None:
+                defaulted:list[dict[str, Any]] | None = None, mirrored:list[dict[str, Any]] | None = None) -> str | None:
   """A note for a row whose kernel is not simply the four-parameter instantiation the adapter describes: the engine's
-  source declares template parameters past small_k (kept at their defaults, named), or the symbol was matched as a
-  prefix of a longer name. The adapter's geometry is its reading of that source; whether the engine's own launch on
-  this GPU picks the same values is not mirrored. None when there is nothing to say."""
+  source declares template parameters past small_k, each either mirrored from the engine's own rule for this GPU
+  (named with the rule that fired) or kept at its declared default (named), or the symbol was matched as a prefix
+  of a longer name. None when there is nothing to say."""
   from boltbeam.runtime.cuda_device import template_arity
   binary = source.get("binary") or {}
   when = (f"; the traced binary is from {binary['mtime'][:10]}, the source file from {source['mtime'][:10]}"
           if binary.get("mtime") and source.get("mtime") else "")
-  if defaulted:
-    kept = ", ".join(f"{d['name']} = {d['value']}" for d in defaulted)
-    return (f"the source's mul_mat_vec_q has {len(defaulted)} template parameter{'s' if len(defaulted) > 1 else ''} past small_k, "
-            f"kept at the declared default ({kept}); the adapter's geometry is read from this source, and whether the engine's "
-            f"launch on this GPU picks another value is not mirrored{when}")
+  if defaulted or mirrored:
+    n = len(defaulted or []) + len(mirrored or [])
+    parts = [f"{m['name']} = {m['value']}, mirrored from the engine's rule ({m['rule']})" for m in mirrored or []]
+    if defaulted:
+      parts.append("kept at the declared default (" + ", ".join(f"{d['name']} = {d['value']}" for d in defaulted)
+                   + "); whether the engine's launch on this GPU picks another value is not mirrored")
+    return (f"the source's mul_mat_vec_q has {n} template parameter{'s' if n > 1 else ''} past small_k: "
+            + "; ".join(parts) + f". The adapter's geometry is read from this source{when}")
   if not symbol or template_arity(symbol["demangled"]) == template_arity(wanted):
     return None
   return (f"the source instantiates {symbol['demangled']} ({template_arity(symbol['demangled'])} template parameters); the "
@@ -228,10 +236,13 @@ _CUDA_CANDIDATES = ("~/env/llama.cpp/ggml/src/ggml-cuda", "~/llama.cpp/ggml/src/
 GGML_TYPE = {"Q4_K": 12, "Q6_K": 14}  # ggml.h enum values, the same ones metal_native.GGML_TYPES reads from GGUF
 Q8_1_BLOCK, Q8_1_BYTES = 32, 36  # block_q8_1: half d, half s, 32 int8 (ggml-common.h)
 MATRIX_ROW_PADDING = 512  # ggml-cuda common.cuh: the quantized vector is padded to this many columns
-CUDA_RULE = ("ggml-cuda mmvq.cu mul_mat_vec_q<type, ncols_dst=1, has_fusion=false, small_k>: grid (ceil(rows / "
-             "rows_per_block), 1, 1), block (warp 32, nwarps, 1); nwarps = calc_nwarps(type, 1, GENERIC), small_k when "
-             "nwarps > 1 and blocks_per_row < nwarps x vdr x 32 / qi, rows_per_block = nwarps if small_k else 1; the "
-             "vector quantized to q8_1 as quantize_q8_1 does, padded to MATRIX_ROW_PADDING columns")
+CUDA_RULE = ("ggml-cuda mmvq.cu mul_mat_vec_q<type, ncols_dst=1, has_fusion=false, small_k, halve_iters>: grid (ceil(rows / "
+             "rows_per_block), 1, 1), block (warp 32, nwarps, 1); the parameter table from the host get_device_table_id(cc) "
+             "for this GPU's compute capability; nwarps = calc_nwarps(type, 1, table), doubled when halve_iters and the table "
+             "promotes the type; small_k when nwarps > 1 and blocks_per_row < nwarps x vdr x 32 / qi, rows_per_block = nwarps "
+             "if small_k else 1; halve_iters from should_halve_iters (one vector, no ids); the vector quantized to q8_1 as "
+             "quantize_q8_1 does, padded to MATRIX_ROW_PADDING columns")
+GENERIC_TABLE = "MMVQ_PARAMETERS_GENERIC"  # the table the device-side get_device_table_id falls to; the adapter's base case
 LINKAGE_NOTE = ("mul_mat_vec_q is `static` in mmvq.cu; that one word is removed from the text in memory so the cubin exports "
                 "the kernel. No other change to the engine's source.")
 
@@ -286,9 +297,86 @@ def cuda_includes(src_dir:pathlib.Path) -> list[str]:
   return [str(p), str(p.parent), str(p.parent.parent / "include")]
 
 
-def ggml_cuda_geometry(text:str, vecdotq:str, common:str, quant:str, rows:int, cols:int) -> dict[str, Any]:
-  """nwarps, small_k and rows per block the way mmvq.cu decides them for one vector on an NVIDIA GPU (the GENERIC
-  table), from the source's own constants: vdr from vecdotq.cuh, qi = QK_K / (4 x QR) from ggml-common.h."""
+def cc_defines(cuda_common:str) -> dict[str, int]:
+  """ggml-cuda common.cuh's `#define GGML_CUDA_CC_<name> <number>` lines: the compute capability constants
+  (VOLTA 700, DGX_SPARK 1210, OFFSET_AMD 0x1000000, ...) the table rule compares with."""
+  return {m.group(1): int(m.group(2), 0) for m in re.finditer(r"#define\s+(GGML_CUDA_CC_\w+)\s+(0x[0-9a-fA-F]+|\d+)\b", cuda_common)}
+
+
+def _cc_condition(cond:str, defines:dict[str, int], cc:int) -> bool:
+  """One `if (...)` condition of get_device_table_id(int cc), evaluated for an NVIDIA compute capability with the
+  source's own constants: GGML_CUDA_CC_IS_NVIDIA(cc) is cc below the vendor offsets, every other family test
+  (RDNA, GCN, CDNA, MUSA) is false, ggml_cuda_highest_compiled_arch(cc) is cc itself (the adapter compiles
+  -arch=native). Anything the evaluator does not know refuses, named."""
+  offsets = [v for k, v in defines.items() if k.startswith("GGML_CUDA_CC_OFFSET_")]
+  nvidia = cc < min(offsets) if offsets else True
+  expr = re.sub(r"\s+", " ", cond)
+  expr = re.sub(r"GGML_CUDA_CC_IS_NVIDIA\s*\(\s*cc\s*\)", str(nvidia), expr)
+  expr = re.sub(r"GGML_CUDA_CC_IS_\w+\s*\(\s*cc\s*\)", "False", expr)
+  expr = re.sub(r"ggml_cuda_highest_compiled_arch\s*\(\s*cc\s*\)", "cc", expr)
+  expr = re.sub(r"GGML_CUDA_CC_\w+", lambda m: str(defines[m.group(0)]) if m.group(0) in defines else m.group(0), expr)
+  expr = expr.replace("&&", " and ").replace("||", " or ").replace("!=", " <> ").replace("!", " not ").replace("<>", "!=")
+  if re.search(r"[^\w\s()<>=!]", expr) or re.search(r"\b(?!cc\b|and\b|or\b|not\b|True\b|False\b)[A-Za-z_]\w*", expr):
+    raise NoEngineSource(f"mmvq.cu's get_device_table_id has a condition the adapter cannot evaluate: {cond.strip()}")
+  return bool(eval(expr, {"__builtins__": {}}, {"cc": cc}))  # noqa: S307  arithmetic on the engine's own constants only
+
+
+def ggml_cuda_table(text:str, cuda_common:str, cc:int | None) -> tuple[str, str]:
+  """The mmvq parameter table the engine's host get_device_table_id(int cc) picks for this compute capability, by
+  taking its `if (...) { return MMVQ_PARAMETERS_X; }` branches in the source's order; the table and the rule that
+  fired. Without a cc the device-side default table is taken and said."""
+  if cc is None:
+    return GENERIC_TABLE, "no compute capability read from the device: the default table"
+  m = re.search(r"get_device_table_id\s*\(\s*int\s+cc\s*\)\s*\{(.*?)\n\}", text, re.S)
+  if not m:
+    raise NoEngineSource("mmvq.cu has no host get_device_table_id(int cc): this ggml-cuda is not the version the adapter reads")
+  body, defines = m.group(1), cc_defines(cuda_common)
+  for cond, table in re.findall(r"if\s*\((.*?)\)\s*\{\s*return\s+(MMVQ_PARAMETERS_\w+)\s*;", body, re.S):
+    if _cc_condition(cond, defines, cc):
+      return table, f"get_device_table_id({cc}): {re.sub(r'\s+', ' ', cond.strip())}"
+  last = re.findall(r"return\s+(MMVQ_PARAMETERS_\w+)\s*;", body)
+  if not last:
+    raise NoEngineSource("mmvq.cu's get_device_table_id returns no table")
+  return last[-1], f"get_device_table_id({cc}): no branch matched, the default"
+
+
+def ggml_cuda_halve_iters(text:str, table:str, quant:str, blocks_per_row:int, nwarps:int, blocks_per_iter_1warp:int) -> tuple[bool, int, str]:
+  """mmvq.cu's should_halve_iters for one vector with no ids, then the promotion calc_nwarps gives the type on
+  that table: (halve_iters as the engine would instantiate it, nwarps, the rule that fired). False off the one
+  table the guard names (`table_id != MMVQ_PARAMETERS_X`); on it, the idle-tail rule with the constants of the
+  source's own return line. A type the table does not promote compiles the same kernel either way, so the engine
+  passes false for it (c_promoted); the adapter does the same."""
+  m = re.search(r"should_halve_iters\s*=\s*\[&\]\s*(?:\(\s*\))?\s*\{(.*?)\n\s*\};", text, re.S)
+  if not m:
+    return False, nwarps, "mmvq.cu has no should_halve_iters: the source never halves"
+  body = m.group(1)
+  only = re.search(r"table_id\s*!=\s*(MMVQ_PARAMETERS_\w+)", body)
+  if only and table != only.group(1):
+    return False, nwarps, f"should_halve_iters is false off the {only.group(1)} table; this GPU's table is {table}"
+  rule = re.search(r"return\s+idle\s*\*\s*(\d+)\s*<=\s*iters_wide\s*\*\s*(\d+)\s*;", body)
+  if not rule:
+    raise NoEngineSource("mmvq.cu's should_halve_iters does not end in the idle rule the adapter mirrors (idle * a <= iters_wide * b)")
+  a, b = int(rule.group(1)), int(rule.group(2))
+  per_iter = nwarps * blocks_per_iter_1warp
+  iters, wide = -(-blocks_per_row // per_iter), -(-blocks_per_row // (2 * per_iter))
+  idle = wide * 2 - iters
+  halve = idle * a <= wide * b
+  words = f"should_halve_iters on {table}: {blocks_per_row} blocks per row, {per_iter} per iteration, {iters} iterations, {wide} wide, idle {idle}: {idle} x {a} <= {wide} x {b} is {halve}"
+  if not halve:
+    return False, nwarps, words
+  promo = re.search(r"halve_iters\s*\)\s*\{\s*switch\s*\(\s*type\s*\)\s*\{(.*?)return\s+(\d+)\s*\*\s*generic\s*;", text, re.S)
+  if not promo or f"GGML_TYPE_{quant}" not in promo.group(1):
+    return False, nwarps, words + f"; calc_nwarps does not promote GGML_TYPE_{quant} on that table, so the engine passes false"
+  return True, nwarps * int(promo.group(2)), words + f"; calc_nwarps promotes GGML_TYPE_{quant} to {promo.group(2)} x {nwarps} warps"
+
+
+def ggml_cuda_geometry(text:str, vecdotq:str, common:str, quant:str, rows:int, cols:int, *, cuda_common:str = "",
+                       cc:int | None = None) -> dict[str, Any]:
+  """nwarps, small_k, halve_iters and rows per block the way mmvq.cu decides them for one vector on this NVIDIA GPU,
+  from the source's own constants and rules: vdr from vecdotq.cuh, qi = QK_K / (4 x QR) from ggml-common.h, the
+  parameter table from get_device_table_id(cc) with common.cuh's GGML_CUDA_CC_* values, halve_iters from
+  should_halve_iters. nwarps is read from the GENERIC case of calc_nwarps (the GB10 table starts from it); another
+  table's own nwarps switch is not mirrored and the record says so."""
   vdr = _define(vecdotq, f"VDR_{quant}_Q8_1_MMVQ")
   qr = _define(common, f"QR{quant[1:]}")
   qi = 256 // (4 * qr)
@@ -296,11 +384,18 @@ def ggml_cuda_geometry(text:str, vecdotq:str, common:str, quant:str, rows:int, c
   m = re.search(r"MMVQ_PARAMETERS_GENERIC\)\s*\{\s*switch\s*\(ncols_dst\)\s*\{\s*case 1:(?:\s*case \d+:)*\s*return (\d+);", text)
   if m:
     nwarps = int(m.group(1))
+  table, table_rule = ggml_cuda_table(text, cuda_common, cc)
+  if table not in (GENERIC_TABLE, "MMVQ_PARAMETERS_GB10"):
+    table_rule += f"; nwarps for {table} is not mirrored, the GENERIC value {nwarps} is used"
   blocks_per_row = cols // 256
-  small_k = nwarps > 1 and blocks_per_row < nwarps * (vdr * 32 // qi)
+  per_warp = vdr * 32 // qi
+  small_k = nwarps > 1 and blocks_per_row < nwarps * per_warp
+  halve, nwarps_launch, halve_rule = (False, nwarps, "small_k launches take no halve_iters") if small_k else \
+    ggml_cuda_halve_iters(text, table, quant, blocks_per_row, nwarps, per_warp)
   rows_per_block = nwarps if small_k else 1
-  return {"vdr": vdr, "qi": qi, "nwarps": nwarps, "small_k": small_k, "rows_per_block": rows_per_block,
-          "grid": ((rows + rows_per_block - 1) // rows_per_block, 1, 1), "block": (32, nwarps, 1)}
+  return {"vdr": vdr, "qi": qi, "nwarps": nwarps_launch, "small_k": small_k, "rows_per_block": rows_per_block,
+          "halve_iters": halve, "table": table, "table_rule": table_rule, "halve_rule": halve_rule, "compute_capability": cc,
+          "grid": ((rows + rows_per_block - 1) // rows_per_block, 1, 1), "block": (32, nwarps_launch, 1)}
 
 
 def fastdiv(d:int) -> bytes:
@@ -340,20 +435,29 @@ def dequantize_q8_1(y:bytes, n:int) -> list[float]:
 Q8_1_WORDS = "pure-Python dequantize and dot, x quantized to q8_1 as the kernel reads it"
 
 
-def ggml_cuda_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:bytes, x:list[float]) -> KernelSpec:
+HALVE_ITERS = "halve_iters"  # the one template parameter past small_k the adapter mirrors; others stay at their defaults
+
+
+def ggml_cuda_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:bytes, x:list[float], *,
+                   cc:int | None = None) -> KernelSpec:
   """ggml's CUDA mul_mat_vec_q for one weight of rows x cols against one vector, every parameter as
-  ggml_cuda_mul_mat_vec_q passes it (ids null, no fusion, one channel, one sample)."""
+  ggml_cuda_mul_mat_vec_q passes it (ids null, no fusion, one channel, one sample). cc is the GPU's compute
+  capability as ggml numbers it (cuda_device.ggml_compute_capability): the parameter table and halve_iters follow
+  the engine's own rules for it."""
   from boltbeam.collectors import metal_native as native
   src_dir = pathlib.Path(src_dir)
   text = ggml_cuda_text(src_dir)
   vecdotq, common = (src_dir / "vecdotq.cuh").read_text(), (src_dir.parent / "ggml-common.h").read_text()
-  geo = ggml_cuda_geometry(text, vecdotq, common, quant, rows, cols)
+  cuda_common = (src_dir / "common.cuh").read_text() if (src_dir / "common.cuh").is_file() else ""
+  geo = ggml_cuda_geometry(text, vecdotq, common, quant, rows, cols, cuda_common=cuda_common, cc=cc)
   gt = GGML_TYPE[quant]
   params = template_parameters(text)
-  extra = params[4:]  # parameters past the four the adapter sets, at their declared defaults (mmvq.cu's halve_iters)
-  if any(d is None for _, _, d in extra):
+  extra = params[4:]  # parameters past the four the adapter sets: halve_iters mirrored, any other at its declared default
+  if any(d is None for _, n, d in extra if n != HALVE_ITERS):
     raise NoEngineSource("mmvq.cu's mul_mat_vec_q has a template parameter without a default past small_k: this ggml-cuda is not the version the adapter reads")
-  tail = "".join(f", {d}" for _, _, d in extra)
+  value = lambda n, d: ("true" if geo["halve_iters"] else "false") if n == HALVE_ITERS else d  # noqa: E731
+  tail = "".join(f", {value(n, d)}" for _, n, d in extra)
+  mirrored = [{"name": n, "value": value(n, d), "rule": geo["halve_rule"]} for _, n, d in extra if n == HALVE_ITERS]
   inst = f"mul_mat_vec_q<(ggml_type){gt}, 1, false, {'true' if geo['small_k'] else 'false'}{tail}>"
   keep = (f"mul_mat_vec_q<GGML_TYPE_{quant}, 1, false, {'true' if geo['small_k'] else 'false'}{tail}>")
   source = text + f"\n// BoltBeam: instantiate the kernel the engine runs for {quant}, one vector\n" \
@@ -371,11 +475,12 @@ def ggml_cuda_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:
   return KernelSpec(label=f"llama.cpp {inst}", adapter="llama.cpp", source=source, kernel=inst,
                     args=args, grid=geo["grid"], block=geo["block"], bytes_read=len(weights),
                     check=_reference(quant, rows, cols, weights, dequantize_q8_1(y, cols), Q8_1_WORDS),
-                    record={**{k: geo[k] for k in ("vdr", "qi", "nwarps", "small_k", "rows_per_block")},
+                    record={**{k: geo[k] for k in ("vdr", "qi", "nwarps", "small_k", "rows_per_block", "halve_iters", "table",
+                                                   "table_rule", "halve_rule", "compute_capability")},
                             "threadgroups": geo["grid"][0], "threads_per_threadgroup": list(geo["block"]), "rule": CUDA_RULE,
                             "linkage": LINKAGE_NOTE, "includes": cuda_includes(src_dir), "bytes_q8_1_vector": len(y),
                             "template_parameters": [{"type": t, "name": n, "default": d} for t, n, d in params],
-                            "defaulted": [{"name": n, "value": d} for _, n, d in extra]})
+                            "mirrored": mirrored, "defaulted": [{"name": n, "value": d} for _, n, d in extra if n != HALVE_ITERS]})
 
 
 # --- the adapters, one row per (engine, backend) --------------------------------------------------------------------------
@@ -389,8 +494,8 @@ def _metal_setup(bench:str | None) -> dict[str, Any]:
 
 def _cuda_setup(bench:str | None) -> dict[str, Any]:
   src = ggml_cuda_source_dir()
-  return {"source": src, "engine": "llama.cpp (ggml CUDA backend)",
-          "spec": lambda s, quant, rows, cols, w, x: ggml_cuda_spec(pathlib.Path(s["source"]["dir"]), quant, rows, cols, w, x),
+  return {"source": src, "engine": "llama.cpp (ggml CUDA backend)",  # s["cc"] is set once the bridge reports the GPU
+          "spec": lambda s, quant, rows, cols, w, x: ggml_cuda_spec(pathlib.Path(s["source"]["dir"]), quant, rows, cols, w, x, cc=s.get("cc")),
           "kernel": lambda s, quant: f"mul_mat_vec_q<(ggml_type){GGML_TYPE[quant]}, 1, ...>" if quant in GGML_TYPE else None,
           "bridge": {"includes": cuda_includes(pathlib.Path(src["dir"]))}}
 
@@ -451,6 +556,9 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
     raise NoEngineSource(str(exc)) from exc
   _, tensors, data_start = read_gguf_layout(model)
   rows_out = []
+  if backend == "CUDA" and hasattr(bridge, "facts"):  # the engine's table and halve_iters rules key on the GPU's cc
+    from boltbeam.runtime.cuda_device import ggml_compute_capability
+    setup["cc"] = ggml_compute_capability(bridge.facts())
   try:
     flusher = kernel_timer.Flusher(bridge, backend)
     floor_us = flusher.floor_us()
@@ -480,13 +588,13 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
       from boltbeam.collectors import boltbeam_gemv
       x = boltbeam_gemv.vector(f"{r['role']}:{quant}", cols)
       spec = setup["spec"](setup, quant, rows, cols, weights, x)
-      got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries)
+      got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries, floor_us=floor_us)
       symbol = got["pipeline"].get("symbol")
       row.update(kernel=spec.kernel, tensor=tensor, bytes=size, correctness=got["correctness"], timed_by=f"{WORDS}: {spec.label}",
                  geometry={**spec.record, "thread_execution_width": got["pipeline"]["thread_execution_width"],
                            "max_threads_per_threadgroup": got["pipeline"]["max_threads_per_threadgroup"],
                            **({"symbol": symbol} if symbol else {})})
-      if note := symbol_note(spec.kernel, symbol, source, spec.record.get("defaulted")):
+      if note := symbol_note(spec.kernel, symbol, source, spec.record.get("defaulted"), spec.record.get("mirrored")):
         row["note"] = note
       if not got["samples"]:
         row.update(status="correctness_failed", wall_us=0.0)
@@ -496,7 +604,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
       less = kernel_timer.less_floor_us(med, floor_us)  # shown beside the measured time, never in its place
       row.update(status="measured", us_per_call=med, us_per_call_less_floor=less, min_us=got["min_us"], samples=len(got["samples"]),
                  spread_pct=got["spread_pct"], wall_us=med * r["count"], wall_us_less_floor=less * r["count"], gbs=size / (med * 1e3),
-                 timing={**got["timing"], "dispatch_floor_us": floor_us})
+                 timing={**got["timing"], "dispatch_floor_us": floor_us})  # timing.more_samples says when the floor rule resampled
       rows_out.append(row)
       if step:
         step(i, len(roles))

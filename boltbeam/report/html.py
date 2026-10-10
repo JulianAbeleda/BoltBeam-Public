@@ -670,7 +670,8 @@ def _per_role(loss:dict[str, Any]) -> str:
     return ""
   items = []
   for r in roles:
-    why = r.get("reason") or ""
+    why = r.get("reason") or ""  # shown as it is; the class, the colour and the rules key on the firm word
+    word = r.get("reason_word") or why
     nums = (("bytes/call", _f(r.get("mb_per_call"), "{:.1f} MB")), ("µs/call (isolated)", _f(r.get("us_per_call"), "{:.1f}")),
             ("GB/s (isolated)", _f(r.get("gbs"), "{:.1f}")), ("% of peak (isolated)", _f(r.get("pct_peak"), "{:.1f}%")),
             ("ideal ms", f'{r["ideal_ms"]:.2f}'), ("est. ms in token", f'{r["est_ms"]:.2f}'),
@@ -689,9 +690,9 @@ def _per_role(loss:dict[str, Any]) -> str:
            f'{_e(PLAIN_VERDICT.get(str(r.get("verdict")), ""))}{" · " + _e(found) if found else ""}</span>') if r.get("verdict") else ""
     items.append(
       f'<details class="role"><summary><span class="rname">{_role_name(r["role"], r["quant"])}</span>'
-      f'<span class="rbar" title="{_f(r.get("pct_peak"), "{:.1f}%")} of the roofline"><i style="width:{_pct(r.get("pct_peak") or 0.0, 100.0):.1f}%;background:{REASON_COLOR.get(why, "var(--ideal)")}"></i></span>'
+      f'<span class="rbar" title="{_f(r.get("pct_peak"), "{:.1f}%")} of the roofline"><i style="width:{_pct(r.get("pct_peak") or 0.0, 100.0):.1f}%;background:{REASON_COLOR.get(word, "var(--ideal)")}"></i></span>'
       f'<span class="rnum"><b>{lost(r):.2f} ms{" est." if est else ""}</b><span>{_f(r.get("pct_peak"), "{:.1f}%")} of peak{" (isolated)" if est else ""}</span>'
-      f'<span class="rtags"><span class="why {REASON_CLASS.get(why, "")}">{_e(why)}</span>{tag}</span></span></summary><div class="rdet">{det}</div></details>')
+      f'<span class="rtags"><span class="why {REASON_CLASS.get(word, "")}">{_e(why)}</span>{tag}</span></span></summary><div class="rdet">{det}</div></details>')
   t = loss.get("tie_out") or {}
   if est:
     from boltbeam.workflow.screen import estimate_how
@@ -755,8 +756,9 @@ def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, 
   groups: dict[str, list[dict[str, Any]]] = {}
   roles = [{**r, "lost_ms": r["est_lost_ms"]} if r.get("estimate") else r for r in loss.get("roles") or []]
   for r in roles:
-    if r.get("reason") in NEXT_RULES and r["lost_ms"] > 0:
-      groups.setdefault(r["reason"], []).append(r)
+    word = r.get("reason_word") or r.get("reason")  # the firm word; a noisy suffix never changes the lever
+    if word in NEXT_RULES and r["lost_ms"] > 0:
+      groups.setdefault(word, []).append(r)
   for reason, rs in groups.items():
     rs = sorted(rs, key=lambda r: -r["lost_ms"])
     # a slow kernel already searched with nothing faster found gets its own item: the search result is the fact

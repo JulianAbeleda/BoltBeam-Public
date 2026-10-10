@@ -37,7 +37,17 @@ _CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES = 8
 _CU_STREAM_NON_BLOCKING = 1
 # cuDeviceGetAttribute codes (cuda.h CUdevice_attribute)
 ATTRIBUTES = {"sm_count": 16, "shared_mem_per_sm_bytes": 81, "l2_cache_bytes": 38, "clock_khz": 13,
-              "memory_clock_khz": 36, "memory_bus_bits": 37, "warp_size": 10, "max_threads_per_block": 1}
+              "memory_clock_khz": 36, "memory_bus_bits": 37, "warp_size": 10, "max_threads_per_block": 1,
+              "compute_capability_major": 75, "compute_capability_minor": 76}
+
+
+def ggml_compute_capability(facts:dict[str, Any]) -> int | None:
+  """The device's compute capability as ggml-cuda numbers it (common.cuh: 100 x major + 10 x minor, so an RTX 5090
+  is 1200, a DGX Spark 1210), from the bridge's facts; None when the driver did not report it."""
+  major, minor = facts.get("compute_capability_major"), facts.get("compute_capability_minor")
+  if major is None or minor is None:
+    return None
+  return 100 * int(major) + 10 * int(minor)
 
 
 class CudaUnavailable(RuntimeError):

@@ -21,7 +21,7 @@ own statistic (best of N for a bandwidth).
 |---|---|---|---|
 | 0 BoltBeam GEMV | `collectors/boltbeam_gemv.py` | BoltBeam's own Q4_K and Q6_K GEMV, Metal and CUDA | the module (BoltBeam's kernel) |
 | 1 llama.cpp Metal | `collectors/engine_kernels.py` | `kernel_mul_mv_<type>_f32` | the installed ggml library (`libggml-metal`, embedded `.metal` text) or a `ggml-metal.metal` file; `BOLTBEAM_GGML_METAL` names it |
-| 1 llama.cpp CUDA | `collectors/engine_kernels.py` | `mul_mat_vec_q<type, 1, false, small_k>` (matched as a prefix when the source has more template parameters; the check reads the q8_1 vector) | the installed llama.cpp source `ggml/src/ggml-cuda/mmvq.cu`; `BOLTBEAM_GGML_CUDA_SRC` names the folder |
+| 1 llama.cpp CUDA | `collectors/engine_kernels.py` | `mul_mat_vec_q<type, 1, false, small_k, halve_iters>`: small_k and halve_iters decided as the engine decides them for this GPU's compute capability (below); the check reads the q8_1 vector | the installed llama.cpp source `ggml/src/ggml-cuda/mmvq.cu` and `common.cuh`; `BOLTBEAM_GGML_CUDA_SRC` names the folder |
 | 2 tinygrad | none | | the fork generates its kernels per shape at run time inside a model graph; there is no shipped source to compile. Not built. tinygrad keeps its own timing (`tinygrad_role_time.py`). |
 
 Adapter 0 is the building-block probe (`probe_evidence.json`). Its rows are "BoltBeam's own kernel (reference)".
@@ -57,6 +57,30 @@ every row as `timing.dispatch_floor_us`: 2.4 µs on the M3, 3.9 to 4.2 µs on th
 is 30 to 130% of the small roles' time, so the floor is never left implicit: each isolated row carries
 `us_per_call_less_floor` beside the measured `us_per_call`, and the tie-out's estimate is made from the less-floor
 times and says "less the N µs dispatch floor" where it does. The measured number is never replaced.
+
+A kernel under 3 times the floor is mostly floor, and the floor's own jitter is most of its spread (attn_kv Q6_K on
+the 5090 read 8.05 then 10.30 µs between two passes). The timer samples such a kernel 60 times instead of 20
+(`kernel_timer.more_samples`, one rule for both backends; `timing.more_samples` on the row says when it fired) and
+every isolated row carries `spread_pct` (P90 less P10 over the median). The tie-out reads it: a role whose spread,
+halved as a ± figure, is wider than the chip's plausibility band gets its reason word followed by "; noisy: ±N%"
+(`tie_out.NOISY`) and `reason_word` keeps the firm word for the readers that key on it. The text summary, the HTML
+report and the TUI show the suffix as the seam sends it; no renderer has a rule of its own.
+
+## Which `mul_mat_vec_q` the engine launches on this GPU
+
+`mmvq.cu` picks a parameter table per GPU in its host `get_device_table_id(int cc)` (GENERIC, TURING, GB10, the AMD
+tables) and, on the GB10 table only, doubles the warps per block when `should_halve_iters` says the K loop retires
+in half the trips. The CUDA adapter mirrors both instead of defaulting them: it reads the GPU's compute capability
+through the bridge (`cuda_device.ggml_compute_capability`, 100 x major + 10 x minor as ggml numbers it: an RTX 5090
+is 1200, a DGX Spark 1210), takes the `if (...) { return MMVQ_PARAMETERS_X; }` branches of the source's own
+`get_device_table_id` in order with `common.cuh`'s `GGML_CUDA_CC_*` values, then applies `should_halve_iters`'s guard
+and its idle-tail rule with the constants of the source's return line, and the promotion list of `calc_nwarps`. The
+row's `geometry` records `table`, `table_rule`, `halve_iters` and `halve_rule`, and the note names the value as
+"mirrored from the engine's rule". Nothing is hard-coded from the table: a source whose rule the adapter cannot read
+refuses, named. On the 5090 the rule fires as "no branch matched, the default" (GENERIC) and "should_halve_iters is
+false off the MMVQ_PARAMETERS_GB10 table"; on a DGX Spark it would instantiate `halve_iters = true` with 8 warps for
+Q4_K and Q6_K at 4,096 columns. The TURING table's own `calc_nwarps` switch is not mirrored (the GENERIC value is
+used and the record says so).
 
 The tie-out for an isolated table has three lines: the limit, the weight kernels above their ideal (isolated), and
 one difference line named for what it holds: kernels not timed and gaps (attention, norms, KV read, idle).
@@ -138,8 +162,8 @@ The in-model pipeline takes about 45 s (two nsys captures and the mmvq cubin com
 cubin cached. The llama.cpp build on the box is from 2026-08-20 and its `libllama.so` drops a `llama_decode.dot` on
 every decode; the capture runs the program in its own capture folder, so the file lands beside `capture.log`. The
 trace's `engine.source` records the source file's commit and mtime beside the traced binary's sha and mtime; a row
-whose kernel was matched as a prefix of a longer template (this `mmvq.cu` has a fifth parameter, `halve_iters`)
-carries a `note` saying so.
+carries a `note` naming the template parameters past small_k and how each was set (this `mmvq.cu` has a fifth
+parameter, `halve_iters`, mirrored from the engine's rule for the GPU's compute capability; see above).
 
 ## Environment
 

@@ -67,3 +67,34 @@ func TestInModelOvercountStillRefused(t *testing.T) {
 		t.Errorf("in-model overcount not refused:\n%s", got)
 	}
 }
+
+// A role whose isolated samples spread wider than the chip's band carries "; noisy: ±N%" after its reason word
+// (tie_out.NOISY): the suffix shows in the in-model table, the narrow WHY table and the isolated table as the seam
+// sends it, with no second rule here.
+func TestNoisyReasonShowsInEveryRoleTable(t *testing.T) {
+	old := tableWidth
+	defer func() { tableWidth = old }()
+	noisy := "too small to fill memory; noisy: ±13.2%"
+	roles := []seam.RoleLoss{
+		{Role: "attn_kv", Quant: "Q6_K", IdealMs: 0.04, ActualMs: 0.14, LostMs: 0.10, Share: 0.6, CallsPerToken: 18, PctPeak: fp(26.1),
+			UsPerCall: fp(7.97), MbPerCall: fp(3.4), Gbs: fp(432.0), EstMs: fp(0.07), EstLostMs: fp(0.03), Reason: noisy,
+			ReasonWord: sp("too small to fill memory"), Noisy: true, SpreadPct: fp(26.3)},
+		{Role: "lm_head", Quant: "Q6_K", IdealMs: 0.30, ActualMs: 0.31, LostMs: 0.01, Share: 0.4, CallsPerToken: 1, PctPeak: fp(98.6),
+			UsPerCall: fp(305.4), MbPerCall: fp(510.5), Gbs: fp(1671.0), EstMs: fp(0.30), EstLostMs: fp(0.0), Reason: "at the limit",
+			ReasonWord: sp("at the limit"), SpreadPct: fp(0.7)},
+	}
+	var b strings.Builder
+	for _, w := range []int{200, 76} {
+		tableWidth = w
+		b.WriteString(fmt.Sprintf("-- role table at %d --\n", w))
+		b.WriteString(plain(roleTable(roles, nil)))
+	}
+	tableWidth = 200
+	b.WriteString("-- isolated table --\n")
+	b.WriteString(plain(isoRoleTable(roles)))
+	got := b.String()
+	if strings.Count(got, noisy) != 3 || !strings.Contains(got, "at the limit") {
+		t.Fatalf("the noisy suffix must show in all three tables:\n%s", got)
+	}
+	golden(t, "loss-noisy.txt", got)
+}

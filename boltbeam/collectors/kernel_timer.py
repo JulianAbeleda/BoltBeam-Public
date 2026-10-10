@@ -36,6 +36,10 @@ from typing import Any, Callable
 
 SAMPLES, WARMUPS = 20, 10  # warmups let the GPU clock ramp up before the first timed sample
 FLOOR_SAMPLES = 20  # launches of an empty kernel: the fixed cost of one dispatch on this GPU
+# a kernel whose median is under NOISY_FLOOR_MULTIPLE x the dispatch floor is mostly floor, and the floor's own jitter
+# is most of its spread (attn_kv Q6_K on a 5090 read 8.05 then 10.30 µs between two passes): it is sampled
+# NOISY_SAMPLES times in all, the spread reported, and the row says why. One rule for both backends.
+NOISY_FLOOR_MULTIPLE, NOISY_SAMPLES = 3.0, 60
 
 # the flush kernel per backend: a sweep over a buffer larger than the last-level cache, run before each timed sample;
 # "mode" says what the sweep does to the cache lines: "read" leaves them clean, "store" leaves them dirty
@@ -150,11 +154,24 @@ def _percentile(values:list[float], q:float) -> float:
   return ordered[min(len(ordered) - 1, max(0, round(q * (len(ordered) - 1))))]
 
 
+def more_samples(samples_us:list[float], floor_us:float | None) -> tuple[int, str | None]:
+  """How many more samples a kernel needs and why: (count, words) under the floor rule, (0, None) otherwise. The
+  one rule: a median under NOISY_FLOOR_MULTIPLE x the dispatch floor is sampled NOISY_SAMPLES times in all."""
+  if floor_us is None or not samples_us:
+    return 0, None
+  med = statistics.median(samples_us)
+  if med >= NOISY_FLOOR_MULTIPLE * floor_us or len(samples_us) >= NOISY_SAMPLES:
+    return 0, None
+  return NOISY_SAMPLES - len(samples_us), (f"median {med:.1f} µs is under {NOISY_FLOOR_MULTIPLE:.0f} x the {floor_us:.1f} µs dispatch "
+                                           f"floor: sampled {NOISY_SAMPLES} times, the spread reported")
+
+
 def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:int = WARMUPS, count:int = SAMPLES,
-              libraries:dict[str, int] | None = None) -> dict[str, Any]:
+              libraries:dict[str, int] | None = None, floor_us:float | None = None) -> dict[str, Any]:
   """Compile (a library per source is reused through `libraries`), bind, check the first output, then time.
   Returns {"correctness", "samples", "median_us", "min_us", "spread_pct", "gbs", "pipeline", "label"}; with a
-  failed check the samples are empty and nothing was timed."""
+  failed check the samples are empty and nothing was timed. With the run's dispatch floor (floor_us) a kernel
+  under NOISY_FLOOR_MULTIPLE x it is sampled NOISY_SAMPLES times (more_samples); timing.more_samples says so."""
   import math
   import struct
   libraries = libraries if libraries is not None else {}
@@ -195,6 +212,9 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
       if not passed:
         return result
     result["samples"] = samples(launch, warmups=warmups, count=count, before=flush)
+    extra, why_more = more_samples(result["samples"], floor_us)
+    if extra:
+      result["samples"] += samples(launch, warmups=0, count=extra, before=flush)
   finally:
     for buf in owned:
       bridge.release(buf)
@@ -202,7 +222,7 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
   result.update(median_us=med, min_us=min(result["samples"]),
                 spread_pct=100.0 * (_percentile(result["samples"], 0.9) - _percentile(result["samples"], 0.1)) / med,
                 gbs=spec.bytes_read / (med * 1e3), warmups=warmups,
-                timing={"warmups": warmups, "samples": count, "cache": f"swept ({flush.row['mode']})" if flush else "not flushed",
+                timing={"warmups": warmups, "samples": len(result["samples"]), "cache": f"swept ({flush.row['mode']})" if flush else "not flushed",
                         "flush_bytes": flush.row["bytes"] if flush else 0, "flush_mode": flush.row["mode"] if flush else None,
-                        "clock": bridge.CLOCK})
+                        "clock": bridge.CLOCK, "more_samples": why_more})
   return result

@@ -424,7 +424,8 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
     return out
   facts = ev.Facts(run, providers.TRACES[shown])
   regimes = {(r["role"], r["quant"]): r.get("regime") for r in ceil.get("_roles") or []}
-  roles, rule = tie.role_why(table["roles"], bw, regimes=regimes, throttled=facts.throttle() is not None, latency_us=floor_us)
+  roles, rule = tie.role_why(table["roles"], bw, regimes=regimes, throttled=facts.throttle() is not None, latency_us=floor_us,
+                             band=(table.get("band") or {}).get("band"))
   out["cross_check"] = cross_check(run, bw)
   roles = [{**r, "evidence": facts.role(r["role"], r["quant"])} for r in roles]
   if shown != provider:

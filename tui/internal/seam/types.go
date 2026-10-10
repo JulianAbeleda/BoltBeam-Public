@@ -699,7 +699,13 @@ type RoleLoss struct {
 	Gbs           *float64 `json:"gbs"`
 	EstMs         *float64 `json:"est_ms"`      // isolated runs: the role's time scaled to the token, an estimate
 	EstLostMs     *float64 `json:"est_lost_ms"` // EstMs minus the ideal, an estimate
-	Reason        string   `json:"reason"`
+	// Reason is the rule's word for the role; when the role's own isolated samples spread wider than the chip's
+	// band it carries the suffix "; noisy: ±N%" (tie_out.NOISY) and ReasonWord keeps the firm word. SpreadPct is
+	// that spread (P90 - P10 over the median, %), from the kernel timer's rows; nil for an in-model capture.
+	Reason     string   `json:"reason"`
+	ReasonWord *string  `json:"reason_word"`
+	Noisy      bool     `json:"noisy"`
+	SpreadPct  *float64 `json:"spread_pct"`
 	// BestFound and Verdict are Run's kernel search for the role (search/role_compare.py role_verdict): the best
 	// plan alone against the model's own kernel per call, and applied, found_not_applied, none_faster or
 	// not_searched with VerdictReason.

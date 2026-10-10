@@ -204,9 +204,11 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   floor_us = None  # an isolated row's dispatch floor (kernel_timer.less_floor_us): one per trace, read off the rows
   for r in rows:
     if r.get("scope") == "kernel" and r.get("role_source") in ROLE_SOURCES and r.get("role") and r.get("quant"):
-      slot = actual.setdefault((r["role"], r["quant"]), {"us": 0.0, "us_less_floor": 0.0, "calls": 0})
+      slot = actual.setdefault((r["role"], r["quant"]), {"us": 0.0, "us_less_floor": 0.0, "calls": 0, "spread_pct": None})
       slot["us"] += float(r["wall_us"]); slot["calls"] += int(r.get("calls", 1))
       slot["us_less_floor"] += float(r.get("wall_us_less_floor", r["wall_us"]))
+      if r.get("spread_pct") is not None:  # an isolated row's sample spread (P90 - P10 over the median, %): the widest kept
+        slot["spread_pct"] = max(float(r["spread_pct"]), slot["spread_pct"] or 0.0)
       if r.get("wall_us_less_floor") is not None:
         floor_us = (r.get("timing") or {}).get("dispatch_floor_us", floor_us)
   out = []
@@ -218,6 +220,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
     out.append({"role": c["role"], "quant": c["quant"], "ideal_ms": c["floor_ms"], "actual_ms": ms,
                 "lost_ms": 0.0 if noise else ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens,
                 "less_floor_ms": got["us_less_floor"] / tokens / 1000.0 if floor_us is not None else None,
+                "spread_pct": got["spread_pct"],
                 "within_noise": noise, "label": AT_LIMIT_NOISE.format(pct=100 * chip["band"]) if noise else None})
   total_lost = sum(max(r["lost_ms"], 0.0) for r in out)
   for r in out: r["share"] = (max(r["lost_ms"], 0.0) / total_lost) if total_lost > 0 else 0.0

@@ -37,6 +37,10 @@ OWN_TIMING = "tinygrad-profile-events"  # the engine's own profiling, not an out
 from boltbeam.collectors.engine_kernels import METHOD as ISOLATED  # the engine's kernels timed alone by BoltBeam's kernel timer
 REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slow": "slow kernel",
            "compute": "compute bound", "unexplained": "unexplained"}
+# a role whose own sample spread (half of P90 - P10 over the median, as ±) is wider than the chip's band gets this
+# suffix after its reason word: the word is the rule's reading, the suffix says the reading is not firm. One rule
+# for both backends; reason_word keeps the firm word for the readers that key on it (the HTML rule tables).
+NOISY = "{word}; noisy: ±{pct:.1f}%"
 # the isolated tie-out: only the ideal and the token are compared; the split is an estimate, labelled so
 NOT_SPLIT_LABEL = "kernels and gaps, not split"
 ESTIMATE_LABEL = "(estimate from isolated times)"
@@ -107,12 +111,23 @@ def batch_limit(*, weight_ms:float, profile:dict[str, Any], context:float, batch
           "tok_s_total": batch * 1000.0 / step}
 
 
+def noisy_words(spread_pct:float | None, band:float | None) -> tuple[bool, float | None]:
+  """Whether a role's isolated samples are noisier than the chip's band: (noisy, ±pct). spread_pct is P90 - P10
+  over the median in percent; as a ± figure that is half of it. band is the chip's plausibility band as a
+  fraction (screen.plausibility_band). Nothing without a spread or a band."""
+  if spread_pct is None or band is None:
+    return False, None
+  half = float(spread_pct) / 2.0
+  return half > 100.0 * float(band), half
+
+
 def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tuple[str, str], str] | None = None,
-             throttled:bool = False, latency_us:float | None = None) -> tuple[list[dict[str, Any]], str]:
+             throttled:bool = False, latency_us:float | None = None, band:float | None = None) -> tuple[list[dict[str, Any]], str]:
   """Each role with % of peak, µs per call and its reason word; and the rule as one sentence with its numbers.
   regimes is the roofline regime per (role, quant) at this context; throttled says the chip throttled while read.
   latency_us is the dispatch floor the run's probe measured on this GPU; without one the assumed figure is used,
-  and the sentence says which."""
+  and the sentence says which. band is the chip's plausibility band: a role whose isolated sample spread is wider
+  than it carries the NOISY suffix, and reason_word keeps the firm word."""
   latency, latency_source = (latency_us, LATENCY_MEASURED) if latency_us else (ROLE_RULE["latency_us"], LATENCY_ASSUMED)
   in_flight = bandwidth_gbs * 1e9 * latency * 1e-6  # bytes
   small = in_flight * ROLE_RULE["fill_factor"]
@@ -133,15 +148,19 @@ def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tu
       why = REASONS["slow"]
     else:
       why = REASONS["unexplained"]
+    noisy, half = noisy_words(r.get("spread_pct"), band)
     out.append({**r, "pct_peak": round(pct, 1) if pct is not None else None, "us_per_call": r["actual_ms"] * 1e3 / calls if calls else None,
                 "mb_per_call": per_call_bytes / 1e6 if per_call_bytes else None,
                 "gbs": per_call_bytes / (r["actual_ms"] * 1e6 / calls) if per_call_bytes and r["actual_ms"] > 0 else None,
-                "reason": why})
+                "reason": NOISY.format(word=why, pct=half) if noisy else why, "reason_word": why, "noisy": noisy})
   rule = (f"At the limit: {ROLE_RULE['at_limit_pct']:.0f}% of peak or more. Too small to fill memory: a call moves "
           f"under {small / 1e6:.1f} MB, which is {ROLE_RULE['fill_factor']:.0f} x the {in_flight / 1e6:.2f} MB that must "
           f"be in flight ({bandwidth_gbs:.0f} GB/s x {latency:.1f} µs latency, {latency_source}, Little's law). "
           "Compute bound: the roofline regime is compute. Slow kernel: below the limit, the call big enough, not "
           "compute bound, the chip not throttled. Anything else: unexplained.")
+  if band is not None and any(r.get("spread_pct") is not None for r in roles):
+    rule += (f" Noisy: the role's own samples spread wider than this chip's ±{100 * band:.1f}% band (half of P90 - P10 over "
+             "the median), so the word is not firm.")
   return out, rule
 
 
