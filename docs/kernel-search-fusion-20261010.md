@@ -114,6 +114,29 @@ In the model, attention takes 0.302 ms per token at context 128 (8.4 µs a layer
 The first search run of this phase failed on two setup faults, both fixed: the fork's single-role families now carry
 `quants` (another change on exp) and the provider needs `BOLTBEAM_ROOT` to read BoltBeam's flash schema.
 
+## Phase 3: the epilogue fusions
+
+The fork registers the `Q4KGEMVEpilogue` kinds and the Q6_K coop residual add as fusion families
+(tinygrad-arkey `decode_fusion_space`). Their row pins (`rows == 4096`) had moved into promotion records the same day,
+so the emitters' validates accept any hidden size. One search run on the 8B (its earlier in-model run reused), all
+times BoltBeam's, less the floor, per token:
+
+| fusion | rows proposed / refused by validate | fused, fastest | unfused alone | in the model (lost) | correctness | verdict |
+|---|---|---|---|---|---|---|
+| ffn_gate + ffn_up + silu_mul, Q4_K | 3 / 0 | 1.308 ms (vector) | ≥ 1.296 ms | 1.300 (0.094) | 1.2e-7 | none faster |
+| ffn_down + ffn_residual, Q4_K | 3 / 0 | 0.432 ms (vector) | ≥ 0.408 ms | 0.373 (0.071) | 2.0e-7 | none faster |
+| silu_mul + ffn_down + ffn_residual, Q4_K | 1 / 0 | 1.099 ms (scalar) | ≥ 0.409 ms | 0.373 (0.071) | 7.9e-8 | none faster |
+| ffn_down + ffn_residual, Q6_K | 9 / 3 (coop in-kernel reduce needs one warp) | 0.621 ms | ≥ 0.615 ms | 0.503 (0.064) | 2.7e-7 | none faster |
+| attention_o + attn_residual, Q4_K | rejected by BubbleBeam: the attn_qo row also holds attention_q | | | | | rejected |
+| attention_v + v_cache_store, Q4_K | rejected by BubbleBeam: the attn_kv row also holds attention_k | | | | | rejected |
+
+In every family the seed and the control were refused by the provider (`unsupported_plan`: a fusion runs only through
+its emitter). Nothing was promoted, so no logits check was run. The model's in-model kernels for these rows are other
+emitters (`q4k_fp16_mmvq_direct_vec_*_epi_ffnresadd`, `q6k_fp16_packed_lanemap_u4_*_epi_ffnresadd`), already fused.
+
+The same run's flash stage again read every BoltBeam timing as noisy at context 128, the installed geometry included,
+so it had no like-for-like bar: not reproduced.
+
 ## Suspects
 
 Found here:
