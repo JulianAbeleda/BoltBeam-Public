@@ -15,7 +15,8 @@ Each row includes context, fixed depth, route sequence, selected-route programs-
 and `counter_evidence.status = unavailable`. The authority artifacts expose neither a hardware
 counter stream nor a measured host-sync split, so the adapter does not manufacture counters.
 
-`boltbeam.decode_decay.decode_depth_slope` compares only matched ctx512/4096 pairs. For the
+The development apparatus on `dev`,
+`boltbeam.experiment.decode_decay.decode_depth_slope`, compares only matched ctx512/4096 pairs. For the
 provided fixtures, the measured wall-time slopes are approximately: 8B W `0.201 us/context`
 and D `0.735 us/context`; 14B W `0.530 us/context` and D `1.125 us/context`. Both pairs retain
 the `flash` route and constant programs-per-token (8B: 1021; 14B: 1133). These are pairwise,

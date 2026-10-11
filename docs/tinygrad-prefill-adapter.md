@@ -1,6 +1,6 @@
 # Tinygrad prefill adapter
 
-`boltbeam.adapters.tinygrad_prefill` ports the reusable normalization seam from tinygrad's prefill timing trace.
+The development apparatus on `dev`, `boltbeam.adapters.tinygrad_prefill`, ports the reusable normalization seam from tinygrad's prefill timing trace.
 It accepts serialized route attachment/execution observations and profile kernel events, then emits the existing
 `boltbeam.timing_trace.v1` contract. Route status is evidence only: the adapter never selects a route or interprets
 policy. Kernel event time is scaled only when a synchronized authority wall time is supplied.

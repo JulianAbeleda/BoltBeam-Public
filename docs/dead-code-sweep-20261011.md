@@ -43,9 +43,11 @@ Line references below are against the pre-sweep tree. Each code batch has its ow
   AMD/runtime bridges and the decode/prefill/session drivers retain subprocess or external integration
   callers. Decorated diagnosis rules are registered indirectly. Dataclass fields are serialized;
   enum members and declared diagnostic vocabularies remain public contract data.
-- Dev-only primitive/MMQ/P9 modules and the test-only experiment/reachability/diagnostic helpers remain
-  qualification apparatus. Their retained purpose is documented in the prior apparatus audit, and their
-  tests exercise the contracts. Hardware qualification was not run or used to justify a deletion.
+- Correction after independent review: the first sweep incorrectly treated the August apparatus audit
+  as sufficient reason to retain test-only helpers on main. Some MMQ/P9 files were already dev-only,
+  but experiment, reachability and diagnostic helpers still shipped on main. Historical in-flight work
+  and dev test callers do not establish current main reachability. The follow-up moves these tested
+  helpers to dev after checking current entrypoints and external callers; hardware qualification is not run.
 - Accepted but unused compatibility arguments (`probe_quant`, `compare_runs`, `candidate_pct`, and the
   old installed-geometry parameters) retain their call signatures. Removing them would change callable
   interfaces, which this sweep does not authorize as an NFC change.
