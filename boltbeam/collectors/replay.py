@@ -57,10 +57,10 @@ def _post(url:str, body:dict[str, Any], timeout:float = 600.0) -> dict[str, Any]
   return _json_post(url, body, timeout)
 
 
-def llama_chat(url:str, messages:list[dict[str, str]], reply:int) -> dict[str, Any]:
-  """One turn streamed through /v1/chat/completions: the reply text, the server's timings and usage, and the
-  client's clock (monotonic) at send, first token and last token."""
-  body = json.dumps({"messages": messages, "max_tokens": reply, **REQUEST}).encode()
+def stream_chat(url:str, messages:list[dict[str, str]], reply:int, **extra:Any) -> dict[str, Any]:
+  """One turn streamed through the OpenAI chat endpoint: the reply text, the timings and usage the server put on
+  its chunks, and the client's clock (monotonic) at send, first token and last token."""
+  body = json.dumps({"messages": messages, "max_tokens": reply, **REQUEST, **extra}).encode()
   req = urllib.request.Request(url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
   text, timings, usage, first = [], {}, {}, None
   sent = time.monotonic()
@@ -79,6 +79,9 @@ def llama_chat(url:str, messages:list[dict[str, str]], reply:int) -> dict[str, A
       usage = chunk.get("usage") or usage
   last = time.monotonic()
   return {"text": "".join(text), "timings": timings, "usage": usage, "t_send": sent, "t_first": first or last, "t_last": last}
+
+
+llama_chat = stream_chat  # llama.cpp puts its own timings on the last chunk
 
 
 def llama_tokenize(url:str, text:str) -> list[int]:
@@ -149,10 +152,97 @@ def llama_bench_flags(s:dict[str, Any]) -> list[str]:
   return [x for key in FLAGS if s.get(key) is not None for x in (FLAGS[key][0], str(s[key]))]
 
 
+# --- the vLLM OpenAI server ----------------------------------------------------------------------------------------
+
+VLLM_METRICS = {"hits": "vllm:prefix_cache_hits_total", "prompt": "vllm:prompt_tokens_total",
+                "generated": "vllm:generation_tokens_total", "prefill_s": "vllm:request_prefill_time_seconds_sum",
+                "decode_s": "vllm:request_decode_time_seconds_sum"}  # vLLM's own counters, read before and after a turn
+
+
+def vllm_metrics(url:str) -> dict[str, float]:
+  text = urllib.request.urlopen(url + "/metrics", timeout=60).read().decode()
+  out = {}
+  for key, name in VLLM_METRICS.items():
+    out[key] = sum(float(l.rsplit(" ", 1)[1]) for l in text.splitlines() if l.startswith(name + "{") or l.startswith(name + " "))
+  return out
+
+
+def vllm_timings(before:dict[str, float], after:dict[str, float]) -> dict[str, Any]:
+  """One request's timings on llama.cpp's keys, from vLLM's counters (one request at a time, so the deltas are its):
+  cache_n the prefix-cache hits in tokens, prompt_n the prompt less them, prompt_ms vLLM's prefill time (scheduled to
+  first token), predicted_n and predicted_ms its generated tokens and decode time (first token to last)."""
+  d = {k: after[k] - before[k] for k in VLLM_METRICS}
+  return {"cache_n": int(d["hits"]), "prompt_n": int(d["prompt"] - d["hits"]), "prompt_ms": d["prefill_s"] * 1e3,
+          "predicted_n": int(d["generated"]), "predicted_ms": d["decode_s"] * 1e3}
+
+
+def vllm_chat(url:str, messages:list[dict[str, str]], reply:int) -> dict[str, Any]:
+  model = json.loads(urllib.request.urlopen(url + "/v1/models", timeout=60).read())["data"][0]["id"]
+  before = vllm_metrics(url)
+  got = stream_chat(url, messages, reply, model=model)
+  got["timings"] = vllm_timings(before, vllm_metrics(url))
+  return got
+
+
+def vllm_tokenize(url:str, text:str) -> list[int]:
+  return _post(url + "/tokenize", {"prompt": text, "add_special_tokens": False}, 120.0)["tokens"]
+
+
+def vllm_detokenize(url:str, ids:list[int]) -> str:
+  return _post(url + "/detokenize", {"tokens": ids}, 120.0)["prompt"]
+
+
+VLLM_FLAGS = {"n_ctx": ("--max-model-len",), "n_batch": ("--max-num-batched-tokens",), "type_k": ("--kv-cache-dtype",)}
+VLLM_LOGGED = {"n_ctx": r"max_model_len=(\d+)", "n_batch": r"max_num_batched_tokens=(\d+)"}
+
+
+def vllm_settings(argv:list[str], log:str) -> dict[str, Any]:
+  """The configuration vLLM ran: each setting from the command, else what its log says; the KV cache in the model's
+  bf16 unless the command sets it ("auto" is the model's type); the chunk is max_num_batched_tokens, one output per
+  chunk; the prefix cache on unless the command turns it off (vLLM's default)."""
+  out: dict[str, Any] = {"source": {}}
+  for key, names in VLLM_FLAGS.items():
+    v = flag_value(argv, names)
+    m = re.search(VLLM_LOGGED[key], log) if v is None and key in VLLM_LOGGED else None
+    v = v if v is not None else (m.group(1) if m else None)
+    out[key] = int(v) if v and v.isdigit() else v
+    out["source"][key] = "the command" if flag_value(argv, names) is not None else ("the server's log" if m else "vLLM's default")
+  if out["type_k"] in (None, "auto"):
+    out["type_k"], out["source"]["type_k"] = "bf16", "the model's dtype (auto)"
+  out["n_ubatch"], out["source"]["n_ubatch"] = out["n_batch"], out["source"]["n_batch"]
+  out["prefix_cache"] = "--no-enable-prefix-caching" not in argv
+  out["source"]["prefix_cache"] = "the command" if any("prefix-caching" in a for a in argv) else "vLLM's default"
+  return out
+
+
+def vllm_attention_paths(binary:pathlib.Path) -> dict[str, int]:
+  """The attention kernels' instruction sites per path in the vLLM package beside this python (no GPU)."""
+  from boltbeam.workflow.tie_out import kind_of
+  site = sorted(binary.expanduser().absolute().parent.parent.glob("lib/python*/site-packages"))  # the venv, not its symlinked python
+  libs = [l for s in site for l in sorted(s.glob("vllm/*.so")) + sorted(s.glob("vllm/vllm_flash_attn/*.so"))]
+  out: dict[str, int] = {}
+  for name, paths in (pf.library_paths(libs).get("kernels") or {}).items():
+    if kind_of({"kernel": name}) == "attention":
+      for p, n in paths.items():
+        out[p] = out.get(p, 0) + n
+  return out
+
+
+def vllm_env(argv:list[str]) -> dict[str, str]:
+  """vLLM's own venv, its run settings, and no download."""
+  import os
+  from boltbeam.collectors import engine_common as ec, vllm_decode as vd
+  return {**os.environ, **ec.venv_env(argv[0]), **vd.RUN_ENV, "HF_HUB_OFFLINE": "1"}
+
+
 REPLAY_ENGINES: dict[str, dict[str, Callable[..., Any]]] = {
   "llama.cpp": {"chat": llama_chat, "tokenize": llama_tokenize, "detokenize": llama_detokenize,
                 "settings": llama_settings, "weight_path": llama_weight_path, "attention_paths": llama_attention_paths,
                 "formats": lambda s, weights: pf.llama_formats(s.get("type_k"), weights), "bench_flags": llama_bench_flags},
+  "vllm": {"chat": vllm_chat, "tokenize": vllm_tokenize, "detokenize": vllm_detokenize, "settings": vllm_settings,
+           "weight_path": lambda quant: "bf16",  # Marlin dequantizes packed weights to bf16; float weights run cuBLAS bf16
+           "attention_paths": vllm_attention_paths, "formats": lambda s, weights: pf.vllm_formats({"BF16"}),
+           "env": vllm_env},
 }
 
 
@@ -289,7 +379,8 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   rows: list[dict[str, Any]] = []
   say(f"replay: starting the server ({binary.name}) with the user's flags")
   with gpu_telemetry.Telemetry(0, INTERVAL_S) as tele:
-    with serve_argv(argv, log_path=run / SERVER_LOG) as (url, command, load_s):
+    env = eng["env"](argv) if "env" in eng else None
+    with serve_argv(argv, log_path=run / SERVER_LOG, environ=env) as (url, command, load_s):
       server["command"] = command
       server["settings"] = eng["settings"](command, (run / SERVER_LOG).read_text(errors="replace"))
       rows.append({"scope": "load", "workload": "replay", "seconds": round(load_s, 2),
@@ -372,6 +463,11 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   target = get_target(manifest.get("target_id"))
   timing = read_json(run / "timing_trace.json")
   server = next(r for r in timing["rows"] if r["scope"] == "server")
+  if "bench_flags" not in engine(provider):  # no per-turn capture for this engine: said, not guessed
+    out = {"schema": "boltbeam.replay_capture.v1", "turns": [], "decode": None,
+           "not_captured": f"{provider}: a replay's turns are captured with llama-bench only; this engine's turns are not captured"}
+    (run / CAPTURE).write_text(json.dumps(out, indent=1) + "\n")
+    return out
   flags = engine(provider)["bench_flags"](server.get("settings") or {})
   model = str(manifest["model_path"])
   out: dict[str, Any] = {"schema": "boltbeam.replay_capture.v1", "flags": flags, "tie_out": TIE_OUT, "turns": [],

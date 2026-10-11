@@ -1078,6 +1078,9 @@ def replay_command(args) -> dict[str, Any]:
             "shapes": [{"name": n, "label": rt.label(rt.shape(n)), "words": s["words"]} for n, s in table["shapes"].items()]}
   if args.command == "replay-servers":
     return {"schema": SCHEMA, "servers": rp.running_servers()}
+  if args.command == "replay-cross":
+    c = rw.cross(pathlib.Path(args.a).expanduser(), pathlib.Path(args.b).expanduser())
+    return {**c, "lines": rw.cross_lines(c)}
   if args.command == "replay-diff":
     d = rw.diff(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser())
     return {**d, "lines": rw.diff_lines(d)}
@@ -1653,6 +1656,9 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--shape", default=None, help="a shape in data/replay_shapes.json")
   sub.add_parser("replay-shapes", help="the shipped replay shapes, each with its label")
   sub.add_parser("replay-servers", help="the llama-server commands running on this machine, to replay on")
+  p = sub.add_parser("replay-cross", help="two engines' replays of one trace: the same work per turn, each against its roofline")
+  p.add_argument("--a", required=True)
+  p.add_argument("--b", required=True)
   p = sub.add_parser("replay-diff", help="two replay runs of one trace, turn by turn")
   p.add_argument("--before", required=True)
   p.add_argument("--after", required=True)

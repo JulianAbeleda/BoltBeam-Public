@@ -32,6 +32,7 @@ PER = "per session"
 TITLE = "The replay: one row per turn"
 COLUMNS = ("turn", "prefix", "cache", "new", "recomputed", "TTFT ms", "prompt ms", "overhead ms", "reply", "decode tok/s",
            "ceiling ms", "% of roofline", "clock", "flags")
+UNSAID = 1 << 30  # the chunk of a server that does not say it: the whole turn in one call
 MIN_SAMPLES = 5  # a turn's own clock needs this many telemetry samples; fewer: the run's mean, said
 LOST = (("prefill_above", "prefill above its ceiling"), ("recompute", "recompute after a cache miss"),
         ("decode_above", "decode above its ceiling"), ("overhead", "overhead (HTTP, template, sampling, streaming)"))
@@ -69,8 +70,10 @@ def standard(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   type_k = str(settings.get("type_k") or "f16").upper()
   return {"profile": profile, "roles": pf.prefill_roles(profile, ceil.get("_roles") or []),
           "formats": eng["formats"](settings, pf.weight_quants(run)), "weight_path": eng["weight_path"],
-          "attention_paths": server.get("attention_paths") or {}, "ubatch": int(settings.get("n_ubatch") or 512),
-          "batch": int(settings.get("n_batch") or 2048), "bandwidth_gbs": bw, "bandwidth_source": bw_source,
+          # a chunk the server did not say: one per turn, the fewest weight reads, so the ceiling never overstates
+          "attention_paths": server.get("attention_paths") or {}, "ubatch": int(settings.get("n_ubatch") or UNSAID),
+          "batch": int(settings.get("n_batch") or UNSAID), "chunk_said": bool(settings.get("n_ubatch")),
+          "bandwidth_gbs": bw, "bandwidth_source": bw_source,
           "peaks": dict(target.matrix_tflops or {}),
           "peaks_source": ((target.capabilities or {}).get("fact_sources") or {}).get("matrix_tflops"),
           "limit_bytes": float(ceil["bytes_moved"]), "kv_per_token": kv_bytes_per_token(profile, type_k) or 0.0,
@@ -192,8 +195,10 @@ def headline(out_rows:list[dict[str, Any]], rows:list[dict[str, Any]], trace:dic
                basis=(f"the profile's weight ledger ({s['limit_bytes'] / 1e9:.2f} GB per token), KV {s['kv_type']} at "
                       f"{s['kv_per_token']:,.0f} B per token, the recurrent state {s['state_bytes'] / 2**20:.1f} MiB in and out "
                       f"per token, the measured matrix peaks scaled to each turn's SM clock, bandwidth "
-                      f"{s['bandwidth_gbs']:,.1f} GB/s ({s['bandwidth_source']}), not scaled; chunk {s['ubatch']} tokens, "
-                      f"{s['batch']} per output call, as the server logged them"))
+                      f"{s['bandwidth_gbs']:,.1f} GB/s ({s['bandwidth_source']}), not scaled; "
+                      + (f"chunk {s['ubatch']} tokens, {s['batch']} per output call, as the server's settings say"
+                         if s.get("chunk_said") else "the server did not say its chunk: one chunk per turn, the fewest "
+                         "weight reads, so the ceiling never overstates the work")))
   return out
 
 
@@ -343,6 +348,58 @@ def tie_lines(w:dict[str, Any]) -> list[str]:
 
 
 # --- before and after ----------------------------------------------------------------------------------------------
+
+# --- two engines on one trace -------------------------------------------------------------------------------------
+
+CROSS_SCHEMA = "boltbeam.replay_cross.v1"
+WORK_MATCH = 0.01  # two engines' prompts for a turn hold the same work when their prefixes differ by at most this share
+
+
+def cross(a:pathlib.Path, b:pathlib.Path) -> dict[str, Any]:
+  """Two engines replaying the same trace on the same target, turn by turn: whether each turn held the same work
+  (its prefix within WORK_MATCH, the same reply length), and each engine's time against its own roofline. Refused,
+  naming the field, when the trace or the target differ."""
+  from boltbeam.workflow.common import load_manifest
+  ta, tb = _read(a / "timing_trace.json"), _read(b / "timing_trace.json")
+  for name, x, y in (("workload", ta.get("workload"), tb.get("workload")),
+                     ("replay trace sha256", (ta.get("replay_trace") or {}).get("sha256"), (tb.get("replay_trace") or {}).get("sha256")),
+                     ("target", load_manifest(a).get("target_id"), load_manifest(b).get("target_id"))):
+    if x != y or x is None:
+      raise DiffRefused(f"the runs differ in {name}: {x!r} and {y!r}")
+  A, B = table(a, ta), table(b, tb)
+  if not (A and B):
+    raise DiffRefused("a run holds no replayed turn")
+  ra = {r["i"]: r for r in ta["rows"] if r.get("scope") == "turn"}
+  rb = {r["i"]: r for r in tb["rows"] if r.get("scope") == "turn"}
+  rows, same = [], 0
+  for i in sorted(set(ra) & set(rb)):
+    x, y = ra[i], rb[i]
+    match = abs(x["prefix"] - y["prefix"]) <= WORK_MATCH * max(x["prefix"], 1) and x["predicted_n"] == y["predicted_n"]
+    same += match
+    ca, cb = next(t for t in A["turns"] if t["i"] == i), next(t for t in B["turns"] if t["i"] == i)
+    rows.append({"i": i, "prefix": [x["prefix"], y["prefix"]], "needed": [x["needed"], y["needed"]],
+                 "reply": [x["predicted_n"], y["predicted_n"]], "same_work": match, "cold": x["cold"],
+                 "ttft_ms": [x["ttft_ms"], y["ttft_ms"]], "prompt_ms": [x["prompt_ms"], y["prompt_ms"]],
+                 "decode_tok_s": [x.get("decode_tok_s"), y.get("decode_tok_s")], "wall_ms": [x["wall_ms"], y["wall_ms"]],
+                 "roofline_ms": [ca["roofline_ms"], cb["roofline_ms"]]})
+  engines = [ta.get("provider"), tb.get("provider")]
+  totals = [{"engine": e, "model": load_manifest(r).get("model_id"), **{k: h.get(k) for k in
+             ("e_pct", "time_ms", "roofline_ms", "ttft_median_ms", "decode_tok_s_median", "cache_reuse", "split", "lost")}}
+            for e, r, h in ((engines[0], a, A["headline"]), (engines[1], b, B["headline"]))]
+  return {"schema": CROSS_SCHEMA, "runs": [a.name, b.name], "engines": engines, "turns": rows,
+          "same_work": same, "compared": len(rows), "rule": f"prefix within {100 * WORK_MATCH:.0f}% and the same reply length",
+          "totals": totals}
+
+
+def cross_lines(c:dict[str, Any]) -> list[str]:
+  e = c["engines"]
+  out = [f"Replay of one trace on {e[0]} and {e[1]}: {c['same_work']} of {c['compared']} turns held the same work ({c['rule']})."]
+  for t in c["totals"]:
+    out.append(f"  {t['engine']} ({t['model']}): {t['e_pct'] or 0:.1f}% of its roofline, {t['roofline_ms'] / 1e3:,.1f} s of "
+               f"ceilings in {t['time_ms'] / 1e3:,.1f} s; TTFT median {t['ttft_median_ms']:,.0f} ms; decode "
+               f"{t['decode_tok_s_median'] or 0:.1f} tok/s median; cache reuse {100 * t['cache_reuse']:.1f}%")
+  return out
+
 
 class DiffRefused(ValueError):
   """Two replays that cannot be compared: the field that differs."""
