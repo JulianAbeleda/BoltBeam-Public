@@ -728,7 +728,7 @@ def _route_compare(c:Any) -> dict[str, Any] | None:
 
 
 def compare_ready(run:pathlib.Path, root:pathlib.Path | None = None) -> dict[str, Any]:
-  """Whether step 5 can compare kernels for this run on this machine: Metal runs only, with the fork, its venv and
+  """Whether step 5 can compare kernels for this run on this machine: on a supported backend, with the fork, its venv and
   the model. Kept out of `results`, whose pinned JSON must not depend on the machine."""
   manifest, policy = load_manifest(run), _optional(run, "route_policy.json")
   out = {"schema": SCHEMA, "kind": "compare_ready", "id": run.name}

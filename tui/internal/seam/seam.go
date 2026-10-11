@@ -381,7 +381,7 @@ func (c Client) RoleTimeArgv(runDir, provider string) []string {
 }
 
 // Engines looks for every engine on this machine now and saves what was found; Providers then sees the saved
-// paths with no env vars set. The scan reads folders only: no GPU, no network, a few seconds at most.
+// paths with no env vars set. The scan reads folders and asks discovered venv interpreters for module specs; no GPU or network.
 func (c Client) Engines() (*Engines, []byte, error) {
 	var e Engines
 	raw, _, err := c.decode(&e, nil, "boltbeam.workflow.screen", "engines")

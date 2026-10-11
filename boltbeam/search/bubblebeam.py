@@ -6,8 +6,7 @@ axis values into the dimensions ``instantiate_candidates`` expands. It proposes
 values per axis; it never builds, hashes or ranks a population. FutureSight
 (``boltbeam.search.futuresight``) judges the population with the same facts.
 
-Ported from tinygrad-arkey ``extra/llm_research/bubblebeam_futuresight.py``
-(35459866b) with the same names and behaviour.
+BoltBeam owns this proposal logic. The tinygrad research adapter re-exports it.
 """
 from __future__ import annotations
 

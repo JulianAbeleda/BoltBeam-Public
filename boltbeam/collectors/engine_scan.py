@@ -99,17 +99,29 @@ def save(result:dict[str, Any]) -> pathlib.Path:
 # Every look at the disk tolerates a folder that cannot be read (a root-owned lost+found under ~/storage): it is
 # simply not there for the scan. A permission error must never end the scan.
 
+def _scan_error(exc:OSError, path:pathlib.Path) -> None:
+  """Absent paths are ordinary; inaccessible paths are reported; I/O faults remain errors."""
+  import warnings
+  if isinstance(exc, (FileNotFoundError, NotADirectoryError)): return
+  if isinstance(exc, PermissionError):
+    warnings.warn(f"engine scan skipped {path}: {exc}", RuntimeWarning)
+    return
+  raise exc
+
+
 def _is_dir(p:pathlib.Path) -> bool:
   try:
     return p.is_dir()
-  except OSError:
+  except OSError as exc:
+    _scan_error(exc, p)
     return False
 
 
 def _is_file(p:pathlib.Path) -> bool:
   try:
     return p.is_file()
-  except OSError:
+  except OSError as exc:
+    _scan_error(exc, p)
     return False
 
 
@@ -120,7 +132,8 @@ def _is_exe(p:pathlib.Path) -> bool:
 def _glob(folder:pathlib.Path, pattern:str) -> list[pathlib.Path]:
   try:
     return sorted(folder.glob(pattern))
-  except OSError:
+  except OSError as exc:
+    _scan_error(exc, folder)
     return []
 
 
@@ -129,7 +142,8 @@ def _subdirs(folder:pathlib.Path) -> list[pathlib.Path]:
   try:
     with os.scandir(folder) as it:
       return sorted((pathlib.Path(e.path) for e in it if e.is_dir(follow_symlinks=True)), key=lambda p: p.name)
-  except OSError:
+  except OSError as exc:
+    _scan_error(exc, folder)
     return []
 
 
@@ -253,7 +267,8 @@ def venv_pythons(home:pathlib.Path) -> list[pathlib.Path]:
         py = folder / "bin" / "python"
         try:
           key = str(folder.resolve())
-        except OSError:
+        except OSError as exc:
+          _scan_error(exc, folder)
           continue
         if key not in seen and _is_exe(py):
           seen.add(key)
@@ -269,7 +284,10 @@ def imports(python:pathlib.Path, modules:Iterable[str], timeout_s:float = PYTHON
           "print(' '.join(m for m in sys.argv[1:] if u.find_spec(m) is not None))")
   try:
     proc = subprocess.run([str(python), "-I", "-c", code, *modules], capture_output=True, text=True, timeout=timeout_s)
-  except (OSError, subprocess.SubprocessError):
+  except OSError as exc:
+    _scan_error(exc, python)
+    return set()
+  except subprocess.SubprocessError:
     return set()
   return set(proc.stdout.split()) if proc.returncode == 0 else set()
 

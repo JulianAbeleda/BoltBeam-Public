@@ -25,7 +25,7 @@ ADAPTERS, one row per (engine, backend):
 tinygrad has no adapter: the fork generates its kernels per shape at run time inside a model graph, so there is no
 shipped source to compile; it keeps its own timing (collectors/tinygrad_role_time.py). Not cheap, so not built.
 
-Weight formats: the block layouts metal_native.BLOCK_ELEMS/BLOCK_BYTES and its reference know (Q4_K, Q6_K, Q8_0). A
+Weight formats: the block layouts metal_native.BLOCK_ELEMS/BLOCK_BYTES and its reference know (the formats in metal_native.GGML_TYPES). A
 role in another format is a not_measured row saying "no <quant> adapter"; the table shows it as not timed, with the
 reason, and leaves it out of the floor rule and the sums (tinygrad_role_time.loss), so the roles that were timed
 are still measured.

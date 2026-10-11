@@ -83,13 +83,14 @@ isolated time matched nsys within 4% on every role from 3 MB up in the earlier r
 Measured against measured (today's launches also less floor from Table 1, 14.42 and 11.01 µs) gives the same total,
 0.129 ms. So:
 
-**Fusing q/k/v would recover at most 0.13 ms of the 3.98 ms token (3.2%): 251.2 to about 259.6 tok/s, 8 tok/s.** The
-attention projections' whole excess over their ideal is 0.31 ms (0.82 measured, 0.51 at peak), and one launch
-recovers four tenths of it, because a 14 MB read is still at 85% of peak and an 11.8 MB read at 77%. The k+v Q6_K
+**The mixed-timing estimate is 0.13 ms of the 3.98 ms token (3.2%); it is not a measured gain or an upper bound.** The
+attention projections' whole excess over their ideal is 0.31 ms (0.82 measured, 0.51 at peak), and the estimate assigns one launch
+four tenths of it, because a 14 MB read is still at 85% of peak and an 11.8 MB read at 77%. The k+v Q6_K
 fusion the brief named would have recovered 2.5 µs per layer if the model had such layers; it has none.
 
-"At most" because the fused time is the kernel alone after a read sweep with the event floor taken off, which is
-the number that matched nsys per role before; inside the token the fused launch would also follow a norm and feed
+The fused time is isolated after a read sweep with the event floor removed, while the baseline is in-model.
+Table 1 shows isolated/in-model ratios of 1.09–1.30 for attn_kv and 16–30% sample spread. These measurements
+cover one model at context 128 and cannot establish a fusion bound; inside the token the fused launch would also follow a norm and feed
 RoPE and attention, as the three do today, and nothing here says that costs less or more.
 
 ## Table 2: the same roles at a batch of 2 and 4 (the engine's ncols_dst 2 and 4 kernel, kernel timer)
@@ -126,7 +127,7 @@ what keeps batch 4 at 675 rather than 900 tok/s.
 
 ## What it means
 
-- The small roles' loss is real but small to recover by fusion: 0.13 ms of 3.98, 8 tok/s. The lever is one engine
+- The proposed fusion has a mixed-timing estimate of 0.13 ms; its actual gain is not established. The lever is one engine
   change (a q+k+v projection as one tensor, as gate+up already is) for 3%.
 - **Batch 2 recovers 0.38 ms of the small roles per token (0.805 to 0.428) and 1.53 ms of the weight kernels per
   token; the whole step at batch 2 is 4.63 ms for two tokens, 2.31 ms per token, 432 tok/s in total.** Batch 4 brings
@@ -138,7 +139,7 @@ what keeps batch 4 at 675 rather than 900 tok/s.
 
 ## Not measured
 
-- A fused launch inside the token (nsys of an engine with the fusion): no engine was changed; the bound is from
+- A fused launch inside the token (nsys of an engine with the fusion): no engine was changed; the estimate is from
   the kernel alone.
 - Batch 2 and 4 per role inside the token (`--role-time in-model --batch 2` needs `llama-batched-bench`, which this
   box's build does not have); the per-role batch numbers are the kernel alone.

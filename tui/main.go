@@ -279,6 +279,10 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 			fmt.Fprintln(errOut, "start needs MODEL and --target")
 			return 2
 		}
+		if p.RoleTime != "" && p.RoleTime != "auto" && p.RoleTime != "in-model" && p.RoleTime != "generic" {
+			fmt.Fprintln(errOut, "unknown --role-time: "+p.RoleTime+"; choose auto, in-model or generic")
+			return 2
+		}
 		// the pipeline runs in the checkout, so the caller's relative paths are made absolute here
 		for _, path := range []*string{&p.Model, &p.Probe, &p.Timing} {
 			if *path != "" {

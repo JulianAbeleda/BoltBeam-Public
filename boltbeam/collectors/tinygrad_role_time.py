@@ -262,7 +262,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
     ms = got["us"] / tokens / 1000.0
     noise = ms < c["floor_ms"] and ms >= c["floor_ms"] * (1 - chip["band"])
     out.append({"role": c["role"], "quant": c["quant"], "shape": list(shape_nk(c) or []) or None, "ideal_ms": c["floor_ms"], "actual_ms": ms,
-                "lost_ms": 0.0 if noise else ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens,
+                "lost_ms": ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens,
                 "less_floor_ms": got["us_less_floor"] / tokens / 1000.0 if floor_us is not None else None,
                 "spread_pct": got["spread_pct"],
                 "within_noise": noise, "label": AT_LIMIT_NOISE.format(pct=100 * chip["band"]) if noise else None})

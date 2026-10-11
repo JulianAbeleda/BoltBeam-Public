@@ -54,8 +54,9 @@ during the next kernel. On an M4 that was a fixed cost of about 60 µs per launc
 times slower and a 28 MB kernel 20% slower than inside the model, and the isolated sum 1.24 times the token
 (docs/in-model-vs-generic-m4-20261010.md). On an RTX 5090 the cost grew with the bytes the kernel pulled through
 the L2: 2.2 to 4.0 µs on the 3 to 41 MB roles (7 to 12%) and 22.5 µs on lm_head
-(docs/in-model-vs-generic-rtx5090-20261010.md). A read sweep evicts without that penalty: the sum lands within
-about 4% of the token on the M3 and, less the dispatch floor, within 4% of nsys per role on the 5090.
+(docs/in-model-vs-generic-rtx5090-20261010.md). A read sweep evicts without that penalty. The tables below put the isolated sum at 54.3 / 66.0 = 0.82 of
+the M3 token and, less the dispatch floor, 3.38 / 3.98 = 0.85 of the 5090 token. On the 5090 it is
+within 3% of the in-model weight-kernel sum (3.29 ms), not the whole token.
 `timing.flush_mode` in every row says which ran. "No flush" is not an option on either chip: a 5090's 96 MiB L2
 holds every weight role but lm_head between warmup and sample, and those rows read at 117 to 149% of DRAM peak.
 

@@ -17,8 +17,8 @@
 #   WORK          the volume: /workspace/boltbeam
 #   MODEL_URL     a GGUF: https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf
 #                 (a file:// URL links a model that is already on the machine)
-#   MODEL_SHA256  the expected sha256 of that file, or its first hex digits; empty skips the comparison
-#                 (the default model's known digest starts d98cdcbd03e17ce4)
+#   MODEL_SHA256  the full expected sha256 of that file; required for a non-default URL
+#                 (the default digest is pinned to the upstream GGUF object)
 #   BOLTBEAM_REPO, BOLTBEAM_REF   the public mirror, main
 #   LLAMA_REPO, LLAMA_REF         ggml-org/llama.cpp at commit 50569eb87
 #   TINYGRAD_REPO, TINYGRAD_REF   the tinygrad fork, branch exp; TINYGRAD_REF= skips it
@@ -33,7 +33,7 @@
 #                   nsys from the NVIDIA apt repo as nsight-systems-cli)
 #    3 boltbeam     clone, venv under $WORK, pip install . plus numpy; the tinygrad fork beside it when public
 #    4 llama.cpp    clone at LLAMA_REF, cmake -DGGML_CUDA=ON Release, CUDA arch from the GPU, build llama-bench
-#    5 model        download with resume, sha256 recorded and compared
+#    5 model        download fresh, full sha256 verified before installation
 #    6 env          $WORK/env.sh (PATH, BOLTBEAM_LLAMA_BENCH, BOLTBEAM_GGML_CUDA_SRC, TMPDIR, BOLTBEAM_CUDA_CACHE)
 #    7 check        boltbeam doctor when the ref has it, then boltbeam selfcheck
 #    8 autoscan     this GPU's profile; its id is the --target of the runs
@@ -45,7 +45,7 @@ set -euo pipefail
 WORK="${WORK:-/workspace/boltbeam}"
 MODEL_URL_DEFAULT="https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf"
 MODEL_URL="${MODEL_URL:-$MODEL_URL_DEFAULT}"
-if [[ "$MODEL_URL" == "$MODEL_URL_DEFAULT" ]]; then MODEL_SHA256="${MODEL_SHA256:-d98cdcbd03e17ce4}"; else MODEL_SHA256="${MODEL_SHA256:-}"; fi
+if [[ "$MODEL_URL" == "$MODEL_URL_DEFAULT" ]]; then MODEL_SHA256="${MODEL_SHA256:-d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785}"; else MODEL_SHA256="${MODEL_SHA256:-}"; fi
 BOLTBEAM_REPO="${BOLTBEAM_REPO:-https://github.com/JulianAbeleda/BoltBeam-Public}"
 BOLTBEAM_REF="${BOLTBEAM_REF:-main}"
 LLAMA_REPO="${LLAMA_REPO:-https://github.com/ggml-org/llama.cpp}"
@@ -109,8 +109,8 @@ run() {
 
 # run_sh 'shell text': the same for a line that needs a pipe or a redirection
 run_sh() {
-  echo "+ $1"
-  ((DRY)) || bash -euo pipefail -c "$1"
+  local code="$1"; shift
+  run bash -euo pipefail -c "$code" -- "$@"
 }
 
 # have CMD: the command is on PATH (a dry run answers for the machine it runs on and says so)
@@ -158,22 +158,29 @@ head_model() {
   echo "$size $sha"
 }
 
-check_sha() {  # check_sha ACTUAL EXPECTED-OR-PREFIX
-  [[ -z "$2" ]] && { note "sha256 $1 (nothing to compare with)"; return; }
-  if [[ "$1" == "$2"* ]]; then note "sha256 $1 matches the expected $2..."; else fail "sha256 $1 does not start with the expected $2"; fi
+check_sha() {
+  [[ "$2" =~ ^[0-9a-f]{64}$ ]] || fail "MODEL_SHA256 must be a full 64-hex digest"
+  [[ "$1" == "$2" ]] || fail "sha256 $1 does not match expected $2"
+  note "sha256 verified: $1"
 }
+
+[[ "$MODEL_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "MODEL_SHA256 must be a full 64-hex digest for MODEL_URL"
+
 
 # git_at DIR REPO REF: a clone at DIR checked out at REF (a branch, tag or commit), fetched fresh
 git_at() {
   local dir="$1" repo="$2" ref="$3"
   exists -d "$dir/.git" || run git clone -q "$repo" "$dir"
+  if (( ! DRY )); then
+    [[ -z "$(git -C "$dir" status --porcelain)" ]] || fail "checkout has local edits: $dir"
+  fi
   run git -C "$dir" fetch -q origin
   if ((DRY)); then
-    if [[ "$ref" =~ ^[0-9a-f]{7,40}$ ]]; then echo "+ git -C $dir checkout -q --detach $ref"; else echo "+ git -C $dir checkout -q -B pod origin/$ref"; fi
+    if [[ "$ref" =~ ^[0-9a-f]{7,40}$ ]]; then echo "+ git -C $dir checkout -q --detach $ref"; else echo "+ git -C $dir checkout -q --detach origin/$ref"; fi
     return
   fi
   if git -C "$dir" rev-parse -q --verify "origin/$ref" >/dev/null 2>&1; then
-    run git -C "$dir" checkout -q -B pod "origin/$ref"
+    run git -C "$dir" checkout -q --detach "origin/$ref"
   else
     run git -C "$dir" checkout -q --detach "$ref"
   fi
@@ -320,19 +327,22 @@ step_model() {
     note "HEAD: $size bytes, sha256 ${sha:-not declared by the server}"
     if ((DRY)); then
       [[ -n "$sha" ]] && check_sha "$sha" "$MODEL_SHA256"
-      echo "+ curl -fL -C - --retry 5 -o $MODEL $MODEL_URL"
+      echo "+ curl -fL --retry 5 -o $MODEL $MODEL_URL"
       echo "+ sha256sum $MODEL > $MODEL.sha256"
       return
     fi
     local have_size=0
     [[ -f "$MODEL" ]] && have_size="$(stat -Lc %s "$MODEL" 2>/dev/null || stat -Lf %z "$MODEL")"
     if [[ "$have_size" == "$size" ]]; then note "model already complete at $MODEL"; else
-      run curl -fL -C - --retry 5 --retry-all-errors -o "$MODEL" "$MODEL_URL"
+      run curl -fL --retry 5 --retry-all-errors -o "$MODEL.download" "$MODEL_URL"
+      local downloaded; downloaded="$(sha256sum "$MODEL.download")"
+      check_sha "${downloaded%% *}" "$MODEL_SHA256"
+      run mv "$MODEL.download" "$MODEL"
     fi
   fi
   ((DRY)) && { echo "+ sha256sum $MODEL > $MODEL.sha256"; return; }
   if [[ ! -f "$MODEL.sha256" ]] || [[ "$MODEL" -nt "$MODEL.sha256" ]]; then
-    run_sh "sha256sum '$MODEL' | awk '{print \$1}' > '$MODEL.sha256'"
+    run_sh 'sha256sum "$1" | awk '"'"'{print $1}'"'"' > "$2"' "$MODEL" "$MODEL.sha256"
   fi
   local actual; actual="$(cat "$MODEL.sha256")"
   note "model $MODEL $(stat -Lc %s "$MODEL" 2>/dev/null || stat -Lf %z "$MODEL") bytes"
@@ -351,19 +361,17 @@ step_env() {
   local nsys_dir="" ; local nsys
   nsys="$(nsys_bin || true)"; [[ -n "$nsys" ]] && nsys_dir="$(dirname "$nsys")"
   local text
-  text="$(cat <<EOF
-# BoltBeam on this pod: written by tools/pod-setup.sh. Source it: . $ENV_FILE
-export PATH=/usr/local/cuda/bin:${nsys_dir:+$nsys_dir:}$VENV/bin:\$PATH
-export BOLTBEAM_LLAMA_BENCH=$LLAMA_BUILD/bin/llama-bench
-export BOLTBEAM_LLAMA_BATCHED_BENCH=$LLAMA_BUILD/bin/llama-batched-bench
-export BOLTBEAM_GGML_CUDA_SRC=$LLAMA_DIR/ggml/src/ggml-cuda
-export BOLTBEAM_CHIPS_DIR=$WORK/chips
-export TMPDIR=$WORK/tmp
-export BOLTBEAM_CUDA_CACHE=$WORK/tmp/boltbeam-cuda
-export BOLTBEAM_MODEL=$MODEL
-${TINYGRAD_REF:+export BOLTBEAM_TINYGRAD_ROOT=$TINYGRAD_DIR}
-EOF
-)"
+  text="$(
+    printf '# BoltBeam pod environment, written by tools/pod-setup.sh\n'
+    printf 'export PATH=%q:"$PATH"\n' "/usr/local/cuda/bin:${nsys_dir:+$nsys_dir:}$VENV/bin"
+    printf 'export %s=%q\n' \
+      BOLTBEAM_LLAMA_BENCH "$LLAMA_BUILD/bin/llama-bench" \
+      BOLTBEAM_LLAMA_BATCHED_BENCH "$LLAMA_BUILD/bin/llama-batched-bench" \
+      BOLTBEAM_GGML_CUDA_SRC "$LLAMA_DIR/ggml/src/ggml-cuda" \
+      BOLTBEAM_CHIPS_DIR "$WORK/chips" TMPDIR "$WORK/tmp" BOLTBEAM_CUDA_CACHE "$WORK/tmp/boltbeam-cuda" \
+      BOLTBEAM_MODEL "$MODEL"
+    [[ -z "$TINYGRAD_REF" ]] || printf 'export BOLTBEAM_TINYGRAD_ROOT=%q\n' "$TINYGRAD_DIR"
+  )"
   echo "+ write $ENV_FILE:"
   sed 's/^/    /' <<<"$text"
   ((DRY)) && { echo "+ . $ENV_FILE"; return; }
@@ -396,7 +404,7 @@ step_check() {
 TARGET=""
 step_autoscan() {
   load_env
-  run_sh "$VENV/bin/python -m boltbeam.workflow.screen autoscan > '$WORK/autoscan.json'"
+  run_sh '"$1" -m boltbeam.workflow.screen autoscan > "$2"' "$VENV/bin/python" "$WORK/autoscan.json"
   echo "+ read target_id from $WORK/autoscan.json"
   ((DRY)) && { TARGET="<target_id from autoscan>"; return; }
   "$PYTHON" -m json.tool "$WORK/autoscan.json" | sed 's/^/    /'
@@ -422,7 +430,7 @@ step_pipeline() {
       note "in-model skipped: no nsys on this machine (step 2 installs it as root)"; continue
     fi
     if exists -f "$run_dir/.pod-done"; then note "$run_dir already measured (remove .pod-done to run it again)"; continue; fi
-    run_sh "cd '$WORK/tmp' && $VENV/bin/python -m boltbeam.workflow.screen pipeline '$MODEL' --run '$run_dir' --target '$TARGET' --id '$RUN_TAG-$mode' --provider llama.cpp --analyze --measure auto --role-time $mode --no-search"
+    run_sh 'cd "$1" && "$2" -m boltbeam.workflow.screen pipeline "$3" --run "$4" --target "$5" --id "$6" --provider llama.cpp --analyze --measure auto --role-time "$7" --no-search' "$WORK/tmp" "$VENV/bin/python" "$MODEL" "$run_dir" "$TARGET" "$RUN_TAG-$mode" "$mode"
     run touch "$run_dir/.pod-done"
   done
 }
@@ -433,7 +441,7 @@ step_results() {
   for mode in in-model generic; do
     run_dir="$RUNS/$RUN_TAG-$mode"
     if ! exists -d "$run_dir" && ! ((DRY)); then note "$run_dir: no run (in-model needs nsys)"; continue; fi
-    run_sh "$VENV/bin/python -m boltbeam.workflow.screen results --run '$run_dir' > '$run_dir/results.json'"
+    run_sh '"$1" -m boltbeam.workflow.screen results --run "$2" > "$3"' "$VENV/bin/python" "$run_dir" "$run_dir/results.json"
     echo "+ $PYTHON (print the per-role table and the tie-out of $run_dir/results.json)"
     ((DRY)) && continue
     "$PYTHON" - "$run_dir/results.json" <<'PY'
@@ -464,7 +472,7 @@ step_bundle() {
   out="$WORK/boltbeam-$RUN_TAG-$date.tgz"
   list="$WORK/tmp/bundle-files.txt"
   echo "+ list the files: runs/$RUN_TAG-*/ (*.json *.html *.md *.txt *.log *.csv; no *.nsys-rep, *.sqlite, *.qdstrm), facts.json, autoscan.json, logs/"
-  run_sh "cd '$WORK' && { find runs/$RUN_TAG-in-model runs/$RUN_TAG-generic -type f \\( -name '*.json' -o -name '*.html' -o -name '*.md' -o -name '*.txt' -o -name '*.log' -o -name '*.csv' \\) 2>/dev/null; ls facts.json autoscan.json 2>/dev/null; find logs -type f; } > '$list'"
+  run_sh 'cd "$1" && { find "runs/$2-in-model" "runs/$2-generic" -type f \( -name "*.json" -o -name "*.html" -o -name "*.md" -o -name "*.txt" -o -name "*.log" -o -name "*.csv" \) 2>/dev/null; ls facts.json autoscan.json 2>/dev/null; find logs -type f; } > "$3"' "$WORK" "$RUN_TAG" "$list"
   run tar -czf "$out" -C "$WORK" -T "$list"
   ((DRY)) || note "bundle: $out ($(du -h "$out" | cut -f1))"
   local host="${RUNPOD_PUBLIC_IP:-HOST}" port="${RUNPOD_TCP_PORT_22:-PORT}"

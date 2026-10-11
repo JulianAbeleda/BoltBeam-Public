@@ -20,11 +20,11 @@ both: a store leaves dirty lines that drain into DRAM during the next kernel. On
 60 us per launch, which made a 2.4 MB kernel 2 to 4 times slower and a 28 MB kernel 20% slower than inside the model
 (docs/in-model-vs-generic-m4-20261010.md). On a 5090 the cost grew with the bytes the kernel pulled through the L2:
 7 to 12% on the 3 to 41 MB roles and 22 us on lm_head (docs/in-model-vs-generic-rtx5090-20261010.md). A read evicts
-without that: the sum of the read-sweep times, less the dispatch floor, lands within 4% of the engine's own token on
-both chips. "No flush" is impossible by design: a 96 MiB L2 makes every weight under it an L2 hit between warmup and
+without that: the recorded sums are 0.82 of the M3 token and, less floor, 0.85 of the 5090 token; the latter is
+within 3% of its in-model weight-kernel sum (docs/kernel-timer.md). "No flush" is impossible by design: a 96 MiB L2 makes every weight under it an L2 hit between warmup and
 sample (117 to 149% of DRAM peak on the 5090), and that is not the number a model sees.
 
-The dispatch floor (an empty kernel between the same two timestamps) is measured beside every row and recorded as
+The dispatch floor (an empty kernel between the same two timestamps) is measured once per timer run and recorded on each row as
 timing.dispatch_floor_us. It is never subtracted silently: a row keeps us_per_call as measured and carries
 us_per_call_less_floor (less_floor_us, the one rule) for the tie-out, which says when it uses it.
 """

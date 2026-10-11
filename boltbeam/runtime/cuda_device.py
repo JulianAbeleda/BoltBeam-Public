@@ -147,13 +147,13 @@ def match_symbol(wanted:str, demangled:dict[str, str]) -> str | None:
   `halve_iters`) is still found; the caller records which symbol was matched."""
   w = normalise_symbol(wanted)
   prefix = w[:-1] + "," if w.endswith(">") else None
-  exact = next((m for m, plain in demangled.items() if m == wanted or normalise_symbol(plain) == w or w in normalise_symbol(plain)), None)
+  exact = next((m for m, plain in demangled.items() if m == wanted or normalise_symbol(kernel_name(plain)) == w), None)
   if exact or prefix is None:
     return exact
-  # several instantiations can share the prefix (mmvq.cu's halve_iters true and false): the smallest normalised
-  # name is taken, the same one every run, which for bool and int tails is the all-false, all-zero one
-  near = sorted(((normalise_symbol(plain), m) for m, plain in demangled.items() if prefix in normalise_symbol(plain)))
-  return near[0][1] if near else None
+  # several instantiations can share the prefix (mmvq.cu's halve_iters true and false): an ambiguous prefix
+  # has no match; the caller must request the actual instantiation
+  near = sorted(((normalise_symbol(plain), m) for m, plain in demangled.items() if normalise_symbol(kernel_name(plain)).startswith(prefix)))
+  return near[0][1] if len(near) == 1 else None
 
 
 def kernel_name(plain:str) -> str:
@@ -358,7 +358,9 @@ class Cuda:
         raise RuntimeError(f"CUDA module has no kernel {name!r}; " + (f"its kernels of that name: {near}" if near else
                                                                       f"it has {sorted(symbols.values())[:8]}"))
       symbol = {"mangled": mangled, "demangled": kernel_name(symbols[mangled])}
-    return {"pso": fn, "thread_execution_width": self.driver.attribute(ATTRIBUTES["warp_size"], self.dev) or 32,
+    width = self.driver.attribute(ATTRIBUTES["warp_size"], self.dev)
+    if not width: raise RuntimeError("CUDA device did not report its warp size")
+    return {"pso": fn, "thread_execution_width": width,
             "max_threads_per_threadgroup": self.driver.func_attribute(fn, _CU_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK),
             "static_threadgroup_memory_bytes": self.driver.func_attribute(fn, _CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES),
             "symbol": symbol}

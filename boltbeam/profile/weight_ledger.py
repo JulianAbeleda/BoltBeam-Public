@@ -180,6 +180,9 @@ def check(ledger:Mapping[str, Any], roles:Iterable[Any]) -> None:
   """The invariant: the bytes the limit counts (the profile's own limit roles plus the unclassified rows) plus the bytes
   excluded with a reason equal every tensor byte in the file, and those fill the file's data region but for padding.
   Raises WeightLedgerError naming the difference."""
+  if ledger.get("unsized"):
+    raise WeightLedgerError("weight ledger incomplete: tensors have unknown block layouts: " +
+                            ", ".join(r["tensor_name"] for r in ledger["unsized"]))
   from_roles = 0
   for r in roles:
     role = r if isinstance(r, Mapping) else r.to_json()

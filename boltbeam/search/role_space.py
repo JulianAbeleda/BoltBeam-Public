@@ -117,10 +117,7 @@ def block_unit_space(family:Mapping[str, Any], kind:Mapping[str, Any], quant:str
 
 def proposal_inputs(describe:Mapping[str, Any], facts:Mapping[str, Any], quant:str, *, subgroup_size:int | None = None,
                     shape:tuple[int, int] | None = None, sm_count:int | None = None) -> dict[str, Any]:
-  """sm_count is BoltBeam's own bridge reading of the GPU (provider_check.bridge_facts), never the provider's: it only
-  places the model's installed row among the candidates."""
-  """schedule, axis_choices, coupled_rows for BubbleBeam, plus the emitter family and the row the model's decode
-  installs (to find the model's own kernel among the measured), or why the role has no space."""
+  """BubbleBeam's candidate space and the provider's explicitly model-bound row, when available."""
   kind = binds_through(describe)
   if kind == EMITTER_PLAN_KIND:
     families = emitter_families(describe, quant)
