@@ -30,7 +30,7 @@ is a data edit, not a code branch:
 - `data/candidates.json` — route-family templates (arch-scoped, origin-tagged).
 
 The decision path (search emission, route families, seed policy, evaluator) is
-model/quant/target-agnostic and is source-scanned by `policy/guards.py`. An
+model/quant/target-agnostic and is source-scanned on dev by `policy/guards.py`. An
 `unknown_transformer` profile fails closed: no authorized search space, all
 routes blocked. See [model-agnostic-search-roadmap.md](model-agnostic-search-roadmap.md).
 

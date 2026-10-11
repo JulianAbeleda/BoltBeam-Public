@@ -39,10 +39,10 @@ Line references below are against the pre-sweep tree. Each code batch has its ow
   checked by `test_nv_decode_seed_ledger.py`; it is not an active runtime seed and remains as a record.
   Schemas and route-policy JSON/hash assets are also read by path, so absence of Python import edges
   does not make them unused.
-- `policy/descriptor.py` and `diagnostics/packed_quant_control.py` retain standalone module entrypoints.
-  AMD/runtime bridges and the decode/prefill/session drivers retain subprocess or external integration
-  callers. Decorated diagnosis rules are registered indirectly. Dataclass fields are serialized;
-  enum members and declared diagnostic vocabularies remain public contract data.
+- The follow-up moves the standalone research-policy and quant-oracle commands, plus the uncalled
+  AMD/KFD bringup bridges, to dev. A module entrypoint alone does not make qualification apparatus
+  part of the product. The decode/prefill/session drivers have current subprocess callers and stay
+  on main. Decorated diagnosis rules, serialized fields and diagnostic vocabulary remain live.
 - Correction after independent review: the first sweep incorrectly treated the August apparatus audit
   as sufficient reason to retain test-only helpers on main. Some MMQ/P9 files were already dev-only,
   but experiment, reachability and diagnostic helpers still shipped on main. Historical in-flight work
@@ -64,3 +64,6 @@ The existing saved run `qwen3-8b-apple_m3_10c-005` was read before the sweep and
 `python -m boltbeam.workflow.screen results --run …`; `cmp` checks the complete JSON bytes unchanged.
 The baseline run is external to the repository and was not edited. Static inventories, import graphs,
 coverage JSON, byte snapshots and gate logs are kept with the external cleanup report.
+
+The completed [apparatus boundary follow-up](apparatus-boundary-20261011.md) gives current
+module-by-module dispositions and supersedes the initial broad retention rationale above.

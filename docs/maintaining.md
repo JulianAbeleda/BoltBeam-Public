@@ -160,3 +160,10 @@ The house rules are in [coding-principles.md](coding-principles.md) and
 - [task_workflow/](task_workflow/): how delegated work is specified and recorded
 - [exp-metal-mr0-mr13-runbook.md](exp-metal-mr0-mr13-runbook.md): the Apple Metal MR0 to MR13 workflow
 - [INTEGRATION_TINYGRAD.md](../INTEGRATION_TINYGRAD.md): the tinygrad integration boundary
+
+### Development apparatus
+
+The [apparatus boundary record](apparatus-boundary-20261011.md) lists the experiment, search,
+analysis, runtime and policy helpers retained on dev with their tests. The packed-quant oracle
+and descriptor-policy reproduction module commands also live on dev. Main retains the product
+CLI, screen and their subprocess drivers; importing a helper only from a test does not admit it to main.

@@ -264,7 +264,7 @@ by model-specific assumptions (audit A0–A10). The load-bearing rules:
 - An `unknown_transformer` profile fails closed: no authorized search space, all
   routes blocked. Classify the architecture before authorizing routes.
 - The decision path (search emission, families, seed policy, evaluator) must not
-  hardcode model/quant/target names; `policy/guards.py` source-scans it.
+  hardcode model/quant/target names; the dev-only `policy/guards.py` source-scans it.
 
 ## Commit Discipline
 
