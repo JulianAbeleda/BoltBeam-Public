@@ -11,6 +11,8 @@ JIT (compiles every chunk's graph), then the measured prefills run.
                      before its first forward call (prompt setup, graph prewarm) is recorded beside it as setup_s
     --mode capture   PROFILE=1 JIT=2 (set by the caller): one kernel per command buffer, each with GPU timestamps; one
                      measured prefill after the warm one, its launches written to --out with each program's source
+    --eager          the fork's own default for an independent prompt: no workload reuse, so every prefill schedules
+                     its graph again (the caller uses it when the captured graphs do not fit in GPU memory)
 
 Every prefill uses different token ids, so the engine's prefix reuse never skips work. What the engine batched is
 recorded from its own forward calls: the token width of each call during the prefill (`chunks`).
@@ -47,6 +49,7 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--mode", choices=("truth", "capture"), default="truth")
   p.add_argument("--samples", type=int, default=3)
   p.add_argument("--out")
+  p.add_argument("--eager", action="store_true", help="the fork's default: no workload reuse, every prompt scheduled again")
   args = p.parse_args(argv)
 
   from tinygrad.llm.model import Transformer
@@ -56,7 +59,7 @@ def main(argv:list[str] | None = None) -> int:
   # time, 2026-10-10). The prefill is measured as the captured graph replays it; the eager first call's time is kept
   # beside it (warm_s) so the scheduling cost is not hidden.
   reuse_was = getattr(model.config, "prefill_workload_reuse", None)
-  if reuse_was is not None:
+  if reuse_was is not None and not args.eager:
     import dataclasses
     model.config = dataclasses.replace(model.config, prefill_workload_reuse=True)
   calls: list = []
@@ -88,17 +91,18 @@ def main(argv:list[str] | None = None) -> int:
 
   setup: list = []  # host time in generate() before the first forward call (prompt setup), not prefill
   wall, chunks = prefill(0)  # eager: schedules and compiles every chunk's graph
-  capture_s = prefill(1)[0]  # the JIT captures
+  capture_s = prefill(1)[0] if not args.eager else None  # the JIT captures
+  begin = 1 if args.eager else 2  # the first measured prefill's seed
   out = {"length": args.length, "warm_s": wall, "capture_s": capture_s, "chunks": chunks, "mode": args.mode,
-         "workload_reuse_default": reuse_was}
+         "workload_reuse_default": reuse_was, "replay": not args.eager}
   if args.mode == "truth":
-    walls = [prefill(i + 2)[0] for i in range(args.samples)]
-    out.update(samples_s=walls, wall_s=statistics.median(walls), setup_s=setup[2:])
+    walls = [prefill(i + begin)[0] for i in range(args.samples)]
+    out.update(samples_s=walls, wall_s=statistics.median(walls), setup_s=setup[begin:])
   else:
     from tinygrad.device import Compiled, Device
     for name in sorted(Device._opened_devices): Device[name].synchronize()
     Compiled.profile_events.clear()
-    wall, chunks = prefill(2)
+    wall, chunks = prefill(begin)
     for name in sorted(Device._opened_devices): Device[name].synchronize()
     launches, programs = [], {}
     for e in list(Compiled.profile_events):

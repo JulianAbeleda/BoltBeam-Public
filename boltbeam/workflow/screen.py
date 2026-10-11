@@ -769,12 +769,15 @@ def results_core(run:pathlib.Path, beside:bool = False) -> dict[str, Any]:
   context = token["context"] if token else None
   kernels, context = roofline_kernels(timing, context) if timing else ([], context)
   chosen = next((s for s in timing.get("context_summaries", []) if s.get("context") == context), {}) if timing else {}
+  loss = loss_block(run, manifest, ceil, token, beside=beside)
+  if manifest.get("workload") == "prefill":  # one ceiling: the sum of the kernels' own, as the where table has it
+    ceil = prefill_ceiling(ceil, loss, token)
   return {
     "schema": SCHEMA, "kind": "results", "id": run.name, "model_id": manifest.get("model_id"),
     "target_id": manifest.get("target_id"), "workload": manifest.get("workload"),
     "measured": bool(timing) or bool(primitive),
     "ceiling": {k: v for k, v in ceil.items() if not k.startswith("_")},
-    "loss": loss_block(run, manifest, ceil, token, beside=beside),
+    "loss": loss,
     "measurement": measurement_of(run),  # the Setup choice of how roles were timed, as the run recorded it
     "probe": probe_rows(run, ceil.get("peak_bandwidth_gbs")),
     "routes": [{"role": r.get("role"), "quant": r.get("quant"), "shape": r.get("shape"),
@@ -806,6 +809,22 @@ def results_core(run:pathlib.Path, beside:bool = False) -> dict[str, Any]:
                or (providers.weight_format(profile) if profile else None)},
     "batches": batch_rows(run, manifest, profile, ceil),
   }
+
+
+PREFILL_CEILING_BASIS = ("the sum of the prefill's kernels' ceilings: each max(operations / the measured peak of its "
+                         "instructions' path, bytes / bandwidth)")
+
+
+def prefill_ceiling(ceil:dict[str, Any], loss:dict[str, Any], token:dict[str, Any] | None) -> dict[str, Any]:
+  """A prefill run's ceiling is its where table's (workflow/prefill.py); the whole-model roofline at one fp16 peak
+  is not shown beside it. Absent, with its reason, until the prefill was captured in the model."""
+  w = loss.get("where_token_goes")
+  if not w:
+    return {"status": "absent", "reason": loss.get("missing") or "no prefill captured in the model yet"}
+  length = w["length"]
+  return {"status": "modeled", "context": length, "floor_ms": w["limit_ms"], "tok_s": length / w["limit_ms"] * 1e3,
+          "bytes_moved": None, "peak_bandwidth_gbs": ceil.get("peak_bandwidth_gbs"), "bandwidth_source": ceil.get("bandwidth_source"),
+          "band": ceil.get("band"), "basis": PREFILL_CEILING_BASIS}
 
 
 def batch_rows(run:pathlib.Path, manifest:dict[str, Any], profile:dict[str, Any], ceil:dict[str, Any]) -> list[dict[str, Any]]:
@@ -1068,7 +1087,10 @@ def pipeline(args, out=sys.stdout) -> int:
   can_time = plan and (plan.get("capture") or providers.capture_method(plan["provider"], get_target(args.target).backend)).get("method")
   if analyze_all and plan and not plan["reason"]:  # one press: per-role time, same engine, search, report again
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
-    if can_time:
+    if getattr(args, "workload", "decode") == "prefill":  # one prefill per length captured in the model, attributed
+      from boltbeam.collectors import prefill as pf
+      steps.append(("role_time", lambda: pf.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say)))
+    elif can_time:
       steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say,
                                                              step=progress.report, measurement=_role_time_arg(args))))
     if getattr(args, "no_search", False):
@@ -1252,21 +1274,31 @@ SAVE_RECORD = "save.json"
 
 
 def where_lines(w:dict[str, Any] | None) -> list[str]:
-  """"Where the token goes" (tie_out.where_token_goes) as plain text: one table, worst first, each column as wide as
-  its widest cell. The summary and the gameplan print these lines; the numbers are the table's, never recomputed."""
+  """A where table (tie_out.where_token_goes, where_prefill_goes) as plain text: one table, worst first, each column
+  as wide as its widest cell. The summary and the gameplan print these lines; the cells are the table's own."""
   if not w:
     return []
-  f = lambda v, fmt: fmt.format(v) if v is not None else ""  # noqa: E731
-  cells = [list(w["columns"])]
-  for r in w["rows"]:
-    cells.append([r["name"], f(r["now_ms"], "{:.2f}"), f(r["limit_ms"], "{:.2f}") or w["no_limit"], f(r["lost_ms"], "{:.2f}"),
-                  f(None if r["share"] is None else 100 * r["share"], "{:.0f}%"), f(r["tok_s_if_fixed"], "{:.1f}"),
-                  f(r["pct_peak"], "{:.1f}%")])
-  cells.append(["= token", f"{w['token_ms']:.2f}", f"{w['limit_ms']:.2f}", f"{w['lost_ms']:.2f}", "100%", "", ""])
+  cells = [list(w["columns"])] + [[r["name"], *r["cells"]] for r in w["rows"]] + [list(w["sum_cells"])]
   width = [max(len(row[i]) for row in cells) for i in range(len(cells[0]))]
   out = [w["title"] + (" (estimate)" if w["estimate"] else "") + ":", f"  {w['words']}"]
   for row in cells:
     out.append(("  " + row[0].ljust(width[0]) + " " + " ".join(c.rjust(width[i + 1]) for i, c in enumerate(row[1:]))).rstrip())
+  return out
+
+
+def curve_lines(c:dict[str, Any] | None) -> list[str]:
+  """workflow/prefill.curve as plain text: one line per prompt length, then ms and MFU per row at every length."""
+  if not c or not c.get("points"):
+    return []
+  f = lambda v, fmt: fmt.format(v) if v is not None else "-"  # noqa: E731
+  out = ["Prefill against prompt length:", f"  {c['words']}"]
+  for p in c["points"]:
+    out.append(f"  {p['length']:>6} tokens: {p['ms']:9.1f} ms, {p['tok_s']:8.0f} tok/s, MFU {f(p.get('mfu_pct'), '{:.1f}%')}"
+               + ("" if p.get("batched") else ", not batched") + (", THROTTLED" if p.get("throttled") else ""))
+  width = max(len(n) for n in c["rows"]) if c["rows"] else 0
+  for n in c["rows"]:
+    out.append(f"  {n:<{width}} " + "  ".join(
+      f"{f((p['rows'].get(n) or {}).get('ms'), '{:.2f}')} ms ({f((p['rows'].get(n) or {}).get('mfu_pct'), '{:.0f}%')})" for p in c["points"]))
   return out
 
 
@@ -1313,6 +1345,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
         lines.append("      " + ", ".join(f"{p['kind']} {p['ms']:.3f}" for p in l["parts"]))
     lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
   lines += where_lines(loss.get("where_token_goes"))
+  lines += curve_lines(loss.get("prefill_curve"))
   if t.get("band"):
     lines.append(f"Band: {t['band']}")
   roles = loss.get("roles") or []

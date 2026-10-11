@@ -670,19 +670,15 @@ def _where(loss:dict[str, Any]) -> str:
 
 
 def _where_token(loss:dict[str, Any]) -> str:
-  """tie_out.where_token_goes as a table: what each part costs the token, worst first. The numbers are the table's."""
+  """A where table (tie_out.where_token_goes, where_prefill_goes) as HTML: what each part costs, worst first. The
+  cells are the table's own."""
   w = loss.get("where_token_goes")
   if not w:
     return ""
   head = "".join(f"<th>{_e(c)}</th>" for c in w["columns"])
-  rows = []
-  for r in w["rows"]:
-    at = f'{r["limit_ms"]:.2f}' if r["limit_ms"] is not None else _e(w["no_limit"])
-    rows.append(f'<tr><td>{_e(r["name"])}</td><td>{r["now_ms"]:.2f}</td><td>{at}</td><td class="lost">{r["lost_ms"]:.2f}</td>'
-                f'<td>{_f(None if r["share"] is None else 100 * r["share"], "{:.0f}%")}</td><td>{_f(r["tok_s_if_fixed"], "{:.1f}")}</td>'
-                f'<td>{_f(r["pct_peak"], "{:.1f}%")}</td></tr>')
-  rows.append(f'<tr class="sum"><td>= token</td><td>{w["token_ms"]:.2f}</td><td>{w["limit_ms"]:.2f}</td><td>{w["lost_ms"]:.2f}</td>'
-              f'<td>100%</td><td></td><td></td></tr>')
+  cell = lambda i, c: f'<td class="lost">{_e(c)}</td>' if i == 2 else f"<td>{_e(c)}</td>"  # noqa: E731
+  rows = [f'<tr><td>{_e(r["name"])}</td>{"".join(cell(i, c) for i, c in enumerate(r["cells"]))}</tr>' for r in w["rows"]]
+  rows.append(f'<tr class="sum">{"".join(f"<td>{_e(c)}</td>" for c in w["sum_cells"])}</tr>')
   body = (f'<p class="muted" style="margin:0 0 10px">{_e(w["words"])}</p>'
           f'<div class="tscroll"><table class="tie where"><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
   return _section(2, w["title"] + (" (estimate)" if w["estimate"] else ""), body)
@@ -690,6 +686,52 @@ def _where_token(loss:dict[str, Any]) -> str:
 
 def _other_line(t:dict[str, Any]) -> dict[str, Any] | None:
   return next((l for l in t.get("lines") or [] if l.get("parts") is not None), None)
+
+
+CURVE_LINES = ("var(--g1)", "var(--g2)", "var(--g3)", "var(--excess)", "var(--ok)", "var(--gaps)")  # one per row drawn
+CURVE_ROWS = 6  # the rows that cost the most at any length are drawn; every row is in the table below
+
+
+def _prefill_curve(loss:dict[str, Any]) -> str:
+  """workflow/prefill.curve as a chart and a table: MFU against prompt length for the prefill and its costliest rows,
+  then ms and MFU per row at every length. The numbers are the curve's own."""
+  c = loss.get("prefill_curve")
+  if not c or not c.get("points"):
+    return ""
+  pts = c["points"]
+  lengths = [p["length"] for p in pts]
+  import math
+  lo, hi = math.log2(min(lengths)), math.log2(max(lengths))
+  x = lambda n: 40 + (math.log2(n) - lo) / ((hi - lo) or 1) * 520  # noqa: E731
+  y = lambda v: 190 - min(max(v, 0.0), 100.0) * 1.7  # noqa: E731
+  series = [("prefill", [(p["length"], p.get("mfu_pct")) for p in pts])]
+  series += [(n, [(p["length"], (p["rows"].get(n) or {}).get("mfu_pct")) for p in pts]) for n in c["rows"][:CURVE_ROWS]]
+  svg = ['<svg viewBox="0 0 700 220" role="img" style="width:100%;max-width:700px;height:auto">',
+         '<g stroke="var(--track)" fill="none">' + "".join(f'<line x1="40" x2="560" y1="{y(v)}" y2="{y(v)}"/>' for v in (0, 25, 50, 75, 100)) + "</g>",
+         '<g fill="var(--tx-3)" font-size="10">' + "".join(f'<text x="34" y="{y(v) + 3}" text-anchor="end">{v}%</text>' for v in (0, 25, 50, 75, 100))
+         + "".join(f'<text x="{x(n)}" y="208" text-anchor="middle">{n}</text>' for n in lengths) + "</g>"]
+  legend = []
+  for i, (name, vals) in enumerate(v for v in series if any(m is not None for _, m in v[1])):
+    color = "var(--tx)" if name == "prefill" else CURVE_LINES[(i - 1) % len(CURVE_LINES)]
+    xy = [(x(n), y(m)) for n, m in vals if m is not None]
+    svg.append(f'<polyline fill="none" stroke="{color}" stroke-width="{2.5 if name == "prefill" else 1.5}" points="'
+               + " ".join(f"{a:.1f},{b:.1f}" for a, b in xy) + '"/>')
+    svg += [f'<circle cx="{a:.1f}" cy="{b:.1f}" r="2.5" fill="{color}"/>' for a, b in xy]
+    legend.append(f'<text x="572" y="{20 + 14 * len(legend)}" font-size="10.5" fill="{color}">{_e(name[:22])}</text>')
+  svg += legend + ["</svg>"]
+  head = "<th>prompt tokens</th><th>prefill ms</th><th>tok/s</th><th>MFU</th><th>ms at ceiling</th><th>chunk</th><th>throttled</th>"
+  body = "".join(f'<tr><td>{p["length"]}</td><td>{p["ms"]:.1f}</td><td>{p["tok_s"]:.0f}</td><td>{_f(p.get("mfu_pct"), "{:.1f}%")}</td>'
+                 f'<td>{_f(p.get("ceiling_ms"), "{:.1f}")}</td><td>{_e(p.get("chunk_size") or "")}{"" if p.get("batched") else " (not batched)"}</td>'
+                 f'<td>{"yes" if p.get("throttled") else "no"}</td></tr>' for p in pts)
+  rhead = "<th>row</th>" + "".join(f"<th>{n}: ms (MFU)</th>" for n in lengths)
+  rbody = "".join("<tr><td>" + _e(n) + "</td>" + "".join(
+    f'<td>{_f((p["rows"].get(n) or {}).get("ms"), "{:.2f}")}'
+    + (f' ({(p["rows"].get(n) or {})["mfu_pct"]:.0f}%)' if (p["rows"].get(n) or {}).get("mfu_pct") is not None else "") + "</td>"
+    for p in pts) + "</tr>" for n in c["rows"])
+  html = (f'<p class="muted" style="margin:0 0 10px">{_e(c["words"])}</p>{"".join(svg)}'
+          f'<div class="tscroll"><table class="tie where"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+          f'<div class="tscroll"><table class="tie where"><thead><tr>{rhead}</tr></thead><tbody>{rbody}</tbody></table></div>')
+  return _section(2, "Prefill against prompt length", html)
 
 
 def _per_role(loss:dict[str, Any]) -> str:
@@ -953,7 +995,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
   measured = _measured(loss) is not None
   sections = _answer(manifest, results, measure, source_run)
   if measured:
-    sections += _where(loss) + _where_token(loss) + _per_role(loss) + _next(loss, policy)
+    sections += _where(loss) + _where_token(loss) + _prefill_curve(loss) + _per_role(loss) + _next(loss, policy)
   sections += _probe(results) + _facts(manifest, results, measure, gameplan)
   sections = _number(sections)
   return (

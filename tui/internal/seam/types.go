@@ -643,6 +643,8 @@ type Loss struct {
 	// WhereTokenGoes is the tie-out as one ranked table of what each part costs the token
 	// (workflow/tie_out.py where_token_goes); every renderer reads it, none recomputes it.
 	WhereTokenGoes *Where `json:"where_token_goes"`
+	// Per is "per prefill" on a prefill run (workflow/prefill.py); nil on decode, whose times are per token.
+	Per *string `json:"per"`
 }
 
 // Where is "Where the token goes": rows worst first, summing to TokenMs (now) and LimitMs (at the limit).
@@ -658,6 +660,9 @@ type Where struct {
 	NoLimit  string     `json:"no_limit"`
 	Words    string     `json:"words"`
 	Rows     []WhereRow `json:"rows"`
+	// SumCells is the sum row as text, Cells on each row the row as text after its name, in Columns' order: the
+	// renderers print them and format no number of their own (one table for decode and prefill).
+	SumCells []string `json:"sum_cells"`
 }
 
 // WhereRow is one part of the token. LimitMs is nil where the limit has no bytes for it ("no limit"); Share and
@@ -671,6 +676,7 @@ type WhereRow struct {
 	Share       *float64 `json:"share"`
 	TokSIfFixed *float64 `json:"tok_s_if_fixed"`
 	PctPeak     *float64 `json:"pct_peak"`
+	Cells       []string `json:"cells"`
 }
 
 // Estimate is an isolated run's scaled split of the token (workflow/tie_out.py _isolated). When the rows carry a

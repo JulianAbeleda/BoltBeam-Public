@@ -657,7 +657,7 @@ func tieOutBody(t *seam.TieOut) string {
 }
 
 // whereBody is "Where the token goes": what each part costs the token, worst first, read from the seam. On a
-// narrow page % OF PEAK goes first, then SHARE, so no row is cut.
+// narrow page the peak column (% OF PEAK, MFU) goes first, then SHARE, so no row is cut.
 func whereBody(w *seam.Where) string {
 	if w == nil || len(w.Rows) == 0 {
 		return ""
@@ -669,7 +669,8 @@ func whereBody(w *seam.Where) string {
 	var b strings.Builder
 	b.WriteString("\n" + stHeader.Render(title) + "\n")
 	b.WriteString(stMuted.Render(w.Words) + "\n")
-	for _, drop := range [][]string{nil, {"% PEAK"}, {"% PEAK", "SHARE"}} {
+	last := strings.ToUpper(w.Columns[len(w.Columns)-1]) // the peak column goes first, then the share
+	for _, drop := range [][]string{nil, {last}, {last, "SHARE"}} {
 		if t := whereTable(w, drop); maxWidth(t) <= tableWidth || len(drop) == 2 {
 			b.WriteString(t)
 			break
@@ -679,23 +680,15 @@ func whereBody(w *seam.Where) string {
 }
 
 func whereTable(w *seam.Where, drop []string) string {
-	pct := func(v *float64, scale float64, f string) string {
-		if v == nil {
-			return ""
-		}
-		return fmt.Sprintf(f, *v*scale)
+	head := []string{}
+	for _, c := range w.Columns {
+		head = append(head, strings.ToUpper(c))
 	}
-	rows := [][]string{{"ROW", "NOW ms", "AT LIMIT", "LOST ms", "SHARE", "TOK/S IF FIXED", "% PEAK"}}
+	rows := [][]string{head}
 	for _, r := range w.Rows {
-		at := w.NoLimit
-		if r.LimitMs != nil {
-			at = fmt.Sprintf("%.2f", *r.LimitMs)
-		}
-		rows = append(rows, []string{r.Name, fmt.Sprintf("%.2f", r.NowMs), at, fmt.Sprintf("%.2f", r.LostMs),
-			pct(r.Share, 100, "%.0f%%"), pct(r.TokSIfFixed, 1, "%.1f"), pct(r.PctPeak, 1, "%.1f%%")})
+		rows = append(rows, append([]string{r.Name}, r.Cells...))
 	}
-	rows = append(rows, []string{"= token", fmt.Sprintf("%.2f", w.TokenMs), fmt.Sprintf("%.2f", w.LimitMs),
-		fmt.Sprintf("%.2f", w.LostMs), "100%", "", ""})
+	rows = append(rows, w.SumCells)
 	keep := []int{}
 	for i, h := range rows[0] {
 		if !slices.Contains(drop, h) {
@@ -705,7 +698,9 @@ func whereTable(w *seam.Where, drop []string) string {
 	for j, row := range rows {
 		cut := []string{}
 		for _, i := range keep {
-			cut = append(cut, row[i])
+			if i < len(row) {
+				cut = append(cut, row[i])
+			}
 		}
 		rows[j] = cut
 	}
@@ -836,9 +831,13 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		tie = &t
 	}
 	b.WriteString(tieOutBody(tie))
-	fmt.Fprintf(&b, "The limit is %.1f ms per token at context 1.\n", *l.LimitMs)
+	per, at := "per token", " at context 1"
+	if l.Per != nil { // a prefill run: its times are per prefill, its limit the sum of its kernels' ceilings
+		per, at = *l.Per, ""
+	}
+	fmt.Fprintf(&b, "The limit is %.1f ms %s%s.\n", *l.LimitMs, per, at)
 	for _, r := range l.Runtimes {
-		what := fmt.Sprintf("%.1f tokens per second, %.1f ms per token", r.TokS, r.Ms)
+		what := fmt.Sprintf("%.1f tokens per second, %.1f ms %s", r.TokS, r.Ms, per)
 		if r.Isolated { // a sum of kernels timed alone is not a token: it has no "lost"
 			fmt.Fprintf(&b, "%s %s per role: %.1f ms, the kernels timed alone and summed.\n", mark("open"), r.Provider, r.Ms)
 			b.WriteString("  " + stMuted.Render("Not a token: attention, norms and gaps are not in it.") + "\n")
