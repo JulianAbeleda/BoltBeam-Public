@@ -127,9 +127,12 @@ def classify_pathology(
   # Barrier explosion.
   if barriers is not None:
     if exp_barr is not None and barriers > t["barrier_ratio_high"] * exp_barr:
+      # A zero expectation is a barrier-free baseline; any observed barrier exceeds it, but no ratio exists.
+      reason = (f"barrier_count={barriers:.0f} exceeds expected=0 (barrier-free baseline)." if exp_barr == 0 else
+                f"barrier_count={barriers:.0f} is {barriers/exp_barr:.1f}× expected={exp_barr:.0f}.")
       return _report(
         PathologyClass.BARRIER_EXPLOSION,
-        f"barrier_count={barriers:.0f} is {barriers/exp_barr:.1f}× expected={exp_barr:.0f}.",
+        reason,
         "Inspect generated loop/barrier structure; remove redundant barriers in emitter.",
         "reopen when barrier_count ≤ expected_barrier_count × 2",
         ["barrier_count", "expected_barrier_count"],
