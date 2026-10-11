@@ -19,6 +19,7 @@ ENGINES is the one table of them. A run is labelled with its engine and its weig
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -197,7 +198,6 @@ def available(target, *, tinygrad_root:pathlib.Path | None = None) -> list[dict[
 
 BUSY_PCT = 40  # the lowest of SAMPLES Apple GPU utilization reads at or above this: another program uses the GPU
 SAMPLES = 3  # the desktop alone reads 0 to 15 percent; a model decoding holds it near 100
-HEAVY = re.compile(r"llama-server|llama-cli|llama-bench|ollama|lm ?studio|mlx|tinygrad", re.I)
 
 
 def _run(argv:list[str]) -> str:
@@ -207,31 +207,53 @@ def _run(argv:list[str]) -> str:
   return proc.stdout
 
 
-def nvidia_holders(text:str, uuids:set[str] | None = None) -> list[str]:
-  """`nvidia-smi --query-compute-apps=pid,process_name,used_memory,gpu_uuid --format=csv,noheader,nounits` as
-  sentences; with uuids, only the programs on those GPUs."""
+def own_pids(ps:str, me:int) -> set[int]:
+  """me and every process below it, from `ps -axo pid=,ppid=`: our own measurement processes."""
+  kids:dict[int, list[int]] = {}
+  for line in ps.strip().splitlines():
+    parts = line.split()
+    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+      kids.setdefault(int(parts[1]), []).append(int(parts[0]))
+  out, todo = set(), [me]
+  while todo:
+    pid = todo.pop()
+    if pid not in out:
+      out.add(pid)
+      todo.extend(kids.get(pid, []))
+  return out
+
+
+def nvidia_holders(text:str, uuids:set[str] | None = None, own:set[int] = frozenset()) -> list[dict[str, Any]]:
+  """The driver's list of compute processes, from `nvidia-smi --query-compute-apps=pid,process_name,used_memory,
+  gpu_uuid --format=csv,noheader,nounits`: {pid, name, memory_mib}. With uuids, only those GPUs. own is skipped."""
   out = []
   for line in text.strip().splitlines():
     parts = [p.strip() for p in line.split(",")]
     if uuids is not None and len(parts) >= 4 and parts[3] not in uuids:
       continue
-    if len(parts) >= 3 and parts[0].isdigit():
-      out.append(f"{pathlib.Path(parts[1]).name} (pid {parts[0]}) holds {parts[2]} MiB")
+    if len(parts) >= 3 and parts[0].isdigit() and int(parts[0]) not in own:
+      mem = parts[2]
+      out.append({"pid": int(parts[0]), "name": pathlib.Path(parts[1]).name,
+                  "memory_mib": int(mem) if mem.isdigit() else None})
   return out
 
 
-def amd_holders(text:str) -> list[str]:
-  """`rocm-smi --showpids --json` as sentences."""
+def amd_holders(text:str, own:set[int] = frozenset()) -> list[dict[str, Any]]:
+  """The driver's list of processes with the GPU open, from `rocm-smi --showpids --json`. It gives no memory."""
   try:
     data = json.loads(text)
   except json.JSONDecodeError:
     return []
   out = []
   for key, val in (data.get("system") or {}).items():
-    if key.startswith("PID") and isinstance(val, str):
-      name = val.split(",")[0].strip()
-      out.append(f"{name} (pid {key[3:]}) has the GPU open")
+    if key.startswith("PID") and key[3:].isdigit() and isinstance(val, str) and int(key[3:]) not in own:
+      out.append({"pid": int(key[3:]), "name": val.split(",")[0].strip(), "memory_mib": None})
   return out
+
+
+def holder_sentence(h:dict[str, Any]) -> str:
+  mem = f"holds {h['memory_mib']} MiB" if h.get("memory_mib") is not None else "has the GPU open"
+  return f"{h['name']} (pid {h['pid']}) {mem}"
 
 
 def apple_busy(ioreg:str) -> int | None:
@@ -240,25 +262,19 @@ def apple_busy(ioreg:str) -> int | None:
   return int(m.group(1)) if m else None
 
 
-def heavy_processes(ps:str) -> list[str]:
-  """Programs from `ps -axo pid=,comm=` that are known to run models on the GPU."""
-  out = []
-  for line in ps.strip().splitlines():
-    pid, _, comm = line.strip().partition(" ")
-    if HEAVY.search(comm) and pid.isdigit():
-      out.append(f"{pathlib.Path(comm.strip()).name} (pid {pid})")
-  return out
-
-
-def gpu_free(backend:str, *, run=_run, uuids:set[str] | None = None) -> dict[str, Any]:
-  """{"free": bool, "reason": sentence}. A GPU another program holds gives slower numbers that look real. uuids:
-  only the GPUs the layout uses (every GPU when None)."""
+def gpu_free(backend:str, *, run=_run, uuids:set[str] | None = None, me:int | None = None) -> dict[str, Any]:
+  """{"free": bool, "reason": sentence, "holders": [{pid, name, memory_mib}]}. A GPU another program holds gives
+  slower numbers that look real. The driver says who holds the device; this process and its children do not
+  count. uuids: only the GPUs the layout uses (every GPU when None). Apple's driver names no holders: utilization
+  is the only check there."""
   try:
-    if backend == "CUDA":
-      holders = nvidia_holders(run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory,gpu_uuid",
-                                    "--format=csv,noheader,nounits"]), uuids)
-    elif backend == "AMD":
-      holders = amd_holders(run(["rocm-smi", "--showpids", "--json"]))
+    if backend in ("CUDA", "AMD"):
+      own = own_pids(run(["ps", "-axo", "pid=,ppid="]), os.getpid() if me is None else me)
+      if backend == "CUDA":
+        holders = nvidia_holders(run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory,gpu_uuid",
+                                      "--format=csv,noheader,nounits"]), uuids, own)
+      else:
+        holders = amd_holders(run(["rocm-smi", "--showpids", "--json"]), own)
     elif backend == "Metal" and sys.platform == "darwin":
       reads = []
       for i in range(SAMPLES):
@@ -267,17 +283,18 @@ def gpu_free(backend:str, *, run=_run, uuids:set[str] | None = None) -> dict[str
         reads.append(apple_busy(run(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"])))
       pct = min((r for r in reads if r is not None), default=None)
       if pct is None or pct < BUSY_PCT:
-        return {"free": True, "reason": f"the GPU is {pct if pct is not None else 'not reported as'}% busy"}
-      found = heavy_processes(run(["ps", "-axo", "pid=,comm="]))
-      return {"free": False, "reason": f"the GPU is {pct}% busy" + (": " + "; ".join(found) if found else
-                                                                    "; quit the program using it")}
+        return {"free": True, "holders": [],
+                "reason": f"the GPU is {pct if pct is not None else 'not reported as'}% busy"}
+      return {"free": False, "holders": [], "reason": f"the GPU is {pct}% busy; the driver does not say which "
+                                                      "program holds it, so quit the program using it"}
     else:
-      return {"free": True, "reason": f"no GPU check for {backend} on {sys.platform}"}
+      return {"free": True, "holders": [], "reason": f"no GPU check for {backend} on {sys.platform}"}
   except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
-    return {"free": False, "reason": f"the GPU could not be read: {exc}"}
+    return {"free": False, "holders": [], "reason": f"the GPU could not be read: {exc}"}
   if holders:
-    return {"free": False, "reason": "the GPU is in use: " + "; ".join(holders)}
-  return {"free": True, "reason": "no other program holds the GPU"}
+    return {"free": False, "holders": holders,
+            "reason": "the GPU is in use: " + "; ".join(holder_sentence(h) for h in holders)}
+  return {"free": True, "holders": [], "reason": "no other program holds the GPU"}
 
 
 # --- step 4: whole step in tinygrad --------------------------------------------------------------------------
