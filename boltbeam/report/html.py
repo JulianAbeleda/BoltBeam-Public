@@ -34,23 +34,13 @@ STAGES: tuple[tuple[str, str, str], ...] = (
   ("output",        "output",      "policy / report / provider plan"),
 )
 
-# Plain words, the same ones boltbeam-tui prints (tui/internal/ui/render.go: plainStage, plainNeed, plainStatus,
-# plainBucket, plainRegime, plainRoute). The page shows the plain word first and the record's id small beside it.
+# Plain words, the same ones boltbeam-tui prints (tui/internal/ui/render.go: plainStage, plainRoute). The page shows the plain word first and the record's id small beside it.
 # tests/test_report_html.py checks these tables against render.go, so the two screens cannot drift apart.
 PLAIN_STAGE = {"load": "Read the model", "autoscan": "Check the machine", "analyze": "Plan what to try",
                "runner_plan": "Prepare the handoff", "ingest_probe": "Test the building blocks",
                "ingest_timing": "Time the real run", "output": "Package the result"}
-PLAIN_STATUS = {"not_analyzed": "not planned yet", "needs_measurement": "needs measuring", "policy_seeded": "plan ready"}
-PLAIN_NEED = {"probe_evidence": "the building-block tests", "timing_trace": "a timing trace"}
 PLAIN_ROUTE = {"promoted": "kept", "refuted": "ruled out", "blocked": "undecided", "unmeasured": "default kernel, none compared yet",
                "candidate": "to try"}
-PLAIN_BUCKET = {"at_peak": "at the speed limit", "gemv_codegen_capped": "reads memory slower than it could",
-                "latency_bound": "waiting on memory", "elementwise_dilution": "small kernel, dead time",
-                "activation_bound": "real activation work", "timing_inconclusive": "not clear yet"}
-PLAIN_REGIME = {"streaming_bound": "reads memory at full speed", "occupancy_starved": "not enough work in flight",
-                "dequant_bound": "slowed by unpacking the numbers", "metadata_bound": "slowed by the scale tables",
-                "latency_bound": "waiting on memory", "compute_bound": "limited by the sums",
-                "inconclusive": "not clear yet"}
 
 # Severity of every word the classifiers emit, so the colour follows the meaning. Sources:
 # roofline/roofline_trace.py (kernel buckets), trace/timing.py (role, candidate and dominant buckets),
@@ -298,10 +288,6 @@ def next_step(report:dict[str, Any], plan:dict[str, Any], probe:dict[str, Any] |
   return "Run `boltbeam analyze --run <run>` to build the search and measurement plan."
 
 
-def _code(text:str) -> str:
-  """Plain text with `backticks` as an HTML fragment with <code>."""
-  parts = text.split("`")
-  return "".join(_e(p) if i % 2 == 0 else f"<code>{_e(p)}</code>" for i, p in enumerate(parts))
 
 
 def roofline_kernels(timing:dict[str, Any], context:Any = None) -> tuple[list[dict[str, Any]], Any]:
