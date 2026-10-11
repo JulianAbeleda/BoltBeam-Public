@@ -441,6 +441,7 @@ class Checker:
     pick = pick_winner(out["candidates"])
     source = next((r for r in measured if pick and r["candidate_hash"] == pick["candidate_hash"]), measured[0] if measured else None)
     compiled = ((((source or {}).get("worker") or {}).get("provider") or {}).get("compile") or {}).get("result") or {}
+    out["unfused_model_bound"] = (compiled.get("fusion") or {}).get("model_bound") is True
     for node in (compiled.get("fusion") or {}).get("unfused") or []:
       name = str(node.get("node"))
       if name not in order:
@@ -895,6 +896,8 @@ def fusion_verdict(proposal:Mapping[str, Any], check:Mapping[str, Any] | None, l
                              if alone else "the provider returned no unfused kernels")
   if not every:
     return out | {"verdict": "not_reproduced", "reason": "not decided: " + out["unfused"]["why"]}
+  if check.get("unfused_model_bound") is not True:
+    return out | {"verdict": "not_reproduced", "reason": "not decided: unfused kernels are not identified as model-bound"}
   if out["in_model_ms"] is None:
     return out | {"verdict": "not_reproduced", "reason": "the tie-out has no in-model time for the rows this fusion replaces"}
   if lower is not None and fused_ms >= lower * (1.0 - band):
@@ -1062,6 +1065,9 @@ def compare_flash(run:pathlib.Path, *, root:pathlib.Path, device:str, checker:An
   installed = described.get("installed") or {}
   if installed.get("refused"):
     return row | {"verdict": "rejected", "reason": f"rejected by the kernel's own validate: {installed['refused']}"}
+  if installed.get("model_bound") is not True:
+    return row | {"verdict": "not_searched", "reason": "not decided: provider describes a candidate route, not the model-bound flash kernel"}
+
   facts = dict(described.get("target") or {})
   from boltbeam.plan.resolved_target import candidate_target, resolved_target_document
   target = candidate_target(resolved_target_document(str(load_target_id(run)), facts)) if facts.get("backend") else None

@@ -60,11 +60,12 @@ def propose(shape:Mapping[str, int], context:int, target:Mapping[str, Any], inst
   subgroup = int(target["subgroup_size"])
   lanes = sorted({w for w in (subgroup, subgroup // 2) if w > 0 and w & (w - 1) == 0}, reverse=True)
   groups = [None] + [g for g in range(2, hq // hkv + 1) if (hq // hkv) % g == 0]
-  base = {"Hq": hq, "Hd": hd, "Hkv": hkv, "MAXC": max_context(context), "split_count": int(installed["split_count"]),
-          "staging": installed.get("staging") or "KV_BOTH", "quant": False, "rope": False, "token_block": 16,
-          "lane_width": lanes[0] if lanes else subgroup, "score_group_width": None, "warps": None,
-          "query_group_size": installed.get("query_group_size"), "stage_width": int(installed.get("stage_width") or 1),
-          "reduce_structure": "staged", "dot_pair_width": 2}
+  required = ("split_count", "staging", "token_block", "lane_width", "score_group_width", "warps",
+              "query_group_size", "stage_width", "reduce_structure", "dot_pair_width", "MAXC")
+  missing = [key for key in required if key not in installed]
+  if missing:
+    return {"candidates": [], "installed_hash": None, "refused": [{"reason": "installed geometry missing: " + ", ".join(missing)}]}
+  base = {"Hq": hq, "Hd": hd, "Hkv": hkv, "quant": False, "rope": False, **{key: installed[key] for key in required}}
   rows = [dict(base)]
   for lane in lanes:
     for group in groups:

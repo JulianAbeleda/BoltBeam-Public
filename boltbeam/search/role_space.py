@@ -110,19 +110,9 @@ def block_unit_space(family:Mapping[str, Any], kind:Mapping[str, Any], quant:str
     return {"why": "the target names no subgroup size, so no row-per-subgroup launch can be proposed"}
   rows = subgroup_row_block_unit_rows(code_bytes=mine, unit_bytes=unit, block_elems=native.BLOCK_ELEMS[q],
                                       subgroup_size=subgroup_size, max_threads=max_threads)
-  installed = None
-  rule = family.get("installed_rule")
-  if isinstance(rule, Mapping) and shape is not None and isinstance(sm_count, int) and sm_count > 0:
-    per_lane = int(rule["units_per_lane"])
-    lanes = max(1, units // per_lane)
-    while lanes > subgroup_size: lanes //= 2
-    cap = int(rule["max_warps_per_cta"])
-    if isinstance(max_threads, int): cap = min(cap, max_threads // subgroup_size)
-    g = 1
-    while g * 2 <= cap and -(-shape[0] // (g * 2)) >= int(rule["min_ctas_per_sm"]) * sm_count: g *= 2
-    installed = {"schedule.launch.threads": g * subgroup_size, "schedule.tile.n": g, "schedule.tile.k": native.BLOCK_ELEMS[q],
-                 "schedule.memory.b.vector_width": mine // lanes, "schedule.memory.a.space": "global", "schedule.pipeline.stage_count": 1}
-  return {"why": None, "rows": rows, "installed_row": installed}
+  # Candidate geometry is not evidence of what the model bound. That metadata must come from the provider.
+  return {"why": None, "rows": rows, "installed_row": None}
+
 
 
 def proposal_inputs(describe:Mapping[str, Any], facts:Mapping[str, Any], quant:str, *, subgroup_size:int | None = None,
@@ -157,8 +147,14 @@ def proposal_inputs(describe:Mapping[str, Any], facts:Mapping[str, Any], quant:s
         generators.append(f"provider emitter rows ({family['family']})")
       rows += mine
       names.append(family["family"])
-      installed = installed or here
+      # Family defaults describe candidates, not the model-bound kernel.
+      installed = None
     if not rows: return {"why": "; ".join(whys), "binds_through": kind}
+    binding = describe.get("model_binding") or {}
+    if (binding.get("quant") == quant.upper() and tuple(binding.get("shape") or []) == shape and
+        binding.get("model_bound") is True and isinstance(binding.get("installed_row"), Mapping)):
+      installed = dict(binding["installed_row"])
+      if installed not in rows: rows.append(installed)
     return {"schedule": dict(SEED_SCHEDULE), "axis_choices": {}, "coupled_rows": rows, "family": "+".join(names),
             "installed_row": installed, "binds_through": kind, "why": None, "generator": "; ".join(generators),
             "refused_families": whys}
