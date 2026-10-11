@@ -294,6 +294,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     t["path"] = kernel_path(t["name"], kernel_paths)
     t["durations"] = sorted(l["raw_wall_us"] for l in t["launches"])
     t["attention"] = kind_of({"kernel": t["name"]}) == "attention"  # attention's work is its own row, never a role's
+    t["recurrent"] = kind_of({"kernel": t["name"]}) == "recurrent"  # so is a recurrent block's scan and convolution
   rows: list[dict[str, Any]] = []
   taken: set[int] = set()
   shapes: dict[int, list[tuple[dict[str, Any], float]]] = {}  # a paired GEMM launch -> its roles, weighted by count
@@ -377,6 +378,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   others: dict[str, dict[str, Any]] = {}
   att = work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths, formats.get("kv") or "F16",
                        formats.get("attention_activations") or acts, depth=depth) if profile else None
+  rec = work.recurrent(profile or {}, length or int(sum(chunk_widths)), chunk_widths) if profile else None
   for ti, t in enumerate(templates):
     if ti in taken:
       continue
@@ -385,7 +387,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
         continue
       # attention's kernels are one row with attention's work, except one with no matrix instruction (its fixup):
       # that, like every other kernel, is its own row, named by its template's stem
-      kind = "attention" if t.get("attention") and t["path"]["status"] != "none" else stem(t["template"])
+      kind = ("attention" if t.get("attention") and t["path"]["status"] != "none" else
+              "recurrent" if t.get("recurrent") and rec else stem(t["template"]))
       o = others.setdefault(kind, {"calls": 0, "wall_us": 0.0, "templates": {}})
       o["calls"] += 1
       o["wall_us"] += l["wall_us"]
@@ -396,6 +399,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       t = {"path": _merge_paths(list(o["templates"].values())), "template": " + ".join(sorted(o["templates"]))}
       rows.append(_row("attention", "attention", t, o["calls"], o["wall_us"], att["flops"], att["bytes"], peaks, bandwidth_gbs,
                        note=att["words"]))
+    elif kind == "recurrent" and rec:
+      rows.append(_recurrent_row(o, rec, peaks, bandwidth_gbs))
     elif (fix := _fixup_row(kind, o, ordered, shapes, formats, mean_m, bandwidth_gbs, cache)) is not None:
       rows.append(fix)
     else:
@@ -457,6 +462,24 @@ def _row(name:str, what:str, t:dict[str, Any], calls:int, wall_us:float, flops:f
           "mfu_pct": work.mfu(flops, ms, peak) if path["status"] in ("one", "mixed") else None,
           "refused": refused, "mixed": path["status"] == "mixed",
           **({"path_shares": work.path_shares(path["paths"])} if path["status"] == "mixed" else {}), **extra}
+
+
+def _recurrent_row(o:dict[str, Any], rec:dict[str, Any], peaks:dict[str, float], bandwidth_gbs:float | None) -> dict[str, Any]:
+  """The recurrent kernels as one row with the recurrent block's work (prefill_work.recurrent). Their code issues no
+  matrix instruction, so the compute side is the measured fp32 vector rate; a kernel whose code was found to use a
+  matrix path keeps that path. With no measured fp32 rate the row is bound by its bytes alone and says so."""
+  merged = _merge_paths(list(o["templates"].values()))
+  if merged["status"] in ("one", "mixed"):
+    path = merged
+  elif merged["status"] == "not_found":
+    path = merged  # the code was not read: no compute side is claimed
+  elif rec["path"] in peaks:
+    path = {"status": "one", "paths": {rec["path"]: 1}, "path": rec["path"], "words": "fp32 vector (no matrix instruction)"}
+  else:
+    path = {"status": "none", "paths": {}, "path": None, "words": "no matrix instruction; no measured fp32 vector rate"}
+  t = {"path": path, "template": " + ".join(sorted(o["templates"]))}
+  return _row("recurrent", "recurrent", t, o["calls"], o["wall_us"], rec["flops"], rec["bytes"], peaks, bandwidth_gbs,
+              note=rec["words"])
 
 
 FIXUP_WORD = "stream_k_fixup"  # a kernel that combines the partial tiles a stream-k GEMM left (kind word, in its name)

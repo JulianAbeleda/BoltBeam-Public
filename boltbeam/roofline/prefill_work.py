@@ -79,6 +79,65 @@ def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None
                    f"{heads} heads, {attention_layers} layers"}
 
 
+def recurrent(profile:dict[str, Any], length:int, chunks:list[int] | None = None,
+              element_bytes:int = 4) -> dict[str, Any] | None:
+  """A recurrent block's prompt work over its layers (Gated DeltaNet / Mamba-style scan plus its short causal
+  convolution), from the profile's recurrent shape. None when the model has no recurrent layers.
+
+  The scan keeps an S x S state per head (S = state_size, H = inner_size / S heads) and per token per state column
+  does kv = S.k (2S), the update S = g S + k delta (3S) and the output S.q (2S): 7 x S^2 x H operations per token
+  per layer. Its bytes: q, k and v in, g and beta in, the output out, per token, and the whole state read once and
+  written once per launch (one launch per engine chunk). The convolution (width conv_kernel over inner + 2 x groups x
+  state channels) adds 2 x width operations and an f32 read and write per channel per token. The scan issues no
+  matrix instruction, so its compute side is the fp32 vector rate; the context depth does not change it (the state
+  is fixed-size)."""
+  r = (profile.get("metadata") or {}).get("recurrent") or {}
+  layers, state, inner = r.get("layer_count"), r.get("state_size"), r.get("inner_size")
+  if not (layers and state and inner):
+    return None
+  heads = inner // state
+  groups = int(r.get("group_count") or 0)
+  width = int(r.get("conv_kernel") or 0)
+  qk = (groups * state if groups else inner)
+  launches = len(chunks) if chunks else 1
+  scan_flops = 7.0 * state * state * heads * length
+  scan_bytes = launches * 2.0 * heads * state * state * element_bytes + length * (2 * qk + 2 * inner + 2 * heads) * element_bytes
+  channels = inner + 2 * groups * state
+  conv_flops = 2.0 * width * channels * length if width else 0.0
+  conv_bytes = 2.0 * channels * length * element_bytes if width else 0.0
+  return {"flops": layers * (scan_flops + conv_flops), "bytes": layers * (scan_bytes + conv_bytes), "layers": layers,
+          "path": FP32_PATH,
+          "words": f"recurrent scan: 7 x {state}^2 x {heads} heads per token, state {heads} x {state}^2 read and written "
+                   f"once per launch ({launches}), {layers} layers" + (f"; convolution width {width} over {channels} "
+                   f"channels" if width else "")}
+
+
+FP32_PATH = "fp32_fma"  # the measured vector path (cuda_compute.PATHS) a kernel with no matrix instruction runs on
+
+
+def peaks_at(peaks:dict[str, float], source:dict[str, Any] | None, sm_mhz:float | None) -> tuple[dict[str, float], str]:
+  """Each measured path's rate at the SM clock the run actually held: its measured rate x observed / measured clock
+  (the probe stores both, per path). Paths without a measured clock, and every path when no clock was observed,
+  keep their measured rate; the words say which. Bandwidth is not scaled (the memory clock does not follow the SM
+  clock under a power cap)."""
+  paths = (source or {}).get("paths") or {}
+  if not sm_mhz:
+    return dict(peaks), "peaks at the clock they were measured at (no SM clock was observed for this run)"
+  out, scaled, measured = {}, [], set()
+  for name, tops in peaks.items():
+    at = (paths.get(name) or {}).get("sm_mhz")
+    if at:
+      out[name] = tops * sm_mhz / at
+      scaled.append(name)
+      measured.add(round(at))
+    else:
+      out[name] = tops
+  if not scaled:
+    return out, "peaks at the clock they were measured at (the peak source records no clock)"
+  at_words = ", ".join(f"{m:,}" for m in sorted(measured))
+  return out, f"peaks scaled to the {sm_mhz:,.0f} MHz SM clock observed (measured at {at_words} MHz)"
+
+
 SWEEP_FIRST = 512  # the first prompt length of a sweep
 SWEEP_STEP = 4  # each next length is this many times the last, up to the binding cap, which is the last point
 

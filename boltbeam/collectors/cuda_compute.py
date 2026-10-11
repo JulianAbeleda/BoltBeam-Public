@@ -8,7 +8,9 @@ integer matrix instruction runs at four times the fp16 one on some chips), so a 
 wrong by that factor. Each path here is one PTX matrix instruction (PATHS, data): the kernel keeps ACC independent
 accumulators per warp in registers and issues the instruction in a loop, so no memory is read and the rate is the
 unit's own. A path whose instruction this GPU or toolkit cannot compile is recorded as not available, with nvcc's
-words; nothing is assumed about which chip has which path.
+words; nothing is assumed about which chip has which path. One path is not a matrix instruction: `fp32_fma`, the
+vector ALU's fused multiply-add, the rate of a kernel that issues no matrix instruction at all (a recurrent block's
+scan); it is measured the same way, with each lane's accumulators in registers.
 
 The figure kept is the plateau, not a burst: the best launch shape is found with a few short samples, then run back
 to back for `seconds` while the telemetry sampler (gpu_telemetry.py) logs the clock; the rate is the median launch of
@@ -54,6 +56,7 @@ class Path:
   arch_suffix: str = ""
   extra: str = ""
   words: str = ""
+  kind: str = "mma"  # mma: one warp-wide matrix instruction; fma: one fused multiply-add per lane per accumulator
 
 
 PATHS = (
@@ -66,11 +69,14 @@ PATHS = (
   Path("fp4", "mma.sync.aligned.m16n8k64.row.col.kind::mxf4.block_scale.scale_vec::2X.f32.e2m1.e2m1.f32.ue8m0",
        16, 8, 64, arch_suffix="a", extra=", {sa}, {{0, 0}}, {sb}, {{0, 0}}",
        words="fp4 e2m1 in with ue8m0 block scales, fp32 accumulate"),
+  Path("fp32_fma", "fma.rn.f32", 1, 1, 1, kind="fma", words="fp32 vector fused multiply-add (no matrix instruction)"),
 )
 
 
 def source(p:Path) -> str:
   """The probe kernel for one path."""
+  if p.kind == "fma":
+    return _fma_source(p)
   acc_n = {"f32": 4, "s32": 4, "f16": 2}[p.acc]
   ctype, cons = {"f32": ("float", "f"), "s32": ("int", "r"), "f16": ("unsigned", "r")}[p.acc]
   d = ", ".join(f"%{i}" for i in range(acc_n))
@@ -110,7 +116,40 @@ extern "C" __global__ void mma_loop(float* out, int iters) {{
 """
 
 
+def _fma_source(p:Path) -> str:
+  """A vector path: each lane keeps ACC x FMA_LANES independent fp32 accumulators and issues one `fma` on each per
+  step, so the rate is the vector ALU's, with no memory read."""
+  return f"""
+extern "C" __global__ void mma_loop(float* out, int iters) {{
+  float a = 1.0f + threadIdx.x * 1e-7f, b = 0.999999f;
+  float c[{ACC}][{FMA_LANES}];
+#pragma unroll
+  for (int k = 0; k < {ACC}; k++)
+#pragma unroll
+    for (int i = 0; i < {FMA_LANES}; i++) c[k][i] = (float)(k * {FMA_LANES} + i);
+  for (int it = 0; it < iters; it++) {{
+#pragma unroll
+    for (int k = 0; k < {ACC}; k++)
+#pragma unroll
+      for (int i = 0; i < {FMA_LANES}; i++)
+        asm volatile("{p.ptx} %0, %1, %2, %0;" : "+f"(c[k][i]) : "f"(a), "f"(b));
+  }}
+  float s = 0.0f;
+#pragma unroll
+  for (int k = 0; k < {ACC}; k++)
+#pragma unroll
+    for (int i = 0; i < {FMA_LANES}; i++) s += c[k][i];
+  out[blockIdx.x * blockDim.x + threadIdx.x] = s;  // every result is kept, so nothing is optimised away
+}}
+"""
+
+
+FMA_LANES = 4  # fp32 accumulators per lane per ACC group: ACC x FMA_LANES independent chains hide the FMA latency
+
+
 def ops_per_launch(p:Path, blocks:int, threads:int, iters:int) -> float:
+  if p.kind == "fma":
+    return blocks * threads * iters * ACC * FMA_LANES * 2.0
   return blocks * (threads // 32) * iters * ACC * 2.0 * p.m * p.n * p.k
 
 

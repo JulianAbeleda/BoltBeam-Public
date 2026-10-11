@@ -78,7 +78,7 @@
       "lds_bytes_per_cu": 102400, "vram_bytes": 33662435328, "vector_load_bits": 128,
       "compute_units": 170, "memory_bandwidth_gbs": 1693.3,
       "peak_tflops": {"fp32": 104.8, "fp16": 104.8, "int8": 180.0},
-      "matrix_tflops": {"fp16": 251.4, "fp16_f16acc": 497.7, "bf16": 251.5, "int8": 995.8, "fp8": 502.8, "fp4": 1988.9},
+      "matrix_tflops": {"fp16": 251.4, "fp16_f16acc": 497.7, "bf16": 251.5, "int8": 995.8, "fp8": 502.8, "fp4": 1988.9, "fp32_fma": 119.7},
       "dot_primitives": ["mma_m16n8k16", "dp4a"],
       "dot_primitives_lowered": [],
       "dequant_primitives": [],
@@ -221,6 +221,16 @@
                 "words": "fp4 e2m1 in with ue8m0 block scales, fp32 accumulate",
                 "throttled": true,
                 "power_w_mean": 583.3
+              },
+              "fp32_fma": {
+                "tops": 119.7,
+                "sm_mhz": 2887.0,
+                "ops_per_sm_per_clock": 243.8,
+                "instruction": "fma.rn.f32",
+                "words": "fp32 vector fused multiply-add (no matrix instruction)",
+                "throttled": false,
+                "power_w_mean": 451.3,
+                "observed_at": "2026-10-11"
               }
             },
             "superseded": "2026-09-23 tinygrad-arkey mma_peak_cuda.cu / imma_peak_cuda.cu read fp16 237.1 TF and int8 947.0 TOPS at 2947 MHz pinned (92.4% of 512 and 2048 ops per SM per clock); this probe reads 99.7 to 99.8% of the same rates"

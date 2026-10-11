@@ -26,6 +26,7 @@ import time
 from typing import Any, Callable
 
 from boltbeam.collectors import gpu_telemetry
+from boltbeam.roofline.prefill_work import peaks_at
 
 TRACE = "prefill_trace.json"
 RAW = "kernel_compare/prefill_capture"
@@ -382,15 +383,18 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     say(f"prefill of {length} tokens in the model{f' after {depth} in the cache' if depth else ''}: {provider}")
     with gpu_telemetry.Telemetry(0) as tele:
       cap = (capture or _engine(provider)["capture"])(run, str(manifest["model_path"]), int(length), target, root)
+    seen = tele.summary()
+    peaks, peaks_clock = peaks_at(dict(target.matrix_tflops or {}), out["peaks_source"], (seen.get("sm_mhz") or {}).get("mean"))
     attr = attribute_prefill(cap["launches"], [dict(r) for r in roles], chunk_widths=cap["chunk"], outputs=cap["outputs"],
                              layers=int(profile.get("layer_count") or 0), kernel_paths=cap["paths"]["kernels"],
-                             peaks=dict(target.matrix_tflops or {}), bandwidth_gbs=bw, profile=profile, length=int(length),
+                             peaks=peaks, bandwidth_gbs=bw, profile=profile, length=int(length),
                              program_roles=cap.get("program_roles"), warmup=cap["warmup"],
                              untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
                              formats=cap.get("formats"), cache=last_level_cache(target), depth=depth)
     per_chunk = len(cap["launches"]) / 2 / max(len(cap["chunk"]), 1) if cap["warmup"] else len(cap["launches"]) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
-                                   "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": tele.summary(),
+                                   "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen,
+                                   "peaks_at": peaks, "peaks_clock": peaks_clock,
                                    "paths_how": cap["paths"]["how"], "libraries": cap["paths"]["libraries"], **attr}
   (run / trace).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
   return out
