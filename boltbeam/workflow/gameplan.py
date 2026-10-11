@@ -217,7 +217,7 @@ def _measured(stem:str, result:dict[str, Any] | None, route:dict[str, Any] | Non
       spread = (f"min {summary['min'] / 1000:.1f}, max {summary['max'] / 1000:.1f} µs over {m.get('samples') or m.get('sample_count') or '?'} samples"
                 if {"min", "max"} <= set(summary) else _nr(file_r, f"population[{i}].measurement.summary_ns"))
       text = role_compare.plan_text(sched)
-      lines.append(f"best plan alone: {text} at {_f(m.get('median_ns'), '{:.0f}', file_r, f'population[{i}].measurement.median_ns')} ns median "
+      lines.append(f"provider rank 1 (ordering only): {text} at {_f(m.get('median_ns'), '{:.0f}', file_r, f'population[{i}].measurement.median_ns')} ns median "
                    f"({spread}); plan_kind {sched.get('plan_kind')}, transforms {json.dumps(sched.get('transforms') or [], sort_keys=True)}")
       ptrs.append(_ptr(file_r, f"population[{i}]"))
       facts.update(best_plan=text, best_median_ns=m.get("median_ns"), plan_kind=sched.get("plan_kind"), transforms=sched.get("transforms"),
@@ -225,15 +225,15 @@ def _measured(stem:str, result:dict[str, Any] | None, route:dict[str, Any] | Non
       default = next(((j, r) for j, r in measured if ((r.get("candidate") or {}).get("schedule") or {}).get("plan_kind") == role_compare.DEFAULT_KIND), None)
       if default is not None:
         j, d = default
-        lines.append(f"the search's own reference kernel: {_f((d.get('measurement') or {}).get('median_ns'), '{:.0f}', file_r, f'population[{j}].measurement.median_ns')} ns median (not the model's kernel)")
+        lines.append(f"provider reference (ordering only): {_f((d.get('measurement') or {}).get('median_ns'), '{:.0f}', file_r, f'population[{j}].measurement.median_ns')} ns median (not the model's kernel)")
         ptrs.append(_ptr(file_r, f"population[{j}]"))
         facts["reference_median_ns"] = (d.get("measurement") or {}).get("median_ns")
   if c is not None:
     k = c.get("kernel") if isinstance(c.get("kernel"), dict) else {}
     where = f"routes[{route_index}].compare" if route_index is not None else "routes[].compare"
-    plan_us, model_us, calls = k.get("plan_us"), k.get("model_us_per_call"), c.get("role_calls_per_token")
+    plan_us, model_us, calls = k.get("plan_us"), k.get("model_kernel_us"), c.get("role_calls_per_token")
     speed = f", {model_us / plan_us:.2f}x" if isinstance(plan_us, (int, float)) and isinstance(model_us, (int, float)) and plan_us else ""
-    lines.append(f"the model's own kernels: {_f(model_us, '{:.1f}', POLICY, where + '.kernel.model_us_per_call')} µs per tensor x "
+    lines.append(f"the model's own kernels: {_f(model_us, '{:.1f}', POLICY, where + '.kernel.model_kernel_us')} µs per tensor x "
                  f"{_f(calls, '{:.0f}', POLICY, where + '.role_calls_per_token')} tensors per token; the plan alone "
                  f"{_f(plan_us, '{:.1f}', POLICY, where + '.kernel.plan_us')} µs{speed}")
     ptrs.append(_ptr(POLICY, where))
@@ -291,12 +291,12 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
   c = (route or {}).get("compare") if isinstance((route or {}).get("compare"), dict) else {}
   k = c.get("kernel") if isinstance(c.get("kernel"), dict) else {}
   best = r.get("best_found") or {}
-  plan_us, model_us, calls = best.get("plan_us", k.get("plan_us")), best.get("model_us", k.get("model_us_per_call")), best.get("calls_per_token", c.get("role_calls_per_token"))
+  plan_us, model_us, calls = best.get("plan_us", k.get("plan_us")), best.get("model_us", k.get("model_kernel_us")), best.get("calls_per_token", c.get("role_calls_per_token"))
   if verdict == "none_faster":
     n = r.get("candidates") if r.get("candidates") is not None else c.get("candidates")
     lines.append(f"nothing to emit: {_f(n, '{}', POLICY, where + '.candidates')} candidates measured, best "
                  f"{_f(plan_us, '{:.1f}', POLICY, where + '.kernel.plan_us')} µs against the model's own "
-                 f"{_f(model_us, '{:.1f}', POLICY, where + '.kernel.model_us_per_call')} µs")
+                 f"{_f(model_us, '{:.1f}', POLICY, where + '.kernel.model_kernel_us')} µs")
     ptrs.append(_ptr(POLICY, where))
     return _layer("promotion", True, lines, {**facts, "plan": "nothing to emit", "candidates": n, "plan_us": plan_us, "model_us": model_us}, ptrs)
   if verdict == "not_reproduced":
@@ -312,7 +312,7 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
   gain = ((model_us - plan_us) * calls / 1000.0) if all(isinstance(x, (int, float)) for x in (model_us, plan_us, calls)) else None
   lines.append(f"plan: {best.get('plan') or c.get('plan') or _nr(POLICY, where + '.plan')}; the plan alone "
                f"{_f(plan_us, '{:.1f}', POLICY, where + '.kernel.plan_us')} µs against the model's own "
-               f"{_f(model_us, '{:.1f}', POLICY, where + '.kernel.model_us_per_call')} µs per call; gain if applied "
+               f"{_f(model_us, '{:.1f}', POLICY, where + '.kernel.model_kernel_us')} µs per call; gain if applied "
                + (f"{gain:.2f} ms per token ({calls:.0f} calls)" if gain is not None else _nr(POLICY, where + ".role_calls_per_token")))
   ptrs.append(_ptr(POLICY, where))
   if verdict == "found_not_applied":

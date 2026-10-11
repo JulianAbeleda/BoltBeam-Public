@@ -340,10 +340,10 @@ def _compare_card(policy:dict[str, Any]) -> str:
       whole = f'{ab["baseline_tok_s"]:.2f} to {ab["candidate_tok_s"]:.2f} ({ab["delta_pct"]:+.1f}%)'
     kn = c.get("kernel") if isinstance(c.get("kernel"), dict) else None
     kernel = "—"
-    if kn and kn.get("model_us_per_call") is not None:
-      kernel = (f'model {kn["model_us_per_call"]:.0f} µs to plan {kn["plan_us"]:.0f} µs '
+    if kn and kn.get("model_kernel_us") is not None and kn.get("plan_us") is not None:
+      kernel = (f'model {kn["model_kernel_us"]:.0f} µs to plan {kn["plan_us"]:.0f} µs '
                 f'({"faster" if kn["faster_than_model"] else "slower"})')
-    elif kn:
+    elif kn and kn.get("plan_us") is not None:
       kernel = f'plan {kn["plan_us"]:.0f} µs alone'
     body.append(f'<tr><td>{_e(r.get("role") or "unknown")}</td><td>{_e(r.get("quant") or "unknown")}</td>'
                 f'<td class="l">{_named(PLAIN_ROUTE, r.get("status") or "unknown", tag=True)}</td>'

@@ -338,29 +338,27 @@ def role_losses(run:pathlib.Path) -> dict[tuple[Any, ...], dict[str, Any]]:
 
 def kernel_numbers(summary:Mapping[str, Any], in_model:Mapping[str, Any] | None = None,
                    verify:Mapping[str, Any] | None = None, tensors:int | None = None) -> dict[str, Any] | None:
-  """Number one of two: the winning plan alone, by BoltBeam's kernel timer (less the dispatch floor) when the check
-  ran, else the provider's claim, beside the model's own kernel. The model's time is the role's kernels inside the
-  running model (tinygrad's role time), per tensor read: a plan reads one of the role's tensors a call, and the model
-  may read several in one call (a fused gate and up), so the role's in-model time is divided by its tensors per
-  token (the model profile's count) when that is known, else by its calls. Never a stand-in for the whole-model
-  number."""
+  """BoltBeam's reproduced, like-for-like kernel times; in-model time is context only."""
   w = summary.get("winner")
   if not w or w.get("median_ns") is None: return None
   mine = ((verify or {}).get("winner") or {}).get("boltbeam") or {}
   model = ((verify or {}).get("model_kernel") or {}).get("boltbeam") or {}
-  plan_us = mine.get("us_less_floor") if mine.get("status") == "measured" else None
-  out = {"plan_us": plan_us if plan_us is not None else w["median_ns"] / 1000.0,
-         "plan_us_source": "BoltBeam's kernel timer, less the dispatch floor" if plan_us is not None else "the provider's claim",
+  plan_us = mine.get("us_less_floor") if ((verify or {}).get("winner") or {}).get("verdict") == provider_check.REPRODUCED else None
+  model_us = model.get("us_less_floor") if ((verify or {}).get("model_kernel") or {}).get("verdict") == provider_check.REPRODUCED else None
+  band = (verify or {}).get("band")
+  out = {"plan_us": plan_us,
+         "plan_us_source": "BoltBeam's kernel timer, less the dispatch floor" if plan_us is not None else None,
          "provider_plan_us": w["median_ns"] / 1000.0,
          "reference_us": (summary.get("default_median_ns") or 0) / 1000.0 if summary.get("default_median_ns") is not None else None,
          "reference": "search fixture heuristic (the provider's time)",
-         "model_kernel_us": model.get("us_less_floor") if model.get("status") == "measured" else None,
-         "model_us_per_call": None, "faster_than_model": None}
+         "model_kernel_us": model_us, "band": band,
+         "model_us_per_call": None, "faster_than_model":
+           plan_us < model_us * (1.0 - band) if plan_us is not None and model_us is not None and band is not None else None}
   if in_model and in_model.get("calls_per_token"):
     # the baseline: the role's own kernels inside the running model, GPU time per tensor at the same shape
     reads = tensors or in_model["calls_per_token"]
     per_call = in_model["actual_ms"] * 1000.0 / reads
-    out.update(model_us_per_call=per_call, faster_than_model=out["plan_us"] < per_call, tensors_per_token=reads,
+    out.update(model_us_per_call=per_call, tensors_per_token=reads,
                model_calls_per_token=in_model["calls_per_token"])
     if tensors and abs(tensors - in_model["calls_per_token"]) > 1e-9:
       out["per_tensor_note"] = (f"the model reads {tensors} tensors of this role per token in {in_model['calls_per_token']:.0f} "
@@ -440,8 +438,7 @@ class Checker:
                                                  cols=cols, weights=weights, seed=proposal["name"], label=entry["plan"], libraries=self.libraries))
       out["candidates"].append({"candidate_hash": entry["candidate_hash"], "plan": entry["plan"], "provider_rank": row.get("rank"),
                                 "boltbeam": mine, **provider_check.judge(entry.get("median_ns"), mine, self.band)})
-    timed = [c for c in out["candidates"] if c["boltbeam"].get("status") == "measured"]
-    pick = min(timed, key=lambda c: c["boltbeam"]["us_less_floor"], default=None)
+    pick = pick_winner(out["candidates"])
     source = next((r for r in measured if pick and r["candidate_hash"] == pick["candidate_hash"]), measured[0] if measured else None)
     compiled = ((((source or {}).get("worker") or {}).get("provider") or {}).get("compile") or {}).get("result") or {}
     for node in (compiled.get("fusion") or {}).get("unfused") or []:
@@ -463,17 +460,24 @@ class Checker:
                               label=label, libraries=self.libraries)
 
 
+def pick_winner(candidates, installed=None, band=0.0):
+  """One winner rule: fastest own measurement must reproduce; retain installed inside the band."""
+  timed = [c for c in candidates if (c.get("boltbeam") or {}).get("status") == "measured"]
+  best = min(timed, key=lambda c: c["boltbeam"]["us_less_floor"], default=None)
+  if (best and best.get("verdict") == provider_check.REPRODUCED and installed and
+      installed.get("verdict") == provider_check.REPRODUCED and
+      best["boltbeam"]["us_less_floor"] >= installed["boltbeam"]["us_less_floor"] * (1.0 - band)):
+    return installed
+  return best
+
+
 def checked(summary:Mapping[str, Any], verify:Mapping[str, Any]) -> dict[str, Any]:
-  """The provider's winner and the model's own kernel as BoltBeam judged them, and BoltBeam's own winner: the fastest
-  candidate BoltBeam measured correct (its time less the floor). Its claim must reproduce for any decision: a slower
-  candidate whose claim happened to reproduce never stands in for it, since that would refute plans BoltBeam itself
-  found faster."""
+  """Provider and installed rows, plus the single BoltBeam winner rule."""
   rows = {c["candidate_hash"]: c for c in verify.get("candidates") or []}
   out = {k: rows.get((summary.get(k) or {}).get("candidate_hash")) for k in ("winner", "model_kernel")}
-  timed = [c for c in rows.values() if (c.get("boltbeam") or {}).get("status") == "measured"]
-  good = [c for c in rows.values() if c.get("verdict") == provider_check.REPRODUCED]
-  out["boltbeam_winner"] = min(timed, key=lambda c: c["boltbeam"]["us_less_floor"], default=None)
-  out["reproduced"], out["not_reproduced"] = len(good), len(rows) - len(good)
+  out["boltbeam_winner"] = pick_winner(rows.values(), out["model_kernel"], verify.get("band", 0.0))
+  out["reproduced"] = sum(c.get("verdict") == provider_check.REPRODUCED for c in rows.values())
+  out["not_reproduced"] = len(rows) - out["reproduced"]
   return out
 
 
@@ -541,8 +545,8 @@ def default_wins(route:Mapping[str, Any], winner:Mapping[str, Any], *, model_id:
   """The search's fastest kernel is the reference or the model's own kernel: no plan to try, a firm refutation."""
   role, quant = str(route["role"]), str(route["quant"])
   which = "the model's own kernel" if model_kernel else "the search reference kernel"
-  ref = EvidenceRef(evidence_id=search_sha, path=search_path, kind="full_kernel_search", fingerprint=f"sha256:{search_sha}",
-                    claim=f"{which} is the fastest measured {role} {quant} kernel")
+  ref = EvidenceRef(evidence_id=search_sha, path=search_path, kind="boltbeam_kernel_check", fingerprint=f"sha256:{search_sha}",
+                    claim=f"no reproduced plan beats {which} outside the chip band for {role} {quant}")
   return CandidateDecision(candidate_id=plan_id(role, quant, winner), model_id=model_id, target_id=target_id,
                            workload="decode", verdict=Verdict.REFUTE.value, evidence=(ref,),
                            reason=f"no searched plan beat {which} alone",
@@ -721,7 +725,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
         model_row = summary.get("model_kernel")
         winner["is_model_kernel"] = bool(model_row) and model_row["candidate_hash"] == pick
         summary["winner"] = winner
-        verify = {"winner": judged["boltbeam_winner"], "model_kernel": judged.get("model_kernel")}
+        verify = {"winner": judged["boltbeam_winner"], "model_kernel": judged.get("model_kernel"), "band": verify.get("band")}
     reproduced = bool(verify) and (verify.get("winner") or {}).get("verdict") == provider_check.REPRODUCED
     k_numbers = kernel_numbers(summary, losses.get(rk), verify if reproduced else None, counts.get(rk))
     if winner is None:
@@ -734,10 +738,10 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
       row.update(status="blocked", decided_by="check", reason=f"{provider_check.NOT_REPRODUCED}: {why}", not_reproduced=True)
     elif winner["is_default"] or winner.get("is_model_kernel"):
       decision = default_wins(route, winner, model_id=model_id, target_id=target_id,
-                              search_path=row["search_result"], search_sha=search_sha,
+                              search_path=row["check_result"], search_sha=_sha256_file(run / row["check_result"]),
                               model_kernel=bool(winner.get("is_model_kernel")))
     elif ab_only_if_faster and not (k_numbers or {}).get("faster_than_model"):
-      model_us = (k_numbers or {}).get("model_us_per_call")
+      model_us = (k_numbers or {}).get("model_kernel_us")
       row.update(status="blocked", decided_by="kernel alone",
                  reason=f"decided by the kernel alone: the best plan took {(k_numbers or {}).get('plan_us', 0):.1f} µs per call by BoltBeam's timer, "
                         + (f"the model's own kernel {model_us:.1f} µs; no whole-model A/B" if model_us is not None
@@ -820,7 +824,7 @@ def _apply(route:dict[str, Any], row:Mapping[str, Any]) -> None:
   because consumers of route_policy.json run a selected route."""
   route["status"] = row["status"]
   route["selected_route"] = row.get("plan_id") if row["status"] == "promoted" else None
-  route["evidence_refs"] = [x for x in (row.get("search_result"), row.get("ab_result")) if x]
+  route["evidence_refs"] = [x for x in (row.get("check_result"), row.get("ab_result")) if x]
   winner = row["search"]["winner"] or {}
   route["compare"] = {"plan_id": row.get("plan_id"), "plan": winner.get("plan"), "plan_hash": winner.get("plan_hash"),
                       "search_median_ns": winner.get("median_ns"), "default_median_ns": row["search"]["default_median_ns"],
@@ -869,10 +873,10 @@ def fusion_verdict(proposal:Mapping[str, Any], check:Mapping[str, Any] | None, l
     return out | {"verdict": "not_reproduced" if check else "not_searched",
                   "reason": (check or {}).get("error") or "the search measured no fused candidate"}
   good = [c for c in check.get("candidates") or [] if c.get("verdict") == provider_check.REPRODUCED]
-  if not good:
+  best = pick_winner(check.get("candidates") or [])
+  if best is None or best.get("verdict") != provider_check.REPRODUCED:
     why = "; ".join(sorted({str(c.get("reason")) for c in check.get("candidates") or []})) or "the search measured no fused candidate"
     return out | {"verdict": "not_reproduced", "reason": f"{provider_check.NOT_REPRODUCED}: {why}"}
-  best = min(good, key=lambda c: c["boltbeam_us_less_floor"])
   fused_ms = best["boltbeam_us_less_floor"] * calls / 1000.0
   out["fused"] = {"plan": best["plan"], "candidate_hash": best["candidate_hash"], "us_less_floor": best["boltbeam_us_less_floor"],
                   "ms_per_token": fused_ms, "correctness": (best.get("boltbeam") or {}).get("correctness"),
@@ -889,8 +893,10 @@ def fusion_verdict(proposal:Mapping[str, Any], check:Mapping[str, Any] | None, l
   if not every:
     out["unfused"]["why"] = ("BoltBeam did not reproduce every covered node's kernel alone; the ones it did sum to a lower bound"
                              if alone else "the provider returned no unfused kernels")
+  if not every:
+    return out | {"verdict": "not_reproduced", "reason": "not decided: " + out["unfused"]["why"]}
   if out["in_model_ms"] is None:
-    return out | {"verdict": "none_faster", "reason": "the tie-out has no in-model time for the rows this fusion replaces"}
+    return out | {"verdict": "not_reproduced", "reason": "the tie-out has no in-model time for the rows this fusion replaces"}
   if lower is not None and fused_ms >= lower * (1.0 - band):
     return out | {"verdict": "none_faster", "decided_by": "kernel alone",
                   "reason": (f"decided by the kernel alone: BoltBeam's fastest fused kernel ({best['plan']}) takes {fused_ms:.3f} ms per token, "
@@ -1105,10 +1111,11 @@ def compare_flash(run:pathlib.Path, *, root:pathlib.Path, device:str, checker:An
   _write(folder / f"{FLASH_STEM}-check.json", check)
   row["check_result"] = f"{FOLDER}/{FLASH_STEM}-check.json"
   good = [c for c in check["candidates"] if c.get("verdict") == provider_check.REPRODUCED]
-  if not good:
+  mine_installed = next((c for c in good if c["candidate_hash"] == proposal["installed_hash"]), None)
+  best = pick_winner(check["candidates"], mine_installed, band)
+  if best is None or best.get("verdict") != provider_check.REPRODUCED:
     why = "; ".join(sorted({str(c.get("reason")) for c in check["candidates"]}))
     return row | {"verdict": "not_reproduced", "reason": f"{provider_check.NOT_REPRODUCED}: {why}"}
-  best = min(good, key=lambda c: c["boltbeam_us_less_floor"])
   mine_installed = next((c for c in good if c["candidate_hash"] == proposal["installed_hash"]), None)
   fused_ms = best["boltbeam_us_less_floor"] * layers / 1000.0
   row["fused"] = {"plan": best["plan"], "candidate_hash": best["candidate_hash"], "us_less_floor": best["boltbeam_us_less_floor"],
@@ -1250,9 +1257,9 @@ def search_stage(run:pathlib.Path, *, backend:str, provider:str, root:pathlib.Pa
 
 
 def _speedup(kernel:Mapping[str, Any] | None) -> float | None:
-  if not kernel or not kernel.get("model_us_per_call") or not kernel.get("plan_us"):
+  if not kernel or not kernel.get("model_kernel_us") or not kernel.get("plan_us"):
     return None
-  return float(kernel["model_us_per_call"]) / float(kernel["plan_us"])
+  return float(kernel["model_kernel_us"]) / float(kernel["plan_us"])
 
 
 def role_verdict(route:Mapping[str, Any] | None, status:Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1268,7 +1275,7 @@ def role_verdict(route:Mapping[str, Any] | None, status:Mapping[str, Any] | None
   plan = c.get("plan")
   best = None
   if k is not None and plan:
-    best = {"plan": plan, "plan_us": k.get("plan_us"), "model_us": k.get("model_us_per_call"), "speedup": x,
+    best = {"plan": plan, "plan_us": k.get("plan_us"), "model_us": k.get("model_kernel_us"), "speedup": x,
             "calls_per_token": c.get("role_calls_per_token"),
             "text": f"{plan} · {x:.1f}x faster" if x and x > 1 else f"{plan} · not faster" if x else plan}
   searched = {"candidates": c.get("candidates"), "measured_correct": c.get("measured_correct")}
@@ -1278,6 +1285,8 @@ def role_verdict(route:Mapping[str, Any] | None, status:Mapping[str, Any] | None
     return {"best_found": None, "verdict": "not_searched", "verdict_reason": c.get("reason") or "the search measured no kernel", **searched}
   if (route or {}).get("status") == "promoted":
     return {"best_found": best, "verdict": "applied", "verdict_reason": c.get("reason"), **searched}
+  if k.get("faster_than_model") is None or k.get("model_kernel_us") is None or k.get("plan_us") is None:
+    return {"best_found": None, "verdict": "not_reproduced", "verdict_reason": "not decided: no reproduced like-for-like baseline", **searched}
   if not k.get("faster_than_model") or plan == "default kernel":
     return {"best_found": best, "verdict": "none_faster", "verdict_reason": c.get("reason"), **searched}
   return {"best_found": best, "verdict": "found_not_applied", "verdict_reason": c.get("reason"), **searched}
