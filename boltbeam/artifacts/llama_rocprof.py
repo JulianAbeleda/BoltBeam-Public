@@ -10,10 +10,7 @@ from boltbeam.vocab import SCHEMA_TIMING_TRACE
 from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
 
 
-_GGML_QUANTS = {
-  12: "Q4_K",
-  14: "Q6_K",
-}
+from boltbeam.profile.gguf import GGML_TYPE_NAMES as _GGML_QUANTS
 
 _ROCPROF_COPY_OPS = {
   2: "host_to_device",

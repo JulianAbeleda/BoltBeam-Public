@@ -16,32 +16,21 @@ from typing import Any
 # `attn_qkv`, `attn_gate` and ssm matrices, and the roofline inventory then held 5.9 GB per token under that word
 from boltbeam.profile.roles import role_from_tensor_name as _role_from_tensor_name
 
-GGML_TYPE_NAMES = {
-  0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1", 8: "Q8_0",
-  12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 18: "IQ3_XXS", 21: "IQ3_S", 22: "IQ2_S",
-  23: "IQ4_XS", 24: "I8", 25: "I16", 26: "I32", 27: "I64", 28: "F64", 30: "BF16",
-  39: "MXFP4", 41: "Q1_0",
-}
-
-# Effective bits per weight from tinygrad.llm.gguf._GGML_QUANT block sizes.
-GGML_BITS_PER_WEIGHT = {
-  0: 32.0, 1: 16.0, 2: 4.5, 3: 5.0, 6: 5.5, 7: 6.0, 8: 8.5,
-  12: 4.5, 13: 5.5, 14: 6.5625, 18: 3.0625, 21: 3.4375, 22: 2.5625,
-  23: 4.25, 24: 8.0, 25: 16.0, 26: 32.0, 27: 64.0, 28: 64.0, 30: 16.0,
-  39: 4.25, 41: 1.125,
-}
+from boltbeam.profile.gguf import GGML_TYPE_NAMES
 
 # GGML's on-disk blocks.  Bits-per-weight is useful for rough display, but a
 # roofline byte denominator must use these physical block sizes instead: a
 # partial block cannot be silently rounded into an "exact" byte count.
 GGML_BLOCK_LAYOUTS: dict[int, tuple[int, int]] = {
   0: (1, 4), 1: (1, 2), 2: (32, 18), 3: (32, 20), 6: (32, 22), 7: (32, 24),
-  8: (32, 34), 12: (256, 144), 13: (256, 176), 14: (256, 210),
+  8: (32, 34), 9: (32, 36), 12: (256, 144), 13: (256, 176), 14: (256, 210),
   18: (256, 98), 21: (256, 110), 22: (256, 82), 23: (256, 136),
   24: (1, 1), 25: (1, 2), 26: (1, 4), 27: (1, 8), 28: (1, 8),
   30: (1, 2), 39: (32, 17), 41: (32, 4),
 }
 
+
+GGML_BITS_PER_WEIGHT = {kind: size * 8 / elems for kind, (elems, size) in GGML_BLOCK_LAYOUTS.items()}
 
 
 @dataclass(frozen=True)

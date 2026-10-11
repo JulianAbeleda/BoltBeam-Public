@@ -83,15 +83,7 @@ AUTHORITIES = {
   "tolerance":   ("boltbeam/collectors/metal_native.py", "the correctness tolerance (TOLERANCE)"),
 }
 # (authority, file, symbol) -> review finding. Today's duplicates, recorded, not fixed. To remove in landing 6.
-ALLOWED = {
-  ("ggml_types", "boltbeam/profile/decode_roles.py", "GGML_TYPE_NAMES"): "C3, to remove in landing 6",
-  ("ggml_types", "boltbeam/collectors/metal_native.py", "GGML_TYPES"): "C3, to remove in landing 6",
-  ("ggml_types", "boltbeam/artifacts/llama_rocprof.py", "_GGML_QUANTS"): "C3, to remove in landing 6",
-  ("block_layout", "boltbeam/collectors/metal_native.py", "BLOCK_BYTES"): "C3, to remove in landing 6",
-  ("block_layout", "boltbeam/collectors/metal_native.py", "BLOCK_ELEMS"): "C3, to remove in landing 6",
-  ("tolerance", "boltbeam/search/role_compare.py", "TOLERANCE"): "C12, to remove in landing 6",
-  ("tolerance", "boltbeam/search/primitive_plan.py", "seed"): "C12 (dev only), to remove in landing 6",
-}
+ALLOWED = {}
 
 # canonical facts the detectors match against: a literal must AGREE with ggml to count as a copy of the table
 LAYOUT = {"Q4_0": (32, 18), "Q5_0": (32, 22), "Q8_0": (32, 34), "Q4_K": (256, 144), "Q5_K": (256, 176), "Q6_K": (256, 210)}

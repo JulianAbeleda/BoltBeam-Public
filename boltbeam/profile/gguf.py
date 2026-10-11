@@ -9,16 +9,17 @@ from typing import Any
 from boltbeam.profile.ir import ModelProfile, TensorRole
 from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
 from boltbeam.profile.architecture import classify_architecture
-from boltbeam.profile import weight_ledger
 from boltbeam.vocab import is_ssm_role
 
 GGML_TYPE_NAMES = {
-  0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1", 8: "Q8_0",
+  0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1", 8: "Q8_0", 9: "Q8_1",
   12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 18: "IQ3_XXS", 21: "IQ3_S", 22: "IQ2_S",
   23: "IQ4_XS", 24: "I8", 25: "I16", 26: "I32", 27: "I64", 28: "F64", 30: "BF16",
   39: "MXFP4", 41: "Q1_0",
 }
 
+
+GGML_TYPE_IDS = {name: value for value, name in GGML_TYPE_NAMES.items()}
 
 class GGUFReader:
   def __init__(self, path:pathlib.Path):
@@ -115,6 +116,7 @@ def declared_context(kv:dict[str, Any], arch:str | None) -> dict[str, Any] | Non
 
 
 def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> ModelProfile:
+  from boltbeam.profile import weight_ledger
   p = pathlib.Path(path).expanduser()
   kv, tensors, data_start = read_gguf_layout(p)
   arch = kv.get("general.architecture")

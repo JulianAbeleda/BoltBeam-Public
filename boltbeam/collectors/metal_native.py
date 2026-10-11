@@ -39,11 +39,12 @@ from boltbeam.workflow.common import load_manifest, read_json, run_dir
 
 COLLECTOR_ID = "metal-native"
 PROVIDER_ID = "boltbeam/metal-native"
-GGML_TYPES = {"Q4_K": 12, "Q6_K": 14, "Q8_0": 8, "Q5_0": 6, "Q4_0": 2, "Q5_K": 13}
-# the block layouts the pure-Python reference can dequantize (DEQUANT): bytes per block and weights per block, the
-# same figures as data/quants.json's rows (block_bytes, block_elems) for these quants
-BLOCK_BYTES = {"Q4_K": 144, "Q6_K": 210, "Q8_0": 34, "Q5_0": 22, "Q4_0": 18, "Q5_K": 176}
-BLOCK_ELEMS = {"Q4_K": 256, "Q6_K": 256, "Q8_0": 32, "Q5_0": 32, "Q4_0": 32, "Q5_K": 256}
+from boltbeam.profile.gguf import GGML_TYPE_IDS
+from boltbeam.profile.decode_roles import GGML_BLOCK_LAYOUTS
+# Formats supported by this reference; the identities and layouts come from their owners.
+GGML_TYPES = {q: GGML_TYPE_IDS[q] for q in ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K")}
+BLOCK_BYTES = {q: GGML_BLOCK_LAYOUTS[t][1] for q, t in GGML_TYPES.items()}
+BLOCK_ELEMS = {q: GGML_BLOCK_LAYOUTS[t][0] for q, t in GGML_TYPES.items()}
 METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18, "Q8_0": 2, "Q5_0": 6, "Q4_0": 2, "Q5_K": 48}  # Q4_K: d, dmin, 12 scale bytes. Q6_K: 16 int8 scales, d.
 # Q8_0, Q4_0: d. Q5_0: d and the 4 bytes of fifth bits. Q5_K: d, dmin, 12 scale bytes, 32 bytes of fifth bits. The rest of a block is its codes (code_bytes).
 WORKING_SET_SHARE = 0.8  # never ask for more than this share of Metal's recommended working set

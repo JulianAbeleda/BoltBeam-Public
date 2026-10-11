@@ -205,7 +205,9 @@ def pick_device(backend:str | None, reply:Mapping[str, Any]) -> tuple[str | None
   return None, f"the provider runs on none of this {backend} machine's devices ({said})"
 
 
-TOLERANCE = {"atol": 0.001, "rtol": 0.001}
+def tolerances() -> dict[str, float]:
+  from boltbeam.collectors.metal_native import TOLERANCE
+  return {"atol": TOLERANCE, "rtol": TOLERANCE}
 
 
 def semantic_workload(route:Mapping[str, Any], *, tensor_name:str, model_sha:str, target:Mapping[str, Any]) -> dict[str, Any]:
@@ -219,7 +221,7 @@ def semantic_workload(route:Mapping[str, Any], *, tensor_name:str, model_sha:str
   return {"schema": "tinygrad.semantic_provider_workload.v1", "model_hash": model_sha, "target": dict(target),
           "semantic_identity": identity, "operation": "matmul", "shape": {"m": 1, "n": n, "k": k},
           "operands": {"a": {"dtype": "fp16"}, "b": {"quantization": quant, "layout": "transposed_row_major"}, "c": {"dtype": "fp16"}},
-          "tolerance": dict(TOLERANCE), "fixture_shape_substitution": "forbidden"}
+          "tolerance": tolerances(), "fixture_shape_substitution": "forbidden"}
 
 
 def propose(route:Mapping[str, Any], *, tensor_name:str, model:str, model_id:str, target_id:str, describe_result:Mapping[str, Any],
@@ -954,7 +956,7 @@ def compare_fusions(run:pathlib.Path, *, facts:Mapping[str, Any], describe_shape
       say(f"fusion {proposal['name']} {proposal['quant']}: rejected ({proposal['why']})")
       continue
     say(f"fusion {proposal['name']} {proposal['quant']}: search")
-    work = fusion_space.workload(proposal, model_sha=model_sha, target=target, tolerance=TOLERANCE)
+    work = fusion_space.workload(proposal, model_sha=model_sha, target=target, tolerance=tolerances())
     base = {"schedule.plan_kind": role_space.EMITTER_PLAN_KIND, "schedule.compute.family": proposal["family"]}
     spec = {"semantic_workload": work, "schedule": dict(role_space.SEED_SCHEDULE), "resolved_target": resolved, "gguf_path": str(model),
             "execution": {"shape_mode": "exact_workload", "warmups": 2, "samples": 7},
