@@ -80,5 +80,39 @@ Share of the captured kernel time by kind:
 - The GEMMs hold at 28 to 30% of the int8 peak at every captured length. Attention's MFU rises from 19% at 512 to
   44% at 32K.
 
+## The audit at 32,768 tokens
+
+The longest length that captures. The untraced prefill is 9,540.2 ms; the captured rows sum to 9,895.2 ms. Every
+entry carries a claim, a standard, evidence, re-performance, a tie-out, materiality and a finding, with a pointer on
+each number: E1 the captured rows, E2 the untraced truth, E3 the peaks and bandwidth, E4 the raw capture. The text
+summary, the HTML report and the TUI print it. The top five, worst first:
+
+| # | row | ms now | standard (ceiling) | ms lost | of prefill | prefill if fixed | finding |
+|---|---|---|---|---|---|---|---|
+| 1 | ffn_down + ffn_gate_up Q4_K | 3,986.7 | 1,126.2 ms: 1,121.5 TFLOP at the 996 TFLOPS int8 peak | 2,860.5 | 30.0% | 6,679.7 ms | 28.2% MFU, 3.5x its ceiling |
+| 2 | gated_delta_net_cuda | 1,225.9 | none: no work counted | 1,225.9 | 12.8% | 8,314.3 ms | no ceiling yet |
+| 3 | attention | 1,427.7 | 632.0 ms: 211.1 TFLOP at 334 TFLOPS over fp16 and fp16-accumulate | 795.7 | 8.3% | 8,744.5 ms | 44.3% MFU, 2.3x its ceiling |
+| 4 | attn_qkv + attn_qo Q8_0 | 823.1 | 231.9 ms: 230.9 TFLOP at int8 | 591.2 | 6.2% | 8,949.1 ms | 28.2% MFU, 3.5x |
+| 5 | attn_gate + ssm_out Q8_0 | 662.4 | 198.8 ms: 197.9 TFLOP at int8 | 463.6 | 4.9% | 9,076.6 ms | 30.0% MFU, 3.3x |
+
+Then unary_gated_op (232.0 ms), the mul_mat_q fixup (272.6 ms now, 73.1 ms at its bytes), rms_norm (182.2 ms) and
+quantize_mmq_q8_1 (179.6 ms). 13 rows under 1% each are one line: 345.9 ms now, 311.1 ms lost.
+
+Re-performance: none of these is re-performed. BoltBeam's CUDA adapter times `mul_mat_vec_q` alone (the GEMV);
+there is no adapter for `mul_mat_q`, `flash_attn_ext_f16` or `gated_delta_net_cuda`. Each entry says so.
+
+## Suspects
+
+- **The memory cap holds back nothing for the engine.** It is the GPU memory less the weights at the KV bytes per
+  token. llama.cpp also needs compute buffers and the recurrent state, so the context could not be created at
+  224,256. The engine's own reserve is not modelled.
+- **The recurrent kernels have no ceiling.** `gated_delta_net_cuda` is 12.8% of the prefill and counts as all lost.
+  The delta rule's work per token is not in the model yet.
+- **131K is an estimate.** It was not captured. Its MFU and its split assume work scales by tokens and causal pairs.
+  The two attention estimates differ by 10.7 s.
+- **Every length throttled.** The board holds its 600 W limit from 8K; the clock mean falls from 2,886 to 2,614 MHz.
+- **The capture runs longer than the truth at 32K** (9,895 against 9,540 ms). The rows sum to the capture.
+- **The int8 peak** is the target's recorded fact, not re-probed in this run.
+
 Runs: `boltbeam-runs/.work/prefill-27b-rtx5090-20261011/` on the Air (summary, traces, telemetry, the self-check;
 nsys reports left on the box's data disk).

@@ -157,6 +157,8 @@ gap:6px 14px;align-items:center;padding:10px 14px}
 .r-ok{color:var(--ok)}.r-small{color:var(--excess)}.r-slow{color:var(--gaps)}
 .rdet{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px 12px;padding:0 14px 12px;font-size:12.5px;color:var(--tx-2)}
 .rdet div span{display:block;color:var(--tx-3);font-size:10.5px;letter-spacing:.06em}
+.audit{padding-left:20px;font-size:12.5px;color:var(--tx-2)}.audit li{margin:0 0 12px}
+.akv div{display:grid;grid-template-columns:110px minmax(0,1fr);gap:8px;padding:2px 0;overflow-wrap:anywhere}.akv div span{color:var(--tx-3)}
 .next{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px;counter-reset:n}
 .next li{counter-increment:n;position:relative;padding:14px 16px 14px 56px;border-radius:12px;background:var(--glass-2);
 border:1px solid var(--edge)}
@@ -738,6 +740,20 @@ def _prefill_curve(loss:dict[str, Any]) -> str:
   return _section(2, "Prefill against prompt length", html)
 
 
+def _prefill_audit(loss:dict[str, Any]) -> str:
+  """workflow/prefill_audit.audit as HTML: the evidence pointers, then one block per entry, worst first. The words
+  are the audit's own."""
+  a = loss.get("prefill_audit")
+  if not a:
+    return ""
+  src = "".join(f'<div><span>[{_e(x["id"])}]</span>{_e(x["file"])}: {_e(x["what"])}</div>' for x in a["sources"])
+  items = "".join(f'<li><b>{_e(e["name"])}</b><div class="akv">'
+                  + "".join(f'<div><span>{_e(k)}</span>{_e(v)}</div>' for k, v in e["fields"]) + "</div></li>" for e in a["entries"])
+  rest = f'<p class="muted">{_e(a["collapsed"])}</p>' if a.get("collapsed") else ""
+  return _section(2, a["title"], f'<p class="muted" style="margin:0 0 10px">{_e(a["words"])}</p><div class="akv">{src}</div>'
+                                 f'<ol class="audit">{items}</ol>{rest}')
+
+
 def _per_role(loss:dict[str, Any]) -> str:
   if loss.get("refused"):
     return _section(3, "Per role", f'<p class="note">Per role: not shown. {_e(loss["refused"])}</p>')
@@ -999,7 +1015,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
   measured = _measured(loss) is not None
   sections = _answer(manifest, results, measure, source_run)
   if measured:
-    sections += _where(loss) + _where_token(loss) + _prefill_curve(loss) + _per_role(loss) + _next(loss, policy)
+    sections += _where(loss) + _where_token(loss) + _prefill_curve(loss) + _prefill_audit(loss) + _per_role(loss) + _next(loss, policy)
   sections += _probe(results) + _facts(manifest, results, measure, gameplan)
   sections = _number(sections)
   return (

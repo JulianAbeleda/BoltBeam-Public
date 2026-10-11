@@ -87,7 +87,7 @@ from boltbeam.target import targets as reg
 from boltbeam.target.targets import get_target
 from boltbeam.workflow import analyze_run, autoscan_run, ingest_probe_run, ingest_timing_run, load_run, output_run
 from boltbeam.workflow.autoscan import _hardware_profile
-from boltbeam.workflow import progress
+from boltbeam.workflow import prefill_audit, progress
 from boltbeam.workflow.common import load_manifest, read_json
 
 SCHEMA = "boltbeam.tui.v1"
@@ -1348,6 +1348,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
   lines += where_lines(loss.get("where_token_goes"))
   lines += curve_lines(loss.get("prefill_curve"))
+  lines += prefill_audit.lines(loss.get("prefill_audit"))
   if t.get("band"):
     lines.append(f"Band: {t['band']}")
   roles = loss.get("roles") or []

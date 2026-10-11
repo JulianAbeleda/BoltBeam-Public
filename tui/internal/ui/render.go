@@ -658,6 +658,29 @@ func tieOutBody(t *seam.TieOut) string {
 
 // whereBody is "Where the token goes": what each part costs the token, worst first, read from the seam. On a
 // narrow page the peak column (% OF PEAK, MFU) goes first, then SHARE, so no row is cut.
+// auditBody is the prefill audit as Python wrote it: the pointers, then each entry's fields, worst first.
+func auditBody(a *seam.Audit) string {
+	if a == nil || len(a.Entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n" + stHeader.Render(a.Title) + "\n" + stMuted.Render(a.Words) + "\n")
+	for _, s := range a.Sources {
+		b.WriteString(stMuted.Render("["+s.ID+"] "+s.File+": "+s.What) + "\n")
+	}
+	for i, e := range a.Entries {
+		fmt.Fprintf(&b, "%d. %s\n", i+1, stHeader.Render(e.Name))
+		for _, f := range e.Fields { // the label, then its words wrapped under it: a field is a sentence, not a cell
+			b.WriteString("   " + stMuted.Render(f[0]) + "\n")
+			b.WriteString(lipgloss.NewStyle().PaddingLeft(5).Width(tableWidth).Render(f[1]) + "\n")
+		}
+	}
+	if a.Collapsed != nil {
+		b.WriteString(stMuted.Render(*a.Collapsed) + "\n")
+	}
+	return b.String()
+}
+
 func whereBody(w *seam.Where) string {
 	if w == nil || len(w.Rows) == 0 {
 		return ""
@@ -856,6 +879,7 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		}
 	}
 	b.WriteString(whereBody(l.WhereTokenGoes))
+	b.WriteString(auditBody(l.PrefillAudit))
 	if l.Refused != nil {
 		b.WriteString(stWarn.Render(glyphWarn+" Per role: not shown. ") + *l.Refused + "\n")
 		return b.String()

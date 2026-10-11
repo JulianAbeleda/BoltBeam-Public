@@ -645,6 +645,31 @@ type Loss struct {
 	WhereTokenGoes *Where `json:"where_token_goes"`
 	// Per is "per prefill" on a prefill run (workflow/prefill.py); nil on decode, whose times are per token.
 	Per *string `json:"per"`
+	// PrefillAudit is the where table at the longest captured prefill as an audit (workflow/prefill_audit.py);
+	// nil on decode. Its words are printed as they are.
+	PrefillAudit *Audit `json:"prefill_audit"`
+}
+
+// Audit is a prefill's where table entry by entry, worst first: each entry's fields (claim, standard, evidence,
+// re-performance, tie-out, materiality, finding) as [name, text]; Sources are the evidence pointers E1..E4;
+// Collapsed is the one line for the rows under 1%.
+type Audit struct {
+	Title     string        `json:"title"`
+	Words     string        `json:"words"`
+	Sources   []AuditSource `json:"sources"`
+	Entries   []AuditEntry  `json:"entries"`
+	Collapsed *string       `json:"collapsed"`
+}
+
+type AuditSource struct {
+	ID   string `json:"id"`
+	File string `json:"file"`
+	What string `json:"what"`
+}
+
+type AuditEntry struct {
+	Name   string      `json:"name"`
+	Fields [][2]string `json:"fields"`
 }
 
 // Where is "Where the token goes": rows worst first, summing to TokenMs (now) and LimitMs (at the limit).

@@ -84,7 +84,20 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], base:dict[str, Any]) -
                                 + (f"; {tie_words(head)}" if head.get("throttled") else "")}])
   if not w:
     out["missing"] = "no prefill captured in the model: step 5 (role time) has not run for this run"
+  out["prefill_audit"] = audit_at_longest(run, manifest, where)
   return out
+
+
+def audit_at_longest(run:pathlib.Path, manifest:dict[str, Any], where:dict[int, dict[str, Any]]) -> dict[str, Any] | None:
+  """The audit (workflow/prefill_audit.py) at the longest length the run captured."""
+  from boltbeam.collectors.prefill import TRACE
+  from boltbeam.workflow.prefill_audit import audit
+  if not where:
+    return None
+  longest = max(where)
+  from boltbeam.target.targets import TARGETS
+  target = TARGETS.get(str(manifest.get("target_id")))
+  return audit(run, where[longest], longest, _read(run / TRACE), backend=target.backend if target else None)
 
 
 def tie_words(row:dict[str, Any]) -> str:

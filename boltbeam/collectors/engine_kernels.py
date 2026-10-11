@@ -530,6 +530,9 @@ ADAPTERS:dict[tuple[str, str], Callable[[str | None], dict[str, Any]]] = {
   ("llama.cpp", "Metal"): _metal_setup,
   ("llama.cpp", "CUDA"): _cuda_setup,
 }
+# the kernel each adapter can time alone, as its template begins: what a captured kernel is matched against when an
+# audit asks whether it could be re-performed (workflow/prefill_audit.py)
+ADAPTED_KERNEL = {("llama.cpp", "Metal"): "kernel_mul_mv_", ("llama.cpp", "CUDA"): "mul_mat_vec_q"}
 
 
 def available(provider:str, backend:str, bench:str | None = None) -> str | None:

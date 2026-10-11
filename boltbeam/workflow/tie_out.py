@@ -526,7 +526,8 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
     return None
   rows = [{"name": r["name"], "what": r["what"], "now_ms": r["ms"], "limit_ms": r.get("ceiling_ms"), "mfu_pct": r.get("mfu_pct"),
            "path": r.get("path"), "bound": r.get("bound"), "calls": r.get("calls"), "refused": r.get("refused"),
-           "flops": r.get("flops"), "compute_ms": r.get("compute_ms")} for r in attr["rows"]]
+           "flops": r.get("flops"), "compute_ms": r.get("compute_ms"), "bytes": r.get("bytes"), "memory_ms": r.get("memory_ms"),
+           "peak_tflops": r.get("peak_tflops"), "template": r.get("template")} for r in attr["rows"]]
   rows.append({"name": GAPS_ROW, "what": "gaps", "now_ms": attr["gaps_ms"], "limit_ms": 0.0, "mfu_pct": None})
   wall = float(attr["wall_ms"])
   base = float(untraced_ms) if untraced_ms else wall
