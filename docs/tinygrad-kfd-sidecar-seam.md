@@ -1,6 +1,6 @@
 # Tinygrad direct-KFD launch sidecar seam
 
-`boltbeam.kfd_observation_bridge` is a CPU-only reader for
+The development apparatus on `dev`, `boltbeam.runtime.kfd_observation_bridge`, is a CPU-only reader for
 `tinygrad.kfd_launch_sidecar.v1`. It does not import tinygrad, open KFD, attach
 to a process, monkey-patch a queue, or depend on rocprof visibility.
 

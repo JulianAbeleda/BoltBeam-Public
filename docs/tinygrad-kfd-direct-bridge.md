@@ -1,6 +1,6 @@
 # Direct KFD bridge boundary
 
-`boltbeam.direct_kfd_bridge` is the CPU/static seam for the future producer-side
+The development apparatus on `dev`, `boltbeam.runtime.direct_kfd_bridge`, is the CPU/static seam for the future producer-side
 KFD launch path. It validates a `boltbeam.kfd_launch_request.v1` request,
 requires exact code-object and digest identities, injects allocations through a
 backend, submits once, waits with a bounded timeout, emits a launch observation,
