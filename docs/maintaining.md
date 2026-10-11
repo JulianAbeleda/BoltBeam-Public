@@ -11,24 +11,26 @@ python3 tools/install_hooks.py     # the commit-message checker and the pre-comm
 boltbeam selfcheck
 ```
 
-The trunk (`main`) carries no test suite. The suite lives on `dev`, which is where correctness is answered:
+The trunk (`main`) carries Go tests and their minimal fixtures in `tui/testdata/`. Python tests live on `dev`:
 
 ```bash
 git checkout dev && pytest
 ```
 
-`boltbeam selfcheck` is the one check that ships on `main`. The `dev` suite runs it too
+`boltbeam selfcheck` also ships on `main`. The `dev` suite runs it too
 (`tests/test_selfcheck.py`).
 
 ## Branches
 
 `master` ⊂ `dev` ⊂ `exp`. They are split by content category, not by maturity.
 
-- `main` holds the runnable product and the records. No test suite. No module without a live caller.
+- `main` holds the runnable product and the records. No Python tests. No module without a live caller.
 - `dev` adds the verification apparatus: the test suite and the campaign gates.
 - `exp` holds active experimentation.
 
-`tools/sync_branches.sh` carries the trunk outward. `dev` is hard-gated on the suite, so a trunk commit that
+`tools/sync_branches.sh` first runs `go vet ./...` and `go test -count=1 ./...` in the trunk’s `tui/`
+with `BOLTBEAM_PYTHON=python3.12` set by the caller. A failed Go gate stops before either outward merge.
+It then carries the trunk outward. `dev` is hard-gated on the Python suite, so a trunk commit that
 breaks the product cannot reach `exp`. `exp` is report-only, because it admits broken intermediate states by
 design. Do not pipe `sync_branches.sh` into `head`: closing its stdout kills it before it merges.
 

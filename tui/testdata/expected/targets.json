@@ -47,8 +47,12 @@
       "has_ceiling": true,
       "id": "nvidia_sm120",
       "matrix_tflops": {
-        "fp16": 237.1,
-        "int8": 947.0
+        "bf16": 251.5,
+        "fp16": 251.4,
+        "fp16_f16acc": 497.7,
+        "fp4": 1988.9,
+        "fp8": 502.8,
+        "int8": 995.8
       },
       "memory_bandwidth_gbs": 1693.3,
       "peak_tflops": {

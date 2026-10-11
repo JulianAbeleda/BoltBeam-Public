@@ -45,8 +45,7 @@ sync_one() {
   git checkout -q "$into"
   git merge -q --no-edit "$from" || { echo "  MERGE CONFLICT in $into — resolve, then rerun" >&2; exit 2; }
   # The suite gate is per-branch, because the branches admit different content.
-  #   main: not gated here — it holds no tests by admission rule (docs/branch-flow.md).
-  #         Its first verification is this merge into dev.
+  #   main: Go vet and tests pass before either outward merge (below).
   #   dev:  hard gate. dev is where "is the product correct" is answerable.
   #   exp:  report only. exp admits broken intermediate states by design; blocking on a
   #         red suite there would gate experimentation on a rule exp does not accept.
@@ -72,6 +71,17 @@ sync_one() {
        fi ;;
   esac
 }
+
+# Go tests and their fixtures ship with main; gate that tree before promoting it.
+# A dry run remains read-only. Python tests belong only to the outer branches.
+if (( ! dry_run )); then
+  git checkout -q "$trunk"
+  echo "=== $trunk: Go vet + Go tests ==="
+  (cd tui && go vet ./... && go test -count=1 ./...) || {
+    echo "Go gate FAILS on $trunk; no outward merge attempted." >&2
+    exit 5
+  }
+fi
 
 sync_one "$trunk" dev
 sync_one dev exp

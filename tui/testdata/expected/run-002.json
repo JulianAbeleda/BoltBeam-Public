@@ -189,6 +189,14 @@
         "no_limit": "no limit",
         "rows": [
           {
+            "cells": [
+              "57.90",
+              "48.30",
+              "9.60",
+              "100%",
+              "20.7",
+              ""
+            ],
             "limit_ms": 48.304279176954736,
             "lost_ms": 9.59960038297578,
             "name": "kernels and gaps, not split",
@@ -198,6 +206,15 @@
             "tok_s_if_fixed": 20.702099628413155,
             "what": "rest"
           }
+        ],
+        "sum_cells": [
+          "= token",
+          "57.90",
+          "48.30",
+          "9.60",
+          "100%",
+          "",
+          ""
         ],
         "title": "Where the token goes",
         "token_ms": 57.903879559930516,

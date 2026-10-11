@@ -3,8 +3,8 @@
 │ Workload                                                                     │
 │ Workload is what the Run measures. Decode times one token at a time. Prefill │
 │ times the prompt read at once, from 512 tokens up to the model's own cap.    │
-│                                                                              │
-│                                                                              │
+│ Session times a 512-token turn appended to a cache already holding 1K, then  │
+│ 4 times more, up to the context that fits before compaction.                 │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -18,7 +18,7 @@
 │ Choose                                                                       │
 │ ▸ ● decode   one token at a time, after the prompt                           │
 │     prefill  the prompt read at once, at lengths up to the model's cap       │
-│     session  not built yet                                                   │
+│     session  a turn appended at depths up to the context that fits           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit

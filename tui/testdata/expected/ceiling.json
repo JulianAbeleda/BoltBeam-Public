@@ -230,5 +230,6 @@
     "scope_observed_at": "2026-10-09",
     "source": "registry"
   },
-  "truth_status": "modeled"
+  "truth_status": "modeled",
+  "weights": null
 }
