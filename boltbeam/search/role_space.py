@@ -136,17 +136,14 @@ def proposal_inputs(describe:Mapping[str, Any], facts:Mapping[str, Any], quant:s
           whys.append(f"{family['family']}: {space['why']}")
           continue
         mine = [{**base, **row} for row in space["rows"]]
-        here = {**base, **space["installed_row"]} if space["installed_row"] else None
         generators.append(f"BubbleBeam rows from the chip's facts ({family['family']})")
       else:
         mine = [{**base, **dict(row)} for row in family.get("coupled_rows") or []]
-        here = {**base, **dict(family["installed_row"])} if isinstance(family.get("installed_row"), Mapping) else None
         generators.append(f"provider emitter rows ({family['family']})")
       rows += mine
       names.append(family["family"])
-      # Family defaults describe candidates, not the model-bound kernel.
-      installed = None
     if not rows: return {"why": "; ".join(whys), "binds_through": kind}
+    # Family defaults describe candidates, not the model-bound kernel.
     binding = describe.get("model_binding") or {}
     if (binding.get("quant") == quant.upper() and tuple(binding.get("shape") or []) == shape and
         binding.get("model_bound") is True and isinstance(binding.get("installed_row"), Mapping)):

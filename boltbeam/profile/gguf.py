@@ -89,9 +89,6 @@ def read_gguf_layout(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tupl
 RECURRENT_KEYS = ("conv_kernel", "state_size", "group_count", "inner_size")  # GGUF ssm.* keys that size the state
 
 
-def read_gguf(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tuple[str, tuple[int, ...], int, int]]]:
-  kv, tensors, _ = read_gguf_layout(path)
-  return kv, tensors
 
 
 def attention_layers(tensors, layers:int | None) -> int | None:

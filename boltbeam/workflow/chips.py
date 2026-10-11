@@ -218,8 +218,3 @@ def chip_list(detected:dict[str, Any] | None = None, facts_roots:list | None = N
   return {"kind": "chips", "targets": facts, "this_machine": this,
           "groups": [{"key": k, "title": titles[k], "selectable": k in ("this", "measured"), "folded": k == "families",
                       "chips": [{"id": tid, "words": words[tid]} for tid in ids]} for k, ids in groups.items()]}
-
-
-def here_words() -> str:
-  import sys
-  return "this Mac" if sys.platform == "darwin" else "this machine"

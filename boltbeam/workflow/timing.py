@@ -7,7 +7,6 @@ from boltbeam.trace.timing import build_timing_profile
 from boltbeam.vocab import SCHEMA_HW_TRACE, SCHEMA_TIMING_TRACE
 from boltbeam.workflow.common import load_manifest, read_json, run_dir, update_manifest, write_json
 
-TIMING_ARTIFACTS = ("timing_trace.json", "timing_profile.json")
 
 
 def ingest_timing_run(run:str | pathlib.Path, trace_path:str | pathlib.Path) -> dict[str, Any]:

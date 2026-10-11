@@ -1170,7 +1170,6 @@ def _flash_session(root:pathlib.Path):
 
 STATUS_FILE = "search_status.json"
 STATUS_SCHEMA = "boltbeam.kernel_search_status.v1"
-VERDICTS = ("applied", "found_not_applied", "none_faster", "not_reproduced", "not_searched")
 
 
 def detect(backend:str | None) -> str | None:

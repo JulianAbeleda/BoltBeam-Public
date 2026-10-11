@@ -57,7 +57,7 @@ NOT_SPLIT_LABEL = "kernels and gaps, not split"
 ESTIMATE_LABEL = "(estimate from isolated times)"
 OTHER_HOW_FLOOR = "at least: untimed work at the limit; untimed weights, attention, norms, launches and gaps were not timed"
 OTHER_HOW_DIFF = "difference: the token less the kernels timed alone{floor}; attention, norms, launches and gaps were not timed"
-ROLE_SOURCE_ISOLATED, ROLE_SOURCE_IN_MODEL = "isolated", "in_model"
+ROLE_SOURCE_ISOLATED = "isolated"
 
 UNATTRIBUTED = "weight kernel, unattributed"  # a GEMV no role took: weight time outside the limit; the capture has no bytes for it
 UNATTRIBUTED_LABEL = "weight kernels, unattributed"  # its own tie-out line, the kernels named
