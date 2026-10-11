@@ -437,8 +437,8 @@ func (m Model) startRun(provider string) tea.Cmd {
 	if m.f.GpuCount < 2 {
 		layout = "" // one GPU: the engine runs as it always has
 	}
-	store, batch, roleTime := m.store, "", m.f.roleTimeArg()
-	if b := m.f.batch(); b > 1 {
+	store, batch, roleTime, workload := m.store, "", m.f.roleTimeArg(), m.f.workload()
+	if b := m.f.batch(); b > 1 && workload == "decode" { // batch is decode's: a prefill reads one prompt
 		batch = strconv.Itoa(b) // batch 1 is always timed beside it
 	}
 	return func() tea.Msg {
@@ -456,7 +456,7 @@ func (m Model) startRun(provider string) tea.Cmd {
 		if abs, err := filepath.Abs(path); err == nil { // the pipeline runs in the checkout, not here
 			path = abs
 		}
-		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: "decode", Measure: "auto", Provider: provider,
+		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: workload, Measure: "auto", Provider: provider,
 			Layout: layout, Analyze: true, Batch: batch, RoleTime: roleTime})
 		if _, err := m.store.Start(id, m.client.Repo, argv); err != nil {
 			return noteMsg("Start failed: " + err.Error())
@@ -1121,6 +1121,10 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, func() tea.Msg { return noteMsg("Type a batch size from 1 to 512.") }
+	case "workload":
+		m.f.Workload = a.arg
+		m.backToSetup()
+		return m, nil
 	case "measurement":
 		m.f.Measurement = a.arg
 		m.backToSetup()

@@ -159,17 +159,17 @@ func TestMeasuredStagesHideHandoff(t *testing.T) {
 	}
 }
 
-// Batch is the fourth Setup line. Its picker takes 1, 8, 32 or a typed number; an engine that decodes one stream
+// Batch is the fifth Setup line. Its picker takes 1, 8, 32 or a typed number; an engine that decodes one stream
 // shows the others as not supported; the choice reaches the pipeline as --batch.
 func TestBatchPicker(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
-	m := press(press(press(press(program(s, nil, nil, nil, 80, 24), "j"), "j"), "j"), "enter")
+	m := press(press(press(press(press(program(s, nil, nil, nil, 80, 24), "j"), "j"), "j"), "j"), "enter")
 	if m.(Model).cursor != pageBatch {
 		t.Fatalf("enter on Batch opens its picker: %d", m.(Model).cursor)
 	}
 	m = press(press(press(m, "j"), "j"), "enter") // 32
-	if got := m.(Model).f.batch(); got != 32 || m.(Model).cursor != pageSetup || m.(Model).row != 3 {
+	if got := m.(Model).f.batch(); got != 32 || m.(Model).cursor != pageSetup || m.(Model).row != 4 {
 		t.Fatalf("batch %d, page %d, row %d", got, m.(Model).cursor, m.(Model).row)
 	}
 	typed := press(press(press(page(m, pageBatch), "1"), "6"), "enter")

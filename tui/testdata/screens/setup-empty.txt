@@ -4,6 +4,7 @@
 │ ▸ Model       not chosen                                                   › │
 │   Chip        not chosen                                                   › │
 │   Engine      looking for engines…                                         › │
+│   Workload    decode                                                       › │
 │   Batch       1                                                            › │
 │   Measurement auto                                                         › │
 │                                                                              │
@@ -11,7 +12,6 @@
 │   [ Emit ] Run first                                                         │
 │   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

@@ -60,6 +60,7 @@ type Facts struct {
 	Batch       int           // streams decoded at once; 0 means 1
 	BatchTyped  string        // digits typed on the batch picker
 	Measurement string        // how roles are timed, as picked: in_model or generic; "" is Python's default here
+	Workload    string        // what the Run measures: decode or prefill; "" is decode
 	Plan        *seam.Emitted // the gameplan Emit wrote for the run on screen (screen emit); nil before Emit
 	Emitting    bool          // an Emit is running
 	ShowLog     bool          // l: the running screen shows the raw log
@@ -134,6 +135,7 @@ const (
 	pageModel
 	pageChip
 	pageEngine
+	pageWorkload
 	pageBatch
 	pageMeasurement
 )
@@ -148,6 +150,7 @@ var steps = []step{
 	{"Model", "", none, modelLine, modelBody, modelChoices},
 	{"Chip", "", none, chipLine, chipPickerBody, chipActions},
 	{"Engine", "", none, engineLine, engineBody, engineActions},
+	{"Workload", "", none, func(Facts) (string, string) { return "", "" }, workloadBody, workloadActions},
 	{"Batch", "", none, batchLine, batchBody, batchActions},
 	{"Measurement", "", none, func(Facts) (string, string) { return "", "" }, measurementBody, measurementActions},
 }
@@ -259,6 +262,7 @@ func setupActions(f Facts) []action {
 		{summary("Model", modelValue(f)), "page", fmt.Sprint(pageModel)},
 		{summary("Chip", chipValue(f)), "page", fmt.Sprint(pageChip)},
 		{summary("Engine", engineValue(f)), "page", fmt.Sprint(pageEngine)},
+		{summary("Workload", f.workload()), "page", fmt.Sprint(pageWorkload)},
 		{summary("Batch", fmt.Sprint(f.batch())), "page", fmt.Sprint(pageBatch)},
 		{summary("Measurement", measurementValue(f)), "page", fmt.Sprint(pageMeasurement)},
 	}
@@ -1033,6 +1037,44 @@ func resultActions(f Facts) []action {
 	}
 	if f.Run != nil && f.Run.Report != nil {
 		out = append(out, action{"Open the full report (" + *f.Run.Report + ")", "report", ""})
+	}
+	return out
+}
+
+// --- Workload -------------------------------------------------------------------------------------------------
+
+// workloads are what a Run can measure, in Setup's order; a workload not built yet is shown muted and not picked.
+var workloads = []struct{ id, about, missing string }{
+	{"decode", "one token at a time, after the prompt", ""},
+	{"prefill", "the prompt read at once, at lengths up to the model's cap", ""},
+	{"session", "a conversation that grows turn by turn", "not built yet"},
+}
+
+// workload is the chosen workload; decode until another is picked.
+func (f Facts) workload() string {
+	if f.Workload == "" {
+		return "decode"
+	}
+	return f.Workload
+}
+
+func workloadBody(Facts, int) string {
+	return "Workload is what the Run measures. Decode times one token at a time. Prefill times the prompt read at once, " +
+		"from 512 tokens up to the model's own cap."
+}
+
+func workloadActions(f Facts) []action {
+	out := []action{}
+	for _, w := range workloads {
+		if w.missing != "" {
+			out = append(out, note(stMuted.Render(fmt.Sprintf("  %-8s %s", w.id, w.missing))))
+			continue
+		}
+		chosen := "  "
+		if w.id == f.workload() {
+			chosen = stAccent.Render("● ")
+		}
+		out = append(out, action{fmt.Sprintf("%s%-8s %s", chosen, w.id, stMuted.Render(w.about)), "workload", w.id})
 	}
 	return out
 }

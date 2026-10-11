@@ -4,6 +4,7 @@
 │ ▸ Model       Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K                    › │
 │   Chip        apple_m3_10c · this Mac · 97.2 GB/s                          › │
 │   Engine      llama.cpp                                                    › │
+│   Workload    decode                                                       › │
 │   Batch       1                                                            › │
 │   Measurement auto                                                         › │
 │                                                                              │
@@ -11,7 +12,6 @@
 │   [ Emit ] Run first                                                         │
 │   Saved runs (2)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
 

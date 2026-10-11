@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Workload                                                                     │
+│ Workload is what the Run measures. Decode times one token at a time. Prefill │
+│ times the prompt read at once, from 512 tokens up to the model's own cap.    │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Choose                                                                       │
+│ ▸ ● decode   one token at a time, after the prompt                           │
+│     prefill  the prompt read at once, at lengths up to the model's cap       │
+│     session  not built yet                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit
