@@ -7,7 +7,7 @@ This page is for people who work on BoltBeam itself. A reader who wants to use i
 
 ```bash
 python -m pip install -e '.[dev]'
-python3 tools/install_hooks.py     # the commit-message checker
+python3 tools/install_hooks.py     # the commit-message checker and the pre-commit sz.py check
 boltbeam selfcheck
 ```
 
@@ -48,7 +48,8 @@ The published articles link into the mirror by path. Never move or rename a file
 
 | script | what it does |
 |---|---|
-| `tools/install_hooks.py` | installs the commit-message checker |
+| `sz.py` | the size budget and the duplicate-authority check (the `pre-commit` hook) |
+| `tools/install_hooks.py` | installs the hooks: the commit-message checker and `pre-commit` |
 | `tools/check_commit_msg.py` | enforces `[subsystem]` prefixes and `NFC` marking |
 | `tools/sync_branches.sh` | carries the trunk outward to `dev` and `exp` |
 | `tools/classify_bench.py` | classifies `bench/` artifacts as verdict or measurement |
@@ -114,12 +115,31 @@ to run next. If a generated candidate fails because a topology knob is missing, 
 
 ## Size
 
+`sz.py` at the repo root holds the size budget and the duplicate-authority check. The `pre-commit` hook runs
+it, and `tools/sync_branches.sh` runs it after each merge (hard on `dev`, report-only on `exp`).
+
 ```bash
-git ls-files '*.py' | xargs wc -l | tail -1     # reproduce, on any branch
+python3 sz.py              # the table, the total and the cap, then the authority check
+SZ_FILES=1 python3 sz.py   # every file
 ```
 
-Line count is not the metric. Duplicated knowledge is. The number drifts with every commit, so it is not
-written down here.
+The budget counts lines that hold code in `boltbeam/` and `tui/`. Blank lines, comments and docstrings do not
+count. Tests do not count. `tools/` is reported but not budgeted. The cap is written in the header of
+`sz.py`, with the reason for the number.
+
+A commit over the cap is refused. Raising the cap is a decision, not a fix. The code has to earn the lines,
+and the commit that raises the cap shows the table in its message.
+
+Line count is not the main metric. Duplicated knowledge is. `sz.py` keeps a short list of authorities, each
+with the one module that owns it: the ggml type table, the block layouts, the role vocabulary, the measured
+chip peaks, the dispatch-floor and noisy constants, and the correctness tolerance. A second definition of one
+of them anywhere else in `boltbeam/` or `tools/` fails the check, with its file and line. Only definitions
+count: assignments, dict, tuple, list and set literals, and numeric tolerance arguments. A mention in a
+comment or a doc does not.
+
+The duplicates that existed when the check landed are listed in `ALLOWED` in `sz.py`, each with its review
+finding. Review landing 6 removes them. Do not add to that list to get a commit through: import the owner
+instead. A new authority is one entry in `AUTHORITIES` and one detector.
 
 ## Design principles
 

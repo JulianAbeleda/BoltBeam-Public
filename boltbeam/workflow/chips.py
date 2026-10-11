@@ -18,6 +18,7 @@ import shutil
 import subprocess
 from typing import Any, Callable
 
+from boltbeam.collectors.cuda_compute import fact_source, matrix_tflops
 from boltbeam.target import targets as reg
 from boltbeam.workflow.autoscan import _hardware_profile, chip_profile_id
 
@@ -54,7 +55,8 @@ def _probes(vendor:str) -> tuple[Measure, Measure]:
     return m.measure_read_gbs, m.measure_matrix_tflops
   if vendor == "nvidia":
     from boltbeam.collectors import cuda_bandwidth as c
-    return c.measure_read_gbs, c.measure_matrix_tflops
+    from boltbeam.collectors import cuda_compute
+    return c.measure_read_gbs, cuda_compute.measure_paths
   raise RuntimeError(f"no BoltBeam probe for {vendor or 'this'} GPUs yet")
 
 
@@ -91,16 +93,21 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
                                # cold burst, sustained series, the regime between them, and the chip's one band
                                **{k: read.get(k) for k in ("regime", "cold_gbs", "sustained_gbs", "spread", "drift", "band")
                                   if read.get(k) is not None}},
-      "matrix_tflops": {"kind": "measurement", "bound": "lower", "scope": scope, "method": matrix["method"],
+      # a probe of every matrix path (cuda_compute) keeps each path's rate and clock; the fp16-only probe a lower bound
+      "matrix_tflops": fact_source(matrix, scope=scope, today=today) if matrix.get("paths") else
+                       {"kind": "measurement", "bound": "lower", "scope": scope, "method": matrix["method"],
                         "value_tflops": matrix["tflops"], "dtype": "fp16", "note": matrix["note"], "observed_at": today},
     },
   }
+  if matrix.get("paths"):
+    caps["fact_status"]["matrix_tflops"] = "measurement"
   return {
     "target_id": pid, "backend": "Metal" if apple else "CUDA", "wave_size": 32, "subgroup_size": 32,
     "lds_bytes_per_cu": None if apple else matrix.get("shared_mem_per_sm_bytes"),
     "vram_bytes": None if apple else device.get("memory_bytes"), "vector_load_bits": 128,
     "compute_units": None if apple else matrix.get("sm_count"),
-    "memory_bandwidth_gbs": read["read_gbs"], "peak_tflops": {}, "matrix_tflops": {"fp16": matrix["tflops"]},
+    "memory_bandwidth_gbs": read["read_gbs"], "peak_tflops": {},
+    "matrix_tflops": matrix_tflops(matrix) if matrix.get("paths") else {"fp16": matrix["tflops"]},
     "dot_primitives": ["simdgroup_matrix"] if apple else ["mma_m16n8k16", "dp4a"], "dequant_primitives": [],
     "backend_status": "descriptor_only", "capabilities": caps,
   }

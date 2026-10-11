@@ -374,6 +374,14 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   target = get_target(manifest.get("target_id"))
   # facts of the run only: what this machine could capture is `providers`, never part of the pinned results
   plan = None
+  if manifest.get("workload") == "prefill":  # the untraced prefill and where its time goes (workflow/prefill.py)
+    from boltbeam.workflow import prefill as pf
+    return pf.loss_block(run, manifest, {"status": "absent", "reason": None, "limit_ms": None, "limit_tok_s": None,
+                                         "not_attributed_ms": None, "source": None, "missing": None, "refused": None,
+                                         "provider": provider, "capture": plan, "roles_provider": None, "provider_missing": None,
+                                         "others": [], "unpaired_roles": [], "not_timed": [], "role_rule": None,
+                                         "latency": None, "cross_check": None, "role_source": None,
+                                         "role_source_words": None, "estimate": None, "findings": []})
   if ceil.get("status") != "modeled" or not ceil.get("floor_ms"):
     return {"status": "absent", "reason": ceil.get("reason"), "runtimes": [], "roles": [], "provider": provider,
             "capture": plan, "others": []}
@@ -991,6 +999,12 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
     probe = [guarded("probe", cuda_probe, probe="measured", last=False)]
   else:
     probe = []
+  if getattr(args, "workload", "decode") == "prefill":  # the untraced prefill per prompt length (collectors/prefill.py)
+    from boltbeam.collectors import prefill as pf
+    root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
+    timing = guarded("timing", lambda: pf.measure(out_dir(), provider, root=root), probe="absent",
+                     probe_reason=llama_bench_decode.PROBE_ABSENT)
+    return [timing]
   if provider == tinygrad_role_time.PROVIDER:
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
     timing = guarded("timing", lambda: providers.measure_tinygrad(out_dir(), root=root),
@@ -1267,7 +1281,9 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   if m and loss.get("limit_tok_s"):
     pct = 100.0 * loss["limit_ms"] / m["ms"] if m.get("ms") else 0.0
     head += (f": {m['tok_s']:.1f} tok/s measured, limit {loss['limit_tok_s']:.1f} tok/s, {pct:.0f}% of roofline, "
-             f"{m['lost_ms']:.1f} ms per token lost")
+             f"{m['lost_ms']:.1f} ms {loss.get('per') or 'per token'} lost")
+  elif m:  # measured, with no limit to hold it against yet (a prefill not yet captured in the model)
+    head += f": {m['tok_s']:.1f} tok/s measured, {m['ms']:.1f} ms {loss.get('per') or 'per token'}; no limit yet: {loss.get('missing')}"
   else:
     head += ": not measured"
   lines = [head]

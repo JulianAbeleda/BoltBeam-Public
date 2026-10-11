@@ -50,6 +50,11 @@ sync_one() {
   #   dev:  hard gate. dev is where "is the product correct" is answerable.
   #   exp:  report only. exp admits broken intermediate states by design; blocking on a
   #         red suite there would gate experimentation on a rule exp does not accept.
+  # the size budget and the duplicate-authority check (sz.py): hard on dev, report-only on exp, like the suite
+  if ! python3 sz.py >/dev/null 2>&1; then
+    if [[ "$into" == exp ]]; then echo "  sz.py FAILS on exp — reported only (run python3 sz.py there)"
+    else echo "  sz.py FAILS on $into after the merge: run python3 sz.py there." >&2; exit 4; fi
+  fi
   local rc=0
   python3 -m pytest -q >/dev/null 2>&1 || rc=$?
   case "$rc" in

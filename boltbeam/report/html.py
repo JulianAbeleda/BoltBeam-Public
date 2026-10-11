@@ -580,8 +580,9 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
     return _section(1, "The answer", who + f'<div class="hero"><span class="big dim">not measured yet</span>{lim}</div>'
                     f'<p class="note">Missing: a measured token ({_e(reason)}). Measure it with <code>{_e(cmd)}</code>.</p>')
   pct = 100.0 * limit_ms / m["ms"] if limit_ms and m.get("ms") else None
+  per = loss.get("per") or "per token"  # a prefill run's times are per prefill (workflow/prefill.py)
   gauge = (f'<div class="gauge" role="img" aria-label="{pct:.0f}% of roofline"><i style="width:{_pct(pct, 100):.1f}%"></i><s></s></div>'
-           f'<div class="gauge-l"><span><b>{pct:.0f}%</b> of roofline</span><span>roofline {limit_ms:.1f} ms per token</span></div>'
+           f'<div class="gauge-l"><span><b>{pct:.0f}%</b> of roofline</span><span>roofline {limit_ms:.1f} ms {per}</span></div>'
            if pct is not None else "")
   step = loss.get("step") or {}
   also = "".join(f'<p class="muted">Also measured at context {a["context"]}: {a["tok_s"]:.1f} tok/s. Not the headline: the headline '
@@ -589,9 +590,11 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
   return _section(1, "The answer", who +
                   f'<div class="hero"><span class="big">{m["tok_s"]:.1f}</span><span class="big-u">tok/s measured</span>{lim}</div>'
                   + gauge +
-                  f'<p class="note">{m["tok_s"]:.1f} tok/s = {m["ms"]:.1f} ms per token.</p>'
-                  f'<p class="note"><span class="lost">{m["lost_ms"]:.1f} ms per token lost</span> against the limit: '
-                  f'{m["ms"]:.1f} ms measured, {_ideal_words(loss, limit_ms)}. <span class="muted">{_e(m.get("note") or "")}</span></p>'
+                  f'<p class="note">{m["tok_s"]:.1f} tok/s = {m["ms"]:.1f} ms {per}.</p>'
+                  + (f'<p class="note"><span class="lost">{m["lost_ms"]:.1f} ms {per} lost</span> against the limit: '
+                     f'{m["ms"]:.1f} ms measured, {_ideal_words(loss, limit_ms)}. <span class="muted">{_e(m.get("note") or "")}</span></p>'
+                     if m.get("lost_ms") is not None else
+                     f'<p class="note">No limit yet: {_e(loss.get("missing") or "")}. <span class="muted">{_e(m.get("note") or "")}</span></p>')
                   + also + _ties(loss, results, m))
 
 

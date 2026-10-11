@@ -1,0 +1,3 @@
+#!/bin/sh
+# the size budget and the duplicate-authority check (sz.py, docs/maintaining.md "Size")
+out="$(python3 sz.py 2>&1)" || { printf "%s\n" "$out" >&2; echo "pre-commit: sz.py failed; see docs/maintaining.md, Size" >&2; exit 1; }
