@@ -30,7 +30,6 @@ _CLOCK_SM, _TEMP_GPU = 1, 0  # nvmlClockType_t NVML_CLOCK_SM; nvmlTemperatureSen
 THROTTLE_REASONS = {0x4: "software power cap", 0x8: "hardware slowdown", 0x20: "software thermal slowdown",
                     0x40: "hardware thermal slowdown", 0x80: "hardware power brake"}
 IDLE = 0x1
-OTHER_REASONS = {0x1: "idle", 0x2: "application clock setting", 0x10: "sync boost", 0x100: "display clock setting"}
 
 
 class _Nvml:
