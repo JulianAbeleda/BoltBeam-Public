@@ -31,7 +31,14 @@ def _read(path:pathlib.Path) -> dict[str, Any]:
 
 def truths(run:pathlib.Path) -> dict[int, dict[str, Any]]:
   trace = _read(run / "timing_trace.json")
-  return {int(r["context"]): r for r in trace.get("rows") or [] if r.get("scope") == "whole_step" and r.get("workload") == "prefill"}
+  return {int(r["context"]): r for r in trace.get("rows") or []
+          if r.get("scope") == "whole_step" and r.get("workload") == "prefill" and r.get("prefill_ms")}
+
+
+def failures(run:pathlib.Path) -> dict[int, str]:
+  """Prompt lengths the engine could not read, with its words (out of memory at the cap)."""
+  trace = _read(run / "timing_trace.json")
+  return {int(r["context"]): r["failed"] for r in trace.get("rows") or [] if r.get("workload") == "prefill" and r.get("failed")}
 
 
 def tables(run:pathlib.Path) -> dict[int, dict[str, Any]]:
@@ -84,6 +91,23 @@ def tie_words(row:dict[str, Any]) -> str:
   return (row.get("telemetry") or {}).get("words") or ""
 
 
+def scaled_mfu(where:dict[int, dict[str, Any]], length:int, untraced_ms:float, profile:dict[str, Any]) -> dict[str, Any] | None:
+  """The MFU of a length too long to capture, from the longest capture below it: each row's time at its peak scaled
+  to the length, matrix rows by the tokens, attention by its causal pairs (prefill_work.attention), over the untraced
+  prefill at the length. The output head runs once per call, so scaling it by the tokens overstates it slightly."""
+  from boltbeam.roofline.prefill_work import attention
+  below = [l for l in where if l < length]
+  if not below or not untraced_ms:
+    return None
+  base = max(below)
+  att, att_base = attention(profile, length), attention(profile, base)
+  pairs = att["flops"] / att_base["flops"] if att and att_base else (length / base) ** 2
+  compute = sum((r.get("compute_ms") or 0.0) * (pairs if tie.kind_of({"kernel": r["name"]}) == "attention" else length / base)
+                for r in where[base]["rows"])
+  return {"mfu_pct": 100.0 * compute / untraced_ms,
+          "how": f"scaled from the {base:,}-token capture: matrix work x {length / base:g}, attention x {pairs:.1f} (its causal pairs)"}
+
+
 def curve(run:pathlib.Path, manifest:dict[str, Any]) -> dict[str, Any] | None:
   """Prefill against prompt length for this run's engine: every length of this run and of its sibling prefill runs
   (same model, chip and engine, same runs folder). Per length: prefill ms, tokens/s, MFU, and per row ms and MFU."""
@@ -91,19 +115,25 @@ def curve(run:pathlib.Path, manifest:dict[str, Any]) -> dict[str, Any] | None:
   provider = run_provider(run)
   runs = [run] + sorted(p for p in run.parent.iterdir() if p != run and is_run(p)) if run.parent.is_dir() else [run]
   points: dict[int, dict[str, Any]] = {}
+  failed: dict[int, str] = {}
   for r in runs:
     m = load_manifest(r)
     if m.get("workload") != "prefill" or m.get("model_id") != manifest.get("model_id") or \
        m.get("target_id") != manifest.get("target_id") or run_provider(r) != provider:
       continue
     where = tables(r)
+    for length, words in failures(r).items():
+      failed.setdefault(length, words.strip().splitlines()[-1][-200:])
     for length, t in truths(r).items():
       if length in points:
         continue
       w = where.get(length)
+      scaled = None if w or not where else scaled_mfu(where, length, t["prefill_ms"], _read(r / "model_profile.json"))
       points[length] = {"length": length, "run": r.name, "ms": t["prefill_ms"], "tok_s": t["tok_s"],
                         "batched": t["batched"], "chunk_size": t["chunk"].get("size"), "throttled": t.get("throttled"),
-                        "mfu_pct": w["mfu_pct"] if w else None, "ceiling_ms": w["limit_ms"] if w else None,
+                        "sm_mhz": ((t.get("telemetry") or {}).get("sm_mhz") or {}).get("mean"),
+                        "mfu_pct": w["mfu_pct"] if w else (scaled or {}).get("mfu_pct"), "mfu_how": (scaled or {}).get("how"),
+                        "ceiling_ms": w["limit_ms"] if w else None,
                         "rows": {x["name"]: {"ms": x["now_ms"], "mfu_pct": x.get("mfu_pct")} for x in (w or {}).get("rows", [])}}
   if not points:
     return None
@@ -111,6 +141,7 @@ def curve(run:pathlib.Path, manifest:dict[str, Any]) -> dict[str, Any] | None:
   names = sorted({n for p in points.values() for n in p["rows"]},
                  key=lambda n: -max(p["rows"].get(n, {}).get("ms") or 0.0 for p in points.values()))
   return {"provider": provider, "lengths": lengths, "points": [points[l] for l in lengths], "rows": names,
+          "failed": [{"length": l, "words": failed[l]} for l in sorted(failed) if l not in points],
           "words": (f"{provider}: prefill against prompt length, every length measured for this model on this chip "
                     "(this run and its sibling prefill runs). MFU is operations over each row's path peak for its time; "
                     "the whole-prefill MFU is the time the matrix units would need at their peaks over the untraced prefill.")}

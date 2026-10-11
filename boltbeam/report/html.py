@@ -719,10 +719,14 @@ def _prefill_curve(loss:dict[str, Any]) -> str:
     svg += [f'<circle cx="{a:.1f}" cy="{b:.1f}" r="2.5" fill="{color}"/>' for a, b in xy]
     legend.append(f'<text x="572" y="{20 + 14 * len(legend)}" font-size="10.5" fill="{color}">{_e(name[:22])}</text>')
   svg += legend + ["</svg>"]
-  head = "<th>prompt tokens</th><th>prefill ms</th><th>tok/s</th><th>MFU</th><th>ms at ceiling</th><th>chunk</th><th>throttled</th>"
-  body = "".join(f'<tr><td>{p["length"]}</td><td>{p["ms"]:.1f}</td><td>{p["tok_s"]:.0f}</td><td>{_f(p.get("mfu_pct"), "{:.1f}%")}</td>'
+  head = "<th>prompt tokens</th><th>prefill ms</th><th>tok/s</th><th>MFU</th><th>ms at ceiling</th><th>chunk</th><th>throttled</th><th>SM MHz mean</th>"
+  body = "".join(f'<tr><td>{p["length"]}</td><td>{p["ms"]:.1f}</td><td>{p["tok_s"]:.0f}</td>'
+                 f'<td title="{_e(p.get("mfu_how") or "")}">{_f(p.get("mfu_pct"), "{:.1f}%")}{" *" if p.get("mfu_how") else ""}</td>'
                  f'<td>{_f(p.get("ceiling_ms"), "{:.1f}")}</td><td>{_e(p.get("chunk_size") or "")}{"" if p.get("batched") else " (not batched)"}</td>'
-                 f'<td>{"yes" if p.get("throttled") else "no"}</td></tr>' for p in pts)
+                 f'<td>{"yes" if p.get("throttled") else "no"}</td><td>{_f(p.get("sm_mhz"), "{:.0f}")}</td></tr>' for p in pts)
+  scaled = [f'{p["length"]}: {p["mfu_how"]}' for p in pts if p.get("mfu_how")]
+  body += f'<tr><td colspan="8" class="muted">* {_e("; ".join(scaled))}</td></tr>' if scaled else ""
+  body += "".join(f'<tr><td>{x["length"]}</td><td colspan="7" class="muted">not read: {_e(x["words"])}</td></tr>' for x in c.get("failed") or [])
   rhead = "<th>row</th>" + "".join(f"<th>{n}: ms (MFU)</th>" for n in lengths)
   rbody = "".join("<tr><td>" + _e(n) + "</td>" + "".join(
     f'<td>{_f((p["rows"].get(n) or {}).get("ms"), "{:.2f}")}'

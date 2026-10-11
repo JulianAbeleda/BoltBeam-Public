@@ -90,6 +90,27 @@ def read_gguf(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tuple[str, 
   return kv, tensors
 
 
+def attention_layers(tensors, layers:int | None) -> int | None:
+  """The layers that keep a KV cache: those holding a key projection (`blk.N.attn_k`). A hybrid model attends in some
+  layers only (the rest are recurrent); None when every layer does or no layer names one (block_count stands)."""
+  blocks = {name.split(".")[1] for name, *_ in tensors if name.startswith("blk.") and ".attn_k." in name}
+  return len(blocks) if blocks and layers and len(blocks) < layers else None
+
+
+def declared_context(kv:dict[str, Any], arch:str | None) -> dict[str, Any] | None:
+  """The context the model declares: `<arch>.context_length`, extended by a rope scaling it declares (factor x the
+  original context). {"length", "source", "scaling"}; None when the file declares none."""
+  if not arch or not kv.get(f"{arch}.context_length"):
+    return None
+  length, source = int(kv[f"{arch}.context_length"]), f"{arch}.context_length"
+  scaling = {k.rsplit(".", 1)[1]: v for k, v in kv.items() if k.startswith(f"{arch}.rope.scaling.")}
+  factor, original = scaling.get("factor"), scaling.get("original_context_length")
+  if scaling.get("type") not in (None, "none") and factor and original and float(factor) * int(original) > length:
+    length = int(float(factor) * int(original))
+    source = f"{arch}.rope.scaling.factor x {arch}.rope.scaling.original_context_length"
+  return {"length": length, "source": source, "scaling": scaling or None}
+
+
 def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> ModelProfile:
   p = pathlib.Path(path).expanduser()
   kv, tensors, data_start = read_gguf_layout(p)
@@ -145,7 +166,9 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
       "head_count": head_count,
       "head_count_kv": head_count_kv,
       "head_dim": head_dim,
+      "layer_count": attention_layers(tensors, layers),
     }.items() if v is not None},
+    "context": declared_context(kv, arch),
   }
   return ModelProfile(model_id=model_id or p.stem, source=str(p), architecture=arch, hidden_size=hidden,
                       ffn_size=ffn, vocab_size=vocab, layer_count=layers, roles=roles, metadata=metadata,

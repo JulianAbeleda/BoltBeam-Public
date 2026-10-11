@@ -66,11 +66,11 @@ UNATTRIBUTED_LABEL = "weight kernels, unattributed"  # its own tie-out line, the
 GEMV_WORDS = ("mul_mat_vec", "kernel_mul_mv", "gemv")  # the GEMV names the adapters know (collectors/engine_kernels.py)
 # what a kernel that is not a weight role is, by words in its name; for labels only, never for attribution. The GEMV
 # words come before the elementwise ones: "mul_mat_vec" holds "mul", and a 2 ms GEMV is not elementwise work
-KIND_WORDS = (("flash", "attention"), ("attention", "attention"), ("softmax", "attention"), ("rms_norm", "norm"),
+KIND_WORDS = (("delta_net", "recurrent"), ("ssm_", "recurrent"), ("flash", "attention"), ("attention", "attention"), ("softmax", "attention"), ("rms_norm", "norm"),
               ("norm", "norm"), ("quantize", "quantize"), ("rope", "rope"), ("set_rows", "KV cache write"),
               ("copy", "copy"), ("cpy", "copy"), ("COPY", "copy"), *((w, UNATTRIBUTED) for w in GEMV_WORDS),
               ("silu", "elementwise"), ("glu", "elementwise"), ("add", "elementwise"), ("mul", "elementwise"))
-KINDS = ("attention", "norm", "quantize", "rope", "KV cache write", "copy", "elementwise", "reduce", UNATTRIBUTED)
+KINDS = ("attention", "recurrent", "norm", "quantize", "rope", "KV cache write", "copy", "elementwise", "reduce", UNATTRIBUTED)
 KIND_PREFIX = (("r_", "reduce"), ("E_", "elementwise"))  # tinygrad's generated kernel names
 
 
@@ -114,10 +114,10 @@ def kernel_words(name:str) -> str:
 
 
 def kv_ms(profile:dict[str, Any], context:float, element_bytes:int, bandwidth_gbs:float) -> float:
-  """Time to read the KV cache once for one token at this context: layers x K and V x kv heads x head dim x
-  context x element size, over the bandwidth."""
+  """Time to read the KV cache once for one token at this context: the attending layers (all of them unless the
+  profile says fewer, a hybrid's) x K and V x kv heads x head dim x context x element size, over the bandwidth."""
   att = (profile.get("metadata") or {}).get("attention") or {}
-  layers, heads, dim = profile.get("layer_count"), att.get("head_count_kv"), att.get("head_dim")
+  layers, heads, dim = att.get("layer_count") or profile.get("layer_count"), att.get("head_count_kv"), att.get("head_dim")
   if not (layers and heads and dim and bandwidth_gbs):
     return 0.0
   return layers * 2 * heads * dim * context * element_bytes / (bandwidth_gbs * 1e9) * 1e3

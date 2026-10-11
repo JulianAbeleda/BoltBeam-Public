@@ -1058,7 +1058,7 @@ def pipeline(args, out=sys.stdout) -> int:
     out.flush()
   steps = [
     ("load", lambda: load_run(args.model, args.run, target_id=args.target, model_id=args.id, workload=args.workload,
-                              contexts=_parse_ctxs(args.ctxs), target_source="user")),
+                              contexts=_parse_ctxs(args.ctxs) if args.ctxs else None, target_source="user")),
     ("autoscan", lambda: autoscan_run(args.run, providers=())),
     ("analyze", lambda: analyze_run(args.run)),
   ]
@@ -1294,7 +1294,9 @@ def curve_lines(c:dict[str, Any] | None) -> list[str]:
   out = ["Prefill against prompt length:", f"  {c['words']}"]
   for p in c["points"]:
     out.append(f"  {p['length']:>6} tokens: {p['ms']:9.1f} ms, {p['tok_s']:8.0f} tok/s, MFU {f(p.get('mfu_pct'), '{:.1f}%')}"
+               + (f" ({p['mfu_how']})" if p.get("mfu_how") else "") + (f", {p['sm_mhz']:.0f} MHz mean" if p.get("sm_mhz") else "")
                + ("" if p.get("batched") else ", not batched") + (", THROTTLED" if p.get("throttled") else ""))
+  out += [f"  {x['length']:>6} tokens: not read: {x['words']}" for x in c.get("failed") or []]
   width = max(len(n) for n in c["rows"]) if c["rows"] else 0
   for n in c["rows"]:
     out.append(f"  {n:<{width}} " + "  ".join(
@@ -1564,7 +1566,8 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--target", required=True)
   p.add_argument("--id", default=None)
   p.add_argument("--workload", default="decode", choices=["decode", "prefill"])
-  p.add_argument("--ctxs", default="128,512")
+  p.add_argument("--ctxs", default=None, help="decode contexts (default 128,512) or prompt lengths (default: the sweep "
+                                              "to the model's own cap, prefill_work.sweep)")
   p.add_argument("--probe", default=None, help="boltbeam.probe_evidence.v1 JSON to ingest after analyze")
   p.add_argument("--timing", default=None, help="boltbeam.timing_trace.v1 JSON to ingest after analyze")
   p.add_argument("--measure", default="none", choices=["none", "auto"],

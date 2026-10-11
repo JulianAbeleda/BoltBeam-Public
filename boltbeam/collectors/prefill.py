@@ -97,7 +97,10 @@ def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> d
           "telemetry_samples": gpu_telemetry.compact(tele.samples),
           "source": f"llama-bench -p {length} -n 0, {len(samples)} repetitions after its warm-up, untraced",
           "engine": {"build": row.get("build_commit"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
-                     "type_k": row.get("type_k"), "command": cmd}}
+                     "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd,
+                     "n_ctx": int(row.get("n_prompt") or length) + int(row.get("n_gen") or 0),
+                     "n_ctx_source": "llama-bench sizes its context to n_prompt + n_gen + n_depth",
+                     "prompt": PROMPT_WORDS["llama.cpp"]}}
 
 
 LLAMA_TILE_ROWS = 128  # mmq_y: the weight rows of one mul_mat_q output tile on a CUDA matrix-instruction build
@@ -118,6 +121,12 @@ def llama_formats(type_k:str | None) -> dict[str, Any]:
   return {"activations": {"in": "Q8_1", "out": "F32"}, "attention_activations": {"in": "F32", "out": "F32"},
           "kv": str(type_k or "f16").upper(), "partials": "F32", "stream_k": llama_stream_k,
           "words": "mul_mat_q: q8_1 in, fp32 out; flash attention: fp32 Q and output, the cache in type_k; fp32 partials"}
+
+
+PROMPT_WORDS = {"llama.cpp": "llama-bench's own prompt: token ids drawn by std::rand() % n_vocab (never seeded: one fixed "
+                            "sequence; each repetition draws new ids), the KV cache cleared before every repetition, so "
+                            "nothing is cached between prompts"}
+MAX_CAPTURE_LAUNCHES = 1_000_000  # a capture estimated to hold more launches than this is not taken: its time stands alone
 
 
 def llama_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, Any]:
@@ -266,7 +275,13 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   for length in read_json(run / "trace_request.json").get("contexts") or []:
     say(f"prefill of {length} tokens: {provider}")
     began = time.monotonic()
-    got = _engine(provider)["truth"](run, str(manifest["model_path"]), int(length), target, root)
+    try:
+      got = _engine(provider)["truth"](run, str(manifest["model_path"]), int(length), target, root)
+    except RuntimeError as exc:  # a length the engine could not read (out of memory at the cap): said, the rest go on
+      say(f"prefill of {length} tokens failed: {str(exc)[-200:]}")
+      rows.append({"scope": "whole_step", "workload": "prefill", "context": int(length), "prompt_tokens": int(length),
+                   "failed": str(exc)[-600:], "seconds": round(time.monotonic() - began, 1)})
+      continue
     tele = got["telemetry"]
     rows.append({"scope": "whole_step", "workload": "prefill", "context": int(length), "prompt_tokens": int(length),
                  "wall_us": got["ms"] * 1e3, "prefill_ms": got["ms"], "tok_s": int(length) / got["ms"] * 1e3,
@@ -275,11 +290,14 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
                  "telemetry": tele, "throttled": tele.get("throttled"), "telemetry_samples": got.get("telemetry_samples"),
                  "source": got["source"], "engine": got["engine"],
                  "seconds": round(time.monotonic() - began, 1)})
+  if not any(r.get("prefill_ms") for r in rows):
+    raise RuntimeError("no prompt length was read: " + "; ".join(f"{r['context']}: {r['failed'][-160:]}" for r in rows))
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
            "workload": "prefill", "provider": provider, "provider_id": provider, "collector_id": "prefill",
            "timing_source": "untraced prefill wall time", "contexts": [r["context"] for r in rows], "rows": rows,
            "clock_policy": gpu_telemetry.clock_policy(0),
-           "measured": ["whole_step.prefill_ms (the prompt read untraced at the engine's own chunk)"]}
+           "measured": ["whole_step.prefill_ms (the prompt read untraced at the engine's own chunk)"],
+           **({"sweep": read_json(run / "prefill_sweep.json")} if (run / "prefill_sweep.json").exists() else {})}
   out = run / "timing_trace.json"
   out.write_text(pretty_json(trace))
   return out
@@ -322,13 +340,24 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   roles = prefill_roles(profile, ceil.get("_roles") or [])
   # the engine's own timing slows its run (one command buffer per kernel): its idle is profiling, not the engine's,
   # so its gaps are the untraced prefill less the busy time, as the decode tie-out treats its own timing
-  truth_ms = {int(r["context"]): r["prefill_ms"] for r in read_json(run / "timing_trace.json").get("rows") or []
-              if r.get("prefill_ms")}
+  truth_rows = [r for r in read_json(run / "timing_trace.json").get("rows") or [] if r.get("prefill_ms")]
+  truth_ms = {int(r["context"]): r["prefill_ms"] for r in truth_rows}
+  truth_chunk = {int(r["context"]): r.get("chunk") or {} for r in truth_rows}
   out = {"schema": "boltbeam.prefill_trace.v1", "provider": provider, "model_id": manifest["model_id"],
          "target_id": target.target_id, "bandwidth_gbs": bw, "bandwidth_source": bw_source,
          "peaks": dict(target.matrix_tflops or {}), "peaks_source": ((target.capabilities or {}).get("fact_sources") or {}).get("matrix_tflops"),
          "lengths": {}}
+  per_chunk = None  # launches per engine chunk, from the last capture: the next capture's size is estimated from it
   for length in read_json(run / "trace_request.json").get("contexts") or []:
+    if int(length) not in truth_ms:
+      out["lengths"][str(length)] = {"not_captured": "the untraced prefill failed at this length (timing_trace.json)"}
+      continue
+    chunks = len(split_chunks(int(length), (truth_chunk.get(int(length)) or {}).get("size") or int(length)))
+    if per_chunk and 2 * per_chunk * chunks > MAX_CAPTURE_LAUNCHES:
+      say(f"prefill of {length} tokens: not captured (about {2 * per_chunk * chunks:,.0f} launches)")
+      out["lengths"][str(length)] = {"not_captured": f"about {2 * per_chunk * chunks:,.0f} launches with the warm-up, over "
+                                                     f"{MAX_CAPTURE_LAUNCHES:,}: the untraced time, MFU and clock stand alone"}
+      continue
     say(f"prefill of {length} tokens in the model: {provider}")
     with gpu_telemetry.Telemetry(0) as tele:
       cap = _engine(provider)["capture"](run, str(manifest["model_path"]), int(length), target, root)
@@ -338,6 +367,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              program_roles=cap.get("program_roles"), warmup=cap["warmup"],
                              untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
                              formats=cap.get("formats"), cache=last_level_cache(target))
+    per_chunk = len(cap["launches"]) / 2 / max(len(cap["chunk"]), 1) if cap["warmup"] else len(cap["launches"]) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
                                    "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": tele.summary(),
                                    "paths_how": cap["paths"]["how"], "libraries": cap["paths"]["libraries"], **attr}

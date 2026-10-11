@@ -73,7 +73,9 @@ def _workload_profile(profile, target_id:str, workload:str, contexts:tuple[int, 
 
 def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str | None = None,
              model_id:str | None = None, workload:str = Workload.DECODE.value,
-             contexts:tuple[int, ...] = (128, 512), target_source:str | None = None) -> dict[str, Any]:
+             contexts:tuple[int, ...] | None = None, target_source:str | None = None) -> dict[str, Any]:
+  """A run folder for the model. contexts: the decode contexts, or a prefill's prompt lengths; left out, decode
+  takes (128, 512) and a prefill the sweep from the model's own cap (prefill_sweep.json, prefill_work.sweep)."""
   out = run_dir(run)
   model_path = pathlib.Path(model).expanduser()
   selected_target = target_id or "amd_gfx1100"
@@ -82,6 +84,11 @@ def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str 
   profile = profile_from_model(model_path, model_id=model_id)
   write_json(out / "model_profile.json", profile.to_json())
   write_json(out / "weight_inventory.json", _weight_inventory(profile))
+  if contexts is None and workload == Workload.PREFILL.value:
+    swept = prefill_sweep(profile.to_json(), selected_target)
+    write_json(out / "prefill_sweep.json", swept)
+    contexts = tuple(swept["lengths"])
+  contexts = contexts or (128, 512)
   write_json(out / "workload_profile.json", _workload_profile(profile, selected_target, workload, contexts))
   manifest = {
     "schema": SCHEMA_RUN_MANIFEST,
@@ -96,3 +103,15 @@ def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str 
     "artifacts": list(LOAD_ARTIFACTS),
   }
   return write_manifest(out, manifest)
+
+
+def prefill_sweep(profile:dict[str, Any], target_id:str) -> dict[str, Any]:
+  """The prefill's prompt lengths from the model's declared context and the memory the target has left after the
+  weights (its total memory, a hardware scan fact; the weights, the profile's ledger), at an f16 cache, the engines'
+  default."""
+  from boltbeam.roofline.prefill_work import sweep
+  from boltbeam.target.targets import get_target
+  facts = (get_target(target_id).capabilities or {}).get("fact_sources") or {}
+  memory = next((v["total_global_mem_bytes"] for v in facts.values() if isinstance(v, dict) and v.get("total_global_mem_bytes")), None)
+  weights = ((profile.get("metadata") or {}).get("weights") or {}).get("total_bytes")
+  return sweep(profile, memory_bytes=memory, weight_bytes=weights)

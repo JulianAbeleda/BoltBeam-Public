@@ -63,6 +63,48 @@ def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None
                    f"{heads} heads, {attention_layers} layers"}
 
 
+SWEEP_FIRST = 512  # the first prompt length of a sweep
+SWEEP_STEP = 4  # each next length is this many times the last, up to the binding cap, which is the last point
+
+
+def kv_bytes_per_token(profile:dict[str, Any], kv_format:str = "F16") -> float | None:
+  """The KV cache one token adds: K and V, kv heads x head dim, in the layers that attend, in the cache's format."""
+  att = (profile.get("metadata") or {}).get("attention") or {}
+  layers = att.get("layer_count") or profile.get("layer_count")
+  if not (layers and att.get("head_count_kv") and att.get("head_dim")):
+    return None
+  return 2.0 * att["head_count_kv"] * att["head_dim"] * layers * elem_bytes(kv_format)
+
+
+def sweep(profile:dict[str, Any], *, memory_bytes:float | None, weight_bytes:float | None,
+          kv_format:str = "F16") -> dict[str, Any]:
+  """The prompt lengths a prefill is measured at: SWEEP_FIRST, then SWEEP_STEP times each, and the binding cap last.
+  The model's cap is the context it declares (profile metadata context); the memory's cap is what the GPU's memory
+  holds after the weights, at the KV bytes one token adds (no reserve for the engine's buffers: the run is the check).
+  The lower binds, cut to a multiple of SWEEP_FIRST."""
+  ctx = (profile.get("metadata") or {}).get("context") or {}
+  per = kv_bytes_per_token(profile, kv_format)
+  model_cap = ctx.get("length")
+  memory_cap = int((memory_bytes - weight_bytes) // per) if memory_bytes and weight_bytes and per else None
+  caps = {k: v for k, v in (("model", model_cap), ("memory", memory_cap)) if v}
+  if not caps:
+    raise ValueError("no cap for the sweep: the model declares no context length and the memory left for the KV is not known")
+  binding = min(caps, key=lambda k: caps[k])
+  cap = caps[binding] if binding == "model" else caps[binding] // SWEEP_FIRST * SWEEP_FIRST
+  lengths, x = [], SWEEP_FIRST
+  while x < cap:
+    lengths.append(x)
+    x *= SWEEP_STEP
+  lengths.append(cap)
+  return {"lengths": lengths, "model_cap": model_cap, "model_cap_source": ctx.get("source"), "memory_cap": memory_cap,
+          "binding": binding, "cap": cap, "kv_bytes_per_token": per, "kv_format": kv_format, "weight_bytes": weight_bytes,
+          "memory_bytes": memory_bytes,
+          "words": f"{SWEEP_FIRST} x {SWEEP_STEP} per step to the {binding} cap {cap:,}"
+                   + (f" (model {model_cap:,} from {ctx.get('source')}" if model_cap else " (the model declares none")
+                   + (f"; memory {memory_cap:,}: {(memory_bytes or 0) / 1e9:.1f} GB less {(weight_bytes or 0) / 1e9:.1f} GB of "
+                      f"weights at {per:,.0f} bytes of {kv_format} KV per token)" if memory_cap else ")")}
+
+
 def path_shares(paths:dict[str, int]) -> dict[str, float]:
   """A kernel's operations over its matrix paths, by its instruction sites on each (one path: all of them)."""
   total = sum(paths.values())

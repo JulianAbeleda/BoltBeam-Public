@@ -164,7 +164,8 @@ def _register_load(sub) -> None:
                  help="explicit target id; when omitted autoscan may replace the legacy AMD default")
   p.add_argument("--id", default=None, help="profile/model id override")
   p.add_argument("--workload", default="decode", choices=["decode", "prefill"])
-  p.add_argument("--ctxs", default="128,512", help="comma-separated contexts to seed the workload profile")
+  p.add_argument("--ctxs", default=None, help="comma-separated contexts to seed the workload profile (default 128,512; "
+                                              "a prefill: the sweep to the model's own cap)")
   p.add_argument("--out", default=None, help="write run manifest JSON here instead of stdout")
   p.set_defaults(fn=cmd_load)
 
@@ -172,7 +173,7 @@ def _register_load(sub) -> None:
 
 def cmd_load(args) -> int:
   manifest = load_run(args.model, args.run, target_id=args.target or "amd_gfx1100", model_id=args.id,
-                      workload=args.workload, contexts=_parse_ctxs(args.ctxs),
+                      workload=args.workload, contexts=_parse_ctxs(args.ctxs) if args.ctxs else None,
                       target_source="user" if args.target else "default")
   _write(manifest, args.out)
   return 0

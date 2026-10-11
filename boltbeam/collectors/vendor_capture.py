@@ -44,7 +44,7 @@ def _nsys_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str], f
 def _nsys_read(tool:str, out:pathlib.Path) -> list[dict[str, Any]]:
   # --force-export: a capture again in the same folder must not be read through the last capture's sqlite export
   proc = subprocess.run([tool, "stats", "--force-export=true", "--report", "cuda_gpu_trace", "--format", "csv", "--output", "-",
-                         str(out / "capture.nsys-rep")], capture_output=True, text=True, timeout=600)
+                         str(out / "capture.nsys-rep")], capture_output=True, text=True, timeout=3600)
   if proc.returncode != 0:
     raise RuntimeError(f"nsys stats exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
   (out / "cuda_gpu_trace.csv").write_text(proc.stdout)  # the evidence the launches were read from
