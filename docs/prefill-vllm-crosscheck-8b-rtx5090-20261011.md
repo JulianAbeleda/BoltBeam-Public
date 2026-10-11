@@ -67,8 +67,8 @@ Measured ms is the untraced prefill. Roofline ms is the sum over the rows of max
 bandwidth), at the peaks' measured clock (cuda_compute: bf16 251.5, fp16 251.4, fp16_f16acc 497.7, int8 995.8
 TFLOPS; 1694 GB/s), recomputed from each run's rows so all three use one basis.
 
-The weight GEMM rows of both BF16 runs use the bf16 path. This is an assumption, because cuBLAS hides that code
-(see the next section). BoltBeam itself refuses those ceilings in the traces.
+The weight GEMM rows of both BF16 runs use the bf16 path. cuBLAS hides that code (see the next section). Since
+2026-10-11 BoltBeam reads that path from the kernel's name, labelled "from the kernel name" (item 7).
 
 | engine | format | length | chunk | measured ms | roofline ms | % of roofline |
 |---|---|---|---|---|---|---|
@@ -124,9 +124,34 @@ The weight GEMM rows of both BF16 runs use the bf16 path. This is an assumption,
    weights llama.cpp converts activations to the weight type for cuBLAS and writes fp32. The formats now follow
    the profile's weight types.
 
+7. **A closed kernel's path from its name (2026-10-11).** `instruction_path.NAME_PATHS` maps documented kernel-name
+   patterns to a path. CUTLASS and cuBLAS names carry the element and accumulate types: `_bf16_s16816gemm` is bf16
+   in with fp32 accumulate. A path read from code always wins. The row says "from the kernel name". The guards still
+   apply: a name's path that would put a kernel above its peak or past the bandwidth is refused.
+
 One difference against the 10-10 audit is older code, not a mismatch. That audit counted llama.cpp attention
 activations as fp16 (1.963e9 bytes at 2048). Current code counts fp32, as llama.cpp reads them (3.171e9 bytes).
 The BF16 run here uses current code.
+
+## Kernel-name paths, re-read from the saved traces (2026-10-11)
+
+No GPU ran. The saved traces hold each row's operations, bytes, time and the peaks at the capture's clock. The rows
+refused for "kernel code not found" were recomputed with the path from the kernel's name.
+
+| run | length | roofline ms before | after | measured ms | % of roofline before | after |
+|---|---|---|---|---|---|---|
+| vLLM BF16 | 512 | 1.08 | 32.51 | 38.30 | 2.8 | 84.9 |
+| vLLM BF16 | 2048 | 5.77 | 121.62 | 145.69 | 4.0 | 83.5 |
+| llama.cpp BF16 | 512 | 1.14 | 9.52 | 47.36 | 2.4 | 20.1 |
+| llama.cpp BF16 | 2048 | 5.53 | 37.45 | 187.94 | 2.9 | 19.9 |
+
+- Resolved in vLLM: gate_up_proj, down_proj, qkv_proj and o_proj, all bf16 from the kernel name.
+- Resolved in llama.cpp: attn_qo and attn_kv.
+- Still refused in llama.cpp: the grouped `ffn_down + ffn_gate_up` row. Its bf16 ceiling would be above its
+  measured time, so the guard refuses it. Its pairing is the likely fault. It is open.
+- The "before" column counts no compute ceiling for the refused rows. That is why it is far below the table above,
+  which assumed bf16 by hand. vLLM's "after" figures are above that table's (76.6 at 512) because they use each
+  capture's own clock.
 
 ## Evidence
 

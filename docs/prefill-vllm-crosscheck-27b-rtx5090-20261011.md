@@ -85,10 +85,12 @@ in the evidence folder.
 The paths:
 - llama.cpp's mul_mat_q runs on the int8 path (996 TFLOPS at the probe clock).
 - vLLM's Marlin dequantizes INT4 to bf16 and runs bf16 HMMA (251.5 TFLOPS), read from its machine code.
-- Two vLLM ceilings are refused in the traces, so here they are assumptions:
-  - The cuBLAS BF16 GEMM (in_proj_ba) is assumed to run on bf16.
-  - The FlashInfer delta-rule kernels (code not readable) are assumed to run on the fp32 vector rate, as the work
-    model's own path.
+- Two vLLM kernels have no readable code. Since 2026-10-11 their paths come from their names, labelled "from the
+  kernel name" (see the section below):
+  - The cuBLAS BF16 GEMM (in_proj_ba) runs on bf16 (`tensorop_bf16_s16816gemm`).
+  - FlashInfer's delta-rule kernels run on fp16/bf16 tensor cores with fp32 accumulate. FlashInfer 0.7.0.post1
+    builds `warp.MmaF16BF16Op(dtype, Float32, (16, 8, 16))` in delta_rule_cp_sm120.py (lines 436, 872, 2074,
+    3837). Its SIMT fixup (line 2463) has no matrix instruction. The row stays bound by its bytes.
 
 | engine | format | length | chunk | measured ms | roofline ms | % of roofline |
 |---|---|---|---|---|---|---|
@@ -200,12 +202,28 @@ Bytes per token per row (the decode work), from each run's profile:
    - At 512 the capture now reads 2,940 MHz, where the whole process averaged 1,041 MHz.
 
 Still open:
-- The FlashInfer delta-rule kernels (CuTe DSL) and the cuBLAS GEMMs have no readable code, so their ceilings stay
-  refused.
+- The deep llama.cpp prefill captures of the replay leave `mul_mat_q` unpaired, and the deep decode capture leaves
+  the FFN gate and up roles unpaired (docs/replay-27b-rtx5090-20261011.md). The kernel-name rule does not touch
+  that pairing.
 - The work model does not count the chunked delta rule's extra arithmetic.
 - The vLLM 27B decode tie-out guard failure, above.
 - For a model folder, the decode probe says "the model file is gone" (measure_status.json probe_reason). The
   probe looks for a file, not a folder. It did not block the run.
+
+## Kernel-name paths, re-attributed from the saved captures (2026-10-11)
+
+No GPU ran. The saved vLLM nsys exports were re-attributed with the current code. Each capture kept the clock it
+had saved.
+
+| length | roofline ms before | after | measured ms | % of roofline before | after |
+|---|---|---|---|---|---|
+| 512 | 100.76 | 103.26 | 133.49 | 75.5 | 77.4 |
+| 2048 | 404.85 | 414.25 | 503.37 | 80.4 | 82.3 |
+
+- Resolved: in_proj_ba (bf16 from the kernel name) and the recurrent row (the delta-rule kernels, fp16 from the
+  kernel name). No refused ceiling is left in the vLLM prefill traces.
+- The "after" figures equal the table above, which had assumed these paths by hand. The recurrent row stays bound
+  by its bytes, so the tensor-core path does not change its ceiling.
 
 ## Evidence
 

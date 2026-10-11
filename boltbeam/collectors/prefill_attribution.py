@@ -39,7 +39,7 @@ import statistics
 from typing import Any
 
 from boltbeam.collectors.attribution import attribute, share_overlap
-from boltbeam.collectors.instruction_path import kernel_path, template
+from boltbeam.collectors.instruction_path import FROM_NAME, kernel_path, template
 from boltbeam.roofline import prefill_work as work
 from boltbeam.workflow.tie_out import kind_of
 
@@ -489,10 +489,13 @@ def _merge_paths(paths:list[dict[str, Any]]) -> dict[str, Any]:
       known[k] = known.get(k, 0) + n
   if not known:
     return paths[0] if paths else {"status": "not_found", "paths": {}, "path": None, "words": "no code"}
+  named = [p for p in paths if p.get("from_name") and p.get("paths")]
+  tag = {"from_name": True, "name_source": named[0]["name_source"]} if named else {}
+  label = f" ({FROM_NAME})" if named else ""
   if len(known) == 1:
     k = next(iter(known))
-    return {"status": "one", "paths": known, "path": k, "words": k}
-  return {"status": "mixed", "paths": known, "path": None, "words": " + ".join(sorted(known))}
+    return {"status": "one", "paths": known, "path": k, "words": k + label, **tag}
+  return {"status": "mixed", "paths": known, "path": None, "words": " + ".join(sorted(known)) + label, **tag}
 
 
 def _row(name:str, what:str, t:dict[str, Any], calls:int, wall_us:float, flops:float, nbytes:float,
@@ -509,11 +512,15 @@ def _row(name:str, what:str, t:dict[str, Any], calls:int, wall_us:float, flops:f
     c = work.ceiling(flops if peak else 0.0, nbytes, peak, bandwidth_gbs,
                      work.compute_ms(flops, path["paths"], peaks) if path["status"] == "mixed" else None)
     refused = None
+    if path.get("from_name") and c["ms"] and c["ms"] > ms * PEAK_SLACK:  # a name's path may not beat the guards
+      refused = (f"no ceiling: the path {path['words']} would put the kernel {c['ms']:.2f} ms over its {ms:.2f} ms "
+                 f"({'above the peak' if c['bound'] == 'compute' else 'faster than the bandwidth'})")
+      c = {"ms": None, "compute_ms": None, "memory_ms": None, "bound": None}
   return {"name": name, "what": what, "calls": calls, "ms": ms, "flops": flops, "bytes": nbytes, "template": t["template"],
           "path": path["words"], "path_status": path["status"], "peak_tflops": peak,
           "ceiling_ms": c["ms"], "compute_ms": c["compute_ms"], "memory_ms": c["memory_ms"], "bound": c["bound"],
-          "mfu_pct": work.mfu(flops, ms, peak) if path["status"] in ("one", "mixed") else None,
-          "refused": refused, "mixed": path["status"] == "mixed",
+          "mfu_pct": work.mfu(flops, ms, peak) if path["status"] in ("one", "mixed") and not refused else None,
+          "refused": refused, "mixed": path["status"] == "mixed", **({"name_source": path["name_source"]} if path.get("from_name") else {}),
           **({"path_shares": work.path_shares(path["paths"])} if path["status"] == "mixed" else {}), **extra}
 
 

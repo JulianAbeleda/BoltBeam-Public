@@ -12,8 +12,11 @@ A kernel's compute ceiling is its work over the peak of the path its matrix inst
 A matrix instruction's path is its operand types: the input type and the accumulator type (`signature`). The table
 from signature to path is built from the probe's own instructions (PATHS), so the path a kernel is judged on is the
 path that was measured. A kernel with no matrix instruction has no matrix path (its ceiling is its bytes); a kernel
-whose instructions are on several paths is `mixed` and the row says which; a kernel whose code was not found has no
-path, and its compute ceiling is refused, named.
+whose instructions are on several paths is `mixed` and the row says which.
+
+A kernel whose code is not readable (a closed library such as cuBLAS, or a JIT-compiled DSL kernel with no cached
+code) is read from its name when NAME_PATHS holds a documented pattern for it: the row says "from the kernel name",
+and a path read from code always wins. A kernel with neither has no path, and its compute ceiling is refused, named.
 """
 from __future__ import annotations
 
@@ -240,13 +243,47 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
           "kernels": {t: index["paths"][t] for t in wanted if t in index["paths"]}}
 
 
+FROM_NAME = "from the kernel name"
+# A closed kernel's matrix path from its name: (pattern, path or None for no matrix instruction, the source that
+# documents it). First match wins. Only for kernels whose code was not read; code always wins over a name.
+NAME_PATHS: tuple[tuple[str, str | None, str], ...] = (
+  (r"delta_rule_cp_sm\d+CPDeltaRule(?:TPrecompute|MNPrecompute|Prefill|FixupHmma)Sm\d+", "fp16",
+   "FlashInfer 0.7.0.post1 gdn_kernels/delta_rule_dsl/delta_rule_cp_sm120.py lines 436, 872, 2074 and 3837: "
+   "warp.MmaF16BF16Op(dtype, Float32, (16, 8, 16)), fp16 or bf16 in with fp32 accumulate (one measured rate, within 0.1%)"),
+  (r"delta_rule_cp_sm\d+CPDeltaRuleFixupSimtSm\d+", None,
+   "FlashInfer 0.7.0.post1 delta_rule_cp_sm120.py line 2463: the SIMT fixup, no MMA atom"),
+  (r"(?:tensorop|xmma|gemm)\w*?(?:e4m3|e5m2)", "fp8", "CUTLASS and cuBLASLt names carry an fp8 element type (e4m3, e5m2)"),
+  (r"_bf16_s\d{4,6}gemm", "bf16", "CUTLASS and cuBLAS names: bf16 elements, s16816 = fp32 accumulate on m16n8k16"),
+  (r"_(?:fp16_|f16_)?h\d{4,6}gemm", "fp16_f16acc", "CUTLASS and cuBLAS names: fp16 elements, h = fp16 accumulate"),
+  (r"_(?:fp16_|f16_)?s\d{4,6}gemm", "fp16", "CUTLASS and cuBLAS names: fp16 elements, s = fp32 accumulate"),
+  (r"_(?:int8_|s8_)?i\d{4,6}gemm", "int8", "CUTLASS and cuBLAS names: int8 elements, i = int32 accumulate"),
+  (r"gemm_bf16bf16_\w*?f32", "bf16", "cuBLASLt xmma names: A and B bf16, fp32 accumulate"),
+  (r"gemm_f16f16_f16f16", "fp16_f16acc", "cuBLASLt xmma names: A and B fp16, fp16 accumulate"),
+  (r"gemm_f16f16_\w*?f32", "fp16", "cuBLASLt xmma names: A and B fp16, fp32 accumulate"),
+  (r"gemm_(?:s8|i8)(?:s8|i8)_", "int8", "cuBLASLt xmma names: A and B int8"),
+)
+
+
+def name_path(name:str) -> dict[str, Any] | None:
+  """A kernel's path from NAME_PATHS, labelled FROM_NAME with its source; None when no pattern matches."""
+  for pat, path, source in NAME_PATHS:
+    if re.search(pat, name, re.I):
+      if path is None:
+        return {"path": None, "paths": {}, "status": "none", "words": f"{NO_MATRIX} ({FROM_NAME})", "from_name": True,
+                "name_source": source}
+      return {"path": path, "paths": {path: 1}, "status": "one", "words": f"{path} ({FROM_NAME})", "from_name": True,
+              "name_source": source}
+  return None
+
+
 def kernel_path(name:str, table:dict[str, dict[str, int]]) -> dict[str, Any]:
   """The path of one captured kernel: {"path", "paths", "status", "words"}. status: one (one matrix path), mixed
-  (several: each path's share of the operations at its own peak, prefill_work.compute_ms), none (no matrix instruction: bytes only), not_found (refused)."""
+  (several: each path's share of the operations at its own peak, prefill_work.compute_ms), none (no matrix instruction: bytes only), not_found (refused).
+  Code read from the kernel decides; only a kernel whose code was not read takes a path from its name (name_path)."""
   key = template(name)
   paths = table.get(key)
   if paths is None:
-    return {"path": None, "paths": {}, "status": "not_found", "words": f"{NOT_FOUND} for {key[:80]}"}
+    return name_path(name) or {"path": None, "paths": {}, "status": "not_found", "words": f"{NOT_FOUND} for {key[:80]}"}
   known = {p: n for p, n in paths.items() if not p.startswith("unknown:")}
   if not paths:
     return {"path": None, "paths": {}, "status": "none", "words": NO_MATRIX}
