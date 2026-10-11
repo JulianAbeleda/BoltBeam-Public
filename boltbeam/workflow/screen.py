@@ -1068,7 +1068,7 @@ def counted(step_id:str) -> bool:
 
 
 def replay_command(args) -> dict[str, Any]:
-  """The replay's seam commands: make a trace, list the shapes, find running servers, compare two runs."""
+  """The replay's seam commands: write a shape's trace, list the shapes, find running servers, compare two runs."""
   from boltbeam.collectors import replay as rp
   from boltbeam.trace import replay_trace as rt
   from boltbeam.workflow import replay as rw
@@ -1081,14 +1081,7 @@ def replay_command(args) -> dict[str, Any]:
   if args.command == "replay-diff":
     d = rw.diff(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser())
     return {**d, "lines": rw.diff_lines(d)}
-  if args.gameterm:
-    if args.system_tokens is None or not args.model:
-      raise ValueError("a GameTerm trace needs --system-tokens (the logs do not hold the system prompt) and --model")
-    with rp.tokenizer(args.model) as count:
-      trace = rt.gameterm(pathlib.Path(args.gameterm).expanduser(), pathlib.Path(args.save).expanduser() if args.save else None,
-                          system_tokens=args.system_tokens, count=count)
-  else:
-    trace = rt.shape(args.shape)
+  trace = rt.shape(args.shape)
   rt.write(trace, pathlib.Path(args.out).expanduser())
   return {"schema": SCHEMA, "out": args.out, "label": rt.label(trace), "source": trace["source"]}
 
@@ -1655,13 +1648,9 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--replay-trace", default=None, help="a replay: a boltbeam.replay_trace.v1 file or a shape's name "
                                                       "(default: the default shape in data/replay_shapes.json)")
   p.add_argument("--server-argv", default=None, help="a replay: the user's llama-server command, as one string")
-  p = sub.add_parser("replay-trace", help="write a counts-only replay trace from a shape or a GameTerm session")
+  p = sub.add_parser("replay-trace", help="write a shape's counts-only replay trace")
   p.add_argument("--out", required=True)
   p.add_argument("--shape", default=None, help="a shape in data/replay_shapes.json")
-  p.add_argument("--gameterm", default=None, help="a GameTerm transcript (counted on this machine, never copied)")
-  p.add_argument("--save", default=None, help="the GameTerm save that holds the session's replies")
-  p.add_argument("--system-tokens", type=int, default=None, help="the system prompt's tokens (the logs do not hold it)")
-  p.add_argument("--model", default=None, help="the model whose tokenizer counts a GameTerm session")
   sub.add_parser("replay-shapes", help="the shipped replay shapes, each with its label")
   sub.add_parser("replay-servers", help="the llama-server commands running on this machine, to replay on")
   p = sub.add_parser("replay-diff", help="two replay runs of one trace, turn by turn")

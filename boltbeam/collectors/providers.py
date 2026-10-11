@@ -197,7 +197,7 @@ def available(target, *, tinygrad_root:pathlib.Path | None = None) -> list[dict[
 
 BUSY_PCT = 40  # the lowest of SAMPLES Apple GPU utilization reads at or above this: another program uses the GPU
 SAMPLES = 3  # the desktop alone reads 0 to 15 percent; a model decoding holds it near 100
-HEAVY = re.compile(r"llama-server|llama-cli|llama-bench|ollama|lm ?studio|mlx|tinygrad|GameTerm", re.I)
+HEAVY = re.compile(r"llama-server|llama-cli|llama-bench|ollama|lm ?studio|mlx|tinygrad", re.I)
 
 
 def _run(argv:list[str]) -> str:

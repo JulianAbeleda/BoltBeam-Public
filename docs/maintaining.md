@@ -56,8 +56,9 @@ The published articles link into the mirror by path. Never move or rename a file
 | `tools/sync_branches.sh` | carries the trunk outward to `dev` and `exp` |
 | `tools/classify_bench.py` | classifies `bench/` artifacts as verdict or measurement |
 | `tools/export_route_manifest_snapshot.py` | the only exporter for the tinygrad EXP snapshot |
+| `tools/trace_from_chat_log.py` | converts a chat log into a counts-only replay trace; nothing in `boltbeam/` imports it |
 
-That is the whole of `tools/` on the trunk: repo infrastructure and one exporter.
+That is the whole of `tools/` on the trunk: repo infrastructure, one exporter and one converter.
 
 ### Campaign gates live on `dev`
 

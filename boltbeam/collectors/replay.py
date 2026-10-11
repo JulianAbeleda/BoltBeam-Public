@@ -23,7 +23,6 @@ table is `unmeasured`. One decode capture at the deepest turn. The ceilings and 
 """
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import pathlib
@@ -48,7 +47,7 @@ DECODE_TOKENS = 64  # decode tokens in the deep turn's decode capture
 REQUEST = {"temperature": 0.0, "ignore_eos": True, "cache_prompt": True, "stream": True,
            "stream_options": {"include_usage": True}, "chat_template_kwargs": {"enable_thinking": False}}
 REQUEST_WORDS = ("greedy, ignore_eos, exactly the trace's reply tokens, prompt cache on, streamed, thinking off in "
-                 "the template (as GameTerm sends it)")
+                 "the template")
 
 
 # --- the llama.cpp server -----------------------------------------------------------------------------------------
@@ -195,19 +194,6 @@ def running_servers(ps:Callable[[], str] | None = None) -> list[list[str]]:
     if argv and pathlib.Path(argv[0]).name == "llama-server":
       out.append(argv)
   return out
-
-
-@contextlib.contextmanager
-def tokenizer(model:str):
-  """The engine's tokenizer for a model: a small llama.cpp server beside the found llama-bench, stopped after the
-  block. Yields a count(text) -> tokens function."""
-  from boltbeam.adapters.llama_server_control import serve
-  from boltbeam.collectors.session import _server
-  import tempfile
-  with tempfile.TemporaryDirectory() as tmp:
-    with serve(executable=_server(pathlib.Path(tmp)), model=model, context_size=512,
-               log_path=pathlib.Path(tmp) / "tokenizer.log", extra=["--parallel", "1"]) as (url, _):
-      yield lambda text: len(llama_tokenize(url, text)) if text else 0
 
 
 def _sha256(path:pathlib.Path) -> str:

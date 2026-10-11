@@ -1,18 +1,14 @@
 """A replay's input: a session as counts, one row per turn (boltbeam.replay_trace.v1). Never chat text.
 
     {"schema": "boltbeam.replay_trace.v1",
-     "source": {"kind": "shape" | "gameterm", "name": "...", "words": "...", "sha256": "<of the source>"},
+     "source": {"kind": "shape" | "chat_log", "name": "...", "words": "...", "sha256": "<of the source>"},
      "system_tokens": 3000,
      "turns": [{"i": 1, "at_ms": 0, "new_tokens": 41, "tool_tokens": 0, "reply_tokens": 112, "compaction": false}, ...]}
 
 A turn adds new_tokens from the user and tool_tokens of tool output to the conversation, then the model answers
 reply_tokens. A compaction turn starts the conversation again from the system prompt, with its new tokens as the
-summary. Readers adapt a source into this one schema (READERS):
-
-  shape      a synthesised trace from a table of ranges (data/replay_shapes.json), drawn with the shape's seed
-  gameterm   a GameTerm transcript and its save, counted by the engine's tokenizer on the user's own machine; the
-             trace holds the counts and the source file's sha256, never its words or its path. The system prompt is
-             in neither file, so its size is stated by the caller.
+summary. A trace comes from a shape (data/replay_shapes.json, drawn with the shape's seed) or from a file: a real chat
+is converted outside BoltBeam (tools/trace_from_chat_log.py) and read here as any trace file is.
 
 Privacy is enforced, not promised: `check` refuses any string longer than MAX_STRING characters outside a field named
 `words` (a chat line would be one), so a trace that holds text cannot be written or read.
@@ -23,12 +19,11 @@ import hashlib
 import json
 import pathlib
 import random
-import statistics
-from typing import Any, Callable
+from typing import Any
 
 SCHEMA = "boltbeam.replay_trace.v1"
 SHAPES = pathlib.Path(__file__).resolve().parents[1] / "data" / "replay_shapes.json"
-KINDS = ("shape", "gameterm")
+KINDS = ("shape", "chat_log")
 COUNTS = ("new_tokens", "tool_tokens", "reply_tokens")
 MAX_STRING = 80  # longer strings are refused outside `words` fields: a trace holds counts, not chat text
 FILE = "replay_trace.json"  # the trace as the run read it
@@ -123,51 +118,3 @@ def shape(name:str | None = None) -> dict[str, Any]:
   digest = hashlib.sha256(json.dumps(s, sort_keys=True).encode()).hexdigest()
   return check({"schema": SCHEMA, "source": {"kind": "shape", "name": name, "words": s["words"], "sha256": digest},
                 "system_tokens": s["system_tokens"], "turns": turns})
-
-
-def gameterm(transcript:pathlib.Path, save:pathlib.Path | None, *, system_tokens:int,
-             count:Callable[[str], int]) -> dict[str, Any]:
-  """A GameTerm session as counts. The transcript gives each turn's user text (turn_started) and its tools' output
-  (tool_resolved); the save gives the replies it kept (a speaker turn after a user turn, matched to the transcript's
-  turn by its text). A turn whose reply the save no longer holds takes the median of the matched replies, and the
-  words say how many. `count` is the engine's tokenizer. Only counts leave this function."""
-  events = []
-  for line in transcript.read_text(errors="replace").splitlines():
-    try:
-      events.append(json.loads(line))
-    except ValueError:
-      continue
-  events.sort(key=lambda e: e.get("sequence") or 0)
-  replies: dict[str, list[int]] = {}
-  if save is not None:
-    kept = json.loads(save.read_text()).get("turns") or []
-    for a, b in zip(kept, kept[1:]):
-      if a.get("author") == "user" and b.get("author") == "speaker":
-        replies.setdefault(hashlib.sha256(str(a.get("text")).encode()).hexdigest(), []).append(count(str(b.get("text"))))
-  order: list[str] = []
-  by: dict[str, dict[str, Any]] = {}
-  for e in events:
-    rid, kind, detail = e.get("request_id"), e.get("kind"), e.get("detail") or {}
-    if kind == "turn_started" and rid not in by:
-      order.append(rid)
-      key = hashlib.sha256(str(detail.get("text")).encode()).hexdigest()
-      by[rid] = {"at": int(e.get("at_ms") or 0), "new": count(str(detail.get("text") or "")), "tool": 0,
-                 "reply": (replies.get(key) or [None]).pop(0) if replies.get(key) else None}
-    elif kind == "tool_resolved" and rid in by:
-      by[rid]["tool"] += count(str(detail.get("output") or ""))
-  if not order:
-    raise TraceRefused(f"{transcript.name}: no turn_started events")
-  matched = [by[r]["reply"] for r in order if by[r]["reply"]]
-  if not matched:
-    raise TraceRefused("no reply in the save matches a transcript turn, so no reply length is known")
-  fill = int(statistics.median(matched))
-  t0 = by[order[0]]["at"]
-  turns = [{"i": n, "at_ms": max(by[r]["at"] - t0, 0), "new_tokens": by[r]["new"], "tool_tokens": by[r]["tool"],
-            "reply_tokens": by[r]["reply"] or fill, "compaction": False} for n, r in enumerate(order, 1)]
-  digest = hashlib.sha256(transcript.read_bytes()).hexdigest()
-  return check({"schema": SCHEMA, "source": {
-    "kind": "gameterm", "name": f"gameterm-{len(turns)}", "sha256": digest,
-    "words": (f"a GameTerm session of {len(turns)} turns, counted by the engine's tokenizer; replies from the save for "
-              f"{len(matched)}, the median {fill} for the other {len(turns) - len(matched)}; a system prompt of "
-              f"{system_tokens} tokens as stated (the logs do not hold it)")},
-    "system_tokens": int(system_tokens), "turns": turns})

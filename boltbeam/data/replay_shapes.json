@@ -9,7 +9,7 @@
    "new_tokens": [20, 200], "tool_tokens": [800, 2400], "reply_tokens": [200, 800], "gap_ms": [2000, 20000]
   },
   "chat-300": {
-   "words": "a chat session shaped like GameTerm's: 300 turns of 20 to 400 new tokens and a 50 to 200 token reply, after a 3,000-token system prompt",
+   "words": "a chat session: 300 turns of 20 to 400 new tokens and a 50 to 200 token reply, after a 3,000-token system prompt",
    "seed": 300, "system_tokens": 3000, "turns": 300,
    "new_tokens": [20, 400], "tool_tokens": [0, 0], "reply_tokens": [50, 200], "gap_ms": [5000, 60000]
   }
