@@ -105,17 +105,42 @@ def _read_safetensors_header(path:pathlib.Path) -> dict[str, Any]:
     return json.loads(f.read(n).decode("utf-8"))
 
 
-def _safetensors_specs(path:pathlib.Path, default_quant:str | None = None) -> list[TensorSpec]:
+# a group-quantized checkpoint (compressed-tensors pack-quantized) stores each weight as these tensors: the packed
+# integers stand for the weight, the rest are its parts (their bytes are in the quant label's bits)
+_PACKED = ".weight_packed"
+_PACKED_PARTS = (".weight_scale", ".weight_zero_point", ".weight_shape", ".weight_g_idx")
+# modules a text prompt's prefill does not run: a draft head for speculative decoding, a vision encoder
+_NOT_IN_TEXT_PREFILL = ("mtp", "visual", "vision_tower", "vision_model")
+
+
+def _group_quant(qcfg:dict[str, Any]) -> tuple[str, int] | None:
+  """A pack-quantized checkpoint's weight format, as a label and its bits: INT4_G128_ZP is 4-bit integers in
+  groups of 128, each group with a 16-bit scale and (ZP, asymmetric) a 4-bit zero point."""
+  groups = [g.get("weights") or {} for g in (qcfg.get("config_groups") or {}).values() if isinstance(g, dict)]
+  w = groups[0] if len(groups) == 1 else {}
+  if qcfg.get("format") != "pack-quantized" or w.get("type") != "int" or not w.get("num_bits") or not w.get("group_size"):
+    return None
+  return f"INT{w['num_bits']}_G{w['group_size']}" + ("" if w.get("symmetric") else "_ZP"), int(w["num_bits"])
+
+
+def _safetensors_specs(path:pathlib.Path, default_quant:str | None = None,
+                       qcfg:dict[str, Any] | None = None) -> list[TensorSpec]:
   specs: list[TensorSpec] = []
+  group = _group_quant(qcfg or {})
   for f in _safetensors_files(path):
     header = _read_safetensors_header(f)
     for name, meta in header.items():
       if name == "__metadata__" or not isinstance(meta, dict):
         continue
+      if set(name.split(".")) & set(_NOT_IN_TEXT_PREFILL) or name.endswith(_PACKED_PARTS):
+        continue
       dtype = str(meta.get("dtype", "F16")).upper()
-      quant = default_quant or _DTYPE_TO_QUANT.get(dtype, dtype)
-      specs.append(TensorSpec(name=name, shape=tuple(int(x) for x in meta.get("shape", ())),
-                              quant=quant))
+      shape = tuple(int(x) for x in meta.get("shape", ()))
+      if group and name.endswith(_PACKED) and len(shape) == 2:  # [N, K x bits / 32] int32 words: the weight [N, K]
+        name, shape, quant = name[:-len(_PACKED)] + ".weight", (shape[0], shape[1] * 32 // group[1]), group[0]
+      else:
+        quant = default_quant or _DTYPE_TO_QUANT.get(dtype, dtype)
+      specs.append(TensorSpec(name=name, shape=shape, quant=quant))
   return specs
 
 
@@ -131,7 +156,7 @@ def _profile_from_hf_tensors(path:pathlib.Path, fmt:str, model_id:str | None) ->
   qmethod = str(qcfg.get("quant_method", fmt if fmt in {"awq", "gptq"} else "")).upper()
   bits = qcfg.get("bits") or qcfg.get("w_bit")
   default_quant = f"{qmethod}_INT{bits}" if qmethod in {"AWQ", "GPTQ"} and bits else None
-  specs = _safetensors_specs(path, default_quant)
+  specs = _safetensors_specs(path, default_quant, qcfg)
   return _profile_from_specs(path, fmt, cfg, specs, model_id, extra={"quantization_config": qcfg})
 
 
@@ -171,8 +196,8 @@ def _shape_for_role(spec:TensorSpec, role:str) -> tuple[int, int, int]:
   if len(dims) == 3 and not is_ssm_role(role):
     n_expert, rows, cols = dims
     return rows, cols, n_expert
-  if is_ssm_role(role):
-    return int(dims[-1]), int(math.prod(dims[:-1]) if len(dims) > 1 else 1), 0
+  if is_ssm_role(role):  # rows first, as the GGUF reader orients its (reversed) dims
+    return int(dims[0]), int(math.prod(dims[1:]) if len(dims) > 1 else 1), 0
   return 0, 0, 0
 
 
@@ -183,6 +208,7 @@ def _is_packed_quant_tensor(name:str) -> bool:
 
 def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:list[TensorSpec],
                         model_id:str | None, extra:dict[str, Any] | None = None) -> ModelProfile:
+  cfg = {**cfg, **(cfg.get("text_config") or {})}  # a multimodal checkpoint keeps the language model's shape there
   grouped: dict[tuple[str, int, int, str, int], list[str]] = {}
   classes: dict[tuple[str, int, int, str, int], str] = {}
   tensors_for_arch: list[tuple[str, tuple[int, ...], int, int]] = []
@@ -209,7 +235,8 @@ def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:li
                 for (role, rows, cols, quant, n_expert), names in sorted(grouped.items()))
   cls, signals = classify_architecture(kv, tensors_for_arch, str(arch) if arch else None)
   meta = {"format_family": fmt, "architecture_signals": signals, "tensor_count": len(specs),
-          "quant_types": sorted({s.quant for s in specs}), **_attention_from_config(cfg, specs)}
+          "quant_types": sorted({s.quant for s in specs}), **_attention_from_config(cfg, specs),
+          **_recurrent_from_config(cfg, specs)}
   if extra: meta.update(extra)
   return ModelProfile(model_id=model_id or path.stem, source=str(path), architecture=str(arch) if arch else None,
                       hidden_size=cfg.get("hidden_size"), ffn_size=cfg.get("intermediate_size"),
@@ -228,6 +255,21 @@ def _attention_from_config(cfg:dict[str, Any], specs:list[TensorSpec]) -> dict[s
   ctx = cfg.get("max_position_embeddings")
   return {**({"attention": att} if heads else {}),
           **({"context": {"length": int(ctx), "source": "config.json max_position_embeddings", "scaling": None}} if ctx else {})}
+
+
+# config.json keys of a gated delta net block -> the GGUF reader's recurrent keys (prefill_work.recurrent)
+_RECURRENT_CONFIG = {"conv_kernel": ("linear_conv_kernel_dim",), "state_size": ("linear_key_head_dim",),
+                     "group_count": ("linear_num_key_heads",),
+                     "inner_size": ("linear_num_value_heads", "linear_value_head_dim")}
+
+
+def _recurrent_from_config(cfg:dict[str, Any], specs:list[TensorSpec]) -> dict[str, Any]:
+  """A recurrent block's state shape from config.json, keyed as the GGUF reader keys it, and its layers: those
+  holding a convolution tap, as the GGUF reader counts them. Empty for a model without one."""
+  layers = len({s.name.split(".layers.")[1].split(".")[0] for s in specs
+                if ".layers." in s.name and classify_tensor_role(s.name, tuple(s.shape)) is RoleClass.SSM_CONV})
+  shape = {k: math.prod(int(cfg[x]) for x in keys) for k, keys in _RECURRENT_CONFIG.items() if all(cfg.get(x) for x in keys)}
+  return {"recurrent": {"layer_count": layers, **shape}} if layers and len(shape) == len(_RECURRENT_CONFIG) else {}
 
 
 def _kv_from_config(cfg:dict[str, Any]) -> dict[str, Any]:

@@ -29,7 +29,7 @@ it) and the shared libraries this process loaded: vLLM's own view of what it ran
 """
 from __future__ import annotations
 
-import argparse, json, random, statistics, time
+import argparse, json, os, random, statistics, time
 
 
 def main() -> int:
@@ -122,7 +122,8 @@ def prefill(a) -> int:
     torch.cuda.synchronize()
     t1 = time.monotonic()
     torch.cuda.profiler.stop()
-    line.update(wall_s=wall, engine_s=engine, window_monotonic=[t0, t1], matrices=_matrices(llm), libraries=_libraries())
+    line.update(wall_s=wall, engine_s=engine, window_monotonic=[t0, t1], matrices=_matrices(llm), libraries=_libraries(),
+                jit_caches=[d for d in (os.environ.get(k) for k in ("TRITON_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR")) if d])
   else:
     got = [call() for _ in range(a.reps)]
     line.update(wall_samples_s=[w for w, _ in got], engine_samples_s=[e for _, e in got])
@@ -132,18 +133,28 @@ def prefill(a) -> int:
 
 def _matrices(llm) -> list | str:
   """The 2-D weights the model runs, by module name: {name, n, k, dtype, count, parts}; parts are the checkpoint
-  tensors vLLM packed into it (packed_modules_mapping), else the module itself."""
+  tensors vLLM packed into it (packed_modules_mapping), else the module itself, each under its parent module
+  (linear_attn.out_proj is not self_attn.o_proj). A quantized linear layer holds no `weight` (its packed integers
+  are other tensors): its shape is the layer's own input and output sizes, its dtype its quantization method."""
   def read(model):
     packed = dict(getattr(model, "packed_modules_mapping", None) or {})
     out: dict = {}
     for name, mod in model.named_modules():
       w = getattr(mod, "weight", None)
-      if w is None or not hasattr(w, "dim") or w.dim() != 2:
+      if w is not None and hasattr(w, "dim"):
+        if w.dim() != 2:
+          continue
+        n, k, dtype = int(w.shape[0]), int(w.shape[1]), str(w.dtype)
+      elif hasattr(mod, "output_size_per_partition") and getattr(mod, "quant_method", None) is not None:
+        n, k = int(mod.output_size_per_partition), int(mod.input_size_per_partition)
+        dtype = type(mod.quant_method).__name__ + ":" + type(getattr(mod, "scheme", None) or mod.quant_method).__name__
+      else:
         continue
-      last = name.split(".")[-1]
-      key = (last, int(w.shape[0]), int(w.shape[1]), str(w.dtype))
+      parent, last = (name.split(".")[-2:] if "." in name else ["", name])
+      key = (parent, last, n, k, dtype)
       out[key] = out.get(key, 0) + 1
-    return [{"name": k[0], "n": k[1], "k": k[2], "dtype": k[3], "count": c, "parts": list(packed.get(k[0], [k[0]]))}
+    return [{"name": k[1], "n": k[2], "k": k[3], "dtype": k[4], "count": c,
+             "parts": [f"{k[0]}.{p}" if k[0] else p for p in packed.get(k[1], [k[1]])]}
             for k, c in sorted(out.items())]
   try:
     return llm.apply_model(read)[0]

@@ -48,14 +48,14 @@ GAP_RATIO = 1.3  # two neighbouring duration clusters differ by at least this ra
 MAX_ASSIGN = 2_000_000
 STEM_CHARS = 40  # a row named by its template is cut to this many characters; the trace keeps the whole name
 MAX_OWN = 2  # a role assembled from at most this many templates that serve it alone
-PAIRING_RULE = ("a template named as attention (tie_out.kind_of) does attention's work and serves no role; a role is "
-                "assembled from up to two templates that serve it alone, or shares one template with roles of its format; "
+PAIRING_RULE = ("a template named as attention or recurrent (tie_out.kind_of) does that block's work and serves no role; a role is "
+                "assembled from up to two templates that serve it alone, or shares one template with roles of its format (whose launches may be a whole multiple of theirs: each product cut along M into that many launches, each reading the weights); "
                 "roles of one format that templates serve alone keep the order of their operations per launch in their time per launch; "
                 "a shared template with a matrix instruction serves roles of one weight format whose launches per chunk sum to its own, less at most one "
                 "layer's launches per chunk and never all of a role's (the engine skipping rows it does not need), at no more operations per "
                 "second than its path's measured peak and no faster read of its roles' weights than the memory's bandwidth (a kernel whose code "
                 "was not read may take roles so, its ceiling refused); within it, duration clusters follow the roles' operations per "
-                "launch at one rate (operations per time within the cluster gap); roles with equal operations are one row; the assignment placing the most roles wins, then the one leaving the fewest matrix kernels unpaired, then the one pairing the most kernel time; among tied ones, only the roles every one places the same way are paired")
+                "launch, a smaller launch never faster per operation than a larger one beyond the cluster gap (it may be slower: it fills fewer units); roles with equal operations are one row; the assignment placing the most roles wins, then the one leaving the fewest matrix kernels unpaired, then the one pairing the most kernel time; among tied ones, only the roles every one places the same way are paired")
 
 
 REPEAT = "repeat"  # measured_window: the capture ends in two identical turns (a session's turn, captured twice)
@@ -124,9 +124,10 @@ def role_groups(roles:list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def split(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int) -> list[list[float]] | None:
   """The template's launch durations cut into one cluster per role row, in the order of their operations, each
-  holding that row's launches (its count per chunk times the chunks, less at most its skip), and one kernel running
-  at one rate: each cluster's operations per launch over its median time within GAP_RATIO of the others'; None if
-  they do not."""
+  holding that row's launches (its count per chunk times the chunks, less at most its skip), and one kernel's rate:
+  a cluster's operations per launch over its median time is never over GAP_RATIO times that of a cluster with more
+  operations per launch (a smaller launch fills fewer of the GPU's units, so it may run slower, never faster); None
+  if they do not."""
   parts = _clusters(tmpl["durations"], len(groups))
   if parts is None:
     return None
@@ -136,9 +137,18 @@ def split(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int) -> list[
       return None
   rates = [sum(r["n"] * r["k"] * r["count"] for r in g["roles"]) / g["count"] / max(statistics.median(p), 1e-9)
            for g, p in zip(ordered, parts)]
-  if len(rates) > 1 and max(rates) > GAP_RATIO * min(rates):
+  if any(rates[i] > GAP_RATIO * rates[j] for i in range(len(rates)) for j in range(i + 1, len(rates))):
     return None
   return parts
+
+
+def m_splits(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int, mean_m:float) -> int:
+  """The launches a shared template runs per product of its roles: a library that caps the rows of one launch runs
+  a chunk's product as p launches of M / p rows, each reading the weights again. p is its launches over its roles'
+  launches, a whole number dividing the chunk's width; 1 when it is not one."""
+  want = sum(g["count"] for g in groups) * chunks
+  p = round(tmpl["calls"] / want) if want else 1
+  return p if p > 1 and (mean_m / p).is_integer() and want * p - sum(g["skip"] for g in groups) * chunks * p <= tmpl["calls"] else 1
 
 
 def _reads_in_time(weight_bytes:float, wall_us:float, bandwidth_gbs:float | None) -> bool:
@@ -181,7 +191,8 @@ def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:i
   as many roles. A shared template may serve several roles of one format (split by duration); an own template serves
   one role alone, and a role may be assembled from up to MAX_OWN of them."""
   # a kernel whose code was not read may hold a matrix instruction: it may take roles, under the bytes rule
-  matrix = [i for i, t in enumerate(templates) if t["path"]["status"] in ("one", "mixed", "not_found") and not t.get("attention")]
+  matrix = [i for i, t in enumerate(templates) if t["path"]["status"] in ("one", "mixed", "not_found")
+            and not t.get("attention") and not t.get("recurrent")]
   options: list[list[tuple[str, tuple[int, ...]] | None]] = []
   for r in roles:
     lo = (r["count"] - r["skip"]) * chunks
@@ -189,7 +200,9 @@ def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:i
     opts += [("shared", (t,)) for t in matrix if templates[t]["calls"] >= lo]
     opts += [("own", ts) for ts in itertools.combinations(matrix, MAX_OWN)
              if lo <= sum(templates[t]["calls"] for t in ts) <= r["count"] * chunks]
-    options.append(opts)
+    # an option the role breaks on its own (its weights read faster than the bandwidth, its operations faster than
+    # the peak) fails with any other roles added too: dropped before the search, so many unread kernels stay cheap
+    options.append([c for c in opts if c is None or _alone_fits(r, c, templates, chunks, mean_m, peaks, bandwidth_gbs)])
   best: dict[str, Any] = {"score": (0, 0, 0, 0.0), "ties": []}
   nodes = 0
 
@@ -199,7 +212,9 @@ def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:i
       if c and c[0] == "shared":
         shared.setdefault(c[1][0], []).append(r)
     for t, rs in shared.items():
-      if not _fits(role_groups(rs), templates[t], chunks, mean_m, _peak(templates[t], peaks), bandwidth_gbs):
+      gs = role_groups(rs)
+      p = m_splits(gs, templates[t], chunks, mean_m)
+      if not _fits(gs, templates[t], chunks * p, mean_m / p, _peak(templates[t], peaks), bandwidth_gbs):
         return False
     if not all(_own_fits(r, [templates[t] for t in c[1]], chunks, mean_m, peaks, bandwidth_gbs)
                for r, c in zip(roles, choice) if c and c[0] == "own"):
@@ -264,6 +279,17 @@ def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:i
                             f"{', '.join(differ)} differ between them and are not paired"
                             + (f"; the {len(kept)} placed the same way in every one are kept" if kept else "")}
   return {i: c for i, c in enumerate(best["ties"][0]) if c}, None
+
+
+def _alone_fits(r:dict[str, Any], c:tuple[str, tuple[int, ...]], templates:list[dict[str, Any]], chunks:int,
+                mean_m:float, peaks:dict[str, float], bandwidth_gbs:float | None) -> bool:
+  kind, ts = c
+  if kind == "own":
+    return _own_fits(r, [templates[t] for t in ts], chunks, mean_m, peaks, bandwidth_gbs)
+  t, n = templates[ts[0]], (r["count"] - r["skip"]) * chunks
+  peak = _peak(t, peaks)
+  return _reads_in_time(r["weight_bytes"] * n, t["wall_us"], bandwidth_gbs) and \
+    (not peak or n * 2.0 * mean_m * r["n"] * r["k"] / (t["wall_us"] * 1e-6) <= peak * 1e12 * PEAK_SLACK)
 
 
 class _TooMany(Exception):
@@ -366,7 +392,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   for ti, rs in sorted(shared.items()):
     t = templates[ti]
     gs = sorted(role_groups(rs), key=lambda g: g["nk"])
-    parts = split(gs, t, chunks)
+    p = m_splits(gs, t, chunks, mean_m)
+    parts, m = split(gs, t, chunks * p), mean_m / p
     edges = [max(p) for p in parts]
     for gi, g in enumerate(gs):
       lo = edges[gi - 1] if gi else -1.0
@@ -374,11 +401,11 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       calls = len(mine)
       for l in mine:
         shapes[id(l)] = [(r, r["count"] / g["count"]) for r in g["roles"]]
-      per_call_flops = sum(2.0 * mean_m * r["n"] * r["k"] * r["count"] for r in g["roles"]) / g["count"]
-      per_call_bytes = sum(gemm(mean_m, r["n"], r["k"], r["weight_bytes"]) * r["count"] for r in g["roles"]) / g["count"]
+      per_call_flops = sum(2.0 * m * r["n"] * r["k"] * r["count"] for r in g["roles"]) / g["count"]
+      per_call_bytes = sum(gemm(m, r["n"], r["k"], r["weight_bytes"]) * r["count"] for r in g["roles"]) / g["count"]
       rows.append(_row(g["name"], "role", t, calls, sum(l["wall_us"] for l in mine), calls * per_call_flops,
                        calls * per_call_bytes, peaks, bandwidth_gbs, roles=[(r["role"], r["quant"]) for r in g["roles"]],
-                       skipped=g["count"] * chunks - calls, tokens_per_call=mean_m))
+                       skipped=g["count"] * chunks * p - calls, tokens_per_call=m))
     taken.add(ti)
   placed = {rr for row in rows for rr in row.get("roles") or []}
   # a GEMV over one token (the output head on the last token): paired by count and bytes, as decode pairs

@@ -155,7 +155,7 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
           "warmup": REPEAT if depth else True, "formats": llama_formats(row.get("type_k"), weight_quants(run)),
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches),
-          "captured_ms": float(row["avg_ns"]) / 1e6}
+          "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches)}
 
 
 def weight_quants(run:pathlib.Path) -> set[str]:
@@ -164,11 +164,12 @@ def weight_quants(run:pathlib.Path) -> set[str]:
 
 
 def library_paths(libraries:list[pathlib.Path], launches:list[dict[str, Any]] | None = None, *,
-                  tools:pathlib.Path | None = None) -> dict[str, Any]:
+                  tools:pathlib.Path | None = None, jit_caches:list[str] | None = None) -> dict[str, Any]:
   """The matrix paths of the kernels in the libraries the engine loads (a library without device code is skipped):
   their embedded PTX, then, for captured kernels no PTX holds (a library that ships machine code only), their machine
-  code for this GPU (instruction_path.sass_table). tools: a folder with the engine's own cuobjdump/nvdisasm."""
-  from boltbeam.collectors.instruction_path import library_table, sass_signatures, sass_table, template
+  code for this GPU (instruction_path.sass_table). tools: a folder with the engine's own cuobjdump/nvdisasm.
+  jit_caches: folders where the engine's compiler (Triton) wrote each kernel it built as <kernel>.ptx."""
+  from boltbeam.collectors.instruction_path import library_table, paths_in_text, sass_signatures, sass_table, template
   kernels: dict[str, dict[str, int]] = {}
   read, seen = [], set()
   find = lambda name: str(tools / name) if tools and (tools / name).is_file() else shutil.which(name)  # noqa: E731
@@ -185,6 +186,17 @@ def library_paths(libraries:list[pathlib.Path], launches:list[dict[str, Any]] | 
       kernels.update(table["kernels"])
       read.append({"library": str(lib), "sha256": table["sha256"], "kernels": len(table["kernels"]), "code": "ptx"})
   wanted = {template(l["key"]) for l in launches or []} - set(kernels)
+  for d in jit_caches or []:
+    found: dict[str, dict[str, int]] = {}
+    for f in sorted(pathlib.Path(d).rglob("*.ptx")) if pathlib.Path(d).is_dir() else []:
+      if template(f.stem) in wanted:  # one kernel built more than once: its variants' instructions added up
+        got = found.setdefault(template(f.stem), {})
+        for path, n in paths_in_text(f.read_text(errors="replace")).items():
+          got[path] = got.get(path, 0) + n
+    if found:
+      kernels.update(found)
+      wanted -= set(found)
+      read.append({"library": d, "sha256": None, "kernels": len(found), "code": "ptx (the engine's JIT cache)"})
   arch = gpu_arch()
   if wanted and arch and find("nvdisasm"):
     sigs = sass_signatures(arch, nvdisasm=find("nvdisasm"))
@@ -387,7 +399,7 @@ def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, A
           "formats": vllm_formats(weight_quants(run)), "method": vendor_capture.plan(target.backend)["method"],
           "matrices": line.get("matrices"), "captured_ms": line["wall_s"] * 1e3, "window": line.get("window_monotonic"),
           "paths": library_paths([pathlib.Path(p) for p in line.get("libraries") or []], launches,
-                                 tools=bins[0] if bins else None)}
+                                 tools=bins[0] if bins else None, jit_caches=line.get("jit_caches"))}
 
 
 def engine_roles(roles:list[dict[str, Any]], matrices:Any) -> tuple[list[dict[str, Any]], str]:

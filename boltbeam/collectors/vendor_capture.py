@@ -54,6 +54,25 @@ def _nsys_read(tool:str, out:pathlib.Path) -> list[dict[str, Any]]:
   return read_nsys_csv(proc.stdout)
 
 
+def busy_window(out:pathlib.Path, launches:list[dict[str, Any]]) -> list[float] | None:
+  """The time.monotonic() span from the first captured kernel's start to the last one's end: the GPU work, without
+  the program's load. nsys keeps its session start on the system's monotonic clock (systemClockNs) and the launch
+  starts relative to it; None when the export does not hold it (another tool, an older nsys)."""
+  import sqlite3
+  db = pathlib.Path(out) / "capture.sqlite"
+  if not launches or not db.is_file():
+    return None
+  try:
+    with sqlite3.connect(db) as con:
+      row = con.execute("SELECT systemClockNs FROM TARGET_INFO_SESSION_START_TIME").fetchone()
+  except sqlite3.Error:
+    return None
+  if not row or not row[0]:
+    return None
+  zero = float(row[0]) / 1e9
+  return [zero + min(l["start_us"] for l in launches) / 1e6, zero + max(l["start_us"] + l["wall_us"] for l in launches) / 1e6]
+
+
 def read_nsys_csv(text:str) -> list[dict[str, Any]]:
   """Kernel launches from `nsys stats --report cuda_gpu_trace` CSV. Memory copies have no grid and are skipped."""
   body = text[text.find("Start"):] if "Start" in text else text

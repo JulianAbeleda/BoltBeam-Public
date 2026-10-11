@@ -26,7 +26,8 @@ from boltbeam.vocab import RoleClass, role_group_of
 
 VECTOR_SIDE = 16  # a matrix with a side under this is vector-like (conv taps 4, norm groups 8, a (1, n) scale)
 
-_SSM_TOKENS = ("ssm", "delta", "conv1d", "time_step", "dt_proj", "a_log", "d_inner")
+_SSM_TOKENS = ("ssm", "delta", "conv1d", "time_step", "dt_proj", "dt_bias", "a_log", "d_inner",
+               "in_proj_a.", "in_proj_b.", "linear_attn.out_proj.")  # the last three: a gated delta net's HF names
 
 
 def is_matrix(dims:tuple[int, ...] | None) -> bool:
@@ -61,6 +62,9 @@ _SSM_MATRIX_PATTERNS: tuple[tuple[str, RoleClass], ...] = (
   ("ssm_out", RoleClass.SSM_OUT),
   ("ssm_alpha", RoleClass.SSM_ALPHA),
   ("ssm_beta", RoleClass.SSM_BETA),
+  ("in_proj_a.", RoleClass.SSM_ALPHA),
+  ("in_proj_b.", RoleClass.SSM_BETA),
+  ("out_proj.", RoleClass.SSM_OUT),
 )
 
 # (substring, RoleClass) checked in order; first match wins.
@@ -82,6 +86,8 @@ _PATTERNS: tuple[tuple[str, RoleClass], ...] = (
   ("down_proj", RoleClass.FFN_DOWN),
   # --- attention (anchored so *_norm falls through) ---
   ("attn_qkv.weight", RoleClass.ATTENTION_QKV),
+  ("in_proj_qkv.", RoleClass.ATTENTION_QKV),       # a gated delta net's q, k and v (GGUF attn_qkv)
+  ("in_proj_z.", RoleClass.ATTENTION_GATE),        # its output gate (GGUF attn_gate)
   ("attn_gate.weight", RoleClass.ATTENTION_GATE),
   ("attn_q.weight", RoleClass.ATTENTION_Q),
   ("attn_k.weight", RoleClass.ATTENTION_K),

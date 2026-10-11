@@ -23,14 +23,18 @@ _ACT_BYTES = 2.0  # fp16 activations
 
 
 def bits_per_weight(role: Mapping[str, Any]) -> float:
-  """Bits per stored weight for a role, from its ggml type or an INTn quant label. Defaults to fp16."""
+  """Bits per stored weight for a role, from its ggml type or an INTn quant label. Defaults to fp16. A group label
+  (INT4_G128_ZP, profile/loaders._group_quant) adds each group's 16-bit scale and, with ZP, its n-bit zero point."""
   ggml = role.get("ggml_type")
   if isinstance(ggml, int) and ggml in GGML_BITS_PER_WEIGHT:
     return GGML_BITS_PER_WEIGHT[ggml]
   quant = str(role.get("quant") or "")
-  for token in quant.replace("-", "_").split("_"):
+  tokens = quant.replace("-", "_").split("_")
+  for token in tokens:
     if token.startswith("INT") and token[3:].isdigit():
-      return float(token[3:])
+      bits = float(token[3:])
+      group = next((int(t[1:]) for t in tokens if t[:1] == "G" and t[1:].isdigit()), 0)
+      return bits + ((16 + (bits if "ZP" in tokens else 0)) / group if group else 0.0)
     if token.startswith("Q") and token[1:2].isdigit():
       return float(token[1])
   return 16.0

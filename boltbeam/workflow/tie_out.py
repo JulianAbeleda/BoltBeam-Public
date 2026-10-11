@@ -64,7 +64,7 @@ UNATTRIBUTED_LABEL = "weight kernels, unattributed"  # its own tie-out line, the
 GEMV_WORDS = ("mul_mat_vec", "kernel_mul_mv", "gemv")  # the GEMV names the adapters know (collectors/engine_kernels.py)
 # what a kernel that is not a weight role is, by words in its name; for labels only, never for attribution. The GEMV
 # words come before the elementwise ones: "mul_mat_vec" holds "mul", and a 2 ms GEMV is not elementwise work
-KIND_WORDS = (("delta_net", "recurrent"), ("ssm_", "recurrent"), ("flash", "attention"), ("attention", "attention"), ("softmax", "attention"), ("rms_norm", "norm"),
+KIND_WORDS = (("delta_net", "recurrent"), ("delta_rule", "recurrent"), ("causal_conv1d", "recurrent"), ("ssm_", "recurrent"), ("flash", "attention"), ("attention", "attention"), ("softmax", "attention"), ("rms_norm", "norm"),
               ("norm", "norm"), ("quantize", "quantize"), ("rope", "rope"), ("set_rows", "KV cache write"),
               ("copy", "copy"), ("cpy", "copy"), ("COPY", "copy"), *((w, UNATTRIBUTED) for w in GEMV_WORDS),
               ("silu", "elementwise"), ("glu", "elementwise"), ("add", "elementwise"), ("mul", "elementwise"))
