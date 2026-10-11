@@ -27,6 +27,9 @@ The review was checked against BoltBeam `cbf3d09` and read-only tinygrad metadat
   and is deferred, rather than substituting another kernel.
 - C3 and BoltBeam's C12: the type IDs live in `profile/gguf.py`, physical layouts in `profile/decode_roles.py`;
   capability data and adapters derive them. Tolerances import the owner in `collectors/metal_native.py`.
+  The Q1_0 physical row is 128 elements / 18 bytes (two scale bytes plus 16 payload bytes), confirmed
+  against the fork’s `tinygrad/llm/gguf.py` and generated `block_q1_0` struct. The former 32 / 4 row
+  omitted scale storage; this was corrected in a separate functional follow-up after the NFC sweep.
   `sz.py` has no authority exceptions. Fork-side tables, legality rules and tolerance ownership remain outside scope.
 
 ## Records and boundary findings

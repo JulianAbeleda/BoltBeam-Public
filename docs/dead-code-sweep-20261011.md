@@ -55,7 +55,7 @@ Line references below are against the pre-sweep tree. Each code batch has its ow
 The sweep reduces the `sz.py` budget from **46,584 to 46,402 on main** and **47,604 to 47,422 on dev**
 (182 code lines). The cap and six duplicate-authority checks are unchanged; the allowlist is empty.
 Every batch runs the full dev Python suite, Go vet/tests, and selfcheck before its guarded landing and
-mirror publication. The remaining suite has 1,911 tests plus 27 subtests, with 10 skipped; main has
+mirror publication. The sweep suite has 1,911 tests plus 27 subtests, with 10 skipped; main has
 74 Go tests and dev has 76. One test was removed solely because its entire unused utility was removed.
 
 The existing saved run `qwen3-8b-apple_m3_10c-005` was read before the sweep and after every batch with
