@@ -49,9 +49,3 @@ def pretty_json(value: Any) -> str:
   """Sorted, human-readable JSON for artifact files; reproducible bytes for equal values (LN-020)."""
   return json.dumps(value, sort_keys=True, indent=2, ensure_ascii=True, allow_nan=False) + "\n"
 
-
-def write_artifact(path: "pathlib.Path | str", value: Any) -> None:
-  """Write an artifact file with reproducible bytes: sorted keys, ASCII, trailing newline."""
-  p = pathlib.Path(path)
-  p.parent.mkdir(parents=True, exist_ok=True)
-  p.write_text(pretty_json(value))
