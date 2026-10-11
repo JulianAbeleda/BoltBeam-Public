@@ -61,7 +61,7 @@ def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None
   attends depth + i + 1 keys."""
   att = (profile.get("metadata") or {}).get("attention") or {}
   heads, dim = att.get("head_count"), att.get("head_dim")
-  attention_layers = att.get("layer_count") or profile.get("layer_count")  # a hybrid model attends in some layers only
+  attention_layers = attention_layer_count(profile)  # a hybrid model attends in some layers only
   per_token = kv_bytes_per_token(profile, kv_format)
   if not (attention_layers and heads and per_token):
     return None
@@ -83,11 +83,16 @@ SWEEP_FIRST = 512  # the first prompt length of a sweep
 SWEEP_STEP = 4  # each next length is this many times the last, up to the binding cap, which is the last point
 
 
+def attention_layer_count(profile:dict[str, Any]) -> int | None:
+  """The profile's attended layers, shared by KV limits and flash comparisons."""
+  return ((profile.get("metadata") or {}).get("attention") or {}).get("layer_count") or profile.get("layer_count")
+
+
 def kv_bytes_per_token(profile:dict[str, Any], kv_format:str = "F16", element_bytes:float | None = None) -> float | None:
   """The KV cache one token adds: K and V, kv heads x head dim, in the layers that attend, in the cache's format (or
   at element_bytes, when the caller knows only the element's size). The one rule for KV bytes."""
   att = (profile.get("metadata") or {}).get("attention") or {}
-  layers = att.get("layer_count") or profile.get("layer_count")
+  layers = attention_layer_count(profile)
   if not (layers and att.get("head_count_kv") and att.get("head_dim")):
     return None
   return 2.0 * att["head_count_kv"] * att["head_dim"] * layers * (element_bytes or elem_bytes(kv_format))

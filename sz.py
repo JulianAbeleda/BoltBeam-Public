@@ -89,7 +89,6 @@ ALLOWED = {
   ("ggml_types", "boltbeam/artifacts/llama_rocprof.py", "_GGML_QUANTS"): "C3, to remove in landing 6",
   ("block_layout", "boltbeam/collectors/metal_native.py", "BLOCK_BYTES"): "C3, to remove in landing 6",
   ("block_layout", "boltbeam/collectors/metal_native.py", "BLOCK_ELEMS"): "C3, to remove in landing 6",
-  ("noisy_floor", "boltbeam/workflow/tie_out.py", "NOISY_RULE"): "C10, to remove in landing 6",
   ("tolerance", "boltbeam/search/role_compare.py", "TOLERANCE"): "C12, to remove in landing 6",
   ("tolerance", "boltbeam/search/primitive_plan.py", "seed"): "C12 (dev only), to remove in landing 6",
 }

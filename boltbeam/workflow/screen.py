@@ -198,7 +198,9 @@ def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "f
     from boltbeam.workflow import layout as lay
     when = ((target.capabilities.get("fact_sources") or {}).get("memory_bandwidth_gbs") or {}).get("observed_at")
     read = {"gbs": known[0], "source": known[1], "short": lay.short_source(known[1], when) + ", chip profile"}
-  bw = (read or {}).get("gbs") or target.memory_bandwidth_gbs or peak_gbs
+  if peak_gbs is not None:
+    read = {"gbs": peak_gbs, "short": "explicit --peak-gbs", "source": "explicit --peak-gbs"}
+  bw = (read or {}).get("gbs") or target.memory_bandwidth_gbs
   if not bw:
     raise Refused(f"target {target.target_id!r} carries no memory_bandwidth_gbs, so there is no memory ceiling; "
                   "pass --peak-gbs or add a measured figure to boltbeam/data/targets.json")

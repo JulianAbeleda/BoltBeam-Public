@@ -45,10 +45,8 @@ REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slo
 # reading, the suffix says why it is not firm (noisy_words). One rule for both backends; reason_word keeps the firm
 # word for the readers that key on it (the HTML rule tables).
 NOISY = "{word}; noisy: {why}"
-NOISY_RULE = {
-  "spread_pct": 10.0,  # ± (half of P90 - P10 over the median) above this can move the word: 85% is at the limit, 75% clearly slow
-  "floor_share": 1 / 3,  # the dispatch floor over the measured time above this: the kernel is mostly floor, the floor's jitter is its spread
-}
+from boltbeam.collectors.kernel_timer import NOISY_RULE
+
 NOISY_FLOOR = "{floor:.1f} µs floor under a {us:.1f} µs kernel"
 # an isolated row's rule time: its time less the dispatch floor, the figure that matched nsys per role on the 5090
 # (docs/in-model-vs-generic-rtx5090-20261010.md); the measured time, floor included, stays in the row as us_per_call
@@ -57,7 +55,7 @@ ISOLATED_RULE = " Timed alone: % of peak and GB/s are on the time {floor_words};
 # the isolated tie-out: only the ideal and the token are compared; the split is an estimate, labelled so
 NOT_SPLIT_LABEL = "kernels and gaps, not split"
 ESTIMATE_LABEL = "(estimate from isolated times)"
-OTHER_HOW_FLOOR = "at least: KV reads at the limit; attention, norms, launches and gaps were not timed"
+OTHER_HOW_FLOOR = "at least: untimed work at the limit; untimed weights, attention, norms, launches and gaps were not timed"
 OTHER_HOW_DIFF = "difference: the token less the kernels timed alone{floor}; attention, norms, launches and gaps were not timed"
 ROLE_SOURCE_ISOLATED, ROLE_SOURCE_IN_MODEL = "isolated", "in_model"
 
@@ -391,7 +389,7 @@ def _isolated(out:dict[str, Any], table:dict[str, Any], token:float, limit:float
                      "columns_words": ISOLATED_COLUMNS.format(floor_words=floor_words(floor_us)) if floor_us is not None else None,
                      "isolated_sum_less_floor_ms": weight_base if floor_us is not None else None,
                      "weight_ms": weight_est, "scaled": scaled,
-                     "weight_how": (f"upper bound: the token less the KV-read floor" if scaled else
+                     "weight_how": (f"upper bound: the token less the untimed-work floor" if scaled else
                                     f"as timed alone{floor}, fits inside the token"),
                      "other_ms": token - weight_est if weight_est is not None else None,
                      "other_how": OTHER_HOW_FLOOR if scaled else OTHER_HOW_DIFF.format(floor=f", {floor_words(floor_us)}" if floor_us is not None else "")}
@@ -453,6 +451,9 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
     rest_now, rest_limit = other["busy_ms"] - named, other["ideal_ms"] - (float(tie.get("kv_ms") or 0.0) - kv)
     if abs(rest_now) > 1e-9:
       add(REST_ROW, "rest", rest_now, None)
+    if kv:
+      add("KV-read ideal, attention not identified", "limit", 0.0, kv)
+      rest_limit -= kv
     if abs(rest_limit) > 1e-9:
       add(LIMIT_ROW, "limit", 0.0, rest_limit)
     gaps = lines[-1]
@@ -474,7 +475,7 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
       words.append(f"The gaps row includes the capture's own overhead, about {token - base:.1f} ms (the captured token less "
                    "the untraced one), so the gaps' tok/s if fixed is an upper bound.")
   if est:
-    words.append(f"Estimate: each weight kernel was timed alone; the rest of the token (attention, norms, launches and gaps) is the difference {ESTIMATE_LABEL}.")
+    words.append(f"Estimate: each weight kernel was timed alone; the rest of the token (untimed weights, attention, norms, launches and gaps) is the difference {ESTIMATE_LABEL}.")
   return table(WHERE_TITLE, WHERE_COLUMNS, rows, now=token, limit=limit, lost=total, no_limit=NO_LIMIT,
                if_fixed=("tok_s_if_fixed", "{:.1f}"), peak=("pct_peak", "{:.1f}%"), sum_name="= token",
                estimate=bool(est), token_ms=token, base_ms=base, limit_ms=limit, words=" ".join(words))

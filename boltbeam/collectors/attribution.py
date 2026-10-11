@@ -370,11 +370,11 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
   manifest = load_manifest(run)
   profile = _optional(run, "model_profile.json")
-  ceil = _measured_vs_ceiling(manifest, profile)
+  ceil = _measured_vs_ceiling(manifest, profile, pathlib.Path(run))
   check_window(window, method=method, tokens=tokens, token_ms=token_ms, long_kernels=long_kernels,
                band=max(float(ceil.get("band") or 0.0), 0.01))
   counts = {(r["role"], r["quant"]): int(r["count"]) for r in profile.get("roles", []) if r.get("count")}
-  result = attribute(window, ceil.get("_roles") or [], counts, tokens, target.memory_bandwidth_gbs)
+  result = attribute(window, ceil.get("_roles") or [], counts, tokens, ceil.get("peak_bandwidth_gbs"))
   wall = sum(g["wall_us"] for g in window)
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": model_id, "target_id": target.target_id, "workload": "decode",
            "provider_id": provider, "capture": {"method": method, "reason": None},

@@ -40,6 +40,7 @@ FLOOR_SAMPLES = 20  # launches of an empty kernel: the fixed cost of one dispatc
 # is most of its spread (attn_kv Q6_K on a 5090 read 8.05 then 10.30 µs between two passes): it is sampled
 # NOISY_SAMPLES times in all, the spread reported, and the row says why. One rule for both backends.
 NOISY_FLOOR_MULTIPLE, NOISY_SAMPLES = 3.0, 60
+NOISY_RULE = {"spread_pct": 10.0, "floor_share": 1 / NOISY_FLOOR_MULTIPLE}
 
 # the flush kernel per backend: a sweep over a buffer larger than the last-level cache, run before each timed sample;
 # "mode" says what the sweep does to the cache lines: "read" leaves them clean, "store" leaves them dirty

@@ -1049,7 +1049,10 @@ def compare_flash(run:pathlib.Path, *, root:pathlib.Path, device:str, checker:An
   attn = in_model if in_model is not None else in_model_attention(run)
   if not attn or not attn.get("context"):
     return row | {"verdict": "not_searched", "reason": "the run has no in-model attention time to judge against"}
-  layers = sum(1 for _l, roles in _attention_layers(run).items() if roles)
+  from boltbeam.roofline.prefill_work import attention_layer_count
+  layers = attention_layer_count(profile)
+  if not layers:
+    return row | {"verdict": "not_searched", "reason": "the profile has no attended layer count"}
   row.update(shape=shape, instance={"calls_per_token": layers, "shape": shape, "context": attn["context"]},
              in_model_ms=attn["ms"], lost_ms=attn["lost_ms"],
              in_model_rows=[{"row": flash_space.ATTENTION, "ms": attn["ms"], "lost_ms": attn["lost_ms"], "calls_per_token": layers}])
@@ -1146,15 +1149,6 @@ def flash_plan(tile:Mapping[str, Any]) -> str:
 def load_target_id(run:pathlib.Path) -> str:
   from boltbeam.workflow.common import load_manifest
   return str(load_manifest(run).get("target_id"))
-
-
-def _attention_layers(run:pathlib.Path) -> dict[int, bool]:
-  """The layers that hold a query projection: one flash attention each."""
-  from boltbeam.profile.gguf import read_gguf_layout
-  from boltbeam.search import fusion_space
-  from boltbeam.workflow.common import load_manifest
-  model = str(load_manifest(run).get("model_path") or "")
-  return {l: "attention_q" in roles for l, roles in fusion_space.layers(read_gguf_layout(pathlib.Path(model))[1]).items()}
 
 
 def _flash_session(root:pathlib.Path):

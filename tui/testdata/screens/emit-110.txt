@@ -12,8 +12,8 @@
 │                                                                                                            │
 │ ## Where the token goes (estimate)                                                                         │
 │ ms per token at context 128, worst first; tok/s if fixed is the 55.1 ms token (18.1 tok/s) less that row's │
-│ lost ms. Estimate: each weight kernel was timed alone; the rest of the token (attention, norms, launches   │
-│ and gaps) is the difference (estimate from isolated times).                                                │
+│ lost ms. Estimate: each weight kernel was timed alone; the rest of the token (untimed weights, attention,  │
+│ norms, launches and gaps) is the difference (estimate from isolated times).                                │
 │                                                                                                            │
 │ ```                                                                                                        │
 │ row              ms now ms at limit ms lost share tok/s if fixed % of peak                                 │

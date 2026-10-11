@@ -251,10 +251,12 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
         slot["spread_pct"] = max(float(r["spread_pct"]), slot["spread_pct"] or 0.0)
       if r.get("wall_us_less_floor") is not None:
         floor_us = (r.get("timing") or {}).get("dispatch_floor_us", floor_us)
+  from collections import Counter
+  shape_counts = Counter((c["role"], c["quant"]) for c in ceiling_roles)
   out = []
   for c in ceiling_roles:
     got = actual.get(role_key(c))
-    if got is None and shape_nk(c) is not None and not any(k[:2] == (c["role"], c["quant"]) and len(k) > 2 for k in actual):
+    if got is None and shape_nk(c) is not None and shape_counts[(c["role"], c["quant"])] == 1 and not any(k[:2] == (c["role"], c["quant"]) and len(k) > 2 for k in actual):
       got = actual.get((c["role"], c["quant"]))  # a trace without shapes keys by role and quant
     if got is None: continue
     ms = got["us"] / tokens / 1000.0

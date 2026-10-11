@@ -126,9 +126,11 @@ def source_vs_binary(source:dict[str, Any], bench:str | None) -> dict[str, Any]:
   (path, sha256, mtime): recorded, not judged. Nothing here proves the binary was built from that source; the
   record lets a reader see when they differ (a 2026-08-20 binary against a 2026-10-05 source on the 5090)."""
   out = dict(source)
+  out["kernel_binary_identity"] = {"status": "not_recorded", "reason":
+    "the benchmark executable hash does not identify its loaded backend library or prove which kernels ran"}
   if bench and pathlib.Path(bench).is_file():
     real = pathlib.Path(bench).resolve()
-    out["binary"] = {"path": str(bench), "bytes": real.stat().st_size, "sha256": hashlib.sha256(real.read_bytes()).hexdigest(),
+    out["binary"] = {"scope": "benchmark_executable", "path": str(bench), "bytes": real.stat().st_size, "sha256": hashlib.sha256(real.read_bytes()).hexdigest(),
                      "mtime": _mtime(real)}
   else:
     out["binary"] = None
@@ -649,7 +651,8 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
   whole = {"scope": "whole_step", "decode_tokens": 1, "wall_us": kernel_us, "measurement_scope": "summed_isolated_kernels",
            "wall_us_less_floor": sum(r["wall_us_less_floor"] for r in measured), "dispatch_floor_us": floor_us,
            "time_source": METHOD, "context": token["context"] if token else None,
-           "tok_s": token["tok_s"] if token else None, "token_source": "step 4, the untraced whole step" if token else None}
+           "tok_s": 1e6 / kernel_us if kernel_us else None,
+           "untraced_tok_s": token["tok_s"] if token else None, "token_source": "step 4, the untraced whole step" if token else None}
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest.get("model_id"), "target_id": manifest.get("target_id"),
            "workload": "decode", "provider_id": provider, "capture": {"method": METHOD, "reason": None},
            "timing_source": f"{setup['engine']} kernels timed alone by BoltBeam's kernel timer ({bridge.CLOCK})",
