@@ -114,13 +114,13 @@ def kernel_words(name:str) -> str:
 
 
 def kv_ms(profile:dict[str, Any], context:float, element_bytes:int, bandwidth_gbs:float) -> float:
-  """Time to read the KV cache once for one token at this context: the attending layers (all of them unless the
-  profile says fewer, a hybrid's) x K and V x kv heads x head dim x context x element size, over the bandwidth."""
-  att = (profile.get("metadata") or {}).get("attention") or {}
-  layers, heads, dim = att.get("layer_count") or profile.get("layer_count"), att.get("head_count_kv"), att.get("head_dim")
-  if not (layers and heads and dim and bandwidth_gbs):
+  """Time to read the KV cache once for one token at this context: the KV bytes per token (prefill_work) x context,
+  over the bandwidth."""
+  from boltbeam.roofline.prefill_work import kv_bytes_per_token
+  per = kv_bytes_per_token(profile, element_bytes=element_bytes)
+  if not (per and bandwidth_gbs):
     return 0.0
-  return layers * 2 * heads * dim * context * element_bytes / (bandwidth_gbs * 1e9) * 1e3
+  return per * context / (bandwidth_gbs * 1e9) * 1e3
 
 
 def attended_context(trace:dict[str, Any], provider:str) -> float | None:
@@ -516,12 +516,13 @@ PREFILL_COLUMNS = ("row", "ms now", "ms at ceiling", "ms lost", "share", "prefil
 NO_CEILING = "no ceiling"  # a kernel with no operations or bytes the model knows (norms, quantize, copies): all its time is lost
 
 
-def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, length:int) -> dict[str, Any] | None:
+def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, length:int,
+                       depth:int = 0) -> dict[str, Any] | None:
   """A captured prefill (prefill_attribution.attribute_prefill) as the where table: every role row, attention, every
   other kernel and the gaps, worst first, summing to the captured prefill's wall time. ms at ceiling is each row's
   max(operations / its path's peak, bytes / bandwidth); MFU is its operations over its time at that peak. prefill ms if
   fixed is the untraced prefill less the row's lost ms. The ranking and the cells are where_token_goes' own (rank,
-  table)."""
+  table). depth: a session's turn, `length` tokens appended after `depth` in the cache (collectors/session.py)."""
   if not attr or not attr.get("rows"):
     return None
   rows = [{"name": r["name"], "what": r["what"], "now_ms": r["ms"], "limit_ms": r.get("ceiling_ms"), "mfu_pct": r.get("mfu_pct"),
@@ -534,7 +535,8 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   total = rank(rows, lambda r: base - r["lost_ms"] if r["what"] != "limit" else None, "ms_if_fixed")
   limit = sum(r["limit_ms"] or 0.0 for r in rows)
   compute = sum(r.get("compute_ms") or 0.0 for r in rows)
-  words = [f"ms of one {length}-token prefill, worst first; prefill ms if fixed is the {base:.1f} ms untraced prefill less "
+  what = f"{length}-token turn after {depth} tokens in the cache" if depth else f"{length}-token prefill"
+  words = [f"ms of one {what}, worst first; prefill ms if fixed is the {base:.1f} ms untraced prefill less "
            "that row's lost ms. ms at ceiling is max(operations / the measured peak of the path the kernel's instructions "
            f"use, bytes / bandwidth); MFU is operations over that peak for the row's time; {NO_CEILING}: the model "
            "counts no work for the kernel, so all of its time is lost."]
@@ -548,7 +550,8 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   mixed = [r["name"] for r in rows if " + " in str(r.get("path") or "") and r.get("limit_ms") is not None]
   if mixed:
     words.append(f"{', '.join(mixed)}: instructions on more than one path; its operations are split over them by its instruction sites, each part at its own path's peak.")
-  return table(PREFILL_TITLE, PREFILL_COLUMNS, rows, now=wall, limit=limit, lost=total, no_limit=NO_CEILING,
+  title = f"Where the turn goes at depth {depth:,}" if depth else PREFILL_TITLE
+  return table(title, PREFILL_COLUMNS, rows, now=wall, limit=limit, lost=total, no_limit=NO_CEILING,
                if_fixed=("ms_if_fixed", "{:.1f}"), peak=("mfu_pct", "{:.1f}%"), sum_name="= prefill", estimate=False,
                token_ms=wall, base_ms=base, limit_ms=limit, words=" ".join(words), workload="prefill", length=length,
-               mfu_pct=100.0 * compute / base if base else None)
+               mfu_pct=100.0 * compute / base if base else None, **({"depth": depth} if depth else {}))

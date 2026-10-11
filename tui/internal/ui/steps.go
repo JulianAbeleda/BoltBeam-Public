@@ -1047,7 +1047,7 @@ func resultActions(f Facts) []action {
 var workloads = []struct{ id, about, missing string }{
 	{"decode", "one token at a time, after the prompt", ""},
 	{"prefill", "the prompt read at once, at lengths up to the model's cap", ""},
-	{"session", "a conversation that grows turn by turn", "not built yet"},
+	{"session", "a turn appended at depths up to the context that fits", ""},
 }
 
 // workload is the chosen workload; decode until another is picked.
@@ -1060,7 +1060,8 @@ func (f Facts) workload() string {
 
 func workloadBody(Facts, int) string {
 	return "Workload is what the Run measures. Decode times one token at a time. Prefill times the prompt read at once, " +
-		"from 512 tokens up to the model's own cap."
+		"from 512 tokens up to the model's own cap. Session times a 512-token turn appended to a cache already holding " +
+		"1K, then 4 times more, up to the context that fits before compaction."
 }
 
 func workloadActions(f Facts) []action {

@@ -53,15 +53,28 @@ PAIRING_RULE = ("a template named as attention (tie_out.kind_of) does attention'
                 "launch; roles with equal operations are one row; the assignment placing the most roles wins, then the one leaving the fewest matrix kernels unpaired; among tied ones, only the roles every one places the same way are paired")
 
 
-def measured_window(launches:list[dict[str, Any]], warmup:bool = True) -> tuple[list[dict[str, Any]], str]:
+REPEAT = "repeat"  # measured_window: the capture ends in two identical turns (a session's turn, captured twice)
+
+
+def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True) -> tuple[list[dict[str, Any]], str]:
   """The measured prefill. With warmup (the engine ran a warm-up prefill inside the capture): the second half of the
   launches, when the first half launched the same kernels the same number of times, else refused. Without: every
-  launch (a prefill of identical chunks has identical halves too, so halves alone cannot say there was a warm-up)."""
+  launch (a prefill of identical chunks has identical halves too, so halves alone cannot say there was a warm-up).
+  REPEAT (the capture holds other work, then the measured prefill twice): the shortest tail of launches that the
+  launches just before it repeat kernel for kernel, in order (equal counts alone would also match a window that
+  straddles the two turns); a once-per-call kernel (the output head) makes that tail one whole call."""
   timed = sorted((l for l in launches if "start_us" in l), key=lambda l: l["start_us"])
   if not warmup:
     return timed, f"one prefill of {len(timed)} launches (the capture holds the measured prefill only)"
-  half = len(timed) // 2
   count = lambda ls: sorted(collections.Counter(template(l["key"]) for l in ls).items())  # noqa: E731
+  if warmup == REPEAT:
+    keys = [template(l["key"]) for l in timed]
+    for n in range(1, len(timed) // 2 + 1):
+      if keys[-n:] == keys[-2 * n:-n]:
+        return timed[-n:], (f"the last of two identical turns at the end of the capture ({n} launches each); the "
+                            f"{len(timed) - n} launches before it fill the cache and repeat the turn")
+    raise ValueError(f"the capture's {len(timed)} launches do not end in two identical turns")
+  half = len(timed) // 2
   if len(timed) % 2 == 0 and half and count(timed[:half]) == count(timed[half:]):
     gap = timed[half]["start_us"] - (timed[half - 1]["start_us"] + timed[half - 1]["wall_us"])
     return timed[half:], (f"the second of two identical prefills ({half} launches each, {gap / 1000:.1f} ms apart); the "
@@ -246,8 +259,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                       layers:int, kernel_paths:dict[str, dict[str, int]], peaks:dict[str, float],
                       bandwidth_gbs:float | None, profile:dict[str, Any] | None = None, length:int | None = None,
                       program_roles:dict[str, dict[str, Any]] | None = None, untraced_ms:float | None = None,
-                      warmup:bool = True, formats:dict[str, Any] | None = None,
-                      cache:dict[str, float] | None = None) -> dict[str, Any]:
+                      warmup:bool | str = True, formats:dict[str, Any] | None = None,
+                      cache:dict[str, float] | None = None, depth:int = 0) -> dict[str, Any]:
   """The measured prefill split by role, attention and other kernels, each with operations, bytes, path and ceiling.
   roles: {role, quant, n, k, count (per chunk), weight_bytes (per launch)}. kernel_paths: template -> {path: sites}.
   outputs: the engine calls that each ended in an output (its last token's work, the output head, once per call).
@@ -255,7 +268,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   shape itself (the fork's own metadata): those launches are that role at that M, N, K, and the role is not paired
   again. untraced_ms: for an engine's own timing, whose run is slowed by profiling, the prefill the rows sum to: the
   gaps are it less the busy time, never the profiled run's idle. formats: the engine adapter's {activations: {in, out},
-  kv, stream_k: template -> layout or None} (prefill.ENGINES); cache: the chip's last-level cache {bytes, gbs}."""
+  kv, stream_k: template -> layout or None} (prefill.ENGINES); cache: the chip's last-level cache {bytes, gbs}. depth: tokens
+  already in the cache (a session's turn), so attention's work counts every key the turn's tokens read."""
   formats = formats or {}
   acts = formats.get("activations")
   gemm = lambda m, n, k, wb: work.gemm(m, n, k, wb, acts)["bytes"]  # noqa: E731
@@ -362,7 +376,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   gemv_keys = {r["key"] for r in gemv_rows if r.get("key")}
   others: dict[str, dict[str, Any]] = {}
   att = work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths, formats.get("kv") or "F16",
-                       formats.get("attention_activations") or acts) if profile else None
+                       formats.get("attention_activations") or acts, depth=depth) if profile else None
   for ti, t in enumerate(templates):
     if ti in taken:
       continue

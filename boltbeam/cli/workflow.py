@@ -14,7 +14,7 @@ from boltbeam.policy.emit import emit_seed_policy
 from boltbeam.synth.fixtures import emit_fixture_manifest
 from boltbeam.target.targets import get_target
 
-from boltbeam.vocab import Verdict, SCHEMA_MODEL_PROFILE, SCHEMA_EVIDENCE_BUNDLE, SCHEMA_INGEST_ERROR
+from boltbeam.vocab import Verdict, Workload, SCHEMA_MODEL_PROFILE, SCHEMA_EVIDENCE_BUNDLE, SCHEMA_INGEST_ERROR
 from boltbeam.artifacts.tinygrad import normalize, normalize_dir
 from boltbeam.artifacts.base import NormalizedEvidence, AdapterIncomplete, UnsupportedArtifact
 from boltbeam.ledger.model import CandidateDecision, LedgerEntry, status_for_verdict
@@ -163,9 +163,9 @@ def _register_load(sub) -> None:
   p.add_argument("--target", default=None,
                  help="explicit target id; when omitted autoscan may replace the legacy AMD default")
   p.add_argument("--id", default=None, help="profile/model id override")
-  p.add_argument("--workload", default="decode", choices=["decode", "prefill"])
+  p.add_argument("--workload", default="decode", choices=[w.value for w in Workload])
   p.add_argument("--ctxs", default=None, help="comma-separated contexts to seed the workload profile (default 128,512; "
-                                              "a prefill: the sweep to the model's own cap)")
+                                              "a prefill: the sweep to the model's own cap; a session: cap for the derived depths)")
   p.add_argument("--out", default=None, help="write run manifest JSON here instead of stdout")
   p.set_defaults(fn=cmd_load)
 

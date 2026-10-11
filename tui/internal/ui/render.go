@@ -702,6 +702,31 @@ func whereBody(w *seam.Where) string {
 	return b.String()
 }
 
+// sessionBody is the session table (workflow/session.py) when the run carries one: a row per depth, then its lines.
+func sessionBody(s *seam.Session) string {
+	if s == nil || len(s.Rows) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n" + stHeader.Render(s.Title) + "\n")
+	b.WriteString(stMuted.Render(s.Words) + "\n")
+	head := []string{}
+	for _, c := range s.Columns {
+		head = append(head, strings.ToUpper(c))
+	}
+	rows := [][]string{head}
+	for _, r := range s.Rows {
+		rows = append(rows, r.Cells)
+	}
+	b.WriteString(table(rows))
+	for _, line := range []string{s.Warm, s.MaxContext, s.Compaction} {
+		if line != "" {
+			b.WriteString(stMuted.Render(line) + "\n")
+		}
+	}
+	return b.String()
+}
+
 func whereTable(w *seam.Where, drop []string) string {
 	head := []string{}
 	for _, c := range w.Columns {
@@ -878,6 +903,7 @@ func lossBodyAt(l seam.Loss, batch int) string {
 			b.WriteString("  " + stMuted.Render(r.Note) + "\n")
 		}
 	}
+	b.WriteString(sessionBody(l.Session))
 	b.WriteString(whereBody(l.WhereTokenGoes))
 	b.WriteString(auditBody(l.PrefillAudit))
 	if l.Refused != nil {

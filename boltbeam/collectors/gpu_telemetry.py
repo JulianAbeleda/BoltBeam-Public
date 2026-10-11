@@ -48,6 +48,13 @@ class _Nvml:
     v = ctypes.c_uint()
     return v.value if getattr(self.lib, fn)(self.handle, *args, ctypes.byref(v)) == 0 else None
 
+  def memory_mib(self) -> tuple[float | None, float | None]:
+    """The device memory in use and in all, MiB (nvmlMemory_t: total, free, used)."""
+    m = (ctypes.c_ulonglong * 3)()
+    if self.lib.nvmlDeviceGetMemoryInfo(self.handle, ctypes.byref(m)) != 0:
+      return None, None
+    return m[2] / 2**20, m[0] / 2**20
+
   def sample(self) -> dict[str, Any]:
     reasons = ctypes.c_ulonglong()
     ok = self.lib.nvmlDeviceGetCurrentClocksEventReasons(self.handle, ctypes.byref(reasons)) == 0
@@ -55,7 +62,7 @@ class _Nvml:
     return {"t": time.monotonic(), "sm_mhz": self._uint("nvmlDeviceGetClockInfo", ctypes.c_int(_CLOCK_SM)),
             "power_w": mw / 1000.0 if mw is not None else None,
             "temp_c": self._uint("nvmlDeviceGetTemperature", ctypes.c_int(_TEMP_GPU)),
-            "reasons": reasons.value if ok else None}
+            "reasons": reasons.value if ok else None, "mem_mib": self.memory_mib()[0]}
 
   def power_limit_w(self) -> float | None:
     mw = self._uint("nvmlDeviceGetEnforcedPowerLimit")
@@ -72,7 +79,8 @@ def reason_words(bits:int) -> list[str]:
 HELD = 0.98  # a throttle reason with the SM clock at or above this share of the run's highest clock held the clock
 
 
-def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None, top_mhz:float | None = None) -> dict[str, Any]:
+def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None, top_mhz:float | None = None,
+              memory_total:float | None = None) -> dict[str, Any]:
   """The samples as one record: SM clock mean, min and max (MHz), power mean and max, temperature max, and the
   throttle reasons seen with the share of samples each was set in. The driver sets a reason (a software power cap)
   while the clock stays where it was, so a sample counts as throttled only when its clock is also below HELD of the
@@ -98,6 +106,9 @@ def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None
          "throttle": {w: round(n / len(samples), 3) for w, n in sorted(seen.items())},
          "held": {w: round(n / len(samples), 3) for w, n in sorted(held.items())}, "top_mhz": top,
          "throttled": bool(seen)}
+  used = [s["mem_mib"] for s in every if s.get("mem_mib") is not None]
+  if used:  # what the device held at most while the work ran (a model loading counts: it is held memory)
+    out["memory_mib"] = {"used_max": round(max(used), 1), "total": memory_total}
   out["words"] = words(out)
   return out
 
@@ -139,7 +150,7 @@ class Telemetry:
     self.device, self.interval_s = device, interval_s
     self.samples: list[dict[str, Any]] = []
     self.reason: str | None = None
-    self._source, self._stop, self._thread, self._limit = source, threading.Event(), None, None
+    self._source, self._stop, self._thread, self._limit, self._total = source, threading.Event(), None, None, None
 
   def __enter__(self) -> "Telemetry":
     try:
@@ -148,6 +159,7 @@ class Telemetry:
       self._nvml, self.reason = None, f"no clock samples: {LIBRARY} not usable here ({exc})"
       return self
     self._limit = self._nvml.power_limit_w()
+    self._total = getattr(self._nvml, "memory_mib", lambda: (None, None))()[1]
     self._thread = threading.Thread(target=self._loop, daemon=True)
     self._thread.start()
     return self
@@ -174,7 +186,7 @@ class Telemetry:
       return {"samples": 0, "reason": self.reason, "throttled": None, "sm_mhz": None, "words": self.reason}
     rows = self.window(t0, t1) if t0 is not None and t1 is not None else self.samples
     clocks = [s["sm_mhz"] for s in self.samples if s.get("sm_mhz") and not (s.get("reasons") or 0) & IDLE]
-    return summarize(rows, power_limit_w=self._limit, top_mhz=max(clocks) if clocks else None)
+    return summarize(rows, power_limit_w=self._limit, top_mhz=max(clocks) if clocks else None, memory_total=self._total)
 
 
 # --- the clock policy ----------------------------------------------------------------------------------------------

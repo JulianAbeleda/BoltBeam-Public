@@ -754,6 +754,19 @@ def _prefill_audit(loss:dict[str, Any]) -> str:
                                  f'<ol class="audit">{items}</ol>{rest}')
 
 
+def _session(loss:dict[str, Any]) -> str:
+  """workflow/session.table as a table and its lines: a row per depth, then the warm row, the context that fits and
+  the compaction. The cells are the table's own."""
+  t = loss.get("session")
+  if not t:
+    return ""
+  head = "".join(f"<th>{_e(c)}</th>" for c in t["columns"])
+  body = "".join("<tr>" + "".join(f"<td>{_e(c)}</td>" for c in r["cells"]) + "</tr>" for r in t["rows"])
+  notes = "".join(f'<p class="muted" style="margin:6px 0 0">{_e(t[k])}</p>' for k in ("warm", "max_context", "compaction") if t.get(k))
+  return _section(2, t["title"], f'<p class="muted" style="margin:0 0 10px">{_e(t["words"])}</p>'
+                  f'<div class="tscroll"><table class="tie where"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>{notes}')
+
+
 def _per_role(loss:dict[str, Any]) -> str:
   if loss.get("refused"):
     return _section(3, "Per role", f'<p class="note">Per role: not shown. {_e(loss["refused"])}</p>')
@@ -1015,7 +1028,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
   measured = _measured(loss) is not None
   sections = _answer(manifest, results, measure, source_run)
   if measured:
-    sections += _where(loss) + _where_token(loss) + _prefill_curve(loss) + _prefill_audit(loss) + _per_role(loss) + _next(loss, policy)
+    sections += _where(loss) + _session(loss) + _where_token(loss) + _prefill_curve(loss) + _prefill_audit(loss) + _per_role(loss) + _next(loss, policy)
   sections += _probe(results) + _facts(manifest, results, measure, gameplan)
   sections = _number(sections)
   return (

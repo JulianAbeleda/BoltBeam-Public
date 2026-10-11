@@ -89,6 +89,7 @@ from boltbeam.workflow import analyze_run, autoscan_run, ingest_probe_run, inges
 from boltbeam.workflow.autoscan import _hardware_profile
 from boltbeam.workflow import prefill_audit, progress
 from boltbeam.workflow.common import load_manifest, read_json
+from boltbeam.vocab import Workload
 
 SCHEMA = "boltbeam.tui.v1"
 # what a run still needs, read off measurement_plan.json: (plan block, the evidence it asks for, its request file)
@@ -374,9 +375,9 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   target = get_target(manifest.get("target_id"))
   # facts of the run only: what this machine could capture is `providers`, never part of the pinned results
   plan = None
-  if manifest.get("workload") == "prefill":  # the untraced prefill and where its time goes (workflow/prefill.py)
-    from boltbeam.workflow import prefill as pf
-    return pf.loss_block(run, manifest, {"status": "absent", "reason": None, "limit_ms": None, "limit_tok_s": None,
+  if manifest.get("workload") in ("prefill", "session"):  # the untraced prompt and where its time goes
+    from boltbeam.workflow import prefill as pf, session as ss  # workflow/prefill.py, workflow/session.py
+    return (pf if manifest["workload"] == "prefill" else ss).loss_block(run, manifest, {"status": "absent", "reason": None, "limit_ms": None, "limit_tok_s": None,
                                          "not_attributed_ms": None, "source": None, "missing": None, "refused": None,
                                          "provider": provider, "capture": plan, "roles_provider": None, "provider_missing": None,
                                          "others": [], "unpaired_roles": [], "not_timed": [], "role_rule": None,
@@ -770,7 +771,7 @@ def results_core(run:pathlib.Path, beside:bool = False) -> dict[str, Any]:
   kernels, context = roofline_kernels(timing, context) if timing else ([], context)
   chosen = next((s for s in timing.get("context_summaries", []) if s.get("context") == context), {}) if timing else {}
   loss = loss_block(run, manifest, ceil, token, beside=beside)
-  if manifest.get("workload") == "prefill":  # one ceiling: the sum of the kernels' own, as the where table has it
+  if manifest.get("workload") in ("prefill", "session"):  # one ceiling: the sum of the kernels' own, as the where table has it
     ceil = prefill_ceiling(ceil, loss, token)
   return {
     "schema": SCHEMA, "kind": "results", "id": run.name, "model_id": manifest.get("model_id"),
@@ -1018,10 +1019,11 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
     probe = [guarded("probe", cuda_probe, probe="measured", last=False)]
   else:
     probe = []
-  if getattr(args, "workload", "decode") == "prefill":  # the untraced prefill per prompt length (collectors/prefill.py)
-    from boltbeam.collectors import prefill as pf
+  if getattr(args, "workload", "decode") in ("prefill", "session"):  # collectors/prefill.py, collectors/session.py
+    from boltbeam.collectors import prefill as pf, session as ss
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
-    timing = guarded("timing", lambda: pf.measure(out_dir(), provider, root=root), probe="absent",
+    mod = pf if args.workload == "prefill" else ss
+    timing = guarded("timing", lambda: mod.measure(out_dir(), provider, root=root), probe="absent",
                      probe_reason=llama_bench_decode.PROBE_ABSENT)
     return [timing]
   if provider == tinygrad_role_time.PROVIDER:
@@ -1087,9 +1089,10 @@ def pipeline(args, out=sys.stdout) -> int:
   can_time = plan and (plan.get("capture") or providers.capture_method(plan["provider"], get_target(args.target).backend)).get("method")
   if analyze_all and plan and not plan["reason"]:  # one press: per-role time, same engine, search, report again
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
-    if getattr(args, "workload", "decode") == "prefill":  # one prefill per length captured in the model, attributed
-      from boltbeam.collectors import prefill as pf
-      steps.append(("role_time", lambda: pf.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say)))
+    if getattr(args, "workload", "decode") in ("prefill", "session"):  # captured in the model, attributed
+      from boltbeam.collectors import prefill as pf, session as ss
+      mod = pf if args.workload == "prefill" else ss  # one prefill per length; one turn at the focus depth
+      steps.append(("role_time", lambda: mod.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say)))
     elif can_time:
       steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say,
                                                              step=progress.report, measurement=_role_time_arg(args))))
@@ -1349,6 +1352,8 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   lines += where_lines(loss.get("where_token_goes"))
   lines += curve_lines(loss.get("prefill_curve"))
   lines += prefill_audit.lines(loss.get("prefill_audit"))
+  from boltbeam.workflow.session import lines as session_lines
+  lines += session_lines(loss.get("session"))
   if t.get("band"):
     lines.append(f"Band: {t['band']}")
   roles = loss.get("roles") or []
@@ -1566,9 +1571,9 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--run", required=True)
   p.add_argument("--target", required=True)
   p.add_argument("--id", default=None)
-  p.add_argument("--workload", default="decode", choices=["decode", "prefill"])
+  p.add_argument("--workload", default="decode", choices=[w.value for w in Workload])
   p.add_argument("--ctxs", default=None, help="decode contexts (default 128,512) or prompt lengths (default: the sweep "
-                                              "to the model's own cap, prefill_work.sweep)")
+                                              "to the model's own cap, prefill_work.sweep; a session: cap for the derived depths)")
   p.add_argument("--probe", default=None, help="boltbeam.probe_evidence.v1 JSON to ingest after analyze")
   p.add_argument("--timing", default=None, help="boltbeam.timing_trace.v1 JSON to ingest after analyze")
   p.add_argument("--measure", default="none", choices=["none", "auto"],

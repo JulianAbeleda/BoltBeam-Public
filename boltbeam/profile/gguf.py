@@ -85,6 +85,9 @@ def read_gguf_layout(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tupl
   return kv, tensors, data_start
 
 
+RECURRENT_KEYS = ("conv_kernel", "state_size", "group_count", "inner_size")  # GGUF ssm.* keys that size the state
+
+
 def read_gguf(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tuple[str, tuple[int, ...], int, int]]]:
   kv, tensors, _ = read_gguf_layout(path)
   return kv, tensors
@@ -125,6 +128,7 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
     head_dim = hidden // head_count
   vocab = len(kv["tokenizer.ggml.tokens"]) if "tokenizer.ggml.tokens" in kv else None
 
+  recurrent = len({n.split(".")[1] for n, *_ in tensors if n.startswith("blk.") and ".ssm_conv1d." in n})
   grouped: dict[tuple[str, int, int, int, int], list[str]] = collections.defaultdict(list)
   shapes = {name: tuple(dims) for name, dims, _typ, _off in tensors}
   for name, dims, typ, _off in tensors:
@@ -169,6 +173,9 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
       "layer_count": attention_layers(tensors, layers),
     }.items() if v is not None},
     "context": declared_context(kv, arch),
+    # a recurrent block's fixed state (Mamba2, Gated DeltaNet): its shape and the layers that hold it
+    **({"recurrent": {"layer_count": recurrent, **{k: kv[f"{arch}.ssm.{k}"] for k in RECURRENT_KEYS if f"{arch}.ssm.{k}" in kv}}}
+       if recurrent else {}),
   }
   return ModelProfile(model_id=model_id or p.stem, source=str(p), architecture=arch, hidden_size=hidden,
                       ffn_size=ffn, vocab_size=vocab, layer_count=layers, roles=roles, metadata=metadata,

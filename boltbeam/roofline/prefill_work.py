@@ -42,24 +42,40 @@ def gemm(m:float, n:int, k:int, weight_bytes:float, activations:dict[str, str] |
   return {"flops": 2.0 * m * n * k, "bytes": float(weight_bytes) + m * k * elem_bytes(a["in"]) + m * n * elem_bytes(a["out"])}
 
 
-def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None, kv_format:str = "F16",
-              activations:dict[str, str] | None = None) -> dict[str, Any] | None:
-  """The prompt's attention work over all layers: operations for the causal pairs, and bytes as each chunk reads
-  the K and V written so far plus its own Q and output. None when the profile does not say the attention shape."""
-  att = (profile.get("metadata") or {}).get("attention") or {}
-  layers, heads, kv_heads, dim = profile.get("layer_count"), att.get("head_count"), att.get("head_count_kv"), att.get("head_dim")
-  attention_layers = att.get("layer_count") or layers  # a hybrid model attends in some layers only
-  if not (attention_layers and heads and kv_heads and dim):
+def recurrent_state_bytes(profile:dict[str, Any], element_bytes:int = 4) -> float | None:
+  """The fixed state a recurrent block holds whatever the context (Mamba2, Gated DeltaNet), over its layers: the
+  convolution's last conv_kernel - 1 inputs of inner + 2 x groups x state channels, and the state matrix of state x
+  inner, at element_bytes (llama.cpp keeps both in f32). None when the model has no recurrent layers."""
+  r = (profile.get("metadata") or {}).get("recurrent") or {}
+  if not (r.get("layer_count") and r.get("state_size") and r.get("inner_size")):
     return None
-  pairs = length * (length + 1) / 2.0
+  conv = (int(r.get("conv_kernel") or 1) - 1) * (r["inner_size"] + 2 * int(r.get("group_count") or 0) * r["state_size"])
+  return float(r["layer_count"] * (conv + r["state_size"] * r["inner_size"]) * element_bytes)
+
+
+def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None, kv_format:str = "F16",
+              activations:dict[str, str] | None = None, depth:int = 0) -> dict[str, Any] | None:
+  """The prompt's attention work over all layers: operations for the causal pairs, and bytes as each chunk reads
+  the K and V written so far plus its own Q and output. None when the profile does not say the attention shape.
+  depth: tokens already in the cache before these `length` (a turn appended to a session), so the token at offset i
+  attends depth + i + 1 keys."""
+  att = (profile.get("metadata") or {}).get("attention") or {}
+  heads, dim = att.get("head_count"), att.get("head_dim")
+  attention_layers = att.get("layer_count") or profile.get("layer_count")  # a hybrid model attends in some layers only
+  per_token = kv_bytes_per_token(profile, kv_format)
+  if not (attention_layers and heads and per_token):
+    return None
+  pairs = length * depth + length * (length + 1) / 2.0
   flops = 4.0 * dim * heads * pairs * attention_layers
-  a, kv = activations or DEFAULT_ACTIVATIONS, elem_bytes(kv_format)
-  done, read = 0, 0.0
+  a = activations or DEFAULT_ACTIVATIONS
+  done, read = depth, 0.0
   for w in chunks or [length]:
     done += w
-    read += done * 2 * kv_heads * dim * kv + w * heads * dim * (elem_bytes(a["in"]) + elem_bytes(a["out"]))
+    read += done * per_token / attention_layers + w * heads * dim * (elem_bytes(a["in"]) + elem_bytes(a["out"]))
+  at = f" after {depth} tokens in the cache" if depth else ""
   return {"flops": flops, "bytes": read * attention_layers, "pairs_per_head": pairs, "layers": attention_layers,
-          "words": f"causal: {length} x {length + 1} / 2 query-key pairs per head, 4 x {dim} operations each, "
+          "words": (f"causal{at}: {length} x {depth} + {length} x {length + 1} / 2" if depth else
+                    f"causal: {length} x {length + 1} / 2") + f" query-key pairs per head, 4 x {dim} operations each, "
                    f"{heads} heads, {attention_layers} layers"}
 
 
@@ -67,13 +83,14 @@ SWEEP_FIRST = 512  # the first prompt length of a sweep
 SWEEP_STEP = 4  # each next length is this many times the last, up to the binding cap, which is the last point
 
 
-def kv_bytes_per_token(profile:dict[str, Any], kv_format:str = "F16") -> float | None:
-  """The KV cache one token adds: K and V, kv heads x head dim, in the layers that attend, in the cache's format."""
+def kv_bytes_per_token(profile:dict[str, Any], kv_format:str = "F16", element_bytes:float | None = None) -> float | None:
+  """The KV cache one token adds: K and V, kv heads x head dim, in the layers that attend, in the cache's format (or
+  at element_bytes, when the caller knows only the element's size). The one rule for KV bytes."""
   att = (profile.get("metadata") or {}).get("attention") or {}
   layers = att.get("layer_count") or profile.get("layer_count")
   if not (layers and att.get("head_count_kv") and att.get("head_dim")):
     return None
-  return 2.0 * att["head_count_kv"] * att["head_dim"] * layers * elem_bytes(kv_format)
+  return 2.0 * att["head_count_kv"] * att["head_dim"] * layers * (element_bytes or elem_bytes(kv_format))
 
 
 def sweep(profile:dict[str, Any], *, memory_bytes:float | None, weight_bytes:float | None,

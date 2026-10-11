@@ -88,6 +88,9 @@ def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str 
     swept = prefill_sweep(profile.to_json(), selected_target)
     write_json(out / "prefill_sweep.json", swept)
     contexts = tuple(swept["lengths"])
+  if contexts is None and workload == Workload.SESSION.value:
+    from boltbeam.cli._common import CAP
+    contexts = (CAP,)  # the depths derived up to the binding cap (collectors/session.py)
   contexts = contexts or (128, 512)
   write_json(out / "workload_profile.json", _workload_profile(profile, selected_target, workload, contexts))
   manifest = {

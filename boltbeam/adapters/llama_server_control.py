@@ -7,6 +7,7 @@ request time is diagnostic only; llama-bench remains timing authority.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
@@ -137,12 +138,10 @@ def _wait_healthy(base_url:str, process:subprocess.Popen, timeout_s:float) -> No
   raise TimeoutError(f"llama server did not become healthy within {timeout_s:g}s")
 
 
-def run_llama_server_control(*, executable:str | pathlib.Path, model:str | pathlib.Path,
-                             prompt_tokens:Sequence[int], warmups:int, seed:int = 20260617,
-                             context_size:int, log_path:str | pathlib.Path,
-                             startup_timeout_s:float = 180.0, request_timeout_s:float = 120.0,
-                             environ:Mapping[str, str] | None = None) -> dict[str, Any]:
-  """Start one clean llama server, collect one matched row, and tear it down."""
+@contextlib.contextmanager
+def serve(*, executable:str | pathlib.Path, model:str | pathlib.Path, context_size:int, log_path:str | pathlib.Path,
+          startup_timeout_s:float = 180.0, environ:Mapping[str, str] | None = None, extra:Sequence[str] = ()):
+  """One clean llama server on a free local port for the block: yields (base url, its command), then stops it."""
   server = pathlib.Path(executable).expanduser().absolute()
   model_path = pathlib.Path(model).expanduser().absolute()
   if not server.is_file(): raise FileNotFoundError(f"llama server not found: {server}")
@@ -150,7 +149,7 @@ def run_llama_server_control(*, executable:str | pathlib.Path, model:str | pathl
   port = _free_port()
   base_url = f"http://127.0.0.1:{port}"
   command = [str(server), "--model", str(model_path), "--host", "127.0.0.1", "--port", str(port),
-             "--ctx-size", str(context_size), "--n-gpu-layers", "99", "--no-warmup"]
+             "--ctx-size", str(context_size), "--n-gpu-layers", "99", "--no-warmup", *extra]
   log = pathlib.Path(log_path)
   log.parent.mkdir(parents=True, exist_ok=True)
   with log.open("w", encoding="utf-8") as stream:
@@ -158,8 +157,7 @@ def run_llama_server_control(*, executable:str | pathlib.Path, model:str | pathl
                                env=dict(os.environ if environ is None else environ), start_new_session=True)
     try:
       _wait_healthy(base_url, process, startup_timeout_s)
-      result = measure_fixed_depth_output(prompt_tokens, warmups=warmups, seed=seed, base_url=base_url,
-                                          timeout_s=request_timeout_s)
+      yield base_url, command
     finally:
       if process.poll() is None:
         try: os.killpg(process.pid, signal.SIGTERM)
@@ -169,9 +167,21 @@ def run_llama_server_control(*, executable:str | pathlib.Path, model:str | pathl
           try: os.killpg(process.pid, signal.SIGKILL)
           except ProcessLookupError: pass
           process.wait(timeout=5)
+
+
+def run_llama_server_control(*, executable:str | pathlib.Path, model:str | pathlib.Path,
+                             prompt_tokens:Sequence[int], warmups:int, seed:int = 20260617,
+                             context_size:int, log_path:str | pathlib.Path,
+                             startup_timeout_s:float = 180.0, request_timeout_s:float = 120.0,
+                             environ:Mapping[str, str] | None = None) -> dict[str, Any]:
+  """Start one clean llama server, collect one matched row, and tear it down."""
+  with serve(executable=executable, model=model, context_size=context_size, log_path=log_path,
+             startup_timeout_s=startup_timeout_s, environ=environ) as (base_url, command):
+    result = measure_fixed_depth_output(prompt_tokens, warmups=warmups, seed=seed, base_url=base_url,
+                                        timeout_s=request_timeout_s)
   result["runtime_command"] = command
-  result["runtime_log"] = str(log)
+  result["runtime_log"] = str(pathlib.Path(log_path))
   return result
 
 
-__all__ = ["measure_fixed_depth_output", "run_llama_server_control", "token_evidence"]
+__all__ = ["measure_fixed_depth_output", "run_llama_server_control", "serve", "token_evidence"]

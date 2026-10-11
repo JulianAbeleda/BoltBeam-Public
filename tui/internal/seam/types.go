@@ -645,6 +645,8 @@ type Loss struct {
 	WhereTokenGoes *Where `json:"where_token_goes"`
 	// Per is "per prefill" on a prefill run (workflow/prefill.py); nil on decode, whose times are per token.
 	Per *string `json:"per"`
+	// Session is a session run's table, one row per depth (workflow/session.py); nil on other runs.
+	Session *Session `json:"session"`
 	// PrefillAudit is the where table at the longest captured prefill as an audit (workflow/prefill_audit.py);
 	// nil on decode. Its words are printed as they are.
 	PrefillAudit *Audit `json:"prefill_audit"`
@@ -670,6 +672,23 @@ type AuditSource struct {
 type AuditEntry struct {
 	Name   string      `json:"name"`
 	Fields [][2]string `json:"fields"`
+}
+
+// Session is the session table as cells: the renderers print them and format no number of their own. Warm,
+// MaxContext and Compaction are its lines below the table, empty when the run has none.
+type Session struct {
+	Title      string       `json:"title"`
+	Words      string       `json:"words"`
+	Columns    []string     `json:"columns"`
+	Rows       []SessionRow `json:"rows"`
+	Warm       string       `json:"warm"`
+	MaxContext string       `json:"max_context"`
+	Compaction string       `json:"compaction"`
+}
+
+// SessionRow is one depth: its cells in Columns' order.
+type SessionRow struct {
+	Cells []string `json:"cells"`
 }
 
 // Where is "Where the token goes": rows worst first, summing to TokenMs (now) and LimitMs (at the limit).

@@ -65,6 +65,7 @@ class EvidenceConfidence(str, Enum):
 class Workload(str, Enum):
   DECODE = "decode"
   PREFILL = "prefill"
+  SESSION = "session"  # a chat session at depth: the turn, decode, the KV cache, compaction (collectors/session.py)
 
 
 class Architecture(str, Enum):

@@ -26,11 +26,14 @@ def _profile(args) -> tuple:
   return profile_from_model(args.model, args.id), get_target(args.target)
 
 
+CAP = 0  # a context of 0 ("cap" in --ctxs): a session derives its depths up to the binding cap (collectors/session.py)
+
+
 def _parse_ctxs(raw:str) -> tuple[int, ...]:
   try:
-    out = tuple(int(x.strip()) for x in raw.split(",") if x.strip())
+    out = tuple(CAP if x.strip() == "cap" else int(x.strip()) for x in raw.split(",") if x.strip())
   except ValueError as exc:
-    raise SystemExit(f"invalid --ctxs {raw!r}; expected comma-separated integers") from exc
+    raise SystemExit(f"invalid --ctxs {raw!r}; expected comma-separated integers or cap") from exc
   if not out: raise SystemExit("--ctxs must contain at least one context")
   return out
 

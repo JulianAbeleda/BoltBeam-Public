@@ -60,25 +60,28 @@ def _bench(run:pathlib.Path) -> str:
   return bench
 
 
-def llama_argv(bench:str, model:str, length:int, reps:int, *, warmup:bool = True) -> list[str]:
-  """One prompt of `length` tokens, no generation, the engine's own ubatch and batch (its defaults, recorded back)."""
-  return [bench, "-m", str(pathlib.Path(model).absolute()), "-p", str(length), "-n", "0", "-ngl", "99", "-r", str(reps),
-          "-o", "json", *([] if warmup else ["--no-warmup"])]
+def llama_argv(bench:str, model:str, length:int, reps:int, *, warmup:bool = True, depth:int = 0, gen:int = 0) -> list[str]:
+  """One prompt of `length` tokens, no generation, the engine's own ubatch and batch (its defaults, recorded back).
+  depth: the prompt goes after that many tokens already in the cache (llama-bench -d, which fills them untimed);
+  gen: also that many generated tokens at the depth, its own row."""
+  return [bench, "-m", str(pathlib.Path(model).absolute()), "-p", str(length), "-n", str(gen), "-ngl", "99", "-r", str(reps),
+          *(["-d", str(depth)] if depth else []), "-o", "json", *([] if warmup else ["--no-warmup"])]
 
 
-def llama_row(text:str) -> dict[str, Any]:
-  """llama-bench's JSON row for the prompt, from its output (a capture's log has the tool's own lines after it)."""
+def llama_row(text:str, field:str = "n_prompt") -> dict[str, Any]:
+  """llama-bench's JSON row for the prompt (or, with field n_gen, for the generation), from its output (a capture's
+  log has the tool's own lines after it)."""
   start = text.find("[")
   while start >= 0:
     try:
       rows = json.JSONDecoder().raw_decode(text[start:])[0]
-      row = next((r for r in rows if isinstance(r, dict) and int(r.get("n_prompt", 0)) > 0), None)
+      row = next((r for r in rows if isinstance(r, dict) and int(r.get(field, 0)) > 0), None)
       if row:
         return row
     except (ValueError, TypeError):
       pass
     start = text.find("[", start + 1)
-  raise RuntimeError("llama-bench printed no prompt row")
+  raise RuntimeError(f"llama-bench printed no row with {field}")
 
 
 def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> dict[str, Any]:
@@ -129,15 +132,18 @@ PROMPT_WORDS = {"llama.cpp": "llama-bench's own prompt: token ids drawn by std::
 MAX_CAPTURE_LAUNCHES = 1_000_000  # a capture estimated to hold more launches than this is not taken: its time stands alone
 
 
-def llama_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, Any]:
+def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0) -> dict[str, Any]:
+  """One prefill captured after the warm-up; at a depth, the depth filled then the prompt twice (llama-bench keeps
+  the filled cache for its second repetition), the last one measured (prefill_attribution.REPEAT)."""
   from boltbeam.collectors import vendor_capture
+  from boltbeam.collectors.prefill_attribution import REPEAT
   bench = _bench(run)
-  raw = run / RAW / str(length)
-  launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, 1), raw)
+  raw = run / RAW / (f"{length}-at-{depth}" if depth else str(length))
+  launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, 2 if depth else 1, depth=depth), raw)
   row = llama_row(vendor_capture.program_output(raw))
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
-  return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1, "warmup": True,
-          "formats": llama_formats(row.get("type_k")),
+  return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1,
+          "warmup": REPEAT if depth else True, "formats": llama_formats(row.get("type_k")),
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(pathlib.Path(bench).resolve().parent), "captured_ms": float(row["avg_ns"]) / 1e6}
 
@@ -187,18 +193,24 @@ def _fork_run(root, python, target, model, length, mode, out:pathlib.Path | None
 
 
 def _fork_once(root, python, target, model, length, mode, out, *, eager:bool) -> dict[str, Any]:
-  from boltbeam.collectors.tinygrad_role_time import DecodeFailed, device_for
-  argv = [str(python), str(DRIVER), "--model", model, "--length", str(length), "--mode", mode]
+  argv = ["--model", model, "--length", str(length), "--mode", mode]
   if out is not None:
     argv += ["--out", str(out)]
   if eager:
     argv += ["--eager", "--samples", str(EAGER_SAMPLES)]
+  return fork_exec(root, python, target, DRIVER, argv, mode, "prefill")
+
+
+def fork_exec(root, python, target, driver:pathlib.Path, argv:list[str], mode:str, what:str) -> dict[str, Any]:
+  """A fork driver run by the fork's python in the fork's folder: untraced (truth) or with every launch timed
+  (capture); its last JSON line."""
+  from boltbeam.collectors.tinygrad_role_time import DecodeFailed, device_for
   env = {**os.environ, "PYTHONPATH": ".", "DEV": device_for(target), "VIZ": "0",
          **({"JIT": "1", "PROFILE": "0"} if mode == "truth" else {"JIT": "2", "PROFILE": "1"})}
-  proc = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=7200, env=env)
+  proc = subprocess.run([str(python), str(driver), *argv], cwd=root, capture_output=True, text=True, timeout=7200, env=env)
   lines = [x for x in proc.stdout.splitlines() if x.startswith("{")]
   if proc.returncode != 0 or not lines:
-    raise DecodeFailed(f"tinygrad prefill ({mode}) failed", proc.stderr or proc.stdout, root)
+    raise DecodeFailed(f"tinygrad {what} ({mode}) failed", proc.stderr or proc.stdout, root)
   return json.loads(lines[-1])
 
 
@@ -223,11 +235,16 @@ def tinygrad_truth(run:pathlib.Path, model:str, length:int, *, target, root=None
 
 
 def tinygrad_capture(run:pathlib.Path, model:str, length:int, target, *, root=None) -> dict[str, Any]:
-  from boltbeam.collectors.instruction_path import paths_in_text, template
   root, python = _fork(root)
   raw = run / RAW / str(length)
   raw.mkdir(parents=True, exist_ok=True)
   got = _fork_run(root, python, target, model, length, "capture", raw / "launches.json")
+  return fork_capture(raw, got)
+
+
+def fork_capture(raw:pathlib.Path, got:dict[str, Any]) -> dict[str, Any]:
+  """A fork driver's capture (launches.json in raw, its JSON line got) as the attribution reads it."""
+  from boltbeam.collectors.instruction_path import paths_in_text, template
   (raw / "driver.json").write_text(json.dumps(got))
   data = json.loads((raw / "launches.json").read_text())
   # a source with no kernel body in it (a precompiled binary's stub) does not say the program's path: left out, so
@@ -326,8 +343,11 @@ def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> li
   return out
 
 
-def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None) -> dict[str, Any]:
-  """One captured prefill per prompt length, attributed: prefill_trace.json."""
+def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None, depth:int = 0,
+              lengths:list[int] | None = None, truth_ms:dict[int, float] | None = None,
+              capture:Callable[..., dict[str, Any]] | None = None, trace:str = TRACE) -> dict[str, Any]:
+  """One captured prefill per prompt length, attributed: prefill_trace.json. A session's turn is the same at a depth:
+  its lengths, its untraced turn times, its own capture and trace file (collectors/session.py)."""
   from boltbeam.collectors.prefill_attribution import attribute_prefill
   from boltbeam.target.targets import get_target
   from boltbeam.workflow.common import load_manifest, read_json
@@ -341,14 +361,15 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   # the engine's own timing slows its run (one command buffer per kernel): its idle is profiling, not the engine's,
   # so its gaps are the untraced prefill less the busy time, as the decode tie-out treats its own timing
   truth_rows = [r for r in read_json(run / "timing_trace.json").get("rows") or [] if r.get("prefill_ms")]
-  truth_ms = {int(r["context"]): r["prefill_ms"] for r in truth_rows}
+  if truth_ms is None:
+    truth_ms = {int(r["context"]): r["prefill_ms"] for r in truth_rows}
   truth_chunk = {int(r["context"]): r.get("chunk") or {} for r in truth_rows}
   out = {"schema": "boltbeam.prefill_trace.v1", "provider": provider, "model_id": manifest["model_id"],
          "target_id": target.target_id, "bandwidth_gbs": bw, "bandwidth_source": bw_source,
          "peaks": dict(target.matrix_tflops or {}), "peaks_source": ((target.capabilities or {}).get("fact_sources") or {}).get("matrix_tflops"),
-         "lengths": {}}
+         "lengths": {}, **({"depth": depth} if depth else {})}
   per_chunk = None  # launches per engine chunk, from the last capture: the next capture's size is estimated from it
-  for length in read_json(run / "trace_request.json").get("contexts") or []:
+  for length in lengths or read_json(run / "trace_request.json").get("contexts") or []:
     if int(length) not in truth_ms:
       out["lengths"][str(length)] = {"not_captured": "the untraced prefill failed at this length (timing_trace.json)"}
       continue
@@ -358,18 +379,18 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
       out["lengths"][str(length)] = {"not_captured": f"about {2 * per_chunk * chunks:,.0f} launches with the warm-up, over "
                                                      f"{MAX_CAPTURE_LAUNCHES:,}: the untraced time, MFU and clock stand alone"}
       continue
-    say(f"prefill of {length} tokens in the model: {provider}")
+    say(f"prefill of {length} tokens in the model{f' after {depth} in the cache' if depth else ''}: {provider}")
     with gpu_telemetry.Telemetry(0) as tele:
-      cap = _engine(provider)["capture"](run, str(manifest["model_path"]), int(length), target, root)
+      cap = (capture or _engine(provider)["capture"])(run, str(manifest["model_path"]), int(length), target, root)
     attr = attribute_prefill(cap["launches"], [dict(r) for r in roles], chunk_widths=cap["chunk"], outputs=cap["outputs"],
                              layers=int(profile.get("layer_count") or 0), kernel_paths=cap["paths"]["kernels"],
                              peaks=dict(target.matrix_tflops or {}), bandwidth_gbs=bw, profile=profile, length=int(length),
                              program_roles=cap.get("program_roles"), warmup=cap["warmup"],
                              untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
-                             formats=cap.get("formats"), cache=last_level_cache(target))
+                             formats=cap.get("formats"), cache=last_level_cache(target), depth=depth)
     per_chunk = len(cap["launches"]) / 2 / max(len(cap["chunk"]), 1) if cap["warmup"] else len(cap["launches"]) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
                                    "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": tele.summary(),
                                    "paths_how": cap["paths"]["how"], "libraries": cap["paths"]["libraries"], **attr}
-  (run / TRACE).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
+  (run / trace).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
   return out
