@@ -137,7 +137,7 @@ def library_table(library:str | pathlib.Path, *, cache:pathlib.Path | None = Non
 
 def kernel_path(name:str, table:dict[str, dict[str, int]]) -> dict[str, Any]:
   """The path of one captured kernel: {"path", "paths", "status", "words"}. status: one (one matrix path), mixed
-  (several: the slowest is the ceiling's, said), none (no matrix instruction: bytes only), not_found (refused)."""
+  (several: each path's share of the operations at its own peak, prefill_work.compute_ms), none (no matrix instruction: bytes only), not_found (refused)."""
   key = template(name)
   paths = table.get(key)
   if paths is None:

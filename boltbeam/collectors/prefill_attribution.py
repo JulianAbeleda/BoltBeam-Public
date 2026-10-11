@@ -232,13 +232,13 @@ class _TooMany(Exception):
 
 
 def _peak(t:dict[str, Any], peaks:dict[str, float]) -> float | None:
-  """The template's path peak; for a mixed template the slowest of its paths (said on the row)."""
+  """The template's path peak; for a mixed template the peak its paths make together for its instruction mix
+  (prefill_work.effective_peak: each path's share of the operations at its own peak)."""
   p = t["path"]
   if p["status"] == "one":
     return peaks.get(p["path"])
   if p["status"] == "mixed":
-    known = [peaks[x] for x in p["paths"] if x in peaks]
-    return min(known) if known else None
+    return work.effective_peak(p["paths"], peaks)
   return None
 
 
@@ -246,16 +246,22 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                       layers:int, kernel_paths:dict[str, dict[str, int]], peaks:dict[str, float],
                       bandwidth_gbs:float | None, profile:dict[str, Any] | None = None, length:int | None = None,
                       program_roles:dict[str, dict[str, Any]] | None = None, untraced_ms:float | None = None,
-                      warmup:bool = True) -> dict[str, Any]:
+                      warmup:bool = True, formats:dict[str, Any] | None = None,
+                      cache:dict[str, float] | None = None) -> dict[str, Any]:
   """The measured prefill split by role, attention and other kernels, each with operations, bytes, path and ceiling.
   roles: {role, quant, n, k, count (per chunk), weight_bytes (per launch)}. kernel_paths: template -> {path: sites}.
   outputs: the engine calls that each ended in an output (its last token's work, the output head, once per call).
   program_roles: template -> {role, quant, shape [M, N, K]} where the engine names each program's role and logical
   shape itself (the fork's own metadata): those launches are that role at that M, N, K, and the role is not paired
   again. untraced_ms: for an engine's own timing, whose run is slowed by profiling, the prefill the rows sum to: the
-  gaps are it less the busy time, never the profiled run's idle."""
+  gaps are it less the busy time, never the profiled run's idle. formats: the engine adapter's {activations: {in, out},
+  kv, stream_k: template -> layout or None} (prefill.ENGINES); cache: the chip's last-level cache {bytes, gbs}."""
+  formats = formats or {}
+  acts = formats.get("activations")
+  gemm = lambda m, n, k, wb: work.gemm(m, n, k, wb, acts)["bytes"]  # noqa: E731
   window, window_words = measured_window(launches, warmup)
   shared, overlap = share_overlap(window)
+  ordered = sorted(shared, key=lambda l: l["start_us"])  # the launches in stream order: a fixup follows its GEMM
   begin = min(l["start_us"] for l in window)
   end = max(l["start_us"] + l["wall_us"] for l in window)
   chunks, mean_m = len(chunk_widths), sum(chunk_widths) / max(len(chunk_widths), 1)
@@ -276,6 +282,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     t["attention"] = kind_of({"kernel": t["name"]}) == "attention"  # attention's work is its own row, never a role's
   rows: list[dict[str, Any]] = []
   taken: set[int] = set()
+  shapes: dict[int, list[tuple[dict[str, Any], float]]] = {}  # a paired GEMM launch -> its roles, weighted by count
   named: dict[tuple[str, str], dict[str, Any]] = {}
   for ti, t in enumerate(templates):  # the engine's own role and (M, N, K) per program
     info = (program_roles or {}).get(t["template"])
@@ -288,7 +295,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     slot["calls"] += t["calls"]
     slot["us"] += t["wall_us"]
     slot["flops"] += t["calls"] * 2.0 * m * n * k
-    slot["bytes"] += t["calls"] * (wb + work.ACT_BYTES * m * (n + k))
+    slot["bytes"] += t["calls"] * gemm(m, n, k, wb)
     slot["t"].append(t)
     taken.add(ti)
   for (role, quant), slot in named.items():
@@ -307,8 +314,11 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       r, mine = roles[i], [templates[t] for t in ts]
       t = {"template": " + ".join(x["template"] for x in mine), "path": _merge_paths([x["path"] for x in mine])}
       calls = sum(x["calls"] for x in mine)
+      for x in mine:
+        for l in x["launches"]:
+          shapes[id(l)] = [(r, 1.0)]
       rows.append(_row(f"{r['role']} {r['quant']}", "role", t, calls, sum(x["wall_us"] for x in mine),
-                       calls * 2.0 * mean_m * r["n"] * r["k"], calls * (r["weight_bytes"] + work.ACT_BYTES * mean_m * (r["n"] + r["k"])),
+                       calls * 2.0 * mean_m * r["n"] * r["k"], calls * gemm(mean_m, r["n"], r["k"], r["weight_bytes"]),
                        peaks, bandwidth_gbs, roles=[(r["role"], r["quant"])], skipped=r["count"] * chunks - calls,
                        tokens_per_call=mean_m))
       taken.update(ts)
@@ -321,8 +331,10 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       lo = edges[gi - 1] if gi else -1.0
       mine = [l for l in t["launches"] if lo < l["raw_wall_us"] <= edges[gi]]
       calls = len(mine)
+      for l in mine:
+        shapes[id(l)] = [(r, r["count"] / g["count"]) for r in g["roles"]]
       per_call_flops = sum(2.0 * mean_m * r["n"] * r["k"] * r["count"] for r in g["roles"]) / g["count"]
-      per_call_bytes = sum((r["weight_bytes"] + work.ACT_BYTES * mean_m * (r["n"] + r["k"])) * r["count"] for r in g["roles"]) / g["count"]
+      per_call_bytes = sum(gemm(mean_m, r["n"], r["k"], r["weight_bytes"]) * r["count"] for r in g["roles"]) / g["count"]
       rows.append(_row(g["name"], "role", t, calls, sum(l["wall_us"] for l in mine), calls * per_call_flops,
                        calls * per_call_bytes, peaks, bandwidth_gbs, roles=[(r["role"], r["quant"]) for r in g["roles"]],
                        skipped=g["count"] * chunks - calls, tokens_per_call=mean_m))
@@ -344,20 +356,22 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       r = next(x for x in left_roles if (x["role"], x["quant"]) == (p["role"], p["quant"]))
       t = by_t[template(g["key"])]
       gemv_rows.append(_row(f"{r['role']} {r['quant']}", "role", t, g["calls"], g["wall_us"], g["calls"] * 2.0 * r["n"] * r["k"],
-                            g["calls"] * (r["weight_bytes"] + work.ACT_BYTES * (r["n"] + r["k"])), peaks, bandwidth_gbs,
+                            g["calls"] * gemm(1, r["n"], r["k"], r["weight_bytes"]), peaks, bandwidth_gbs,
                             roles=[(r["role"], r["quant"])], tokens_per_call=1, key=g["key"]))
   rows += gemv_rows
   gemv_keys = {r["key"] for r in gemv_rows if r.get("key")}
   others: dict[str, dict[str, Any]] = {}
-  att = work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths) if profile else None
+  att = work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths, formats.get("kv") or "F16",
+                       formats.get("attention_activations") or acts) if profile else None
   for ti, t in enumerate(templates):
     if ti in taken:
       continue
     for l in t["launches"]:
       if l["key"] in gemv_keys:
         continue
-      # attention is one row with its own work; every other kernel is its own row, named by its template's stem
-      kind = "attention" if kind_of({"kernel": t["name"]}) == "attention" else stem(t["template"])
+      # attention's kernels are one row with attention's work, except one with no matrix instruction (its fixup):
+      # that, like every other kernel, is its own row, named by its template's stem
+      kind = "attention" if t.get("attention") and t["path"]["status"] != "none" else stem(t["template"])
       o = others.setdefault(kind, {"calls": 0, "wall_us": 0.0, "templates": {}})
       o["calls"] += 1
       o["wall_us"] += l["wall_us"]
@@ -368,6 +382,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       t = {"path": _merge_paths(list(o["templates"].values())), "template": " + ".join(sorted(o["templates"]))}
       rows.append(_row("attention", "attention", t, o["calls"], o["wall_us"], att["flops"], att["bytes"], peaks, bandwidth_gbs,
                        note=att["words"]))
+    elif (fix := _fixup_row(kind, o, ordered, shapes, formats, mean_m, bandwidth_gbs, cache)) is not None:
+      rows.append(fix)
     else:
       matrix = any(p.get("status") in ("one", "mixed") for p in o["templates"].values())
       rows.append({"name": kind, "what": "kernels", "calls": o["calls"], "ms": o["wall_us"] / 1000.0, "flops": None,
@@ -418,10 +434,69 @@ def _row(name:str, what:str, t:dict[str, Any], calls:int, wall_us:float, flops:f
     c = {"ms": None, "compute_ms": None, "memory_ms": None, "bound": None}
     refused = f"no ceiling: {path['words'] if path['status'] == 'not_found' else 'no measured peak for ' + path['words']}"
   else:
-    c = work.ceiling(flops if peak else 0.0, nbytes, peak, bandwidth_gbs)
+    c = work.ceiling(flops if peak else 0.0, nbytes, peak, bandwidth_gbs,
+                     work.compute_ms(flops, path["paths"], peaks) if path["status"] == "mixed" else None)
     refused = None
   return {"name": name, "what": what, "calls": calls, "ms": ms, "flops": flops, "bytes": nbytes, "template": t["template"],
           "path": path["words"], "path_status": path["status"], "peak_tflops": peak,
           "ceiling_ms": c["ms"], "compute_ms": c["compute_ms"], "memory_ms": c["memory_ms"], "bound": c["bound"],
           "mfu_pct": work.mfu(flops, ms, peak) if path["status"] in ("one", "mixed") else None,
-          "refused": refused, "mixed": path["status"] == "mixed", **extra}
+          "refused": refused, "mixed": path["status"] == "mixed",
+          **({"path_shares": work.path_shares(path["paths"])} if path["status"] == "mixed" else {}), **extra}
+
+
+FIXUP_WORD = "stream_k_fixup"  # a kernel that combines the partial tiles a stream-k GEMM left (kind word, in its name)
+
+
+def _fixup_row(kind:str, o:dict[str, Any], window:list[dict[str, Any]], shapes:dict[int, list[tuple[dict[str, Any], float]]],
+               formats:dict[str, Any], mean_m:float, bandwidth_gbs:float | None,
+               cache:dict[str, float] | None) -> dict[str, Any] | None:
+  """A stream-k fixup's row with its bytes ceiling: each launch follows its GEMM launch on the stream; that GEMM's
+  roles (N, K, weight block) and launch grid give the partial tiles it left (prefill_work.stream_k_partials), read
+  once, and the tiles fixed, read and written, in the engine's partial format. Partials that fit the last-level cache,
+  written by the GEMM just before, are read at its bandwidth; else at the memory's. None when this is not a fixup,
+  or the adapter names no stream-k layout for it (its row then says so)."""
+  if FIXUP_WORD not in kind:
+    return None
+  layout_of = formats.get("stream_k")
+  tmpls = sorted(o["templates"])
+  base = {"name": kind, "what": "kernels", "calls": o["calls"], "ms": o["wall_us"] / 1000.0, "flops": None, "path": "no matrix instruction",
+          "templates": tmpls, "mfu_pct": None, "compute_ms": None, "bound": "memory"}
+  layouts = {t: layout_of(t) if layout_of else None for t in tmpls}
+  if not all(layouts.values()):
+    return {**base, "bytes": None, "ceiling_ms": None,
+            "refused": f"no ceiling: the engine adapter names no stream-k layout for {', '.join(t for t, v in layouts.items() if not v)}"}
+  from boltbeam.quantization.quant import load_quant_registry
+  quants = load_quant_registry()
+  per_elem = work.elem_bytes(formats.get("partials") or "F32")
+  nbytes, cached, unshaped, launches = 0.0, 0.0, 0, 0
+  for i, l in enumerate(window):
+    t = template(l["key"])
+    if t not in layouts:
+      continue
+    launches += 1
+    prev = window[i - 1] if i else None
+    roles = shapes.get(id(prev)) if prev is not None else None
+    if not roles:
+      unshaped += 1
+      continue
+    lay = layouts[t]
+    blocks = int(str(prev["key"]).split(" grid=", 1)[1].split()[0].split("x")[0]) if " grid=" in str(prev["key"]) else 0
+    for r, wt in roles:
+      q = quants.get(str(r["quant"]).upper())
+      kb = q.block_elems if q else 1
+      got = work.stream_k_partials(int(round(mean_m)), r["n"], r["k"], blocks=blocks, tile_m=lay["tile_m"], tile_n=lay["tile_n"],
+                                   k_block=kb, k_iter=max(lay["k_iter"] // kb, 1))
+      tile = lay["tile_m"] * lay["tile_n"] * per_elem
+      b = (got["partials"] + 2 * got["tiles"]) * tile * wt
+      nbytes += b
+      if cache and blocks * tile <= cache.get("bytes", 0):
+        cached += b
+  bw_c, bw = (cache or {}).get("gbs"), bandwidth_gbs
+  ms = (cached / (bw_c * 1e9) if bw_c else 0.0) * 1e3 + ((nbytes - cached) / (bw * 1e9) * 1e3 if bw else 0.0)
+  return {**base, "bytes": nbytes, "ceiling_ms": ms if unshaped == 0 else None, "memory_ms": ms,
+          "cached_bytes": cached,
+          "note": (f"{launches} launches, each after its GEMM: partial tiles read once and tiles fixed read and written "
+                   f"({formats.get('partials') or 'F32'}); {cached / max(nbytes, 1) * 100:.0f}% of the bytes fit the "
+                   "last-level cache, read at its bandwidth"),
+          "refused": None if unshaped == 0 else f"no ceiling: {unshaped} of its launches follow a GEMM no role was paired with"}

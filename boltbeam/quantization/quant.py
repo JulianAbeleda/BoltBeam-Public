@@ -57,12 +57,14 @@ def _from_row(d:dict[str, Any]) -> QuantCapability:
                          packed_word_bits=d.get("packed_word_bits"))
 
 
-def load_quant_registry(path:str | pathlib.Path | None = None) -> dict[str, QuantCapability]:
+def load_quant_registry(path:str | pathlib.Path | None = None, *, activations:bool = False) -> dict[str, QuantCapability]:
+  """The weight quants; with activations, also the formats an engine only reads and writes activations in (a row
+  marked "activation_only": q8_1, fp32), which no weight route or limit may take."""
   p = pathlib.Path(path) if path else _DEFAULT_PATH
   data = json.loads(p.read_text())
   if data.get("schema") != SCHEMA_QUANT_REGISTRY:
     raise ValueError(f"{p} is not a {SCHEMA_QUANT_REGISTRY} registry")
-  caps = {row["name"]: _from_row(row) for row in data["quants"]}
+  caps = {row["name"]: _from_row(row) for row in data["quants"] if activations or not row.get("activation_only")}
   return caps
 
 

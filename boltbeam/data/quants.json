@@ -41,6 +41,14 @@
       "name": "BF16", "ggml_type": 30, "block_elems": 1, "block_bytes": 2, "packed_word_bits": 16,
       "dequant_family": "float_passthrough", "route_families": ["matmul_or_attention"],
       "refuted_routes": [], "pending_routes": []
+    },
+    {
+      "name": "Q8_1", "activation_only": true, "ggml_type": 9, "block_elems": 32, "block_bytes": 36, "packed_word_bits": 8,
+      "dequant_family": "legacy_scale", "route_families": [], "refuted_routes": [], "pending_routes": []
+    },
+    {
+      "name": "F32", "activation_only": true, "ggml_type": 0, "block_elems": 1, "block_bytes": 4, "packed_word_bits": 32,
+      "dequant_family": "float_passthrough", "route_families": [], "refuted_routes": [], "pending_routes": []
     }
   ]
 }

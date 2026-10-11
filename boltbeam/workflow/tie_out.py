@@ -546,7 +546,7 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
                  f"untraced prefill is {base:.1f} ms.")
   mixed = [r["name"] for r in rows if " + " in str(r.get("path") or "") and r.get("limit_ms") is not None]
   if mixed:
-    words.append(f"{', '.join(mixed)}: instructions on more than one path; the ceiling uses the slowest of them.")
+    words.append(f"{', '.join(mixed)}: instructions on more than one path; its operations are split over them by its instruction sites, each part at its own path's peak.")
   return table(PREFILL_TITLE, PREFILL_COLUMNS, rows, now=wall, limit=limit, lost=total, no_limit=NO_CEILING,
                if_fixed=("ms_if_fixed", "{:.1f}"), peak=("mfu_pct", "{:.1f}%"), sum_name="= prefill", estimate=False,
                token_ms=wall, base_ms=base, limit_ms=limit, words=" ".join(words), workload="prefill", length=length,

@@ -100,6 +100,26 @@ def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> d
                      "type_k": row.get("type_k"), "command": cmd}}
 
 
+LLAMA_TILE_ROWS = 128  # mmq_y: the weight rows of one mul_mat_q output tile on a CUDA matrix-instruction build
+LLAMA_K_ITER = 256  # MMQ_ITER_K: the K elements one stream-k step covers
+
+
+def llama_stream_k(tmpl:str) -> dict[str, int] | None:
+  """llama.cpp's stream-k layout for a mul_mat_q fixup template: its second template argument is the tile's token
+  columns (mmq_x); None for any other fixup (flash attention's has its own layout, not modelled)."""
+  import re
+  m = re.match(r"mul_mat_q_stream_k_fixup<[^,]+,(\d+),", tmpl.replace(" ", ""))
+  return {"tile_m": int(m.group(1)), "tile_n": LLAMA_TILE_ROWS, "k_iter": LLAMA_K_ITER} if m else None
+
+
+def llama_formats(type_k:str | None) -> dict[str, Any]:
+  """What llama.cpp's prefill kernels read and write: mul_mat_q reads activations quantized to q8_1 and writes fp32,
+  flash attention reads fp32 Q and the cache in its type_k and writes fp32, stream-k partials are fp32."""
+  return {"activations": {"in": "Q8_1", "out": "F32"}, "attention_activations": {"in": "F32", "out": "F32"},
+          "kv": str(type_k or "f16").upper(), "partials": "F32", "stream_k": llama_stream_k,
+          "words": "mul_mat_q: q8_1 in, fp32 out; flash attention: fp32 Q and output, the cache in type_k; fp32 partials"}
+
+
 def llama_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, Any]:
   from boltbeam.collectors import vendor_capture
   bench = _bench(run)
@@ -108,6 +128,7 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, 
   row = llama_row(vendor_capture.program_output(raw))
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1, "warmup": True,
+          "formats": llama_formats(row.get("type_k")),
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(pathlib.Path(bench).resolve().parent), "captured_ms": float(row["avg_ns"]) / 1e6}
 
@@ -264,6 +285,15 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   return out
 
 
+def last_level_cache(target) -> dict[str, float] | None:
+  """The chip's last-level cache: its size and measured read bandwidth, from the target's facts; None if either is
+  not recorded."""
+  facts = (target.capabilities or {}).get("fact_sources") or {}
+  size = next((v.get("l2_cache_bytes") for v in facts.values() if isinstance(v, dict) and v.get("l2_cache_bytes")), None)
+  gbs = (facts.get("l2_bandwidth_gbs") or {}).get("value_gbs")
+  return {"bytes": float(size), "gbs": float(gbs)} if size and gbs else None
+
+
 def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> list[dict[str, Any]]:
   """The profile's weight roles with their shape, launches per chunk and weight bytes per launch (the limit's own
   bytes over the role's count, so a role's bytes are the decode table's)."""
@@ -306,8 +336,10 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              layers=int(profile.get("layer_count") or 0), kernel_paths=cap["paths"]["kernels"],
                              peaks=dict(target.matrix_tflops or {}), bandwidth_gbs=bw, profile=profile, length=int(length),
                              program_roles=cap.get("program_roles"), warmup=cap["warmup"],
-                             untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None))
-    out["lengths"][str(length)] = {"method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": tele.summary(),
+                             untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
+                             formats=cap.get("formats"), cache=last_level_cache(target))
+    out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
+                                   "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": tele.summary(),
                                    "paths_how": cap["paths"]["how"], "libraries": cap["paths"]["libraries"], **attr}
   (run / TRACE).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
   return out

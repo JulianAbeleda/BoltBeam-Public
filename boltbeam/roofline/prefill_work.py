@@ -11,22 +11,39 @@ output head over one token is a GEMV of 2 x N x K.
 
 A kernel's ceiling is max(operations / the measured peak of the path its instructions use, bytes / the measured
 bandwidth): the roofline taken per kernel, with the path's own peak (collectors/cuda_compute.py) instead of one
-number for the chip. MFU is operations over (time x that peak).
+number for the chip. A kernel whose instructions are on several paths (flash attention: fp16 with fp32 and with fp16
+accumulate) has its operations split over its paths by its instruction sites, each part at its own path's peak
+(`compute_ms`). MFU is operations over (time x the peak those parts make together).
+
+Bytes come from the formats the engine reads and writes (the engine adapter names them, data/quants.json sizes
+them): a GEMM reads its weight once, M x K activations in the engine's activation-in format and writes M x N in its
+activation-out format. A stream-k fixup (`stream_k_fixup`) moves the partial tiles its GEMM left (stream_k_partials).
 """
 from __future__ import annotations
 
 from typing import Any
 
-ACT_BYTES = 2  # an activation element in and out of a GEMM, fp16: the bytes side of a GEMM ceiling at prefill sizes
+from boltbeam.quantization.quant import load_quant_registry
+
+DEFAULT_ACTIVATIONS = {"in": "F16", "out": "F16"}  # an engine adapter that names no formats: fp16 in and out, said
 
 
-def gemm(m:float, n:int, k:int, weight_bytes:float) -> dict[str, float]:
-  """One launch: operations and bytes (the weight once, activations in and out at ACT_BYTES)."""
-  return {"flops": 2.0 * m * n * k, "bytes": float(weight_bytes) + ACT_BYTES * m * (n + k)}
+def elem_bytes(fmt:str) -> float:
+  """Bytes per element of a format in data/quants.json (Q8_1 1.125, F32 4, F16 2); an absent format is refused."""
+  q = load_quant_registry(activations=True).get(str(fmt).upper())
+  if q is None:
+    raise KeyError(f"format {fmt} is not in data/quants.json: its bytes per element are not known")
+  return q.bytes_per_elem
 
 
-def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None,
-              kv_element_bytes:int = 2) -> dict[str, Any] | None:
+def gemm(m:float, n:int, k:int, weight_bytes:float, activations:dict[str, str] | None = None) -> dict[str, float]:
+  """One launch: operations and bytes (the weight once, M x K in and M x N out in the engine's formats)."""
+  a = activations or DEFAULT_ACTIVATIONS
+  return {"flops": 2.0 * m * n * k, "bytes": float(weight_bytes) + m * k * elem_bytes(a["in"]) + m * n * elem_bytes(a["out"])}
+
+
+def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None, kv_format:str = "F16",
+              activations:dict[str, str] | None = None) -> dict[str, Any] | None:
   """The prompt's attention work over all layers: operations for the causal pairs, and bytes as each chunk reads
   the K and V written so far plus its own Q and output. None when the profile does not say the attention shape."""
   att = (profile.get("metadata") or {}).get("attention") or {}
@@ -36,18 +53,73 @@ def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None
     return None
   pairs = length * (length + 1) / 2.0
   flops = 4.0 * dim * heads * pairs * attention_layers
+  a, kv = activations or DEFAULT_ACTIVATIONS, elem_bytes(kv_format)
   done, read = 0, 0.0
   for w in chunks or [length]:
     done += w
-    read += done * 2 * kv_heads * dim * kv_element_bytes + 2 * w * heads * dim * ACT_BYTES
+    read += done * 2 * kv_heads * dim * kv + w * heads * dim * (elem_bytes(a["in"]) + elem_bytes(a["out"]))
   return {"flops": flops, "bytes": read * attention_layers, "pairs_per_head": pairs, "layers": attention_layers,
           "words": f"causal: {length} x {length + 1} / 2 query-key pairs per head, 4 x {dim} operations each, "
                    f"{heads} heads, {attention_layers} layers"}
 
 
-def ceiling(flops:float, nbytes:float, peak_tflops:float | None, bandwidth_gbs:float | None) -> dict[str, Any]:
-  """ms at the ceiling and which side binds; compute_ms None when no peak is known for the kernel's path."""
-  compute = flops / (peak_tflops * 1e12) * 1e3 if peak_tflops and flops else None
+def path_shares(paths:dict[str, int]) -> dict[str, float]:
+  """A kernel's operations over its matrix paths, by its instruction sites on each (one path: all of them)."""
+  total = sum(paths.values())
+  return {p: n / total for p, n in paths.items()} if total else {}
+
+
+def compute_ms(flops:float, paths:dict[str, int], peaks:dict[str, float]) -> float | None:
+  """Each path's share of the operations at that path's own peak, summed; None if a path has no measured peak."""
+  shares = path_shares(paths)
+  if not shares or not flops or any(p not in peaks for p in shares):
+    return None
+  return sum(flops * f / (peaks[p] * 1e12) for p, f in shares.items()) * 1e3
+
+
+def effective_peak(paths:dict[str, int], peaks:dict[str, float]) -> float | None:
+  """The peak the paths make together for this kernel's mix: operations over compute_ms."""
+  ms = compute_ms(1e12, paths, peaks)
+  return 1e12 / (ms * 1e-3) / 1e12 if ms else None
+
+
+def stream_k_partials(m:int, n:int, k:int, *, blocks:int, tile_m:int, tile_n:int, k_block:int, k_iter:int) -> dict[str, int]:
+  """What a stream-k GEMM leaves its fixup: `blocks` blocks share tiles x k-blocks of work in equal contiguous spans
+  (rounded down to k_iter); a block that starts inside a tile and ends past it combines the partial tiles of the blocks
+  before it in that tile. Returns {partials read, tiles fixed}. A grid of one block per tile leaves nothing."""
+  per = max(k // k_block, 1)
+  tiles = -(-m // tile_m) * -(-n // tile_n)
+  work = tiles * per
+  if blocks <= 0 or tiles % blocks == 0:
+    return {"partials": 0, "tiles": 0}
+  def start(b:int) -> int:
+    x = b * work // blocks
+    return x - (x % per) % k_iter
+  reads = fixed = 0
+  for b in range(blocks):
+    k0, k1 = start(b), start(b + 1)
+    if k0 == k1 or k0 % per == 0 or (k0 // per == k1 // per and k1 % per):
+      continue
+    bi, stop, any_ = b - 1, k0, False
+    while bi >= 0:
+      kb = start(bi)
+      if kb == stop:
+        bi, stop = bi - 1, kb
+        continue
+      any_, reads = True, reads + 1
+      if kb % per == 0 or kb // per < k0 // per:
+        break
+      bi, stop = bi - 1, kb
+    fixed += any_
+  return {"partials": reads, "tiles": fixed}
+
+
+def ceiling(flops:float, nbytes:float, peak_tflops:float | None, bandwidth_gbs:float | None,
+            compute:float | None = None) -> dict[str, Any]:
+  """ms at the ceiling and which side binds; compute_ms None when no peak is known for the kernel's path. A kernel
+  on several paths passes its own compute ms (compute_ms)."""
+  if compute is None:
+    compute = flops / (peak_tflops * 1e12) * 1e3 if peak_tflops and flops else None
   memory = nbytes / (bandwidth_gbs * 1e9) * 1e3 if bandwidth_gbs and nbytes else None
   if compute is None and memory is None:
     return {"ms": None, "compute_ms": None, "memory_ms": None, "bound": None}
