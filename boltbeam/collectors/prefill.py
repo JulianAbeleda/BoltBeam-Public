@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 import statistics
 import subprocess
 import time
@@ -119,12 +120,19 @@ def llama_stream_k(tmpl:str) -> dict[str, int] | None:
   return {"tile_m": int(m.group(1)), "tile_n": LLAMA_TILE_ROWS, "k_iter": LLAMA_K_ITER} if m else None
 
 
-def llama_formats(type_k:str | None) -> dict[str, Any]:
-  """What llama.cpp's prefill kernels read and write: mul_mat_q reads activations quantized to q8_1 and writes fp32,
-  flash attention reads fp32 Q and the cache in its type_k and writes fp32, stream-k partials are fp32."""
-  return {"activations": {"in": "Q8_1", "out": "F32"}, "attention_activations": {"in": "F32", "out": "F32"},
+def llama_formats(type_k:str | None, weights:set[str] | None = None) -> dict[str, Any]:
+  """What llama.cpp's prefill kernels read and write: for block-quantized weights mul_mat_q reads activations
+  quantized to q8_1 and writes fp32; for float weights (all of one float type) cuBLAS reads activations converted to
+  the weight's type and writes fp32 (ggml_cuda_mul_mat_cublas, f32 output on NVIDIA). Flash attention reads fp32 Q
+  and the cache in its type_k and writes fp32, stream-k partials are fp32."""
+  from boltbeam.quantization.quant import load_quant_registry
+  reg = load_quant_registry()
+  floats = {w for w in weights or () if w in reg and reg[w].dequant_family == "float_passthrough"}
+  act = next(iter(floats)) if len(floats) == 1 and floats == set(weights or ()) else None
+  return {"activations": {"in": act or "Q8_1", "out": "F32"}, "attention_activations": {"in": "F32", "out": "F32"},
           "kv": str(type_k or "f16").upper(), "partials": "F32", "stream_k": llama_stream_k,
-          "words": "mul_mat_q: q8_1 in, fp32 out; flash attention: fp32 Q and output, the cache in type_k; fp32 partials"}
+          "words": (f"cuBLAS: {act.lower()} in, fp32 out" if act else "mul_mat_q: q8_1 in, fp32 out")
+                   + "; flash attention: fp32 Q and output, the cache in type_k; fp32 partials"}
 
 
 PROMPT_WORDS = {"llama.cpp": "llama-bench's own prompt: token ids drawn by std::rand() % n_vocab (never seeded: one fixed "
@@ -144,28 +152,79 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   row = llama_row(vendor_capture.program_output(raw))
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1,
-          "warmup": REPEAT if depth else True, "formats": llama_formats(row.get("type_k")),
+          "warmup": REPEAT if depth else True, "formats": llama_formats(row.get("type_k"), weight_quants(run)),
           "method": vendor_capture.plan(target.backend)["method"],
-          "paths": library_paths(pathlib.Path(bench).resolve().parent), "captured_ms": float(row["avg_ns"]) / 1e6}
+          "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches),
+          "captured_ms": float(row["avg_ns"]) / 1e6}
 
 
-def library_paths(folder:pathlib.Path) -> dict[str, Any]:
-  """The matrix paths of every kernel in the engine's own libraries: each shared library beside its binary that
-  holds device code (a library without any is skipped)."""
-  from boltbeam.collectors.instruction_path import library_table
+def weight_quants(run:pathlib.Path) -> set[str]:
+  p = run / "model_profile.json"
+  return {str(r.get("quant")).upper() for r in (json.loads(p.read_text()).get("roles") or [])} if p.exists() else set()
+
+
+def library_paths(libraries:list[pathlib.Path], launches:list[dict[str, Any]] | None = None, *,
+                  tools:pathlib.Path | None = None) -> dict[str, Any]:
+  """The matrix paths of the kernels in the libraries the engine loads (a library without device code is skipped):
+  their embedded PTX, then, for captured kernels no PTX holds (a library that ships machine code only), their machine
+  code for this GPU (instruction_path.sass_table). tools: a folder with the engine's own cuobjdump/nvdisasm."""
+  from boltbeam.collectors.instruction_path import library_table, sass_signatures, sass_table, template
   kernels: dict[str, dict[str, int]] = {}
-  read = []
-  for lib in sorted(folder.glob("*.so*")):
-    if lib.is_symlink():
+  read, seen = [], set()
+  find = lambda name: str(tools / name) if tools and (tools / name).is_file() else shutil.which(name)  # noqa: E731
+  for lib in libraries:
+    lib = pathlib.Path(lib).resolve()
+    if lib in seen or not lib.is_file():
       continue
+    seen.add(lib)
     try:
       table = library_table(lib)
     except (RuntimeError, OSError):
       continue
     if table["kernels"]:
       kernels.update(table["kernels"])
-      read.append({"library": str(lib), "sha256": table["sha256"], "kernels": len(table["kernels"])})
-  return {"kernels": kernels, "libraries": read, "how": "PTX embedded in the engine's libraries (cuobjdump --dump-ptx)"}
+      read.append({"library": str(lib), "sha256": table["sha256"], "kernels": len(table["kernels"]), "code": "ptx"})
+  wanted = {template(l["key"]) for l in launches or []} - set(kernels)
+  arch = gpu_arch()
+  if wanted and arch and find("nvdisasm"):
+    sigs = sass_signatures(arch, nvdisasm=find("nvdisasm"))
+    for lib in sorted(seen):
+      if not wanted:
+        break
+      try:
+        table = sass_table(lib, wanted, arch, sigs, cuobjdump=find("cuobjdump"), nvdisasm=find("nvdisasm"))
+      except (RuntimeError, OSError):
+        continue
+      if table["kernels"]:
+        kernels.update(table["kernels"])
+        wanted -= set(table["kernels"])
+        read.append({"library": str(lib), "sha256": table["sha256"], "kernels": len(table["kernels"]), "code": table["how"]})
+  return {"kernels": kernels, "libraries": read,
+          "how": "the engine's loaded libraries: embedded PTX (cuobjdump --dump-ptx), else machine code (nvdisasm) "
+                 "with each matrix opcode mapped to the path whose probe compiles to it"}
+
+
+def gpu_arch(device:int = 0) -> str | None:
+  """This GPU's machine-code architecture, sm_XY, from nvidia-smi's compute capability; None without it."""
+  try:
+    proc = subprocess.run(["nvidia-smi", "-i", str(device), "--query-gpu=compute_cap", "--format=csv,noheader"],
+                          capture_output=True, text=True, timeout=30)
+  except (OSError, subprocess.SubprocessError):
+    return None
+  cap = proc.stdout.strip()
+  return f"sm_{cap.replace('.', '')}" if proc.returncode == 0 and cap.replace(".", "").isdigit() else None
+
+
+def linked_libraries(binary:pathlib.Path) -> list[pathlib.Path]:
+  """The shared libraries beside a binary, then those it links (ldd): where an engine binary's kernels live."""
+  out = [p for p in sorted(binary.parent.glob("*.so*")) if not p.is_symlink()]
+  try:
+    proc = subprocess.run(["ldd", str(binary)], capture_output=True, text=True, timeout=60)
+    out += [pathlib.Path(l.split("=>", 1)[1].split("(")[0].strip()) for l in proc.stdout.splitlines()
+            if "=>" in l and "/" in l.split("=>", 1)[1]]
+  except (OSError, subprocess.SubprocessError):
+    pass
+  return out
 
 
 # --- the tinygrad fork -------------------------------------------------------------------------------------------
@@ -265,11 +324,115 @@ def is_kernel_code(src:str) -> bool:
   return "__global__" in src or ".entry" in src
 
 
+# --- vLLM ----------------------------------------------------------------------------------------------------------
+
+VLLM_WARM = 2  # warm calls before the timed or captured one (the first call after load runs slower)
+
+
+def _vllm(model:str, length:int, *extra:str) -> tuple[list[str], dict[str, str]]:
+  from boltbeam.collectors import engine_common as ec, vllm_decode as vd
+  py = vd.python()
+  if py is None:
+    raise RuntimeError(f"vLLM was not found: set ${vd.ENV} to the python of the venv vLLM is installed in")
+  return ([py, str(vd.DRIVER), "--model", str(pathlib.Path(model).absolute()), "--prefill", str(length),
+           "--warm", str(VLLM_WARM), *extra], ec.venv_env(py))
+
+
+def vllm_chunk(length:int, line:dict[str, Any]) -> dict[str, Any]:
+  """vLLM's chunk: the prompt split at max_num_batched_tokens when chunked prefill is on (else one chunk); every
+  step computes the logits of the request's last scheduled token, so each chunk is one output."""
+  size = int(line["max_num_batched_tokens"]) if line.get("chunked_prefill") else length
+  return chunk_record(split_chunks(length, size), f"vLLM max_num_batched_tokens {line['max_num_batched_tokens']}, "
+                      f"chunked prefill {'on' if line.get('chunked_prefill') else 'off'}")
+
+
+def vllm_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> dict[str, Any]:
+  from boltbeam.collectors import engine_common as ec, vllm_decode as vd
+  argv, env = _vllm(model, length, "--reps", str(REPS))
+  with gpu_telemetry.Telemetry(device) as tele:
+    line = ec.run_driver(argv, env={**env, **vd.RUN_ENV})[-1]
+  engine = [s for s in line["engine_samples_s"] if s]
+  own = len(engine) == len(line["engine_samples_s"])
+  samples = [s * 1e3 for s in (engine if own else line["wall_samples_s"])]
+  return {"ms": statistics.median(samples), "samples_ms": samples, "chunk": vllm_chunk(length, line),
+          "telemetry": tele.summary(), "telemetry_samples": gpu_telemetry.compact(tele.samples),
+          "source": (f"vLLM's own request timing (first token less scheduled), {len(samples)} prompts after {VLLM_WARM} "
+                     "warm-up calls, untraced" if own else
+                     f"the wall time of LLM.generate (vLLM reported no request timing), {len(samples)} prompts after "
+                     f"{VLLM_WARM} warm-up calls, untraced"),
+          "engine": {"vllm": line.get("vllm"), "max_num_batched_tokens": line["max_num_batched_tokens"],
+                     "chunked_prefill": line.get("chunked_prefill"), "wall_samples_ms": [s * 1e3 for s in line["wall_samples_s"]],
+                     "command": argv, "prompt": PROMPT_WORDS["vllm"]}}
+
+
+def vllm_formats(weights:set[str]) -> dict[str, Any]:
+  """vLLM on a float checkpoint: activations, attention and the cache in the weights' type (the KV cache dtype
+  auto), GEMMs writing that type; no stream-k fixups."""
+  fmt = next(iter(weights)) if len(weights) == 1 else "BF16"
+  return {"activations": {"in": fmt, "out": fmt}, "attention_activations": {"in": fmt, "out": fmt}, "kv": fmt,
+          "words": f"{fmt.lower()} activations in and out, attention and the KV cache in {fmt.lower()} (dtype auto)"}
+
+
+def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, Any]:
+  """The measured call alone (the driver marks it for nsys), the engine in this process so nsys sees it."""
+  from boltbeam.collectors import vendor_capture, vllm_decode as vd
+  argv, env = _vllm(model, length, "--capture")
+  raw = run / RAW / str(length)
+  launches = vendor_capture.capture(target.backend, argv, raw, env={**env, **vd.CAPTURE_ENV}, profiler_range=True)
+  line = json.loads([x for x in vendor_capture.program_output(raw).splitlines() if x.startswith('{"length"')][-1])
+  chunk = vllm_chunk(length, line)
+  tools = pathlib.Path(vd.python() or "").parent.parent
+  bins = sorted(tools.glob("lib/python*/site-packages/nvidia/*/bin"))
+  return {"launches": launches, "chunk": chunk["widths"], "outputs": chunk["outputs"], "warmup": False,
+          "formats": vllm_formats(weight_quants(run)), "method": vendor_capture.plan(target.backend)["method"],
+          "matrices": line.get("matrices"), "captured_ms": line["wall_s"] * 1e3, "window": line.get("window_monotonic"),
+          "paths": library_paths([pathlib.Path(p) for p in line.get("libraries") or []], launches,
+                                 tools=bins[0] if bins else None)}
+
+
+def engine_roles(roles:list[dict[str, Any]], matrices:Any) -> tuple[list[dict[str, Any]], str]:
+  """The weight matrices the engine runs, as roles to pair launches with: an engine that packs several checkpoint
+  tensors into one GEMM (q, k and v as one N) runs one launch for their work. Each matrix's parts are named by the
+  role classifier and matched to the profile's roles by K; its weight bytes are its parts'. The matrices replace
+  the profile's roles only when they cover every role's work (count x N x K) exactly; else the roles stand, said."""
+  from boltbeam.profile.roles import role_from_tensor_name
+  if not isinstance(matrices, list) or not matrices:
+    return roles, f"the profile's roles (the engine's matrices: {matrices or 'not reported'})"
+  left: dict[tuple[str, str, int], int] = {}
+  for r in roles:  # rows of one role and shape (k and v) add up
+    left[(r["role"], r["quant"], r["k"])] = left.get((r["role"], r["quant"], r["k"]), 0) + r["count"] * r["n"]
+  out = []
+  for m in matrices:
+    parts = [role_from_tensor_name(f"{p}.weight", (1 << 20, int(m["k"]))) for p in m["parts"]]
+    found = [next((r for r in roles if r["role"] == p and r["k"] == int(m["k"])), None) for p in parts]
+    if not all(found):
+      continue
+    if sum(r["n"] for r in found) != int(m["n"]):
+      return roles, f"the profile's roles ({m['name']}: N {m['n']} is not the sum of its parts' rows)"
+    for r in found:
+      left[(r["role"], r["quant"], r["k"])] -= int(m["count"]) * r["n"]
+    quants = sorted({r["quant"] for r in found})
+    out.append({"role": m["name"] if len(found) == 1 and m["name"] == found[0]["role"] else
+                f"{m['name']} ({' + '.join(sorted({r['role'] for r in found}))})",
+                "quant": "+".join(quants), "n": int(m["n"]), "k": int(m["k"]), "count": int(m["count"]),
+                "weight_bytes": sum(r["weight_bytes"] for r in found), "parts": [r["role"] for r in found]})
+  if any(left.values()):
+    return roles, "the profile's roles (the engine's matrices do not cover " + ", ".join(
+      f"{k[0]} {k[1]}" for k, v in left.items() if v) + " exactly)"
+  return out, "the engine's own weight matrices (packed parts' work and bytes summed; every role's work covered once)"
+
+
+PROMPT_WORDS["vllm"] = ("the driver's own prompt: token ids drawn by random.Random(seed).randrange(vocab), each call new ids, "
+                        "prefix caching off, so nothing is cached between prompts")
+
+
 ENGINES: dict[str, dict[str, Callable[..., dict[str, Any]]]] = {
   "llama.cpp": {"truth": lambda run, model, length, target, root: llama_truth(run, model, length),
                 "capture": lambda run, model, length, target, root: llama_capture(run, model, length, target)},
   "tinygrad": {"truth": lambda run, model, length, target, root: tinygrad_truth(run, model, length, target=target, root=root),
                "capture": lambda run, model, length, target, root: tinygrad_capture(run, model, length, target, root=root)},
+  "vllm": {"truth": lambda run, model, length, target, root: vllm_truth(run, model, length),
+           "capture": lambda run, model, length, target, root: vllm_capture(run, model, length, target)},
 }
 
 
@@ -383,9 +546,13 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     say(f"prefill of {length} tokens in the model{f' after {depth} in the cache' if depth else ''}: {provider}")
     with gpu_telemetry.Telemetry(0) as tele:
       cap = (capture or _engine(provider)["capture"])(run, str(manifest["model_path"]), int(length), target, root)
-    seen = tele.summary()
+    # the clock while the measured prefill ran (an adapter that reports its window: the samples next to it), not
+    # over the engine's start-up, whose low clocks would scale every peak down
+    w = cap.get("window")
+    seen = tele.summary(w[0] - tele.interval_s, w[1] + tele.interval_s) if w else tele.summary()
     peaks, peaks_clock = peaks_at(dict(target.matrix_tflops or {}), out["peaks_source"], (seen.get("sm_mhz") or {}).get("mean"))
-    attr = attribute_prefill(cap["launches"], [dict(r) for r in roles], chunk_widths=cap["chunk"], outputs=cap["outputs"],
+    pairing, pairing_source = engine_roles(roles, cap["matrices"]) if "matrices" in cap else (roles, "the profile's roles")
+    attr = attribute_prefill(cap["launches"], [dict(r) for r in pairing], chunk_widths=cap["chunk"], outputs=cap["outputs"],
                              layers=int(profile.get("layer_count") or 0), kernel_paths=cap["paths"]["kernels"],
                              peaks=peaks, bandwidth_gbs=bw, profile=profile, length=int(length),
                              program_roles=cap.get("program_roles"), warmup=cap["warmup"],
@@ -394,7 +561,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     per_chunk = len(cap["launches"]) / 2 / max(len(cap["chunk"]), 1) if cap["warmup"] else len(cap["launches"]) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
                                    "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen,
-                                   "peaks_at": peaks, "peaks_clock": peaks_clock,
+                                   "peaks_at": peaks, "peaks_clock": peaks_clock, "pairing_roles": pairing_source,
                                    "paths_how": cap["paths"]["how"], "libraries": cap["paths"]["libraries"], **attr}
   (run / trace).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
   return out

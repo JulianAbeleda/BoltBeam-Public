@@ -135,6 +135,111 @@ def library_table(library:str | pathlib.Path, *, cache:pathlib.Path | None = Non
   return out
 
 
+# --- SASS: a library that ships machine code only (cuBLAS ships no PTX for most of its kernels) ------------------
+# The machine-code matrix opcode of each path is read from the probe's own kernel compiled for this GPU, so a kernel
+# is judged on the same instruction the probe measured: `HMMA.16816.F32.BF16` is whatever the bf16 probe compiles to.
+
+_SASS_MMA = re.compile(r"\b[A-Z]*MMA(?:\.[A-Z0-9_]+)+")
+_SASS_FUNC = re.compile(r"^\s*\.text\.(\S+):")
+
+
+def sass_entries(lines:Iterable[str]) -> dict[str, dict[str, int]]:
+  """{mangled function: {matrix opcode: sites}} over nvdisasm output; a function with no matrix opcode has {}."""
+  out: dict[str, dict[str, int]] = {}
+  cur = None
+  for line in lines:
+    m = _SASS_FUNC.match(line)
+    if m:
+      cur = m.group(1)
+      out.setdefault(cur, {})
+      continue
+    if cur and "MMA" in line:
+      for op in _SASS_MMA.findall(line):
+        out[cur][op] = out[cur].get(op, 0) + 1
+  return out
+
+
+def sass_signatures(arch:str, *, cache:pathlib.Path | None = None, nvcc:str | None = None,
+                    nvdisasm:str | None = None) -> dict[str, str]:
+  """{matrix opcode: path} for this GPU: each probe path (cuda_compute.PATHS) compiled for `arch` (sm_XY), its matrix
+  opcode read back. A path that does not compile here is left out (its opcodes then read as unknown)."""
+  from boltbeam.collectors.cuda_compute import source
+  from boltbeam.runtime.cuda_device import build_cubin, find_nvcc
+  nvcc = nvcc or find_nvcc()
+  out: dict[str, str] = {}
+  for p in PATHS:
+    if p.kind != "mma" or not nvcc:
+      continue
+    try:
+      cubin = build_cubin(nvcc, source(p), cache=cache, arch=arch + p.arch_suffix)
+    except RuntimeError:
+      continue
+    for ops in _disassemble(cubin, nvdisasm, cache).values():
+      for op in ops:
+        out.setdefault(op, p.name)
+  return out
+
+
+def _disassemble(cubin:bytes, nvdisasm:str | None, cache:pathlib.Path | None) -> dict[str, dict[str, int]]:
+  from boltbeam.runtime.cuda_device import default_cache
+  tool = nvdisasm or shutil.which("nvdisasm")
+  if not tool:
+    raise RuntimeError("nvdisasm is not installed: a kernel's machine code cannot be read")
+  d = cache or default_cache()
+  d.mkdir(parents=True, exist_ok=True)
+  f = d / f"c-{hashlib.sha256(cubin).hexdigest()[:16]}.cubin"
+  if not f.exists():
+    f.write_bytes(cubin)
+  proc = subprocess.run([tool, "-c", str(f)], capture_output=True, text=True, timeout=1800)
+  if proc.returncode != 0:
+    raise RuntimeError(f"nvdisasm {f} exited {proc.returncode}: {proc.stderr.strip()[-200:]}")
+  return sass_entries(proc.stdout.splitlines())
+
+
+def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures:dict[str, str], *,
+               cache:pathlib.Path | None = None, cuobjdump:str | None = None, nvdisasm:str | None = None) -> dict[str, Any]:
+  """{template: paths} for the wanted kernel templates found in a library's machine code for `arch`: its cubins
+  extracted (cuobjdump -xelf), their function symbols read, and only the cubins that hold a wanted kernel
+  disassembled. Each opcode is mapped to a path by `signatures` (sass_signatures); one it does not know is
+  `unknown:OPCODE`. The library's symbol index and every disassembled cubin's table are cached by hash."""
+  import tempfile
+  from boltbeam.runtime.cuda_device import default_cache, demangle, elf_symbols
+  lib = pathlib.Path(library)
+  sha = hashlib.sha256(lib.read_bytes()).hexdigest()
+  cache = cache or default_cache()
+  cache.mkdir(parents=True, exist_ok=True)
+  index_file = cache / f"sass-{sha[:16]}-{arch}.json"
+  index = json.loads(index_file.read_text()) if index_file.exists() else None
+  tool = cuobjdump or shutil.which("cuobjdump")
+  with tempfile.TemporaryDirectory(dir=cache) as tmp:
+    if index is None or any(t in index["symbols"] and t not in index["paths"] for t in wanted):
+      if not tool:
+        raise RuntimeError("cuobjdump is not installed: a library's machine code cannot be read")
+      proc = subprocess.run([tool, "-xelf", "all", str(lib.absolute())], cwd=tmp, capture_output=True, text=True, timeout=3600)
+      cubins = sorted(pathlib.Path(tmp).glob(f"*.{arch}.cubin")) if proc.returncode == 0 else []
+      if index is None:
+        names = {c.name: elf_symbols(c.read_bytes()) for c in cubins}
+        plain = demangle(sorted({s for v in names.values() for s in v}))
+        index = {"symbols": {template(plain.get(s, s)): c for c, syms in names.items() for s in syms}, "paths": {}}
+      for t in sorted(wanted):
+        c = index["symbols"].get(t)
+        if c is None or t in index["paths"] or not (pathlib.Path(tmp) / c).exists():
+          continue
+        entries = _disassemble((pathlib.Path(tmp) / c).read_bytes(), nvdisasm, cache)
+        plain = demangle(sorted(entries))
+        for mangled, ops in entries.items():
+          key = template(plain.get(mangled, mangled))
+          if key in wanted or key not in index["paths"]:
+            merged: dict[str, int] = {}
+            for op, n in ops.items():
+              p = signatures.get(op) or f"unknown:{op}"
+              merged[p] = merged.get(p, 0) + n
+            index["paths"][key] = merged
+      index_file.write_text(json.dumps(index, sort_keys=True))
+  return {"library": str(lib), "sha256": sha, "how": f"machine code for {arch} (cuobjdump -xelf, nvdisasm)",
+          "kernels": {t: index["paths"][t] for t in wanted if t in index["paths"]}}
+
+
 def kernel_path(name:str, table:dict[str, dict[str, int]]) -> dict[str, Any]:
   """The path of one captured kernel: {"path", "paths", "status", "words"}. status: one (one matrix path), mixed
   (several: each path's share of the operations at its own peak, prefill_work.compute_ms), none (no matrix instruction: bytes only), not_found (refused)."""

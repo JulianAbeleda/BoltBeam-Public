@@ -21,6 +21,9 @@ the engine's launch geometry:
                  ("ffn_down + ffn_gate_up": the same N x K turned around)
   the peak       a pairing that needs more operations per second than the measured peak of the template's path is
                  impossible and is refused (PEAK_SLACK)
+  the bytes      so is one that reads its roles' weights faster than the memory's measured bandwidth: a kernel whose
+                 code could not be read (a library that hides it) may still take a role by count and time, its work
+                 counted and its ceiling refused, but never a kernel too short to have read the weights
 
 The assignment that places the most roles wins; two such assignments are ambiguous and nothing is paired. Kernels no
 role takes keep their time, named by kind; a GEMV over one token that matches a role by count and bytes (the output
@@ -32,6 +35,7 @@ from __future__ import annotations
 import collections
 import itertools
 import math
+import statistics
 from typing import Any
 
 from boltbeam.collectors.attribution import attribute, share_overlap
@@ -49,8 +53,9 @@ PAIRING_RULE = ("a template named as attention (tie_out.kind_of) does attention'
                 "roles of one format that templates serve alone keep the order of their operations per launch in their time per launch; "
                 "a shared template with a matrix instruction serves roles of one weight format whose launches per chunk sum to its own, less at most one "
                 "layer's launches per chunk and never all of a role's (the engine skipping rows it does not need), at no more operations per "
-                "second than its path's measured peak; within it, duration clusters follow the roles' operations per "
-                "launch; roles with equal operations are one row; the assignment placing the most roles wins, then the one leaving the fewest matrix kernels unpaired; among tied ones, only the roles every one places the same way are paired")
+                "second than its path's measured peak and no faster read of its roles' weights than the memory's bandwidth (a kernel whose code "
+                "was not read may take roles so, its ceiling refused); within it, duration clusters follow the roles' operations per "
+                "launch at one rate (operations per time within the cluster gap); roles with equal operations are one row; the assignment placing the most roles wins, then the one leaving the fewest matrix kernels unpaired, then the one pairing the most kernel time; among tied ones, only the roles every one places the same way are paired")
 
 
 REPEAT = "repeat"  # measured_window: the capture ends in two identical turns (a session's turn, captured twice)
@@ -119,17 +124,30 @@ def role_groups(roles:list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def split(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int) -> list[list[float]] | None:
   """The template's launch durations cut into one cluster per role row, in the order of their operations, each
-  holding that row's launches (its count per chunk times the chunks, less at most its skip); None if they do not."""
+  holding that row's launches (its count per chunk times the chunks, less at most its skip), and one kernel running
+  at one rate: each cluster's operations per launch over its median time within GAP_RATIO of the others'; None if
+  they do not."""
   parts = _clusters(tmpl["durations"], len(groups))
   if parts is None:
     return None
-  for g, p in zip(sorted(groups, key=lambda g: g["nk"]), parts):
+  ordered = sorted(groups, key=lambda g: g["nk"])
+  for g, p in zip(ordered, parts):
     if not (g["count"] - g["skip"]) * chunks <= len(p) <= g["count"] * chunks:
       return None
+  rates = [sum(r["n"] * r["k"] * r["count"] for r in g["roles"]) / g["count"] / max(statistics.median(p), 1e-9)
+           for g, p in zip(ordered, parts)]
+  if len(rates) > 1 and max(rates) > GAP_RATIO * min(rates):
+    return None
   return parts
 
 
-def _fits(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int, mean_m:float, peak:float | None) -> bool:
+def _reads_in_time(weight_bytes:float, wall_us:float, bandwidth_gbs:float | None) -> bool:
+  """The launches had time to read the weights once each at the memory's measured bandwidth (none known: not checked)."""
+  return not bandwidth_gbs or weight_bytes / (wall_us * 1e-6) <= bandwidth_gbs * 1e9 * PEAK_SLACK
+
+
+def _fits(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int, mean_m:float, peak:float | None,
+          bandwidth_gbs:float | None = None) -> bool:
   if len({g["quant"] for g in groups}) > 1:
     return False
   want = sum(g["count"] for g in groups) * chunks
@@ -139,13 +157,18 @@ def _fits(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int, mean_m:f
   flops = sum(g["count"] * chunks * 2.0 * mean_m * g["nk"] for g in groups)
   if peak and flops / (tmpl["wall_us"] * 1e-6) > peak * 1e12 * PEAK_SLACK:
     return False
-  return split(groups, tmpl, chunks) is not None
+  wb = sum(r["weight_bytes"] * (r["count"] - r["skip"]) * chunks for g in groups for r in g["roles"])
+  return _reads_in_time(wb, tmpl["wall_us"], bandwidth_gbs) and split(groups, tmpl, chunks) is not None
 
 
-def _own_fits(r:dict[str, Any], ts:list[dict[str, Any]], chunks:int, mean_m:float, peaks:dict[str, float]) -> bool:
-  """A role assembled from templates that serve it alone: their launches add up to its count, each within its peak."""
+def _own_fits(r:dict[str, Any], ts:list[dict[str, Any]], chunks:int, mean_m:float, peaks:dict[str, float],
+              bandwidth_gbs:float | None = None) -> bool:
+  """A role assembled from templates that serve it alone: their launches add up to its count, each within its peak
+  and with time to read its weight."""
   calls = sum(t["calls"] for t in ts)
   if not (r["count"] - r["skip"]) * chunks <= calls <= r["count"] * chunks:
+    return False
+  if not all(_reads_in_time(r["weight_bytes"] * t["calls"], t["wall_us"], bandwidth_gbs) for t in ts):
     return False
   per_call = 2.0 * mean_m * r["n"] * r["k"]
   return all(not _peak(t, peaks) or t["calls"] * per_call / (t["wall_us"] * 1e-6) <= _peak(t, peaks) * 1e12 * PEAK_SLACK
@@ -153,11 +176,12 @@ def _own_fits(r:dict[str, Any], ts:list[dict[str, Any]], chunks:int, mean_m:floa
 
 
 def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:int, mean_m:float,
-         peaks:dict[str, float]) -> tuple[dict[int, tuple[str, tuple[int, ...]]], dict[str, Any] | None]:
+         peaks:dict[str, float], bandwidth_gbs:float | None = None) -> tuple[dict[int, tuple[str, tuple[int, ...]]], dict[str, Any] | None]:
   """role index -> ("shared", (t,)) or ("own", (t1, t2)) by PAIRING_RULE, or ({}, why) when two assignments place
   as many roles. A shared template may serve several roles of one format (split by duration); an own template serves
   one role alone, and a role may be assembled from up to MAX_OWN of them."""
-  matrix = [i for i, t in enumerate(templates) if t["path"]["status"] in ("one", "mixed") and not t.get("attention")]
+  # a kernel whose code was not read may hold a matrix instruction: it may take roles, under the bytes rule
+  matrix = [i for i, t in enumerate(templates) if t["path"]["status"] in ("one", "mixed", "not_found") and not t.get("attention")]
   options: list[list[tuple[str, tuple[int, ...]] | None]] = []
   for r in roles:
     lo = (r["count"] - r["skip"]) * chunks
@@ -166,7 +190,7 @@ def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:i
     opts += [("own", ts) for ts in itertools.combinations(matrix, MAX_OWN)
              if lo <= sum(templates[t]["calls"] for t in ts) <= r["count"] * chunks]
     options.append(opts)
-  best: dict[str, Any] = {"score": (0, 0, 0), "ties": []}
+  best: dict[str, Any] = {"score": (0, 0, 0, 0.0), "ties": []}
   nodes = 0
 
   def leaf(choice):
@@ -175,9 +199,10 @@ def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:i
       if c and c[0] == "shared":
         shared.setdefault(c[1][0], []).append(r)
     for t, rs in shared.items():
-      if not _fits(role_groups(rs), templates[t], chunks, mean_m, _peak(templates[t], peaks)):
+      if not _fits(role_groups(rs), templates[t], chunks, mean_m, _peak(templates[t], peaks), bandwidth_gbs):
         return False
-    if not all(_own_fits(r, [templates[t] for t in c[1]], chunks, mean_m, peaks) for r, c in zip(roles, choice) if c and c[0] == "own"):
+    if not all(_own_fits(r, [templates[t] for t in c[1]], chunks, mean_m, peaks, bandwidth_gbs)
+               for r, c in zip(roles, choice) if c and c[0] == "own"):
       return False
     # more operations per launch, more time per launch: roles of one format that a template serves alone, compared
     alone = [(r, sum(templates[t]["wall_us"] for t in c[1]) / sum(templates[t]["calls"] for t in c[1]))
@@ -199,8 +224,9 @@ def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:i
     if i == len(roles):
       if not leaf(choice):
         return
-      used = len({t for c in choice if c for t in c[1]})
-      score = (placed, used, -sum(1 for c in choice if c and c[0] == "own"))
+      used = {t for c in choice if c for t in c[1]}
+      score = (placed, len(used), -sum(1 for c in choice if c and c[0] == "own"),
+               round(sum(templates[t]["wall_us"] for t in used), 3))
       if score > best["score"]:
         best.update(score=score, ties=[list(choice)])
       elif score == best["score"] and placed:
@@ -320,7 +346,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                      bandwidth_gbs, roles=[(role, quant)], role_source="the engine's own program metadata (role, M, N, K)"))
   roles = [r for r in roles if (r["role"], str(r["quant"])) not in named]
   templates_left = [t if ti not in taken else {**t, "path": {"status": "taken"}} for ti, t in enumerate(templates)]
-  choice, ambiguous = pair(templates_left, roles, chunks=chunks, mean_m=mean_m, peaks=peaks)
+  choice, ambiguous = pair(templates_left, roles, chunks=chunks, mean_m=mean_m, peaks=peaks, bandwidth_gbs=bandwidth_gbs)
   shared: dict[int, list[dict[str, Any]]] = {}
   for i, (kind, ts) in choice.items():
     if kind == "shared":

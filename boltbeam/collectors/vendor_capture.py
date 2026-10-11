@@ -31,13 +31,16 @@ class NoCapture(RuntimeError):
   """No outside view of the GPU here. The message says why, in one sentence."""
 
 
-def _nsys_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str], flush_ms:int | None = None) -> list[str]:
+def _nsys_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str], flush_ms:int | None = None,
+               profiler_range:bool = False) -> list[str]:
   # llama.cpp runs its decode as CUDA graphs. By default nsys reports a graph launch as one item with no
   # kernels; node tracing reports every kernel inside the graph, with its grid.
   # flush_ms: a GPU process that its parent stops with a signal (a server's runner) never flushes CUPTI's buffers
   # at exit; flushing on a timer keeps its kernels.
+  # profiler_range: the program marks its measured window itself (cudaProfilerStart/Stop); only that is captured
   flush = [f"--cuda-flush-interval={flush_ms}"] if flush_ms else []
-  return [tool, "profile", "-t", "cuda", "--cuda-graph-trace=node", *flush, "--force-overwrite", "true",
+  window = ["--capture-range=cudaProfilerApi", "--capture-range-end=stop"] if profiler_range else []
+  return [tool, "profile", "-t", "cuda", "--cuda-graph-trace=node", *flush, *window, "--force-overwrite", "true",
           "-o", str(out / "capture"), *argv]
 
 
@@ -167,10 +170,12 @@ def plan(backend:str, find:Callable[[str], str | None] | None = None) -> dict[st
 
 
 def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 1800.0, cwd:pathlib.Path | None = None,
-            env:dict[str, str] | None = None, flush_ms:int | None = None) -> list[dict[str, Any]]:
+            env:dict[str, str] | None = None, flush_ms:int | None = None,
+            profiler_range:bool = False) -> list[dict[str, Any]]:
   """Run argv under the vendor tool and return its kernel launches. NoCapture when there is no tool here.
-  flush_ms asks the tool to flush its buffers on a timer, where it can (nsys). The program runs in `cwd`, by default
-  the capture folder `out`: whatever it drops into its working directory (an old llama.cpp build writes a 421 KB
+  flush_ms asks the tool to flush its buffers on a timer, where it can (nsys); profiler_range captures only the
+  window the program marks with the CUDA profiler API (nsys). The program runs in `cwd`, by default the capture
+  folder `out`: whatever it drops into its working directory (an old llama.cpp build writes a 421 KB
   llama_decode.dot graph dump on every decode) lands beside its capture, not in the caller's folder. Callers pass
   absolute paths in argv."""
   p = plan(backend)
@@ -182,7 +187,7 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   cwd = cwd or out
   log = out / "capture.log"
   with open(log, "w") as fh:
-    wrapped = wrap(p["tool"], argv, out, env or {}, flush_ms) if backend == "CUDA" else wrap(p["tool"], argv, out, env or {})
+    wrapped = wrap(p["tool"], argv, out, env or {}, flush_ms, *((True,) if profiler_range else ())) if backend == "CUDA" else wrap(p["tool"], argv, out, env or {})
     proc = subprocess.run(wrapped, stdout=fh, stderr=subprocess.STDOUT, timeout=timeout_s,
                           cwd=cwd, env={**os.environ, **(env or {})})
   if proc.returncode != 0:

@@ -12,7 +12,7 @@ from boltbeam.profile.gguf import GGML_TYPE_NAMES, profile_from_gguf
 from boltbeam.profile.ir import ModelProfile, TensorRole
 from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
 from boltbeam.profile.weight_ledger import experts_read
-from boltbeam.vocab import is_ssm_role
+from boltbeam.vocab import RoleClass, is_ssm_role
 
 _DTYPE_TO_QUANT = {
   "F64": "F64", "F32": "F32", "F16": "F16", "BF16": "BF16",
@@ -183,7 +183,8 @@ def _is_packed_quant_tensor(name:str) -> bool:
 
 def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:list[TensorSpec],
                         model_id:str | None, extra:dict[str, Any] | None = None) -> ModelProfile:
-  grouped: dict[tuple[str, int, int, str, int, str], list[str]] = {}
+  grouped: dict[tuple[str, int, int, str, int], list[str]] = {}
+  classes: dict[tuple[str, int, int, str, int], str] = {}
   tensors_for_arch: list[tuple[str, tuple[int, ...], int, int]] = []
   for spec in specs:
     rc = classify_tensor_role(spec.name, tuple(spec.shape))
@@ -193,24 +194,40 @@ def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:li
     rows, cols, n_expert = _shape_for_role(spec, role)
     if rows <= 0 or cols <= 0:
       continue
-    key = (role, rows, cols, spec.quant, n_expert, rc.value)
+    # one row per (role, shape, quant), as the GGUF reader groups (k and v together); its class is the first tensor's
+    key = (role, rows, cols, spec.quant, n_expert)
     grouped.setdefault(key, []).append(spec.name)
+    classes.setdefault(key, rc.value)
     tensors_for_arch.append((spec.name, spec.shape, spec.ggml_type, 0))
 
   arch = cfg.get("model_type") or (cfg.get("architectures") or [None])[0]
   kv = _kv_from_config(cfg)
   roles = tuple(TensorRole(role=role, tensor_name=names[0], rows=rows, cols=cols, quant=quant,
-                           ggml_type=-1, count=len(names), role_class=role_class, n_expert=n_expert,
+                           ggml_type=-1, count=len(names), role_class=classes[(role, rows, cols, quant, n_expert)],
+                           n_expert=n_expert,
                            experts_read=experts_read(kv, kv["general.architecture"], n_expert) if n_expert else 0)
-                for (role, rows, cols, quant, n_expert, role_class), names in sorted(grouped.items()))
+                for (role, rows, cols, quant, n_expert), names in sorted(grouped.items()))
   cls, signals = classify_architecture(kv, tensors_for_arch, str(arch) if arch else None)
   meta = {"format_family": fmt, "architecture_signals": signals, "tensor_count": len(specs),
-          "quant_types": sorted({s.quant for s in specs})}
+          "quant_types": sorted({s.quant for s in specs}), **_attention_from_config(cfg, specs)}
   if extra: meta.update(extra)
   return ModelProfile(model_id=model_id or path.stem, source=str(path), architecture=str(arch) if arch else None,
                       hidden_size=cfg.get("hidden_size"), ffn_size=cfg.get("intermediate_size"),
                       vocab_size=cfg.get("vocab_size"), layer_count=cfg.get("num_hidden_layers"),
                       roles=roles, metadata=meta, architecture_class=cls)
+
+
+def _attention_from_config(cfg:dict[str, Any], specs:list[TensorSpec]) -> dict[str, Any]:
+  """The attention shape and declared context from config.json, as the GGUF reader records them from its keys: heads,
+  kv heads, head dim (head_dim, else hidden / heads), the layers holding a q projection, the context length."""
+  heads, hidden = cfg.get("num_attention_heads"), cfg.get("hidden_size")
+  dim = cfg.get("head_dim") or (hidden // heads if hidden and heads else None)
+  layers = len({s.name for s in specs if classify_tensor_role(s.name, tuple(s.shape)) is RoleClass.ATTENTION_Q})
+  att = {k: v for k, v in {"head_count": heads, "head_count_kv": cfg.get("num_key_value_heads") or heads,
+                           "head_dim": dim, "layer_count": layers or cfg.get("num_hidden_layers")}.items() if v}
+  ctx = cfg.get("max_position_embeddings")
+  return {**({"attention": att} if heads else {}),
+          **({"context": {"length": int(ctx), "source": "config.json max_position_embeddings", "scaling": None}} if ctx else {})}
 
 
 def _kv_from_config(cfg:dict[str, Any]) -> dict[str, Any]:
