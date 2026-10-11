@@ -337,11 +337,13 @@ type Pipeline struct {
 	Analyze bool
 	// NoSearch skips Run's per-role kernel search (a quick run)
 	NoSearch bool
+	// ReplayTrace is a replay's trace file or shape name; ServerArgv the user's server command it replays on
+	ReplayTrace, ServerArgv string
 }
 
 func (c Client) PipelineArgv(p Pipeline) []string {
 	argv := []string{c.Python, "-m", "boltbeam.workflow.screen", "pipeline", p.Model, "--run", p.RunDir, "--target", p.Target}
-	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider, "--layout": p.Layout, "--batch": p.Batch, "--role-time": p.RoleTime} {
+	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider, "--layout": p.Layout, "--batch": p.Batch, "--role-time": p.RoleTime, "--replay-trace": p.ReplayTrace, "--server-argv": p.ServerArgv} {
 		if value != "" {
 			argv = append(argv, flag, value)
 		}
@@ -386,6 +388,22 @@ func (c Client) Engines() (*Engines, []byte, error) {
 	var e Engines
 	raw, _, err := c.decode(&e, nil, "boltbeam.workflow.screen", "engines")
 	return &e, raw, err
+}
+
+// ReplayChoices is what a replay can be set up with: the shipped shapes and the llama-server commands running here.
+func (c Client) ReplayChoices() (*ReplayChoices, error) {
+	var r ReplayChoices
+	if _, _, err := c.decode(&r, nil, "boltbeam.workflow.screen", "replay-shapes"); err != nil {
+		return nil, err
+	}
+	var s struct {
+		Servers [][]string `json:"servers"`
+	}
+	if _, _, err := c.decode(&s, nil, "boltbeam.workflow.screen", "replay-servers"); err != nil {
+		return nil, err
+	}
+	r.Servers = s.Servers
+	return &r, nil
 }
 
 // Providers lists the runtimes that can measure the target on this machine.

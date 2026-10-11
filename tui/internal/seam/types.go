@@ -647,6 +647,8 @@ type Loss struct {
 	Per *string `json:"per"`
 	// Session is a session run's table, one row per depth (workflow/session.py); nil on other runs.
 	Session *Session `json:"session"`
+	// Replay is a replay run's table, one row per turn, with its headline and where tables (workflow/replay.py).
+	Replay *Replay `json:"replay"`
 	// PrefillAudit is the where table at the longest captured prefill as an audit (workflow/prefill_audit.py);
 	// nil on decode. Its words are printed as they are.
 	PrefillAudit *Audit `json:"prefill_audit"`
@@ -684,6 +686,48 @@ type Session struct {
 	Warm       string       `json:"warm"`
 	MaxContext string       `json:"max_context"`
 	Compaction string       `json:"compaction"`
+}
+
+// Replay is the replay table as cells and its headline as lines (workflow/replay.py): the renderers print them.
+type Replay struct {
+	Title         string        `json:"title"`
+	Words         string        `json:"words"`
+	HeadlineLines []string      `json:"headline_lines"`
+	Columns       []string      `json:"columns"`
+	Rows          []SessionRow  `json:"rows"`
+	Total         []string      `json:"total"`
+	Unmodelled    []string      `json:"unmodelled"`
+	Wheres        []ReplayWhere `json:"wheres"`
+	DecodeWhere   *ReplayDecode `json:"decode_where"`
+}
+
+// ReplayWhere is a captured turn's where table, or its one line when it is unmeasured or failed (Status).
+type ReplayWhere struct {
+	Where
+	Status     string `json:"status"`
+	ServerLine string `json:"server_line"`
+}
+
+// ReplayDecode is the deepest turn's decode per role, as cells, or its one line when not measured.
+type ReplayDecode struct {
+	Status  string     `json:"status"`
+	Title   string     `json:"title"`
+	Words   string     `json:"words"`
+	Columns []string   `json:"columns"`
+	Rows    [][]string `json:"rows"`
+}
+
+// ReplayChoices are the shipped trace shapes and the servers found running, for Setup's Workload page.
+type ReplayChoices struct {
+	Default string        `json:"default"`
+	Shapes  []ReplayShape `json:"shapes"`
+	Servers [][]string    `json:"servers"`
+}
+
+type ReplayShape struct {
+	Name  string `json:"name"`
+	Label string `json:"label"`
+	Words string `json:"words"`
 }
 
 // SessionRow is one depth: its cells in Columns' order.

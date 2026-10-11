@@ -377,9 +377,9 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   target = get_target(manifest.get("target_id"))
   # facts of the run only: what this machine could capture is `providers`, never part of the pinned results
   plan = None
-  if manifest.get("workload") in ("prefill", "session"):  # the untraced prompt and where its time goes
-    from boltbeam.workflow import prefill as pf, session as ss  # workflow/prefill.py, workflow/session.py
-    return (pf if manifest["workload"] == "prefill" else ss).loss_block(run, manifest, {"status": "absent", "reason": None, "limit_ms": None, "limit_tok_s": None,
+  if manifest.get("workload") in ("prefill", "session", "replay"):  # the untraced prompt and where its time goes
+    from boltbeam.workflow import prefill as pf, replay as rw, session as ss  # workflow/prefill.py, session.py, replay.py
+    return {"prefill": pf, "session": ss, "replay": rw}[manifest["workload"]].loss_block(run, manifest, {"status": "absent", "reason": None, "limit_ms": None, "limit_tok_s": None,
                                          "not_attributed_ms": None, "source": None, "missing": None, "refused": None,
                                          "provider": provider, "capture": plan, "roles_provider": None, "provider_missing": None,
                                          "others": [], "unpaired_roles": [], "not_timed": [], "role_rule": None,
@@ -775,6 +775,8 @@ def results_core(run:pathlib.Path, beside:bool = False) -> dict[str, Any]:
   loss = loss_block(run, manifest, ceil, token, beside=beside)
   if manifest.get("workload") in ("prefill", "session"):  # one ceiling: the sum of the kernels' own, as the where table has it
     ceil = prefill_ceiling(ceil, loss, token)
+  elif manifest.get("workload") == "replay":  # one ceiling: the sum of the turns' rooflines (workflow/replay.py)
+    ceil = replay_ceiling(ceil, loss)
   return {
     "schema": SCHEMA, "kind": "results", "id": run.name, "model_id": manifest.get("model_id"),
     "target_id": manifest.get("target_id"), "workload": manifest.get("workload"),
@@ -828,6 +830,16 @@ def prefill_ceiling(ceil:dict[str, Any], loss:dict[str, Any], token:dict[str, An
   return {"status": "modeled", "context": length, "floor_ms": w["limit_ms"], "tok_s": length / w["limit_ms"] * 1e3,
           "bytes_moved": None, "peak_bandwidth_gbs": ceil.get("peak_bandwidth_gbs"), "bandwidth_source": ceil.get("bandwidth_source"),
           "band": ceil.get("band"), "basis": PREFILL_CEILING_BASIS}
+
+
+def replay_ceiling(ceil:dict[str, Any], loss:dict[str, Any]) -> dict[str, Any]:
+  """A replay's ceiling is the sum of its warm turns' rooflines (workflow/replay.py), not one token's."""
+  h = (loss.get("replay") or {}).get("headline") or {}
+  if not h.get("roofline_ms"):
+    return {"status": "absent", "reason": loss.get("reason") or "no turn ceiling: the run lacks the profile or the ledger"}
+  return {"status": "modeled", "context": h["deepest_prefix"], "floor_ms": h["roofline_ms"], "tok_s": None, "bytes_moved": None,
+          "peak_bandwidth_gbs": ceil.get("peak_bandwidth_gbs"), "bandwidth_source": ceil.get("bandwidth_source"),
+          "band": ceil.get("band"), "basis": h.get("basis")}
 
 
 def batch_rows(run:pathlib.Path, manifest:dict[str, Any], profile:dict[str, Any], ceil:dict[str, Any]) -> list[dict[str, Any]]:
@@ -1021,10 +1033,10 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
     probe = [guarded("probe", cuda_probe, probe="measured", last=False)]
   else:
     probe = []
-  if getattr(args, "workload", "decode") in ("prefill", "session"):  # collectors/prefill.py, collectors/session.py
-    from boltbeam.collectors import prefill as pf, session as ss
+  if getattr(args, "workload", "decode") in ("prefill", "session", "replay"):  # collectors/prefill.py, session.py, replay.py
+    from boltbeam.collectors import prefill as pf, replay as rp, session as ss
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
-    mod = pf if args.workload == "prefill" else ss
+    mod = {"prefill": pf, "session": ss, "replay": rp}[args.workload]
     timing = guarded("timing", lambda: mod.measure(out_dir(), provider, root=root), probe="absent",
                      probe_reason=llama_bench_decode.PROBE_ABSENT)
     return [timing]
@@ -1055,14 +1067,52 @@ def counted(step_id:str) -> bool:
   return step_id not in SETUP
 
 
+def replay_command(args) -> dict[str, Any]:
+  """The replay's seam commands: make a trace, list the shapes, find running servers, compare two runs."""
+  from boltbeam.collectors import replay as rp
+  from boltbeam.trace import replay_trace as rt
+  from boltbeam.workflow import replay as rw
+  if args.command == "replay-shapes":
+    table = rt.shapes()
+    return {"schema": SCHEMA, "default": table["default"],
+            "shapes": [{"name": n, "label": rt.label(rt.shape(n)), "words": s["words"]} for n, s in table["shapes"].items()]}
+  if args.command == "replay-servers":
+    return {"schema": SCHEMA, "servers": rp.running_servers()}
+  if args.command == "replay-diff":
+    d = rw.diff(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser())
+    return {**d, "lines": rw.diff_lines(d)}
+  if args.gameterm:
+    if args.system_tokens is None or not args.model:
+      raise ValueError("a GameTerm trace needs --system-tokens (the logs do not hold the system prompt) and --model")
+    with rp.tokenizer(args.model) as count:
+      trace = rt.gameterm(pathlib.Path(args.gameterm).expanduser(), pathlib.Path(args.save).expanduser() if args.save else None,
+                          system_tokens=args.system_tokens, count=count)
+  else:
+    trace = rt.shape(args.shape)
+  rt.write(trace, pathlib.Path(args.out).expanduser())
+  return {"schema": SCHEMA, "out": args.out, "label": rt.label(trace), "source": trace["source"]}
+
+
+def _load(args) -> dict[str, Any]:
+  """Step 0: the run folder. A replay also stages its trace and the server command (collectors/replay.stage), and its
+  context is the prefix the trace reaches."""
+  contexts = _parse_ctxs(args.ctxs) if args.ctxs else None
+  if args.workload == Workload.REPLAY.value:
+    from boltbeam.collectors import replay as rp
+    run = pathlib.Path(args.run)
+    run.mkdir(parents=True, exist_ok=True)
+    contexts = (rp.stage(run, getattr(args, "replay_trace", None), getattr(args, "server_argv", None)),)
+  return load_run(args.model, args.run, target_id=args.target, model_id=args.id, workload=args.workload,
+                  contexts=contexts, target_source="user")
+
+
 def pipeline(args, out=sys.stdout) -> int:
   """Run the stages in order and say so, one line each. The run folder keeps whatever landed before a failure."""
   def say(text:str) -> None:
     out.write(text + "\n")
     out.flush()
   steps = [
-    ("load", lambda: load_run(args.model, args.run, target_id=args.target, model_id=args.id, workload=args.workload,
-                              contexts=_parse_ctxs(args.ctxs) if args.ctxs else None, target_source="user")),
+    ("load", lambda: _load(args)),
     ("autoscan", lambda: autoscan_run(args.run, providers=())),
     ("analyze", lambda: analyze_run(args.run)),
   ]
@@ -1091,15 +1141,17 @@ def pipeline(args, out=sys.stdout) -> int:
   can_time = plan and (plan.get("capture") or providers.capture_method(plan["provider"], get_target(args.target).backend)).get("method")
   if analyze_all and plan and not plan["reason"]:  # one press: per-role time, same engine, search, report again
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
-    if getattr(args, "workload", "decode") in ("prefill", "session"):  # captured in the model, attributed
-      from boltbeam.collectors import prefill as pf, session as ss
-      mod = pf if args.workload == "prefill" else ss  # one prefill per length; one turn at the focus depth
+    if getattr(args, "workload", "decode") in ("prefill", "session", "replay"):  # captured in the model, attributed
+      from boltbeam.collectors import prefill as pf, replay as rp, session as ss
+      # one prefill per length; one turn at the focus depth; the replay's picked turns and its deepest decode
+      mod = {"prefill": pf, "session": ss, "replay": rp}[args.workload]
       steps.append(("role_time", lambda: mod.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say)))
     elif can_time:
       steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say,
                                                              step=progress.report, measurement=_role_time_arg(args))))
-    if getattr(args, "no_search", False):
-      steps.append(("search", lambda: role_compare.skip(pathlib.Path(args.run), "skipped with --no-search", say)))
+    if getattr(args, "no_search", False) or getattr(args, "workload", "decode") == "replay":
+      why = "skipped with --no-search" if getattr(args, "no_search", False) else "a replay has no per-role kernel search"
+      steps.append(("search", lambda: role_compare.skip(pathlib.Path(args.run), why, say)))
     elif not can_time:
       steps.append(("search", lambda: role_compare.skip(pathlib.Path(args.run), "no per-role time on this machine, "
                                                         "so there is no kernel to compare with", say)))
@@ -1317,7 +1369,12 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   m = next((r for r in loss.get("runtimes") or [] if not r.get("per_role")), None)
   batch = t.get("batch") or 1
   head = f"{res.get('model_id')} on {res.get('target_id')} with {loss.get('provider')}, batch {batch}"
-  if m and loss.get("limit_tok_s"):
+  if loss.get("workload") == "replay" and (loss.get("replay") or {}).get("headline"):  # workflow/replay.py: per session
+    h = loss["replay"]["headline"]
+    head += (f": a {h['warm_turns']}-turn replay at {h['e_pct']:.1f}% of its roofline, {(h['time_ms'] - h['roofline_ms']) / 1e3:.1f} s "
+             f"of {h['time_ms'] / 1e3:.1f} s lost" if h.get("e_pct") is not None else
+             f": a {h['warm_turns']}-turn replay in {h['time_ms'] / 1e3:.1f} s, no ceiling ({loss.get('reason') or 'see below'})")
+  elif m and loss.get("limit_tok_s"):
     pct = 100.0 * loss["limit_ms"] / m["ms"] if m.get("ms") else 0.0
     head += (f": {m['tok_s']:.1f} tok/s measured, limit {loss['limit_tok_s']:.1f} tok/s, {pct:.0f}% of roofline, "
              f"{m['lost_ms']:.1f} ms {loss.get('per') or 'per token'} lost")
@@ -1355,7 +1412,9 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   lines += curve_lines(loss.get("prefill_curve"))
   lines += prefill_audit.lines(loss.get("prefill_audit"))
   from boltbeam.workflow.session import lines as session_lines
+  from boltbeam.workflow.replay import lines as replay_lines
   lines += session_lines(loss.get("session"))
+  lines += replay_lines(loss.get("replay"))
   if t.get("band"):
     lines.append(f"Band: {t['band']}")
   roles = loss.get("roles") or []
@@ -1593,6 +1652,21 @@ def main(argv:list[str] | None = None) -> int:
                       "each kernel alone) or auto (in-model when this machine has it, else generic)")
   p.add_argument("--no-search", action="store_true",
                  help="with --analyze: skip the per-role kernel search (a quick run)")
+  p.add_argument("--replay-trace", default=None, help="a replay: a boltbeam.replay_trace.v1 file or a shape's name "
+                                                      "(default: the default shape in data/replay_shapes.json)")
+  p.add_argument("--server-argv", default=None, help="a replay: the user's llama-server command, as one string")
+  p = sub.add_parser("replay-trace", help="write a counts-only replay trace from a shape or a GameTerm session")
+  p.add_argument("--out", required=True)
+  p.add_argument("--shape", default=None, help="a shape in data/replay_shapes.json")
+  p.add_argument("--gameterm", default=None, help="a GameTerm transcript (counted on this machine, never copied)")
+  p.add_argument("--save", default=None, help="the GameTerm save that holds the session's replies")
+  p.add_argument("--system-tokens", type=int, default=None, help="the system prompt's tokens (the logs do not hold it)")
+  p.add_argument("--model", default=None, help="the model whose tokenizer counts a GameTerm session")
+  sub.add_parser("replay-shapes", help="the shipped replay shapes, each with its label")
+  sub.add_parser("replay-servers", help="the llama-server commands running on this machine, to replay on")
+  p = sub.add_parser("replay-diff", help="two replay runs of one trace, turn by turn")
+  p.add_argument("--before", required=True)
+  p.add_argument("--after", required=True)
   for name in ("providers", "gpu-free"):
     p = sub.add_parser(name)
     p.add_argument("--target", required=True)
@@ -1667,6 +1741,8 @@ def main(argv:list[str] | None = None) -> int:
       out = clean_work(pathlib.Path(args.work).expanduser(), before=args.before, keep=args.keep)
     elif args.command == "delete":
       out = delete(pathlib.Path(args.root).expanduser(), pathlib.Path(args.run).expanduser())
+    elif args.command.startswith("replay-"):
+      out = replay_command(args)
     else:
       out = results(_run_arg(args))
       code = 0 if out["measured"] else 3

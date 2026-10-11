@@ -753,6 +753,46 @@ def _session(loss:dict[str, Any]) -> str:
                   f'<div class="tscroll"><table class="tie where"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>{notes}')
 
 
+def _cells_table(columns:list[str], rows:list[list[str]]) -> str:
+  head = "".join(f"<th>{_e(c)}</th>" for c in columns)
+  body = "".join("<tr>" + "".join(f"<td>{_e(c)}</td>" for c in r) + "</tr>" for r in rows)
+  return f'<div class="tscroll"><table class="tie where"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>'
+
+
+def _replay(loss:dict[str, Any]) -> str:
+  """workflow/replay.table: the headline, TTFT and decode tok/s against the prefix, the table, the where tables of
+  the captured turns and the deepest decode. The numbers and cells are the table's own."""
+  t = loss.get("replay")
+  if not t:
+    return ""
+  head = "".join(f'<p style="margin:0 0 4px">{_e(l)}</p>' for l in t["headline_lines"])
+  pts = [p for p in t["turns"] if p.get("decode_tok_s")]
+  svg = ""
+  if len(pts) > 1:
+    px, ttft, tok = [p["prefix"] for p in pts], [p["ttft_ms"] for p in pts], [p["decode_tok_s"] for p in pts]
+    x = lambda v: 40 + (v - min(px)) / ((max(px) - min(px)) or 1) * 520  # noqa: E731
+    line = lambda ys: " ".join(f"{x(a):.1f},{190 - b / (max(ys) or 1) * 170:.1f}" for a, b in zip(px, ys))  # noqa: E731
+    svg = ('<svg viewBox="0 0 700 220" role="img" style="width:100%;max-width:700px;height:auto">'
+           f'<polyline fill="none" stroke="var(--accent)" stroke-width="1.5" points="{line(ttft)}"/>'
+           f'<polyline fill="none" stroke="var(--ideal)" stroke-width="1.5" points="{line(tok)}"/>'
+           f'<g fill="var(--tx-3)" font-size="10"><text x="40" y="208">prefix {min(px):,}</text>'
+           f'<text x="560" y="208" text-anchor="end">{max(px):,} tokens</text>'
+           f'<text x="570" y="40">TTFT (max {max(ttft):,.0f} ms)</text><text x="570" y="56">decode tok/s (max {max(tok):.0f})</text></g></svg>')
+  body = head + svg + f'<p class="muted" style="margin:10px 0">{_e(t["words"])}</p>' + _cells_table(t["columns"], [r["cells"] for r in t["rows"]] + [t["total"]])
+  for w in t.get("wheres") or []:
+    if w.get("status") != "measured":
+      body += f'<p class="note">{_e(w["words"])}</p>'
+      continue
+    body += (f'<h3>{_e(w["title"])}</h3><p class="muted">{_e(w["words"])}</p>'
+             + _cells_table(w["columns"], [[r["name"], *r["cells"]] for r in w["rows"]] + [w["sum_cells"]])
+             + f'<p class="muted">{_e(w["server_line"])}</p>')
+  d = t.get("decode_where")
+  if d:
+    body += (f'<h3>{_e(d["title"])}</h3><p class="muted">{_e(d["words"])}</p>' + _cells_table(d["columns"], d["rows"])
+             if d.get("status") == "measured" else f'<p class="note">{_e(d["words"])}</p>')
+  return _section(2, t["title"], body)
+
+
 def _per_role(loss:dict[str, Any]) -> str:
   if loss.get("refused"):
     return _section(3, "Per role", f'<p class="note">Per role: not shown. {_e(loss["refused"])}</p>')
@@ -1014,7 +1054,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
   measured = _measured(loss) is not None
   sections = _answer(manifest, results, measure, source_run)
   if measured:
-    sections += _where(loss) + _session(loss) + _where_token(loss) + _prefill_curve(loss) + _prefill_audit(loss) + _per_role(loss) + _next(loss, policy)
+    sections += _where(loss) + _session(loss) + _replay(loss) + _where_token(loss) + _prefill_curve(loss) + _prefill_audit(loss) + _per_role(loss) + _next(loss, policy)
   sections += _probe(results) + _facts(manifest, results, measure, gameplan)
   sections = _number(sections)
   return (

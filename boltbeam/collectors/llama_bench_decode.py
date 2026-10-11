@@ -137,11 +137,14 @@ def decode_argv(llama_bench:str, model:pathlib.Path | str, depth:int, tokens:int
 
 
 def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int = 128, tokens:int = ROLE_TOKENS,
-              llama_bench:str = DEFAULT, layout:str = "one", gpus:int = 1, batch:int = 1) -> dict[str, Any]:
+              llama_bench:str = DEFAULT, layout:str = "one", gpus:int = 1, batch:int = 1,
+              flags:list[str] | None = None, raw:pathlib.Path | None = None, out:str = TRACE) -> dict[str, Any]:
   """llama.cpp's kernels per role, captured from outside by the GPU vendor's tool (collectors/vendor_capture.py)
   and attributed by bytes and count (collectors/attribution.py). Two captures at the same depth, one with
   `tokens` decode tokens and one with 1, are subtracted per kernel: what is left is exactly tokens - 1 decode
-  tokens, with the context fill, the setup and the first token removed."""
+  tokens, with the context fill, the setup and the first token removed. flags: llama-bench flags a caller matches to
+  another configuration (a replay's cache types); raw and out: the capture folder and trace file, when a run holds
+  more than one decode capture."""
   from boltbeam.collectors import attribution, vendor_capture
   from boltbeam.workflow import layout as lay
   if layout == "row":
@@ -151,7 +154,8 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int 
   if bench is None:
     raise CannotMeasure(available() or "llama-bench is missing", f"export {ENV}=/path/to/llama-bench")
   extra, env = lay.engine_args(layout, PROVIDER) if gpus > 1 else ([], {})
-  raw = run / RAW
+  extra = [*extra, *(flags or [])]
+  raw = raw or run / RAW
   if batch > 1:  # B streams: llama-batched-bench, the step time from its own t_tg
     batched = find_batched()
     if batched is None:
@@ -172,7 +176,7 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int 
     tok_s = bench_tok_s(printed)
     token_ms = 1000.0 / tok_s if tok_s else None
   return attribution.provider_trace(run, window, provider=PROVIDER, method=method, model_id=model_id,
-                                    target=target, context=context, tokens=tokens - 1, out=TRACE,
+                                    target=target, context=context, tokens=tokens - 1, out=out,
                                     token_ms=token_ms, long_kernels=len(long), overlap=overlap, batch=batch)
 
 

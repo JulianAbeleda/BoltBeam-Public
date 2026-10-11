@@ -727,6 +727,53 @@ func sessionBody(s *seam.Session) string {
 	return b.String()
 }
 
+// replayBody is the replay (workflow/replay.py) when the run carries one: the headline, a row per turn, then the
+// captured turns' where tables (or their one line) and the deepest decode.
+func replayBody(r *seam.Replay) string {
+	if r == nil || len(r.Rows) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n" + stHeader.Render(r.Title) + "\n")
+	for _, l := range r.HeadlineLines {
+		b.WriteString(l + "\n")
+	}
+	b.WriteString(stMuted.Render(r.Words) + "\n")
+	head := []string{}
+	for _, c := range r.Columns {
+		head = append(head, strings.ToUpper(c))
+	}
+	rows := [][]string{head}
+	for _, row := range r.Rows {
+		rows = append(rows, row.Cells)
+	}
+	b.WriteString(table(append(rows, r.Total)))
+	if len(r.Unmodelled) > 0 {
+		b.WriteString(stMuted.Render("Not in the ceiling: "+strings.Join(r.Unmodelled, "; ")+".") + "\n")
+	}
+	for _, w := range r.Wheres {
+		if w.Status != "measured" {
+			b.WriteString(stMuted.Render(w.Words) + "\n")
+			continue
+		}
+		b.WriteString(whereBody(&w.Where))
+		b.WriteString(stMuted.Render(w.ServerLine) + "\n")
+	}
+	if d := r.DecodeWhere; d != nil {
+		if d.Status != "measured" {
+			b.WriteString(stMuted.Render(d.Words) + "\n")
+		} else {
+			b.WriteString("\n" + stHeader.Render(d.Title) + "\n" + stMuted.Render(d.Words) + "\n")
+			head := []string{}
+			for _, c := range d.Columns {
+				head = append(head, strings.ToUpper(c))
+			}
+			b.WriteString(table(append([][]string{head}, d.Rows...)))
+		}
+	}
+	return b.String()
+}
+
 func whereTable(w *seam.Where, drop []string) string {
 	head := []string{}
 	for _, c := range w.Columns {
@@ -904,6 +951,7 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		}
 	}
 	b.WriteString(sessionBody(l.Session))
+	b.WriteString(replayBody(l.Replay))
 	b.WriteString(whereBody(l.WhereTokenGoes))
 	b.WriteString(auditBody(l.PrefillAudit))
 	if l.Refused != nil {

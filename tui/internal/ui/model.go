@@ -136,6 +136,10 @@ type enginesMsg struct {
 	scan *seam.Engines
 	err  error
 }
+type replayMsg struct {
+	choices *seam.ReplayChoices
+	err     error
+}
 type noteMsg string
 
 // emitMsg is the answer of Emit: the gameplan Python wrote, or why it could not.
@@ -438,6 +442,13 @@ func (m Model) startRun(provider string) tea.Cmd {
 		layout = "" // one GPU: the engine runs as it always has
 	}
 	store, batch, roleTime, workload := m.store, "", m.f.roleTimeArg(), m.f.workload()
+	trace, server := "", ""
+	if workload == "replay" {
+		if s := m.f.replayShape(); s != nil {
+			trace = s.Name
+		}
+		server = m.f.ReplayArgv
+	}
 	if b := m.f.batch(); b > 1 && workload == "decode" { // batch is decode's: a prefill reads one prompt
 		batch = strconv.Itoa(b) // batch 1 is always timed beside it
 	}
@@ -457,7 +468,7 @@ func (m Model) startRun(provider string) tea.Cmd {
 			path = abs
 		}
 		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: workload, Measure: "auto", Provider: provider,
-			Layout: layout, Analyze: true, Batch: batch, RoleTime: roleTime})
+			Layout: layout, Analyze: true, Batch: batch, RoleTime: roleTime, ReplayTrace: trace, ServerArgv: server})
 		if _, err := m.store.Start(id, m.client.Repo, argv); err != nil {
 			return noteMsg("Start failed: " + err.Error())
 		}
@@ -749,6 +760,11 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		if reload != nil {
 			return m, reload
 		}
+	case replayMsg:
+		if msg.err != nil {
+			m.note = "Replay choices: " + msg.err.Error()
+		}
+		m.f.Replay = msg.choices
 	case enginesMsg:
 		m.f.EngineScan = false
 		if msg.err != nil { // the Engine line shows what was found; only a failure needs words
@@ -1123,6 +1139,17 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, func() tea.Msg { return noteMsg("Type a batch size from 1 to 512.") }
 	case "workload":
 		m.f.Workload = a.arg
+		if a.arg == "replay" { // stay: the trace and the server are picked here, from what this machine has
+			client := m.client
+			return m, func() tea.Msg { c, err := client.ReplayChoices(); return replayMsg{c, err} }
+		}
+		m.backToSetup()
+		return m, nil
+	case "replayshape":
+		m.f.ReplayShape = a.arg
+		return m, nil
+	case "replayserver":
+		m.f.ReplayArgv = a.arg
 		m.backToSetup()
 		return m, nil
 	case "measurement":

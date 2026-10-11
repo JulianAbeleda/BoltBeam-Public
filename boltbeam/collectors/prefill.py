@@ -62,12 +62,14 @@ def _bench(run:pathlib.Path) -> str:
   return bench
 
 
-def llama_argv(bench:str, model:str, length:int, reps:int, *, warmup:bool = True, depth:int = 0, gen:int = 0) -> list[str]:
+def llama_argv(bench:str, model:str, length:int, reps:int, *, warmup:bool = True, depth:int = 0, gen:int = 0,
+               extra:list[str] | None = None) -> list[str]:
   """One prompt of `length` tokens, no generation, the engine's own ubatch and batch (its defaults, recorded back).
   depth: the prompt goes after that many tokens already in the cache (llama-bench -d, which fills them untimed);
-  gen: also that many generated tokens at the depth, its own row."""
+  gen: also that many generated tokens at the depth, its own row; extra: flags a caller matches to another
+  configuration (a replay's cache types, chunk and flash attention, read from the user's server)."""
   return [bench, "-m", str(pathlib.Path(model).absolute()), "-p", str(length), "-n", str(gen), "-ngl", "99", "-r", str(reps),
-          *(["-d", str(depth)] if depth else []), "-o", "json", *([] if warmup else ["--no-warmup"])]
+          *(["-d", str(depth)] if depth else []), "-o", "json", *([] if warmup else ["--no-warmup"]), *(extra or [])]
 
 
 def llama_row(text:str, field:str = "n_prompt") -> dict[str, Any]:
@@ -141,21 +143,25 @@ PROMPT_WORDS = {"llama.cpp": "llama-bench's own prompt: token ids drawn by std::
 MAX_CAPTURE_LAUNCHES = 1_000_000  # a capture estimated to hold more launches than this is not taken: its time stands alone
 
 
-def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0) -> dict[str, Any]:
+def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0, extra:list[str] | None = None,
+                  raw:pathlib.Path | None = None) -> dict[str, Any]:
   """One prefill captured after the warm-up; at a depth, the depth filled then the prompt twice (llama-bench keeps
-  the filled cache for its second repetition), the last one measured (prefill_attribution.REPEAT)."""
+  the filled cache for its second repetition), the last one measured (prefill_attribution.REPEAT). extra: llama_argv's;
+  raw: the capture's folder, when a run holds more than one capture of one length at one depth."""
   from boltbeam.collectors import vendor_capture
   from boltbeam.collectors.prefill_attribution import REPEAT
   bench = _bench(run)
-  raw = run / RAW / (f"{length}-at-{depth}" if depth else str(length))
-  launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, 2 if depth else 1, depth=depth), raw)
+  raw = raw or run / RAW / (f"{length}-at-{depth}" if depth else str(length))
+  launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, 2 if depth else 1, depth=depth,
+                                                               extra=extra), raw)
   row = llama_row(vendor_capture.program_output(raw))
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1,
           "warmup": REPEAT if depth else True, "formats": llama_formats(row.get("type_k"), weight_quants(run)),
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches),
-          "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches)}
+          "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches),
+          "measured_ms": float((row.get("samples_ns") or [row["avg_ns"]])[-1]) / 1e6}  # the repetition attributed
 
 
 def weight_quants(run:pathlib.Path) -> set[str]:
@@ -573,6 +579,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     per_chunk = len(cap["launches"]) / 2 / max(len(cap["chunk"]), 1) if cap["warmup"] else len(cap["launches"]) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
                                    "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen,
+                                   **({"measured_ms": cap["measured_ms"]} if cap.get("measured_ms") else {}),
                                    "peaks_at": peaks, "peaks_clock": peaks_clock, "pairing_roles": pairing_source,
                                    "paths_how": cap["paths"]["how"], "libraries": cap["paths"]["libraries"], **attr}
   (run / trace).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")

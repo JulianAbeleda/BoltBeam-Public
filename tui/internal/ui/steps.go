@@ -56,19 +56,22 @@ type Facts struct {
 	CJob        *jobs.Job          // the compare job, id "<run>-compare"
 	CTail       []string
 	Spin        string
-	Confirm     string        // the run id waiting for a second enter before it is deleted
-	Batch       int           // streams decoded at once; 0 means 1
-	BatchTyped  string        // digits typed on the batch picker
-	Measurement string        // how roles are timed, as picked: in_model or generic; "" is Python's default here
-	Workload    string        // what the Run measures: decode or prefill; "" is decode
-	Plan        *seam.Emitted // the gameplan Emit wrote for the run on screen (screen emit); nil before Emit
-	Emitting    bool          // an Emit is running
-	ShowLog     bool          // l: the running screen shows the raw log
-	Frac        float64       // the bar, 0 to 1; it never goes back while one job runs
-	fracJob     string        // the job Frac belongs to
-	stageAt     time.Time     // when this screen saw the current step start
-	stageDone   int           // the step count stageAt was taken at
-	logRoom     int           // screen lines the log may take under the bar; 0: up to 20
+	Confirm     string              // the run id waiting for a second enter before it is deleted
+	Batch       int                 // streams decoded at once; 0 means 1
+	BatchTyped  string              // digits typed on the batch picker
+	Measurement string              // how roles are timed, as picked: in_model or generic; "" is Python's default here
+	Workload    string              // what the Run measures: decode or prefill; "" is decode
+	Replay      *seam.ReplayChoices // a replay's shapes and the servers running here, loaded when replay is picked
+	ReplayShape string              // the picked shape; "" is the default
+	ReplayArgv  string              // the server command the user confirmed for a replay; "" until then
+	Plan        *seam.Emitted       // the gameplan Emit wrote for the run on screen (screen emit); nil before Emit
+	Emitting    bool                // an Emit is running
+	ShowLog     bool                // l: the running screen shows the raw log
+	Frac        float64             // the bar, 0 to 1; it never goes back while one job runs
+	fracJob     string              // the job Frac belongs to
+	stageAt     time.Time           // when this screen saw the current step start
+	stageDone   int                 // the step count stageAt was taken at
+	logRoom     int                 // screen lines the log may take under the bar; 0: up to 20
 }
 
 // clock is the time the screen reads; a variable so a test can fix it.
@@ -173,6 +176,9 @@ func (f Facts) missing() []string {
 	if p := f.engineRow(); p == nil || !p.Available {
 		out = append(out, "an engine")
 	}
+	if f.workload() == "replay" && f.ReplayArgv == "" {
+		out = append(out, "the server to replay on")
+	}
 	return out
 }
 
@@ -262,7 +268,7 @@ func setupActions(f Facts) []action {
 		{summary("Model", modelValue(f)), "page", fmt.Sprint(pageModel)},
 		{summary("Chip", chipValue(f)), "page", fmt.Sprint(pageChip)},
 		{summary("Engine", engineValue(f)), "page", fmt.Sprint(pageEngine)},
-		{summary("Workload", f.workload()), "page", fmt.Sprint(pageWorkload)},
+		{summary("Workload", workloadValue(f)), "page", fmt.Sprint(pageWorkload)},
 		{summary("Batch", fmt.Sprint(f.batch())), "page", fmt.Sprint(pageBatch)},
 		{summary("Measurement", measurementValue(f)), "page", fmt.Sprint(pageMeasurement)},
 	}
@@ -1048,6 +1054,28 @@ var workloads = []struct{ id, about, missing string }{
 	{"decode", "one token at a time, after the prompt", ""},
 	{"prefill", "the prompt read at once, at lengths up to the model's cap", ""},
 	{"session", "a turn appended at depths up to the context that fits", ""},
+	{"replay", "a recorded session replayed on your server's flags", ""},
+}
+
+// replayShape is the picked shape, else the default the shapes list names.
+func (f Facts) replayShape() *seam.ReplayShape {
+	if f.Replay == nil {
+		return nil
+	}
+	for i, s := range f.Replay.Shapes {
+		if s.Name == f.ReplayShape || (f.ReplayShape == "" && s.Name == f.Replay.Default) {
+			return &f.Replay.Shapes[i]
+		}
+	}
+	return nil
+}
+
+// workloadValue is the Setup line: the workload, and for a replay its trace in a few words.
+func workloadValue(f Facts) string {
+	if s := f.replayShape(); f.workload() == "replay" && s != nil {
+		return "replay (" + s.Label + ")"
+	}
+	return f.workload()
 }
 
 // workload is the chosen workload; decode until another is picked.
@@ -1061,7 +1089,8 @@ func (f Facts) workload() string {
 func workloadBody(Facts, int) string {
 	return "Workload is what the Run measures. Decode times one token at a time. Prefill times the prompt read at once, " +
 		"from 512 tokens up to the model's own cap. Session times a 512-token turn appended to a cache already holding " +
-		"1K, then 4 times more, up to the context that fits before compaction."
+		"1K, then 4 times more, up to the context that fits before compaction. Replay plays a recorded session, as " +
+		"token counts, through your own llama-server command and shows each turn against its roofline."
 }
 
 func workloadActions(f Facts) []action {
@@ -1076,6 +1105,30 @@ func workloadActions(f Facts) []action {
 			chosen = stAccent.Render("● ")
 		}
 		out = append(out, action{fmt.Sprintf("%s%-8s %s", chosen, w.id, stMuted.Render(w.about)), "workload", w.id})
+	}
+	if f.workload() != "replay" || f.Replay == nil {
+		return out
+	}
+	out = append(out, head("Trace"))
+	pick := f.replayShape()
+	for _, s := range f.Replay.Shapes {
+		chosen := "  "
+		if pick != nil && s.Name == pick.Name {
+			chosen = stAccent.Render("● ")
+		}
+		out = append(out, action{chosen + s.Label + "  " + stMuted.Render(s.Words), "replayshape", s.Name})
+	}
+	out = append(out, head("Server to replay on (enter confirms it)"))
+	if len(f.Replay.Servers) == 0 {
+		out = append(out, note("  no llama-server is running here; start yours, then pick replay again"))
+	}
+	for _, argv := range f.Replay.Servers {
+		cmd := strings.Join(argv, " ")
+		chosen := "  "
+		if cmd == f.ReplayArgv {
+			chosen = stAccent.Render("● ")
+		}
+		out = append(out, action{chosen + cmd, "replayserver", cmd})
 	}
 	return out
 }

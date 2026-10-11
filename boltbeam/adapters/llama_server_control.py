@@ -139,6 +139,30 @@ def _wait_healthy(base_url:str, process:subprocess.Popen, timeout_s:float) -> No
 
 
 @contextlib.contextmanager
+def _running(command:list[str], base_url:str, log_path:str | pathlib.Path, startup_timeout_s:float,
+             environ:Mapping[str, str] | None):
+  """The command started in its own session with its output in the log, waited on until /health answers; stopped
+  (its whole process group) when the block ends."""
+  log = pathlib.Path(log_path)
+  log.parent.mkdir(parents=True, exist_ok=True)
+  with log.open("w", encoding="utf-8") as stream:
+    process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT,
+                               env=dict(os.environ if environ is None else environ), start_new_session=True)
+    try:
+      _wait_healthy(base_url, process, startup_timeout_s)
+      yield
+    finally:
+      if process.poll() is None:
+        try: os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError: pass
+        try: process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+          try: os.killpg(process.pid, signal.SIGKILL)
+          except ProcessLookupError: pass
+          process.wait(timeout=5)
+
+
+@contextlib.contextmanager
 def serve(*, executable:str | pathlib.Path, model:str | pathlib.Path, context_size:int, log_path:str | pathlib.Path,
           startup_timeout_s:float = 180.0, environ:Mapping[str, str] | None = None, extra:Sequence[str] = ()):
   """One clean llama server on a free local port for the block: yields (base url, its command), then stops it."""
@@ -150,23 +174,42 @@ def serve(*, executable:str | pathlib.Path, model:str | pathlib.Path, context_si
   base_url = f"http://127.0.0.1:{port}"
   command = [str(server), "--model", str(model_path), "--host", "127.0.0.1", "--port", str(port),
              "--ctx-size", str(context_size), "--n-gpu-layers", "99", "--no-warmup", *extra]
-  log = pathlib.Path(log_path)
-  log.parent.mkdir(parents=True, exist_ok=True)
-  with log.open("w", encoding="utf-8") as stream:
-    process = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT,
-                               env=dict(os.environ if environ is None else environ), start_new_session=True)
-    try:
-      _wait_healthy(base_url, process, startup_timeout_s)
-      yield base_url, command
-    finally:
-      if process.poll() is None:
-        try: os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError: pass
-        try: process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-          try: os.killpg(process.pid, signal.SIGKILL)
-          except ProcessLookupError: pass
-          process.wait(timeout=5)
+  with _running(command, base_url, log_path, startup_timeout_s, environ):
+    yield base_url, command
+
+
+OWN_FLAGS = ("--host", "--port")  # the only flags serve_argv replaces in a user's command
+
+
+def own_argv(argv:Sequence[str], port:int) -> list[str]:
+  """The user's server command with only --host and --port replaced (a loopback host and this port); nothing added."""
+  out, skip = [], False
+  for a in argv:
+    if skip:
+      skip = False
+      continue
+    if a in OWN_FLAGS:
+      skip = True
+      continue
+    if a.split("=", 1)[0] in OWN_FLAGS:
+      continue
+    out.append(a)
+  return [*out, "--host", "127.0.0.1", "--port", str(port)]
+
+
+@contextlib.contextmanager
+def serve_argv(argv:Sequence[str], *, log_path:str | pathlib.Path, startup_timeout_s:float = 600.0,
+               environ:Mapping[str, str] | None = None):
+  """The user's own server command on a free local port: yields (base url, the command run, seconds from start to
+  /health answering), then stops it."""
+  if not argv or not pathlib.Path(argv[0]).expanduser().is_file():
+    raise FileNotFoundError(f"llama server not found: {argv[0] if argv else '(empty command)'}")
+  port = _free_port()
+  base_url = f"http://127.0.0.1:{port}"
+  command = own_argv([str(pathlib.Path(argv[0]).expanduser()), *argv[1:]], port)
+  began = time.monotonic()
+  with _running(command, base_url, log_path, startup_timeout_s, environ):
+    yield base_url, command, time.monotonic() - began
 
 
 def run_llama_server_control(*, executable:str | pathlib.Path, model:str | pathlib.Path,
@@ -184,4 +227,4 @@ def run_llama_server_control(*, executable:str | pathlib.Path, model:str | pathl
   return result
 
 
-__all__ = ["measure_fixed_depth_output", "run_llama_server_control", "serve", "token_evidence"]
+__all__ = ["measure_fixed_depth_output", "own_argv", "run_llama_server_control", "serve", "serve_argv", "token_evidence"]

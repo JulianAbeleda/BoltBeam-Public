@@ -66,6 +66,7 @@ class Workload(str, Enum):
   DECODE = "decode"
   PREFILL = "prefill"
   SESSION = "session"  # a chat session at depth: the turn, decode, the KV cache, compaction (collectors/session.py)
+  REPLAY = "replay"  # a recorded session replayed on the user's own server, per turn against the roofline (collectors/replay.py)
 
 
 class Architecture(str, Enum):

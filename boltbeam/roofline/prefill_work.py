@@ -21,7 +21,7 @@ activation-out format. A stream-k fixup (`stream_k_fixup`) moves the partial til
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from boltbeam.quantization.quant import load_quant_registry
 
@@ -250,6 +250,46 @@ def ceiling(flops:float, nbytes:float, peak_tflops:float | None, bandwidth_gbs:f
     return {"ms": memory, "compute_ms": None, "memory_ms": memory, "bound": "memory"}
   bound = "compute" if memory is None or compute >= memory else "memory"
   return {"ms": max(compute, memory or 0.0), "compute_ms": compute, "memory_ms": memory, "bound": bound}
+
+
+def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int, depth:int, *, ubatch:int, batch:int,
+                 formats:dict[str, Any], weight_path:Callable[[str], str | None], attention_paths:dict[str, int],
+                 peaks:dict[str, float], bandwidth_gbs:float) -> dict[str, Any]:
+  """The ceiling of `length` tokens appended after `depth` in the cache, from the profile alone (no capture): per
+  weight role, per chunk, a GEMM at its path's peak or the bandwidth (a role once per model runs once per output call
+  over one token: the output head); attention at the depth with its operations split over its paths by instruction
+  sites; the recurrent block at the fp32 vector rate. Kernels the model counts no work for add nothing. roles:
+  prefill.prefill_roles; formats: the engine's (activations, attention_activations, kv); weight_path: a weight quant's
+  matrix path in this engine; ubatch, batch: the engine's chunk and the tokens per output call."""
+  if length <= 0:
+    return {"ms": 0.0, "rows": [], "unmodelled": []}
+  chunks = [min(ubatch, length - i) for i in range(0, length, ubatch)]
+  outputs = -(-length // batch)
+  acts = formats.get("activations")
+  rows, unmodelled = [], []
+  for r in roles:
+    path = weight_path(r["quant"])
+    once = r["count"] == 1
+    work_rows = [gemm(1, r["n"], r["k"], r["weight_bytes"], acts)] * outputs if once else \
+                [gemm(w, r["n"], r["k"], r["weight_bytes"], acts) for w in chunks for _ in range(r["count"])]
+    flops, nbytes = sum(x["flops"] for x in work_rows), sum(x["bytes"] for x in work_rows)
+    peak = peaks.get(path) if path and not once else None
+    if path and not once and peak is None:
+      unmodelled.append(f"{r['role']} {r['quant']}: no measured peak for {path}")
+    rows.append({"name": f"{r['role']} {r['quant']}", "flops": flops, "bytes": nbytes, **ceiling(flops, nbytes, peak, bandwidth_gbs)})
+  att = attention(profile, length, chunks, formats.get("kv") or "F16", formats.get("attention_activations") or acts, depth=depth)
+  if att:
+    comp = compute_ms(att["flops"], attention_paths, peaks) if attention_paths else None
+    if comp is None:
+      unmodelled.append("attention: its instruction paths were not read, so only its bytes bound it")
+    rows.append({"name": "attention", "flops": att["flops"], "bytes": att["bytes"],
+                 **ceiling(att["flops"], att["bytes"], None, bandwidth_gbs, comp)})
+  rec = recurrent(profile, length, chunks)
+  if rec:
+    rows.append({"name": "recurrent", "flops": rec["flops"], "bytes": rec["bytes"],
+                 **ceiling(rec["flops"], rec["bytes"], peaks.get(rec["path"]), bandwidth_gbs)})
+  return {"ms": sum(r["ms"] or 0.0 for r in rows), "rows": rows, "unmodelled": unmodelled, "chunks": len(chunks),
+          "outputs": outputs}
 
 
 def mfu(flops:float, ms:float, peak_tflops:float | None) -> float | None:
