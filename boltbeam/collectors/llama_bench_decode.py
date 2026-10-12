@@ -83,7 +83,7 @@ def batched_argv(binary:str, model:pathlib.Path | str, context:int, tokens:int, 
                  extra:list[str] | None = None) -> list[str]:
   """B streams, each with its own context-token prompt, then `tokens` decode steps; the KV cache holds them all."""
   n_kv = max(batches) * (context + tokens) + 16
-  return [binary, "-m", str(pathlib.Path(model).absolute()), "-c", str(n_kv), "-b", "2048", "-ub", "512", "-npp", str(context),
+  return [binary, "-m", str(pathlib.Path(model).absolute()), "-c", str(n_kv), "-npp", str(context),
           "-ntg", str(tokens), "-npl", ",".join(map(str, batches)), "-ngl", "99", "--output-format", "jsonl",
           *(extra or [])]
 
@@ -136,7 +136,7 @@ def decode_argv(llama_bench:str, model:pathlib.Path | str, depth:int, tokens:int
           "--no-warmup", "-o", "json", *(extra or [])]
 
 
-def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int = 128, tokens:int = ROLE_TOKENS,
+def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int, tokens:int = ROLE_TOKENS,
               llama_bench:str = DEFAULT, layout:str = "one", gpus:int = 1, batch:int = 1,
               flags:list[str] | None = None, raw:pathlib.Path | None = None, out:str = TRACE) -> dict[str, Any]:
   """llama.cpp's kernels per role, captured from outside by the GPU vendor's tool (collectors/vendor_capture.py)
@@ -154,7 +154,8 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int 
   if bench is None:
     raise CannotMeasure(available() or "llama-bench is missing", f"export {ENV}=/path/to/llama-bench")
   extra, env = lay.engine_args(layout, PROVIDER) if gpus > 1 else ([], {})
-  extra = [*extra, *(flags or [])]
+  from boltbeam.collectors.capture_settings import llama_flags
+  extra = [*extra, *llama_flags(run, context, capture=True), *(flags or [])]
   raw = raw or run / RAW
   if batch > 1:  # B streams: llama-batched-bench, the step time from its own t_tg
     batched = find_batched()
@@ -207,7 +208,8 @@ def bench_decode(llama_bench:str, model:pathlib.Path, depth:int, layout_args:lis
   rows = json.loads(proc.stdout[proc.stdout.find("["):])
   row = next(r for r in rows if int(r.get("n_gen", 0)) > 0)
   return {"tok_s": float(row["avg_ts"]), "stddev_tok_s": float(row.get("stddev_ts", 0.0)), "command": cmd,
-          "build": row.get("build_commit"), "backends": row.get("backends"), "gpu": row.get("gpu_info")}
+          "build": row.get("build_commit"), "backends": row.get("backends"), "gpu": row.get("gpu_info"),
+          "decode_tokens": int(row.get("n_gen", GEN_TOKENS)), "engine": {k: row[k] for k in ("n_ubatch", "n_batch", "type_k", "type_v", "flash_attn") if k in row}}
 
 
 def _here() -> str | None:
@@ -245,7 +247,7 @@ def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path
 def build_timing_trace(manifest:dict[str, Any], bench:dict[int, dict[str, Any]], peak_gbs:float | None) -> dict[str, Any]:
   """The trace from the measured decodes. Pure: the tests feed it numbers."""
   rows = [{"scope": "whole_step", "context": ctx, "wall_us": 1e6 / b["tok_s"], "tok_s": b["tok_s"],
-           "stddev_tok_s": b["stddev_tok_s"], "source": "llama-bench", **({"build": b["build"]} if b.get("build") else {})}
+           "stddev_tok_s": b["stddev_tok_s"], "source": "llama-bench", "engine": b.get("engine", {}), "decode_tokens": b.get("decode_tokens"), **({"build": b["build"]} if b.get("build") else {})}
           for ctx, b in sorted(bench.items())]
   trace = {
     "schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
@@ -295,18 +297,19 @@ def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_be
     raise CannotMeasure("llama-bench-decode times decode only; this run is prefill", "plan the run with workload decode")
   from boltbeam.workflow import progress
   bench = {}
-  contexts = request.get("contexts") or [0]
+  from boltbeam.collectors.capture_settings import contexts as requested_contexts, llama_flags
+  contexts = requested_contexts(run)
   parts = len(contexts) * (2 if any(int(b) > 1 for b in batches) else 1)
   progress.report(0, parts)
   for ctx in contexts:
     say(f"decode at depth {ctx}: llama-bench")
-    bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), layout_args, layout_env, cwd=run)
+    bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), [*layout_args, *llama_flags(run, int(ctx))], layout_env, cwd=run)
     progress.report(len(bench), parts)
   from boltbeam.workflow.screen import run_bandwidth
   trace = build_timing_trace(manifest, bench, run_bandwidth(run, facts["target"])[0])
   trace["aux_sources"] = {"llama_bench": {str(k): v for k, v in bench.items()}}
   trace["provider"] = PROVIDER
-  trace["batches"] = batch_points(bench, facts["model"], batches, say=say, layout_args=layout_args, env=layout_env, cwd=run)
+  trace["batches"] = batch_points(bench, facts["model"], batches, say=say, layout_args=[*layout_args, *llama_flags(run, max(contexts))], env=layout_env, cwd=run)
   out = timing_out or run / "timing_trace.json"
   out.parent.mkdir(parents=True, exist_ok=True)
   out.write_text(pretty_json(trace))

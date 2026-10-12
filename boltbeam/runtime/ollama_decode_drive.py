@@ -109,7 +109,8 @@ def main() -> int:
   ap.add_argument("--gguf", required=True)
   ap.add_argument("--models", required=True, help="OLLAMA_MODELS folder")
   ap.add_argument("--port", type=int, default=11534)
-  ap.add_argument("--contexts", default="128")
+  ap.add_argument("--model-context-limit", type=int)
+  ap.add_argument("--contexts", required=True)
   ap.add_argument("--batches", default="1")
   ap.add_argument("--tokens", type=int, default=64)
   ap.add_argument("--reps", type=int, default=3)
@@ -118,7 +119,7 @@ def main() -> int:
   a = ap.parse_args()
   contexts = [int(x) for x in a.contexts.split(",")]
   batches = [int(x) for x in a.batches.split(",")]
-  num_ctx = max(contexts) + max(a.tokens, a.once or 0) + 64
+  num_ctx = a.model_context_limit or max(contexts) + max(a.tokens, a.once or 0) + 64
   for batch in (batches[:1] if a.once else batches):
     with Server(a.ollama, a.port, a.models, batch, pathlib.Path(a.log)) as s:
       mf = pathlib.Path(a.models) / "Modelfile"
@@ -142,6 +143,7 @@ def main() -> int:
           prompt_tokens = prompt_tokens or got[0].get("prompt_eval_count")  # later calls reuse the cached prompt
         per = statistics.median(stream)
         print(json.dumps({"context": context, "batch": batch, "tokens": a.tokens, "prompt_tokens": prompt_tokens,
+                          "engine": {"build": call(s.base, "/api/version").get("version"), "num_ctx": num_ctx},
                           "step_ms": 1000.0 / per, "tok_s_stream": per, "tok_s_total": statistics.median(total)}),
               flush=True)
   return 0

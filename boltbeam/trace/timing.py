@@ -42,6 +42,7 @@ def build_trace_request(profile:ModelProfile, target:TargetProfile, workload_pro
     "target_id": target.target_id,
     "workload": workload,
     "contexts": contexts,
+    **({"engine_settings": workload_profile["engine_settings"]} if workload_profile.get("engine_settings") else {}),
     "provider_neutral": True,
     "execution": {
       "context_mode": "fixed_decode_depth" if workload == "decode" else "fixed_prefill_length",

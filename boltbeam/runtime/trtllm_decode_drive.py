@@ -10,6 +10,8 @@ ignore_eos, greedy), step ms = (time of N - time of 1) / (N - 1).
 """
 from __future__ import annotations
 
+import importlib.metadata
+
 import argparse, json, statistics, time
 
 
@@ -36,7 +38,8 @@ def main() -> int:
   ap = argparse.ArgumentParser()
   ap.add_argument("--probe", action="store_true")
   ap.add_argument("--model")
-  ap.add_argument("--contexts", default="128")
+  ap.add_argument("--model-context-limit", type=int)
+  ap.add_argument("--contexts")
   ap.add_argument("--batches", default="1")
   ap.add_argument("--tokens", type=int, default=64)
   ap.add_argument("--reps", type=int, default=3)
@@ -48,6 +51,8 @@ def main() -> int:
   if a.probe:
     print(json.dumps({"reason": probe()}), flush=True)
     return 0
+  if not a.contexts:
+    ap.error("--contexts is required for a measurement")
   from tensorrt_llm import SamplingParams
   if a.backend == "tensorrt":  # a TensorRT engine is built for this GPU, then run
     from tensorrt_llm._tensorrt_engine import LLM
@@ -55,7 +60,7 @@ def main() -> int:
     from tensorrt_llm import LLM
   contexts = [int(x) for x in a.contexts.split(",")]
   batches = [int(x) for x in a.batches.split(",")]
-  max_len = max(contexts) + max(a.tokens, a.once or 0) + 8
+  max_len = a.model_context_limit or max(contexts) + max(a.tokens, a.once or 0) + 8
   llm = LLM(model=a.model, max_seq_len=max_len, max_batch_size=max(batches), max_num_tokens=max(8192, max_len))
   backend = a.backend or "pytorch"
   vocab = 150000
@@ -87,7 +92,8 @@ def main() -> int:
       step_ms = (long_s - short_s) * 1000.0 / (a.tokens - 1)
       print(json.dumps({"context": context, "batch": batch, "tokens": a.tokens, "long_s": long_s, "short_s": short_s,
                         "step_ms": step_ms, "tok_s_stream": 1000.0 / step_ms, "tok_s_total": batch * 1000.0 / step_ms,
-                        "backend": backend}), flush=True)
+                        "backend": backend, "engine": {"build": importlib.metadata.version("tensorrt_llm"),
+                                                        "max_seq_len": max_len}}), flush=True)
   return 0
 
 

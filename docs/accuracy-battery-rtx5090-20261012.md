@@ -281,3 +281,30 @@ The completed 27B vLLM repeat fails the original row-spread prediction: normaliz
 
 The resident model server was restored from its exact saved command. `/health` is ok, a chat to its alias completed,
 and `/props` reports b11571-097cf33d9. The run folders were copied to the Mac without `.nsys-rep` files.
+
+## Repeat-derived bands after the battery
+
+The criteria above remain the predictions written before the runs. The product now derives future timing judgments
+from an independent repeat pair of the exact setup, with one absolute spread per row and its relative equivalent.
+This changes the measurement policy; it does not rewrite the earlier pass/fail results.
+
+The saved prefill pairs produce these bands without further GPU work. Both repeats were measured on 2026-10-12.
+
+| Engine build | Prompt tokens | Rows | Relative row spreads | Largest absolute row spread |
+|---|---:|---:|---:|---|
+| llama.cpp 097cf33d9 | 512 | 29 | 0.0032–3.6679% | FFN gate/up: 0.091973 ms |
+| llama.cpp 097cf33d9 | 2048 | 29 | 0.0037–2.8484% | FFN gate/up: 0.156758 ms |
+| vLLM 0.31.0 | 512 | 43 | 0.0116–14.4470% | FFN gate/up: 0.288746 ms |
+| vLLM 0.31.0 | 2048 | 43 | 0–37.4464% | FFN gate/up: 2.855395 ms |
+
+The calibration artifact records both source dates, engine builds, setup and evidence hashes. Widths remain
+row-specific; there is no percentage constant or minimum millisecond floor. A zero observed spread is recorded
+as zero, with no claim that two repeats establish statistical confidence.
+
+The old llama.cpp decode repeats captured context 128 while requesting 512. They cannot calibrate the requested
+512 setup. Its judgment is **not checked** until a matching independent pair exists. Other engines, models and
+workloads also remain not checked without their own matching repeat evidence.
+
+Capture commands now derive context and token count from the persisted request and untraced measurement, and
+preserve observed chunk, cache, batch and allocation settings where the adapter supports them. Unsupported requests
+or missing required evidence are refused. Compiler CUDA and torch runtime CUDA are separate observations.

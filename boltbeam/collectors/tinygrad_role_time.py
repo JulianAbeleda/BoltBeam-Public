@@ -182,16 +182,14 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
 
 INCOMPLETE = "incomplete measurement"
 OVERCOUNTED = "overcounted measurement"
-DEFAULT_BAND = 0.01  # the band when the chip has none recorded
-BAND_RULE = ("within ±{pct:.1f}% of the floor counts as at the limit: the largest of this chip's read probe spread, "
-             "its cold to sustained difference and its documented run-to-run range, at least 1%")
-AT_LIMIT_NOISE = "at the limit (within ±{pct:.1f}%)"
+AT_LIMIT_NOISE = "at the limit (within measured repeat spread ±{ms:.6f} ms)"
 
-
-def noise_band(band:float | None) -> dict[str, Any]:
-  """The chip's one plausibility band (screen.plausibility_band), at least 1%, with the sentence that explains it."""
-  b = max(float(band or 0.0), DEFAULT_BAND)
-  return {"band": b, "words": BAND_RULE.format(pct=100 * b)}
+def noise_band(band:dict | None) -> dict[str, Any]:
+  """Only a scoped repeat calibration supplies an uncertainty band."""
+  from boltbeam.workflow.repeat_bands import end_to_end_width
+  measured = band if isinstance(band, dict) else None
+  return {"calibration": measured, "width_ms": end_to_end_width(measured),
+          "words": "per-row measured repeat spread" if measured else "not checked: no repeat band for this setup"}
 
 
 def refusal(table:dict[str, Any], limit_ms:float | None) -> str | None:
@@ -200,30 +198,29 @@ def refusal(table:dict[str, Any], limit_ms:float | None) -> str | None:
   it); further below is refused. The captured run's own token time is an upper bound: kernels that run one after
   another fit inside it."""
   token_ms = table.get("token_ms")
+  from boltbeam.workflow.repeat_bands import width
   total = table.get("band") or noise_band(None)
-  if token_ms and table["kernel_ms"] > token_ms * (1 + total["band"]):
-    return (f"{OVERCOUNTED}: {table['kernel_ms']:.2f} ms of GPU time per token is more than the "
-            f"{token_ms:.2f} ms the captured run took per token by more than ±{100 * total['band']:.1f}%, so the "
-            "capture counted work outside the decode tokens or kernels that overlap")
-  if limit_ms and not table.get("isolated") and table["kernel_ms"] < limit_ms * (1 - total["band"]):
-    # (an isolated table sums only the weight kernels it timed, so the whole-token floor does not bound it)
-    return (f"{INCOMPLETE}: {table['kernel_ms']:.2f} ms of GPU time per token is below the limit's floor of "
-            f"{limit_ms:.2f} ms by more than ±{100 * total['band']:.1f}%, so the "
-            "capture missed kernels or counted tokens wrong")
+  spread = total["width_ms"]
+  if spread is not None and token_ms and table["kernel_ms"] - token_ms > spread:
+    return f"{OVERCOUNTED}: kernel time exceeds captured token by more than its measured repeat spread"
+  if spread is not None and limit_ms and not table.get("isolated") and limit_ms - table["kernel_ms"] > spread:
+    return f"{INCOMPLETE}: kernel time is below the floor beyond its measured repeat spread"
   from boltbeam.role_key import role_label
-  below = [r for r in table["roles"] if r["actual_ms"] < r["ideal_ms"] * (1 - total["band"])]
+  below = []
+  for row in table["roles"]:
+    key = role_label(row["role"], row["quant"], row.get("shape"))
+    delta = width(total["calibration"], key, work={"calls": row.get("calls_per_token"), "limit_ms": row["ideal_ms"]})
+    if delta is not None and row["ideal_ms"] - row["actual_ms"] > delta:
+      below.append(key)
   if below:
-    names = ", ".join(f"{role_label(r['role'], r['quant'], r.get('shape'))} {r['actual_ms']:.2f} < {r['ideal_ms']:.2f} ms "
-                      for r in below)
-    return (f"{INCOMPLETE}: {len(below)} role(s) measured more than ±{100 * total['band']:.1f}% below their floor ({names}), "
-            "so the capture missed kernels")
+    return f"{INCOMPLETE}: roles below their floor beyond measured repeat spread: {', '.join(below)}"
   return None
 
 
 def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
-         limit_ms:float | None = None, band:float | None = None) -> dict[str, Any] | None:
+         limit_ms:float | None = None, band:dict | None = None) -> dict[str, Any] | None:
   """Per role: ideal ms (roofline), actual ms (in model), lost ms; sorted by lost ms. None without a trace.
-  A table that breaks a floor beyond the chip's band (noise_band) comes back as {"status": "incomplete", "reason":
+  A table that breaks a floor beyond its row's measured repeat spread comes back as {"status": "incomplete", "reason":
   ...} with no numbers. A role inside the band is labelled at the limit and loses 0 ms. A kernel row with a status
   other than measured (an isolated row the timer had no adapter for) is not a time: it is left out of the roles,
   the floor rule and the sums, and listed in not_timed with its reason, so a 0 µs row never reads as below its floor
@@ -260,12 +257,17 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
       got = actual.get((c["role"], c["quant"]))  # a trace without shapes keys by role and quant
     if got is None: continue
     ms = got["us"] / tokens / 1000.0
-    noise = ms < c["floor_ms"] and ms >= c["floor_ms"] * (1 - chip["band"])
+    from boltbeam.workflow.repeat_bands import width
+    from boltbeam.role_key import role_label
+    delta = width(chip["calibration"], role_label(c["role"], c["quant"], shape_nk(c)),
+                  work={"calls": got["calls"] / tokens, "limit_ms": c["floor_ms"]})
+    noise = delta is not None and 0 < c["floor_ms"] - ms <= delta
     out.append({"role": c["role"], "quant": c["quant"], "shape": list(shape_nk(c) or []) or None, "ideal_ms": c["floor_ms"], "actual_ms": ms,
                 "lost_ms": ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens,
                 "less_floor_ms": got["us_less_floor"] / tokens / 1000.0 if floor_us is not None else None,
                 "spread_pct": got["spread_pct"],
-                "within_noise": noise, "label": AT_LIMIT_NOISE.format(pct=100 * chip["band"]) if noise else None})
+                "within_noise": noise, "check_status": "checked" if delta is not None else "not checked",
+                "band_ms": delta, "label": AT_LIMIT_NOISE.format(ms=delta) if noise else None})
   total_lost = sum(max(r["lost_ms"], 0.0) for r in out)
   for r in out: r["share"] = (max(r["lost_ms"], 0.0) / total_lost) if total_lost > 0 else 0.0
   out.sort(key=lambda r: -r["lost_ms"])
@@ -275,6 +277,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
            "isolated": whole.get("measurement_scope") == "summed_isolated_kernels", "floor_us": floor_us,
            "not_attributed_ms": whole_ms - sum(r["actual_ms"] for r in out), "token_ms": whole.get("token_ms"),
            "unpaired_roles": list(trace.get("unpaired_roles") or []), "band": chip,
+           "check_status": "checked" if chip["width_ms"] is not None and all(r["check_status"] == "checked" for r in out) else "not checked",
            # a limit role the timer had no adapter for: its own row with the reason, outside the floor rule and the sums
            "not_timed": [n for n in not_timed if role_key(n) in {role_key(c) for c in ceiling_roles}
                          or (n["role"], n["quant"]) in {(c["role"], c["quant"]) for c in ceiling_roles}]}

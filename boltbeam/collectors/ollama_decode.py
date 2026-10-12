@@ -51,13 +51,15 @@ def available(target, env:dict[str, str] | None = None) -> str | None:
 
 
 def argv(model:str, contexts:list[int], batches:list[int], *, tokens:int = TOKENS, reps:int = REPS,
-         once:int | None = None, log:str = "ollama-serve.log") -> list[str]:
+         once:int | None = None, log:str = "ollama-serve.log", context_limit:int | None = None) -> list[str]:
   exe = program()
   if exe is None:
     raise RuntimeError(f"ollama was not found in ${ENV} or on PATH")
   out = [sys.executable, str(DRIVER), "--ollama", exe, "--gguf", model, "--models", models_folder(),
          "--port", str(PORT), "--contexts", ",".join(map(str, contexts)), "--batches", ",".join(map(str, batches)),
          "--tokens", str(tokens), "--reps", str(reps), "--log", log]
+  if context_limit is not None:
+    out += ["--model-context-limit", str(context_limit)]
   return out + (["--once", str(once)] if once else [])
 
 
@@ -67,15 +69,17 @@ def whole_step(model:str, contexts:list[int], batches:list[int], *, log:pathlib.
     log.parent.mkdir(parents=True, exist_ok=True)
   serve_log = str(log.with_suffix(".serve.log")) if log else "ollama-serve.log"
   rows = ec.run_driver(argv(model, contexts, batches, tokens=tokens, log=serve_log), log=log)
-  return [ec.point(r["context"], r["batch"], r["step_ms"], tokens=r["tokens"], prompt_tokens=r.get("prompt_tokens"),
+  return [ec.point(r["context"], r["batch"], r["step_ms"], tokens=r["tokens"], engine=r.get("engine", {}), prompt_tokens=r.get("prompt_tokens"),
                    tok_s_total_measured=r["tok_s_total"], source="Ollama API eval_count / eval_duration")
           for r in rows]
 
 
-def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int = 128, batch:int = 1,
+def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int, batch:int = 1,
               tokens:int = ROLE_TOKENS) -> dict[str, Any]:
   raw = run / "kernel_compare"
   raw.mkdir(parents=True, exist_ok=True)
+  from boltbeam.collectors.capture_settings import context_limit
+  limit = context_limit(run, context, 'num_ctx')
   return ec.captured_role_time(run, provider=PROVIDER, trace=TRACE, target=target, model_id=model_id,
                                context=context, tokens=tokens, batch=batch, flush_ms=FLUSH_MS,
                                argv_for=lambda n: argv(model, [context], [batch], tokens=n, reps=1, once=n,

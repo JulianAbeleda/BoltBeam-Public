@@ -42,7 +42,6 @@ SERVER_LOG = "replay_server.log"
 CAPTURE = "replay_capture.json"
 INTERVAL_S = 0.01  # a 150 ms turn at the default 50 ms would hold three samples
 HEADROOM = 64  # tokens left free under the server's context: the replay stops before a turn would need them
-TIE_OUT = 0.10  # a capture stands for the server's turn only when llama-bench's turn is within this share of prompt_ms
 DECODE_TOKENS = 64  # decode tokens in the deep turn's decode capture
 REQUEST = {"temperature": 0.0, "ignore_eos": True, "cache_prompt": True, "stream": True,
            "stream_options": {"include_usage": True}, "chat_template_kwargs": {"enable_thinking": False}}
@@ -449,8 +448,12 @@ def picks(turns:list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
   return unique
 
 
-def ties_out(bench_ms:float | None, server_ms:float) -> bool:
-  return bool(bench_ms) and server_ms > 0 and abs(bench_ms - server_ms) <= TIE_OUT * server_ms
+def ties_out(bench_ms:float | None, server_ms:float, band:dict | None = None) -> bool | None:
+  from boltbeam.workflow.repeat_bands import end_to_end_width
+  width = end_to_end_width(band)
+  if width is None or not bench_ms or server_ms <= 0:
+    return None
+  return abs(bench_ms - server_ms) <= width
 
 
 def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None) -> dict[str, Any]:
@@ -470,7 +473,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     return out
   flags = engine(provider)["bench_flags"](server.get("settings") or {})
   model = str(manifest["model_path"])
-  out: dict[str, Any] = {"schema": "boltbeam.replay_capture.v1", "flags": flags, "tie_out": TIE_OUT, "turns": [],
+  out: dict[str, Any] = {"schema": "boltbeam.replay_capture.v1", "flags": flags, "tie_out": "measured repeat spread or not checked", "turns": [],
                          "decode": None}
   turns = [r for r in timing["rows"] if r["scope"] == "turn"]
   for name, r in picks(turns):
@@ -486,9 +489,11 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
       out["turns"].append({"name": name, "i": r["i"], "failed": str(exc)[-400:]})
       continue
     attr = (got.get("lengths") or {}).get(str(n)) or {}
+    from boltbeam.workflow.repeat_bands import find as find_band
     bench = attr.get("measured_ms") or attr.get("captured_ms")
     out["turns"].append({"name": name, "i": r["i"], "prompt_n": n, "cache_n": c, "file": file, "bench_ms": bench,
-                         "server_ms": r["prompt_ms"], "ties_out": ties_out(bench, r["prompt_ms"])})
+                         "server_ms": r["prompt_ms"], "ties_out": ties_out(bench, r["prompt_ms"],
+                            find_band(run, f"turn {r['i']}"))})
   deep = max(turns, key=lambda r: r["prefix"])
   say(f"replay: capturing decode at the deepest turn ({deep['prefix']} tokens)")
   try:

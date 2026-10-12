@@ -245,12 +245,13 @@ def wheres(run:pathlib.Path, trace:dict[str, Any]) -> list[dict[str, Any]]:
       out.append({"title": head, "status": "failed", "words": f"{head}: not captured: {t['failed'][-200:]}"})
       continue
     attr = (_read(run / t["file"]).get("lengths") or {}).get(str(t["prompt_n"]))
-    if not t["ties_out"]:
-      out.append({"title": head, "status": "unmeasured",
-                  "words": (f"{head}: unmeasured. llama-bench's turn of {t['prompt_n']:,} tokens after {t['cache_n']:,} took "
-                            f"{t['bench_ms'] or 0:,.1f} ms; the server's prompt_ms was {t['server_ms']:,.1f} ms, more than "
-                            f"{100 * cap.get('tie_out', rp.TIE_OUT):.0f}% apart, so the capture does not stand for the server's turn.")})
+    from boltbeam.workflow.repeat_bands import find
+    band = find(run, f"turn {t['i']}")
+    confirmation = tie.end_to_end(attr, t["server_ms"], "replay turn", band=band)
+    if confirmation["confirms"] is False:
+      out.append({"title": head, "status": "unmeasured", "words": confirmation["words"]})
       continue
+    attr = {**attr, "end_to_end": confirmation}
     w = tie.where_prefill_goes(attr, untraced_ms=t["server_ms"], length=int(t["prompt_n"]), depth=int(t["cache_n"]))
     if not w:
       out.append({"title": head, "status": "unmeasured", "words": f"{head}: unmeasured: the capture holds no attributed rows."})
@@ -283,7 +284,9 @@ def decode_where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | Non
   if not s:
     return None
   limit = decode_ms_per_token(s, d["context"])
-  got = loss(ceil.get("_roles") or [], _read(run / d["file"]), limit, ceil.get("band"))
+  from boltbeam.workflow.repeat_bands import for_decode
+  capture = _read(run / d["file"])
+  got = loss(ceil.get("_roles") or [], capture, limit, for_decode(run, capture))
   if not got or got.get("status") != "measured":
     return {"status": "unmeasured", "words": f"Decode at {d['context']:,}: unmeasured: {(got or {}).get('reason') or 'no attributed rows'}"}
   kv_ms = (s["kv_per_token"] * d["context"] + 2 * s["state_bytes"]) / (s["bandwidth_gbs"] * 1e9) * 1e3
@@ -408,7 +411,7 @@ def cross_lines(c:dict[str, Any]) -> list[str]:
 
 
 
-def diff(a:pathlib.Path, b:pathlib.Path) -> dict[str, Any]:
+def diff(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[str, Any]:
   """Two replay runs of the same trace, model and target, turn by turn (aligned by i) and in total: boltbeam.replay_diff.v1.
   Refused, naming the field, when the trace's sha256, the model or the target differ. Two prefill or decode audits
   are the engine-upgrade audit (workflow/diff.audit), on the same refusal and row rules."""
@@ -416,7 +419,7 @@ def diff(a:pathlib.Path, b:pathlib.Path) -> dict[str, Any]:
   from boltbeam.workflow.common import load_manifest
   ma, mb = load_manifest(a), load_manifest(b)
   if ma.get("workload") in ("prefill", "decode") or mb.get("workload") in ("prefill", "decode"):
-    return engine_diff.audit(a, b)
+    return engine_diff.audit(a, b, bands=bands)
   ta, tb = _read(a / "timing_trace.json"), _read(b / "timing_trace.json")
   refuse_unless_same([("workload", ta.get("workload"), tb.get("workload")),
                       ("replay trace sha256", (ta.get("replay_trace") or {}).get("sha256"), (tb.get("replay_trace") or {}).get("sha256")),

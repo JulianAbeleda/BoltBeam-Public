@@ -28,6 +28,7 @@ from __future__ import annotations
 import datetime as _dt
 import functools, hashlib, json, os, pathlib, statistics, subprocess
 from collections.abc import Callable, Mapping
+from boltbeam.workflow.repeat_bands import for_decode
 from typing import Any
 
 from boltbeam.role_key import role_key, role_label, role_stem
@@ -315,11 +316,14 @@ def time_roles(run:pathlib.Path, *, root:pathlib.Path | None = None) -> dict[str
   ready = readiness(root, model)
   if not ready["ready"]:
     raise RuntimeError(f"{ready['message']} Fix: {ready['fix']}" if ready.get("fix") else ready["message"])
+  from boltbeam.collectors.capture_settings import selected_context, require_supported, decode_tokens
+  require_supported(run)
   trace = tinygrad_role_time.collect(run, root=root, python=fork_python(root), model=model,
-                                     model_id=str(manifest.get("model_id")), target=get_target(manifest.get("target_id")))
+                                     model_id=str(manifest.get("model_id")), target=get_target(manifest.get("target_id")), context=selected_context(run),
+                                     tokens=decode_tokens(run, selected_context(run)))
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
   ceil = _measured_vs_ceiling(manifest, _optional(run, "model_profile.json"))
-  table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), ceil.get("band"))
+  table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), for_decode(run, trace))
   if table and table["status"] != "measured":  # say it where the job ends, not only on the next screen
     raise RuntimeError(table["reason"])
   return trace
@@ -334,7 +338,7 @@ def role_losses(run:pathlib.Path) -> dict[tuple[Any, ...], dict[str, Any]]:
   path = run / tinygrad_role_time.TRACE
   if not path.is_file(): return {}
   ceil = _measured_vs_ceiling(load_manifest(run), _optional(run, "model_profile.json"))
-  table = tinygrad_role_time.loss(ceil.get("_roles") or [], read_json(path), ceil.get("floor_ms"), ceil.get("band")) or {"roles": []}
+  table = tinygrad_role_time.loss(ceil.get("_roles") or [], read_json(path), ceil.get("floor_ms"), for_decode(run, read_json(path))) or {"roles": []}
   return {role_key(r): r for r in table["roles"]}  # an incomplete table has no roles
 
 
@@ -389,7 +393,7 @@ def role_bytes(model:str, quant:str, rows:int, cols:int, tensor_name:str | None 
 class Checker:
   """BoltBeam's bridge on this machine, its flush and dispatch floor, opened once for a run's roles."""
 
-  def __init__(self, backend:str, band:float, bridge=None):
+  def __init__(self, backend:str, band:float | None, bridge=None):
     from boltbeam.collectors import kernel_timer
     self.backend, self.band = backend, band
     self.bridge = bridge or kernel_timer.bridge_for(backend)
@@ -587,11 +591,6 @@ class ProviderRefused(RuntimeError):
   """The provider's device is not the GPU BoltBeam reads, or the provider runs on none of this machine's devices."""
 
 
-def _target_band(target_id:str) -> float:
-  from boltbeam.target.targets import get_target
-  from boltbeam.workflow.screen import plausibility_band
-  return plausibility_band(get_target(target_id))
-
 
 def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callable[[str], None] = print,
                 search:Callable[..., dict[str, Any]] | None = None, ab_run:Callable[..., dict[str, Any]] | None = None,
@@ -628,8 +627,13 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
     raise ProviderRefused(why)
   facts = (describe_fn or describe)(root, device)
   # the provider's device against BoltBeam's own reading of this machine's GPU
+  measured_band = None
   if checker is None:
-    checker = Checker(backend, _target_band(target_id))
+    from boltbeam.workflow.repeat_bands import for_decode
+    measured_band = for_decode(run)
+    if measured_band is None:
+      raise ProviderRefused("not checked: no matching repeat evidence for this setup")
+    checker = Checker(backend, None)
   ident = provider_check.identity(facts.get("target") or {}, checker.facts())
   if not ident["passed"]:
     raise ProviderRefused(ident["reason"])
@@ -675,6 +679,10 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
     role, quant = str(route["role"]), str(route["quant"])
     key, stem, rk = role_label(role, quant, route["shape"]), role_stem(role, quant, route["shape"]), role_key(route)
     n, k = (int(x) for x in route["shape"])
+    if measured_band is not None:
+      repeat_row = measured_band.get("rows", {}).get(key, {})
+      reference = repeat_row.get("reference_ms")
+      checker.band = repeat_row.get("width_ms", 0) / reference if reference else None
     say(f"role {key}: search")
     tensor_name = route.get("tensor_name") or tensors.get(rk)
     try:
@@ -794,7 +802,9 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
     _write(folder / "compare.json", record)
     say(f"role {key}: done {row['status']}")
     if step: step(len(record["roles"]), len(routes))
-  if fusions:
+  if fusions and measured_band is not None:
+    say("fusions not checked: no repeat evidence for the fused workload")
+  if fusions and measured_band is None:
     try:
       found = compare_fusions(run, facts=facts, describe_shapes=lambda shapes: ((describe_fn or describe)(root, device, shapes=shapes)
                                                                                  .get("fusion_shape_verdicts") or []),

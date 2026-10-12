@@ -25,7 +25,13 @@ def snapshot(provider:str | None = None) -> dict:
   if provider == "tinygrad":
     from boltbeam.search.role_compare import default_fork_root, fork_python
     python = str(fork_python(default_fork_root()))
-  torch = _read([python, "-c", "import importlib.metadata; print(importlib.metadata.version('torch'))"]) if python else ""
+  raw_torch = _read([python, "-c", "import json, torch; print(json.dumps({'version': str(torch.__version__), 'cuda': torch.version.cuda}))"]) if python else ""
+  try:
+    runtime = json.loads(raw_torch)
+    torch = runtime.get("version", "")
+    cuda_runtime = runtime.get("cuda") or "unknown"
+  except (ValueError, TypeError, AttributeError):
+    torch, cuda_runtime = raw_torch, "unknown"
   commands = {"driver": ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
               "cuda": ["nvcc", "--version"], "nsight_systems": ["nsys", "--version"],
               "nsight_compute": ["ncu", "--version"]}
@@ -35,7 +41,8 @@ def snapshot(provider:str | None = None) -> dict:
     match = re.search(r"release\s+(\d+\.\d+)", raw) if key == "cuda" else re.search(r"\d+\.\d+(?:\.\d+)?(?:\+\w+)?", raw)
     versions[key] = (raw or "unknown") if key == "torch" else (
       match.group(1) if key == "cuda" else match.group()) if match else "unknown"
-  return {"recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "versions": versions}
+  return {"recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "versions": versions,
+          "runtime": {"cuda": cuda_runtime}}
 
 
 def record(run, provider:str) -> None:
@@ -47,7 +54,9 @@ def record(run, provider:str) -> None:
 
 def changes(before:dict, after:dict) -> list[dict]:
   pins = json.loads(providers.PINS.read_text())["toolchain"]
-  a, b = (x.get("toolchain", {}).get("versions", {}) for x in (before, after))
+  a, b = ({**x.get("toolchain", {}).get("versions", {}),
+           "cuda_runtime": x.get("toolchain", {}).get("runtime", {}).get("cuda", "unknown")} for x in (before, after))
+  pins = {**pins, "cuda_runtime": None}
   return [{"name": k, "before": a.get(k, "unknown"), "after": b.get(k, "unknown"), "pin": pin,
            "changed": a.get(k, "unknown") != b.get(k, "unknown"),
            "known": all(x.get(k, "unknown") != "unknown" for x in (a, b))} for k, pin in pins.items()]

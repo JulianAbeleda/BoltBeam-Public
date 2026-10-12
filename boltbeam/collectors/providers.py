@@ -25,6 +25,7 @@ import re
 import subprocess
 import sys
 import time
+from boltbeam.workflow.repeat_bands import for_decode
 from typing import Any, Callable
 
 from boltbeam.collectors import (llama_bench_decode, ollama_decode, tinygrad_role_time, trtllm_decode, vendor_capture,
@@ -313,7 +314,9 @@ def measure_tinygrad(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pa
     raise RuntimeError(why)
   request = read_json(run / "trace_request.json")
   rows = []
-  for ctx in request.get("contexts") or [128]:
+  from boltbeam.collectors.capture_settings import contexts, require_supported
+  require_supported(run)
+  for ctx in contexts(run):
     got = tinygrad_role_time.whole_step(root=root, python=role_compare.fork_python(root), model=str(manifest["model_path"]),
                                         target=target, context=int(ctx), tokens=TINYGRAD_TOKENS)
     rows.append({"scope": "whole_step", "context": int(ctx), "wall_us": 1e6 / got["tok_s"], "tok_s": got["tok_s"],
@@ -346,7 +349,7 @@ def engine_trace(manifest:dict[str, Any], *, provider:str, provider_id:str, coll
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
   ones = sorted((p for p in points if p["batch"] == 1), key=lambda p: p["context"])
   rows = [{"scope": "whole_step", "context": p["context"], "wall_us": p["step_ms"] * 1000.0, "tok_s": p["tok_s_stream"],
-           "decode_tokens": p.get("tokens"), "batch": 1, "source": p.get("source")} for p in ones]
+           "decode_tokens": p.get("tokens"), "batch": 1, "source": p.get("source"), "engine": p.get("engine", {})} for p in ones]
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
            "workload": manifest["workload"], "provider": provider, "provider_id": provider_id,
            "collector_id": collector_id, "weight_format": weights, "timing_source": f"{provider} whole step",
@@ -373,9 +376,15 @@ def measure_engine(run:pathlib.Path, provider:str, *, batches:list[int] | tuple[
   if why := m.available(target) or reads(provider, model):
     raise RuntimeError(why)
   request = read_json(run / "trace_request.json")
-  contexts = [int(c) for c in request.get("contexts") or [128]]
+  from boltbeam.collectors.capture_settings import contexts as requested_contexts, require_supported
+  require_supported(run, ("chunk_size",) if provider == "vllm" else ())
+  contexts = requested_contexts(run)
+  options = {}
+  if provider == "vllm":
+    from boltbeam.collectors.capture_settings import vllm_flags
+    options["settings"] = vllm_flags(run, contexts[0])
   points = m.whole_step(model, contexts, sorted({1, *batches}), tokens=tokens,
-                        log=run / "kernel_compare" / f"{provider}_whole_step.log")
+                        log=run / "kernel_compare" / f"{provider}_whole_step.log", **options)
   profile = read_json(run / "model_profile.json") if (run / "model_profile.json").exists() else {}
   from boltbeam.workflow.screen import run_bandwidth
   trace = engine_trace(manifest, provider=provider, provider_id=m.PROVIDER_ID, collector_id=collector(provider, target.backend),
@@ -397,7 +406,7 @@ CROSS_CHECK = "isolated_timing_trace.json"  # the engine's kernels timed alone, 
 
 
 def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None, batch:int = 1,
-              context:int = 128, say:Callable[[str], None] = lambda _: None,
+              context:int | None = None, say:Callable[[str], None] = lambda _: None,
               step:Callable[[int, int], None] | None = None, measurement:str = "auto") -> dict[str, Any]:
   """Per-role time for one provider, refused under the same floor rule for every provider. batch > 1 captures
   one decode step of that many streams (driven engines and llama.cpp's batched bench). say and step report
@@ -406,6 +415,11 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
   from boltbeam.target.targets import get_target
   from boltbeam.workflow.common import load_manifest
   check(provider)
+  from boltbeam.collectors.capture_settings import selected_context, require_supported, decode_tokens
+  context = selected_context(run, context)
+  tokens = decode_tokens(run, context)
+  if provider != llama_bench_decode.PROVIDER:
+    require_supported(run, ("chunk_size",) if provider == "vllm" else ())
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
   gpu = gpu_free(target.backend)
@@ -423,17 +437,17 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
   elif provider in DRIVEN:
     if why := ENGINES[provider].available(target) or reads(provider, model):
       raise RuntimeError(why)
-    trace = ENGINES[provider].role_time(run, target=target, model=model, model_id=model_id, context=context, batch=batch)
+    trace = ENGINES[provider].role_time(run, target=target, model=model, model_id=model_id, context=context, batch=batch, tokens=tokens)
   elif provider == tinygrad_role_time.PROVIDER:
     root = pathlib.Path(root) if root else role_compare.default_fork_root()
     if why := tinygrad_role_time.available(target, root):
       raise RuntimeError(why)
     trace = tinygrad_role_time.role_time_captured(run, root=root, python=role_compare.fork_python(root), model=model,
-                                                  model_id=model_id, target=target)
+                                                  model_id=model_id, target=target, context=context, tokens=tokens)
   else:
     layout, gpus = _layout(run)
     trace = llama_bench_decode.role_time(run, target=target, model=model, model_id=model_id, layout=layout, gpus=gpus,
-                                         context=context, batch=batch)
+                                         context=context, batch=batch, tokens=tokens)
   if how.get("cross_check") == engine_kernels.METHOD:  # the in-model capture stands; the isolated numbers sit beside it
     try:
       engine_kernels.collect(run, provider, say=say, step=step, out=CROSS_CHECK)
@@ -441,7 +455,7 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
       (run / CROSS_CHECK).write_text(json.dumps({"capture": {"method": engine_kernels.METHOD, "reason": f"failed: {exc}"}, "rows": []}))
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
   ceil = _measured_vs_ceiling(manifest, _optional(run, "model_profile.json"))
-  table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), ceil.get("band"))
+  table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), for_decode(run, trace))
   if table and table["status"] != "measured":
     raise RuntimeError(table["reason"])
   return trace

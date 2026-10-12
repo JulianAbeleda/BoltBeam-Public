@@ -72,6 +72,7 @@ import pathlib
 import shutil
 import sys
 import time
+from boltbeam.workflow.repeat_bands import for_decode
 from typing import Any
 
 from boltbeam.cli._common import _parse_ctxs
@@ -365,7 +366,7 @@ def _provider_table(run:pathlib.Path, provider:str, ceil:dict[str, Any], limit_m
   if not trace:
     return None, {}
   capture = trace.get("capture") or {"method": tinygrad_role_time.OWN_TIMING, "reason": None}
-  return tinygrad_role_time.loss(ceil.get("_roles") or [], trace, limit_ms, ceil.get("band")), capture
+  return tinygrad_role_time.loss(ceil.get("_roles") or [], trace, limit_ms, for_decode(run, trace)), capture
 
 
 def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], token:dict[str, Any] | None, *,
@@ -459,6 +460,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
     state, by_key = {"status": "skipped", "reason": role_compare.search_applies(None, shown)}, {}
   roles = [{**r, **role_compare.role_verdict(by_key.get(role_key(r)), state)} for r in roles]
   out.update(roles=roles, role_rule=rule, not_attributed_ms=table["not_attributed_ms"], capture=capture,
+             check_status=table.get("check_status", "not checked"), band=table.get("band"),
              unpaired_roles=table.get("unpaired_roles") or [], not_timed=table.get("not_timed") or [],
              source=_source(shown, capture, target))
   out["tie_out"] = tie.tie_out(run, provider=shown, table=table, trace=_optional(run, providers.TRACES[shown]),
@@ -1085,7 +1087,8 @@ def replay_command(args) -> dict[str, Any]:
     c = rw.cross(pathlib.Path(args.a).expanduser(), pathlib.Path(args.b).expanduser())
     return {**c, "lines": rw.cross_lines(c)}
   if args.command in ("replay-diff", "diff"):
-    d = rw.diff(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser())
+    d = rw.diff(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser(),
+                bands=read_json(args.bands) if getattr(args, "bands", None) else None)
     return {**d, "lines": rw.diff_lines(d)}
   trace = rt.shape(args.shape)
   rt.write(trace, pathlib.Path(args.out).expanduser())
@@ -1101,8 +1104,17 @@ def _load(args) -> dict[str, Any]:
     run = pathlib.Path(args.run)
     run.mkdir(parents=True, exist_ok=True)
     contexts = (rp.stage(run, getattr(args, "replay_trace", None), getattr(args, "server_argv", None)),)
-  return load_run(args.model, args.run, target_id=args.target, model_id=args.id, workload=args.workload,
-                  contexts=contexts, target_source="user")
+  result = load_run(args.model, args.run, target_id=args.target, model_id=args.id, workload=args.workload,
+                  contexts=contexts, target_source="user",
+                  engine_settings=({"chunk_size": args.chunk_size} if getattr(args, "chunk_size", None) is not None else None))
+  if getattr(args, "bands", None):
+    from boltbeam.workflow.common import write_json
+    from boltbeam.workflow.repeat_bands import ARTIFACT, SCHEMA as BAND_SCHEMA
+    evidence = read_json(args.bands)
+    if evidence.get("schema") != BAND_SCHEMA:
+      raise ValueError("unsupported repeat band schema")
+    write_json(pathlib.Path(args.run) / ARTIFACT, evidence)
+  return result
 
 
 def pipeline(args, out=sys.stdout) -> int:
@@ -1147,6 +1159,7 @@ def pipeline(args, out=sys.stdout) -> int:
       steps.append(("role_time", lambda: mod.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say)))
     elif can_time:
       steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say,
+                                                             batch=max(_parse_batches(getattr(args, "batch", None))),
                                                              step=progress.report, measurement=_role_time_arg(args))))
     if getattr(args, "no_search", False) or getattr(args, "workload", "decode") == "replay":
       why = "skipped with --no-search" if getattr(args, "no_search", False) else "a replay has no per-role kernel search"
@@ -1388,6 +1401,8 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   if step.get("graph_failed"):
     lines.append("Graph replay failed on this run: the token ran without graphs" + (f" ({step['graph_error']})" if step.get("graph_error") else ""))
   est = loss.get("estimate")
+  if loss.get("check_status") == "not checked":
+    lines.append("Not checked: no matching repeat band for one or more timing rows.")
   if t.get("refused"):
     lines.append(f"Not tied out: {t['refused']}")
   elif est and t.get("token_ms") is not None:
@@ -1632,6 +1647,8 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--target", required=True)
   p.add_argument("--id", default=None)
   p.add_argument("--workload", default="decode", choices=[w.value for w in Workload])
+  p.add_argument("--bands", help="repeat calibration artifact; only an exact setup match can supply bands")
+  p.add_argument("--chunk-size", type=int, help="requested engine chunk size; unsupported adapters refuse it")
   p.add_argument("--ctxs", default=None, help="decode contexts (default 128,512) or prompt lengths (default: the sweep "
                                               "to the model's own cap, prefill_work.sweep; a session: cap for the derived depths)")
   p.add_argument("--probe", default=None, help="boltbeam.probe_evidence.v1 JSON to ingest after analyze")
@@ -1654,6 +1671,10 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--replay-trace", default=None, help="a replay: a boltbeam.replay_trace.v1 file or a shape's name "
                                                       "(default: the default shape in data/replay_shapes.json)")
   p.add_argument("--server-argv", default=None, help="a replay: the user's llama-server command, as one string")
+  p = sub.add_parser("repeat-bands", help="derive per-row bands from two identical repeat runs (no GPU)")
+  p.add_argument("--before", required=True)
+  p.add_argument("--after", required=True)
+  p.add_argument("--out", required=True, help="repeat_bands.json; existing calibrations are retained")
   p = sub.add_parser("replay-trace", help="write a shape's counts-only replay trace")
   p.add_argument("--out", required=True)
   p.add_argument("--shape", default=None, help="a shape in data/replay_shapes.json")
@@ -1668,6 +1689,7 @@ def main(argv:list[str] | None = None) -> int:
     p = sub.add_parser(name, help=about)
     p.add_argument("--before", required=True)
     p.add_argument("--after", required=True)
+    p.add_argument("--bands", help="repeat_bands.json containing calibrations for both setups")
   for name in ("providers", "gpu-free"):
     p = sub.add_parser(name)
     p.add_argument("--target", required=True)
@@ -1683,6 +1705,14 @@ def main(argv:list[str] | None = None) -> int:
       p.add_argument("--batch", type=int, default=1, help="capture one decode step of this many streams")
       p.add_argument("--role-time", default="auto", choices=["auto", "in-model", "generic"])
   args = parser.parse_args(argv)
+  if args.command == "repeat-bands":
+    from boltbeam.workflow.repeat_bands import save
+    try:
+      save(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser(), pathlib.Path(args.out).expanduser())
+    except (ValueError, FileNotFoundError) as exc:
+      parser.error(str(exc))
+    print(f"measured repeat bands written to {args.out}")
+    return 0
   if args.command == "pipeline":
     return pipeline(args)
   if args.command == "compare":

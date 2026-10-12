@@ -39,7 +39,17 @@ Changing a pin is its own `[target]` or `[repo]` commit. The commit cites the up
    (`replay-diff` is the same command. Two replays compare turn by turn; two prefill or decode audits compare
    row by row.)
 
-One run per build and workload. No retries.
+Repeat calibration is separate from the upgrade run: collect two independent runs of an identical setup,
+then derive their measured spreads without a GPU:
+
+```sh
+python -m boltbeam.workflow.screen repeat-bands --before REPEAT_A --after REPEAT_B --out bands.json
+python -m boltbeam.workflow.screen diff --before OLD --after NEW --bands bands.json
+```
+
+The artifact retains calibration history, source dates, engine builds and evidence hashes. A new pipeline can
+load it with `--bands bands.json`. Calibrate both builds to judge an upgrade; a missing matching calibration
+leaves the numerical comparison visible and marks its judgment "not checked". No extra GPU repeats are automatic.
 
 ## What it refuses
 
@@ -52,16 +62,16 @@ from one place (`workflow/diff.refuse_unless_same`).
 - Its header names the pin and each run's build against it.
 - Toolchain changes, including driver, CUDA and torch, are named alongside the engine build.
 - Each row, per prompt length (prefill) or per context (decode):
-  - before and after ms, the change, and its band: max(3% of the before time, 0.05 ms). The floor keeps tiny
-    rows from flagging on noise.
+  - before and after ms, the change, and its band: the absolute spread of that exact row in an independent repeat pair;
+    relative widths follow the observations, so small rows can have wider percentages than large rows.
   - whether it moved beyond the band;
   - work changes: calls, operations, bytes (prefill), the limit (decode);
   - rows only before, or only after.
 - The gaps as a row of their own, with the same band.
 - The tie-out on both sides:
   - the kernel changes plus the gap change equal the captured wall change (within 0.001 ms);
-  - each side's captured wall time against its untraced median, within the 6% end-to-end band
-    (`tie_out.END_TO_END_BAND`). That band was derived from prefill captures. Decode uses the same band.
+  - each side's captured wall time against its untraced median, using the larger of their two measured repeat spreads.
+    No matching repeat evidence means "not checked", for both prefill and decode.
 - The untraced change.
 
 A part reads "unchanged outside moved rows" only when no row moved, no work changed, no row came or went, the gaps
@@ -69,6 +79,17 @@ held, and both sides confirm end to end. An upgrade is expected to move rows; th
 
 ## Worked example
 
-The clean loop test ([loop-test-27b-prefill-rtx5090-20261012.md](loop-test-27b-prefill-rtx5090-20261012.md)):
+The earlier clean loop test used the former fixed bands ([loop-test-27b-prefill-rtx5090-20261012.md](loop-test-27b-prefill-rtx5090-20261012.md)):
 b9592 against b9592 plus one GDN commit. Only the recurrent row moved; the 2048 gaps moved 0.417 ms against a
 0.155 ms band; everything else held, and both sides confirm end to end.
+
+## Exact setup and capture settings
+
+Bands match the target and device, engine build, model path and profile, workload, requested contexts and settings,
+GPU layout, capture window and method, and observed toolchain. They are never borrowed from another setup. A pair
+whose decode capture used a different context than requested cannot calibrate the requested setup.
+
+Capture commands use the persisted request and the settings observed during its untraced measurement, including
+decode token count, engine context allocation and chunk size. `--chunk-size` records an explicit request; unsupported
+adapters refuse it. Missing allocation or token evidence requires a fresh measurement rather than a guessed capture.
+The torch build string and its runtime CUDA are recorded separately from the CUDA compiler version.

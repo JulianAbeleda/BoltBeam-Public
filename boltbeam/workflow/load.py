@@ -73,7 +73,8 @@ def _workload_profile(profile, target_id:str, workload:str, contexts:tuple[int, 
 
 def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str | None = None,
              model_id:str | None = None, workload:str = Workload.DECODE.value,
-             contexts:tuple[int, ...] | None = None, target_source:str | None = None) -> dict[str, Any]:
+             contexts:tuple[int, ...] | None = None, target_source:str | None = None,
+             engine_settings:dict[str, Any] | None = None) -> dict[str, Any]:
   """A run folder for the model. contexts: the decode contexts, or a prefill's prompt lengths; left out, decode
   takes (128, 512) and a prefill the sweep from the model's own cap (prefill_sweep.json, prefill_work.sweep)."""
   out = run_dir(run)
@@ -92,7 +93,10 @@ def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str 
     from boltbeam.cli._common import CAP
     contexts = (CAP,)  # the depths derived up to the binding cap (collectors/session.py)
   contexts = contexts or (128, 512)
-  write_json(out / "workload_profile.json", _workload_profile(profile, selected_target, workload, contexts))
+  workload_profile = _workload_profile(profile, selected_target, workload, contexts)
+  if engine_settings:
+    workload_profile["engine_settings"] = dict(engine_settings)
+  write_json(out / "workload_profile.json", workload_profile)
   from boltbeam.collectors.toolchain import snapshot
   manifest = {
     "schema": SCHEMA_RUN_MANIFEST,

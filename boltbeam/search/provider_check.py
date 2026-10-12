@@ -130,13 +130,16 @@ def retime(bridge, flusher, floor_us:float | None, record:Mapping[str, Any], *, 
           "timing": {**got["timing"], "dispatch_floor_us": floor_us}, "timed_by": f"BoltBeam's kernel timer: {label}"}
 
 
-def judge(provider_ns:float | None, mine:Mapping[str, Any], band:float) -> dict[str, Any]:
+def judge(provider_ns:float | None, mine:Mapping[str, Any], band:float | None) -> dict[str, Any]:
   """BoltBeam's own reading of the kernel decides: a kernel it rebuilt, found correct and timed with a quiet reading
   (not noisy by tie_out.noisy_words, the one rule) is reproduced, and its time less the floor is the time every
   decision uses. The provider's median is kept beside it with the ratio and whether it sits inside the chip's band:
   a note and the search's order, never a gate (on the RTX 5090 the fork's device timestamps sit 2 to 9% from
   BoltBeam's time less the floor, outside the 1.4% band). Unknown is not pass: a noisy reading decides nothing."""
   from boltbeam.workflow.tie_out import noisy_words
+  if band is None:
+    return {"verdict": NOT_REPRODUCED, "band": None, "provider_in_band": None,
+            "reason": "not checked: no matching repeat evidence for this row"}
   if mine.get("status") != "measured":
     return {"verdict": NOT_REPRODUCED, "reason": f"BoltBeam could not reproduce the kernel: {mine.get('reason')}"}
   ours = mine.get("us_less_floor") if mine.get("us_less_floor") is not None else mine["us"]

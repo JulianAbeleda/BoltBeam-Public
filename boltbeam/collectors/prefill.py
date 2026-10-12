@@ -90,7 +90,8 @@ def llama_row(text:str, field:str = "n_prompt") -> dict[str, Any]:
 
 def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> dict[str, Any]:
   bench = _bench(run)
-  cmd = llama_argv(bench, model, length, REPS)
+  from boltbeam.collectors.capture_settings import llama_flags
+  cmd = llama_argv(bench, model, length, REPS, extra=llama_flags(run, length))
   with gpu_telemetry.Telemetry(device) as tele:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, cwd=run)
   if proc.returncode != 0:
@@ -155,8 +156,10 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   from boltbeam.collectors.prefill_attribution import REPEAT
   bench = _bench(run)
   raw = raw or run / RAW / (f"{length}-at-{depth}" if depth else str(length))
+  from boltbeam.collectors.capture_settings import llama_flags
+  settings = llama_flags(run, length, capture=True) if not depth else []
   launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, 2, depth=depth,
-                                                               extra=extra), raw)
+                                                               extra=[*settings, *(extra or [])]), raw)
   row = llama_row(vendor_capture.program_output(raw))
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1,
@@ -391,7 +394,8 @@ def vllm_chunk(length:int, line:dict[str, Any]) -> dict[str, Any]:
 
 def vllm_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> dict[str, Any]:
   from boltbeam.collectors import engine_common as ec, vllm_decode as vd
-  argv, env = _vllm(model, length, "--reps", str(REPS))
+  from boltbeam.collectors.capture_settings import vllm_flags
+  argv, env = _vllm(model, length, "--reps", str(REPS), *vllm_flags(run, length))
   with gpu_telemetry.Telemetry(device) as tele:
     line = ec.run_driver(argv, env={**env, **vd.RUN_ENV})[-1]
   engine = [s for s in line["engine_samples_s"] if s]
@@ -423,7 +427,8 @@ VLLM_RECURRENT_FORM = {"name": "chunked_wy", "chunk": 64}  # vLLM's prefill runs
 def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, Any]:
   """The measured call alone (the driver marks it for nsys), the engine in this process so nsys sees it."""
   from boltbeam.collectors import vendor_capture, vllm_decode as vd
-  argv, env = _vllm(model, length, "--capture")
+  from boltbeam.collectors.capture_settings import vllm_flags
+  argv, env = _vllm(model, length, "--capture", *vllm_flags(run, length, capture=True))
   raw = run / RAW / str(length)
   launches = vendor_capture.capture(target.backend, argv, raw, env={**env, **vd.CAPTURE_ENV}, profiler_range=True)
   line = json.loads([x for x in vendor_capture.program_output(raw).splitlines() if x.startswith('{"length"')][-1])
@@ -519,7 +524,10 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
   rows = []
-  for length in read_json(run / "trace_request.json").get("contexts") or []:
+  from boltbeam.collectors.capture_settings import contexts, require_supported
+  if provider not in ("llama.cpp", "vllm"):
+    require_supported(run)
+  for length in contexts(run):
     say(f"prefill of {length} tokens: {provider}")
     began = time.monotonic()
     try:
@@ -600,7 +608,10 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
          "peaks": dict(target.matrix_tflops or {}), "peaks_source": ((target.capabilities or {}).get("fact_sources") or {}).get("matrix_tflops"),
          "lengths": {}, **({"depth": depth} if depth else {})}
   per_chunk = None  # launches per engine chunk, from the last capture: the next capture's size is estimated from it
-  for length in lengths or read_json(run / "trace_request.json").get("contexts") or []:
+  from boltbeam.collectors.capture_settings import contexts, require_supported
+  if provider not in ("llama.cpp", "vllm"):
+    require_supported(run)
+  for length in lengths if lengths is not None else contexts(run):
     if int(length) not in truth_ms:
       out["lengths"][str(length)] = {"not_captured": "the untraced prefill failed at this length (timing_trace.json)"}
       continue
@@ -626,7 +637,8 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
                              formats=cap.get("formats"), cache=last_level_cache(target), depth=depth,
                              observed=cap["paths"].get("observed"), prune=cap.get("prune"))
-    attr["end_to_end"] = tie_out.end_to_end(attr, truth_ms.get(int(length)))
+    from boltbeam.workflow.repeat_bands import find
+    attr["end_to_end"] = tie_out.end_to_end(attr, truth_ms.get(int(length)), band=find(run, f"prefill {length}"))
     per_chunk = len(cap["launches"]) / cap.get("copies", 2 if cap["warmup"] else 1) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
                                    "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen,

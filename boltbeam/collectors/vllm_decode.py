@@ -53,24 +53,30 @@ def available(target, env:dict[str, str] | None = None) -> str | None:
 
 
 def argv(model:str, contexts:list[int], batches:list[int], *, tokens:int = TOKENS, reps:int = REPS,
-         once:int | None = None) -> list[str]:
+         once:int | None = None, context_limit:int | None = None) -> list[str]:
   py = python()
   if py is None:
     raise RuntimeError(f"vLLM was not found: set ${ENV}")
   out = [py, str(DRIVER), "--model", model, "--contexts", ",".join(map(str, contexts)),
          "--batches", ",".join(map(str, batches)), "--tokens", str(tokens), "--reps", str(reps)]
+  if context_limit is not None:
+    out += ["--model-context-limit", str(context_limit)]
   return out + (["--once", str(once)] if once else [])
 
 
 def whole_step(model:str, contexts:list[int], batches:list[int], *, log:pathlib.Path | None = None,
-               tokens:int = TOKENS) -> list[dict[str, Any]]:
-  rows = ec.run_driver(argv(model, contexts, batches, tokens=tokens), log=log, env={**ec.venv_env(python()), **RUN_ENV})
-  return [ec.point(r["context"], r["batch"], r["step_ms"], tokens=r["tokens"], source="vLLM offline LLM API, "
+               tokens:int = TOKENS, settings:list[str] | None = None) -> list[dict[str, Any]]:
+  rows = ec.run_driver([*argv(model, contexts, batches, tokens=tokens), *(settings or [])], log=log, env={**ec.venv_env(python()), **RUN_ENV})
+  return [ec.point(r["context"], r["batch"], r["step_ms"], tokens=r["tokens"], engine=r.get("engine", {}), source="vLLM offline LLM API, "
                    "N tokens minus 1 token, CUDA graphs on, vLLM's own sampler") for r in rows]
 
 
-def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int = 128, batch:int = 1,
+def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int, batch:int = 1,
               tokens:int = ROLE_TOKENS) -> dict[str, Any]:
+  from boltbeam.collectors.capture_settings import context_limit
+  limit = context_limit(run, context, 'max_model_len')
+  from boltbeam.collectors.capture_settings import vllm_flags
+  flags = vllm_flags(run, context, capture=True)
   return ec.captured_role_time(run, provider=PROVIDER, trace=TRACE, target=target, model_id=model_id,
                                context=context, tokens=tokens, batch=batch, env={**ec.venv_env(python()), **CAPTURE_ENV},
-                               argv_for=lambda n: argv(model, [context], [batch], tokens=n, reps=1, once=n))
+                               argv_for=lambda n: [*argv(model, [context], [batch], tokens=n, reps=1, once=n, context_limit=limit), *flags])

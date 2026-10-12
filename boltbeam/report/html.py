@@ -636,6 +636,8 @@ def _where(loss:dict[str, Any]) -> str:
   rows.append(f'<tr class="sum"><td>{_e(total)}</td><td>{token:.3f}</td><td>100%</td>'
               f'<td class="how">{_e(t.get("token_source") or "")}</td></tr>')
   notes = []
+  if loss.get("check_status") == "not checked":
+    notes.append("Not checked: no matching repeat band for one or more timing rows.")
   if t.get("untraced_ms") is not None and str(t.get("token_source", "")).startswith("the captured run"):
     notes.append(f'Tracing slowed the token: {token:.3f} ms here, {t["untraced_ms"]:.3f} ms untraced.')
   for l in t["lines"]:

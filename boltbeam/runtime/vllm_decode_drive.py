@@ -35,7 +35,8 @@ import argparse, json, os, random, statistics, time
 def main() -> int:
   ap = argparse.ArgumentParser()
   ap.add_argument("--model", required=True)
-  ap.add_argument("--contexts", default="128")
+  ap.add_argument("--model-context-limit", type=int)
+  ap.add_argument("--contexts", default="", help="explicit decode depths; prefill uses --prefill")
   ap.add_argument("--batches", default="1")
   ap.add_argument("--tokens", type=int, default=64)
   ap.add_argument("--reps", type=int, default=3)
@@ -44,18 +45,22 @@ def main() -> int:
   ap.add_argument("--prefill", type=int, default=None, help="prefill mode: one prompt of this many tokens")
   ap.add_argument("--capture", action="store_true", help="prefill mode: the measured call alone, marked for the profiler")
   ap.add_argument("--seed", type=int, default=0, help="prefill mode: the seed the prompt ids are drawn from")
+  ap.add_argument("--max-num-batched-tokens", type=int)
   ap.add_argument("--dtype", default="auto")
   ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
   a = ap.parse_args()
   from vllm import LLM, SamplingParams
   from vllm.inputs import TokensPrompt
-  contexts = [int(x) for x in a.contexts.split(",")]
+  contexts = [int(x) for x in a.contexts.split(",") if x]
   batches = [int(x) for x in a.batches.split(",")]
   if a.prefill:
     return prefill(a)
-  max_len = max(contexts) + max(a.tokens, a.once or 0) + 8
+  if not contexts:
+    ap.error("decode needs explicit --contexts")
+  max_len = a.model_context_limit or max(contexts) + max(a.tokens, a.once or 0) + 8
   llm = LLM(model=a.model, dtype=a.dtype, max_model_len=max_len, enable_prefix_caching=False,
-            gpu_memory_utilization=a.gpu_memory_utilization, max_num_seqs=max(max(batches), 1), seed=0)
+            gpu_memory_utilization=a.gpu_memory_utilization, max_num_seqs=max(max(batches), 1), seed=0,
+            **({"max_num_batched_tokens": a.max_num_batched_tokens, "enable_chunked_prefill": True} if a.max_num_batched_tokens else {}))
   vocab = llm.get_tokenizer().vocab_size
 
   def prompts(context:int, batch:int) -> list:
@@ -86,6 +91,9 @@ def main() -> int:
       short_s = statistics.median(timed(context, batch, 1) for _ in range(a.reps))
       step_ms = (long_s - short_s) * 1000.0 / (a.tokens - 1)
       print(json.dumps({"context": context, "batch": batch, "tokens": a.tokens, "long_s": long_s, "short_s": short_s,
+                        "engine": {"build": __import__("vllm").__version__, "max_model_len": max_len,
+                                   "max_num_batched_tokens": int(llm.llm_engine.vllm_config.scheduler_config.max_num_batched_tokens),
+                                   "chunked_prefill": bool(llm.llm_engine.vllm_config.scheduler_config.enable_chunked_prefill)},
                         "step_ms": step_ms, "tok_s_stream": 1000.0 / step_ms, "tok_s_total": batch * 1000.0 / step_ms}),
             flush=True)
   return 0
@@ -95,7 +103,8 @@ def prefill(a) -> int:
   from vllm import LLM, SamplingParams
   from vllm.inputs import TokensPrompt
   llm = LLM(model=a.model, dtype=a.dtype, max_model_len=a.prefill + 8, enable_prefix_caching=False,
-            gpu_memory_utilization=a.gpu_memory_utilization, max_num_seqs=1, seed=0, disable_log_stats=False)
+            gpu_memory_utilization=a.gpu_memory_utilization, max_num_seqs=1, seed=0, disable_log_stats=False,
+            **({"max_num_batched_tokens": a.max_num_batched_tokens, "enable_chunked_prefill": True} if a.max_num_batched_tokens else {}))
   vocab = llm.get_tokenizer().vocab_size
   rng = random.Random(a.seed)
   params = SamplingParams(max_tokens=1, temperature=0.0)
