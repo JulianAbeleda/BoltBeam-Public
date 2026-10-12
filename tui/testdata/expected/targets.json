@@ -53,7 +53,8 @@
         "fp32_fma": 119.7,
         "fp4": 1988.9,
         "fp8": 502.8,
-        "int8": 995.8
+        "int8": 995.8,
+        "tf32": 125.7
       },
       "memory_bandwidth_gbs": 1693.3,
       "peak_tflops": {

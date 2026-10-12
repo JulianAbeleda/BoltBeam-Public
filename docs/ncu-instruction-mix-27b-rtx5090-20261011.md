@@ -34,8 +34,10 @@ name rules are what run on a box without it.
 
 - `NAME_PATHS`: TPrecompute, MNPrecompute and Prefill now map to bf16, and FixupHmma maps to tf32. Each rule
   cites this run.
-- BoltBeam has no measured tf32 peak (`cuda_compute.PATHS` has no tf32 probe). So a row holding the tf32 fixup
-  has no compute ceiling, and says why. Before, it had a ceiling on the wrong unit. A tf32 probe is open.
+- A tf32 probe path now exists (`cuda_compute.PATHS`, `mma.sync.aligned.m16n8k8...tf32`). On the 5090 it measured
+  125.7 TF at 2,898 MHz, 255.1 operations per SM per clock: half of bf16 (251.4 in the same run). So the recurrent
+  row holding the tf32 fixup has a compute ceiling again, on the right unit ("bf16 + tf32"). It stays bound by its
+  bytes: 2.32 ms against 7.25 ms measured.
 - `instruction_path.ncu_observe` stays as an optional check (`BOLTBEAM_NCU=1`, counters open). It profiles only
   kernels with no readable code. Its path ranks below code and above a name, and the row says "observed by ncu".
 

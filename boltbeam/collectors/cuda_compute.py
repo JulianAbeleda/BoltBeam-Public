@@ -64,6 +64,7 @@ PATHS = (
   Path("fp16_f16acc", "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16", 16, 8, 16, acc="f16",
        words="fp16 in, fp16 accumulate"),
   Path("bf16", "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32", 16, 8, 16, words="bf16 in, fp32 accumulate"),
+  Path("tf32", "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32", 16, 8, 8, words="tf32 in, fp32 accumulate"),
   Path("int8", "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32", 16, 8, 32, acc="s32", words="int8 in, int32 accumulate"),
   Path("fp8", "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32", 16, 8, 32, words="fp8 e4m3 in, fp32 accumulate"),
   Path("fp4", "mma.sync.aligned.m16n8k64.row.col.kind::mxf4.block_scale.scale_vec::2X.f32.e2m1.e2m1.f32.ue8m0",
@@ -240,8 +241,10 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--device", type=int, default=0)
   p.add_argument("--seconds", type=float, default=SECONDS)
   p.add_argument("--reps", type=int, default=5)
+  p.add_argument("--path", action="append", choices=[x.name for x in PATHS], help="only this path (repeatable)")
   a = p.parse_args(argv)
-  sys.stdout.write(json.dumps(measure_paths(a.device, reps=a.reps, seconds=a.seconds), indent=1, sort_keys=True) + "\n")
+  paths = tuple(x for x in PATHS if not a.path or x.name in a.path)
+  sys.stdout.write(json.dumps(measure_paths(a.device, reps=a.reps, seconds=a.seconds, paths=paths), indent=1, sort_keys=True) + "\n")
   return 0
 
 

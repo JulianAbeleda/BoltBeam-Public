@@ -212,7 +212,10 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
   cache = cache or default_cache()
   cache.mkdir(parents=True, exist_ok=True)
   index_file = cache / f"sass-{sha[:16]}-{arch}.json"
-  index = json.loads(index_file.read_text()) if index_file.exists() else None
+  try:  # an index cut short (a run stopped while writing it) is rebuilt, never trusted
+    index = json.loads(index_file.read_text()) if index_file.exists() else None
+  except ValueError:
+    index = None
   tool = cuobjdump or shutil.which("cuobjdump")
   with tempfile.TemporaryDirectory(dir=cache) as tmp:
     if index is None or any(t in index["symbols"] and t not in index["paths"] for t in wanted):
