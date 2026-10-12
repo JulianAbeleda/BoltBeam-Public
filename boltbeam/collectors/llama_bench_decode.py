@@ -245,7 +245,8 @@ def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path
 def build_timing_trace(manifest:dict[str, Any], bench:dict[int, dict[str, Any]], peak_gbs:float | None) -> dict[str, Any]:
   """The trace from the measured decodes. Pure: the tests feed it numbers."""
   rows = [{"scope": "whole_step", "context": ctx, "wall_us": 1e6 / b["tok_s"], "tok_s": b["tok_s"],
-           "stddev_tok_s": b["stddev_tok_s"], "source": "llama-bench"} for ctx, b in sorted(bench.items())]
+           "stddev_tok_s": b["stddev_tok_s"], "source": "llama-bench", **({"build": b["build"]} if b.get("build") else {})}
+          for ctx, b in sorted(bench.items())]
   trace = {
     "schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
     "workload": manifest["workload"], "provider_id": PROVIDER_ID, "collector_id": COLLECTOR_ID,

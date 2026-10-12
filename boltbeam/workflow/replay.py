@@ -27,6 +27,7 @@ import statistics
 from typing import Any
 
 from boltbeam.workflow import tie_out as tie
+from boltbeam.workflow.diff import DiffRefused, refuse_unless_same, row_changes  # the one authority for comparing runs
 
 PER = "per session"
 TITLE = "The replay: one row per turn"
@@ -367,11 +368,9 @@ def cross(a:pathlib.Path, b:pathlib.Path) -> dict[str, Any]:
   naming the field, when the trace or the target differ."""
   from boltbeam.workflow.common import load_manifest
   ta, tb = _read(a / "timing_trace.json"), _read(b / "timing_trace.json")
-  for name, x, y in (("workload", ta.get("workload"), tb.get("workload")),
-                     ("replay trace sha256", (ta.get("replay_trace") or {}).get("sha256"), (tb.get("replay_trace") or {}).get("sha256")),
-                     ("target", load_manifest(a).get("target_id"), load_manifest(b).get("target_id"))):
-    if x != y or x is None:
-      raise DiffRefused(f"the runs differ in {name}: {x!r} and {y!r}")
+  refuse_unless_same([("workload", ta.get("workload"), tb.get("workload")),
+                      ("replay trace sha256", (ta.get("replay_trace") or {}).get("sha256"), (tb.get("replay_trace") or {}).get("sha256")),
+                      ("target", load_manifest(a).get("target_id"), load_manifest(b).get("target_id"))])
   A, B = table(a, ta), table(b, tb)
   if not (A and B):
     raise DiffRefused("a run holds no replayed turn")
@@ -407,21 +406,21 @@ def cross_lines(c:dict[str, Any]) -> list[str]:
   return out
 
 
-class DiffRefused(ValueError):
-  """Two replays that cannot be compared: the field that differs."""
 
 
 def diff(a:pathlib.Path, b:pathlib.Path) -> dict[str, Any]:
   """Two replay runs of the same trace, model and target, turn by turn (aligned by i) and in total: boltbeam.replay_diff.v1.
-  Refused, naming the field, when the trace's sha256, the model or the target differ."""
+  Refused, naming the field, when the trace's sha256, the model or the target differ. Two prefill or decode audits
+  are the engine-upgrade audit (workflow/diff.audit), on the same refusal and row rules."""
+  from boltbeam.workflow import diff as engine_diff
   from boltbeam.workflow.common import load_manifest
-  ta, tb = _read(a / "timing_trace.json"), _read(b / "timing_trace.json")
   ma, mb = load_manifest(a), load_manifest(b)
-  for name, x, y in (("workload", ta.get("workload"), tb.get("workload")),
-                     ("replay trace sha256", (ta.get("replay_trace") or {}).get("sha256"), (tb.get("replay_trace") or {}).get("sha256")),
-                     ("model", ma.get("model_id"), mb.get("model_id")), ("target", ma.get("target_id"), mb.get("target_id"))):
-    if x != y or x is None:
-      raise DiffRefused(f"the runs differ in {name}: {x!r} and {y!r}")
+  if ma.get("workload") in ("prefill", "decode") or mb.get("workload") in ("prefill", "decode"):
+    return engine_diff.audit(a, b)
+  ta, tb = _read(a / "timing_trace.json"), _read(b / "timing_trace.json")
+  refuse_unless_same([("workload", ta.get("workload"), tb.get("workload")),
+                      ("replay trace sha256", (ta.get("replay_trace") or {}).get("sha256"), (tb.get("replay_trace") or {}).get("sha256")),
+                      ("model", ma.get("model_id"), mb.get("model_id")), ("target", ma.get("target_id"), mb.get("target_id"))])
   A, B = table(a, ta), table(b, tb)
   if not (A and B):
     raise DiffRefused("a run holds no replayed turn")
@@ -435,14 +434,17 @@ def diff(a:pathlib.Path, b:pathlib.Path) -> dict[str, Any]:
            "lost": {k: hb["lost"][k] - ha["lost"][k] for k, _ in LOST} if ha.get("lost") and hb.get("lost") else None}
   rows_a = {(w.get("turn"), r["name"]): r for w in A.get("wheres") or wheres(a, ta) if w.get("status") == "measured" for r in w["rows"]}
   rows_b = {(w.get("turn"), r["name"]): r for w in B.get("wheres") or wheres(b, tb) if w.get("status") == "measured" for r in w["rows"]}
-  where = [{"turn": k[0], "row": k[1], "now_ms": (rows_b[k]["now_ms"] - rows_a[k]["now_ms"]) if k in rows_a and k in rows_b else None,
-            "lost_ms": (rows_b[k].get("lost_ms", 0) - rows_a[k].get("lost_ms", 0)) if k in rows_a and k in rows_b else None,
-            "only_in": None if k in rows_a and k in rows_b else ("before" if k in rows_a else "after")}
-           for k in sorted(set(rows_a) | set(rows_b), key=lambda k: (k[0] or 0, k[1]))]
+  where = [{"turn": c["key"][0], "row": c["key"][1], "now_ms": c["now_ms"],
+            "lost_ms": None if c["only_in"] else (rows_b[c["key"]].get("lost_ms", 0) - rows_a[c["key"]].get("lost_ms", 0)),
+            "only_in": c["only_in"]}
+           for c in sorted(row_changes(rows_a, rows_b), key=lambda c: (c["key"][0] or 0, c["key"][1]))]
   return {"schema": DIFF_SCHEMA, "before": a.name, "after": b.name, "turns": turns, "total": total, "where": where}
 
 
 def diff_lines(d:dict[str, Any]) -> list[str]:
+  if d.get("schema") != DIFF_SCHEMA:
+    from boltbeam.workflow.diff import audit_lines
+    return audit_lines(d)
   t = d["total"]
   out = [f"Replay {d['after']} against {d['before']} (after less before):"]
   if t.get("e_pct") is not None:

@@ -1006,6 +1006,7 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
                               details=failure_details(exc))
         raise
       if last:
+        providers.record_build(run, provider)  # the build it ran, against its pin (data/engine_pins.json)
         got = probe_state or {"probe": probe, "reason": probe_reason}
         _write_measure_status(args.run, "measured", collector=plan["collector"], probe=got["probe"],
                               probe_reason=got["reason"], provider=provider, layout=layout, gpus=gpus, batches=batches,
@@ -1081,7 +1082,7 @@ def replay_command(args) -> dict[str, Any]:
   if args.command == "replay-cross":
     c = rw.cross(pathlib.Path(args.a).expanduser(), pathlib.Path(args.b).expanduser())
     return {**c, "lines": rw.cross_lines(c)}
-  if args.command == "replay-diff":
+  if args.command in ("replay-diff", "diff"):
     d = rw.diff(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser())
     return {**d, "lines": rw.diff_lines(d)}
   trace = rt.shape(args.shape)
@@ -1659,9 +1660,12 @@ def main(argv:list[str] | None = None) -> int:
   p = sub.add_parser("replay-cross", help="two engines' replays of one trace: the same work per turn, each against its roofline")
   p.add_argument("--a", required=True)
   p.add_argument("--b", required=True)
-  p = sub.add_parser("replay-diff", help="two replay runs of one trace, turn by turn")
-  p.add_argument("--before", required=True)
-  p.add_argument("--after", required=True)
+  for name, about in (("replay-diff", "two replay runs of one trace, turn by turn"),
+                      ("diff", "two runs of one model and target: replays turn by turn, prefill or decode audits row by row "
+                               "(the engine-upgrade audit, docs/engine-upgrade-audit.md)")):
+    p = sub.add_parser(name, help=about)
+    p.add_argument("--before", required=True)
+    p.add_argument("--after", required=True)
   for name in ("providers", "gpu-free"):
     p = sub.add_parser(name)
     p.add_argument("--target", required=True)
@@ -1736,7 +1740,7 @@ def main(argv:list[str] | None = None) -> int:
       out = clean_work(pathlib.Path(args.work).expanduser(), before=args.before, keep=args.keep)
     elif args.command == "delete":
       out = delete(pathlib.Path(args.root).expanduser(), pathlib.Path(args.run).expanduser())
-    elif args.command.startswith("replay-"):
+    elif args.command.startswith("replay-") or args.command == "diff":
       out = replay_command(args)
     else:
       out = results(_run_arg(args))

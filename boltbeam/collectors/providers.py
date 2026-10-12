@@ -445,3 +445,54 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
   if table and table["status"] != "measured":
     raise RuntimeError(table["reason"])
   return trace
+
+
+# --- engine pins: the version each engine is measured at (data/engine_pins.json, the one table) -------------------
+
+PINS = pathlib.Path(__file__).resolve().parent.parent / "data" / "engine_pins.json"
+
+
+def engine_pin(provider:str) -> dict[str, Any] | None:
+  """The pinned version of an engine: llama.cpp's build tag and sha, vLLM's version; None when it has no pin."""
+  import json
+  return (json.loads(PINS.read_text()).get("engines") or {}).get(provider)
+
+
+def pin_label(pin:dict[str, Any] | None) -> str:
+  if not pin:
+    return "no pin"
+  return f"{pin['tag']} ({pin['sha'][:9]})" if pin.get("tag") else f"version {pin.get('version')}"
+
+
+def run_build(run:pathlib.Path) -> str | None:
+  """The engine build a run measured: llama.cpp's build_commit or vLLM's version, from its untraced rows."""
+  import json
+  p = run / "timing_trace.json"
+  for r in (json.loads(p.read_text()).get("rows") or []) if p.exists() else []:
+    e = r.get("engine") or {}
+    got = r.get("build") or e.get("build") or e.get("vllm") or r.get("vllm")
+    if got:
+      return str(got)
+  return None
+
+
+def pin_check(provider:str, build:str | None) -> dict[str, Any]:
+  """A build against its engine's pin: a llama.cpp build_commit matches when the pinned sha starts with it; a vLLM
+  version when equal. Says plainly when they differ or the build is unknown."""
+  pin = engine_pin(provider)
+  if build is None:
+    return {"pin": pin, "build": None, "matches": None, "words": f"{provider}: the run recorded no engine build"}
+  ok = None if not pin else (str(pin.get("sha", "")).startswith(build) if pin.get("sha") else str(pin.get("version")) == build)
+  words = (f"{provider} build {build} has no pin" if ok is None else f"{provider} build {build} is the pin {pin_label(pin)}" if ok
+           else f"{provider} build {build} is NOT the pin {pin_label(pin)}: this run measured another build")
+  return {"pin": pin, "build": build, "matches": ok, "words": words}
+
+
+def record_build(run:pathlib.Path, provider:str) -> dict[str, Any]:
+  """The run's engine build and its pin check, written into the run's manifest (engine)."""
+  from boltbeam.workflow.common import load_manifest, write_manifest
+  got = {"provider": provider, **pin_check(provider, run_build(run))}
+  manifest = load_manifest(run)
+  manifest["engine"] = got
+  write_manifest(run, manifest)
+  return got
