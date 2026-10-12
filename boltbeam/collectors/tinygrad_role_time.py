@@ -1,7 +1,7 @@
 """Where the time goes, per role, in tinygrad's own runtime, and how much of it is lost against the roofline.
 
 `collect` runs boltbeam/runtime/tinygrad_decode_profile.py under the tinygrad fork's python, on the target's own
-tinygrad device (METAL, NV, ...) with JIT=2 PROFILE=1, so every kernel carries its own GPU timestamps. BoltBeam's
+tinygrad device (METAL, NV, ...) with the measured JIT mode and PROFILE=1, so every kernel carries its own GPU timestamps. BoltBeam's
 existing normalizer (artifacts/tinygrad_profile_events.decode_profile_events) turns the events into a
 boltbeam.timing_trace.v1, joining each program to the role the model itself attached to the call (the program
 census). Kernels with no such role are "not attributed": no role is guessed from a kernel name.
@@ -71,7 +71,8 @@ def whole_step(*, root:pathlib.Path, python:pathlib.Path, model:str, target, con
     if proc.returncode == 0 and lines:
       out = json.loads(lines[-1])
       return {"tok_s": out["tok_s"], "tokens": out["tokens"], "wall_s": out["wall_s"], "device": device,
-              "jit": "graphs" if jit == "1" else "no graphs (graph replay failed)", "graph_error": graph_error}
+              "jit": "graphs" if jit == "1" else "no graphs (graph replay failed)", "graph_error": graph_error,
+              "engine": {k: out[k] for k in ("jit_mode", "warm_tokens", "context_start", "context_end", "max_context", "build")}}
     if "GraphException" not in (proc.stderr or ""):
       break
     # the engine's own words for why the graph did not replay (the last GraphException line), kept with the row
@@ -121,11 +122,16 @@ def role_time_captured(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Pa
   from boltbeam.collectors import attribution, vendor_capture
   device = device_for(target)
   raw = run / "kernel_compare" / "tinygrad_capture"
+  from boltbeam.collectors.capture_settings import observed
+  settings = observed(run, context)
+  if settings.get("jit_mode") != 2 or type(settings.get("max_context")) is not int:
+    raise ValueError("outside tinygrad capture requires an untraced non-graph run with recorded allocation")
   env = {"PYTHONPATH": ".", "DEV": device, "JIT": "2", "PROFILE": "0", "VIZ": "0"}
   got = {}
   for name, n in (("long", tokens), ("short", 1)):
     (raw / name).mkdir(parents=True, exist_ok=True)
-    got[name] = vendor_capture.capture(target.backend, decode_argv(python, model, context, n, raw / name),
+    got[name] = vendor_capture.capture(target.backend, decode_argv(python, model, context, n, raw / name) +
+                                       ["--max-context", str(settings["max_context"])],
                                        raw / name, cwd=root, env=env)
   window, overlap = attribution.shared_window(got["long"], got["short"])
   printed = [json.loads(x) for x in vendor_capture.program_output(raw / "long").splitlines() if x.startswith('{"tokens"')]
@@ -155,12 +161,20 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
   events, census = raw / "events.pkl", raw / "census.json"
   argv = [str(python), str(DRIVER), "--model", model, "--context", str(context), "--tokens", str(tokens),
           "--events", str(events), "--census", str(census)]
+  from boltbeam.collectors.capture_settings import observed
+  settings = observed(run, context)
+  jit = settings.get("jit_mode")
+  if jit not in (1, 2):
+    raise ValueError("tinygrad capture requires the untraced jit_mode; rerun whole-step measurement")
   proc = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=timeout_s,
-                        env={**os.environ, "PYTHONPATH": ".", "DEV": device, "JIT": "2", "PROFILE": "1", "VIZ": "0"})
+                        env={**os.environ, "PYTHONPATH": ".", "DEV": device, "JIT": str(jit), "PROFILE": "1", "VIZ": "0"})
   lines = [x for x in proc.stdout.splitlines() if x.startswith("{")]
   if proc.returncode != 0 or not lines:
     raise DecodeFailed("in-model profile failed", proc.stderr or proc.stdout, root)
   summary = json.loads(lines[-1])
+  for key in ("jit_mode", "warm_tokens", "context_start", "context_end", "max_context", "build"):
+    if summary.get(key) != settings.get(key):
+      raise ValueError(f"tinygrad captured {key} differs from the untraced run")
   # the peak is the run's one read bandwidth (workflow/screen.py run_bandwidth): the limit's number, one source
   from boltbeam.workflow.screen import run_bandwidth
   peak_gbs, peak_source = run_bandwidth(run, target)
@@ -168,12 +182,15 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
   trace = decode_profile_events(load_profile_events(events, tinygrad_root=root), model_id=model_id,
                                 target_id=target.target_id, workload="decode", context=context,
                                 decode_tokens=summary["tokens"], program_census=json.loads(census.read_text()),
+                                model_profile=json.loads((run / "model_profile.json").read_text()) if (run / "model_profile.json").exists() else None,
                                 source_path=str(events.relative_to(run)), **peak)
-  trace.setdefault("notes", []).append(f"in-model decode on {device} with JIT=2 PROFILE=1: one command buffer per "
-                                       f"kernel; {summary['tokens']} tokens after a {context}-token prefill")
+  trace.setdefault("notes", []).append(f"in-model decode on {device} with JIT={jit} PROFILE=1; "
+                                       f"{summary['tokens']} tokens after a {context}-token prefill")
   for row in trace.get("rows", []):  # the profiled run's own wall time per token: the tie-out's measured token
     if row.get("scope") == "whole_step" and summary.get("wall_s"):
       row["token_ms"] = summary["wall_s"] * 1000.0 / summary["tokens"]
+      row["engine"] = settings
+      row["wall_tok_s"] = summary["tok_s"]
   trace["capture"] = {"method": OWN_TIMING, "reason": OWN_TIMING_REASON.get(target.backend)}
   trace["peak_source"] = peak_source
   (run / TRACE).write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
@@ -232,6 +249,12 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   if not whole or not whole.get("tok_s") or not whole.get("wall_us"): return None
   tokens = whole.get("decode_tokens") or max(1, round(whole["wall_us"] * whole["tok_s"] / 1e6))
   from boltbeam.role_key import role_key, shape_nk
+  # A fused launch with different logical role keys has one observed duration. Preserve that joint
+  # duration and its work; never allocate it by bytes or compare a partial role time to the whole role's floor.
+  joint = [r for r in rows if len({role_key(p) for p in r.get("logical_parts", [])}) > 1]
+  joint_keys = {role_key(p) for r in joint for p in r["logical_parts"]}
+  attribution = trace.get("aux_sources", {}).get("attribution") or {}
+  incomplete_keys = {role_key(p) for p in attribution.get("matrix_work", {}).get("mismatches", [])}
   actual: dict[tuple[Any, ...], dict[str, float]] = {}
   floor_us = None  # an isolated row's dispatch floor (kernel_timer.less_floor_us): one per trace, read off the rows
   not_timed = []  # rows the timer could not time (no adapter for the quant, a failed check): no time, never a 0 ms
@@ -255,7 +278,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
     got = actual.get(role_key(c))
     if got is None and shape_nk(c) is not None and shape_counts[(c["role"], c["quant"])] == 1 and not any(k[:2] == (c["role"], c["quant"]) and len(k) > 2 for k in actual):
       got = actual.get((c["role"], c["quant"]))  # a trace without shapes keys by role and quant
-    if got is None: continue
+    if got is None or role_key(c) in joint_keys | incomplete_keys: continue
     ms = got["us"] / tokens / 1000.0
     from boltbeam.workflow.repeat_bands import width
     from boltbeam.role_key import role_label
@@ -273,11 +296,19 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   out.sort(key=lambda r: -r["lost_ms"])
   whole_ms = whole["wall_us"] / tokens / 1000.0
   table = {"status": "measured", "source": "measured in tinygrad's runtime", "device": trace.get("target_id"),
-           "tokens": tokens, "kernel_ms": whole_ms, "tok_s": whole["tok_s"], "roles": out,
+           "tokens": tokens, "kernel_ms": whole_ms, "tok_s": whole.get("wall_tok_s", whole["tok_s"]), "roles": out,
            "isolated": whole.get("measurement_scope") == "summed_isolated_kernels", "floor_us": floor_us,
            "not_attributed_ms": whole_ms - sum(r["actual_ms"] for r in out), "token_ms": whole.get("token_ms"),
-           "unpaired_roles": list(trace.get("unpaired_roles") or []), "band": chip,
-           "check_status": "checked" if chip["width_ms"] is not None and all(r["check_status"] == "checked" for r in out) else "not checked",
+           "unpaired_roles": list(trace.get("unpaired_roles") or []) + [
+             {"role": c["role"], "quant": c["quant"], "shape": list(shape_nk(c) or []) or None,
+              "reason": "time shared with other logical parts in a fused launch"} for c in ceiling_roles if role_key(c) in joint_keys],
+           "joint_role_groups": [{"kernel": r["kernel"], "actual_ms": r["wall_us"] / tokens / 1000,
+                                  "calls_per_token": r["calls"] / tokens, "logical_parts": r["logical_parts"],
+                                  "logical_flops_per_token": r["logical_flops"] / tokens} for r in joint], "band": chip,
+           "attribution": trace.get("aux_sources", {}).get("attribution"),
+           "unpaired_launches": trace.get("aux_sources", {}).get("attribution", {}).get("unresolved_launches", []),
+           "check_status": "checked" if chip["width_ms"] is not None and not joint_keys and (not attribution or attribution.get("complete")) and
+             all(r["check_status"] == "checked" for r in out) else "not checked",
            # a limit role the timer had no adapter for: its own row with the reason, outside the floor rule and the sums
            "not_timed": [n for n in not_timed if role_key(n) in {role_key(c) for c in ceiling_roles}
                          or (n["role"], n["quant"]) in {(c["role"], c["quant"]) for c in ceiling_roles}]}

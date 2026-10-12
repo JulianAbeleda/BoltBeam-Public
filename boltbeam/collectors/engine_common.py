@@ -101,7 +101,7 @@ def point(context:int, batch:int, step_ms:float, **extra:Any) -> dict[str, Any]:
 
 def captured_role_time(run:pathlib.Path, *, provider:str, trace:str, argv_for:Callable[[int], list[str]], target,
                        model_id:str, context:int, tokens:int, batch:int = 1, env:dict[str, str] | None = None,
-                       cwd:pathlib.Path | None = None, flush_ms:int | None = None) -> dict[str, Any]:
+                       cwd:pathlib.Path | None = None, flush_ms:int | None = None, profiler_range:bool = False) -> dict[str, Any]:
   """An engine's kernels per role, captured from outside and attributed by bytes and count: the path llama.cpp
   takes. Two driver runs at one context and batch, N tokens and 1 (--once), subtracted per kernel: what is left
   is N - 1 decode steps. The captured run's own time per step is the difference of the two runs' printed decode
@@ -110,7 +110,7 @@ def captured_role_time(run:pathlib.Path, *, provider:str, trace:str, argv_for:Ca
   raw = run / "kernel_compare" / f"{provider.replace('.', '_').replace('-', '_')}_capture"
   got, secs, matrices = {}, {}, None
   for name, n in (("long", tokens), ("short", 1)):
-    got[name] = vendor_capture.capture(target.backend, argv_for(n), raw / name, cwd=cwd, env=env, flush_ms=flush_ms)
+    got[name] = vendor_capture.capture(target.backend, argv_for(n), raw / name, cwd=cwd, env=env, flush_ms=flush_ms, **({"profiler_range": True} if profiler_range else {}))
     printed = [r for r in json_lines(vendor_capture.program_output(raw / name)) if "seconds" in r]
     secs[name] = printed[-1]["seconds"] if printed else None
     matrices = matrices or (printed[-1].get("matrices") if printed else None)  # the engine's packed GEMMs, if it says

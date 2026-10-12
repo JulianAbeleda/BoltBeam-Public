@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pathlib
+import math
 import re
 import pickle
 import sys
@@ -196,25 +197,76 @@ def _census_program_info(census:dict[str, Any] | None) -> dict[tuple[str, str | 
     binaries = {p["binary_sha256"] for p in programs if p.get("binary_sha256")}
     for binary in [None, *sorted(binaries)]:
       matches = [p for p in programs if binary is None or p.get("binary_sha256") in (None, "", binary)]
-      identities = [identity for p in matches for identity in p.get("semantic_identities", [])]
+      # Census rows describe calls, not a bag of identities over all layers. Deduplicate resolver/attached
+      # copies within a call, then retain the multiplicity of distinct tensors in a fused program.
+      signatures, identities, complete = [], [], True
+      for program in matches:
+        unique = {_freeze(x): x for x in program.get("semantic_identities", [])}
+        parts = {}
+        identities.extend(unique.values())
+        complete = complete and bool(unique)
+        for identity in unique.values():
+          shape = [identity.get("logical_" + axis) for axis in ("m", "n", "k")]
+          role, quant = identity.get("role"), identity.get("source_quant_storage")
+          if not role or not quant or any(type(x) is not int or x <= 0 for x in shape):
+            complete = False
+            continue
+          key = (role, quant, *shape)
+          part = parts.setdefault(key, {"role": role, "quant": quant, "shape": shape, "count": 0})
+          part["count"] += 1
+        signatures.append({"logical_parts": sorted(parts.values(), key=lambda x: (x["role"], x["quant"], x["shape"]))})
+      agreed = _unique_mapping(signatures)
       info: dict[str, Any] = {"binary_sha256_candidates": sorted(binaries)}
       if identities:
-        roles = sorted({str(x["role"]) for x in identities if x.get("role")})
+        roles = {x.get("role") for x in identities}
         quants = {x.get("source_quant_storage") for x in identities}
-        shapes = {(x.get("logical_m"), x.get("logical_n"), x.get("logical_k")) for x in identities}
-        info.update(role=roles[0] if len(roles) == 1 and all(x.get("role") for x in identities) else "mixed",
-                    semantic_roles=roles, role_source="captured_program_semantics",
+        info.update(role=next(iter(roles)) if len(roles) == 1 and None not in roles else "mixed",
+                    semantic_roles=sorted(r for r in roles if r), role_source="captured_program_semantics",
                     quant=next(iter(quants)) if len(quants) == 1 else None, shape=None)
-        if len(shapes) == 1 and all(isinstance(x, int) and not isinstance(x, bool) and x > 0 for x in next(iter(shapes))):
-          info["shape"] = list(next(iter(shapes)))
+      if complete and agreed and (parts := agreed["logical_parts"]):
+        roles, quants = {p["role"] for p in parts}, {p["quant"] for p in parts}
+        shapes = {tuple(p["shape"]) for p in parts}
+        info.update(role=next(iter(roles)) if len(roles) == 1 else "mixed", semantic_roles=sorted(roles),
+                    role_source="captured_program_semantics", logical_parts=parts,
+                    quant=next(iter(quants)) if len(quants) == 1 else None,
+                    shape=list(next(iter(shapes))) if len(shapes) == 1 else None,
+                    logical_flops_per_call=sum(2 * p["count"] * p["shape"][0] * p["shape"][1] * p["shape"][2] for p in parts))
+      elif complete and any(s["logical_parts"] for s in signatures):
+        info.update(role="unknown", semantic_status="inconsistent_call_metadata")
       result[(name, binary)] = info
   return result
+
+
+def matrix_work_coverage(rows:list[dict], profile:dict, tokens:int, *, batch:int = 1) -> dict:
+  """Check captured projection work against the independent model inventory, including fused multiplicity."""
+  from collections import defaultdict
+  from boltbeam.profile.weight_ledger import reads_per_token
+  from boltbeam.role_key import role_key, shape_nk
+  from boltbeam.vocab import is_weight_gemv_role
+  expected, actual = defaultdict(float), defaultdict(float)
+  for row in profile.get("roles", []):
+    if not is_weight_gemv_role(row["role"]): continue
+    if (shape := shape_nk(row)) is None:
+      return {"complete": False, "words": "Matrix work not checked: model inventory lacks matrix dimensions.", "mismatches": []}
+    expected[role_key(row)] += 2 * batch * shape[0] * shape[1] * reads_per_token(row)
+  for row in rows:
+    for part in row.get("logical_parts", []):
+      actual[role_key(part)] += 2 * math.prod(part["shape"]) * part["count"] * row["calls"] / tokens
+  mismatches = [{"role": key[0], "quant": key[1], "shape": list(key[2:]),
+                 "expected_flops_per_token": expected[key], "actual_flops_per_token": actual[key],
+                 "reason": "captured matrix work differs from the model inventory"}
+                for key in sorted(expected.keys() | actual.keys()) if expected[key] != actual[key]]
+  complete = bool(expected) and not mismatches
+  return {"complete": complete, "expected_flops_per_token": sum(expected.values()), "actual_flops_per_token": sum(actual.values()),
+          "mismatches": mismatches,
+          "words": ("Matrix work matches the model inventory." if complete else
+                    f"Matrix work incomplete: captured {sum(actual.values()):,.0f} versus expected {sum(expected.values()):,.0f} FLOP/token.")}
 
 
 def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "amd_gfx1100",
                           workload:str = "prefill", context:int | None = None,
                           decode_tokens:int | None = None,
-                          program_census:dict[str, Any] | None = None,
+                          program_census:dict[str, Any] | None = None, model_profile:dict[str, Any] | None = None,
                           provider_id:str = "tinygrad/profile-events", peak_gbs:float = DEFAULT_PEAK_MEM_GBS,
                           weight_inventory:str | pathlib.Path | None = None,
                           source_path:str | pathlib.Path | None = None) -> dict[str, Any]:
@@ -281,7 +333,7 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
       row["quant"] = info["quant"]
     if info.get("shape"):
       row["shape"] = info["shape"]
-    for key in ("semantic_roles", "role_source"):
+    for key in ("semantic_roles", "role_source", "logical_parts", "logical_flops_per_call", "semantic_status"):
       if key in info:
         row[key] = info[key]
     if prog and prog.get("resources"):
@@ -371,8 +423,12 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
   if bytes_source:
     whole["bytes_source"] = bytes_source
 
-  semantic_roles = {"attn_qo", "attn_kv", "ffn_down", "ffn_gate_up", "lm_head", "attention_tile", "attention_combine"}
-  role_rows = [r for r in rows if r.get("role") in semantic_roles]
+  role_rows = [r for r in rows if r.get("role_source") == "captured_program_semantics"]
+  unresolved = [r for r in rows if not r.get("logical_parts") and
+                (r.get("role_source") == "captured_program_semantics" or r.get("kind") in ("gemm", "gemv") or r.get("role") in ("unknown", "mixed"))]
+  for row in role_rows:
+    if row.get("logical_flops_per_call") is not None:
+      row["logical_flops"] = row["logical_flops_per_call"] * row["calls"]
   attribution = {
     "status": "attributable" if raw_events > 0 and role_rows else "non_attributive",
     "usable_for_aggregate": bool(total_us > 0),
@@ -381,10 +437,21 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
     "profile_enabled": True,
     "profile_kernel_row_count": len(rows),
     "per_role_kernel_row_count": len(role_rows),
+    "complete": bool(raw_events and role_rows and not unresolved),
+    "work_status": "checked" if raw_events and role_rows and not unresolved else "not checked",
+    "unresolved_launches": [{"kernel": r["kernel"], "calls": r["calls"], "wall_us": r["wall_us"],
+                             "reason": "missing or inconsistent logical program metadata"} for r in unresolved],
   }
+
+  if workload == "decode" and model_profile is not None and decode_tokens:
+    coverage = matrix_work_coverage(rows, model_profile, decode_tokens)
+    attribution["matrix_work"] = coverage
+    attribution["complete"] = attribution["complete"] and coverage["complete"]
+    attribution["work_status"] = "checked" if attribution["complete"] else "not checked"
 
   return {
     "schema": SCHEMA_TIMING_TRACE,
+    "unpaired_roles": attribution.get("matrix_work", {}).get("mismatches", []),
     "model_id": model_id,
     "target_id": target_id,
     "workload": workload,
@@ -416,7 +483,7 @@ def timing_trace_from_tinygrad_profile_events(path:str | pathlib.Path, *, model_
                                               target_id:str = "amd_gfx1100", workload:str = "prefill",
                                               context:int | None = None,
                                               decode_tokens:int | None = None,
-                                              program_census:dict[str, Any] | None = None,
+                                              program_census:dict[str, Any] | None = None, model_profile:dict[str, Any] | None = None,
                                               provider_id:str = "tinygrad/profile-events",
                                               peak_gbs:float = DEFAULT_PEAK_MEM_GBS,
                                               tinygrad_root:str | pathlib.Path | None = None,

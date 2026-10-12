@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import importlib.metadata
 
-import argparse, json, statistics, time
+import argparse, json, os, statistics, time
 
 
 def probe() -> str | None:
@@ -39,6 +39,9 @@ def main() -> int:
   ap.add_argument("--probe", action="store_true")
   ap.add_argument("--model")
   ap.add_argument("--model-context-limit", type=int)
+  ap.add_argument("--max-num-tokens", type=int)
+  ap.add_argument("--profile-window", action="store_true")
+  ap.add_argument("--worker-single-process", choices=("0", "1"), default=os.environ.get("TLLM_WORKER_USE_SINGLE_PROCESS", "0"))
   ap.add_argument("--contexts")
   ap.add_argument("--batches", default="1")
   ap.add_argument("--tokens", type=int, default=64)
@@ -53,6 +56,7 @@ def main() -> int:
     return 0
   if not a.contexts:
     ap.error("--contexts is required for a measurement")
+  os.environ["TLLM_WORKER_USE_SINGLE_PROCESS"] = a.worker_single_process
   from tensorrt_llm import SamplingParams
   if a.backend == "tensorrt":  # a TensorRT engine is built for this GPU, then run
     from tensorrt_llm._tensorrt_engine import LLM
@@ -61,8 +65,11 @@ def main() -> int:
   contexts = [int(x) for x in a.contexts.split(",")]
   batches = [int(x) for x in a.batches.split(",")]
   max_len = a.model_context_limit or max(contexts) + max(a.tokens, a.once or 0) + 8
-  llm = LLM(model=a.model, max_seq_len=max_len, max_batch_size=max(batches), max_num_tokens=max(8192, max_len))
   backend = a.backend or "pytorch"
+  # The scheduler needs capacity for this request's prompts, not an unrelated 8192-token build profile.
+  max_tokens = a.max_num_tokens or max(1, max(contexts)) * max(batches)
+  llm = LLM(model=a.model, max_seq_len=max_len, max_batch_size=max(batches), max_num_tokens=max_tokens,
+            **({"enable_build_cache": True} if backend == "tensorrt" else {}))
   vocab = 150000
 
   def prompts(context:int, batch:int) -> list[list[int]]:
@@ -81,7 +88,13 @@ def main() -> int:
   if a.once:
     for _ in range(a.warm):
       timed(contexts[0], batches[0], 2)
-    print(json.dumps({"tokens": a.once, "seconds": timed(contexts[0], batches[0], a.once)}), flush=True)
+    import torch
+    if a.profile_window: torch.cuda.cudart().cudaProfilerStart()
+    try:
+      seconds = timed(contexts[0], batches[0], a.once)
+    finally:
+      if a.profile_window: torch.cuda.cudart().cudaProfilerStop()
+    print(json.dumps({"tokens": a.once, "seconds": seconds, "matrices": _matrices(llm)}), flush=True)
     return 0
   for context in contexts:
     for batch in batches:
@@ -93,8 +106,31 @@ def main() -> int:
       print(json.dumps({"context": context, "batch": batch, "tokens": a.tokens, "long_s": long_s, "short_s": short_s,
                         "step_ms": step_ms, "tok_s_stream": 1000.0 / step_ms, "tok_s_total": batch * 1000.0 / step_ms,
                         "backend": backend, "engine": {"build": importlib.metadata.version("tensorrt_llm"),
-                                                        "max_seq_len": max_len}}), flush=True)
+                                                        "max_seq_len": max_len, "max_num_tokens": max_tokens, "backend": backend,
+                                                        "worker_single_process": a.worker_single_process}}), flush=True)
   return 0
+
+
+def _matrices(llm) -> list | str:
+  """Read loaded, local Linear dimensions and the runtime's weight-packing contract, outside the timed window."""
+  try:
+    model = llm._executor.engine.model_engine.model
+    out = {}
+    for name, mod in model.named_modules():
+      if not all(hasattr(mod, k) for k in ("in_features", "out_features", "weights_loading_config")):
+        continue
+      if getattr(mod, "tp_size", 1) != 1:
+        return "not read: local tensor-parallel matrices do not establish the full model's work"
+      parent, _, last = name.rpartition(".")
+      parent = parent.rsplit(".", 1)[-1]
+      shards = mod.weights_loading_config.weight_mode.shard_keys
+      parts = tuple(f"{parent}.{s}_proj" for s in shards) if shards else (f"{parent}.{last}",)
+      key = (last, int(mod.out_features), int(mod.in_features), str(mod.dtype), parts)
+      out[key] = out.get(key, 0) + 1
+    return [{"name": k[0], "n": k[1], "k": k[2], "dtype": k[3], "parts": list(k[4]), "count": count}
+            for k, count in sorted(out.items())]
+  except (AttributeError, TypeError, ValueError) as exc:
+    return f"not read: {type(exc).__name__}: {str(exc)[:200]}"
 
 
 if __name__ == "__main__":

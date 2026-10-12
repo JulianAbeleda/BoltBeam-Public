@@ -90,7 +90,9 @@ def _prefill_sides(run:pathlib.Path, record:dict | None = None) -> dict[str, dic
 def _decode_side(run:pathlib.Path, record:dict | None = None) -> dict[str, dict[str, Any]]:
   """The decode where table (per token) and its tie-out: the captured token against the untraced one."""
   from boltbeam.workflow.screen import results
-  loss = results(run).get("loss") or {}
+  # Repeat evidence must not depend on the band it is used to derive. The normal report still applies
+  # calibrated floor refusals; this reader compares observations, not the validity of the roofline.
+  loss = results(run, repeat_evidence=True).get("loss") or {}
   w, t = loss.get("where_token_goes"), loss.get("tie_out") or {}
   if not w:
     return {}

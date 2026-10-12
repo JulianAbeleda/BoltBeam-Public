@@ -639,7 +639,8 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
       less = kernel_timer.less_floor_us(med, floor_us)  # shown beside the measured time, never in its place
       row.update(status="measured", us_per_call=med, us_per_call_less_floor=less, min_us=got["min_us"], samples=len(got["samples"]),
                  spread_pct=got["spread_pct"], wall_us=med * r["count"], wall_us_less_floor=less * r["count"], gbs=size / (med * 1e3),
-                 timing={**got["timing"], "dispatch_floor_us": floor_us})  # timing.more_samples says when the floor rule resampled
+                 timing={**got["timing"], "dispatch_floor_us": floor_us,
+                         "floor_correction": "estimate: an empty launch interval is not a measured additive kernel overhead"})  # timing.more_samples says when the floor rule resampled
       rows_out.append(row)
       if step:
         step(i, len(roles))

@@ -83,4 +83,4 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
   return ec.captured_role_time(run, provider=PROVIDER, trace=TRACE, target=target, model_id=model_id,
                                context=context, tokens=tokens, batch=batch, flush_ms=FLUSH_MS,
                                argv_for=lambda n: argv(model, [context], [batch], tokens=n, reps=1, once=n,
-                                                       log=str(raw / f"ollama-serve-{n}.log")))
+                                                       log=str(raw / f"ollama-serve-{n}.log"), context_limit=limit))

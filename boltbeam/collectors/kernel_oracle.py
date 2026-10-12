@@ -117,6 +117,14 @@ def attach(rows:list[dict[str, Any]], launches:list[dict[str, Any]], adapted:str
     grid = ((r.get("geometry") or {}).get("threadgroups"))
     r["cache_check"] = check(g, r) if grid in (None, g[0]["grid"]) else not_checked(
       f"the launch under ncu has {g[0]['grid']} blocks, this role {grid}")
+    if r["cache_check"].get("ncu_us") is not None and r.get("us_per_call_less_floor") is not None:
+      r["timer_comparison"] = {
+        "event_interval_us": r.get("us_per_call"), "empty_launch_interval_us": (r.get("timing") or {}).get("dispatch_floor_us"),
+        "event_less_floor_us": r["us_per_call_less_floor"], "isolated_kernel_us": r["cache_check"]["ncu_us"],
+        "estimate_minus_kernel_us": r["us_per_call_less_floor"] - r["cache_check"]["ncu_us"],
+        "scope": "paired isolated runs; event-minus-empty is an estimate, Nsight duration is kernel execution",
+        "in_model_equivalence": "not established by this isolated cache check"}
+
 
 
 def cache_check(run:pathlib.Path, provider:str, adapted:str, backend:str, rows:list[dict[str, Any]]) -> None:

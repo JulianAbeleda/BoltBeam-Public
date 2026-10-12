@@ -1,5 +1,11 @@
 # The kernel timer
 
+The [2026-10-12 follow-up](accuracy-fixes-20261012.md) separates event/floor bias from isolated-versus-in-model
+kernel differences. An empty-launch subtraction is an estimate: three new direct-event repeats put a small
+projection at 1.824, 2.720 and 3.360 µs while paired Nsight durations remain 2.656 µs. The earlier measurements
+below remain historical observations; they do not establish a transferable per-role accuracy bound.
+
+
 One timing loop for every isolated kernel time BoltBeam reports. `boltbeam/collectors/kernel_timer.py` holds the
 loop. Adapters hand it a `KernelSpec`. Bridges run the dispatch on the GPU.
 

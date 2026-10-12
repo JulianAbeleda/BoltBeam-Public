@@ -360,17 +360,17 @@ def run_provider(run:pathlib.Path) -> str:
   return (_optional(run, MEASURE_STATUS).get("provider")) or providers.DEFAULT
 
 
-def _provider_table(run:pathlib.Path, provider:str, ceil:dict[str, Any], limit_ms:float) -> tuple[dict | None, dict]:
+def _provider_table(run:pathlib.Path, provider:str, ceil:dict[str, Any], limit_ms:float, *, repeat_evidence:bool = False) -> tuple[dict | None, dict]:
   """One provider's per-role table (or None) and the capture its trace names."""
   trace = _optional(run, providers.TRACES[provider])
   if not trace:
     return None, {}
   capture = trace.get("capture") or {"method": tinygrad_role_time.OWN_TIMING, "reason": None}
-  return tinygrad_role_time.loss(ceil.get("_roles") or [], trace, limit_ms, for_decode(run, trace)), capture
+  return tinygrad_role_time.loss(ceil.get("_roles") or [], trace, limit_ms, None if repeat_evidence else for_decode(run, trace)), capture
 
 
 def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], token:dict[str, Any] | None, *,
-               beside:bool = False) -> dict[str, Any]:
+               beside:bool = False, repeat_evidence:bool = False) -> dict[str, Any]:
   """The end result for the provider step 4 measured with: its speed against the limit, ms per token lost, and per
   role where it loses it. Another provider's per-role table, when the run holds one, is shown beside it, labelled.
   The floor rule (tinygrad_role_time.refusal) holds for every provider's table."""
@@ -413,7 +413,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   if out["layout"] and out["layout"].get("ms") and out["layout"]["gpus"] > 1:
     limit_ms = out["layout"]["ms"]  # the layout's limit is the one the measurement is compared with
     out.update(limit_ms=limit_ms, limit_tok_s=1000.0 / limit_ms)
-  tables = {name: _provider_table(run, name, ceil, limit_ms) for name in providers.NAMES}
+  tables = {name: _provider_table(run, name, ceil, limit_ms, repeat_evidence=repeat_evidence) for name in providers.NAMES}
   for name in providers.NAMES:
     table, capture = tables[name]
     if table is None or table["status"] != "measured":
@@ -462,6 +462,8 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   out.update(roles=roles, role_rule=rule, not_attributed_ms=table["not_attributed_ms"], capture=capture,
              check_status=table.get("check_status", "not checked"), band=table.get("band"),
              unpaired_roles=table.get("unpaired_roles") or [], not_timed=table.get("not_timed") or [],
+             attribution=table.get("attribution"), unpaired_launches=table.get("unpaired_launches") or [],
+             joint_role_groups=table.get("joint_role_groups") or [],
              source=_source(shown, capture, target))
   out["tie_out"] = tie.tie_out(run, provider=shown, table=table, trace=_optional(run, providers.TRACES[shown]),
                                limit_ms=limit_ms, profile=profile, bandwidth_gbs=bw,
@@ -748,8 +750,8 @@ def compare_ready(run:pathlib.Path, root:pathlib.Path | None = None) -> dict[str
   return out | ready | {"applies": True, "compare_message": None}
 
 
-def results(run:pathlib.Path) -> dict[str, Any]:
-  return results_core(run, beside=True)
+def results(run:pathlib.Path, *, repeat_evidence:bool = False) -> dict[str, Any]:
+  return results_core(run, beside=True, repeat_evidence=repeat_evidence)
 
 
 def the_token(run:pathlib.Path) -> dict[str, Any] | None:
@@ -762,7 +764,7 @@ def the_token(run:pathlib.Path) -> dict[str, Any] | None:
   return tie.measured_step(_optional(run, "timing_trace.json"), provider, near=near)
 
 
-def results_core(run:pathlib.Path, beside:bool = False) -> dict[str, Any]:
+def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool = False) -> dict[str, Any]:
   manifest = load_manifest(run)
   profile = _optional(run, "model_profile.json")
   policy = _optional(run, "route_policy.json")
@@ -774,7 +776,7 @@ def results_core(run:pathlib.Path, beside:bool = False) -> dict[str, Any]:
   context = token["context"] if token else None
   kernels, context = roofline_kernels(timing, context) if timing else ([], context)
   chosen = next((s for s in timing.get("context_summaries", []) if s.get("context") == context), {}) if timing else {}
-  loss = loss_block(run, manifest, ceil, token, beside=beside)
+  loss = loss_block(run, manifest, ceil, token, beside=beside, repeat_evidence=repeat_evidence)
   if manifest.get("workload") in ("prefill", "session"):  # one ceiling: the sum of the kernels' own, as the where table has it
     ceil = prefill_ceiling(ceil, loss, token)
   elif manifest.get("workload") == "replay":  # one ceiling: the sum of the turns' rooflines (workflow/replay.py)
@@ -1464,6 +1466,10 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
       lines.append(f"  {'not attributed':<{w + 6}} {'':>7} {loss['not_attributed_ms']:7.3f}")
     if nxt := (loss.get("search") or {}).get("next"):
       lines.append(f"Next: {nxt['what']}. {nxt['do']}")
+  if coverage := (loss.get("attribution") or {}).get("matrix_work"):
+    if not coverage["complete"]: lines.append(coverage["words"])
+  if unresolved := loss.get("unpaired_launches"):
+    lines.append(f"Attribution incomplete: {sum(r['calls'] for r in unresolved)} launches lack logical program metadata; work is not checked.")
   for n in loss.get("not_timed") or []:  # a limit role the timer had no adapter for: its own row, out of the floor rule and the sums
     lines.append(f"  {n['role']:<{w}} {n['quant']:<5} not timed: {n.get('reason') or n.get('status')}; left out of the floor rule and the sums")
   if not roles and why_no_roles:

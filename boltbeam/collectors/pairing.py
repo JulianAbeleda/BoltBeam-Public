@@ -37,7 +37,7 @@ from typing import Any, Callable
 
 from boltbeam.collectors.instruction_path import template
 from boltbeam.vocab import OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE
-from boltbeam.workflow.tie_out import kind_of
+from boltbeam.workflow.tie_out import UNATTRIBUTED, kind_of
 
 PEAK_SLACK = 1.05  # a measured peak or bandwidth may be beaten by measurement noise only
 GAP_RATIO = 1.3  # input-side rows of one format whose operations per launch are within this cannot be told apart by time
@@ -60,6 +60,13 @@ FLAT_RULE = ("no layer structure (no launch times, or no attention or recurrent 
              "launch is more time per launch; rows that could exchange their groups are left unpaired and said")
 PRUNED = "pruned"  # the side and kind of a pruned last layer's launches (`prune`)
 _RANK = {s: i for i, s in enumerate(("in", "gate", "out", "ffn_in", "ffn_out", "head"))}
+
+
+def projection_candidate(name:str) -> bool:
+  """A known standalone non-matrix operation cannot read a projection's weights. Fused matrix names win."""
+  if any(w in name.lower() for w in ("gemm", "gemv", "matmul", "mul_mat", "mul_mv")):
+    return True
+  return kind_of({"kernel": name}) in ("other", UNATTRIBUTED)
 
 
 def layer_kinds(profile:dict[str, Any]) -> dict[str, int]:
@@ -255,6 +262,22 @@ def flat_groups(groups:list[dict[str, Any]], m:float = 1) -> list[dict[str, Any]
 
 def _fits(item:dict[str, Any], g:dict[str, Any], k:int, r:int, bandwidth_gbs:float | None, peak:float | None) -> bool:
   """One launch of the group, serving k calls of the item at M / r rows: within the bandwidth and the peak."""
+  # Explicit call semantics constrain candidates before timing bounds. Missing dimensions do not prove a
+  # match; they simply leave the candidate unresolved for the ambiguity check.
+  if not projection_candidate(g.get("template", "")) and not all(
+      launch.get("logical_parts") for launch, *_ in g.get("launches", [])):
+    return False
+  for launch, m, _, _ in g.get("launches", []):
+    if proof := launch.get("matrix_grid_constraint"):
+      from boltbeam.collectors.llama_mmq import fits
+      if not fits(proof, launch, item.get("parts", [item]), m, k, r): return False
+    for part in launch.get("logical_parts") or []:
+      if not any((part.get("role") in (None, row["role"]) and part.get("quant") in (None, row["quant"]) and
+                  (not part.get("shape") or part["shape"] == [m / r, row.get("n"), row.get("k")]))
+                 for row in item.get("parts", [item])):
+        return False
+    if launch.get("matrix_calls") is not None and launch["matrix_calls"] != k:
+      return False
   us = g["median_us"]
   if bandwidth_gbs and item["weight_bytes"] * k / (us * 1e-6) > bandwidth_gbs * 1e9 * PEAK_SLACK:
     return False
@@ -569,15 +592,15 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
           continue
         if any(bound.get((p["group"]["kind"], p["group"]["template"]), q) != q for q, ps in ((ia["quant"], b), (ib["quant"], a)) for p in ps):
           continue  # a template the counts bound to one format cannot serve the other
-        ta, tb = (sum(p["group"]["median_us"] * len(p["launches"]) for p in x) for x in (a, b))
-        if ia["weight_bytes"] == ib["weight_bytes"] and abs(ta - tb) <= 0.01 * max(ta, tb):
-          continue  # equal bytes over equal time: either reading gives the same rows
+        identity = lambda it: sorted((r["role"], r["quant"], r.get("n"), r.get("k"), r["count"]) for r in it["parts"])
+        if identity(ia) == identity(ib):
+          continue  # exchanging identical logical rows changes no attribution
         if (all(_fits(ia, p["group"], p["fused"], p["split"], bandwidth_gbs, peak_of(p["group"]["template"])) for p in b)
             and all(_fits(ib, p["group"], p["fused"], p["split"], bandwidth_gbs, peak_of(p["group"]["template"])) for p in a)):
           found.append(f"{ia['role']} {ia['quant']} and {ib['role']} {ib['quant']} could exchange their launches")
           out[id(ia)] = (ia, found[-1])
           out[id(ib)] = (ib, found[-1])
-    free = [g for g in groups if len(_avail(g, None)) == g["n"]]
+    free = [g for g in groups if len(_avail(g, g["side"])) == g["n"]]
     key = lambda g: (g["kind"] if g["kind"] != "tail" else None, g["template"])  # noqa: E731
     for p in placed:
       g, q = p["group"], p["item"]["quant"]
@@ -585,11 +608,11 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       # free group is a twin only when the walk had no such reason to prefer the one taken, and the row fits it
       serves = key(g) in bound or any(o is not p and key(o["group"]) == key(g) for o in placed)
       twin = next((f for f in free if f["kind"] == g["kind"] and f["side"] == g["side"] and f["n"] == len(p["launches"])
-                   and abs(f["median_us"] - g["median_us"]) <= 0.01 * g["median_us"]
+                   and ordered(p["item"], f)
                    and (f["template"] == g["template"] or (fmt.get(key(f)) == q) == serves)
                    and _fits(p["item"], f, p["fused"], p["split"], bandwidth_gbs, peak_of(f["template"]))), None)
       if twin is not None:
-        found.append(f"{p['item']['role']} {p['item']['quant']} could have taken {twin['slot']} for {g['slot']}: equal launches and time")
+        found.append(f"{p['item']['role']} {p['item']['quant']} could have taken {twin['slot']} for {g['slot']}: equal eligible launches without distinguishing semantic evidence")
         out[id(p["item"])] = (p["item"], found[-1])
         break
     return found, out
@@ -689,7 +712,7 @@ class _TooMany(Exception):
 
 
 def pair(launches:list[dict[str, Any]], rows:list[dict[str, Any]], *, kinds:dict[str, int], widths:list[int],
-         outputs:int | None = None, candidate:Callable[[str], bool] = lambda t: True, bandwidth_gbs:float | None = None,
+         outputs:int | None = None, candidate:Callable[[str], bool] = projection_candidate, bandwidth_gbs:float | None = None,
          peak_of:Callable[[str], float | None] = lambda t: None,
          flat:list[dict[str, Any]] | None = None, prune:dict[str, Any] | None = None) -> dict[str, Any]:
   """The whole walk: structure, then assign; the flat way when the window has no structure (said in "structure").

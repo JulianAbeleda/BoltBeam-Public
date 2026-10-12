@@ -162,8 +162,18 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
                                                                extra=[*settings, *(extra or [])]), raw)
   row = llama_row(vendor_capture.program_output(raw))
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
+  formats = llama_formats(row.get("type_k"), weight_quants(run))
+  if target.backend == "CUDA" and target.compute_units:
+    from boltbeam.collectors import engine_kernels, llama_mmq
+    try:
+      source = engine_kernels.ggml_cuda_source_dir()
+      commit = str(row.get("build_commit") or "")
+      if commit:
+        formats["matrix_grid_constraint"] = llama_mmq.constraints(pathlib.Path(source["dir"]), target.compute_units, commit)
+    except engine_kernels.NoEngineSource:
+      pass
   return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1,
-          "warmup": REPEAT, "copies": 2 if depth else COPIES, "formats": llama_formats(row.get("type_k"), weight_quants(run)),
+          "warmup": REPEAT, "copies": 2 if depth else COPIES, "formats": formats,
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches),
           "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches),

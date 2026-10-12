@@ -114,14 +114,18 @@ def classify_tinygrad_kernel(name:str, *, shape_index:dict[tuple[int, int], dict
     return {"kind": "gemv", "role": "quantized_matvec", "quant": "Q4_K"}
   if "q6k" in low and "gemv" in low:
     return {"kind": "gemv", "role": "quantized_matvec", "quant": "Q6_K"}
+  if "argmax" in low or "topk" in low:
+    return {"kind": "sampling", "role": "sampling"}
   if "dequant" in low or "ggml_data_to_tensor" in low:
     return {"kind": "dequant", "role": "dequant"}
   if "flash" in low or "attn" in low:
     return {"kind": "attention", "role": "attention"}
   if "rope" in low:
     return {"kind": "rope", "role": "rope"}
-  if "norm" in low or low.startswith("r_"):
+  if "norm" in low:
     return {"kind": "norm", "role": "norm"}
+  if low.startswith("r_"):
+    return {"kind": "reduce", "role": "reduce"}
   if "silu" in low or "gelu" in low:
     return {"kind": "activation", "role": "ffn_activation"}
   if "copy" in low or "cast" in low or low.startswith("d_"):

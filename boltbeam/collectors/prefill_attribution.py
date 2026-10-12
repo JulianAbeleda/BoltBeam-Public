@@ -97,6 +97,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   formats = formats or {}
   acts = formats.get("activations")
   gemm = lambda m, n, k, wb: work.gemm(m, n, k, wb, acts)["bytes"]  # noqa: E731
+  if proof := formats.get("matrix_grid_constraint"):
+    launches = [{**l, "matrix_grid_constraint": proof} for l in launches]
   window, window_words = measured_window(launches, warmup)
   shared, overlap = share_overlap(window)
   ordered = sorted(shared, key=lambda l: l["start_us"])  # the launches in stream order: a fixup follows its GEMM
@@ -211,7 +213,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
           "wall_source": "the untraced prefill (the engine's own timing slows its run)" if untraced_ms is not None else
                          "the captured prefill, first kernel to last", "busy_ms": busy, "gaps_ms": wall - busy,
           "overlap": overlap, "chunks": chunk_widths, "rows": sorted(rows, key=lambda r: -r["ms"]),
-          "ambiguous": ambiguous, "rule": got["words"], "structure": got["structure"], "prune": prune,
+          "ambiguous": ambiguous, "matrix_grid_constraint": formats.get("matrix_grid_constraint"), "rule": got["words"], "structure": got["structure"], "prune": prune,
           "templates": [{"template": t["template"], "calls": t["calls"], "ms": t["wall_us"] / 1000.0, "path": t["path"]}
                         for t in templates]}
 

@@ -24,6 +24,12 @@
           "tag": "b11571",
           "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
           "doc": "docs/accuracy-battery-rtx5090-20261012.md"
+        },
+        {
+          "date": "2026-10-12",
+          "tag": "b11571",
+          "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
+          "doc": "docs/accuracy-fixes-20261012.md"
         }
       ]
     },
@@ -40,6 +46,11 @@
           "date": "2026-10-12",
           "version": "0.31.0",
           "doc": "docs/accuracy-battery-rtx5090-20261012.md"
+        },
+        {
+          "date": "2026-10-12",
+          "version": "0.31.0",
+          "doc": "docs/accuracy-fixes-20261012.md"
         }
       ]
     },
@@ -50,6 +61,11 @@
           "date": "2026-10-12",
           "version": "1.2.1",
           "doc": "docs/accuracy-battery-rtx5090-20261012.md"
+        },
+        {
+          "date": "2026-10-12",
+          "version": "1.3.0rc29",
+          "doc": "docs/accuracy-fixes-20261012.md"
         }
       ]
     },
@@ -61,6 +77,11 @@
           "date": "2026-10-12",
           "sha": "caa752ac45b4793f0991436f29a5d783c4277e22",
           "doc": "docs/accuracy-battery-rtx5090-20261012.md"
+        },
+        {
+          "date": "2026-10-12",
+          "sha": "928aed074a6bc2f3caabfc12ee72424e06a8c200",
+          "doc": "docs/accuracy-fixes-20261012.md"
         }
       ]
     },
@@ -71,6 +92,11 @@
           "date": "2026-10-12",
           "version": "0.40.2",
           "doc": "docs/accuracy-battery-rtx5090-20261012.md"
+        },
+        {
+          "date": "2026-10-12",
+          "version": "0.40.2",
+          "doc": "docs/accuracy-fixes-20261012.md"
         }
       ],
       "audit": "docs/accuracy-battery-rtx5090-20261012.md"

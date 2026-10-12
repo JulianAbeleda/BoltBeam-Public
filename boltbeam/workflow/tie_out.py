@@ -52,7 +52,7 @@ NOISY_FLOOR = "{floor:.1f} µs floor under a {us:.1f} µs kernel"
 # an isolated row's rule time: its time less the dispatch floor, the figure that matched nsys per role on the 5090
 # (docs/in-model-vs-generic-rtx5090-20261010.md); the measured time, floor included, stays in the row as us_per_call
 ISOLATED_COLUMNS = "µs/call is the measured time, floor included; less floor, GB/s and % of peak are {floor_words}"
-ISOLATED_RULE = " Timed alone: % of peak and GB/s are on the time {floor_words}; µs/call is the measured time with the floor in it."
+ISOLATED_RULE = " Timed alone: % of peak and GB/s are on the time {floor_words}; µs/call is the measured time with the floor in it. Empty-launch subtraction is an estimate, not a measured additive correction."
 # the isolated tie-out: only the ideal and the token are compared; the split is an estimate, labelled so
 NOT_SPLIT_LABEL = "kernels and gaps, not split"
 ESTIMATE_LABEL = "(estimate from isolated times)"
@@ -74,6 +74,8 @@ KIND_PREFIX = (("r_", "reduce"), ("E_", "elementwise"))  # tinygrad's generated 
 
 
 def kind_of(row:dict[str, Any]) -> str:
+  if row.get("logical_parts"):
+    return "weight kernels"
   if row.get("kind") in KINDS:
     return row["kind"]
   name = str(row.get("kernel") or "")
@@ -132,6 +134,9 @@ def attended_context(trace:dict[str, Any], provider:str) -> float | None:
   if method == ISOLATED:  # the kernels ran alone: the context is step 4's, as the row carries it
     return float(whole["context"])
   n = whole.get("decode_tokens") or 1
+  engine = whole.get("engine") or {}
+  if provider == "tinygrad" and method == OWN_TIMING and all(engine.get(k) is not None for k in ("context_start", "context_end")):
+    return (engine["context_start"] + engine["context_end"]) / 2
   base = float(whole["context"]) + (TINYGRAD_WARM if provider == "tinygrad" else 0)
   captured = method not in (None, OWN_TIMING)
   return base + ((n + 3) / 2 if captured else (n + 1) / 2)
@@ -285,14 +290,17 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
     return out
   busy = table["kernel_ms"]
   out["band"] = (table.get("band") or {}).get("words")
-  # An outside capture (nsys, xctrace) runs the program nearly as it is: its own token is the one its kernels fit.
-  # The engine's own profiling (tinygrad PROFILE=1, one command buffer per kernel) slows the run many times over,
-  # so its wall time is mostly profiling: the token is the untraced whole step, and its idle is never "gaps".
+  # Every capture reconciles to its own wall. Profiling perturbation is a separate comparison with
+  # the untraced step; kernel busy time is never substituted for measured elapsed time.
   outside = (trace or {}).get("capture", {}).get("method") not in (None, OWN_TIMING)
-  if outside and whole.get("token_ms"):
+  if whole.get("token_ms"):
     token, source = whole["token_ms"], "the captured run's own time per token"
   else:
     token, source = untraced, f"the untraced whole step at context {untraced_ctx}"
+  if not outside:
+    out["profiled_wall_ms"] = whole.get("token_ms")
+    out["profile_overhead_ms"] = token - untraced if token is not None and untraced is not None else None
+    out["measurement_scope"] = "profiled wall; residual includes host execution and profiling overhead"
   out.update(token_ms=token, token_source=source, busy_ms=busy)
   if token is None:
     out["refused"] = f"no measured token for {provider} in this run to tie the kernels out against"
@@ -315,7 +323,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   lines = [{"label": f"limit at context {context:.0f} (ideal)", "ms": limit, "how": "derived"}]
   if roles:
     taken = {(r["role"], r["quant"]) for r in roles}
-    outside = roles_outside_limit(profile, taken | {(u["role"], u["quant"]) for u in table.get("unpaired_roles") or []})
+    outside_roles = roles_outside_limit(profile, taken | {(u["role"], u["quant"]) for u in table.get("unpaired_roles") or []})
     parts: dict[str, float] = {}
     loose = []  # GEMVs no role took and no outside role names: weight time the limit does not know, its own line
     tokens = table["tokens"]
@@ -324,7 +332,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
         ms, calls = float(r["wall_us"]) / tokens / 1000.0, float(r.get("calls") or 0)
         k = kind_of(r)
         if k == UNATTRIBUTED:
-          k = outside.get(round(calls / tokens), UNATTRIBUTED)
+          k = outside_roles.get(round(calls / tokens), UNATTRIBUTED)
           if k == UNATTRIBUTED:
             loose.append({"kernel": kernel_words(str(r.get("kernel") or "")), "calls_per_token": calls / tokens,
                           "us_per_call": float(r["wall_us"]) / calls if calls else None, "ms": ms})
@@ -340,7 +348,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   else:
     lines.append({"label": "all kernels above the ideal, not split by role", "ms": busy - limit, "how": "measured"})
   gaps = token - limit - sum(l["ms"] for l in lines[1:])
-  lines.append({"label": "gaps between kernels (GPU idle)" if gaps >= 0 else
+  lines.append({"label": ("gaps between kernels (GPU idle)" if outside else "captured wall outside GPU kernels") if gaps >= 0 else
                 (f"gaps between kernels (below 0, within measured repeat spread ±{spread:.6f} ms)" if spread is not None else
                  "gaps between kernels (below 0; not checked: no repeat band)"), "ms": gaps, "how": "difference"})
   out["lines"] = lines
@@ -461,7 +469,7 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
     if abs(rest_limit) > 1e-9:
       add(LIMIT_ROW, "limit", 0.0, rest_limit)
     gaps = lines[-1]
-    add(GAPS_ROW, "gaps", gaps["ms"], 0.0)
+    add("outside GPU kernels (profiled wall)" if tie.get("profiled_wall_ms") is not None else GAPS_ROW, "gaps", gaps["ms"], 0.0)
   else:  # not split by role: the tie-out's own lines, the ideal on the first one that holds kernels
     for i, l in enumerate(lines[1:]):
       gaps = l["how"] == "difference" and len(lines) > 2

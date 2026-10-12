@@ -107,7 +107,8 @@ def trace_rows(result:dict[str, Any], *, context:int, time_source:str) -> list[d
   return [{"scope": "kernel", "context": context, "kernel": g["key"] + (f" role={g['role']}" if g.get("shared_key") else ""),
            "calls": g["calls"], "wall_us": g["wall_us"], "role": g["role"], "quant": g["quant"],
            "role_source": ROLE_SOURCE if g["role"] else None, "time_source": time_source,
-           **({"shape": g["shape"]} if g.get("shape") else {})} for g in result["groups"]]
+           **{k: g[k] for k in ("shape", "logical_parts", "logical_flops") if g.get(k) is not None}}
+          for g in result["groups"]]
 
 
 def agreement(by_bytes:dict[str, Any], by_metadata:dict[str, tuple[str | None, str | None]]) -> dict[str, Any]:
@@ -257,18 +258,19 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
       counts = {(m["role"], m["quant"]): m["count"] for m in got}
       packed = {(m["role"], m["quant"]): m["part_roles"] for m in got}
   result = attribute(window, roles, counts, tokens, ceil.get("peak_bandwidth_gbs"), kinds=pairing.layer_kinds(profile), classes=classes)
-  if packed:  # a packed GEMM's time back to its parts by their weight bytes (a decode GEMV streams its weights)
-    split = []
+  if packed:  # one measured duration belongs to the packed launch, not separate byte-weighted part timings
+    from collections import Counter
+    from boltbeam.role_key import role_key
     for g in result["groups"]:
       parts = packed.get((g["role"], g["quant"]))
       if not parts:
-        split.append(g)
         continue
-      total = sum(p["weight_bytes"] for p in parts)
-      # each part keeps its shape: one role at two shapes (q in qkv_proj, o in o_proj) is two rows of the limit
-      split += [{**g, "role": p["role"], "quant": p["quant"], "wall_us": g["wall_us"] * p["weight_bytes"] / total,
-                 "packed_as": g["role"], **({"shape": [1, *p["shape"]]} if p.get("shape") else {})} for p in parts]
-    result["groups"] = split
+      counts = Counter((p["role"], p["quant"], *p["shape"]) for p in parts)
+      logical = [{"role": r, "quant": q, "shape": [batch, n, k], "count": c} for (r, q, n, k), c in counts.items()]
+      joint = len({role_key(p) for p in logical}) > 1
+      g.update(logical_parts=logical, logical_flops=sum(2 * batch * n * k * c for (_, _, n, k), c in counts.items()) * g["calls"],
+               role=None if joint else logical[0]["role"], quant=None if joint else logical[0]["quant"])
+      if not joint: g["shape"] = logical[0]["shape"]
   wall = sum(g["wall_us"] for g in window)
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": model_id, "target_id": target.target_id, "workload": "decode",
            "provider_id": provider, "capture": {"method": method, "reason": None},
@@ -280,5 +282,13 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
                    + trace_rows(result, context=context, time_source=method),
            "pairs": result["pairs"], "unpaired_roles": result["unpaired"], "ambiguous": result["ambiguous"],
            "pairing_rule": result["rule"], "structure": result["structure"], "overlap": overlap, "pairing_roles": pairing_roles}
+  if packed:
+    from boltbeam.artifacts.tinygrad_profile_events import matrix_work_coverage
+    work = matrix_work_coverage(trace["rows"], profile, tokens, batch=batch)
+    unresolved = [{"kernel": r["kernel"], "calls": r["calls"]} for r in trace["rows"] if r.get("scope") == "kernel"
+                  and not r.get("logical_parts") and any(w in r["kernel"].lower() for w in ("gemm", "gemv", "matmul"))]
+    trace["aux_sources"] = {"attribution": {"complete": work["complete"] and not result["unpaired"] and not unresolved,
+                                            "matrix_work": work, "unresolved_launches": unresolved,
+                                            "source": "the engine's loaded matrix inventory"}}
   (pathlib.Path(run) / out).write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
   return trace

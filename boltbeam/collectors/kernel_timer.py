@@ -175,8 +175,8 @@ class Flusher:
     return us
 
   def floor_us(self, count:int = FLOOR_SAMPLES) -> float:
-    """The fixed GPU cost of one dispatch, the median over `count` empty launches after WARMUPS, each after a sweep as
-    every timed launch is: reported beside every time."""
+    """The median interval around an empty launch under the same protocol, reported beside every time.
+    This includes the empty kernel itself and does not establish an additive correction for other kernels."""
     launch = lambda: self.bridge.dispatch(self.empty_pso, [self.small], (1, 1, 1), (32, 1, 1))  # noqa: E731
     return statistics.median(samples(launch, warmups=WARMUPS, count=count, before=self))
 

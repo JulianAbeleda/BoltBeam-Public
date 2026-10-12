@@ -2,8 +2,8 @@
 """Per-kernel GPU time of a real decode, in tinygrad's own runtime, with each program's role from the model.
 
 The tinygrad fork's python runs this file by path, with the fork as the working directory, under PROFILE=1. It
-imports only tinygrad and the standard library. Run it with JIT=2 (JIT on, graph off): every kernel then runs in
-its own command buffer and carries its own GPU timestamps. Graph replay only gives an even split of a batch.
+imports only tinygrad and the standard library. Use the unprofiled measurement's JIT mode: HCQ graph replay
+provides per-program timestamps, while JIT=2 dispatches each kernel separately. These have different host costs.
 
 It writes two files for BoltBeam's own normalizer (boltbeam/artifacts/tinygrad_profile_events.py):
   --events  a pickle of the profile events of the measured decode window only (after prefill and warm tokens)
@@ -13,7 +13,22 @@ and prints one JSON line: tokens, wall time, tok/s.
 """
 from __future__ import annotations
 
-import argparse, hashlib, json, pickle, sys, time
+import argparse, hashlib, json, os, pathlib, pickle, subprocess, sys, time
+
+
+def _build() -> str:
+  """The imported engine's source identity, including local changes; pins are not observations."""
+  import tinygrad
+  root = pathlib.Path(tinygrad.__file__).resolve().parents[1]
+  def git(*args): return subprocess.check_output(["git", "-C", str(root), *args], stderr=subprocess.DEVNULL)
+  try:
+    commit = git("rev-parse", "HEAD").decode().strip()
+    changes = git("diff", "--no-ext-diff", "HEAD", "--", "tinygrad")
+    for name in sorted(git("ls-files", "--others", "--exclude-standard", "-z", "tinygrad").split(b"\0")):
+      if name:
+        changes += name + b"\0" + (root / os.fsdecode(name)).read_bytes()
+    return commit + ("+sha256:" + hashlib.sha256(changes).hexdigest() if changes else "")
+  except (OSError, subprocess.SubprocessError): return "unknown"
 
 
 def _programs(jit) -> list[dict]:
@@ -52,6 +67,7 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--model", required=True)
   p.add_argument("--context", type=int, default=128)
   p.add_argument("--warm", type=int, default=3)
+  p.add_argument("--max-context", type=int)
   p.add_argument("--tokens", type=int, default=10, help="decode tokens in the measured window")
   p.add_argument("--events", required=True)
   p.add_argument("--census", required=True)
@@ -61,7 +77,7 @@ def main(argv:list[str] | None = None) -> int:
   from tinygrad.engine.jit import TinyJit
   from tinygrad.llm.model import Transformer
 
-  model, kv = Transformer.from_gguf(args.model, max(512, args.context + args.warm + args.tokens + 8))
+  model, kv = Transformer.from_gguf(args.model, args.max_context or max(512, args.context + args.warm + args.tokens + 8))
   bos = kv.get("tokenizer.ggml.bos_token_id") or 0
   gen = model.generate([bos] * args.context)
   next(gen)
@@ -75,17 +91,38 @@ def main(argv:list[str] | None = None) -> int:
   _flush()
   Compiled.profile_events.clear()
   t0 = time.perf_counter()
-  for _ in range(args.tokens): next(gen)
+  stale_graphs = 0
+  for i in range(args.tokens):
+    next(gen)
+    if i == 0:
+      _flush()
+      stale_graphs = sum(type(e).__name__ == "ProfileGraphEvent" for e in Compiled.profile_events)
   _flush()
   wall = time.perf_counter() - t0
   events = list(Compiled.profile_events)
+  # HCQ graph timestamps are retired on the next replay, not device synchronization. Remove the stale warm
+  # graph event and drain one unmeasured token so the saved window contains exactly the measured replays.
+  if any(type(e).__name__ == "ProfileGraphEvent" for e in events):
+    retained = []
+    for event in events:
+      if type(event).__name__ == "ProfileGraphEvent" and stale_graphs:
+        stale_graphs -= 1
+      else:
+        retained.append(event)
+    Compiled.profile_events.clear()
+    next(gen)
+    _flush()
+    events = retained + [e for e in Compiled.profile_events if type(e).__name__ == "ProfileGraphEvent"]
   # the decode JIT is the one whose call count moved in the window
   used = [j for j in jits if j.cnt != before[id(j)] and j.captured is not None]
   census = {"capture": {"program_evidence_by_jit": {f"jit{i}": _programs(j) for i, j in enumerate(used)}}}
   with open(args.events, "wb") as fh: pickle.dump(events, fh)
   with open(args.census, "w") as fh: json.dump(census, fh)
   print(json.dumps({"tokens": args.tokens, "wall_s": wall, "tok_s": args.tokens / wall, "events": len(events),
-                    "decode_jits": len(used), "context": args.context}))
+                    "decode_jits": len(used), "context": args.context, "jit_mode": int(os.environ.get("JIT", "1")),
+                    "profile": int(os.environ.get("PROFILE", "0")), "warm_tokens": args.warm,
+                    "context_start": args.context + args.warm + 1, "context_end": args.context + args.warm + args.tokens,
+                    "max_context": model.max_context, "build": _build()}))
   return 0
 
 

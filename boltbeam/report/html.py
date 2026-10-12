@@ -801,7 +801,7 @@ def _per_role(loss:dict[str, Any]) -> str:
   est = loss.get("estimate")
   lost = (lambda r: r["est_lost_ms"]) if est else (lambda r: r["lost_ms"])
   roles = sorted(loss.get("roles") or [], key=lambda r: (-lost(r), str(r["role"]), str(r["quant"])))
-  if not roles:
+  if not roles and not loss.get("unpaired_launches") and not loss.get("joint_role_groups") and not loss.get("attribution"):
     return ""
   items = []
   for r in roles:
@@ -853,6 +853,10 @@ def _per_role(loss:dict[str, Any]) -> str:
   if unsplit:
     names = ", ".join(f'{PLAIN_ROLE.get(str(u.get("role")), u.get("role"))} {u.get("quant") or ""}'.strip() for u in unsplit)
     body += f'<p class="note">Roles that could not be split: {_e(names)}. Their time is inside other kernels.</p>'
+  if coverage := (loss.get("attribution") or {}).get("matrix_work"):
+    if not coverage["complete"]: body += f'<p class="note">{_e(coverage["words"])}</p>'
+  if unresolved := loss.get("unpaired_launches"):
+    body += f'<p class="note">Attribution incomplete: {sum(r["calls"] for r in unresolved)} launches lack logical program metadata; work is not checked.</p>'
   for n in loss.get("not_timed") or []:  # a limit role the timer had no adapter for: its own row, out of the floor rule and the sums
     body += (f'<p class="note">{_role_name(n.get("role"), n.get("quant"))}: not timed: {_e(n.get("reason") or n.get("status") or "")}. '
              f'Left out of the floor rule and the sums.</p>')

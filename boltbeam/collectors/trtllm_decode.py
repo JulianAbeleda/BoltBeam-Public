@@ -65,16 +65,20 @@ def available(target, env:dict[str, str] | None = None) -> str | None:
 
 
 def argv(model:str, contexts:list[int], batches:list[int], *, tokens:int = TOKENS, reps:int = REPS,
-         once:int | None = None, context_limit:int | None = None) -> list[str]:
+         once:int | None = None, context_limit:int | None = None, max_num_tokens:int | None = None, backend:str | None = None,
+         worker_single_process:str | None = None) -> list[str]:
   py = python()
   if py is None:
     raise RuntimeError(f"TensorRT-LLM was not found: set ${ENV}")
   out = [py, str(DRIVER), "--model", model, "--contexts", ",".join(map(str, contexts)),
          "--batches", ",".join(map(str, batches)), "--tokens", str(tokens), "--reps", str(reps)]
-  out += ["--backend", os.environ.get(BACKEND_ENV) or DEFAULT_BACKEND]
+  out += ["--backend", backend or os.environ.get(BACKEND_ENV) or DEFAULT_BACKEND]
+  out += ["--worker-single-process", worker_single_process or os.environ.get("TLLM_WORKER_USE_SINGLE_PROCESS", "0")]
   if context_limit is not None:
     out += ["--model-context-limit", str(context_limit)]
-  return out + (["--once", str(once)] if once else [])
+  if max_num_tokens is not None:
+    out += ["--max-num-tokens", str(max_num_tokens)]
+  return out + (["--once", str(once), "--profile-window"] if once else [])
 
 
 def whole_step(model:str, contexts:list[int], batches:list[int], *, log:pathlib.Path | None = None,
@@ -86,9 +90,14 @@ def whole_step(model:str, contexts:list[int], batches:list[int], *, log:pathlib.
 
 def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int, batch:int = 1,
               tokens:int = ROLE_TOKENS) -> dict[str, Any]:
-  from boltbeam.collectors.capture_settings import context_limit
+  from boltbeam.collectors.capture_settings import context_limit, observed
   limit = context_limit(run, context, 'max_seq_len')
+  settings = observed(run, context)
+  capacity, backend = settings.get("max_num_tokens"), settings.get("backend")
+  if type(capacity) is not int or capacity <= 0 or backend not in ("pytorch", "tensorrt"):
+    raise ValueError("TensorRT capture requires the untraced scheduler capacity and backend; rerun whole-step measurement")
   return ec.captured_role_time(run, provider=PROVIDER, trace=TRACE, target=target, model_id=model_id,
-                               context=context, tokens=tokens, batch=batch, env=ec.venv_env(python()),
-                               argv_for=lambda n: argv(model, [context], [batch], tokens=n, reps=1, once=n, context_limit=limit))
+                               context=context, tokens=tokens, batch=batch, env=ec.venv_env(python()), profiler_range=True,
+                               argv_for=lambda n: argv(model, [context], [batch], tokens=n, reps=1, once=n, context_limit=limit,
+                                                       max_num_tokens=capacity, backend=backend, worker_single_process=settings.get("worker_single_process")))
 

@@ -322,7 +322,7 @@ def measure_tinygrad(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pa
     rows.append({"scope": "whole_step", "context": int(ctx), "wall_us": 1e6 / got["tok_s"], "tok_s": got["tok_s"],
                  "decode_tokens": got["tokens"], "source": f"tinygrad decode on {got['device']}, JIT with {got['jit']}, no profiling",
                  # the engine's own account of its graph state: a reader shows it, never infers it (TH: hidden failure)
-                 "jit": got["jit"], "graph_error": got.get("graph_error")})
+                 "jit": got["jit"], "graph_error": got.get("graph_error"), "engine": got.get("engine", {})})
   from boltbeam.workflow.screen import run_bandwidth
   peak_gbs, peak_source = run_bandwidth(run, target)
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
