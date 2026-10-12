@@ -217,3 +217,67 @@ The selected-turn table redraws the finished agent-60 run with chip best. The ol
 - The replay biggest turn fails the 10% server gate, and the literal prediction of no mul_mat_q launches was wrong. No code was changed to force these results to pass.
 
 Part 3 still needs the missing engines and model runs. Unknown or refused capture is not a pass.
+
+## 7. Remaining engine battery (part 3)
+
+Each new attempt wrote its prediction before running. The original gates remain: every role pairs,
+work matches the same model, arithmetic residual at most 0.001 ms, and capture error within 6%.
+The progress ledger in `acc2-20261012/progress.md` records every completed or refused attempt.
+No adapters were built and no BoltBeam or fork code was changed.
+
+Crash recovery reused the completed vLLM repeat and 8B decode/prefill from the earlier session.
+Each had exit 0, full timing traces, prediction timestamps preceding the saved execution and engine logs
+identifying v0.31.0. The source folders are retained. The reused decode manifests lacked engine versions;
+analysis copies recover the version from saved engine logs, with an explicit evidence field. Missing historical
+toolchain metadata remains unknown; current toolchain readings are not substituted for historical observations.
+TensorRT's 8B whole-step timing was also complete; only its interrupted role-capture stage was resumed.
+New manifests record driver 595.99.02, CUDA 13.2, Nsight Systems 2026.1.3 and Nsight Compute 2026.2.1.
+TensorRT's engine Python records torch 2.9.1; Ollama does not use torch and the recorder reports unknown.
+Ollama 0.40.2 is verified by its own serve log and client version, replacing the previously unknown current pin.
+
+| engine | version | model | workload | work match | roles paired | tie-out | % of roofline |
+|---|---|---|---|---|---|---|---|
+| vLLM | 0.31.0 | 27B AWQ | decode 512 | PASS modeled projections; capture context differs | PASS | PASS (0.000000 ms) | 77.32% |
+| vLLM | 0.31.0 | 8B BF16 | decode 512 | PASS modeled projections; capture context differs | PASS | PASS (0.000000 ms) | 89.76% |
+| vLLM | 0.31.0 | 8B BF16 | prefill 2048 | PASS, pruning accounted | PASS | PASS (0.000000 ms) | 83.29% |
+| vLLM | 0.31.0 | 8B BF16 | prefill 512 | PASS, pruning accounted | PASS | PASS (0.000000 ms) | 82.67% |
+| TensorRT-LLM | 1.2.1 | 8B BF16 | decode 512 | not checked | not checked | not checked | 85.92% whole step only |
+| TensorRT-LLM | 1.2.1 | 27B AWQ | decode 512 | not checked | not checked | not checked | not checked |
+| Ollama | 0.40.2 | 8B Q4_K_M | decode 512 | PASS modeled projections; capture context differs | PASS | PASS (0.000000 ms) | 68.74% |
+| Ollama | 0.40.2 | 27B Q4_K_M | decode 512 | PASS modeled projections; capture context differs | PASS | PASS (0.000000 ms) | 78.61% |
+| tinygrad | caa752ac4 | 8B Q4_K_M | decode 512 | not checked; metadata incomplete | FAIL: three matrix kernels unassigned | FAIL: profiling mode refused | 68.61% whole step only |
+| tinygrad | caa752ac4 | 27B Q4_K_M | decode 512 | not checked | not checked | not checked | not checked |
+
+| run | captured vs untraced | verdict | evidence / reason |
+|---|---|---|---|
+| vlB-decode-finish | -1.944% | PASS numerically; same-context proof not checked | capture mean context 145; untraced 512; no role refusal |
+| v8-decode | -0.566% | PASS numerically; same-context proof not checked | capture mean context 145; untraced 512; no role refusal |
+| v8-prefill 2048 | -0.583% | PASS | no ambiguity; operations match 8B profile and llama.cpp except declared FFN pruning |
+| v8-prefill 512 | +0.924% | PASS | no ambiguity; operations match 8B profile and llama.cpp except declared FFN pruning |
+| t8-decode | not checked | FAIL / not measured | host available memory fell below 3 GiB during profiled engine build; own process group stopped to prevent another OOM restart. Saved untraced timing is 10.457 ms/token (95.627 tok/s). |
+| t27-decode | not checked | FAIL / not measured | installed Transformers does not recognize the checkpoint architecture; engine load fails. |
+| o8-decode | +2.091% | PASS numerically; same-context proof not checked | capture mean context 145; untraced 512; no role refusal |
+| o27-decode | +7.455% | FAIL | capture mean context 145; untraced 512; no role refusal |
+| tg8-decode | +1373.212% profiled wall | FAIL | profiled wall60.247288ms vs4.089520ms untraced; device-kernel sum4.185750ms (+2.353%), not a whole-token wall time; JIT2 profile vs JIT1 graphs |
+| tg27-decode | not checked | FAIL / not measured | fork recurrent block supports one token only and refuses the requested 512-token prefill. |
+
+Roofline percentages use each engine's own weight format and its untraced requested-context time.
+For decode, the context-1 weight/state floor plus the linear KV-read term is evaluated at the untraced context.
+Prefill uses the sum of modeled captured-row ceilings over the untraced time. Different quants and instruction
+paths therefore do not share one denominator. TensorRT8B has a valid whole-step roofline percentage despite absent role attribution; its paired/capture checks stay not checked. No percentage is claimed when whole-step measurement is absent.
+The lean battery did not recreate the deleted 8B F16 GGUF.
+
+The completed 27B vLLM repeat fails the original row-spread prediction: normalization moves by +0.061015 ms, above the 0.05 ms absolute band (29.1% of the first normalization row). All other rows and gaps stay inside the original bands, and projection work is unchanged. This is repeat variation against a predefined band, not proof of incorrect kernel timing.
+
+### Root-cause evidence and open accuracy work
+
+- **Proven missing request derivation.** `workflow/screen.py` calls `providers.role_time` from both pipeline and standalone role-time without passing context. `collectors/providers.py` defaults context to 128, then forwards it to driven engines or llama.cpp. The untraced benchmark instead reads `trace_request.json` contexts. The correct generic repair is to carry the selected request and matching untraced point into capture; replacing 128 with another constant would preserve the bug. Long and short captures, chunk sizes and other run settings must agree with that request.
+- **Measured pairing ambiguity, cause not established.** The replay mid FFN-down row has a free slot 3 competing with slot 2. `collectors/pairing.py`'s twin check compares kind, side, count, a literal 1% time threshold, format standing and `_fits`. This is a heuristic constant, but these traces do not prove that threshold is wrong. Tensor dimensions, launch semantic metadata or instruction-path constraints could distinguish twins if available. A kernel-name or model-specific exception is not justified.
+- **Uncalibrated universal acceptance bands.** `workflow/diff.py` uses max(3%, 0.05 ms) for repeated rows and `workflow/tie_out.py` uses 6% for captured versus untraced time. The report preserves those original criteria. These constants are not a repeat-derived confidence estimate for every setup. New calibrated checks require dated exact-scope repeat evidence; absent evidence must say not checked.
+- **Tinygrad semantic work is incomplete.** Three captured weight-matrix programs have no semantic identities in the fork's saved census and remain role unknown, totaling 0.26185 ms/token. Other launches supply every role label, so `loss.unpaired_roles=[]` does not prove every matrix launch was attributed. The event normalizer joins only the semantic metadata actually captured; work must remain not checked until each program carries its logical tensor parts. The fused gate/up row has one shape and 36 launches/token for two 36-layer projections, so launch count alone cannot stand in for matrix work.
+- **Tinygrad mode comparison fails.** Its profiled JIT2 wall is 60.247288 ms/token against 4.089520 ms with unprofiled JIT1 graphs. The 4.185750 ms sum of device intervals is kernel busy time, not that wall. The existing tie-out refuses these inflated profiled kernels rather than manufacturing idle from an impossible sum. The requested and captured contexts also differ. No fork development was performed.
+- **Version provenance missing in decode artifacts.** Saved vLLM decode rows lack the build while the engine's own logs contain it; `providers.run_build` reads timing rows rather than those logs. Recovered analysis metadata makes the evidence inspectable, but does not repair the collector.
+- **TensorRT measurement unavailable.** Its 8B profiled build exceeded safe host memory and its 27B checkpoint loader lacks the architecture. These are resource/runtime limitations, not accuracy passes and not justification to change adapters during this battery.
+
+The resident model server was restored from its exact saved command. `/health` is ok, a chat to its alias completed,
+and `/props` reports b11571-097cf33d9. The run folders were copied to the Mac without `.nsys-rep` files.

@@ -18,6 +18,12 @@
           "tag": "b11571",
           "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
           "doc": "docs/engine-upgrade-llama-b11571-rtx5090-20261012.md"
+        },
+        {
+          "date": "2026-10-12",
+          "tag": "b11571",
+          "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
+          "doc": "docs/accuracy-battery-rtx5090-20261012.md"
         }
       ]
     },
@@ -29,22 +35,45 @@
           "date": "2026-10-11",
           "version": "0.31.0",
           "doc": "docs/prefill-vllm-crosscheck-27b-rtx5090-20261011.md"
+        },
+        {
+          "date": "2026-10-12",
+          "version": "0.31.0",
+          "doc": "docs/accuracy-battery-rtx5090-20261012.md"
         }
       ]
     },
     "tensorrt-llm": {
       "version": "1.2.1",
-      "history": []
+      "history": [
+        {
+          "date": "2026-10-12",
+          "version": "1.2.1",
+          "doc": "docs/accuracy-battery-rtx5090-20261012.md"
+        }
+      ]
     },
     "tinygrad": {
       "sha": "caa752ac4",
       "checkout": "detached",
-      "history": []
+      "history": [
+        {
+          "date": "2026-10-12",
+          "sha": "caa752ac45b4793f0991436f29a5d783c4277e22",
+          "doc": "docs/accuracy-battery-rtx5090-20261012.md"
+        }
+      ]
     },
     "ollama": {
-      "version": "unknown",
-      "reason": "ollama --version printed nothing",
-      "history": []
+      "version": "0.40.2",
+      "history": [
+        {
+          "date": "2026-10-12",
+          "version": "0.40.2",
+          "doc": "docs/accuracy-battery-rtx5090-20261012.md"
+        }
+      ],
+      "audit": "docs/accuracy-battery-rtx5090-20261012.md"
     }
   },
   "toolchain": {
