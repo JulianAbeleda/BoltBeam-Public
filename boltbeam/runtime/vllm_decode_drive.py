@@ -75,7 +75,8 @@ def main() -> int:
   if a.once:
     for _ in range(a.warm):
       timed(contexts[0], batches[0], 2)
-    print(json.dumps({"tokens": a.once, "seconds": timed(contexts[0], batches[0], a.once)}), flush=True)
+    print(json.dumps({"tokens": a.once, "seconds": timed(contexts[0], batches[0], a.once), "matrices": _matrices(llm)}),
+          flush=True)
     return 0
   for context in contexts:
     for batch in batches:

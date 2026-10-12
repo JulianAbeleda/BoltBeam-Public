@@ -101,7 +101,8 @@ The weight GEMM rows of both BF16 runs use the bf16 path. cuBLAS hides that code
    - Fix: the vLLM driver reports its measured call's monotonic window. role_time reads the clock over that
      window: 2827 MHz, and the ceiling is 5.0 ms.
    - The llama.cpp capture still reads the whole llama-bench process. llama-bench is GPU-bound after its model
-     load, but a BF16 load is seconds long. A window for llama-bench is open work.
+     load, but a BF16 load is seconds long. (Fixed: vendor_capture.busy_window reads the clock over the captured
+     kernels only; see the 27B crosscheck, item 8.)
 3. **vLLM's packed GEMMs.** One qkv launch does q, k and v. One gate_up launch does gate and up.
    - Fix: the driver reports the model's own weight matrices and their packed parts (`packed_modules_mapping`).
      prefill.engine_roles pairs launches with those matrices. It sums the parts' work and bytes, and accepts the

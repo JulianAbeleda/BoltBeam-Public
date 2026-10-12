@@ -108,14 +108,16 @@ def captured_role_time(run:pathlib.Path, *, provider:str, trace:str, argv_for:Ca
   times over N - 1."""
   from boltbeam.collectors import attribution, vendor_capture
   raw = run / "kernel_compare" / f"{provider.replace('.', '_').replace('-', '_')}_capture"
-  got, secs = {}, {}
+  got, secs, matrices = {}, {}, None
   for name, n in (("long", tokens), ("short", 1)):
     got[name] = vendor_capture.capture(target.backend, argv_for(n), raw / name, cwd=cwd, env=env, flush_ms=flush_ms)
     printed = [r for r in json_lines(vendor_capture.program_output(raw / name)) if "seconds" in r]
     secs[name] = printed[-1]["seconds"] if printed else None
+    matrices = matrices or (printed[-1].get("matrices") if printed else None)  # the engine's packed GEMMs, if it says
   window, overlap = attribution.shared_window(got["long"], got["short"])
   token_ms = ((secs["long"] - secs["short"]) * 1000.0 / (tokens - 1)
               if secs["long"] is not None and secs["short"] is not None else None)
   return attribution.provider_trace(run, window, provider=provider, method=vendor_capture.plan(target.backend)["method"],
                                     model_id=model_id, target=target, context=context, tokens=tokens - 1, out=trace,
-                                    token_ms=token_ms, long_kernels=len(got["long"]), overlap=overlap, batch=batch)
+                                    token_ms=token_ms, long_kernels=len(got["long"]), overlap=overlap, batch=batch,
+                                    matrices=matrices)

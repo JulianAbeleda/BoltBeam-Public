@@ -215,6 +215,17 @@ def _here() -> str | None:
   return this_machine_target()
 
 
+def model_file(model:str | pathlib.Path) -> pathlib.Path:
+  """The GGUF file llama-bench and the building-block probe read, or CannotMeasure saying why not: a model folder
+  (safetensors, for another engine) is not one, and is said so, not called gone."""
+  path = pathlib.Path(model).expanduser()
+  if path.is_dir():
+    raise CannotMeasure(f"{path} is a model folder; this step reads one GGUF file", "measure with the model's GGUF file")
+  if not path.is_file():
+    raise CannotMeasure(f"the model file is gone: {path}", "measure again with the model file in place")
+  return path
+
+
 def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path = "RUN", llama_bench:str = DEFAULT,
               here:Callable[[], str | None] | None = None, env:dict[str, str] | None = None) -> dict[str, Any]:
   """What the measurement will use, or CannotMeasure with the reason and the command to run instead."""
@@ -223,9 +234,7 @@ def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path
   if mine != target_id:
     raise CannotMeasure(f"this machine is {mine or 'no registered GPU'}, not {target_id}",
                         f"on the machine with {target_id}: pipeline MODEL --run {run} --target {target_id} --measure auto")
-  path = pathlib.Path(model).expanduser()
-  if not path.is_file():
-    raise CannotMeasure(f"the model file is gone: {path}", "measure again with the model file in place")
+  path = model_file(model)
   bench = find(llama_bench, env)
   if bench is None:
     raise CannotMeasure(f"llama-bench was not found in ${ENV} or on PATH, so there is no whole-step decode time",

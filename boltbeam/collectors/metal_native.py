@@ -170,10 +170,7 @@ def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path
   """What the measurement will use, or CannotMeasure with the reason and the command to run instead."""
   target = get_target(target_id)
   if target.backend == "CUDA" and not need_bench:  # the probe alone: adapter 0 runs through the CUDA bridge
-    path = pathlib.Path(model).expanduser()
-    if not path.is_file():
-      raise CannotMeasure(f"the model file is gone: {path}", "measure again with the model file in place")
-    return {"target": target, "model": path, "llama_bench": None}
+    return {"target": target, "model": llama_bench_decode.model_file(model), "llama_bench": None}
   if target.backend != "Metal":
     raise CannotMeasure(f"{target_id} is a {target.backend} chip; BoltBeam measures by itself on Metal only",
                         f"on a machine with {target_id}: boltbeam collect-hw-trace --provider llama --run {run}")
@@ -183,9 +180,7 @@ def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path
   if mine != target_id and target_id != "apple_metal":
     raise CannotMeasure(f"this Mac is {mine or 'an unknown chip'}, not {target_id}",
                         f"pick {mine} in step 2, or on a Mac with {target_id}: boltbeam metal-measure --run {run}")
-  path = pathlib.Path(model).expanduser()
-  if not path.is_file():
-    raise CannotMeasure(f"the model file is gone: {path}", "measure again with the model file in place")
+  path = llama_bench_decode.model_file(model)
   bench = llama_bench_decode.find(llama_bench)
   if need_bench and bench is None:
     raise CannotMeasure("llama-bench is not installed, so there is no whole-step decode time",

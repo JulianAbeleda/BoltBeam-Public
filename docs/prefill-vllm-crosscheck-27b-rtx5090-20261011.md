@@ -162,9 +162,23 @@ Bytes per token per row (the decode work), from each run's profile:
     capture, timed as they ran. A kernel whose extra launches all ran before the step both captures made is
     start-up, and is left out (`startup_us`). The overlap is reported as its own figure (`overlap_us`). The guard
     is unchanged.
-  - After: 11.03 ms of GPU time per token against 11.47 ms, so the capture is a measurement. lm_head, ffn_gate_up
-    and ssm_alpha_beta pair. The packed Marlin GEMMs (qkv, z, o, down) do not. Decode pairing uses the profile's
-    roles, not the engine's packed matrices as prefill does (`prefill.engine_roles`). That is open.
+  - After: 11.03 ms of GPU time per token against 11.47 ms, so the capture is a measurement.
+  - Packed matrices (2026-10-11): decode now pairs with the engine's own matrices through `prefill.engine_roles`,
+    prefill's authority, and gives a packed GEMM's time back to its parts by weight bytes. The vLLM driver prints
+    them in capture mode too. The saved capture predates that, so it was re-attributed with the matrices the same
+    model's prefill capture printed.
+  - Marlin launches every matrix on one grid, so one kernel serves several matrices. Roles left unpaired are now
+    placed as prefill places roles on a shared kernel (`attribution.shared_kernels`, using `prefill_attribution.pair`
+    and `split`): each kernel's launches in duration clusters, in the order of the matrices' size.
+  - That left a tie: ffn_down (64 a token) and in_proj_qkvz + qkv_proj (48 + 16) fit either Marlin kernel by counts,
+    bytes and rates. Launch order breaks it. `vendor_capture.sequence` keeps each capture's launches in order per
+    stream. `vocab.LAYER_STAGE` ranks the fine role classes in a layer's data flow (input projections, output
+    projection, FFN in, FFN out, head). Among assignments tied after every other rule, the one whose launches
+    rise through the stages within a layer wins (`prefill_attribution.order_violations`). It never overrides a rule.
+    A tie order cannot break stays flagged.
+  - Result: every role pairs. Per layer the stream runs in_proj_qkvz or qkv_proj, out_proj or o_proj, gate_up, then
+    down, and the pairing matches that order. The re-attributed prefill captures (512 tokens here, and the deep
+    llama.cpp turn) had no tie, and are unchanged.
 
 ## What BoltBeam got wrong, and the fixes in this change
 

@@ -433,7 +433,7 @@ def engine_roles(roles:list[dict[str, Any]], matrices:Any) -> tuple[list[dict[st
   tensors into one GEMM (q, k and v as one N) runs one launch for their work. Each matrix's parts are named by the
   role classifier and matched to the profile's roles by K; its weight bytes are its parts'. The matrices replace
   the profile's roles only when they cover every role's work (count x N x K) exactly; else the roles stand, said."""
-  from boltbeam.profile.roles import role_from_tensor_name
+  from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
   if not isinstance(matrices, list) or not matrices:
     return roles, f"the profile's roles (the engine's matrices: {matrices or 'not reported'})"
   left: dict[tuple[str, str, int], int] = {}
@@ -453,7 +453,9 @@ def engine_roles(roles:list[dict[str, Any]], matrices:Any) -> tuple[list[dict[st
     out.append({"role": m["name"] if len(found) == 1 and m["name"] == found[0]["role"] else
                 f"{m['name']} ({' + '.join(sorted({r['role'] for r in found}))})",
                 "quant": "+".join(quants), "n": int(m["n"]), "k": int(m["k"]), "count": int(m["count"]),
-                "weight_bytes": sum(r["weight_bytes"] for r in found), "parts": [r["role"] for r in found]})
+                "weight_bytes": sum(r["weight_bytes"] for r in found), "parts": [r["role"] for r in found],
+                "part_roles": [{"role": r["role"], "quant": r["quant"], "weight_bytes": r["weight_bytes"]} for r in found],
+                "fine": [classify_tensor_role(f"{p}.weight", (1 << 20, int(m["k"]))).value for p in m["parts"]]})
   if any(left.values()):
     return roles, "the profile's roles (the engine's matrices do not cover " + ", ".join(
       f"{k[0]} {k[1]}" for k, v in left.items() if v) + " exactly)"

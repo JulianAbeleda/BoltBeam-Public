@@ -214,8 +214,44 @@ def _own_fits(r:dict[str, Any], ts:list[dict[str, Any]], chunks:int, mean_m:floa
              for t in ts)
 
 
+def stage_of(r:dict[str, Any]) -> int | None:
+  """A role's place in its layer (vocab.layer_stage): an engine's packed matrix by its tensors' fine classes, the
+  earliest; a profile role by its group. None when unknown."""
+  from boltbeam.vocab import layer_stage
+  got = [s for s in (layer_stage(p) for p in (r.get("fine") or [r["role"]])) if s is not None]
+  return min(got) if got else None
+
+
+def order_violations(choice:dict[int, tuple[str, tuple[int, ...]]], templates:list[dict[str, Any]],
+                     roles:list[dict[str, Any]], *, chunks:int, mean_m:float) -> int:
+  """How often, in stream order (vendor_capture.sequence), a role-paired launch runs at an earlier layer stage than
+  the one before it without going back to the first stage (the next layer): 0 when the assignment follows the
+  block's data flow. A shared template's launches take their duration cluster's roles (split)."""
+  from boltbeam.collectors.vendor_capture import sequence
+  label: dict[int, int] = {}
+  shared: dict[int, list[dict[str, Any]]] = {}
+  for i, (kind, ts) in choice.items():
+    if kind == "shared":
+      shared.setdefault(ts[0], []).append(roles[i])
+    elif (s := stage_of(roles[i])) is not None:
+      label.update({id(l): s for t in ts for l in templates[t]["launches"]})
+  for t, rs in shared.items():
+    gs = sorted(role_groups(rs), key=lambda g: g["nk"])
+    p = m_splits(gs, templates[t], chunks, mean_m)
+    for g, ls in zip(gs, split(gs, templates[t], chunks * p) or []):
+      got = [s for s in (stage_of(r) for r in g["roles"]) if s is not None]
+      if got:
+        label.update({id(l): min(got) for l in ls})
+  bad = 0
+  for seq in sequence([l for t in templates for l in t["launches"] if id(l) in label]).values():
+    st = [label[id(l)] for l in seq]
+    bad += sum(1 for a, b in zip(st, st[1:]) if b < a and b != min(st))
+  return bad
+
+
 def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:int, mean_m:float,
-         peaks:dict[str, float], bandwidth_gbs:float | None = None) -> tuple[dict[int, tuple[str, tuple[int, ...]]], dict[str, Any] | None]:
+         peaks:dict[str, float], bandwidth_gbs:float | None = None,
+         order:bool = False) -> tuple[dict[int, tuple[str, tuple[int, ...]]], dict[str, Any] | None]:
   """role index -> ("shared", (t,)) or ("own", (t1, t2)) by PAIRING_RULE, or ({}, why) when two assignments place
   as many roles. A shared template may serve several roles of one format (split by duration); an own template serves
   one role alone, and a role may be assembled from up to MAX_OWN of them."""
@@ -299,6 +335,13 @@ def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:i
     return {}, {"reason": f"more than {MAX_ASSIGN} ways to pair {len(roles)} roles with {len(matrix)} templates"}
   if not best["ties"]:
     return {}, None
+  if len(best["ties"]) > 1 and order:  # launch order breaks a tie the rules above leave, never overrides them
+    scored = [(order_violations({i: c for i, c in enumerate(t) if c}, templates, roles, chunks=chunks, mean_m=mean_m), t)
+              for t in best["ties"]]
+    low = min(s for s, _ in scored)
+    if sum(1 for s, _ in scored if s == low) == 1:
+      return {i: c for i, c in enumerate(next(t for s, t in scored if s == low)) if c}, None
+    best["ties"] = [t for s, t in scored if s == low]
   if len(best["ties"]) > 1:  # keep what every tied assignment does the same way, when that alone still fits
     ties = best["ties"]
     common = [c if c and all(t[i] == c for t in ties) else None for i, c in enumerate(ties[0])]
@@ -416,7 +459,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     n_w, m_w = (chunk_widths.count(w), float(w)) if w else (chunks, mean_m)
     tag = f" ({w}-token chunks)" if w else ""
     left = [templates[ti] if ti not in taken else {**templates[ti], "path": {"status": "taken"}} for ti in here]
-    choice, why = pair(left, roles, chunks=n_w, mean_m=m_w, peaks=peaks, bandwidth_gbs=bandwidth_gbs)
+    choice, why = pair(left, roles, chunks=n_w, mean_m=m_w, peaks=peaks, bandwidth_gbs=bandwidth_gbs, order=True)
     ambiguous = ambiguous or why
     shared: dict[int, list[dict[str, Any]]] = {}
     for i, (kind, ts) in choice.items():

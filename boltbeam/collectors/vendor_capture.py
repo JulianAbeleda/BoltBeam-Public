@@ -83,7 +83,17 @@ def read_nsys_csv(text:str) -> list[dict[str, Any]]:
       continue
     block = [row.get(k) for k in ("BlkX", "BlkY", "BlkZ")]
     out.append({"key": f"{row['Name']} grid={'x'.join(grid)} block={'x'.join(b or '' for b in block)}",
-                "wall_us": float(row["Duration (ns)"]) / 1000.0, "start_us": float(row["Start (ns)"]) / 1000.0})
+                "wall_us": float(row["Duration (ns)"]) / 1000.0, "start_us": float(row["Start (ns)"]) / 1000.0,
+                **({"stream": row["Strm"]} if row.get("Strm") else {})})
+  return out
+
+
+def sequence(launches:list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+  """The launches in the order they ran, per stream (one stream when the capture does not name them): the one
+  ordered view of a capture. A launch without a start time has no place in it and is left out."""
+  out: dict[str, list[dict[str, Any]]] = {}
+  for l in sorted((l for l in launches if l.get("start_us") is not None), key=lambda l: l["start_us"]):
+    out.setdefault(str(l.get("stream", "")), []).append(l)
   return out
 
 

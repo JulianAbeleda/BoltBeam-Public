@@ -50,12 +50,14 @@ def groups(launches:Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
   """Sum launches by their identity key: {"key", "calls", "wall_us"}. A launch row may already carry calls."""
   out: dict[str, dict[str, Any]] = {}
   for l in launches:
-    g = out.setdefault(str(l["key"]), {"key": str(l["key"]), "calls": 0, "wall_us": 0.0, "launches": [], "starts": []})
+    g = out.setdefault(str(l["key"]), {"key": str(l["key"]), "calls": 0, "wall_us": 0.0, "launches": [], "starts": [],
+                                       "streams": []})
     g["calls"] += int(l.get("calls", 1))
     g["wall_us"] += float(l["wall_us"])
     if "calls" not in l:  # one launch: its own duration (for clusters) and its share of the busy time
       g["launches"].append((float(l.get("raw_wall_us", l["wall_us"])), float(l["wall_us"])))
       g["starts"].append(l.get("start_us"))
+      g["streams"].append(l.get("stream"))
   return list(out.values())
 
 
@@ -362,7 +364,8 @@ def difference(long:list[dict[str, Any]], short:list[dict[str, Any]]) -> list[di
       order = every[-calls:]
       latest = [timed[i] for i in order]
       out.append({"key": g["key"], "calls": calls, "wall_us": sum(sh for _, sh in latest), "launches": latest,
-                  "short_launches": [], "from_us": g["starts"][order[0]],
+                  "short_launches": [], "from_us": g["starts"][order[0]], "starts": [g["starts"][i] for i in order],
+                  "streams": [(g.get("streams") or [None] * len(timed))[i] for i in order],
                   "before_us": g["starts"][every[-calls - 1]] if len(every) > calls else None})
       continue
     us = g["wall_us"] - b["wall_us"]
@@ -374,6 +377,52 @@ def difference(long:list[dict[str, Any]], short:list[dict[str, Any]]) -> list[di
 
 class CaptureRefused(RuntimeError):
   """The capture cannot be a measurement. The message says why."""
+
+
+def shared_kernels(result:dict[str, Any], shaped:list[dict[str, Any]], tokens:int, bandwidth_gbs:float | None) -> None:
+  """Roles left unpaired, placed on the kernels left the way prefill places roles on a shared template
+  (prefill_attribution.pair and split): one kernel serving several roles of one format (a library that launches
+  every matrix on one grid), its launches cut into duration clusters in the order of the roles' size. At one token
+  a matrix's operations follow its bytes, so prefill's rule holds with each token as a chunk of one row. shaped:
+  the roles with n, k, count and weight_bytes (prefill.prefill_roles or prefill.engine_roles). In place."""
+  from boltbeam.collectors import prefill_attribution as pa
+  want = {(r["role"], r["quant"]) for r in result["unpaired"]}
+  left = [{**r, "skip": 0} for r in shaped if (r["role"], r["quant"]) in want]
+  free = [g for g in result["groups"] if g["role"] is None and not g.get("block") and g.get("launches")
+          and len(g["launches"]) == g["calls"]]
+  if not left or not free:
+    return
+  def launch(g, i, d, sh):  # its place in the stream, when the capture had one, for the order tie-break
+    st, sm = (g.get("starts") or [None] * len(g["launches"]))[i], (g.get("streams") or [None] * len(g["launches"]))[i]
+    return {"raw_wall_us": d, "wall_us": sh, **({"start_us": st} if st is not None else {}),
+            **({"stream": sm} if sm is not None else {})}
+  tmpls = [{"template": g["key"], "calls": g["calls"], "wall_us": g["wall_us"], "path": {"status": "not_found"},
+            "launches": [launch(g, i, d, sh) for i, (d, sh) in enumerate(g["launches"])]} for g in free]
+  choice, why = pa.pair(tmpls, left, chunks=tokens, mean_m=1.0, peaks={}, bandwidth_gbs=bandwidth_gbs, order=True)
+  if why:
+    result["ambiguous"] = result["ambiguous"] or why
+  shared: dict[int, list[dict[str, Any]]] = {}
+  rows, used = [], set()
+  for i, (kind, ts) in choice.items():
+    if kind == "shared":
+      shared.setdefault(ts[0], []).append(left[i])
+    else:
+      for t in ts:
+        rows.append({**free[t], "role": left[i]["role"], "quant": left[i]["quant"]})
+        used.add(t)
+  for t, rs in shared.items():
+    gs = sorted(pa.role_groups(rs), key=lambda g: g["nk"])
+    parts = pa.split(gs, tmpls[t], tokens)
+    for gi, g in enumerate(gs):
+      us = sum(l["wall_us"] for l in parts[gi])
+      total = sum(r["weight_bytes"] * r["count"] for r in g["roles"])
+      rows += [{"key": f"{free[t]['key']} cluster={gi}", "calls": len(parts[gi]), "wall_us": us * r["weight_bytes"] * r["count"] / total,
+                "role": r["role"], "quant": r["quant"], "count": None, "shared_by": g["name"]} for r in g["roles"]]
+    used.add(t)
+  placed = {(left[i]["role"], left[i]["quant"]) for i in choice}
+  result["groups"] = [g for g in result["groups"] if not any(g is free[t] for t in used)] + rows
+  result["unpaired"] = [r for r in result["unpaired"] if (r["role"], r["quant"]) not in placed]
+  result["shared"] = [{"role": left[i]["role"], "quant": left[i]["quant"], "kernel": free[c[1][0]]["key"]} for i, c in choice.items()]
 
 
 def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_ms:float | None,
@@ -392,7 +441,8 @@ def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_m
 
 def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str, model_id:str, target,
                    context:int, tokens:int, out:str, token_ms:float | None = None,
-                   long_kernels:int = 0, overlap:dict[str, Any] | None = None, batch:int = 1) -> dict[str, Any]:
+                   long_kernels:int = 0, overlap:dict[str, Any] | None = None, batch:int = 1,
+                   matrices:Any = None) -> dict[str, Any]:
   """A boltbeam.timing_trace.v1 of one provider's captured decode window, attributed, written to run/out.
   token_ms is the captured run's own time per token, as the runtime printed it. With batch B, a token is one decode
   step of B streams: the weights are read once per step, so a role's calls per step are its count at any batch. Refused (CaptureRefused, no file
@@ -410,7 +460,32 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   check_window(window, method=method, tokens=tokens, token_ms=token_ms, long_kernels=long_kernels,
                band=max(float(ceil.get("band") or 0.0), 0.01))
   counts = {(r["role"], r["quant"]): int(r["count"]) for r in profile.get("roles", []) if r.get("count")}
-  result = attribute(window, ceil.get("_roles") or [], counts, tokens, ceil.get("peak_bandwidth_gbs"))
+  roles, pairing_roles, packed = ceil.get("_roles") or [], "the profile's roles", {}
+  if matrices:  # an engine that packs checkpoint tensors into one GEMM: pair with its own matrices (prefill's authority)
+    from boltbeam.collectors.prefill import engine_roles, prefill_roles
+    pr = prefill_roles(profile, roles)
+    got, pairing_roles = engine_roles(pr, matrices)
+    if got is not pr:
+      roles = [{"role": m["role"], "quant": m["quant"], "bytes_moved": m["weight_bytes"] * m["count"], "floor_ms": None}
+               for m in got]
+      counts = {(m["role"], m["quant"]): m["count"] for m in got}
+      packed = {(m["role"], m["quant"]): m["part_roles"] for m in got}
+  result = attribute(window, roles, counts, tokens, ceil.get("peak_bandwidth_gbs"))
+  if result["unpaired"]:
+    from boltbeam.collectors.prefill import prefill_roles
+    shaped = got if packed else prefill_roles(profile, ceil.get("_roles") or [])
+    shared_kernels(result, shaped, tokens, ceil.get("peak_bandwidth_gbs"))
+  if packed:  # a packed GEMM's time back to its parts by their weight bytes (a decode GEMV streams its weights)
+    split = []
+    for g in result["groups"]:
+      parts = packed.get((g["role"], g["quant"]))
+      if not parts:
+        split.append(g)
+        continue
+      total = sum(p["weight_bytes"] for p in parts)
+      split += [{**g, "role": p["role"], "quant": p["quant"], "wall_us": g["wall_us"] * p["weight_bytes"] / total,
+                 "packed_as": g["role"]} for p in parts]
+    result["groups"] = split
   wall = sum(g["wall_us"] for g in window)
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": model_id, "target_id": target.target_id, "workload": "decode",
            "provider_id": provider, "capture": {"method": method, "reason": None},
@@ -421,6 +496,7 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
                      "batch": batch}]
                    + trace_rows(result, context=context, time_source=method),
            "pairs": result["pairs"], "unpaired_roles": result["unpaired"], "assembled_roles": result["assembled"],
-           "ambiguous": result["ambiguous"], "pairing_rule": result["rule"], "overlap": overlap}
+           "ambiguous": result["ambiguous"], "pairing_rule": result["rule"], "overlap": overlap,
+           "pairing_roles": pairing_roles}
   (pathlib.Path(run) / out).write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
   return trace
