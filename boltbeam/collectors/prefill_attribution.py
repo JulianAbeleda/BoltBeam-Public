@@ -1,64 +1,40 @@
-"""Which role each kernel of a captured prefill ran for, from launch counts and operations, and each kernel's ceiling.
+"""Which role each kernel of a captured prefill ran for, and each kernel's ceiling.
 
 A capture from outside the engine (nsys) sees kernels, not roles, and a prefill GEMM's launch grid need not show its
-shape (a stream-k kernel launches one block per SM whatever the matrix). So the pairing reads what does not depend on
-the engine's launch geometry:
+shape (a stream-k kernel launches one block per SM whatever the matrix). The pairing is the layer walk
+(collectors/pairing.py, docs/pairing-layer-walk-20261011.md): the block kernels mark the layers, the launches around
+them are the layer's projections, the profile's counts and fine classes say which. This module owns what is prefill's:
 
   the window     a capture that holds the engine's warm-up prefill and the measured one (the adapter says which) is
-                 cut to its second half, when the two halves launch the same kernels the same number of times (an engine may idle on the
-                 host inside a prefill, before its last token's tail, so the longest idle stretch is not the edge)
+                 cut to its second half, when the two halves launch the same kernels the same number of times (an
+                 engine may idle on the host inside a prefill, before its last token's tail, so the longest idle
+                 stretch is not the edge); a session's turn is the last of two identical turns (REPEAT)
   templates      launches are grouped by kernel template (instruction_path.template), and a template's matrix path
-                 is read from its code (instruction_path.kernel_path); a template the kind words name as attention
-                 (tie_out.kind_of, the decode table's own rule for the attention row) does attention's work, its own
-                 row, and is never paired with a weight role
-  counts         a role runs `count` times per chunk (model_profile.json), so a template that serves a set of roles
-                 launches the sum of their counts per chunk, times the chunks; the engine may skip a role in the last
-                 layer of a chunk (its rows are not needed), so up to one layer's worth fewer is allowed and said
-  one format     a template reads one weight format: the roles it serves share a quant
-  operations     more operations per launch is more time per launch: within a template the launches fall into duration
-                 clusters, one per role row, in the order of the rows' operations, each cluster holding that row's
-                 launches; roles whose operations are within GAP_RATIO cannot be told apart by time and are one row
-                 ("ffn_down + ffn_gate_up": the same N x K turned around)
-  the peak       a pairing that needs more operations per second than the measured peak of the template's path is
-                 impossible and is refused (PEAK_SLACK)
-  the bytes      so is one that reads its roles' weights faster than the memory's measured bandwidth: a kernel whose
-                 code could not be read (a library that hides it) may still take a role by count and time, its work
-                 counted and its ceiling refused, but never a kernel too short to have read the weights
+                 is read from its code (instruction_path.kernel_path); a weight launch is one whose template holds a
+                 matrix instruction or whose code was not read, and is not a block kernel
+  the rows       a role's launches summed: operations 2 M N K per launch at the launch's chunk width, bytes from the
+                 engine's formats (prefill_work.gemm), and the ceiling max(operations / the path's measured peak,
+                 bytes / bandwidth); attention and the recurrent block are rows with the model's work; a stream-k
+                 fixup has its bytes ceiling; every other kernel keeps its time, named by kind
 
-The assignment that places the most roles wins; two such assignments are ambiguous and nothing is paired. Kernels no
-role takes keep their time, named by kind; a GEMV over one token that matches a role by count and bytes (the output
-head on each engine call's last token: once per call, `outputs` calls) is paired the way decode pairs
-(attribution.attribute, a call standing for a decode token).
+A kernel whose code could not be read (a library that hides it) may still take a role, its work counted and its
+ceiling refused. A weight kernel no role took keeps its time and says so.
 """
 from __future__ import annotations
 
 import collections
-import itertools
-import math
-import statistics
 from typing import Any
 
-from boltbeam.collectors.attribution import attribute, share_overlap
+from boltbeam.collectors import pairing
+from boltbeam.collectors.attribution import share_overlap
 from boltbeam.collectors.instruction_path import FROM_NAME, kernel_path, template
+from boltbeam.collectors.pairing import PEAK_SLACK
 from boltbeam.roofline import prefill_work as work
 from boltbeam.workflow.tie_out import kind_of
 
-PEAK_SLACK = 1.05
-GAP_RATIO = 1.3  # two neighbouring duration clusters differ by at least this ratio, or they are one cluster
-MAX_ASSIGN = 2_000_000
 STEM_CHARS = 40  # a row named by its template is cut to this many characters; the trace keeps the whole name
-MAX_OWN = 2  # a role assembled from at most this many templates that serve it alone
-PAIRING_RULE = ("a template named as attention or recurrent (tie_out.kind_of) does that block's work and serves no role; a role is "
-                "assembled from up to two templates that serve it alone, or shares one template with roles of its format (whose launches may be a whole multiple of theirs: each product cut along M into that many launches, each reading the weights); "
-                "roles of one format that templates serve alone keep the order of their operations per launch in their time per launch; "
-                "a shared template with a matrix instruction serves roles of one weight format whose launches per chunk sum to its own, less at most one "
-                "layer's launches per chunk and never all of a role's (the engine skipping rows it does not need), at no more operations per "
-                "second than its path's measured peak and no faster read of its roles' weights than the memory's bandwidth (a kernel whose code "
-                "was not read may take roles so, its ceiling refused); within it, and within each chunk width, duration clusters follow the roles' operations per "
-                "launch, a smaller launch never faster per operation than a larger one beyond the cluster gap (it may be slower: it fills fewer units); roles with equal operations are one row; the assignment placing the most roles wins, then the one leaving the fewest matrix kernels unpaired, then the one pairing the most kernel time; among tied ones, only the roles every one places the same way are paired")
-
-
 REPEAT = "repeat"  # measured_window: the capture ends in two identical turns (a session's turn, captured twice)
+UNPAIRED = "no ceiling: a matrix kernel no role could be paired with, so its work is not known"
 
 
 def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True) -> tuple[list[dict[str, Any]], str]:
@@ -87,287 +63,6 @@ def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True) -> 
   raise ValueError(f"the capture's {len(timed)} launches are not a warm-up prefill and a measured one of the same kernels")
 
 
-def _clusters(durations:list[float], k:int) -> list[list[float]] | None:
-  """k duration clusters cut at the k - 1 widest gaps in log duration, each gap at least GAP_RATIO; None if not."""
-  if k == 1:
-    return [sorted(durations)]
-  d = sorted(durations)
-  gaps = sorted(((math.log(d[i + 1] / d[i]) if d[i] > 0 else 0.0, i) for i in range(len(d) - 1)), reverse=True)[:k - 1]
-  if len(gaps) < k - 1 or min(g for g, _ in gaps) < math.log(GAP_RATIO):
-    return None
-  cuts = sorted(i for _, i in gaps)
-  out, start = [], 0
-  for c in cuts:
-    out.append(d[start:c + 1])
-    start = c + 1
-  out.append(d[start:])
-  return out
-
-
-def chunk_of(keys:list[str], chunks:int) -> list[int] | None:
-  """Each launch's chunk, for a window of `chunks` chunks in stream order that each run the model's graph once:
-  boundary k is the launch where every kernel stem has run closest to k / chunks of its launches (the sum over stems
-  of the distance is least). Stems, not templates, because an engine may launch another variant of a kernel for a
-  chunk of another width, and the count need not match exactly (a narrow chunk's stream-k fixups, the rows a last
-  layer skips). None when a chunk would be empty or a boundary is off by more than a quarter of a chunk's launches."""
-  if chunks <= 1:
-    return [0] * len(keys)
-  stems = [k.split("<", 1)[0] for k in keys]
-  total = collections.Counter(stems)
-  seen: collections.Counter = collections.Counter()
-  best = [(math.inf, 0)] * (chunks - 1)
-  for i in range(len(stems) + 1):  # i launches before the boundary
-    for k in range(1, chunks):
-      d = sum(abs(seen[s] - k * n / chunks) for s, n in total.items())
-      if d <= best[k - 1][0]:  # among equal distances, the latest: a launch that ends a chunk belongs to it
-        best[k - 1] = (d, i)
-    if i < len(stems):
-      seen[stems[i]] += 1
-  edges = [i for _, i in best]
-  if any(d > 0.25 * len(stems) / chunks for d, _ in best) or any(b <= a for a, b in zip([0, *edges], [*edges, len(stems)])):
-    return None
-  return [sum(1 for e in edges if i >= e) for i in range(len(stems))]
-
-
-def role_groups(roles:list[dict[str, Any]]) -> list[dict[str, Any]]:
-  """Roles of one format whose operations per launch are within GAP_RATIO of each other, joined: time cannot tell
-  them apart (ffn_gate_up and ffn_down are the same N x K turned around)."""
-  out: list[dict[str, Any]] = []
-  for quant in sorted({r["quant"] for r in roles}):
-    for r in sorted((r for r in roles if r["quant"] == quant), key=lambda r: (r["n"] * r["k"], r["role"])):
-      last = out[-1] if out and out[-1]["quant"] == quant else None
-      if last and r["n"] * r["k"] < last["nk"] * GAP_RATIO:
-        last["roles"].append(r)
-        last["count"] += r["count"]
-        last["skip"] += r["skip"]
-      else:
-        out.append({"quant": quant, "nk": r["n"] * r["k"], "roles": [r], "count": r["count"], "skip": r["skip"]})
-  for g in out:
-    g["name"] = " + ".join(sorted(r["role"] for r in g["roles"])) + f" {g['quant']}"
-  return out
-
-
-def split(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int) -> list[list[dict[str, Any]]] | None:
-  """The template's launches cut by duration into one cluster per role row, in the order of their operations, each
-  holding that row's launches (its count per chunk times the chunks, less at most its skip), and one kernel's rate:
-  a cluster's operations per launch over its median time is never over GAP_RATIO times that of a cluster with more
-  operations per launch (a smaller launch fills fewer of the GPU's units, so it may run slower, never faster); None
-  if they do not."""
-  ordered = sorted(groups, key=lambda g: g["nk"])
-  parts = _clusters([l["raw_wall_us"] for l in tmpl["launches"]], len(groups))
-  if parts is None:
-    return None
-  for g, p in zip(ordered, parts):
-    if not (g["count"] - g["skip"]) * chunks <= len(p) <= g["count"] * chunks:
-      return None
-  rates = [sum(r["n"] * r["k"] * r["count"] for r in g["roles"]) / g["count"] / max(statistics.median(p), 1e-9)
-           for g, p in zip(ordered, parts)]
-  if any(rates[i] > GAP_RATIO * rates[j] for i in range(len(rates)) for j in range(i + 1, len(rates))):
-    return None
-  edges = [max(p) for p in parts]
-  out: list[list[dict[str, Any]]] = [[] for _ in ordered]
-  for l in tmpl["launches"]:
-    out[next(i for i, e in enumerate(edges) if l["raw_wall_us"] <= e)].append(l)
-  return out
-
-
-def m_splits(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int, mean_m:float) -> int:
-  """The launches a shared template runs per product of its roles: a library that caps the rows of one launch runs
-  a chunk's product as p launches of M / p rows, each reading the weights again. p is its launches over its roles'
-  launches, a whole number dividing the chunk's width; 1 when it is not one."""
-  want = sum(g["count"] for g in groups) * chunks
-  p = round(tmpl["calls"] / want) if want else 1
-  return p if p > 1 and (mean_m / p).is_integer() and want * p - sum(g["skip"] for g in groups) * chunks * p <= tmpl["calls"] else 1
-
-
-def _reads_in_time(weight_bytes:float, wall_us:float, bandwidth_gbs:float | None) -> bool:
-  """The launches had time to read the weights once each at the memory's measured bandwidth (none known: not checked)."""
-  return not bandwidth_gbs or weight_bytes / (wall_us * 1e-6) <= bandwidth_gbs * 1e9 * PEAK_SLACK
-
-
-def _fits(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int, mean_m:float, peak:float | None,
-          bandwidth_gbs:float | None = None) -> bool:
-  if len({g["quant"] for g in groups}) > 1:
-    return False
-  want = sum(g["count"] for g in groups) * chunks
-  skip = sum(g["skip"] for g in groups) * chunks
-  if not (want - skip <= tmpl["calls"] <= want):
-    return False
-  flops = sum(g["count"] * chunks * 2.0 * mean_m * g["nk"] for g in groups)
-  if peak and flops / (tmpl["wall_us"] * 1e-6) > peak * 1e12 * PEAK_SLACK:
-    return False
-  wb = sum(r["weight_bytes"] * (r["count"] - r["skip"]) * chunks for g in groups for r in g["roles"])
-  return _reads_in_time(wb, tmpl["wall_us"], bandwidth_gbs) and split(groups, tmpl, chunks) is not None
-
-
-def _own_fits(r:dict[str, Any], ts:list[dict[str, Any]], chunks:int, mean_m:float, peaks:dict[str, float],
-              bandwidth_gbs:float | None = None) -> bool:
-  """A role assembled from templates that serve it alone: their launches add up to its count, each within its peak
-  and with time to read its weight."""
-  calls = sum(t["calls"] for t in ts)
-  if not (r["count"] - r["skip"]) * chunks <= calls <= r["count"] * chunks:
-    return False
-  if not all(_reads_in_time(r["weight_bytes"] * t["calls"], t["wall_us"], bandwidth_gbs) for t in ts):
-    return False
-  per_call = 2.0 * mean_m * r["n"] * r["k"]
-  return all(not _peak(t, peaks) or t["calls"] * per_call / (t["wall_us"] * 1e-6) <= _peak(t, peaks) * 1e12 * PEAK_SLACK
-             for t in ts)
-
-
-def stage_of(r:dict[str, Any]) -> int | None:
-  """A role's place in its layer (vocab.layer_stage): an engine's packed matrix by its tensors' fine classes, the
-  earliest; a profile role by its group. None when unknown."""
-  from boltbeam.vocab import layer_stage
-  got = [s for s in (layer_stage(p) for p in (r.get("fine") or [r["role"]])) if s is not None]
-  return min(got) if got else None
-
-
-def order_violations(choice:dict[int, tuple[str, tuple[int, ...]]], templates:list[dict[str, Any]],
-                     roles:list[dict[str, Any]], *, chunks:int, mean_m:float) -> int:
-  """How often, in stream order (vendor_capture.sequence), a role-paired launch runs at an earlier layer stage than
-  the one before it without going back to the first stage (the next layer): 0 when the assignment follows the
-  block's data flow. A shared template's launches take their duration cluster's roles (split)."""
-  from boltbeam.collectors.vendor_capture import sequence
-  label: dict[int, int] = {}
-  shared: dict[int, list[dict[str, Any]]] = {}
-  for i, (kind, ts) in choice.items():
-    if kind == "shared":
-      shared.setdefault(ts[0], []).append(roles[i])
-    elif (s := stage_of(roles[i])) is not None:
-      label.update({id(l): s for t in ts for l in templates[t]["launches"]})
-  for t, rs in shared.items():
-    gs = sorted(role_groups(rs), key=lambda g: g["nk"])
-    p = m_splits(gs, templates[t], chunks, mean_m)
-    for g, ls in zip(gs, split(gs, templates[t], chunks * p) or []):
-      got = [s for s in (stage_of(r) for r in g["roles"]) if s is not None]
-      if got:
-        label.update({id(l): min(got) for l in ls})
-  bad = 0
-  for seq in sequence([l for t in templates for l in t["launches"] if id(l) in label]).values():
-    st = [label[id(l)] for l in seq]
-    bad += sum(1 for a, b in zip(st, st[1:]) if b < a and b != min(st))
-  return bad
-
-
-def pair(templates:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunks:int, mean_m:float,
-         peaks:dict[str, float], bandwidth_gbs:float | None = None,
-         order:bool = False) -> tuple[dict[int, tuple[str, tuple[int, ...]]], dict[str, Any] | None]:
-  """role index -> ("shared", (t,)) or ("own", (t1, t2)) by PAIRING_RULE, or ({}, why) when two assignments place
-  as many roles. A shared template may serve several roles of one format (split by duration); an own template serves
-  one role alone, and a role may be assembled from up to MAX_OWN of them."""
-  # a kernel whose code was not read may hold a matrix instruction: it may take roles, under the bytes rule
-  matrix = [i for i, t in enumerate(templates) if t["path"]["status"] in ("one", "mixed", "not_found")
-            and not t.get("attention") and not t.get("recurrent")]
-  options: list[list[tuple[str, tuple[int, ...]] | None]] = []
-  for r in roles:
-    lo = (r["count"] - r["skip"]) * chunks
-    opts: list[tuple[str, tuple[int, ...]] | None] = [None]
-    opts += [("shared", (t,)) for t in matrix if templates[t]["calls"] >= lo]
-    opts += [("own", ts) for ts in itertools.combinations(matrix, MAX_OWN)
-             if lo <= sum(templates[t]["calls"] for t in ts) <= r["count"] * chunks]
-    # an option the role breaks on its own (its weights read faster than the bandwidth, its operations faster than
-    # the peak) fails with any other roles added too: dropped before the search, so many unread kernels stay cheap
-    options.append([c for c in opts if c is None or _alone_fits(r, c, templates, chunks, mean_m, peaks, bandwidth_gbs)])
-  best: dict[str, Any] = {"score": (0, 0, 0, 0.0), "ties": []}
-  nodes = 0
-
-  def leaf(choice):
-    shared: dict[int, list[dict[str, Any]]] = {}
-    for r, c in zip(roles, choice):
-      if c and c[0] == "shared":
-        shared.setdefault(c[1][0], []).append(r)
-    for t, rs in shared.items():
-      gs = role_groups(rs)
-      p = m_splits(gs, templates[t], chunks, mean_m)
-      if not _fits(gs, templates[t], chunks * p, mean_m / p, _peak(templates[t], peaks), bandwidth_gbs):
-        return False
-    if not all(_own_fits(r, [templates[t] for t in c[1]], chunks, mean_m, peaks, bandwidth_gbs)
-               for r, c in zip(roles, choice) if c and c[0] == "own"):
-      return False
-    # more operations per launch, more time per launch: roles of one format that a template serves alone, compared
-    alone = [(r, sum(templates[t]["wall_us"] for t in c[1]) / sum(templates[t]["calls"] for t in c[1]))
-             for r, c in zip(roles, choice) if c and (c[0] == "own" or len(shared.get(c[1][0], [])) == 1)]
-    for (a, ta), (b, tb) in itertools.combinations(alone, 2):
-      if a["quant"] == b["quant"] and max(a["n"] * a["k"], b["n"] * b["k"]) >= GAP_RATIO * min(a["n"] * a["k"], b["n"] * b["k"]):
-        if (a["n"] * a["k"] > b["n"] * b["k"]) != (ta > tb):
-          return False
-    return True
-
-  def walk(i, choice, load, own_used):
-    nonlocal nodes
-    nodes += 1
-    if nodes > MAX_ASSIGN:
-      raise _TooMany
-    placed = sum(1 for c in choice if c)
-    if placed + len(roles) - i < best["score"][0]:
-      return
-    if i == len(roles):
-      if not leaf(choice):
-        return
-      used = {t for c in choice if c for t in c[1]}
-      score = (placed, len(used), -sum(1 for c in choice if c and c[0] == "own"),
-               round(sum(templates[t]["wall_us"] for t in used), 3))
-      if score > best["score"]:
-        best.update(score=score, ties=[list(choice)])
-      elif score == best["score"] and placed:
-        best["ties"].append(list(choice))
-      return
-    r = roles[i]
-    for c in options[i]:
-      if c is None:
-        walk(i + 1, choice + [None], load, own_used)
-        continue
-      kind, ts = c
-      if any(t in own_used for t in ts) or (kind == "own" and any(load.get(t) for t in ts)):
-        continue
-      if kind == "shared":
-        t = ts[0]
-        need = load.get(t, 0) + (r["count"] - r["skip"]) * chunks
-        if need > templates[t]["calls"]:
-          continue
-        walk(i + 1, choice + [c], {**load, t: need}, own_used)
-      else:
-        walk(i + 1, choice + [c], load, own_used | set(ts))
-
-  try:
-    walk(0, [], {}, set())
-  except _TooMany:
-    return {}, {"reason": f"more than {MAX_ASSIGN} ways to pair {len(roles)} roles with {len(matrix)} templates"}
-  if not best["ties"]:
-    return {}, None
-  if len(best["ties"]) > 1 and order:  # launch order breaks a tie the rules above leave, never overrides them
-    scored = [(order_violations({i: c for i, c in enumerate(t) if c}, templates, roles, chunks=chunks, mean_m=mean_m), t)
-              for t in best["ties"]]
-    low = min(s for s, _ in scored)
-    if sum(1 for s, _ in scored if s == low) == 1:
-      return {i: c for i, c in enumerate(next(t for s, t in scored if s == low)) if c}, None
-    best["ties"] = [t for s, t in scored if s == low]
-  if len(best["ties"]) > 1:  # keep what every tied assignment does the same way, when that alone still fits
-    ties = best["ties"]
-    common = [c if c and all(t[i] == c for t in ties) else None for i, c in enumerate(ties[0])]
-    kept = {i: c for i, c in enumerate(common) if c} if any(common) and leaf(common) else {}
-    differ = sorted({f"{roles[i]['role']} {roles[i]['quant']}" for i in range(len(roles)) if len({repr(t[i]) for t in ties}) > 1})
-    return kept, {"reason": f"{len(ties)} ways to pair the roles with the kernel templates place {best['score'][0]} roles each; "
-                            f"{', '.join(differ)} differ between them and are not paired"
-                            + (f"; the {len(kept)} placed the same way in every one are kept" if kept else "")}
-  return {i: c for i, c in enumerate(best["ties"][0]) if c}, None
-
-
-def _alone_fits(r:dict[str, Any], c:tuple[str, tuple[int, ...]], templates:list[dict[str, Any]], chunks:int,
-                mean_m:float, peaks:dict[str, float], bandwidth_gbs:float | None) -> bool:
-  kind, ts = c
-  if kind == "own":
-    return _own_fits(r, [templates[t] for t in ts], chunks, mean_m, peaks, bandwidth_gbs)
-  t, n = templates[ts[0]], (r["count"] - r["skip"]) * chunks
-  peak = _peak(t, peaks)
-  return _reads_in_time(r["weight_bytes"] * n, t["wall_us"], bandwidth_gbs) and \
-    (not peak or n * 2.0 * mean_m * r["n"] * r["k"] / (t["wall_us"] * 1e-6) <= peak * 1e12 * PEAK_SLACK)
-
-
-class _TooMany(Exception):
-  pass
-
-
 def _peak(t:dict[str, Any], peaks:dict[str, float]) -> float | None:
   """The template's path peak; for a mixed template the peak its paths make together for its instruction mix
   (prefill_work.effective_peak: each path's share of the operations at its own peak)."""
@@ -387,15 +82,15 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                       cache:dict[str, float] | None = None, depth:int = 0,
                       observed:dict[str, dict[str, int]] | None = None) -> dict[str, Any]:
   """The measured prefill split by role, attention and other kernels, each with operations, bytes, path and ceiling.
-  roles: {role, quant, n, k, count (per chunk), weight_bytes (per launch)}. kernel_paths: template -> {path: sites}.
-  outputs: the engine calls that each ended in an output (its last token's work, the output head, once per call).
-  program_roles: template -> {role, quant, shape [M, N, K]} where the engine names each program's role and logical
-  shape itself (the fork's own metadata): those launches are that role at that M, N, K, and the role is not paired
-  again. untraced_ms: for an engine's own timing, whose run is slowed by profiling, the prefill the rows sum to: the
-  gaps are it less the busy time, never the profiled run's idle. formats: the engine adapter's {activations: {in, out},
-  kv, stream_k: template -> layout or None} (prefill.ENGINES); cache: the chip's last-level cache {bytes, gbs}. depth: tokens
-  already in the cache (a session's turn), so attention's work counts every key the turn's tokens read. observed:
-  template -> {path: instructions} ncu saw a closed kernel execute (instruction_path.ncu_observe)."""
+  roles: {role, quant, n, k, count (per chunk), weight_bytes (per launch), role_class or fine}. kernel_paths: template
+  -> {path: sites}. outputs: the engine calls that each ended in an output (its last token's work, the output head, once
+  per call). program_roles: template -> {role, quant, shape [M, N, K]} where the engine names each program's role and
+  logical shape itself (the fork's own metadata): those launches are that role at that M, N, K, and the role is not
+  paired again. untraced_ms: for an engine's own timing, whose run is slowed by profiling, the prefill the rows sum to:
+  the gaps are it less the busy time, never the profiled run's idle. formats: the engine adapter's {activations: {in,
+  out}, kv, stream_k: template -> layout or None} (prefill.ENGINES); cache: the chip's last-level cache {bytes, gbs}.
+  depth: tokens already in the cache (a session's turn), so attention's work counts every key the turn's tokens read.
+  observed: template -> {path: instructions} ncu saw a closed kernel execute (instruction_path.ncu_observe)."""
   formats = formats or {}
   acts = formats.get("activations")
   gemm = lambda m, n, k, wb: work.gemm(m, n, k, wb, acts)["bytes"]  # noqa: E731
@@ -404,10 +99,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   ordered = sorted(shared, key=lambda l: l["start_us"])  # the launches in stream order: a fixup follows its GEMM
   begin = min(l["start_us"] for l in window)
   end = max(l["start_us"] + l["wall_us"] for l in window)
-  chunks, mean_m = len(chunk_widths), sum(chunk_widths) / max(len(chunk_widths), 1)
-  for r in roles:
-    # up to one layer's launches fewer per chunk, never all of them: a role with no launch is not on a template
-    r.setdefault("skip", min(math.ceil(r["count"] / layers), r["count"] - 1) if layers else 0)
+  mean_m = sum(chunk_widths) / max(len(chunk_widths), 1)
   by_t: dict[str, dict[str, Any]] = {}
   for l in shared:
     t = by_t.setdefault(template(l["key"]), {"template": template(l["key"]), "name": l["key"].split(" grid=")[0], "launches": [],
@@ -420,20 +112,11 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     t["path"] = kernel_path(t["name"], kernel_paths, observed)
     t["attention"] = kind_of({"kernel": t["name"]}) == "attention"  # attention's work is its own row, never a role's
     t["recurrent"] = kind_of({"kernel": t["name"]}) == "recurrent"  # so is a recurrent block's scan and convolution
-  # chunks of different widths: each launch's chunk from the sequence every chunk repeats, and each template cut
-  # into one per width, so each width pairs as a prefill of equal chunks (a narrow chunk runs every launch shorter,
-  # and an engine may launch another variant of a kernel for it)
-  ids = chunk_of([template(l["key"]) for l in ordered], chunks) if len(set(chunk_widths)) > 1 else None
-  widths = sorted(set(chunk_widths), reverse=True) if ids is not None else [None]
-  if ids is not None:
-    where = {id(l): chunk_widths[c] for l, c in zip(ordered, ids)}
-    templates = [{**t, "width": w, "launches": ls, "calls": len(ls), "wall_us": sum(l["wall_us"] for l in ls)}
-                 for t in templates for w in widths if (ls := [l for l in t["launches"] if where[id(l)] == w])]
   rows: list[dict[str, Any]] = []
-  taken: set[int] = set()
+  paired: set[int] = set()  # launch ids a row holds
   shapes: dict[int, list[tuple[dict[str, Any], float]]] = {}  # a paired GEMM launch -> its roles, weighted by count
   named: dict[tuple[str, str], dict[str, Any]] = {}
-  for ti, t in enumerate(templates):  # the engine's own role and (M, N, K) per program
+  for t in templates:  # the engine's own role and (M, N, K) per program
     info = (program_roles or {}).get(t["template"])
     if not info or t.get("attention"):
       continue
@@ -446,83 +129,52 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     slot["flops"] += t["calls"] * 2.0 * m * n * k
     slot["bytes"] += t["calls"] * gemm(m, n, k, wb)
     slot["t"].append(t)
-    taken.add(ti)
+    paired.update(id(l) for l in t["launches"])
   for (role, quant), slot in named.items():
     ts = slot["t"]
     t = {"template": " + ".join(x["template"] for x in ts), "path": _merge_paths([x["path"] for x in ts])}
     rows.append(_row(f"{role} {quant}", "role", t, slot["calls"], slot["us"], slot["flops"], slot["bytes"], peaks,
                      bandwidth_gbs, roles=[(role, quant)], role_source="the engine's own program metadata (role, M, N, K)"))
-  roles = [r for r in roles if (r["role"], str(r["quant"])) not in named]
-  ambiguous = None
-  for w in widths:
-    here = [ti for ti, t in enumerate(templates) if t.get("width") == w]
-    n_w, m_w = (chunk_widths.count(w), float(w)) if w else (chunks, mean_m)
-    tag = f" ({w}-token chunks)" if w else ""
-    left = [templates[ti] if ti not in taken else {**templates[ti], "path": {"status": "taken"}} for ti in here]
-    choice, why = pair(left, roles, chunks=n_w, mean_m=m_w, peaks=peaks, bandwidth_gbs=bandwidth_gbs, order=True)
-    ambiguous = ambiguous or why
-    shared: dict[int, list[dict[str, Any]]] = {}
-    for i, (kind, ts) in choice.items():
-      if kind == "shared":
-        shared.setdefault(here[ts[0]], []).append(roles[i])
-      else:  # one role from templates that serve it alone
-        r, mine = roles[i], [templates[here[t]] for t in ts]
-        t = {"template": " + ".join(x["template"] for x in mine), "path": _merge_paths([x["path"] for x in mine])}
-        calls = sum(x["calls"] for x in mine)
-        for x in mine:
-          for l in x["launches"]:
-            shapes[id(l)] = [(r, 1.0)]
-        rows.append(_row(f"{r['role']} {r['quant']}{tag}", "role", t, calls, sum(x["wall_us"] for x in mine),
-                         calls * 2.0 * m_w * r["n"] * r["k"], calls * gemm(m_w, r["n"], r["k"], r["weight_bytes"]),
-                         peaks, bandwidth_gbs, roles=[(r["role"], r["quant"])], skipped=r["count"] * n_w - calls,
-                         tokens_per_call=m_w))
-        taken.update(here[t] for t in ts)
-    for ti, rs in sorted(shared.items()):
-      t = templates[ti]
-      gs = sorted(role_groups(rs), key=lambda g: g["nk"])
-      p = m_splits(gs, t, n_w, m_w)
-      parts, m = split(gs, t, n_w * p), m_w / p
-      for gi, g in enumerate(gs):
-        mine = parts[gi]
-        calls = len(mine)
-        for l in mine:
-          shapes[id(l)] = [(r, r["count"] / g["count"]) for r in g["roles"]]
-        per_call_flops = sum(2.0 * m * r["n"] * r["k"] * r["count"] for r in g["roles"]) / g["count"]
-        per_call_bytes = sum(gemm(m, r["n"], r["k"], r["weight_bytes"]) * r["count"] for r in g["roles"]) / g["count"]
-        rows.append(_row(g["name"] + tag, "role", t, calls, sum(l["wall_us"] for l in mine), calls * per_call_flops,
-                         calls * per_call_bytes, peaks, bandwidth_gbs, roles=[(r["role"], r["quant"]) for r in g["roles"]],
-                         skipped=g["count"] * n_w * p - calls, tokens_per_call=m))
-      taken.add(ti)
-  placed = {rr for row in rows for rr in row.get("roles") or []}
-  # a GEMV over one token (the output head on the last token): paired by count and bytes, as decode pairs
-  # work only a call's last token does, once per call: a role run once per token (the output head)
-  left_roles = [r for r in roles if (r["role"], r["quant"]) not in placed and r["count"] == 1]
-  # only kernels with no matrix instruction: a GEMV over one token streams its weight, it does not tile it
-  loose = [l for ti, t in enumerate(templates) if ti not in taken and t["path"]["status"] == "none" for l in t["launches"]]
-  gemv_rows = []
-  if left_roles:
-    from boltbeam.collectors.attribution import groups as key_groups
-    kg = key_groups([{k: v for k, v in l.items() if k != "start_us"} for l in loose])
-    ceil_roles = [{"role": r["role"], "quant": r["quant"], "bytes_moved": r["weight_bytes"] * r["count"]} for r in left_roles]
-    res = attribute(kg, ceil_roles, {(r["role"], r["quant"]): r["count"] for r in left_roles}, outputs, bandwidth_gbs)
-    for p in res["pairs"]:
-      g = next(x for x in res["groups"] if x["key"] == p["key"])
-      r = next(x for x in left_roles if (x["role"], x["quant"]) == (p["role"], p["quant"]))
-      t = by_t[template(g["key"])]
-      gemv_rows.append(_row(f"{r['role']} {r['quant']}", "role", t, g["calls"], g["wall_us"], g["calls"] * 2.0 * r["n"] * r["k"],
-                            g["calls"] * gemm(1, r["n"], r["k"], r["weight_bytes"]), peaks, bandwidth_gbs,
-                            roles=[(r["role"], r["quant"])], tokens_per_call=1, key=g["key"]))
-  rows += gemv_rows
-  gemv_keys = {r["key"] for r in gemv_rows if r.get("key")}
+  roles = [{**r, "nk": r["n"] * r["k"]} for r in roles if (r["role"], str(r["quant"])) not in named]
+  kinds = pairing.layer_kinds(profile or {}) or ({"attention": layers} if layers else {})
+  weight = {t["template"] for t in templates if t["path"]["status"] in ("one", "mixed", "not_found")
+            and not t.get("attention") and not t.get("recurrent") and not any(id(l) in paired for l in t["launches"])}
+  got = pairing.pair(shared, roles, kinds=kinds, widths=chunk_widths, outputs=outputs, candidate=weight.__contains__,
+                     bandwidth_gbs=bandwidth_gbs, peak_of=lambda t: _peak(by_t[t], peaks) if t in by_t else None)
+  per_item: dict[tuple, dict[str, Any]] = {}  # one row per role set, over every layer kind it ran in
+  for p in got["placed"]:
+    key = tuple(sorted((x["role"], str(x["quant"])) for x in p["item"]["parts"]))
+    it = per_item.setdefault(key, {"item": p["item"], "launches": [], "templates": set(), "need": 0, "kinds": set()})
+    it["launches"] += [(l, m / p["split"], p["fused"], p["split"]) for l, m, _, _ in p["launches"]]
+    it["templates"].add(p["group"]["template"])
+    if p["item"]["kind"] not in it["kinds"]:
+      it["kinds"].add(p["item"]["kind"])
+      it["need"] += p["item"]["need"]
+  for it in per_item.values():
+    item = it["item"]
+    parts = item["parts"]
+    for l, _, _, _ in it["launches"]:
+      paired.add(id(l))
+      shapes[id(l)] = [(r, r["count"] / item["count"]) for r in parts]
+    calls = len(it["launches"])
+    flops = sum(2.0 * m * item["nk"] * k for _, m, k, _ in it["launches"])
+    nbytes = sum(sum(gemm(m, r["n"], r["k"], r["weight_bytes"]) * r["count"] for r in parts) / item["count"] * k for _, m, k, _ in it["launches"])
+    us = sum(l["wall_us"] for l, _, _, _ in it["launches"])
+    t = {"template": " + ".join(sorted(it["templates"])), "path": _merge_paths([by_t[x]["path"] for x in sorted(it["templates"])])}
+    _, _, k0, r0 = it["launches"][0]
+    rows.append(_row(f"{item['role']} {item['quant']}", "role", t, calls, us, flops, nbytes, peaks, bandwidth_gbs,
+                     roles=[(r["role"], r["quant"]) for r in parts], skipped=max(it["need"] * r0 // k0 - calls, 0),
+                     tokens_per_call=sorted(m for _, m, _, _ in it["launches"])[calls // 2],
+                     **({"fused": k0} if k0 > 1 else {}), **({"split": r0} if r0 > 1 else {})))
+  unpaired = [f"{u['item']['role']} {u['item']['quant']}: {u['reason']}" for u in got["unplaced"]]
+  ambiguous = ({"reason": "; ".join(unpaired)} if unpaired else None) or got.get("ambiguous")
   others: dict[str, dict[str, Any]] = {}
   att = work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths, formats.get("kv") or "F16",
                        formats.get("attention_activations") or acts, depth=depth) if profile else None
   rec = work.recurrent(profile or {}, length or int(sum(chunk_widths)), chunk_widths) if profile else None
-  for ti, t in enumerate(templates):
-    if ti in taken:
-      continue
+  for t in templates:
     for l in t["launches"]:
-      if l["key"] in gemv_keys:
+      if id(l) in paired:
         continue
       # attention's kernels are one row with attention's work, except one with no matrix instruction (its fixup):
       # that, like every other kernel, is its own row, named by its template's stem
@@ -547,16 +199,14 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       matrix = any(p.get("status") in ("one", "mixed") for p in o["templates"].values())
       rows.append({"name": kind, "what": "kernels", "calls": o["calls"], "ms": o["wall_us"] / 1000.0, "flops": None,
                    "bytes": None, "path": " | ".join(sorted(paths)), "ceiling_ms": None, "mfu_pct": None,
-                   "templates": sorted(o["templates"]),
-                   "refused": "no ceiling: a matrix kernel no role could be paired with, so its work is not known"
-                              if matrix else None})
+                   "templates": sorted(o["templates"]), "refused": UNPAIRED if matrix else None})
   busy = sum(r["ms"] for r in rows)
   wall = (end - begin) / 1000.0 if untraced_ms is None else float(untraced_ms)
   return {"window": window_words, "launches": len(window), "wall_ms": wall, "profiled_wall_ms": (end - begin) / 1000.0,
           "wall_source": "the untraced prefill (the engine's own timing slows its run)" if untraced_ms is not None else
                          "the captured prefill, first kernel to last", "busy_ms": busy, "gaps_ms": wall - busy,
           "overlap": overlap, "chunks": chunk_widths, "rows": sorted(rows, key=lambda r: -r["ms"]),
-          "ambiguous": ambiguous, "rule": PAIRING_RULE,
+          "ambiguous": ambiguous, "rule": got["words"], "structure": got["structure"],
           "templates": [{"template": t["template"], "calls": t["calls"], "ms": t["wall_us"] / 1000.0, "path": t["path"]}
                         for t in templates]}
 

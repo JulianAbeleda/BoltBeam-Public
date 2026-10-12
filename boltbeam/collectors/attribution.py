@@ -1,17 +1,14 @@
-"""Which model role each captured GPU kernel ran for, from bytes and launch counts, for any provider.
+"""Which model role each captured GPU kernel ran for in a decode, for any provider.
 
 A capture from outside the provider (nsys, rocprofv3, metal-system-trace) sees kernels, not roles. Kernel names
 differ per provider and per build, so this module reads them for one thing only: the kind words the tie-out already
 uses for the attention and recurrent rows (tie_out.kind_of), whose kernels serve no weight role. Otherwise a name
 is only an opaque key that groups launches of one program (with its launch geometry, when the capture has it).
 
-Two facts tie a kernel group to a role:
-  calls per token   each role runs `count` times per token (model_profile.json roles). A group's launches over
-                    the measured tokens must equal that count.
-  bytes per call    each role moves `bytes_moved / count` bytes per call (the roofline's own figure). Within one
-                    count, a role that moves more bytes takes the group that runs longer per call (decode GEMVs
-                    stream their weights). A pairing that would need more bandwidth than the chip's peak is
-                    physically impossible and is refused.
+The pairing is the layer walk (collectors/pairing.py, docs/pairing-layer-walk-20261011.md): the block kernels mark
+the layers, the launches around them are the layer's projections, the profile's counts and fine classes say which;
+a token is a unit of M = 1, so a role's launches read its weights and a launch cannot do that faster than the chip's
+measured bandwidth. A capture without launch times pairs the flat way: counts per token, bytes and time.
 
 Kernels on several streams can run at once. Each launch then gets only its share of the GPU busy time
 (share_overlap: shared time split equally), so a token's kernel time is the union of its intervals, never the
@@ -23,13 +20,8 @@ it once per layer: llama.cpp's mul_mat_id at one decode token is one kernel (CUD
 y-block reading the expert ids[y] names; Metal: one mul_mv_id dispatch over k), so that launch moves k experts' bytes.
 The profile's count for an expert role is its stacks, the launches per token, and bytes per call is the role's limit
 bytes over that count: k experts' bytes. CUDA also fuses an expert gate and up with their GLU into one launch that
-reads 2k matrices; that is the fused case below with k = 2 (the gate_up role's count is 2 per layer). The router and
+reads 2k matrices; that is the fused case with k = 2 (the gate_up role's count is 2 per layer). The router and
 the shared experts are plain matrices: one launch per layer each.
-
-The pairing is one assignment over every role at once (PAIRING_RULE), not a walk that places one role and moves
-on: on the 27B hybrid, ffn_down and the fused gate+up kernel both run 64 times per token, and placing ffn_down
-first gave it the 100 MB launch (755 GB/s, plausible alone) and left the 50 MB launch to no one. Paired by bytes,
-more bytes per launch is more time per launch within one launch count, and both fit at 88 to 89% of peak.
 
 Time in groups no role takes is "not attributed". Nothing is guessed: a role with no matching group stays absent,
 and loss() (tinygrad_role_time.py) then applies the same floor rule as for every provider.
@@ -39,11 +31,10 @@ from __future__ import annotations
 import pathlib
 from typing import Any, Iterable
 
+from boltbeam.collectors import pairing
+from boltbeam.collectors.pairing import BLOCKS, PEAK_SLACK  # noqa: F401  (the decode readers import them from here)
+
 ROLE_SOURCE = "attributed_by_bytes_and_count"
-PEAK_SLACK = 1.05  # the registry's peak is a measured figure; a kernel may beat it by measurement noise only
-COUNT_TOLERANCE = 0.02  # launches per token must be this close to a whole number
-MAX_FUSED = 3  # a kernel may serve at most this many of one role's calls (gate and up fused: 2)
-BLOCKS = ("attention", "recurrent")  # kernels tie_out.kind_of names so serve no weight role
 
 
 def groups(launches:Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -54,229 +45,68 @@ def groups(launches:Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
                                        "streams": []})
     g["calls"] += int(l.get("calls", 1))
     g["wall_us"] += float(l["wall_us"])
-    if "calls" not in l:  # one launch: its own duration (for clusters) and its share of the busy time
+    if "calls" not in l:  # one launch: its own duration, its share of the busy time, its start
       g["launches"].append((float(l.get("raw_wall_us", l["wall_us"])), float(l["wall_us"])))
       g["starts"].append(l.get("start_us"))
       g["streams"].append(l.get("stream"))
   return list(out.values())
 
 
-MAX_NODES = 200_000  # pairings the walk may visit before the table is refused as too many to tell apart
-PAIRING_RULE = ("a kernel named as attention or recurrent (tie_out.kind_of) serves no role; a role takes a kernel group that runs its count of times per token, or 1/k of them for a fused kernel "
-                f"moving k calls' bytes (k up to {MAX_FUSED}), at no more than the chip's peak bandwidth; among groups with "
-                "one launch count, more bytes per launch is more time per launch; the assignment that places the most "
-                "roles wins, then the one with the fewest fused kernels, then the walk's order (more bytes first, an exact "
-                "group before a fused one, a slower group before a faster one); a group no role's bytes fit stays unattributed")
-
-
 def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], counts:dict[tuple[str, str], int],
-              tokens:int, peak_gbs:float | None) -> dict[str, Any]:
-  """Pair kernel groups with roles by PAIRING_RULE. roles: the ceiling's decode roles (role, quant, bytes_moved,
-  floor_ms). counts: calls per token per (role, quant). Returns {"pairs": [...], "groups": every group with its role
-  or None, "unpaired", "assembled", "ambiguous", "rule"}. Roles the one assignment leaves out are then tried by
-  assemble() from the groups left and their duration clusters."""
-  known = sorted([{**r, "count": int(counts[(r["role"], r["quant"])]), "bytes_per_call": r["bytes_moved"] / counts[(r["role"], r["quant"])]}
-                  for r in roles if counts.get((r["role"], r["quant"]))], key=lambda r: -r["bytes_per_call"])
-  from boltbeam.workflow.tie_out import kind_of
-  rows = []
-  for g in kernel_groups:
-    cpt = g["calls"] / tokens
-    whole = round(cpt)
-    # an attention or recurrent block's kernel does that block's work, never a weight role's (the prefill's rule):
-    # deep in a context attention runs longer per call than a GEMV, so it would fit a role by count and bytes
-    block = kind_of({"kernel": g["key"]}) in BLOCKS
-    rows.append({**g, "calls_per_token": cpt, "count": None if block else whole if whole and abs(cpt - whole) <= COUNT_TOLERANCE * whole
-                 else None, "us_per_call": g["wall_us"] / g["calls"], "role": None, "quant": None, "block": block})
-  choice, ambiguous = _pairing(known, [_candidates(r, rows, peak_gbs) for r in known], rows)
-  pairs = []
-  for i, (gi, k) in sorted(choice.items()):
-    r, g = known[i], rows[gi]
-    gbs = k * r["bytes_per_call"] / (g["us_per_call"] * 1e3)
-    g.update(role=r["role"], quant=r["quant"], gbs=gbs, fused=k)
-    pairs.append({"role": r["role"], "quant": r["quant"], "key": g["key"], "count": r["count"], "fused": k, "gbs": gbs})
-  left = [r for i, r in enumerate(known) if i not in choice]
-  assembled, ambiguous_pieces = assemble(rows, left, tokens, peak_gbs) if left else ([], None)
-  built = {(a["role"], a["quant"]) for a in assembled}
-  unpaired = [{"role": r["role"], "quant": r["quant"], "count": r["count"]} for r in left if (r["role"], r["quant"]) not in built]
-  return {"pairs": pairs, "groups": rows, "unpaired": unpaired, "assembled": assembled,
-          "ambiguous": ambiguous or ambiguous_pieces, "rule": PAIRING_RULE}
-
-
-def _candidates(r:dict[str, Any], rows:list[dict[str, Any]], peak_gbs:float | None) -> list[tuple[int, int]]:
-  """The (group index, k) a role may take, in the walk's order: exact (k = 1) before fused, the slower group first.
-  A group is a candidate when its launches per token are the role's count over k and k calls' bytes over its time
-  per launch is no more than the peak (a faster pairing is physically impossible)."""
-  out = []
-  for k in range(1, MAX_FUSED + 1):
-    if r["count"] % k:
-      continue
-    fit = [(i, g) for i, g in enumerate(rows) if g["count"] == r["count"] // k]
-    for i, g in sorted(fit, key=lambda ig: -ig[1]["us_per_call"]):
-      if not peak_gbs or k * r["bytes_per_call"] / (g["us_per_call"] * 1e3) <= peak_gbs * PEAK_SLACK:
-        out.append((i, k))
-  return out
-
-
-class _TooMany(Exception):
-  pass
-
-
-def _pairing(known:list[dict[str, Any]], cands:list[list[tuple[int, int]]],
-             rows:list[dict[str, Any]]) -> tuple[dict[int, tuple[int, int]], dict[str, Any] | None]:
-  """The one assignment role index -> (group index, k) by PAIRING_RULE: a depth-first walk over the roles (more
-  bytes per call first), each trying its candidates in order and then going unpaired, keeping the first assignment
-  at the best score (roles placed, then fewest fused). Within one launch count the bytes per launch and the time
-  per launch must order the same way. A walk past MAX_NODES refuses the whole pairing, named."""
-  best:dict[str, Any] = {"score": (-1, 0), "choice": {}}
-  nodes = 0
-
-  def monotone(choice:dict[int, tuple[int, int]], i:int, gi:int, k:int) -> bool:
-    g, mine = rows[gi], k * known[i]["bytes_per_call"]
-    for j, (gj, kj) in choice.items():
-      h, theirs = rows[gj], kj * known[j]["bytes_per_call"]
-      if h["count"] == g["count"] and ((mine > theirs and g["us_per_call"] <= h["us_per_call"])
-                                       or (mine < theirs and g["us_per_call"] >= h["us_per_call"])):
-        return False
-    return True
-
-  def walk(i:int, choice:dict[int, tuple[int, int]], used:set[int], fused:int) -> None:
-    nonlocal nodes
-    nodes += 1
-    if nodes > MAX_NODES:
-      raise _TooMany
-    if len(choice) + (len(known) - i) < best["score"][0]:
-      return  # cannot place as many roles as the best found
-    if i == len(known):
-      if (len(choice), -fused) > best["score"]:
-        best.update(score=(len(choice), -fused), choice=dict(choice))
-      return
-    for gi, k in cands[i]:
-      if gi in used or not monotone(choice, i, gi, k):
-        continue
-      choice[i], _ = (gi, k), used.add(gi)
-      walk(i + 1, choice, used, fused + (k > 1))
-      del choice[i]
-      used.discard(gi)
-    walk(i + 1, choice, used, fused)
-
-  try:
-    walk(0, {}, set(), 0)
-  except _TooMany:
-    return {}, {"reason": f"more than {MAX_NODES} ways to pair {len(known)} roles with the kernel groups: too many to tell apart"}
-  return best["choice"], None
-
-
-# --- roles assembled from several groups or duration clusters -------------------------------------------------
-
-SPLIT_RATIO = 1.5  # two duration clusters count as different work only when their means differ this much
-SPLIT_SHARE = 0.05  # and each holds at least this share of the calls
-PIECE_SPREAD = 1.5  # the pieces of one role move the same bytes per call: their times per call agree within this
-COUNT_SLACK = 1.0  # a role's pieces may miss its count by this many calls per token (window edges)
-MAX_PIECES = 8  # more candidate pieces than this is too many to tell apart: refused as ambiguous
-
-
-def split_clusters(g:dict[str, Any], tokens:int) -> list[dict[str, Any]] | None:
-  """Two pieces of one kernel group when its per-call durations are clearly bimodal, else None. 2-means on log
-  duration over the long capture's launches; the short capture's launches are subtracted per cluster."""
-  import math
-  durs = sorted(d for d, _ in g.get("launches") or [])
-  if len(durs) < 20:
-    return None
-  logs = [math.log(max(d, 1e-6)) for d in durs]
-  lo, hi = logs[len(logs) // 10], logs[len(logs) * 9 // 10]
-  a = b = []
-  for _ in range(50):
-    cut = (lo + hi) / 2
-    a = [x for x in logs if x <= cut]
-    b = [x for x in logs if x > cut]
-    if not a or not b:
-      return None
-    lo, hi = sum(a) / len(a), sum(b) / len(b)
-  if math.exp(hi - lo) < SPLIT_RATIO or min(len(a), len(b)) < SPLIT_SHARE * len(logs):
-    return None
-  edge = math.exp((lo + hi) / 2)
-  out = []
-  for name, test in (("fast", lambda d: d <= edge), ("slow", lambda d: d > edge)):
-    calls = sum(1 for d, _ in g["launches"] if test(d)) - sum(1 for d, _ in g.get("short_launches") or [] if test(d))
-    us = sum(s for d, s in g["launches"] if test(d)) - sum(s for d, s in g.get("short_launches") or [] if test(d))
-    if calls <= 0 or us <= 0:
-      return None
-    out.append({"key": f"{g['key']} cluster={name}", "parent": g["key"], "cluster": name, "edge_us": edge,
-                "calls": calls, "wall_us": us, "calls_per_token": calls / tokens, "us_per_call": us / calls})
-  return out
-
-
-def assemble(rows:list[dict[str, Any]], left:list[dict[str, Any]], tokens:int,
-             peak_gbs:float | None) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-  """Roles exact matching could not place, each built from one or more unpaired groups or duration clusters whose
-  calls per token add up to the role's count. A piece must be slow enough to move the role's bytes per call
-  (no more than the peak), the pieces of one role must agree in time per call (same bytes), and a role that
-  moves more bytes per call must take longer per call than one that moves fewer. Exactly one assignment must
-  satisfy this; none or several leave the roles unpaired, and several are recorded as ambiguous."""
-  import itertools
-  smallest = min(r["bytes_per_call"] for r in left)
-  pieces = []
-  for g in [g for g in rows if g["role"] is None and not g.get("block")]:
-    parts = split_clusters(g, tokens) or [{**g, "parent": g["key"], "cluster": None}]
-    for part in parts:  # a piece too fast to move even the smallest role's bytes is not weight work
-      if not peak_gbs or smallest / (part["us_per_call"] * 1e3) <= peak_gbs * PEAK_SLACK:
-        pieces.append(part)
-  if not pieces:
-    return [], None
-  if len(pieces) > MAX_PIECES:
-    return [], {"reason": f"{len(pieces)} candidate kernel groups for {len(left)} roles: too many to tell apart"}
-  valid = []
-  for choice in itertools.product(range(len(left) + 1), repeat=len(pieces)):  # len(left) = no role
-    per = {i: [pieces[p] for p, c in enumerate(choice) if c == i] for i in range(len(left))}
-    ok = True
-    for i, r in enumerate(left):
-      ps = per[i]
-      if not ps or abs(sum(p["calls_per_token"] for p in ps) - r["count"]) > COUNT_SLACK:
-        ok = False
-        break
-      times = [p["us_per_call"] for p in ps]
-      if max(times) / min(times) > PIECE_SPREAD or (peak_gbs and r["bytes_per_call"] / (min(times) * 1e3) > peak_gbs * PEAK_SLACK):
-        ok = False
-        break
-    if ok:  # more bytes per call, more time per call, across roles
-      for i, j in itertools.permutations(range(len(left)), 2):
-        if left[i]["bytes_per_call"] > left[j]["bytes_per_call"] and            min(p["us_per_call"] for p in per[i]) <= max(p["us_per_call"] for p in per[j]):
-          ok = False
-          break
-    if ok:
-      valid.append(per)
-  if len(valid) != 1:
-    return [], ({"reason": f"{len(valid)} ways to build the roles from the kernels left; refused as ambiguous"}
-                if len(valid) > 1 else None)
-  out = []
-  for i, r in enumerate(left):
-    ps = valid[0][i]
-    for p in ps:
-      if p["cluster"] is None:
-        g = next(g for g in rows if g["key"] == p["key"])
-        g["role"], g["quant"] = r["role"], r["quant"]
-      else:
-        rows.append({**p, "role": r["role"], "quant": r["quant"], "count": None})
-    out.append({"role": r["role"], "quant": r["quant"], "count": r["count"],
-                "pieces": [{"key": p["parent"], "cluster": p["cluster"], "edge_us": p.get("edge_us"),
-                            "calls_per_token": p["calls_per_token"], "us_per_call": p["us_per_call"],
-                            "gbs": r["bytes_per_call"] / (p["us_per_call"] * 1e3)} for p in ps]})
-  # a split group's rows are its clusters now: drop the whole group so its time is not counted twice
-  for key in {p["key"] for a in out for p in a["pieces"] if p["cluster"]}:
-    whole = next(g for g in rows if g["key"] == key)
-    taken = {g["cluster"] for g in rows if g.get("parent") == key and g.get("cluster")}
-    rows.remove(whole)
-    for part in split_clusters(whole, tokens) or []:  # a cluster no role took stays as an unattributed row
-      if part["cluster"] not in taken:
-        rows.append({**part, "role": None, "quant": None, "count": None})
-  return out, None
+              tokens:int, peak_gbs:float | None, *, kinds:dict[str, int] | None = None,
+              classes:dict[tuple[str, str], str] | None = None) -> dict[str, Any]:
+  """Pair kernel groups with roles by the layer walk. roles: the ceiling's decode roles (role, quant, bytes_moved,
+  floor_ms, and fine or part_roles for an engine's packed matrix). counts: calls per token per (role, quant). kinds:
+  layers per block kind (pairing.layer_kinds); classes: (role, quant) -> fine class. Returns {"pairs": [...], "groups":
+  every group with its role or None (a group several roles share is one row per role), "unpaired", "ambiguous",
+  "rule", "structure"}."""
+  rows = [{"role": r["role"], "quant": r["quant"], "count": int(counts[(r["role"], r["quant"])]),
+           "weight_bytes": r["bytes_moved"] / counts[(r["role"], r["quant"])], "nk": None,
+           "role_class": (classes or {}).get((r["role"], r["quant"])), **({"fine": r["fine"]} if r.get("fine") else {})}
+          for r in roles if counts.get((r["role"], r["quant"]))]
+  timed = all(g.get("launches") and len(g["launches"]) == g["calls"] and None not in (g.get("starts") or [None]) for g in kernel_groups)
+  launches = [{"key": g["key"], "raw_wall_us": d, "wall_us": sh, "start_us": g["starts"][i], "stream": (g.get("streams") or [None] * g["calls"])[i]}
+              for g in kernel_groups for i, (d, sh) in enumerate(g["launches"])] if timed and kernel_groups else []
+  got = pairing.pair(launches, rows, kinds=kinds or {}, widths=[1] * tokens, bandwidth_gbs=peak_gbs,
+                     flat=None if timed and kernel_groups else kernel_groups)
+  by_key: dict[str, dict[str, Any]] = {g["key"]: g for g in kernel_groups}
+  rows_out: list[dict[str, Any]] = []
+  pairs: dict[tuple[str, str, str], dict[str, Any]] = {}
+  taken: dict[str, float] = {}
+  for p in got["placed"]:
+    item, g = p["item"], p["group"]
+    key = g.get("key") or p["launches"][0][0]["key"]
+    us = sum(l["wall_us"] for l, _, _, _ in p["launches"])
+    for part in item["parts"]:
+      share = part["weight_bytes"] * part["count"] / sum(x["weight_bytes"] * x["count"] for x in item["parts"])
+      row = pairs.setdefault((key, part["role"], part["quant"]), {
+        "key": key, "calls": 0, "wall_us": 0.0, "role": part["role"], "quant": part["quant"], "fused": p["fused"]})
+      row["calls"] += len(p["launches"])
+      row["wall_us"] += us * share
+    taken[key] = taken.get(key, 0.0) + us
+  for (key, role, quant), row in pairs.items():
+    rows_out.append({**row, "calls_per_token": row["calls"] / tokens, "us_per_call": row["wall_us"] / row["calls"],
+                     "gbs": next(r["weight_bytes"] for r in rows if (r["role"], r["quant"]) == (role, quant)) * row["fused"] / (row["wall_us"] / row["calls"] * 1e3),
+                     **({"shared_key": True} if sum(1 for k in pairs if k[0] == key) > 1 else {})})
+  for key, g in by_key.items():
+    left_us = g["wall_us"] - taken.get(key, 0.0)
+    left_calls = g["calls"] - sum(r["calls"] for r in rows_out if r["key"] == key)
+    if left_calls > 0:
+      rows_out.append({"key": key, "calls": left_calls, "wall_us": max(left_us, 0.0), "role": None, "quant": None,
+                       "calls_per_token": left_calls / tokens, "us_per_call": max(left_us, 0.0) / left_calls})
+  pair_rows = [{"role": r["role"], "quant": r["quant"], "key": r["key"], "count": int(counts[(r["role"], r["quant"])]), "fused": r["fused"],
+                "gbs": r["gbs"]} for r in rows_out if r["role"]]
+  unpaired = [{"role": u["item"]["role"], "quant": u["item"]["quant"], "count": u["item"]["count"], "reason": u["reason"]} for u in got["unplaced"]]
+  return {"pairs": pair_rows, "groups": rows_out, "unpaired": unpaired, "ambiguous": got.get("ambiguous"), "rule": got["words"],
+          "structure": got["structure"]}
 
 
 def trace_rows(result:dict[str, Any], *, context:int, time_source:str) -> list[dict[str, Any]]:
-  """Kernel rows of a boltbeam.timing_trace.v1 for the attributed groups, the shape loss() reads."""
-  return [{"scope": "kernel", "context": context, "kernel": g["key"], "calls": g["calls"], "wall_us": g["wall_us"],
-           "role": g["role"], "quant": g["quant"], "role_source": ROLE_SOURCE if g["role"] else None,
-           "time_source": time_source} for g in result["groups"]]
+  """Kernel rows of a boltbeam.timing_trace.v1 for the attributed groups, the shape loss() reads. A kernel several
+  roles share is one row per role, keyed with the role so the rows stay distinct."""
+  return [{"scope": "kernel", "context": context, "kernel": g["key"] + (f" role={g['role']}" if g.get("shared_key") else ""),
+           "calls": g["calls"], "wall_us": g["wall_us"], "role": g["role"], "quant": g["quant"],
+           "role_source": ROLE_SOURCE if g["role"] else None, "time_source": time_source} for g in result["groups"]]
 
 
 def agreement(by_bytes:dict[str, Any], by_metadata:dict[str, tuple[str | None, str | None]]) -> dict[str, Any]:
@@ -379,52 +209,6 @@ class CaptureRefused(RuntimeError):
   """The capture cannot be a measurement. The message says why."""
 
 
-def shared_kernels(result:dict[str, Any], shaped:list[dict[str, Any]], tokens:int, bandwidth_gbs:float | None) -> None:
-  """Roles left unpaired, placed on the kernels left the way prefill places roles on a shared template
-  (prefill_attribution.pair and split): one kernel serving several roles of one format (a library that launches
-  every matrix on one grid), its launches cut into duration clusters in the order of the roles' size. At one token
-  a matrix's operations follow its bytes, so prefill's rule holds with each token as a chunk of one row. shaped:
-  the roles with n, k, count and weight_bytes (prefill.prefill_roles or prefill.engine_roles). In place."""
-  from boltbeam.collectors import prefill_attribution as pa
-  want = {(r["role"], r["quant"]) for r in result["unpaired"]}
-  left = [{**r, "skip": 0} for r in shaped if (r["role"], r["quant"]) in want]
-  free = [g for g in result["groups"] if g["role"] is None and not g.get("block") and g.get("launches")
-          and len(g["launches"]) == g["calls"]]
-  if not left or not free:
-    return
-  def launch(g, i, d, sh):  # its place in the stream, when the capture had one, for the order tie-break
-    st, sm = (g.get("starts") or [None] * len(g["launches"]))[i], (g.get("streams") or [None] * len(g["launches"]))[i]
-    return {"raw_wall_us": d, "wall_us": sh, **({"start_us": st} if st is not None else {}),
-            **({"stream": sm} if sm is not None else {})}
-  tmpls = [{"template": g["key"], "calls": g["calls"], "wall_us": g["wall_us"], "path": {"status": "not_found"},
-            "launches": [launch(g, i, d, sh) for i, (d, sh) in enumerate(g["launches"])]} for g in free]
-  choice, why = pa.pair(tmpls, left, chunks=tokens, mean_m=1.0, peaks={}, bandwidth_gbs=bandwidth_gbs, order=True)
-  if why:
-    result["ambiguous"] = result["ambiguous"] or why
-  shared: dict[int, list[dict[str, Any]]] = {}
-  rows, used = [], set()
-  for i, (kind, ts) in choice.items():
-    if kind == "shared":
-      shared.setdefault(ts[0], []).append(left[i])
-    else:
-      for t in ts:
-        rows.append({**free[t], "role": left[i]["role"], "quant": left[i]["quant"]})
-        used.add(t)
-  for t, rs in shared.items():
-    gs = sorted(pa.role_groups(rs), key=lambda g: g["nk"])
-    parts = pa.split(gs, tmpls[t], tokens)
-    for gi, g in enumerate(gs):
-      us = sum(l["wall_us"] for l in parts[gi])
-      total = sum(r["weight_bytes"] * r["count"] for r in g["roles"])
-      rows += [{"key": f"{free[t]['key']} cluster={gi}", "calls": len(parts[gi]), "wall_us": us * r["weight_bytes"] * r["count"] / total,
-                "role": r["role"], "quant": r["quant"], "count": None, "shared_by": g["name"]} for r in g["roles"]]
-    used.add(t)
-  placed = {(left[i]["role"], left[i]["quant"]) for i in choice}
-  result["groups"] = [g for g in result["groups"] if not any(g is free[t] for t in used)] + rows
-  result["unpaired"] = [r for r in result["unpaired"] if (r["role"], r["quant"]) not in placed]
-  result["shared"] = [{"role": left[i]["role"], "quant": left[i]["quant"], "kernel": free[c[1][0]]["key"]} for i, c in choice.items()]
-
-
 def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_ms:float | None,
                  long_kernels:int, band:float = 0.01) -> None:
   """Refuse a window with no kernels, or with more GPU time per token than the captured run took per token by more
@@ -460,21 +244,18 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   check_window(window, method=method, tokens=tokens, token_ms=token_ms, long_kernels=long_kernels,
                band=max(float(ceil.get("band") or 0.0), 0.01))
   counts = {(r["role"], r["quant"]): int(r["count"]) for r in profile.get("roles", []) if r.get("count")}
+  classes = {(r["role"], r["quant"]): r.get("role_class") for r in profile.get("roles", [])}
   roles, pairing_roles, packed = ceil.get("_roles") or [], "the profile's roles", {}
   if matrices:  # an engine that packs checkpoint tensors into one GEMM: pair with its own matrices (prefill's authority)
     from boltbeam.collectors.prefill import engine_roles, prefill_roles
     pr = prefill_roles(profile, roles)
     got, pairing_roles = engine_roles(pr, matrices)
     if got is not pr:
-      roles = [{"role": m["role"], "quant": m["quant"], "bytes_moved": m["weight_bytes"] * m["count"], "floor_ms": None}
+      roles = [{"role": m["role"], "quant": m["quant"], "bytes_moved": m["weight_bytes"] * m["count"], "floor_ms": None, "fine": m["fine"]}
                for m in got]
       counts = {(m["role"], m["quant"]): m["count"] for m in got}
       packed = {(m["role"], m["quant"]): m["part_roles"] for m in got}
-  result = attribute(window, roles, counts, tokens, ceil.get("peak_bandwidth_gbs"))
-  if result["unpaired"]:
-    from boltbeam.collectors.prefill import prefill_roles
-    shaped = got if packed else prefill_roles(profile, ceil.get("_roles") or [])
-    shared_kernels(result, shaped, tokens, ceil.get("peak_bandwidth_gbs"))
+  result = attribute(window, roles, counts, tokens, ceil.get("peak_bandwidth_gbs"), kinds=pairing.layer_kinds(profile), classes=classes)
   if packed:  # a packed GEMM's time back to its parts by their weight bytes (a decode GEMV streams its weights)
     split = []
     for g in result["groups"]:
@@ -489,14 +270,13 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   wall = sum(g["wall_us"] for g in window)
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": model_id, "target_id": target.target_id, "workload": "decode",
            "provider_id": provider, "capture": {"method": method, "reason": None},
-           "timing_source": f"{method} kernel timeline, attributed by bytes and count",
+           "timing_source": f"{method} kernel timeline, attributed by the layer walk",
            "rows": [{"scope": "whole_step", "context": context, "decode_tokens": tokens, "wall_us": wall,
                      "tok_s": tokens / (wall / 1e6) if wall else None, "launch_count": sum(g["calls"] for g in window),
                      "measurement_scope": "summed_kernel_intervals", "time_source": method, "token_ms": token_ms,
                      "batch": batch}]
                    + trace_rows(result, context=context, time_source=method),
-           "pairs": result["pairs"], "unpaired_roles": result["unpaired"], "assembled_roles": result["assembled"],
-           "ambiguous": result["ambiguous"], "pairing_rule": result["rule"], "overlap": overlap,
-           "pairing_roles": pairing_roles}
+           "pairs": result["pairs"], "unpaired_roles": result["unpaired"], "ambiguous": result["ambiguous"],
+           "pairing_rule": result["rule"], "structure": result["structure"], "overlap": overlap, "pairing_roles": pairing_roles}
   (pathlib.Path(run) / out).write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
   return trace

@@ -534,8 +534,8 @@ def last_level_cache(target) -> dict[str, float] | None:
 
 
 def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> list[dict[str, Any]]:
-  """The profile's weight roles with their shape, launches per chunk and weight bytes per launch (the limit's own
-  bytes over the role's count, so a role's bytes are the decode table's)."""
+  """The profile's weight roles with their shape, launches per chunk, weight bytes per launch (the limit's own
+  bytes over the role's count, so a role's bytes are the decode table's) and fine class (its place in the layer)."""
   from boltbeam.role_key import role_key
   by = {role_key(r): r for r in ceil_roles}
   out = []
@@ -543,7 +543,7 @@ def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> li
     c = by.get(role_key(r))
     if c and r.get("count") and r.get("rows") and r.get("cols"):
       out.append({"role": r["role"], "quant": r["quant"], "n": int(r["rows"]), "k": int(r["cols"]), "count": int(r["count"]),
-                  "weight_bytes": float(c["bytes_moved"]) / int(r["count"])})
+                  "weight_bytes": float(c["bytes_moved"]) / int(r["count"]), "role_class": r.get("role_class")})
   return out
 
 

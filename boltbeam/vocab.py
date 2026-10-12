@@ -203,29 +203,24 @@ def is_weight_gemv_role(role:str) -> bool:
   return role in WEIGHT_GEMV_ROLES or (role.startswith("ssm_") and role not in _ROLE_GROUPS)
 
 
-# Where a role runs within one layer of a block, in the block's own data flow: the projections that read the layer's
-# input (attention or delta net), then the projection that writes its output, then the FFN's input projections, then
-# its output projection; the head after every layer. Keyed by the fine RoleClass: a coarse group whose classes sit at
-# different stages (attn_qo: q reads the input, o writes the output) has no stage (layer_stage). Used only to break
-# ties that counts, bytes, rates and guards leave open: kernels in stream order rise through these stages within a
-# layer and fall back to the first at the next.
-LAYER_STAGE: dict[str, int] = {
-  "attention_q": 0, "attention_k": 0, "attention_v": 0, "attention_qkv": 0, "attention_gate": 0,
-  "ssm_in": 0, "ssm_alpha": 0, "ssm_beta": 0,
-  "attention_o": 1, "ssm_out": 1,
-  "ffn_gate": 2, "ffn_up": 2, "moe_router": 2, "moe_expert_gate": 2, "moe_expert_up": 2,
-  "moe_shared_expert_gate": 2, "moe_shared_expert_up": 2,
-  "ffn_down": 3, "moe_expert_down": 3, "moe_shared_expert_down": 3,
-  "lm_head": 4,
+# Where a role runs within one layer of a block, in the block's own data flow (collectors/pairing.py): the
+# projections that read the layer's input run before the block's kernels; the gate projection may run on either
+# side (an engine computes it when it needs it); the output projection and the FFN run after, in this order; the head
+# runs once per call, after the last layer. Keyed by the fine RoleClass. A coarse group whose classes sit at
+# different stages (attn_qo: q reads the input, o writes the output) holds one launch per class per layer.
+STAGE: dict[str, str] = {
+  "attention_q": "in", "attention_k": "in", "attention_v": "in", "attention_qkv": "in",
+  "ssm_in": "in", "ssm_alpha": "in", "ssm_beta": "in", "ssm_projection": "in",
+  "attention_gate": "gate",
+  "attention_o": "out", "ssm_out": "out",
+  "ffn_gate": "ffn_in", "ffn_up": "ffn_in", "moe_router": "ffn_in", "moe_expert_gate": "ffn_in", "moe_expert_up": "ffn_in",
+  "moe_shared_expert_gate": "ffn_in", "moe_shared_expert_up": "ffn_in",
+  "ffn_down": "ffn_out", "moe_expert_down": "ffn_out", "moe_shared_expert_down": "ffn_out",
+  "lm_head": "head",
 }
-
-
-def layer_stage(role:str) -> int | None:
-  """A fine role class's stage, or a coarse group's when every fine class in it has the same one; else None."""
-  if role in LAYER_STAGE:
-    return LAYER_STAGE[role]
-  got = {LAYER_STAGE.get(c) for c, g in ROLE_GROUP_OF.items() if g == role}
-  return next(iter(got)) if len(got) == 1 else None
+STAGE_SIDE: dict[str, str | None] = {"in": "input", "gate": None, "out": "output", "ffn_in": "output", "ffn_out": "output",
+                                     "head": "tail"}  # None: either side of the block
+OUTPUT_ORDER: tuple[str, ...] = ("gate", "out", "ffn_in", "ffn_out")  # the output side's data flow
 
 
 def role_group_of(role_class:str) -> str:
