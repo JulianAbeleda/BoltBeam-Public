@@ -24,6 +24,12 @@ without that: the recorded sums are 0.82 of the M3 token and, less floor, 0.85 o
 within 3% of its in-model weight-kernel sum (docs/kernel-timer.md). "No flush" is impossible by design: a 96 MiB L2 makes every weight under it an L2 hit between warmup and
 sample (117 to 149% of DRAM peak on the 5090), and that is not the number a model sees.
 
+Warm activations: after the sweep the args a spec marks `warm` (the activation vector) are read back in by the same
+kernel (WARM_RULE). Inside the model the kernel before wrote the vector and it is still in the cache: Nsight Compute
+on a 5090 decode reads exactly the weight bytes from DRAM per launch, and the timer swept the vector out too
+(weights plus 4.6 KB). With the read-back the timed launch reads exactly the weights, as in the model. Its time moved
+by 0.4 µs or less (docs/kernel-timer.md, "Checked against Nsight Compute").
+
 The dispatch floor (an empty kernel between the same two timestamps) is measured once per timer run and recorded on each row as
 timing.dispatch_floor_us. It is never subtracted silently: a row keeps us_per_call as measured and carries
 us_per_call_less_floor (less_floor_us, the one rule) for the tie-out, which says when it uses it.
@@ -31,6 +37,7 @@ us_per_call_less_floor (less_floor_us, the one rule) for the tie-out, which says
 from __future__ import annotations
 
 import statistics
+import struct
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -48,17 +55,21 @@ FLUSH = {
   "Metal": {"bytes": 64 << 20, "kernel": "sweep", "mode": "read", "empty": "empty", "threads": 256, "source": """
 #include <metal_stdlib>
 using namespace metal;
-kernel void sweep(device const float* b [[buffer(0)]], device float* o [[buffer(1)]], uint i [[thread_position_in_grid]]) {
-  if (b[i] == 12345.0f) o[0] = 1.0f; }
+kernel void sweep(device const float* b [[buffer(0)]], device float* o [[buffer(1)]], constant uint& n [[buffer(2)]],
+                  uint i [[thread_position_in_grid]]) {
+  if (i < n && b[i] == 12345.0f) o[0] = 1.0f; }
 kernel void empty(device float* b [[buffer(0)]], uint i [[thread_position_in_grid]]) { if (i == 0xFFFFFFFF) b[0] = 0.0f; }
 """},
   "CUDA": {"bytes": 256 << 20, "kernel": "sweep", "mode": "read", "empty": "empty", "threads": 256, "source": """
-extern "C" __global__ void sweep(const float* b, float* o) {
+extern "C" __global__ void sweep(const float* b, float* o, unsigned n) {
   unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (b[i] == 12345.0f) o[0] = 1.0f; }
+  if (i < n && b[i] == 12345.0f) o[0] = 1.0f; }
 extern "C" __global__ void empty(float* b) { if (blockIdx.x * blockDim.x + threadIdx.x == 0xFFFFFFFFu) b[0] = 0.0f; }
 """},
 }
+
+WARM_RULE = ("the activation vector is read back in after the sweep: inside the model the kernel before wrote it and it is "
+             "still in the cache, the weights are not")
 
 
 def less_floor_us(us:float, floor_us:float | None) -> float | None:
@@ -126,11 +137,14 @@ class KernelSpec:
   shared_bytes: int = 0
   record: dict[str, Any] = field(default_factory=dict)  # the geometry and its origin, kept with the result
   keep_output: bool = False  # return the first launch's output bytes (a chained launch reads them as its input)
+  # the args the model's previous kernel has just written (the activation vector): read back in after each sweep, so
+  # they are in the cache as in the model while the weights come from DRAM (WARM_RULE)
+  warm: tuple[int, ...] = ()
 
 
 class Flusher:
-  """The backend's sweep kernel and empty kernel, compiled once on a bridge. A "read" sweep binds a 16-byte sink as
-  its second buffer so the compiler cannot drop the loads."""
+  """The backend's sweep kernel and empty kernel, compiled once on a bridge. The sweep binds a 16-byte sink as its
+  second buffer so the compiler cannot drop the loads, and the count of floats to read as its third."""
 
   def __init__(self, bridge, backend:str):
     row = FLUSH[backend]
@@ -141,11 +155,19 @@ class Flusher:
     self.buf = bridge.buffer(length=row["bytes"])
     self.small = bridge.buffer(length=16)
     self.bridge = bridge
-    self.groups = row["bytes"] // 4 // row["threads"]
 
-  def __call__(self) -> float:
-    bufs = [self.buf, self.small] if self.row["mode"] == "read" else [self.buf]
-    return self.bridge.dispatch(self.flush_pso, bufs, (self.groups, 1, 1), (self.row["threads"], 1, 1))
+  def read(self, buf:int, nbytes:int) -> float:
+    """Read nbytes of a buffer through the sweep kernel: what is read is left in the cache, clean."""
+    words = nbytes // 4
+    groups = max(1, -(-words // self.row["threads"]))
+    return self.bridge.dispatch(self.flush_pso, [buf, self.small, struct.pack("<I", words)], (groups, 1, 1), (self.row["threads"], 1, 1))
+
+  def __call__(self, warm:list[tuple[int, int]] = ()) -> float:
+    """The sweep, then each (buffer, bytes) in `warm` read back in: the weights leave the cache, the activations stay."""
+    us = self.read(self.buf, self.row["bytes"])
+    for buf, nbytes in warm:
+      self.read(buf, nbytes)
+    return us
 
   def floor_us(self, count:int = FLOOR_SAMPLES) -> float:
     """The fixed GPU cost of one dispatch, the median over `count` empty launches: reported beside every time."""
@@ -198,6 +220,8 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
       out_index, out_len = len(owned) - 1, int(arg)
   result:dict[str, Any] = {"label": spec.label, "adapter": spec.adapter, "kernel": spec.kernel, "samples": [],
                            "correctness": None, "pipeline": {k: v for k, v in pipeline.items() if k != "pso"}}
+  warm = [(bound[i], len(spec.args[i])) for i in spec.warm]
+  before = (lambda: flush(warm)) if flush is not None and warm else flush
   try:
     launch = lambda: bridge.dispatch(pipeline["pso"], bound, spec.grid, spec.block, spec.shared_bytes)  # noqa: E731
     launch()
@@ -218,10 +242,10 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
         result["correctness"]["reason"] = "the kernel's output is not finite"
       if not passed:
         return result
-    result["samples"] = samples(launch, warmups=warmups, count=count, before=flush)
+    result["samples"] = samples(launch, warmups=warmups, count=count, before=before)
     extra, why_more = more_samples(result["samples"], floor_us)
     if extra:
-      result["samples"] += samples(launch, warmups=0, count=extra, before=flush)
+      result["samples"] += samples(launch, warmups=0, count=extra, before=before)
   finally:
     for buf in owned:
       bridge.release(buf)
@@ -231,5 +255,6 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
                 gbs=spec.bytes_read / (med * 1e3), warmups=warmups,
                 timing={"warmups": warmups, "samples": len(result["samples"]), "cache": f"swept ({flush.row['mode']})" if flush else "not flushed",
                         "flush_bytes": flush.row["bytes"] if flush else 0, "flush_mode": flush.row["mode"] if flush else None,
-                        "clock": bridge.CLOCK, "more_samples": why_more})
+                        "clock": bridge.CLOCK, "more_samples": why_more,
+                        "warm": [WARM_RULE, sum(n for _, n in warm)] if flush and warm else None})
   return result

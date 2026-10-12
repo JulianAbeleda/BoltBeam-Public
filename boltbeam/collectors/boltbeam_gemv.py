@@ -210,7 +210,7 @@ def spec(backend:str, quant:str, rows:int, cols:int, weights:bytes, x:list[float
   return KernelSpec(label=label or f"{ADAPTER} {name}", adapter=ADAPTER, source=SOURCES[backend], kernel=name,
                     args=[weights, struct.pack(f"<{cols}f", *x), rows * 4, ("value", struct.pack("<I", rows)), ("value", struct.pack("<I", cols))],
                     grid=(groups, 1, 1), block=(ROWS_PER_GROUP * 32, 1, 1), bytes_read=len(weights) + cols * 4 + rows * 4,
-                    check=check,
+                    check=check, warm=(1,),
                     record={"threadgroup_threads": ROWS_PER_GROUP * 32, "threadgroups": groups, "source": KERNEL_SOURCE})
 
 

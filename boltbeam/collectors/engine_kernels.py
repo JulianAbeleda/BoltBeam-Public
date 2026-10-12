@@ -246,7 +246,7 @@ def ggml_metal_spec(text:str, quant:str, rows:int, cols:int, weights:bytes, x:li
   return KernelSpec(label=f"llama.cpp {name}", adapter="llama.cpp", source=text, kernel=name, macros=dict(GGML_MACROS),
                     constants={fc: ("short", nsg), fc + 2: ("short", 1), fc + 3: ("short", 1), fc + 4: ("short", 1)},
                     args=[("value", args), weights, struct.pack(f"<{cols}f", *x), rows * 4],
-                    grid=(groups, 1, 1), block=(32, nsg, 1), bytes_read=len(weights), shared_bytes=smem,
+                    grid=(groups, 1, 1), block=(32, nsg, 1), bytes_read=len(weights), shared_bytes=smem, warm=(2,),
                     check=_reference(quant, rows, cols, weights, x),
                     record={"nsg": nsg, "nr0": nr0, "rows_per_threadgroup": per_group, "function_constant_base": fc,
                             "threadgroups": groups, "threads_per_threadgroup": [32, nsg, 1], "threadgroup_bytes": smem,
@@ -501,7 +501,7 @@ def ggml_cuda_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:
           ("value", fastdiv(1)), u32(blocks_per_row * rows), u32(padded_blocks), u32(rows),  # sample_ratio, stride_sample_x/y/dst
           u32(0)]  # ids_stride
   return KernelSpec(label=f"llama.cpp {inst}", adapter="llama.cpp", source=source, kernel=inst,
-                    args=args, grid=geo["grid"], block=geo["block"], bytes_read=len(weights),
+                    args=args, grid=geo["grid"], block=geo["block"], bytes_read=len(weights), warm=(1,),
                     check=_reference(quant, rows, cols, weights, dequantize_q8_1(y, cols), Q8_1_WORDS),
                     record={**{k: geo[k] for k in ("vdr", "qi", "nwarps", "small_k", "rows_per_block", "halve_iters", "table",
                                                    "table_rule", "halve_rule", "compute_capability")},

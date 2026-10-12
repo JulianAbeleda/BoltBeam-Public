@@ -9,7 +9,7 @@ why.
                                   cache state measured), the free clock (profiler/ncu_counters.ncu_command); the
                                   adapted kernel, the sweep and the empty kernel, so a launch after the floor's
                                   sweep is not taken for a timed one
-    the launches that follow a    the timed samples
+    the launches that follow a    the timed samples (the sweep kernel also reads the warm activations back in)
     sweep kernel
     per role                      ncu's own duration, the DRAM bytes read, the weight bytes: checked when the DRAM
                                   bytes are the weight bytes (CACHE_SLACK)
