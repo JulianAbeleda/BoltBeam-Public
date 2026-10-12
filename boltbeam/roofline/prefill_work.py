@@ -114,28 +114,55 @@ def recurrent(profile:dict[str, Any], length:int, chunks:list[int] | None = None
 
 # The arithmetic an engine's recurrent kernels execute, when its adapter names the algorithm they run. The ceiling
 # stays the work the model needs (recurrent(): the same on every engine); this is a separate, labelled figure.
-# Per token per head, state S, chunk C. The chunked WY form of the delta rule (Yang et al., "Parallelizing Linear
-# Transformers with the Delta Rule over Sequence Length", 2024) builds each chunk's WY factors and intra-chunk
-# attention (about 10 C S) besides the state's read, update and output (about 6 S^2).
+#
+# chunked_wy: the delta rule in chunks of C tokens with the WY / UT transform (Yang et al., "Parallelizing Linear
+# Transformers with the Delta Rule over Sequence Length", 2024), run chunk-parallel: the prompt is cut into spans,
+# each span builds its own transfer matrix and local state, a scan fixes the state at each span's start, then the
+# output pass recomputes every chunk from the fixed state. Per chunk, per head, state S (each product 2 m n k):
+#   five C x C x S products: K K^T (the UT system), X = T K, Q K^T, the new values, the intra-chunk output;
+#   seven C x S x S products: the span's transfer and local state (two each), and in the output pass the output
+#   from the state, the state against K, and the state update;
+#   the inverse of the C x C triangular system, by doubling from 8 x 8 diagonal blocks (inverted without matrix
+#   instructions): at size n, C / 2n blocks of two n x n x n products, each n padded to the matrix tile's 16 rows.
+# Per span, per head: its first chunk starts from the identity and zero, so it skips two C x S x S products, and
+# the fixup scan composes one S x S x S product. A span of None is the whole prompt. Tokens round up to whole chunks.
+MMA_ROWS = 16  # the matrix instruction tile's rows (16 x 8 x 16); a smaller product pads up to them
+INVERSE_BASE = 8  # the triangular inverse's diagonal blocks, inverted without matrix instructions
+
+
+def chunked_wy_ops(state:int, chunk:int, length:int, span:int | None = None) -> float:
+  """Executed operations per head of the chunk-parallel chunked WY delta rule over `length` tokens."""
+  s, c = state, chunk
+  blocks, spans = -(-length // c), (-(-length // span) if span else 1)
+  inverse, n = 0, INVERSE_BASE
+  while 2 * n <= c:
+    inverse += (c // (2 * n)) * 2 * 2 * max(n, MMA_ROWS) * n * n
+    n *= 2
+  return float(blocks * (5 * 2 * c * c * s + 7 * 2 * c * s * s + inverse) - spans * 2 * 2 * c * s * s + spans * 2 * s ** 3)
+
+
 RECURRENT_FORMS: dict[str, tuple[str, Any]] = {
-  "chunked_wy": ("the chunked WY form of the delta rule", lambda s, c: 6.0 * s * s + 10.0 * c * s),
+  "chunked_wy": ("the chunk-parallel chunked WY form of the delta rule", chunked_wy_ops),
 }
 
 
 def recurrent_executed(profile:dict[str, Any], length:int, form:dict[str, Any] | None) -> dict[str, Any] | None:
-  """The recurrent scan's executed operations under the engine's named algorithm (form: {"name", "chunk"}), over its
-  layers, with its words; None when no form is named, the name is not in RECURRENT_FORMS, or there is no recurrent
-  block."""
+  """The recurrent scan's executed operations under the engine's named algorithm (form: {"name", "chunk", optional
+  "span"}), over its layers, with its words; None when no form is named, the name is not in RECURRENT_FORMS, or
+  there is no recurrent block."""
   r = (profile.get("metadata") or {}).get("recurrent") or {}
   layers, state, inner = r.get("layer_count"), r.get("state_size"), r.get("inner_size")
-  if not (form and form.get("name") in RECURRENT_FORMS and layers and state and inner):
+  if not (form and form.get("name") in RECURRENT_FORMS and layers and state and inner and form.get("chunk")):
     return None
   words, per = RECURRENT_FORMS[form["name"]]
-  chunk = int(form.get("chunk") or 0)
+  chunk, span = int(form["chunk"]), (int(form["span"]) if form.get("span") else None)
   heads = inner // state
-  return {"flops": float(layers * heads * length * per(state, chunk)),
-          "words": f"executed by {words}, chunk {chunk}: about 6 x {state}^2 + 10 x {chunk} x {state} operations per "
-                   f"token per head, {heads} heads, {layers} layers (the ceiling counts the model's 7 x {state}^2)"}
+  spans = f"spans of {span}" if span else "one span"
+  return {"flops": layers * heads * per(state, chunk, length, span),
+          "words": f"executed by {words}, chunk {chunk}, {spans}: per chunk per head five {chunk} x {chunk} x {state} "
+                   f"and seven {chunk} x {state} x {state} products, the triangular inverse padded to the "
+                   f"{MMA_ROWS}-row matrix tile, and per span one {state}^3 fixup less two skipped products; "
+                   f"{heads} heads, {layers} layers (the ceiling counts the model's 7 x {state}^2 per token)"}
 
 
 FP32_PATH = "fp32_fma"  # the measured vector path (cuda_compute.PATHS) a kernel with no matrix instruction runs on

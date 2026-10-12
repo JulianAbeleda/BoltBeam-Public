@@ -46,7 +46,10 @@ name rules are what run on a box without it.
 - At 512 tokens per layer: the model's work is 2.82e9 operations (7 x 128^2 x 48 heads x 512). The chunked WY
   estimate is 4.43e9 (6 x 128^2 + 10 x 64 x 128 per token per head).
 - ncu counted 7.72e9 matrix operations per layer in the four delta-rule kernels (m16n8k16 = 4,096 operations a
-  warp instruction, m16n8k8 = 2,048). That is 1.74 times the estimate. The estimate is a floor.
+  warp instruction, m16n8k8 = 2,048). That is 1.74 times the estimate. The estimate was a floor.
+- Resolved the same day: the estimate is replaced by the count derived from the algorithm's public source. It gives
+  7,719,616,512 per layer. ncu gives 7,719,616,512. The difference is zero. The derivation is in the cross-check
+  doc (prefill-vllm-crosscheck-27b-rtx5090-20261011.md, "The chunked delta rule's executed arithmetic").
 - The ceiling keeps the model's work. The executed figure is a separate, labelled field (`executed_flops`).
 
 ## Evidence

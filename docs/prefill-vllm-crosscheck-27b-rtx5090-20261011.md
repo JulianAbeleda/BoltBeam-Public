@@ -231,12 +231,8 @@ Bytes per token per row (the decode work), from each run's profile:
 Still open:
 - (Fixed 2026-10-11, see the replay doc's Open section.) The deep llama.cpp prefill captures of the replay leave
   `mul_mat_q` unpaired, and the deep decode capture leaves the FFN gate and up roles unpaired.
-- The chunked delta rule's extra arithmetic (2026-10-11): the ceiling still counts the work the model needs,
-  7 x S^2 x H per token per layer, the same on every engine. The recurrent row now also carries
-  `executed_flops`: the arithmetic of the algorithm the engine adapter names (`prefill_work.RECURRENT_FORMS`,
-  the chunked WY form, chunk 64, about 6 x S^2 + 10 x C x S per token per head). At 512 tokens on the 27B that is
-  4.43e9 per layer against the model's 2.82e9. ncu counted 7.72e9 matrix operations per layer in the delta-rule
-  kernels (1.74 times the formula). So the formula is a floor on what the kernels execute.
+- The chunked delta rule's extra arithmetic (2026-10-11): resolved, see "The chunked delta rule's executed
+  arithmetic" below. The formula now matches ncu exactly.
 - The vLLM 27B decode tie-out guard failure, above (fixed; the packed-matrix decode pairing is open).
 - For a model folder, the decode probe says "the model file is gone" (measure_status.json probe_reason). The
   probe looks for a file, not a folder. It did not block the run.
@@ -255,6 +251,64 @@ had saved.
   kernel name). No refused ceiling is left in the vLLM prefill traces.
 - The "after" figures equal the table above, which had assumed these paths by hand. The recurrent row stays bound
   by its bytes, so the tensor-core path does not change its ceiling.
+
+## The chunked delta rule's executed arithmetic (2026-10-11)
+
+No GPU ran. The count comes from FlashInfer 0.7.0.post1's public source and the saved ncu export.
+
+The ceiling still counts the work the model needs: 7 x S^2 x H per token per layer, the same on every engine. The
+recurrent row also carries `executed_flops`: what the engine's named algorithm executes
+(`prefill_work.chunked_wy_ops`). It does not change the ceiling.
+
+The algorithm: the delta rule in chunks of C = 64 tokens with the WY / UT transform, run chunk-parallel. The prompt
+is cut into spans. It runs as four kernels:
+1. The UT system: K K^T per chunk, then its triangular inverse (collective_inverse_hmma.py).
+2. Each span's transfer matrix and local state, chunk by chunk (delta_rule_cp_sm120.py, MN precompute).
+3. The fixup: a scan over spans that fixes the state at each span's start, in tf32 (one S x S x S product a span).
+4. The output pass: every chunk again, from the fixed state.
+
+Every matrix product, per chunk per head (state S = 128, each product 2 m n k operations):
+
+| product | shape | kernel |
+|---|---|---|
+| K K^T | C x C x S | 1 |
+| X = T K | S x C x C | 2 |
+| transfer: Z = M K^T, then M + Z X | S x C x S, S x S x C | 2 |
+| state: Y = S K^T, then S + Y X | S x C x S, S x S x C | 2 |
+| Q K^T | C x C x S | 4 |
+| output from the state, the state against K | C x S x S, S x C x S | 4 |
+| the new values | S x C x C | 4 |
+| the intra-chunk output | S x C x C | 4 |
+| the state update | S x S x C | 4 |
+
+- That is five C x C x S products and seven C x S x S products per chunk.
+- The inverse doubles from 8 x 8 diagonal blocks. The 8 x 8 blocks are inverted without matrix instructions. At
+  size n there are C / 2n blocks, each with two n x n x n products. The 8 x 8 products run on m16n8k8 and pad 8
+  rows up to 16, so that level costs twice its arithmetic. Per chunk: 16,384 + 32,768 + 131,072 = 180,224.
+- Each span's first chunk starts from the identity and zero, so it skips two C x S x S products.
+- Each span adds one S x S x S product in the fixup. Its 3xTF32 option is off by default, so one pass.
+- Tokens round up to whole chunks. Every other dimension is a multiple of the 16 x 8 x 16 tile, so no other padding.
+
+Per head, with B chunks and P spans:
+
+    B (10 C^2 S + 14 C S^2 + inverse(C)) - 4 P C S^2 + 2 P S^3
+
+Against ncu, one layer at 512 tokens (48 heads, 40 launches of each kernel):
+
+| kernel | HMMA instructions (40 launches) | operations per layer | formula per layer |
+|---|---|---|---|
+| UT system and inverse | 3,932,160 + 614,400 m16n8k16, 122,880 m16n8k8 | 465,567,744 + 6,291,456 | 471,859,200 |
+| span transfer and state | 33,423,360 m16n8k16 | 3,422,552,064 | 3,422,552,064 |
+| fixup (tf32) | 3,932,160 m16n8k8 | 201,326,592 | 201,326,592 |
+| output pass | 35,389,440 m16n8k16 | 3,623,878,656 | 3,623,878,656 |
+| total | | 7,719,616,512 | 7,719,616,512 |
+
+- The formula matches ncu exactly: the difference is 0. The tolerance is exact equality, and a dev test pins it.
+- The old estimate (6 S^2 + 10 C S per token per head, 4.43e9) left out the span pass, which runs the
+  recurrence a second time, and the inverse.
+- The span count P comes from the engine's span choice (the device's SM count and the head count). The adapter
+  may name it as `span`; without it P is 1. At 512 the source rounds spans up to 512, so P is 1, and ncu agrees:
+  one skipped first chunk per head. When S = 2C, as here, the two span terms cancel, so P does not change the count.
 
 ## Evidence
 
