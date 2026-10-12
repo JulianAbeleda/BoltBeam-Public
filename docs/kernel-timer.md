@@ -61,7 +61,10 @@ within 3% of the in-model weight-kernel sum (3.29 ms), not the whole token.
 holds every weight role but lm_head between warmup and sample, and those rows read at 117 to 149% of DRAM peak.
 
 The dispatch floor (an empty kernel between the same two timestamps) is measured once per run and recorded beside
-every row as `timing.dispatch_floor_us`: 2.4 µs on the M3, 3.9 to 4.2 µs on the 5090 (CUDA events). On the 5090 that
+every row as `timing.dispatch_floor_us`: 2.4 µs on the M3, 3.9 to 4.2 µs on the 5090 (CUDA events). Since
+2026-10-11 it is measured as a timed launch runs: after the warmups, 60 launches, each after a sweep. Measured cold
+(20 launches, no warmup, no sweep) it read 4.2 µs in one run and 6.4 µs in the next, and every row's less-floor
+time moved with it. On the 5090 that
 is 30 to 130% of the small roles' time, so the floor is never left implicit: each isolated row carries
 `us_per_call_less_floor` beside the measured `us_per_call`, and the tie-out's estimate is made from the less-floor
 times and says "less the N µs dispatch floor" where it does. The measured number is never replaced.
@@ -147,6 +150,105 @@ flush; less the floor it matches nsys inside the model on every role from 3 MB u
 
 The read-sweep sum less the floor is 3.38 ms against a 3.98 ms token (0.85; the in-model weight kernels are 0.83
 of it). Under the store flush the sum was 4.80 ms, 1.21 times the token.
+
+## Checked against Nsight Compute (RTX 5090, 2026-10-11)
+
+Nsight Compute is the oracle; the generic timer is what is improved against it. The timer never needs ncu.
+
+How the oracle was read. Every ncu command BoltBeam builds runs with `--clock-control none`
+(`profiler/ncu_counters.ncu_command`, `CLOCK_CONTROL`): ncu's default locks the base clock and slows every duration
+it reports. The metrics are one pass, `gpu__time_duration.sum`, `dram__bytes_op_read.sum` and the grid, with
+`--cache-control none`. With an L2 counter added ncu needs three passes, and the later passes find the L2 the first
+pass filled; application replay mixed up two launches of the same kernel and grid. So the L2 hit share is derived:
+1 less the DRAM bytes over the bytes the kernel reads.
+
+- In the model: llama-bench decode (`-p 0 -n 4 -d 128`) under ncu, every `mul_mat_vec_q` launch. A launch is a role's
+  by its ggml type and grid; a fused gate+up launch reads twice the weights and counts as two calls.
+- The timer alone: the same timer run under ncu, the launches that follow a sweep.
+- Models: Qwen3-8B Q4_K_M and a 27B hybrid (Q4_K_M), llama.cpp build 9592. Token: 3.98 ms (8B) and 13.97 ms (27B),
+  llama-bench untraced, context 128.
+
+### 1. The sweep does evict: the cache check
+
+Each timed launch read its weight bytes from DRAM on every role of both models (DRAM over weights 1.000 to 1.002).
+The check is now a recorded field. With ncu on PATH, open counters and `BOLTBEAM_NCU=1`, the generic run times its
+kernels once more under ncu and writes `cache_check` on each row: ncu's duration, the DRAM bytes, the weight bytes,
+their ratio, the derived L2 hit share, and `passed` when the DRAM bytes are within 2% of the weights
+(`collectors/kernel_oracle.py`). Without counters the row says `"not checked"` and why. It costs one more timer pass
+under ncu: about 3 minutes on the 8B.
+
+### 2. The cache state inside the model
+
+In the model every launch reads exactly its weight bytes from DRAM (8B attn_kv Q4_K: 2,359,296 bytes, the weight
+size). The q8_1 vector the kernel before wrote is an L2 hit. The timer's sweep evicted the vector too: each timed
+launch read the weights plus 4,608 bytes. The timer now reads the activation args back in after each sweep
+(`KernelSpec.warm`, `WARM_RULE`; both llama.cpp adapters and BoltBeam's GEMV mark the vector). Under ncu the timed
+launches then read exactly the weights, as in the model.
+
+The time did not move. ncu's own duration of the timed kernel, vector cold then warm (8B): attn_kv Q4_K 3.87 / 3.84,
+attn_kv Q6_K 4.83 / 4.74, attn_qo 8.22 / 8.19, ffn_down Q4_K 20.00 / 19.97, ffn_down Q6_K 29.09 / 28.72,
+ffn_gate_up 19.39 / 19.55, lm_head 302.37 / 303.07 µs. The gap from the summed kernels to the token does not close
+through the cache state: after both changes the 8B sum is 3.41 ms, 0.86 of the 3.98 ms token (it was 0.83 to 0.85),
+and ncu's in-model sum over the same roles is 3.50 ms, 0.88. The rest of the token is the kernels the timer does not
+time (attention, norms, quantize) and the gaps between launches.
+
+### 3. The dispatch floor against ncu's duration
+
+The timed launch's event time less ncu's duration of the same kernel is what the floor should take off: 2.9 to 4.3 µs
+across the 15 roles (median 3.6). The floor as measured before the change read 4.26 µs, then 6.43 µs in a later run:
+cold launches with no warmup. Measured after warmups, each after a sweep, it read 3.84 to 3.97 µs in five runs. Less
+the floor against ncu's duration of the same kernel, 8B: before mean |difference| 0.85 µs, after 0.38 µs. The
+floor still takes about 0.5 µs too much off the kernels over 8 µs on average; an empty kernel's own duration is 1.1 µs
+by ncu and part of it every kernel pays too, which events alone cannot separate. The measured time is kept as it is.
+
+### Error per role, generic less the floor against ncu in the model
+
+Before: the timer on main a0fd266's rules (8B the same day; 27B the 2026-10-10 run). After: both changes. Error is
+generic less oracle. `ncu alone` is ncu's duration of the timer's own launch after the change.
+
+| model | role | before µs | after µs | ncu alone µs | oracle in model µs | error before | error after |
+|---|---|---|---|---|---|---|---|
+| 8B | attn_kv Q4_K 1024x4096 | 4.32 | 4.10 | 4.00 | 3.94 | +0.38 (+9.8%) | +0.16 (+4.1%) |
+| 8B | attn_kv Q6_K 1024x4096 | 5.66 | 4.43 | 4.67 | 4.77 | +0.90 (+18.8%) | -0.34 (-7.0%) |
+| 8B | attn_qo Q4_K 4096x4096 | 7.36 | 8.00 | 8.16 | 8.45 | -1.09 (-12.9%) | -0.45 (-5.3%) |
+| 8B | ffn_down Q4_K 4096x12288 | 19.33 | 19.44 | 20.06 | 20.99 | -1.66 (-7.9%) | -1.55 (-7.4%) |
+| 8B | ffn_down Q6_K 4096x12288 | 28.35 | 28.80 | 28.77 | 31.04 | -2.69 (-8.7%) | -2.24 (-7.2%) |
+| 8B | ffn_gate_up Q4_K 12288x4096 | 17.90 | 18.90 | 19.58 | 18.75 | -0.85 (-4.5%) | +0.14 (+0.8%) |
+| 8B | lm_head Q6_K 151936x4096 | 301.46 | 302.53 | 303.33 | 303.92 | -2.46 (-0.8%) | -1.39 (-0.5%) |
+| 27B | attn_kv Q8_0 1024x5120 | 5.17 | 6.00 | 5.57 | 5.65 | -0.48 (-8.5%) | +0.35 (+6.2%) |
+| 27B | attn_qo Q6_K 5120x6144 | 17.62 | 18.43 | 18.53 | 20.10 | -2.48 (-12.3%) | -1.66 (-8.3%) |
+| 27B | attn_qo Q8_0 12288x5120 | 40.69 | 41.07 | 42.11 | 42.83 | -2.14 (-5.0%) | -1.76 (-4.1%) |
+| 27B | ffn_down Q4_K 5120x17408 | 32.21 | 32.70 | 32.70 | 35.62 | -3.41 (-9.6%) | -2.91 (-8.2%) |
+| 27B | ffn_gate_up Q4_K 17408x5120 | 31.89 | 31.20 | 32.50 | 34.40 | -2.51 (-7.3%) | -3.20 (-9.3%) |
+| 27B | lm_head Q6_K 248320x5120 | 613.66 | 614.32 | 615.30 | 616.16 | -2.50 (-0.4%) | -1.84 (-0.3%) |
+| 27B | ssm_projection Q8_0 48x5120 | 1.79 | 2.40 | 2.66 | 2.69 | -0.90 (-33.3%) | -0.29 (-10.7%) |
+| 27B | ssm_projection Q8_0 5120x6144 | 21.92 | 22.21 | 22.67 | 22.91 | -0.99 (-4.3%) | -0.70 (-3.1%) |
+
+| model | sum per token, before | after | oracle | mean abs error before | after |
+|---|---|---|---|---|---|
+| 8B | 3.314 ms | 3.408 ms | 3.497 ms | 9.0% | 4.6% |
+| 27B | 9.079 ms | 9.141 ms | 9.844 ms | 10.1% | 6.3% |
+
+What is left is not a timer rule. In the model ffn_down, the attention output and gate+up run as a fused launch
+(`has_fusion` true: the residual add or the GLU in the same kernel); the adapter times the plain kernel. ncu puts
+the fused launch 0.9 to 2.9 µs above the plain one on the same bytes (8B ffn_down Q6_K 28.77 alone, 31.04 in the
+model). That is the largest remaining error, and it is the adapter's, not the timer's.
+
+### Run the comparison again
+
+On dev, with ncu and open counters (exit 2 and the reason otherwise):
+
+```bash
+BOLTBEAM_NCU=1 python -m boltbeam.workflow.screen pipeline MODEL.gguf --run RUN --provider llama.cpp \
+  --analyze --measure auto --role-time generic --no-search          # rows carry cache_check
+python tools/kernel_oracle.py RUN --model MODEL.gguf --out cmp.json  # error per role against ncu in the model
+BOLTBEAM_ORACLE_RUN=RUN:MODEL.gguf python -m pytest -q tests/test_kernel_oracle.py   # the live test; skipped otherwise
+```
+
+GPU runs for this record: the timer three times on the 8B and once on the 27B, the timer under ncu four times on the
+8B (a wrong metric name for this chip, then three-pass metrics, then application replay, then one pass) and once on
+the 27B, the decode under ncu once per model, and the cache check once per model. Evidence is kept outside the repo
+in the runs work folder, `.work/ncu-timer-20261011/`.
 
 ## Running on the Ubuntu box (RTX 5090)
 

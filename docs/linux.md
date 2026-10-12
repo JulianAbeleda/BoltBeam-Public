@@ -38,7 +38,9 @@ report says so.
 
 Nsight Compute (`ncu`) can say which matrix instructions a closed kernel executed (a library that ships no readable
 code). BoltBeam runs it only when `BOLTBEAM_NCU=1` is set and the driver lets a normal user read the counters.
-Nothing else needs it.
+With the same setting, the generic kernel timer runs once more under ncu and records on each row whether the timed
+kernel read its weights from DRAM (`cache_check`; [kernel-timer.md](kernel-timer.md)). Nothing else needs it. BoltBeam
+always runs ncu with `--clock-control none`, so its durations are at the clock the engine runs at.
 
 - Check: `grep RmProfilingAdminOnly /proc/driver/nvidia/params` must show `0`.
 - To open them, put `options nvidia NVreg_RestrictProfilingToAdminUsers=0` in

@@ -30,7 +30,8 @@ on a 5090 decode reads exactly the weight bytes from DRAM per launch, and the ti
 (weights plus 4.6 KB). With the read-back the timed launch reads exactly the weights, as in the model. Its time moved
 by 0.4 µs or less (docs/kernel-timer.md, "Checked against Nsight Compute").
 
-The dispatch floor (an empty kernel between the same two timestamps) is measured once per timer run and recorded on each row as
+The dispatch floor (an empty kernel between the same two timestamps, after warmups, each after a sweep as a timed
+launch is) is measured once per timer run and recorded on each row as
 timing.dispatch_floor_us. It is never subtracted silently: a row keeps us_per_call as measured and carries
 us_per_call_less_floor (less_floor_us, the one rule) for the tie-out, which says when it uses it.
 """
@@ -42,7 +43,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 SAMPLES, WARMUPS = 20, 10  # warmups let the GPU clock ramp up before the first timed sample
-FLOOR_SAMPLES = 20  # launches of an empty kernel: the fixed cost of one dispatch on this GPU
+# the dispatch floor: an empty kernel's launches, each after a sweep as every timed launch is, after WARMUPS. Measured
+# with no warmups and no sweep it read 4.2 to 6.4 µs on a 5090 between runs; this way 3.8 to 4.0, and Nsight Compute
+# puts what a timed kernel carries over its own duration at 2.9 to 4.3 (docs/kernel-timer.md, "Checked against
+# Nsight Compute")
+FLOOR_SAMPLES = 60
 # a kernel whose median is under NOISY_FLOOR_MULTIPLE x the dispatch floor is mostly floor, and the floor's own jitter
 # is most of its spread (attn_kv Q6_K on a 5090 read 8.05 then 10.30 µs between two passes): it is sampled
 # NOISY_SAMPLES times in all, the spread reported, and the row says why. One rule for both backends.
@@ -170,9 +175,10 @@ class Flusher:
     return us
 
   def floor_us(self, count:int = FLOOR_SAMPLES) -> float:
-    """The fixed GPU cost of one dispatch, the median over `count` empty launches: reported beside every time."""
+    """The fixed GPU cost of one dispatch, the median over `count` empty launches after WARMUPS, each after a sweep as
+    every timed launch is: reported beside every time."""
     launch = lambda: self.bridge.dispatch(self.empty_pso, [self.small], (1, 1, 1), (32, 1, 1))  # noqa: E731
-    return statistics.median(samples(launch, warmups=0, count=count))
+    return statistics.median(samples(launch, warmups=WARMUPS, count=count, before=self))
 
 
 def _percentile(values:list[float], q:float) -> float:
