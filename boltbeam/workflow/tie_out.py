@@ -532,7 +532,7 @@ NO_CEILING = "no ceiling"  # a kernel with no operations or bytes the model know
 END_TO_END_BAND = 0.06
 
 
-def end_to_end(attr:dict[str, Any], untraced_ms:float | None) -> dict[str, Any]:
+def end_to_end(attr:dict[str, Any], untraced_ms:float | None, what:str = "prefill") -> dict[str, Any]:
   """Whether a capture confirms the untraced prefill end to end. The kernels plus the gaps always equal the captured
   wall time (attribute_prefill); this checks that captured wall time against the untraced median, within
   END_TO_END_BAND. gap_growth_ms is its own figure: the capture's idle beyond what the untraced prefill leaves room
@@ -549,10 +549,10 @@ def end_to_end(attr:dict[str, Any], untraced_ms:float | None) -> dict[str, Any]:
   ok = abs(share) <= END_TO_END_BAND
   return {"confirms": ok, "captured_ms": captured, "untraced_ms": float(untraced_ms), "diff_ms": diff, "diff_pct": 100 * share,
           "band_pct": 100 * END_TO_END_BAND, "gaps_ms": gaps, "gap_growth_ms": growth,
-          "words": (f"the captured prefill took {captured:.1f} ms against the {float(untraced_ms):.1f} ms untraced median "
+          "words": (f"the captured {what} took {captured:.1f} ms against the {float(untraced_ms):.1f} ms untraced median "
                     f"({100 * share:+.1f}%, band ±{100 * END_TO_END_BAND:.0f}%); its gaps are {gaps:.1f} ms, "
-                    f"{growth:.1f} ms more than the untraced prefill leaves room for"
-                    + ("" if ok else ". The rows stand, but this capture does not confirm the prefill end to end"))}
+                    f"{growth:.1f} ms more than the untraced {what} leaves room for"
+                    + ("" if ok else f". The rows stand, but this capture does not confirm the {what} end to end"))}
 
 
 def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, length:int,

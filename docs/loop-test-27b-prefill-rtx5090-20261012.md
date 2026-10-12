@@ -288,4 +288,5 @@ The earlier failure came from the full upstream checkout, not from BoltBeam: wit
 else moved.
 
 Evidence on the box: `~/storage/bbeng/tmp/loop27-cp/`, `loop27-cp-pipeline.log`, `loop27-cp-summary.txt`,
-`loop27cp-prediction.txt`; the engine clone `~/storage/loop27-cp`.
+`loop27cp-prediction.txt`. The engine clone was removed after the run; it is b9592 (`ac4cddeb0`) plus
+`24e41838e` cherry-picked, and can be rebuilt from those two commits.

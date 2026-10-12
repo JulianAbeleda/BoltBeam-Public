@@ -2,8 +2,8 @@
  "schema": "boltbeam.engine_pins.v1",
  "about": "The one table of engine versions BoltBeam measures. A run records the build it ran; the engine-upgrade audit names both pins and says when a build differs from its pin. Changing a pin is its own [target] or [repo] commit that cites the upgrade audit justifying it (docs/engine-upgrade-audit.md).",
  "engines": {
-  "llama.cpp": {"tag": "b9592", "sha": "ac4cddeb0dbd778f650bf568f6f08344a06abe3a",
-                "audit": "docs/prefill-audit-27b-rtx5090-20261011.md"},
+  "llama.cpp": {"tag": "b11571", "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
+                "audit": "docs/engine-upgrade-llama-b11571-rtx5090-20261012.md"},
   "vllm": {"version": "0.31.0", "audit": "docs/prefill-vllm-crosscheck-27b-rtx5090-20261011.md"}
  }
 }

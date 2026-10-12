@@ -94,10 +94,11 @@ def _decode_side(run:pathlib.Path) -> dict[str, dict[str, Any]]:
   w, t = loss.get("where_token_goes"), loss.get("tie_out") or {}
   if not w:
     return {}
-  rows = {r["name"]: {"now_ms": r["now_ms"], **{f: r.get(f) for f in ("calls", "limit_ms")}} for r in w["rows"]}
+  rows = {r["name"]: {"now_ms": r["now_ms"], **{f: r.get(f) for f in ("calls", "limit_ms")}}
+          for r in w["rows"] if r.get("what") != "gaps"}  # the gaps are the tie-out's own row, compared once
   token, busy, untraced = t.get("token_ms"), t.get("busy_ms"), t.get("untraced_ms")
   attr = {"profiled_wall_ms": token, "wall_ms": token, "busy_ms": busy, "gaps_ms": (token - busy) if token and busy else None}
-  e2e = tie.end_to_end(attr, untraced) if token and busy is not None else {"confirms": None, "words": "no captured token"}
+  e2e = tie.end_to_end(attr, untraced, "token") if token and busy is not None else {"confirms": None, "words": "no captured token"}
   return {f"decode {t.get('context')}": {"rows": rows, "tie": {
     "captured_ms": token, "busy_ms": busy, "gaps_ms": attr["gaps_ms"], "residual_ms": 0.0 if token and busy else None,
     "untraced_ms": untraced, "end_to_end": e2e}}}
