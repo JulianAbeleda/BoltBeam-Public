@@ -31,6 +31,7 @@ output width, in the units that had output tokens; those small launches are that
 from __future__ import annotations
 
 import collections
+import itertools
 import statistics
 from typing import Any, Callable
 
@@ -155,6 +156,18 @@ def structure(launches:list[dict[str, Any]], *, kinds:dict[str, int], units:int,
     per = collections.Counter(layers[i]["unit"] for i in ls)
     if any(n >= RECUR * kinds[k] for n in per.values()) or (side == "after" and len(last_of_unit.get((t, k), ())) >= RECUR * units):
       recurs.add((t, k))
+  # a weight format some layers use and others do not (a mixed quant per layer) takes the same slot in each. When the
+  # recurring templates leave the gaps between layers uneven and every candidate makes them even (a unit's last gap
+  # aside), the templates in those gaps are slots: dropping them is what would shift the slots
+  between, every, kept = set(), collections.defaultdict(set), collections.defaultdict(set)
+  for i, l in enumerate(layers[:-1]):
+    if (i + 1) % per_unit:
+      pair, gap = (l["kind"], layers[i + 1]["kind"]), cands(l["last"] + 1, layers[i + 1]["first"])
+      between |= {template(seq[j]["key"]) for j in gap}
+      every[pair].add(len(gap))
+      kept[pair].add(sum(1 for j in gap if {(template(seq[j]["key"]), k) for k in pair} & recurs))
+  if every and all(len(v) == 1 for v in every.values()) and any(len(v) > 1 for v in kept.values()):
+    recurs |= {(t, k) for t, k, _ in seen if t in between}
   for i, l in enumerate(layers):
     lo = layers[i - 1]["last"] + 1 if i else 0
     hi = layers[i + 1]["first"] if i + 1 < len(layers) else len(seq)
@@ -262,8 +275,8 @@ def assign(groups:list[dict[str, Any]], rows:list[dict[str, Any]], *, units:int,
   flat = not kinds or not any(g["kind"] not in ("flat", "tail") for g in groups)
   splits = [{}] if flat else _kind_splits(rows, kinds, units)
   best: dict[str, Any] = {"score": (-1, 0.0), "placed": [], "unplaced": [], "nodes": 0, "ambiguous": None}
-  for split in splits:  # one node budget over every split
-    items = _items(rows, kinds, units, outputs if outputs is not None else units, split, flat, prune)
+  for split, carry in itertools.product(splits, _carriers(rows, prune)):  # one node budget over every split
+    items = _items(rows, kinds, units, outputs if outputs is not None else units, split, flat, prune, carry)
     got = _search(items, groups, bandwidth_gbs, peak_of, best["nodes"])
     best["nodes"] = got["nodes"]
     if got["score"] > best["score"]:
@@ -308,10 +321,25 @@ def _kind_splits(rows:list[dict[str, Any]], kinds:dict[str, int], units:int) -> 
   return out or [{}]
 
 
-def _items(rows, kinds, units, outputs, split, flat, prune=None) -> list[dict[str, Any]]:
+def _carriers(rows:list[dict[str, Any]], prune:dict[str, Any] | None) -> list[dict[str, str]]:
+  """Which format carries the pruned last layer, per role of the pruned stages held in several formats (a mixed quant
+  per layer: each format runs in some layers only, and the last layer is one of them); every way, for the walk to try."""
+  formats: dict[str, list[str]] = collections.defaultdict(list)
+  for r in rows if prune else []:
+    if "head" not in stages(r) and stages(r) & set(prune["stages"]):
+      formats[r["role"]].append(r["quant"])
+  roles = sorted(x for x, q in formats.items() if len(q) > 1)
+  return [dict(zip(roles, combo)) for combo in itertools.product(*(formats[x] for x in roles))]
+
+
+def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> list[dict[str, Any]]:
   """One item per (row, kind) with its launches in the window and its sides; head rows on the tail; input-side rows
-  of one format and kind whose operations are within GAP_RATIO joined."""
+  of one format and kind whose operations are within GAP_RATIO joined. carry: {role: format} (_carriers), the format
+  whose row runs the pruned layer when the role's formats each run in some layers only."""
   items: list[dict[str, Any]] = []
+  per_role: dict[tuple[str, str], float] = collections.Counter()  # (role, kind) -> launches per layer over its formats
+  for (role, _, k), n in split.items():
+    per_role[(role, k)] += n / (kinds[k] * units)
   for r in rows:
     if "head" in stages(r):
       items.append({"row": r, "parts": [r], "need": r["count"] * outputs, "sides": {"flat"} if flat else {"tail"},
@@ -326,6 +354,8 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None) -> list[dict[st
         stg = stages(r, need / (kinds[k] * units))
         sides = {STAGE_SIDE.get(s) for s in stg} or {None}
         per_layer = need / (kinds[k] * units)
+        if (carry or {}).get(r["role"]) == r["quant"]:  # the role's formats share the layers: the last is this one's
+          per_layer = per_role[(r["role"], k)]
         if prune and k == prune["kind"] and stg and stg <= set(prune["stages"]) and per_layer == int(per_layer):
           need -= int(per_layer) * units  # the unit's last layer runs this row at output width: its own item
           items.append({"row": r, "parts": [r], "need": int(per_layer) * prune["units"], "kind": PRUNED, "stages": stg,
@@ -366,7 +396,6 @@ def _bind(items:list[dict[str, Any]], groups:list[dict[str, Any]]) -> tuple[dict
   every kind the template runs in. Among the ways the counts balance, the one skipping the fewest calls; none, or
   two such, bind nothing: the walk then binds a
   template when a row takes it (decode, where every kernel is a candidate)."""
-  import itertools
   fmt: dict[tuple[str, str], str] = {}
   ratios: dict[tuple[str, str], tuple[int, int]] = {}
   for scope in ({g["kind"] for g in groups if g["kind"] == "flat"}, {g["kind"] for g in groups if g["kind"] not in ("flat", "tail", PRUNED)}):
@@ -549,10 +578,16 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
           out[id(ia)] = (ia, found[-1])
           out[id(ib)] = (ib, found[-1])
     free = [g for g in groups if len(_avail(g, None)) == g["n"]]
+    key = lambda g: (g["kind"] if g["kind"] != "tail" else None, g["template"])  # noqa: E731
     for p in placed:
-      g = p["group"]
+      g, q = p["group"], p["item"]["quant"]
+      # the walk prefers a template already serving the row's format (bound by the counts, or by another row): a
+      # free group is a twin only when the walk had no such reason to prefer the one taken, and the row fits it
+      serves = key(g) in bound or any(o is not p and key(o["group"]) == key(g) for o in placed)
       twin = next((f for f in free if f["kind"] == g["kind"] and f["side"] == g["side"] and f["n"] == len(p["launches"])
-                   and abs(f["median_us"] - g["median_us"]) <= 0.01 * g["median_us"]), None)
+                   and abs(f["median_us"] - g["median_us"]) <= 0.01 * g["median_us"]
+                   and (f["template"] == g["template"] or (fmt.get(key(f)) == q) == serves)
+                   and _fits(p["item"], f, p["fused"], p["split"], bandwidth_gbs, peak_of(f["template"]))), None)
       if twin is not None:
         found.append(f"{p['item']['role']} {p['item']['quant']} could have taken {twin['slot']} for {g['slot']}: equal launches and time")
         out[id(p["item"])] = (p["item"], found[-1])

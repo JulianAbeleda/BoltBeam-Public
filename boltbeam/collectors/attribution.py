@@ -106,7 +106,8 @@ def trace_rows(result:dict[str, Any], *, context:int, time_source:str) -> list[d
   roles share is one row per role, keyed with the role so the rows stay distinct."""
   return [{"scope": "kernel", "context": context, "kernel": g["key"] + (f" role={g['role']}" if g.get("shared_key") else ""),
            "calls": g["calls"], "wall_us": g["wall_us"], "role": g["role"], "quant": g["quant"],
-           "role_source": ROLE_SOURCE if g["role"] else None, "time_source": time_source} for g in result["groups"]]
+           "role_source": ROLE_SOURCE if g["role"] else None, "time_source": time_source,
+           **({"shape": g["shape"]} if g.get("shape") else {})} for g in result["groups"]]
 
 
 def agreement(by_bytes:dict[str, Any], by_metadata:dict[str, tuple[str | None, str | None]]) -> dict[str, Any]:
@@ -264,8 +265,9 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
         split.append(g)
         continue
       total = sum(p["weight_bytes"] for p in parts)
+      # each part keeps its shape: one role at two shapes (q in qkv_proj, o in o_proj) is two rows of the limit
       split += [{**g, "role": p["role"], "quant": p["quant"], "wall_us": g["wall_us"] * p["weight_bytes"] / total,
-                 "packed_as": g["role"]} for p in parts]
+                 "packed_as": g["role"], **({"shape": [1, *p["shape"]]} if p.get("shape") else {})} for p in parts]
     result["groups"] = split
   wall = sum(g["wall_us"] for g in window)
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": model_id, "target_id": target.target_id, "workload": "decode",

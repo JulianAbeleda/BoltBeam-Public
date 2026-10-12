@@ -140,42 +140,46 @@ def llama_formats(type_k:str | None, weights:set[str] | None = None) -> dict[str
 PROMPT_WORDS = {"llama.cpp": "llama-bench's own prompt: token ids drawn by std::rand() % n_vocab (never seeded: one fixed "
                             "sequence; each repetition draws new ids), the KV cache cleared before every repetition, so "
                             "nothing is cached between prompts"}
+COPIES = 3  # a capture's prefills at most: the engine's warm-up and two repetitions (llama_capture)
 MAX_CAPTURE_LAUNCHES = 1_000_000  # a capture estimated to hold more launches than this is not taken: its time stands alone
 
 
 def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0, extra:list[str] | None = None,
                   raw:pathlib.Path | None = None) -> dict[str, Any]:
-  """One prefill captured after the warm-up; at a depth, the depth filled then the prompt twice (llama-bench keeps
-  the filled cache for its second repetition), the last one measured (prefill_attribution.REPEAT). extra: llama_argv's;
+  """The prompt captured twice after the warm-up, the last one measured (prefill_attribution.REPEAT): llama-bench's
+  first repetition after its warm-up can carry a one-time host cost its later ones do not, and the untraced median it
+  is checked against leaves it out. At a depth, the depth filled then the prompt twice (llama-bench keeps the filled
+  cache for its second repetition). extra: llama_argv's;
   raw: the capture's folder, when a run holds more than one capture of one length at one depth."""
   from boltbeam.collectors import vendor_capture
   from boltbeam.collectors.prefill_attribution import REPEAT
   bench = _bench(run)
   raw = raw or run / RAW / (f"{length}-at-{depth}" if depth else str(length))
-  launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, 2 if depth else 1, depth=depth,
+  launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, 2, depth=depth,
                                                                extra=extra), raw)
   row = llama_row(vendor_capture.program_output(raw))
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1,
-          "warmup": REPEAT if depth else True, "formats": llama_formats(row.get("type_k"), weight_quants(run)),
+          "warmup": REPEAT, "copies": 2 if depth else COPIES, "formats": llama_formats(row.get("type_k"), weight_quants(run)),
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches),
           "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches),
           "measured_ms": float((row.get("samples_ns") or [row["avg_ns"]])[-1]) / 1e6,  # the repetition attributed
-          "prune": llama_prunes(launches, split_chunks(length, ub), -(-length // b) if b else 1, warmup=True)}
+          "prune": llama_prunes(launches, split_chunks(length, ub), -(-length // b) if b else 1, copies=2 if depth else COPIES)}
 
 
 LLAMA_PRUNED_STAGES = ("ffn_in", "ffn_out")  # llama.cpp keeps only the output rows (inp_out_ids) before the last FFN
 
 
-def llama_prunes(launches:list[dict[str, Any]], chunk:list[int], outputs:int, warmup:bool = True) -> dict[str, Any] | None:
+def llama_prunes(launches:list[dict[str, Any]], chunk:list[int], outputs:int, copies:int = 2) -> dict[str, Any] | None:
   """Whether this llama.cpp build ran its last layer's FFN on the output tokens only, from the capture: a prefill whose
   GEMV launches (one per output call is the head) outnumber its output calls ran the pruned layer as GEMVs. llama-bench
-  asks for one output token per call, at the end of the call's last chunk. None when the build does not prune."""
+  asks for one output token per call, at the end of the call's last chunk. copies: the prefills the capture holds.
+  None when the build does not prune."""
   from boltbeam.collectors.instruction_path import template
   from boltbeam.workflow.tie_out import GEMV_WORDS
   found = [template(l["key"]) for l in launches if any(w in str(l["key"]) for w in GEMV_WORDS)]
-  gemv = len(found) // (2 if warmup else 1)
+  gemv = len(found) // copies
   if gemv <= outputs:
     return None
   per_call = -(-len(chunk) // max(outputs, 1))
@@ -475,7 +479,8 @@ def engine_roles(roles:list[dict[str, Any]], matrices:Any) -> tuple[list[dict[st
                 f"{m['name']} ({' + '.join(sorted({r['role'] for r in found}))})",
                 "quant": "+".join(quants), "n": int(m["n"]), "k": int(m["k"]), "count": int(m["count"]),
                 "weight_bytes": sum(r["weight_bytes"] for r in found), "parts": [r["role"] for r in found],
-                "part_roles": [{"role": r["role"], "quant": r["quant"], "weight_bytes": r["weight_bytes"]} for r in found],
+                "part_roles": [{"role": r["role"], "quant": r["quant"], "weight_bytes": r["weight_bytes"], "shape": [r["n"], r["k"]]}
+                               for r in found],
                 "fine": [classify_tensor_role(f"{p}.weight", (1 << 20, int(m["k"]))).value for p in m["parts"]]})
   if any(left.values()):
     return roles, "the profile's roles (the engine's matrices do not cover " + ", ".join(
@@ -600,9 +605,9 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
       out["lengths"][str(length)] = {"not_captured": "the untraced prefill failed at this length (timing_trace.json)"}
       continue
     chunks = len(split_chunks(int(length), (truth_chunk.get(int(length)) or {}).get("size") or int(length)))
-    if per_chunk and 2 * per_chunk * chunks > MAX_CAPTURE_LAUNCHES:
-      say(f"prefill of {length} tokens: not captured (about {2 * per_chunk * chunks:,.0f} launches)")
-      out["lengths"][str(length)] = {"not_captured": f"about {2 * per_chunk * chunks:,.0f} launches with the warm-up, over "
+    if per_chunk and COPIES * per_chunk * chunks > MAX_CAPTURE_LAUNCHES:
+      say(f"prefill of {length} tokens: not captured (about {COPIES * per_chunk * chunks:,.0f} launches)")
+      out["lengths"][str(length)] = {"not_captured": f"about {COPIES * per_chunk * chunks:,.0f} launches with the warm-up, over "
                                                      f"{MAX_CAPTURE_LAUNCHES:,}: the untraced time, MFU and clock stand alone"}
       continue
     say(f"prefill of {length} tokens in the model{f' after {depth} in the cache' if depth else ''}: {provider}")
@@ -622,7 +627,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              formats=cap.get("formats"), cache=last_level_cache(target), depth=depth,
                              observed=cap["paths"].get("observed"), prune=cap.get("prune"))
     attr["end_to_end"] = tie_out.end_to_end(attr, truth_ms.get(int(length)))
-    per_chunk = len(cap["launches"]) / 2 / max(len(cap["chunk"]), 1) if cap["warmup"] else len(cap["launches"]) / max(len(cap["chunk"]), 1)
+    per_chunk = len(cap["launches"]) / cap.get("copies", 2 if cap["warmup"] else 1) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
                                    "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen,
                                    **({"measured_ms": cap["measured_ms"]} if cap.get("measured_ms") else {}),
