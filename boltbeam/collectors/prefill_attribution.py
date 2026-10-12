@@ -34,6 +34,7 @@ from boltbeam.workflow.tie_out import kind_of
 
 STEM_CHARS = 40  # a row named by its template is cut to this many characters; the trace keeps the whole name
 REPEAT = "repeat"  # measured_window: the capture ends in two identical turns (a session's turn, captured twice)
+PRUNED_NAME = ", last layer at output tokens"  # a pruned last layer's row (pairing.PRUNED), after its role's name
 UNPAIRED = "no ceiling: a matrix kernel no role could be paired with, so its work is not known"
 
 
@@ -80,7 +81,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                       program_roles:dict[str, dict[str, Any]] | None = None, untraced_ms:float | None = None,
                       warmup:bool | str = True, formats:dict[str, Any] | None = None,
                       cache:dict[str, float] | None = None, depth:int = 0,
-                      observed:dict[str, dict[str, int]] | None = None) -> dict[str, Any]:
+                      observed:dict[str, dict[str, int]] | None = None, prune:dict[str, Any] | None = None) -> dict[str, Any]:
   """The measured prefill split by role, attention and other kernels, each with operations, bytes, path and ceiling.
   roles: {role, quant, n, k, count (per chunk), weight_bytes (per launch), role_class or fine}. kernel_paths: template
   -> {path: sites}. outputs: the engine calls that each ended in an output (its last token's work, the output head, once
@@ -90,7 +91,9 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   the gaps are it less the busy time, never the profiled run's idle. formats: the engine adapter's {activations: {in,
   out}, kv, stream_k: template -> layout or None} (prefill.ENGINES); cache: the chip's last-level cache {bytes, gbs}.
   depth: tokens already in the cache (a session's turn), so attention's work counts every key the turn's tokens read.
-  observed: template -> {path: instructions} ncu saw a closed kernel execute (instruction_path.ncu_observe)."""
+  observed: template -> {path: instructions} ncu saw a closed kernel execute (instruction_path.ncu_observe). prune: the
+  engine adapter's {stages, outputs, words} when the engine runs its last layer's rows of those stages at the output
+  tokens only (pairing.pair): those launches are their own row, the role at output width."""
   formats = formats or {}
   acts = formats.get("activations")
   gemm = lambda m, n, k, wb: work.gemm(m, n, k, wb, acts)["bytes"]  # noqa: E731
@@ -140,10 +143,10 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   weight = {t["template"] for t in templates if t["path"]["status"] in ("one", "mixed", "not_found")
             and not t.get("attention") and not t.get("recurrent") and not any(id(l) in paired for l in t["launches"])}
   got = pairing.pair(shared, roles, kinds=kinds, widths=chunk_widths, outputs=outputs, candidate=weight.__contains__,
-                     bandwidth_gbs=bandwidth_gbs, peak_of=lambda t: _peak(by_t[t], peaks) if t in by_t else None)
+                     bandwidth_gbs=bandwidth_gbs, peak_of=lambda t: _peak(by_t[t], peaks) if t in by_t else None, prune=prune)
   per_item: dict[tuple, dict[str, Any]] = {}  # one row per role set, over every layer kind it ran in
   for p in got["placed"]:
-    key = tuple(sorted((x["role"], str(x["quant"])) for x in p["item"]["parts"]))
+    key = (tuple(sorted((x["role"], str(x["quant"])) for x in p["item"]["parts"])), p["item"]["kind"] == pairing.PRUNED)
     it = per_item.setdefault(key, {"item": p["item"], "launches": [], "templates": set(), "need": 0, "kinds": set()})
     it["launches"] += [(l, m / p["split"], p["fused"], p["split"]) for l, m, _, _ in p["launches"]]
     it["templates"].add(p["group"]["template"])
@@ -162,10 +165,12 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     us = sum(l["wall_us"] for l, _, _, _ in it["launches"])
     t = {"template": " + ".join(sorted(it["templates"])), "path": _merge_paths([by_t[x]["path"] for x in sorted(it["templates"])])}
     _, _, k0, r0 = it["launches"][0]
-    rows.append(_row(f"{item['role']} {item['quant']}", "role", t, calls, us, flops, nbytes, peaks, bandwidth_gbs, item["quant"],
+    pruned = item["kind"] == pairing.PRUNED
+    rows.append(_row(f"{item['role']} {item['quant']}{PRUNED_NAME if pruned else ''}", "role", t, calls, us, flops, nbytes, peaks, bandwidth_gbs, item["quant"],
                      roles=[(r["role"], r["quant"]) for r in parts], skipped=max(it["need"] * r0 // k0 - calls, 0),
                      tokens_per_call=sorted(m for _, m, _, _ in it["launches"])[calls // 2],
-                     **({"fused": k0} if k0 > 1 else {}), **({"split": r0} if r0 > 1 else {})))
+                     **({"fused": k0} if k0 > 1 else {}), **({"split": r0} if r0 > 1 else {}),
+                     **({"pruned_layer": prune.get("words")} if pruned and prune else {})))
   unpaired = [f"{u['item']['role']} {u['item']['quant']}: {u['reason']}" for u in got["unplaced"]]
   ambiguous = ({"reason": "; ".join(unpaired)} if unpaired else None) or got.get("ambiguous")
   others: dict[str, dict[str, Any]] = {}
@@ -206,7 +211,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
           "wall_source": "the untraced prefill (the engine's own timing slows its run)" if untraced_ms is not None else
                          "the captured prefill, first kernel to last", "busy_ms": busy, "gaps_ms": wall - busy,
           "overlap": overlap, "chunks": chunk_widths, "rows": sorted(rows, key=lambda r: -r["ms"]),
-          "ambiguous": ambiguous, "rule": got["words"], "structure": got["structure"],
+          "ambiguous": ambiguous, "rule": got["words"], "structure": got["structure"], "prune": prune,
           "templates": [{"template": t["template"], "calls": t["calls"], "ms": t["wall_us"] / 1000.0, "path": t["path"]}
                         for t in templates]}
 

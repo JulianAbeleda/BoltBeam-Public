@@ -22,6 +22,11 @@ output projection, the FFN. The block's kernels are the ones tie_out.kind_of nam
 Prefill and decode differ in the unit (a chunk of M tokens; a token, M = 1) and in which launches are weight launches
 (the caller's `candidate`). The tail of a unit (after its last layer: the head, sampling) pairs at M = 1 by bytes.
 A window with no launch times, or no block kernel named, pairs the flat way: counts per unit, bytes and time, no sides.
+
+An engine may prune its last layer (the engine adapter says so, `prune`): the rows of the pruned stages run in every
+layer but the unit's last at the unit's width, and in the last layer at its output tokens only, as kernels the other
+layers never launch (a GEMV). A pruned row's work is so split: its layers less one at every token, and one layer at
+output width, in the units that had output tokens; those small launches are that row at output width (side PRUNED).
 """
 from __future__ import annotations
 
@@ -52,6 +57,7 @@ RULE = ("the block kernels (attention, recurrent) mark the layers; the launches 
 FLAT_RULE = ("no layer structure (no launch times, or no attention or recurrent kernel named): a role takes kernel groups "
              "whose launches per unit are its count, or 1/k of them for a fused kernel, within the bandwidth; more bytes per "
              "launch is more time per launch; rows that could exchange their groups are left unpaired and said")
+PRUNED = "pruned"  # the side and kind of a pruned last layer's launches (`prune`)
 _RANK = {s: i for i, s in enumerate(("in", "gate", "out", "ffn_in", "ffn_out", "head"))}
 
 
@@ -246,8 +252,8 @@ def _fits(item:dict[str, Any], g:dict[str, Any], k:int, r:int, bandwidth_gbs:flo
 
 def assign(groups:list[dict[str, Any]], rows:list[dict[str, Any]], *, units:int, outputs:int | None = None,
            kinds:dict[str, int] | None = None, bandwidth_gbs:float | None = None,
-           peak_of:Callable[[str], float | None] = lambda t: None) -> dict[str, Any]:
-  """Rows to slot groups (_groups or flat_groups). rows: {role, quant, count (per unit), weight_bytes (per call),
+           peak_of:Callable[[str], float | None] = lambda t: None, prune:dict[str, Any] | None = None) -> dict[str, Any]:
+  """Rows to slot groups (_groups or flat_groups). prune: {stages, kind, units} (pair's): the pruned layer's rows. rows: {role, quant, count (per unit), weight_bytes (per call),
   nk (n x k; None at M = 1), role_class or fine}. outputs: the calls that ended in an output (the head's launches per
   window; the units when None). Returns {"placed": [{item, group, fused, split}], "unplaced": [{item, reason}],
   "nodes", "ambiguous", "words"}. The assignment placing the most weight bytes wins; among
@@ -257,7 +263,7 @@ def assign(groups:list[dict[str, Any]], rows:list[dict[str, Any]], *, units:int,
   splits = [{}] if flat else _kind_splits(rows, kinds, units)
   best: dict[str, Any] = {"score": (-1, 0.0), "placed": [], "unplaced": [], "nodes": 0, "ambiguous": None}
   for split in splits:  # one node budget over every split
-    items = _items(rows, kinds, units, outputs if outputs is not None else units, split, flat)
+    items = _items(rows, kinds, units, outputs if outputs is not None else units, split, flat, prune)
     got = _search(items, groups, bandwidth_gbs, peak_of, best["nodes"])
     best["nodes"] = got["nodes"]
     if got["score"] > best["score"]:
@@ -302,7 +308,7 @@ def _kind_splits(rows:list[dict[str, Any]], kinds:dict[str, int], units:int) -> 
   return out or [{}]
 
 
-def _items(rows, kinds, units, outputs, split, flat) -> list[dict[str, Any]]:
+def _items(rows, kinds, units, outputs, split, flat, prune=None) -> list[dict[str, Any]]:
   """One item per (row, kind) with its launches in the window and its sides; head rows on the tail; input-side rows
   of one format and kind whose operations are within GAP_RATIO joined."""
   items: list[dict[str, Any]] = []
@@ -320,6 +326,10 @@ def _items(rows, kinds, units, outputs, split, flat) -> list[dict[str, Any]]:
         stg = stages(r, need / (kinds[k] * units))
         sides = {STAGE_SIDE.get(s) for s in stg} or {None}
         per_layer = need / (kinds[k] * units)
+        if prune and k == prune["kind"] and stg and stg <= set(prune["stages"]) and per_layer == int(per_layer):
+          need -= int(per_layer) * units  # the unit's last layer runs this row at output width: its own item
+          items.append({"row": r, "parts": [r], "need": int(per_layer) * prune["units"], "kind": PRUNED, "stages": stg,
+                        **_facts(r), "slack": 0, "sides": {PRUNED}})
         items.append({"row": r, "parts": [r], "need": need, "kind": k, "stages": stg, **_facts(r),
                       "slack": min(int(per_layer) * units, need - 1) if kinds[k] > 1 else 0,
                       "sides": {s for s in ("input", "output") if None in sides or s in sides}})
@@ -338,7 +348,7 @@ def _items(rows, kinds, units, outputs, split, flat) -> list[dict[str, Any]]:
     out.append(it)
   def order(i):  # output-side rows in the data flow's order, then the rest most bytes first (they bind their templates'
     stage = _output_stage(i)  # formats for the lighter rows after them); the head last
-    rank = 2 if "head" in i["stages"] else 0 if stage else 1
+    rank = 2 if "head" in i["stages"] else 1.5 if i["kind"] == PRUNED else 0 if stage else 1
     return (rank, OUTPUT_ORDER.index(stage) if stage else 0, -(i["weight_bytes"] * i["need"]), i["role"])
   out.sort(key=order)
   return out
@@ -359,7 +369,7 @@ def _bind(items:list[dict[str, Any]], groups:list[dict[str, Any]]) -> tuple[dict
   import itertools
   fmt: dict[tuple[str, str], str] = {}
   ratios: dict[tuple[str, str], tuple[int, int]] = {}
-  for scope in ({g["kind"] for g in groups if g["kind"] == "flat"}, {g["kind"] for g in groups if g["kind"] not in ("flat", "tail")}):
+  for scope in ({g["kind"] for g in groups if g["kind"] == "flat"}, {g["kind"] for g in groups if g["kind"] not in ("flat", "tail", PRUNED)}):
     if not scope:
       continue
     launches: dict[str, set] = collections.defaultdict(set)
@@ -425,7 +435,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
   min_out: dict[str, int] = collections.Counter()
   min_in: dict[str, int] = collections.Counter()
   for it in items:
-    if it["kind"] is None:
+    if it["kind"] in (None, PRUNED):
       continue
     if it["sides"] == {"output"}:
       min_out[it["kind"]] += 1
@@ -646,17 +656,20 @@ class _TooMany(Exception):
 def pair(launches:list[dict[str, Any]], rows:list[dict[str, Any]], *, kinds:dict[str, int], widths:list[int],
          outputs:int | None = None, candidate:Callable[[str], bool] = lambda t: True, bandwidth_gbs:float | None = None,
          peak_of:Callable[[str], float | None] = lambda t: None,
-         flat:list[dict[str, Any]] | None = None) -> dict[str, Any]:
+         flat:list[dict[str, Any]] | None = None, prune:dict[str, Any] | None = None) -> dict[str, Any]:
   """The whole walk: structure, then assign; the flat way when the window has no structure (said in "structure").
-  widths: each unit's M (a chunk's tokens; 1 per decode token). flat: kernel groups for a window with no launches."""
+  widths: each unit's M (a chunk's tokens; 1 per decode token). flat: kernel groups for a window with no launches.
+  prune: the engine adapter's {stages, outputs: output tokens per unit, kernels} when it prunes the last layer (_pruned)."""
   units = len(widths)
   try:
     if flat is not None:
       raise NoStructure("kernel groups without launches")
     st = structure(launches, kinds=kinds, units=units, candidate=candidate)
-    groups, words = _groups(st, widths), {k: dict(v) for k, v in st["sides"].items()}
-    got = assign(groups, rows, units=units, outputs=outputs, kinds=kinds, bandwidth_gbs=bandwidth_gbs, peak_of=peak_of)
-    got["structure"] = {"layers": len(st["layers"]), "units": units, "sides": words, "flat": None}
+    cut, small = _pruned(st, prune) if prune else (None, [])
+    groups, words = _groups(st, widths) + small, {k: dict(v) for k, v in st["sides"].items()}
+    got = assign(groups, rows, units=units, outputs=outputs, kinds=kinds, bandwidth_gbs=bandwidth_gbs, peak_of=peak_of, prune=cut)
+    got["structure"] = {"layers": len(st["layers"]), "units": units, "sides": words, "flat": None,
+                        **({"pruned": {"stages": list(cut["stages"]), "offered": sum(g["n"] for g in small)}} if cut else {})}
   except NoStructure as exc:
     m = sum(widths) / max(units, 1)
     groups = flat_groups(flat, m) if flat is not None else flat_groups(_by_key(launches), m)
@@ -665,6 +678,32 @@ def pair(launches:list[dict[str, Any]], rows:list[dict[str, Any]], *, kinds:dict
     got = assign(groups, rows, units=units, outputs=outputs, kinds={}, bandwidth_gbs=bandwidth_gbs, peak_of=peak_of)
     got["structure"] = {"layers": 0, "units": units, "sides": {}, "flat": str(exc)}
   return got
+
+
+def _pruned(st:dict[str, Any], prune:dict[str, Any]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+  """The pruned last layer's small launches: in the tail of each unit with output tokens (every launch after its last
+  layer's block), the launches of the kernels the adapter counted (prune's kernels) that no other part of the window
+  launches. They become slot groups of side
+  PRUNED, one per position, at the unit's output tokens; the tail keeps them too, so the head still pairs there (a
+  launch is taken once, and the bandwidth and peak checks keep a row off a launch that cannot be its). None when there
+  are none."""
+  seq, outs = st["seq"], prune.get("outputs") or []
+  mine = {j for u, t in enumerate(st["tail"]) if u < len(outs) and outs[u] for j in t}
+  others = {template(l["key"]) for j, l in enumerate(seq) if j not in mine}
+  kernels = set(prune.get("kernels") or {template(seq[j]["key"]) for j in mine})
+  out: dict[int, dict[str, Any]] = {}
+  for u, width in enumerate(outs):
+    small = [j for j in (st["tail"][u] if width and u < len(st["tail"]) else []) if template(seq[j]["key"]) not in others
+             and template(seq[j]["key"]) in kernels]
+    for p, j in enumerate(small):
+      g = out.setdefault(p, {"kind": PRUNED, "side": PRUNED, "slot": p, "template": template(seq[j]["key"]), "launches": []})
+      if g["template"] == template(seq[j]["key"]):
+        g["launches"].append((seq[j], width, None, None))
+  if not out:
+    return None, []
+  per = len(st["layers"]) // max(st["units"], 1)
+  cut = {"stages": tuple(prune["stages"]), "kind": st["layers"][per - 1]["kind"], "units": sum(1 for w in outs if w)}
+  return cut, [_finish(g) for g in out.values()]
 
 
 def _by_key(launches:list[dict[str, Any]]) -> list[dict[str, Any]]:

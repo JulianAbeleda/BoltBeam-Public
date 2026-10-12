@@ -161,7 +161,28 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches),
           "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches),
-          "measured_ms": float((row.get("samples_ns") or [row["avg_ns"]])[-1]) / 1e6}  # the repetition attributed
+          "measured_ms": float((row.get("samples_ns") or [row["avg_ns"]])[-1]) / 1e6,  # the repetition attributed
+          "prune": llama_prunes(launches, split_chunks(length, ub), -(-length // b) if b else 1, warmup=True)}
+
+
+LLAMA_PRUNED_STAGES = ("ffn_in", "ffn_out")  # llama.cpp keeps only the output rows (inp_out_ids) before the last FFN
+
+
+def llama_prunes(launches:list[dict[str, Any]], chunk:list[int], outputs:int, warmup:bool = True) -> dict[str, Any] | None:
+  """Whether this llama.cpp build ran its last layer's FFN on the output tokens only, from the capture: a prefill whose
+  GEMV launches (one per output call is the head) outnumber its output calls ran the pruned layer as GEMVs. llama-bench
+  asks for one output token per call, at the end of the call's last chunk. None when the build does not prune."""
+  from boltbeam.collectors.instruction_path import template
+  from boltbeam.workflow.tie_out import GEMV_WORDS
+  found = [template(l["key"]) for l in launches if any(w in str(l["key"]) for w in GEMV_WORDS)]
+  gemv = len(found) // (2 if warmup else 1)
+  if gemv <= outputs:
+    return None
+  per_call = -(-len(chunk) // max(outputs, 1))
+  out = [1 if (u + 1) % per_call == 0 or u + 1 == len(chunk) else 0 for u in range(len(chunk))]
+  return {"stages": list(LLAMA_PRUNED_STAGES), "outputs": out, "kernels": sorted(set(found)),
+          "words": (f"{gemv} GEMV launches per prefill against {outputs} output call(s): the last layer's FFN runs on "
+                    "the output tokens only (llama.cpp's inp_out_ids), in the chunk that ends each call")}
 
 
 def weight_quants(run:pathlib.Path) -> set[str]:
@@ -599,7 +620,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              program_roles=cap.get("program_roles"), warmup=cap["warmup"],
                              untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
                              formats=cap.get("formats"), cache=last_level_cache(target), depth=depth,
-                             observed=cap["paths"].get("observed"))
+                             observed=cap["paths"].get("observed"), prune=cap.get("prune"))
     attr["end_to_end"] = tie_out.end_to_end(attr, truth_ms.get(int(length)))
     per_chunk = len(cap["launches"]) / 2 / max(len(cap["chunk"]), 1) if cap["warmup"] else len(cap["launches"]) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
