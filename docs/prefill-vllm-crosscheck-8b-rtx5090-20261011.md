@@ -148,7 +148,14 @@ refused for "kernel code not found" were recomputed with the path from the kerne
 - Resolved in vLLM: gate_up_proj, down_proj, qkv_proj and o_proj, all bf16 from the kernel name.
 - Resolved in llama.cpp: attn_qo and attn_kv.
 - Still refused in llama.cpp: the grouped `ffn_down + ffn_gate_up` row. Its bf16 ceiling would be above its
-  measured time, so the guard refuses it. Its pairing is the likely fault. It is open.
+  measured time, so the guard refuses it.
+  - Cause (2026-10-11, from the saved trace): the clock, not the pairing. The pairing is consistent: 420 calls are
+    3 matrices x 36 layers x 4 chunks, less 12 skipped. The row does 21.65 TFLOP in 102.8 ms, 210.5 TFLOPS. The
+    peaks were scaled to 2,231 MHz, the whole llama-bench process's mean with its model load (lowest sample
+    225 MHz): bf16 193.8 TFLOPS. At the probe's own clock the bf16 peak is 251.5 TFLOPS. The row runs at 84% of it.
+  - The 27B crosscheck's item 8 fixed that clock: a llama.cpp capture now reads the clock over its kernels only.
+    This capture predates that fix and has no raw export left, so it is not re-attributed. A new 8B BF16 capture
+    would show the row paired with a ceiling.
 - The "before" column counts no compute ceiling for the refused rows. That is why it is far below the table above,
   which assumed bf16 by hand. vLLM's "after" figures are above that table's (76.6 at 512) because they use each
   capture's own clock.

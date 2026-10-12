@@ -202,7 +202,8 @@ Bytes per token per row (the decode work), from each run's profile:
    - At 512 the capture now reads 2,940 MHz, where the whole process averaged 1,041 MHz.
 
 Still open:
-- The deep llama.cpp prefill captures of the replay leave `mul_mat_q` unpaired, and the deep decode capture leaves
+- (Prefill part fixed 2026-10-11: chunks of different widths were clustered together. See the replay doc's Open
+  section. The decode part needs one capture.) The deep llama.cpp prefill captures of the replay leave `mul_mat_q` unpaired, and the deep decode capture leaves
   the FFN gate and up roles unpaired (docs/replay-27b-rtx5090-20261011.md). The kernel-name rule does not touch
   that pairing.
 - The work model does not count the chunked delta rule's extra arithmetic.

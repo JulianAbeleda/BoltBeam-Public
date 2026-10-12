@@ -54,7 +54,7 @@ PAIRING_RULE = ("a template named as attention or recurrent (tie_out.kind_of) do
                 "a shared template with a matrix instruction serves roles of one weight format whose launches per chunk sum to its own, less at most one "
                 "layer's launches per chunk and never all of a role's (the engine skipping rows it does not need), at no more operations per "
                 "second than its path's measured peak and no faster read of its roles' weights than the memory's bandwidth (a kernel whose code "
-                "was not read may take roles so, its ceiling refused); within it, duration clusters follow the roles' operations per "
+                "was not read may take roles so, its ceiling refused); within it, and within each chunk width, duration clusters follow the roles' operations per "
                 "launch, a smaller launch never faster per operation than a larger one beyond the cluster gap (it may be slower: it fills fewer units); roles with equal operations are one row; the assignment placing the most roles wins, then the one leaving the fewest matrix kernels unpaired, then the one pairing the most kernel time; among tied ones, only the roles every one places the same way are paired")
 
 
@@ -104,6 +104,23 @@ def _clusters(durations:list[float], k:int) -> list[list[float]] | None:
   return out
 
 
+def chunk_of(keys:list[str], chunks:int) -> list[int] | None:
+  """Each launch's chunk, from a window of `chunks` chunks that run one kernel sequence each: the period L at which
+  the sequence repeats longest (the last chunk may differ near its end: the rows its last layer skips, the output head),
+  launch i in chunk min(i // L, chunks - 1). None when no period holds every chunk but the last whole and at least
+  half of the last."""
+  if chunks <= 1:
+    return [0] * len(keys)
+  n, best = len(keys), None
+  # every chunk runs the same graph whatever its width, so the period is near n / chunks (the last chunk may run a
+  # few launches more, the output head, or fewer); starting below that keeps clear of one layer's period
+  for period in range(max(1, int(0.75 * n / chunks)), n // (chunks - 1) + 1):
+    match = next((i for i in range(n - period) if keys[i] != keys[i + period]), n - period)
+    if match >= (chunks - 2) * period + max(1, (n - (chunks - 1) * period) // 2) and (best is None or match > best[1]):
+      best = (period, match)
+  return None if best is None else [min(i // best[0], chunks - 1) for i in range(n)]
+
+
 def role_groups(roles:list[dict[str, Any]]) -> list[dict[str, Any]]:
   """Roles of one format whose operations per launch are within GAP_RATIO of each other, joined: time cannot tell
   them apart (ffn_gate_up and ffn_down are the same N x K turned around)."""
@@ -122,24 +139,32 @@ def role_groups(roles:list[dict[str, Any]]) -> list[dict[str, Any]]:
   return out
 
 
-def split(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int) -> list[list[float]] | None:
-  """The template's launch durations cut into one cluster per role row, in the order of their operations, each
-  holding that row's launches (its count per chunk times the chunks, less at most its skip), and one kernel's rate:
+def split(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int) -> list[list[dict[str, Any]]] | None:
+  """The template's launches cut by duration into one cluster per role row, in the order of their operations, each
+  holding that row's launches (its count per chunk times the chunks, less at most its skip), within each class of
+  chunks of one width (tmpl["classes"]; a chunk of fewer tokens runs every launch shorter), and one kernel's rate:
   a cluster's operations per launch over its median time is never over GAP_RATIO times that of a cluster with more
   operations per launch (a smaller launch fills fewer of the GPU's units, so it may run slower, never faster); None
   if they do not."""
-  parts = _clusters(tmpl["durations"], len(groups))
-  if parts is None:
-    return None
   ordered = sorted(groups, key=lambda g: g["nk"])
-  for g, p in zip(ordered, parts):
-    if not (g["count"] - g["skip"]) * chunks <= len(p) <= g["count"] * chunks:
+  classes = tmpl.get("classes") if tmpl.get("classes") and sum(c["chunks"] for c in tmpl["classes"]) == chunks else \
+    [{"chunks": chunks, "launches": tmpl["launches"]}]
+  out: list[list[dict[str, Any]]] = [[] for _ in ordered]
+  for c in classes:  # chunks of one width launch alike; a narrower chunk's launches are shorter, so cut apart
+    parts = _clusters([l["raw_wall_us"] for l in c["launches"]], len(groups))
+    if parts is None:
       return None
-  rates = [sum(r["n"] * r["k"] * r["count"] for r in g["roles"]) / g["count"] / max(statistics.median(p), 1e-9)
-           for g, p in zip(ordered, parts)]
-  if any(rates[i] > GAP_RATIO * rates[j] for i in range(len(rates)) for j in range(i + 1, len(rates))):
-    return None
-  return parts
+    edges = [max(p) for p in parts]
+    for g, p in zip(ordered, parts):
+      if not (g["count"] - g["skip"]) * c["chunks"] <= len(p) <= g["count"] * c["chunks"]:
+        return None
+    rates = [sum(r["n"] * r["k"] * r["count"] for r in g["roles"]) / g["count"] / max(statistics.median(p), 1e-9)
+             for g, p in zip(ordered, parts)]
+    if any(rates[i] > GAP_RATIO * rates[j] for i in range(len(rates)) for j in range(i + 1, len(rates))):
+      return None
+    for l in c["launches"]:
+      out[next(i for i, e in enumerate(edges) if l["raw_wall_us"] <= e)].append(l)
+  return out
 
 
 def m_splits(groups:list[dict[str, Any]], tmpl:dict[str, Any], chunks:int, mean_m:float) -> int:
@@ -342,9 +367,16 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     t["calls"] += 1
     t["wall_us"] += l["wall_us"]
   templates = sorted(by_t.values(), key=lambda t: -t["wall_us"])
+  if len(set(chunk_widths)) > 1:  # chunks of different widths: each launch's chunk, from the repeating sequence
+    ids = chunk_of([template(l["key"]) for l in ordered], chunks)
+    where = {id(l): c for l, c in zip(ordered, ids or [])}
+    for t in templates:
+      if ids is not None:
+        t["classes"] = [{"width": w, "chunks": chunk_widths.count(w),
+                         "launches": [l for l in t["launches"] if chunk_widths[where[id(l)]] == w]}
+                        for w in sorted(set(chunk_widths))]
   for t in templates:
     t["path"] = kernel_path(t["name"], kernel_paths)
-    t["durations"] = sorted(l["raw_wall_us"] for l in t["launches"])
     t["attention"] = kind_of({"kernel": t["name"]}) == "attention"  # attention's work is its own row, never a role's
     t["recurrent"] = kind_of({"kernel": t["name"]}) == "recurrent"  # so is a recurrent block's scan and convolution
   rows: list[dict[str, Any]] = []
@@ -394,10 +426,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     gs = sorted(role_groups(rs), key=lambda g: g["nk"])
     p = m_splits(gs, t, chunks, mean_m)
     parts, m = split(gs, t, chunks * p), mean_m / p
-    edges = [max(p) for p in parts]
     for gi, g in enumerate(gs):
-      lo = edges[gi - 1] if gi else -1.0
-      mine = [l for l in t["launches"] if lo < l["raw_wall_us"] <= edges[gi]]
+      mine = parts[gi]
       calls = len(mine)
       for l in mine:
         shapes[id(l)] = [(r, r["count"] / g["count"]) for r in g["roles"]]
