@@ -34,6 +34,17 @@ nsys --version
 Without it BoltBeam still runs: the roles are then timed with its own kernel timer (the generic measurement) and the
 report says so.
 
+### Optional: ncu for closed kernels
+
+Nsight Compute (`ncu`) can say which matrix instructions a closed kernel executed (a library that ships no readable
+code). BoltBeam runs it only when `BOLTBEAM_NCU=1` is set and the driver lets a normal user read the counters.
+Nothing else needs it.
+
+- Check: `grep RmProfilingAdminOnly /proc/driver/nvidia/params` must show `0`.
+- To open them, put `options nvidia NVreg_RestrictProfilingToAdminUsers=0` in
+  `/etc/modprobe.d/nvidia-profiling.conf`, then reload the driver or reboot. The open-kernel driver reads this name;
+  the older parameter name is ignored.
+
 ## 3. llama.cpp with CUDA
 
 llama.cpp is the default engine. Build it with CUDA from a checkout; BoltBeam reads its `llama-bench` and, for the
@@ -125,6 +136,7 @@ object.
 ## 8. The GPU must be free
 
 A measurement on a GPU that another program holds gives slower numbers that look real. Before a run, BoltBeam asks
-`nvidia-smi` which programs hold the GPU and refuses to measure while any does. Stop a resident model server (for
+`nvidia-smi` which programs hold the GPU, with each one's pid, name and memory, and refuses to measure while any
+does. BoltBeam's own process and the measurement processes it starts do not count. Stop a resident model server (for
 example one started with `systemctl --user stop <unit>`) for the measurement, and start it again after. The engine
 scan never touches the GPU; `doctor` is safe to run at any time.

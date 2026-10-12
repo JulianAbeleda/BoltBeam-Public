@@ -151,7 +151,20 @@ Bytes per token per row (the decode work), from each run's profile:
   - It is 20% faster in tok/s, at the same 77% of its roofline.
 - The vLLM 27B decode capture failed BoltBeam's tie-out guard. nsys counted 12.74 ms of GPU time per token
   against 11.47 ms of wall time per token. So it has no per-kernel decode table here. Its untraced time and the
-  limit stand. This is open work: likely overlapping streams in vLLM's hybrid decode that the guard counts twice.
+  limit stand.
+  - Cause (2026-10-11, from the saved capture): not overlapping streams. The union of kernel intervals equals
+    their sum in both captures (0 µs overlap). The decode steps themselves run 11.44 ms apart with 11.25 ms busy.
+    The long run's start-up runs some kernels more times than the short run's (a warm-up and graph capture sized
+    by the token count). A per-kernel difference of the two captures counted those launches as decode: 52.9 ms
+    over 31 tokens. The heaviest GEMM also runs at start-up at start-up clocks, so subtracting the short run's
+    total carried that noise in too.
+  - Fix (`attribution.difference`, `shared_window`): a kernel's extra launches are its latest launches in the long
+    capture, timed as they ran. A kernel whose extra launches all ran before the step both captures made is
+    start-up, and is left out (`startup_us`). The overlap is reported as its own figure (`overlap_us`). The guard
+    is unchanged.
+  - After: 11.03 ms of GPU time per token against 11.47 ms, so the capture is a measurement. lm_head, ffn_gate_up
+    and ssm_alpha_beta pair. The packed Marlin GEMMs (qkv, z, o, down) do not. Decode pairing uses the profile's
+    roles, not the engine's packed matrices as prefill does (`prefill.engine_roles`). That is open.
 
 ## What BoltBeam got wrong, and the fixes in this change
 
@@ -202,12 +215,15 @@ Bytes per token per row (the decode work), from each run's profile:
    - At 512 the capture now reads 2,940 MHz, where the whole process averaged 1,041 MHz.
 
 Still open:
-- (Prefill part fixed 2026-10-11: chunks of different widths were clustered together. See the replay doc's Open
-  section. The decode part needs one capture.) The deep llama.cpp prefill captures of the replay leave `mul_mat_q` unpaired, and the deep decode capture leaves
-  the FFN gate and up roles unpaired (docs/replay-27b-rtx5090-20261011.md). The kernel-name rule does not touch
-  that pairing.
-- The work model does not count the chunked delta rule's extra arithmetic.
-- The vLLM 27B decode tie-out guard failure, above.
+- (Fixed 2026-10-11, see the replay doc's Open section.) The deep llama.cpp prefill captures of the replay leave
+  `mul_mat_q` unpaired, and the deep decode capture leaves the FFN gate and up roles unpaired.
+- The chunked delta rule's extra arithmetic (2026-10-11): the ceiling still counts the work the model needs,
+  7 x S^2 x H per token per layer, the same on every engine. The recurrent row now also carries
+  `executed_flops`: the arithmetic of the algorithm the engine adapter names (`prefill_work.RECURRENT_FORMS`,
+  the chunked WY form, chunk 64, about 6 x S^2 + 10 x C x S per token per head). At 512 tokens on the 27B that is
+  4.43e9 per layer against the model's 2.82e9. ncu counted 7.72e9 matrix operations per layer in the delta-rule
+  kernels (1.74 times the formula). So the formula is a floor on what the kernels execute.
+- The vLLM 27B decode tie-out guard failure, above (fixed; the packed-matrix decode pairing is open).
 - For a model folder, the decode probe says "the model file is gone" (measure_status.json probe_reason). The
   probe looks for a file, not a folder. It did not block the run.
 

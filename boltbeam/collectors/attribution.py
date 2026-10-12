@@ -1,8 +1,9 @@
 """Which model role each captured GPU kernel ran for, from bytes and launch counts, for any provider.
 
 A capture from outside the provider (nsys, rocprofv3, metal-system-trace) sees kernels, not roles. Kernel names
-differ per provider and per build, so this module never reads them: a name is only an opaque key that groups
-launches of one program (with its launch geometry, when the capture has it).
+differ per provider and per build, so this module reads them for one thing only: the kind words the tie-out already
+uses for the attention and recurrent rows (tie_out.kind_of), whose kernels serve no weight role. Otherwise a name
+is only an opaque key that groups launches of one program (with its launch geometry, when the capture has it).
 
 Two facts tie a kernel group to a role:
   calls per token   each role runs `count` times per token (model_profile.json roles). A group's launches over
@@ -42,22 +43,24 @@ ROLE_SOURCE = "attributed_by_bytes_and_count"
 PEAK_SLACK = 1.05  # the registry's peak is a measured figure; a kernel may beat it by measurement noise only
 COUNT_TOLERANCE = 0.02  # launches per token must be this close to a whole number
 MAX_FUSED = 3  # a kernel may serve at most this many of one role's calls (gate and up fused: 2)
+BLOCKS = ("attention", "recurrent")  # kernels tie_out.kind_of names so serve no weight role
 
 
 def groups(launches:Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
   """Sum launches by their identity key: {"key", "calls", "wall_us"}. A launch row may already carry calls."""
   out: dict[str, dict[str, Any]] = {}
   for l in launches:
-    g = out.setdefault(str(l["key"]), {"key": str(l["key"]), "calls": 0, "wall_us": 0.0, "launches": []})
+    g = out.setdefault(str(l["key"]), {"key": str(l["key"]), "calls": 0, "wall_us": 0.0, "launches": [], "starts": []})
     g["calls"] += int(l.get("calls", 1))
     g["wall_us"] += float(l["wall_us"])
     if "calls" not in l:  # one launch: its own duration (for clusters) and its share of the busy time
       g["launches"].append((float(l.get("raw_wall_us", l["wall_us"])), float(l["wall_us"])))
+      g["starts"].append(l.get("start_us"))
   return list(out.values())
 
 
 MAX_NODES = 200_000  # pairings the walk may visit before the table is refused as too many to tell apart
-PAIRING_RULE = ("a role takes a kernel group that runs its count of times per token, or 1/k of them for a fused kernel "
+PAIRING_RULE = ("a kernel named as attention or recurrent (tie_out.kind_of) serves no role; a role takes a kernel group that runs its count of times per token, or 1/k of them for a fused kernel "
                 f"moving k calls' bytes (k up to {MAX_FUSED}), at no more than the chip's peak bandwidth; among groups with "
                 "one launch count, more bytes per launch is more time per launch; the assignment that places the most "
                 "roles wins, then the one with the fewest fused kernels, then the walk's order (more bytes first, an exact "
@@ -72,12 +75,16 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
   assemble() from the groups left and their duration clusters."""
   known = sorted([{**r, "count": int(counts[(r["role"], r["quant"])]), "bytes_per_call": r["bytes_moved"] / counts[(r["role"], r["quant"])]}
                   for r in roles if counts.get((r["role"], r["quant"]))], key=lambda r: -r["bytes_per_call"])
+  from boltbeam.workflow.tie_out import kind_of
   rows = []
   for g in kernel_groups:
     cpt = g["calls"] / tokens
     whole = round(cpt)
-    rows.append({**g, "calls_per_token": cpt, "count": whole if whole and abs(cpt - whole) <= COUNT_TOLERANCE * whole
-                 else None, "us_per_call": g["wall_us"] / g["calls"], "role": None, "quant": None})
+    # an attention or recurrent block's kernel does that block's work, never a weight role's (the prefill's rule):
+    # deep in a context attention runs longer per call than a GEMV, so it would fit a role by count and bytes
+    block = kind_of({"kernel": g["key"]}) in BLOCKS
+    rows.append({**g, "calls_per_token": cpt, "count": None if block else whole if whole and abs(cpt - whole) <= COUNT_TOLERANCE * whole
+                 else None, "us_per_call": g["wall_us"] / g["calls"], "role": None, "quant": None, "block": block})
   choice, ambiguous = _pairing(known, [_candidates(r, rows, peak_gbs) for r in known], rows)
   pairs = []
   for i, (gi, k) in sorted(choice.items()):
@@ -207,7 +214,7 @@ def assemble(rows:list[dict[str, Any]], left:list[dict[str, Any]], tokens:int,
   import itertools
   smallest = min(r["bytes_per_call"] for r in left)
   pieces = []
-  for g in [g for g in rows if g["role"] is None]:
+  for g in [g for g in rows if g["role"] is None and not g.get("block")]:
     parts = split_clusters(g, tokens) or [{**g, "parent": g["key"], "cluster": None}]
     for part in parts:  # a piece too fast to move even the smallest role's bytes is not weight work
       if not peak_gbs or smallest / (part["us_per_call"] * 1e3) <= peak_gbs * PEAK_SLACK:
@@ -321,19 +328,46 @@ def shared_window(long:list[dict[str, Any]], short:list[dict[str, Any]]) -> tupl
   long_s, lo = share_overlap(long)
   short_s, so = share_overlap(short)
   window = difference(groups(long_s), groups(short_s))
-  return window, {"rule": OVERLAP_RULE, "long_sum_us": lo["sum_us"], "long_union_us": lo["union_us"],
-                  "short_sum_us": so["sum_us"], "short_union_us": so["union_us"]}
+  facts = {"rule": OVERLAP_RULE, "long_sum_us": lo["sum_us"], "long_union_us": lo["union_us"],
+           "short_sum_us": so["sum_us"], "short_union_us": so["union_us"],
+           "overlap_us": lo["sum_us"] - lo["union_us"]}
+  # the extra tokens run last. A kernel whose extra launches all ran before the step both captures made (the
+  # heaviest kernel's last launch before its extra ones) differs only in the engine's start-up (a warm-up sized
+  # by the token count, graph capture): not decode work, though a per-kernel difference would count it
+  heavy = max(window, key=lambda g: g["wall_us"], default=None)
+  edge = heavy.get("before_us") if heavy else None
+  if edge is not None:
+    kept = [g for g in window if g.get("from_us") is None or g["from_us"] > edge]
+    facts.update(startup_us=sum(g["wall_us"] for g in window) - sum(g["wall_us"] for g in kept),
+                 window_rule="a kernel's extra launches are its latest; those that all ran before the step both "
+                             "captures made are the engine's start-up, not decode")
+    return kept, facts
+  return window, facts
 
 
 def difference(long:list[dict[str, Any]], short:list[dict[str, Any]]) -> list[dict[str, Any]]:
-  """Kernel groups of the long capture minus the short one, per key: the work only the extra tokens did."""
+  """Kernel groups of the long capture minus the short one, per key: the work only the extra tokens did. The extra
+  tokens run last, so with launch times a key's extra calls are its latest launches in the long capture, timed as
+  they ran: an engine's start-up may run the same kernel many times at start-up clocks, and subtracting the short
+  capture's total would carry that start-up's run-to-run noise into the window. Without times, the totals are
+  subtracted."""
   base = {g["key"]: g for g in short}
   out = []
   for g in long:
     b = base.get(g["key"], {"calls": 0, "wall_us": 0.0})
-    calls, us = g["calls"] - b["calls"], g["wall_us"] - b["wall_us"]
+    calls = g["calls"] - b["calls"]
+    timed = g.get("launches") or []
+    if calls > 0 and len(timed) == g["calls"] and None not in (g.get("starts") or [None]):
+      every = sorted(range(len(timed)), key=lambda i: g["starts"][i])
+      order = every[-calls:]
+      latest = [timed[i] for i in order]
+      out.append({"key": g["key"], "calls": calls, "wall_us": sum(sh for _, sh in latest), "launches": latest,
+                  "short_launches": [], "from_us": g["starts"][order[0]],
+                  "before_us": g["starts"][every[-calls - 1]] if len(every) > calls else None})
+      continue
+    us = g["wall_us"] - b["wall_us"]
     if calls > 0 and us > 0:
-      out.append({"key": g["key"], "calls": calls, "wall_us": us, "launches": g.get("launches") or [],
+      out.append({"key": g["key"], "calls": calls, "wall_us": us, "launches": timed,
                   "short_launches": b.get("launches") or []})
   return out
 
@@ -370,7 +404,9 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
   manifest = load_manifest(run)
   profile = _optional(run, "model_profile.json")
-  ceil = _measured_vs_ceiling(manifest, profile, pathlib.Path(run))
+  # a decode capture is paired with the decode ceiling's bytes whatever the run's workload (a replay, a session):
+  # any other workload reads the prefill block, whose role bytes are not one decode token's
+  ceil = _measured_vs_ceiling({**manifest, "workload": "decode"}, profile, pathlib.Path(run))
   check_window(window, method=method, tokens=tokens, token_ms=token_ms, long_kernels=long_kernels,
                band=max(float(ceil.get("band") or 0.0), 0.01))
   counts = {(r["role"], r["quant"]): int(r["count"]) for r in profile.get("roles", []) if r.get("count")}

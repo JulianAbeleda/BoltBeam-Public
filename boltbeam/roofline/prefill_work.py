@@ -112,6 +112,32 @@ def recurrent(profile:dict[str, Any], length:int, chunks:list[int] | None = None
                    f"channels" if width else "")}
 
 
+# The arithmetic an engine's recurrent kernels execute, when its adapter names the algorithm they run. The ceiling
+# stays the work the model needs (recurrent(): the same on every engine); this is a separate, labelled figure.
+# Per token per head, state S, chunk C. The chunked WY form of the delta rule (Yang et al., "Parallelizing Linear
+# Transformers with the Delta Rule over Sequence Length", 2024) builds each chunk's WY factors and intra-chunk
+# attention (about 10 C S) besides the state's read, update and output (about 6 S^2).
+RECURRENT_FORMS: dict[str, tuple[str, Any]] = {
+  "chunked_wy": ("the chunked WY form of the delta rule", lambda s, c: 6.0 * s * s + 10.0 * c * s),
+}
+
+
+def recurrent_executed(profile:dict[str, Any], length:int, form:dict[str, Any] | None) -> dict[str, Any] | None:
+  """The recurrent scan's executed operations under the engine's named algorithm (form: {"name", "chunk"}), over its
+  layers, with its words; None when no form is named, the name is not in RECURRENT_FORMS, or there is no recurrent
+  block."""
+  r = (profile.get("metadata") or {}).get("recurrent") or {}
+  layers, state, inner = r.get("layer_count"), r.get("state_size"), r.get("inner_size")
+  if not (form and form.get("name") in RECURRENT_FORMS and layers and state and inner):
+    return None
+  words, per = RECURRENT_FORMS[form["name"]]
+  chunk = int(form.get("chunk") or 0)
+  heads = inner // state
+  return {"flops": float(layers * heads * length * per(state, chunk)),
+          "words": f"executed by {words}, chunk {chunk}: about 6 x {state}^2 + 10 x {chunk} x {state} operations per "
+                   f"token per head, {heads} heads, {layers} layers (the ceiling counts the model's 7 x {state}^2)"}
+
+
 FP32_PATH = "fp32_fma"  # the measured vector path (cuda_compute.PATHS) a kernel with no matrix instruction runs on
 
 

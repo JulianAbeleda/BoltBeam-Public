@@ -388,7 +388,11 @@ def vllm_formats(weights:set[str]) -> dict[str, Any]:
   auto), GEMMs writing that type; no stream-k fixups."""
   fmt = next(iter(weights)) if len(weights) == 1 else "BF16"
   return {"activations": {"in": fmt, "out": fmt}, "attention_activations": {"in": fmt, "out": fmt}, "kv": fmt,
+          "recurrent_form": VLLM_RECURRENT_FORM,
           "words": f"{fmt.lower()} activations in and out, attention and the KV cache in {fmt.lower()} (dtype auto)"}
+
+
+VLLM_RECURRENT_FORM = {"name": "chunked_wy", "chunk": 64}  # vLLM's prefill runs the gated delta rule chunked (WY), chunk 64
 
 
 def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, Any]:
@@ -401,11 +405,27 @@ def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, A
   chunk = vllm_chunk(length, line)
   tools = pathlib.Path(vd.python() or "").parent.parent
   bins = sorted(tools.glob("lib/python*/site-packages/nvidia/*/bin"))
+  paths = library_paths([pathlib.Path(p) for p in line.get("libraries") or []], launches,
+                        tools=bins[0] if bins else None, jit_caches=line.get("jit_caches"))
   return {"launches": launches, "chunk": chunk["widths"], "outputs": chunk["outputs"], "warmup": False,
           "formats": vllm_formats(weight_quants(run)), "method": vendor_capture.plan(target.backend)["method"],
           "matrices": line.get("matrices"), "captured_ms": line["wall_s"] * 1e3, "window": line.get("window_monotonic"),
-          "paths": library_paths([pathlib.Path(p) for p in line.get("libraries") or []], launches,
-                                 tools=bins[0] if bins else None, jit_caches=line.get("jit_caches"))}
+          "paths": observe_closed(argv, {**env, **vd.CAPTURE_ENV}, raw, launches, paths, tools=bins[0] if bins else None)}
+
+
+def observe_closed(argv:list[str], env:dict[str, str], raw:pathlib.Path, launches:list[dict[str, Any]],
+                   paths:dict[str, Any], tools:pathlib.Path | None = None) -> dict[str, Any]:
+  """paths with "observed": what ncu saw the kernels whose code was not read execute, when asked for
+  (instruction_path.NCU_ENV) and the counters are open to this user; paths unchanged otherwise."""
+  import os
+  from boltbeam.collectors import instruction_path as ip
+  closed = {ip.template(l["key"]) for l in launches} - set(paths["kernels"])
+  if os.environ.get(ip.NCU_ENV) != "1" or not closed or not ip.counters_open() or not gpu_arch():
+    return paths
+  tool = str(tools / "nvdisasm") if tools and (tools / "nvdisasm").is_file() else shutil.which("nvdisasm")
+  sigs = ip.sass_signatures(gpu_arch(), nvdisasm=tool)
+  got = ip.ncu_observe(argv, env, raw / "ncu", closed, sigs)
+  return {**paths, "observed": got["kernels"], "observed_how": got["how"]}
 
 
 def engine_roles(roles:list[dict[str, Any]], matrices:Any) -> tuple[list[dict[str, Any]], str]:
@@ -575,7 +595,8 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              peaks=peaks, bandwidth_gbs=bw, profile=profile, length=int(length),
                              program_roles=cap.get("program_roles"), warmup=cap["warmup"],
                              untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
-                             formats=cap.get("formats"), cache=last_level_cache(target), depth=depth)
+                             formats=cap.get("formats"), cache=last_level_cache(target), depth=depth,
+                             observed=cap["paths"].get("observed"))
     per_chunk = len(cap["launches"]) / 2 / max(len(cap["chunk"]), 1) if cap["warmup"] else len(cap["launches"]) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
                                    "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen,

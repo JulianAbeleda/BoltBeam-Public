@@ -108,7 +108,8 @@ The weight GEMM rows of both BF16 runs use the bf16 path. cuBLAS hides that code
      matrices only when they cover every profile role's work exactly.
 4. **cuBLAS kernels have no readable code.** The cutlass GEMMs vLLM and llama.cpp BF16 run come from libcublasLt,
    which ships neither PTX nor an extractable cubin for them. cuobjdump finds the name only in the host binary. ncu
-   could read them, but needs admin profiling rights (RmProfilingAdminOnly=1).
+   could read them, but needs admin profiling rights (RmProfilingAdminOnly=1). Since 2026-10-11 the box's counters
+   are open and ncu reads them: see [ncu-instruction-mix-27b-rtx5090-20261011.md](ncu-instruction-mix-27b-rtx5090-20261011.md).
    - Fix: such a kernel may still take a role by count and time, so its work is counted. Its ceiling is refused,
      named "kernel code not found".
    - Two physical rules keep it honest. A kernel cannot read the role's weights faster than the measured

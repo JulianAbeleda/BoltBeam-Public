@@ -247,9 +247,12 @@ FROM_NAME = "from the kernel name"
 # A closed kernel's matrix path from its name: (pattern, path or None for no matrix instruction, the source that
 # documents it). First match wins. Only for kernels whose code was not read; code always wins over a name.
 NAME_PATHS: tuple[tuple[str, str | None, str], ...] = (
-  (r"delta_rule_cp_sm\d+CPDeltaRule(?:TPrecompute|MNPrecompute|Prefill|FixupHmma)Sm\d+", "fp16",
-   "FlashInfer 0.7.0.post1 gdn_kernels/delta_rule_dsl/delta_rule_cp_sm120.py lines 436, 872, 2074 and 3837: "
-   "warp.MmaF16BF16Op(dtype, Float32, (16, 8, 16)), fp16 or bf16 in with fp32 accumulate (one measured rate, within 0.1%)"),
+  (r"delta_rule_cp_sm\d+CPDeltaRule(?:TPrecompute|MNPrecompute|Prefill)Sm\d+", "bf16",
+   "FlashInfer 0.7.0.post1 gdn_kernels/delta_rule_dsl/delta_rule_cp_sm120.py lines 436, 872 and 2074: "
+   "warp.MmaF16BF16Op(dtype, Float32, (16, 8, 16)) in the model's dtype; ncu on a bf16 model (2026-10-11) saw "
+   "HMMA.16816.F32.BF16 (TPrecompute also about 16% fp16 m16n8k16/k8); fp16 runs at the same measured rate"),
+  (r"delta_rule_cp_sm\d+CPDeltaRuleFixupHmmaSm\d+", "tf32",
+   "ncu (2026-10-11): the HMMA fixup executes HMMA.1688.F32.TF32 only, tf32 in with fp32 accumulate"),
   (r"delta_rule_cp_sm\d+CPDeltaRuleFixupSimtSm\d+", None,
    "FlashInfer 0.7.0.post1 delta_rule_cp_sm120.py line 2463: the SIMT fixup, no MMA atom"),
   (r"(?:tensorop|xmma|gemm)\w*?(?:e4m3|e5m2)", "fp8", "CUTLASS and cuBLASLt names carry an fp8 element type (e4m3, e5m2)"),
@@ -276,12 +279,16 @@ def name_path(name:str) -> dict[str, Any] | None:
   return None
 
 
-def kernel_path(name:str, table:dict[str, dict[str, int]]) -> dict[str, Any]:
+def kernel_path(name:str, table:dict[str, dict[str, int]], observed:dict[str, dict[str, int]] | None = None) -> dict[str, Any]:
   """The path of one captured kernel: {"path", "paths", "status", "words"}. status: one (one matrix path), mixed
   (several: each path's share of the operations at its own peak, prefill_work.compute_ms), none (no matrix instruction: bytes only), not_found (refused).
-  Code read from the kernel decides; only a kernel whose code was not read takes a path from its name (name_path)."""
+  Code read from the kernel decides; a kernel whose code was not read takes the path ncu saw it execute (observed,
+  ncu_observe), else a path from its name (name_path)."""
   key = template(name)
   paths = table.get(key)
+  if paths is None and observed and key in observed:
+    got = kernel_path(name, {key: observed[key]})
+    return {**got, "words": f"{got['words']} ({FROM_NCU})", "from_ncu": True}
   if paths is None:
     return name_path(name) or {"path": None, "paths": {}, "status": "not_found", "words": f"{NOT_FOUND} for {key[:80]}"}
   known = {p: n for p, n in paths.items() if not p.startswith("unknown:")}
@@ -293,3 +300,76 @@ def kernel_path(name:str, table:dict[str, dict[str, int]]) -> dict[str, Any]:
     p = next(iter(known))
     return {"path": p, "paths": known, "status": "one", "words": p}
   return {"path": None, "paths": known, "status": "mixed", "words": " + ".join(sorted(known))}
+
+
+# --- ncu: the instructions a closed kernel executed (optional; needs the GPU's counters open to this user) ----------
+# BoltBeam works without it: code, then names, decide. ncu only answers for kernels whose code was not read, and what
+# it saw is folded back into NAME_PATHS by hand (docs/ncu-instruction-mix-*.md), so the name route learns from it.
+
+FROM_NCU = "observed by ncu"
+NCU_ENV = "BOLTBEAM_NCU"  # set to 1 to run ncu on a capture's closed kernels
+
+
+def ncu_entries(lines:Iterable[str]) -> dict[str, dict[str, int]]:
+  """{kernel name: {matrix opcode: warp instructions executed}} from `ncu -i R --page source --print-source sass
+  --csv`: one "Kernel Name" line per profiled launch, then its SASS lines; launches of one name are summed."""
+  import csv
+  out: dict[str, dict[str, int]] = {}
+  cur, col = None, None
+  for row in csv.reader(lines):
+    if len(row) >= 2 and row[0] == "Kernel Name":
+      cur, col = row[1], None
+      out.setdefault(cur, {})
+    elif cur is not None and col is None and "Source" in row and "Instructions Executed" in row:
+      col = (row.index("Source"), row.index("Instructions Executed"))
+    elif cur is not None and col is not None and len(row) > max(col) and "MMA" in row[col[0]]:
+      n = int(float(row[col[1]] or 0))
+      for op in _SASS_MMA.findall(row[col[0]]):
+        out[cur][op] = out[cur].get(op, 0) + n
+  return out
+
+
+def ncu_table(entries:dict[str, dict[str, int]], signatures:dict[str, str]) -> dict[str, dict[str, int]]:
+  """{template: {path: instructions executed}}: each executed opcode mapped by the probe's own (sass_signatures),
+  one it does not know as unknown:OPCODE; a kernel that executed no matrix instruction has {}."""
+  out: dict[str, dict[str, int]] = {}
+  for name, ops in entries.items():
+    got = out.setdefault(template(name), {})
+    for op, n in ops.items():
+      if n:
+        p = signatures.get(op) or f"unknown:{op}"
+        got[p] = got.get(p, 0) + n
+  return out
+
+
+def counters_open(params:str = "/proc/driver/nvidia/params") -> bool:
+  """Whether this user may read the GPU's performance counters (the driver's RmProfilingAdminOnly is 0)."""
+  try:
+    return "RmProfilingAdminOnly: 0" in pathlib.Path(params).read_text()
+  except OSError:
+    return False
+
+
+def ncu_observe(argv:list[str], env:dict[str, str] | None, out:pathlib.Path, templates:set[str],
+                signatures:dict[str, str], *, ncu:str | None = None, launches:int = 200) -> dict[str, Any]:
+  """The program run once under ncu (its profiler range only), the launches of the named templates profiled for
+  their executed SASS (SourceCounters), at most `launches` of them: {"kernels": ncu_table, "how"}."""
+  import os
+  tool = ncu or shutil.which("ncu")
+  if not tool or not templates:
+    return {"kernels": {}, "how": "ncu not run"}
+  out.mkdir(parents=True, exist_ok=True)
+  names = "|".join(re.escape(t.split("<", 1)[0].split("::")[-1]) for t in sorted(templates))
+  rep = out / "ncu"
+  proc = subprocess.run([tool, "--profile-from-start", "off", "--section", "SourceCounters", "--kernel-name",
+                         f"regex:{names}", "--launch-count", str(launches), "-f", "-o", str(rep), *argv],
+                        capture_output=True, text=True, timeout=7200, env={**os.environ, **(env or {})})
+  (out / "ncu.log").write_text(proc.stdout + proc.stderr)
+  if proc.returncode != 0 or not rep.with_suffix(".ncu-rep").exists():
+    raise RuntimeError(f"ncu exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
+  csv_text = subprocess.run([tool, "-i", str(rep.with_suffix(".ncu-rep")), "--page", "source", "--print-source", "sass",
+                             "--csv"], capture_output=True, text=True, timeout=3600).stdout
+  table = ncu_table(ncu_entries(csv_text.splitlines()), signatures)
+  return {"kernels": {t: p for t, p in table.items() if t in templates},
+          "how": "ncu SourceCounters: the SASS each closed kernel executed, its matrix opcodes mapped to the probe's paths"}
+
