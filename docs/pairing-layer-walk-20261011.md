@@ -106,6 +106,24 @@ time the role rows hold.
   rows while vLLM launches one packed qkv product. No pairing of them is right. d8-vllm leaves attn_kv unpaired
   where the old search left attn_qo; the four other rows pair. d27-vllm is refused as ambiguous before and after;
   the walk withdraws the rows it cannot tell apart (5 unpaired against 2).
+- Fresh 27B vLLM decode capture (2026-10-12, d1bd988, one run): the capture now carries vLLM's matrix list, and
+  every role pairs. `unpaired_roles` is empty and the run is not ambiguous. The packed products pair as
+  in_proj_qkvz and qkv_proj, and their time splits into their roles by weight bytes. Decode 85.94 tok/s (85.6
+  before). Tie-out: 11.025 ms of kernels plus 0.407 ms of gaps = 11.432 ms per token captured, against 11.635 ms
+  untraced. The per-role capture attended context 145; the headline is at context 512. Evidence:
+  ~/env/boltbeam-runs/.work/vllm-27b-decode-fresh-20261012/.
+
+  | role | ms/token | limit ms/token |
+  |---|---|---|
+  | ffn_gate_up | 3.849 | 3.503 |
+  | ffn_down | 1.945 | 1.751 |
+  | lm_head | 1.624 | 1.502 |
+  | attn_qkv | 0.869 | 0.773 |
+  | ssm_out | 0.620 | 0.464 |
+  | attn_qo | 0.571 | 0.464 |
+  | attn_gate | 0.522 | 0.464 |
+  | ssm_alpha_beta | 0.186 | 0.028 |
+  | attn_kv | 0.061 | 0.052 |
 
 ## Rules the replay added
 
