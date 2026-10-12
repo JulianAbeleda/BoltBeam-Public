@@ -31,7 +31,7 @@ from boltbeam.workflow import tie_out as tie
 PER = "per session"
 TITLE = "The replay: one row per turn"
 COLUMNS = ("turn", "prefix", "cache", "new", "recomputed", "TTFT ms", "prompt ms", "overhead ms", "reply", "decode tok/s",
-           "ceiling ms", "% of roofline", "clock", "flags")
+           "ceiling ms", "chip best ms", "% of roofline", "clock", "flags")
 UNSAID = 1 << 30  # the chunk of a server that does not say it: the whole turn in one call
 MIN_SAMPLES = 5  # a turn's own clock needs this many telemetry samples; fewer: the run's mean, said
 LOST = (("prefill_above", "prefill above its ceiling"), ("recompute", "recompute after a cache miss"),
@@ -99,6 +99,7 @@ def turn_ceilings(s:dict[str, Any], r:dict[str, Any], run_mhz:float | None) -> d
   steps = max(r["predicted_n"] - 1, 0)
   decode = steps * decode_ms_per_token(s, r["prefix"] + r["predicted_n"] / 2)
   return {"done_ms": done["ms"], "needed_ms": needed["ms"], "decode_ms": decode, "roofline_ms": needed["ms"] + decode,
+          "best_ms": needed["best_ms"] + decode,  # decode is bytes at the bandwidth on every path
           "clock_mhz": mhz, "clock_from": "the turn" if own else "the run's mean", "peaks_clock": words,
           "unmodelled": done["unmodelled"]}
 
@@ -135,7 +136,8 @@ def table(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
                      "cells": [str(r["i"]), f"{r['prefix']:,}", f"{r['cache_n']:,}", f"{r['needed']:,}", f"{r['recomputed']:,}",
                                f"{r['ttft_ms']:.0f}", f"{r['prompt_ms']:.0f}", f"{r['overhead_ms']:.0f}", str(r["predicted_n"]),
                                f"{r['decode_tok_s']:.1f}" if r.get("decode_tok_s") else "-",
-                               f"{c['roofline_ms']:.0f}" if c else "-", f"{pct:.0f}%" if pct is not None else "-",
+                               f"{c['roofline_ms']:.0f}" if c else "-", f"{c['best_ms']:.0f}" if c else "-",
+                               f"{pct:.0f}%" if pct is not None else "-",
                                f"{c['clock_mhz']:.0f}" if c and c.get("clock_mhz") else "-", " ".join(flags)]})
   head = headline(out_rows, rows, trace, s)
   warm = [x for x in out_rows if not x["turn"]["cold"]] or out_rows
@@ -143,6 +145,7 @@ def table(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   total = ["warm", "", f"{sum(x['turn']['cache_n'] for x in warm):,}", f"{tot('needed'):,}", f"{tot('recomputed'):,}",
            f"{tot('ttft_ms'):,.0f}", f"{tot('prompt_ms'):,.0f}", f"{tot('overhead_ms'):,.0f}", f"{tot('predicted_n'):,}", "",
            f"{head['roofline_ms']:,.0f}" if head.get("roofline_ms") is not None else "-",
+           f"{sum(x['ceiling']['best_ms'] for x in warm):,.0f}" if all(x["ceiling"] for x in warm) else "-",
            f"{head['e_pct']:.0f}%" if head.get("e_pct") is not None else "-", "", ""]
   stopped = next((r for r in rows if r["scope"] == "stopped"), None)
   src = (trace.get("replay_trace") or {}).get("source") or {}
@@ -150,8 +153,9 @@ def table(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
            f"server command, prompt cache on: {next((r.get('request') for r in rows if r['scope'] == 'server'), '')}. "
            "prefix: every token the turn's prompt holds; cache: what the cache supplied; new: the tokens the turn added; "
            "recomputed: tokens the cache held last turn and the server processed again; overhead: TTFT less prompt ms; "
-           "ceiling: the turn's roofline at its clock (prefill of the new tokens plus decode); % of roofline: ceiling over "
-           "the turn's time, send to last token."]
+           "ceiling: the turn's roofline at its clock (prefill of the new tokens plus decode) on the engine's paths; chip "
+           "best: the same work with each prefill row on the chip-best path for its weights (prefill_work.chip_best); % of "
+           "roofline: ceiling over the turn's time, send to last token."]
   if stopped:
     words.append(f"Stopped at turn {stopped['i']}: {stopped['reason']}.")
   if not s:
@@ -282,16 +286,18 @@ def decode_where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | Non
   if not got or got.get("status") != "measured":
     return {"status": "unmeasured", "words": f"Decode at {d['context']:,}: unmeasured: {(got or {}).get('reason') or 'no attributed rows'}"}
   kv_ms = (s["kv_per_token"] * d["context"] + 2 * s["state_bytes"]) / (s["bandwidth_gbs"] * 1e9) * 1e3
-  rows = [[f"{r['role']} {r['quant']}", f"{r['actual_ms']:.3f}", f"{r['ideal_ms']:.3f}", f"{r['lost_ms']:+.3f}"] for r in got["roles"]]
-  rows.append(["attention, state and the rest (no role)", f"{got['not_attributed_ms']:.3f}", f"{kv_ms:.3f}",
+  rows = [[f"{r['role']} {r['quant']}", f"{r['actual_ms']:.3f}", f"{r['ideal_ms']:.3f}", f"{r['ideal_ms']:.3f}", f"{r['lost_ms']:+.3f}"]
+          for r in got["roles"]]
+  rows.append(["attention, state and the rest (no role)", f"{got['not_attributed_ms']:.3f}", f"{kv_ms:.3f}", f"{kv_ms:.3f}",
                f"{got['not_attributed_ms'] - kv_ms:+.3f}"])
   server = 1e3 / d["server_tok_s"] if d.get("server_tok_s") else None
   words = (f"One decode token at {d['context']:,} tokens, captured with llama-bench and the server's cache types: "
            f"{got['kernel_ms']:.2f} ms of kernels against a {limit:.2f} ms limit (the ledger, the KV cache and the state at "
-           f"this depth). ms at limit for a role is its bytes over the bandwidth; the last row's limit is the KV and state read.")
+           f"this depth). ms at limit for a role is its bytes over the bandwidth; the last row's limit is the KV and state read. "
+           "ms at chip best is the limit: no matrix path moves fewer bytes.")
   if server:
     words += f" The server's own decode at that turn: {server:.2f} ms per token."
-  return {"status": "measured", "title": f"Where a decode token goes at {d['context']:,}", "columns": ["row", "ms now", "ms at limit", "ms lost"],
+  return {"status": "measured", "title": f"Where a decode token goes at {d['context']:,}", "columns": ["row", "ms now", "ms at limit", "ms at chip best", "ms lost"],
           "rows": rows, "words": words}
 
 

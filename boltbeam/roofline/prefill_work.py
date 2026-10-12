@@ -253,6 +253,52 @@ def compute_ms(flops:float, paths:dict[str, int], peaks:dict[str, float]) -> flo
   return sum(flops * f / (peaks[p] * 1e12) for p, f in shares.items()) * 1e3
 
 
+# The matrix paths (cuda_compute.PATHS) that hold a weight format's values exactly and accumulate in fp32 or int32.
+# Integer weights of at most 8 bits (block quants, INTn) are exact as int8, fp16 or bf16 operands, their scales applied
+# outside the product; a float weight only on its own type. fp16 with fp16 accumulation, tf32 and fp8 round.
+FLOAT_WEIGHT_PATHS = {"F16": ("fp16",), "BF16": ("bf16",), "F32": (FP32_PATH,)}
+INTEGER_WEIGHT_PATHS = ("int8", "fp16", "bf16")
+CHIP_BEST_WORDS = ("ms at chip best is the same bytes at the bandwidth, with the operations at the fastest path this "
+                   "chip measured that holds the row's weights exactly (fp32 or int32 accumulate), or the engine's own "
+                   "path when that is faster")
+
+
+def weight_paths(fmt:str | None) -> tuple[str, ...]:
+  """The paths that hold a weight (or KV) format's values exactly; () for a format BoltBeam does not know."""
+  if not fmt:
+    return ()
+  name = str(fmt).upper()
+  q = load_quant_registry(activations=True).get(name)
+  if q is not None:
+    return FLOAT_WEIGHT_PATHS.get(name, ()) if q.dequant_family == "float_passthrough" else INTEGER_WEIGHT_PATHS
+  bits = name[3:].split("_")[0] if name.startswith("INT") else ""
+  return INTEGER_WEIGHT_PATHS if bits.isdigit() and int(bits) <= 8 else ()
+
+
+def chip_best(fmt:str | None, peaks:dict[str, float], own_peak:float | None = None) -> dict[str, Any] | None:
+  """THE chip-best path for a row's data: the fastest measured path that holds `fmt` exactly, or the row's own path
+  (own_peak) when that is faster, so the chip-best ceiling is never above the engine-path one. None when neither has
+  a measured peak. {"path", "peak_tflops"}."""
+  got = [(peaks[p], 1, p) for p in weight_paths(fmt) if peaks.get(p)]  # a named path wins a tie
+  if own_peak:
+    got.append((own_peak, 0, "the engine's own path"))
+  if not got:
+    return None
+  peak, _, path = max(got)
+  return {"path": path, "peak_tflops": peak}
+
+
+def best_ms(flops:float, nbytes:float, fmt:str | None, peaks:dict[str, float], bandwidth_gbs:float | None,
+            engine_ms:float | None, own_peak:float | None) -> tuple[float | None, str | None]:
+  """A row's chip-best ceiling and the path it names (None: the engine's own). It needs no engine path: a row whose
+  kernel's path is unknown still has one when its format has a measured path. Never above the engine's ceiling."""
+  b = chip_best(fmt, peaks, own_peak) if flops else None
+  if b is None or b["path"] == "the engine's own path":
+    return engine_ms, None
+  at = ceiling(flops, nbytes, b["peak_tflops"], bandwidth_gbs)["ms"]
+  return (min(at, engine_ms) if engine_ms is not None else at), b["path"]
+
+
 def effective_peak(paths:dict[str, int], peaks:dict[str, float]) -> float | None:
   """The peak the paths make together for this kernel's mix: operations over compute_ms."""
   ms = compute_ms(1e12, paths, peaks)
@@ -313,9 +359,13 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
   over one token: the output head); attention at the depth with its operations split over its paths by instruction
   sites; the recurrent block at the fp32 vector rate. Kernels the model counts no work for add nothing. roles:
   prefill.prefill_roles; formats: the engine's (activations, attention_activations, kv); weight_path: a weight quant's
-  matrix path in this engine; ubatch, batch: the engine's chunk and the tokens per output call."""
+  matrix path in this engine; ubatch, batch: the engine's chunk and the tokens per output call. Each row and the total
+  also carry best_ms, the same work at the chip-best path for the row's data (chip_best)."""
   if length <= 0:
-    return {"ms": 0.0, "rows": [], "unmodelled": []}
+    return {"ms": 0.0, "best_ms": 0.0, "rows": [], "unmodelled": []}
+
+  def best(row:dict[str, Any], fmt:str | None, own:float | None) -> dict[str, Any]:
+    return {**row, "best_ms": best_ms(row["flops"], row["bytes"], fmt, peaks, bandwidth_gbs, row["ms"], own)[0]}
   chunks = [min(ubatch, length - i) for i in range(0, length, ubatch)]
   outputs = -(-length // batch)
   acts = formats.get("activations")
@@ -329,19 +379,21 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
     peak = peaks.get(path) if path and not once else None
     if path and not once and peak is None:
       unmodelled.append(f"{r['role']} {r['quant']}: no measured peak for {path}")
-    rows.append({"name": f"{r['role']} {r['quant']}", "flops": flops, "bytes": nbytes, **ceiling(flops, nbytes, peak, bandwidth_gbs)})
+    row = {"name": f"{r['role']} {r['quant']}", "flops": flops, "bytes": nbytes, **ceiling(flops, nbytes, peak, bandwidth_gbs)}
+    rows.append(best(row, None if once else r["quant"], peak))
   att = attention(profile, length, chunks, formats.get("kv") or "F16", formats.get("attention_activations") or acts, depth=depth)
   if att:
     comp = compute_ms(att["flops"], attention_paths, peaks) if attention_paths else None
     if comp is None:
       unmodelled.append("attention: its instruction paths were not read, so only its bytes bound it")
-    rows.append({"name": "attention", "flops": att["flops"], "bytes": att["bytes"],
-                 **ceiling(att["flops"], att["bytes"], None, bandwidth_gbs, comp)})
+    row = {"name": "attention", "flops": att["flops"], "bytes": att["bytes"], **ceiling(att["flops"], att["bytes"], None, bandwidth_gbs, comp)}
+    rows.append(best(row, formats.get("kv") or "F16", effective_peak(attention_paths, peaks) if attention_paths else None))
   rec = recurrent(profile, length, chunks)
   if rec:
-    rows.append({"name": "recurrent", "flops": rec["flops"], "bytes": rec["bytes"],
-                 **ceiling(rec["flops"], rec["bytes"], peaks.get(rec["path"]), bandwidth_gbs)})
-  return {"ms": sum(r["ms"] or 0.0 for r in rows), "rows": rows, "unmodelled": unmodelled, "chunks": len(chunks),
+    row = {"name": "recurrent", "flops": rec["flops"], "bytes": rec["bytes"],
+           **ceiling(rec["flops"], rec["bytes"], peaks.get(rec["path"]), bandwidth_gbs)}
+    rows.append({**row, "best_ms": row["ms"]})  # its state's format is not a weight's: its own path
+  return {"ms": sum(r["ms"] or 0.0 for r in rows), "best_ms": sum(r["best_ms"] or 0.0 for r in rows), "rows": rows, "unmodelled": unmodelled, "chunks": len(chunks),
           "outputs": outputs}
 
 

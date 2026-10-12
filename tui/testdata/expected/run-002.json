@@ -174,10 +174,12 @@
       "unpaired_roles": [],
       "where_token_goes": {
         "base_ms": 57.903879559930516,
+        "best_ms": 48.304279176954736,
         "columns": [
           "row",
           "ms now",
           "ms at limit",
+          "ms at chip best",
           "ms lost",
           "share",
           "tok/s if fixed",
@@ -189,8 +191,10 @@
         "no_limit": "no limit",
         "rows": [
           {
+            "best_ms": 48.304279176954736,
             "cells": [
               "57.90",
+              "48.30",
               "48.30",
               "9.60",
               "100%",
@@ -211,6 +215,7 @@
           "= token",
           "57.90",
           "48.30",
+          "48.30",
           "9.60",
           "100%",
           "",
@@ -218,7 +223,7 @@
         ],
         "title": "Where the token goes",
         "token_ms": 57.903879559930516,
-        "words": "ms per token at context 128, worst first; tok/s if fixed is the 57.9 ms token (17.3 tok/s) less that row's lost ms."
+        "words": "ms per token at context 128, worst first; tok/s if fixed is the 57.9 ms token (17.3 tok/s) less that row's lost ms. ms at chip best is the limit: a token's limit is its bytes at the bandwidth, and no matrix path moves fewer."
       }
     },
     "measured": true,

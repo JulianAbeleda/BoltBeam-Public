@@ -46,6 +46,7 @@ REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slo
 # word for the readers that key on it (the HTML rule tables).
 NOISY = "{word}; noisy: {why}"
 from boltbeam.collectors.kernel_timer import NOISY_RULE
+from boltbeam.roofline.prefill_work import CHIP_BEST_WORDS
 
 NOISY_FLOOR = "{floor:.1f} µs floor under a {us:.1f} µs kernel"
 # an isolated row's rule time: its time less the dispatch floor, the figure that matched nsys per role on the 5090
@@ -406,7 +407,8 @@ REST_ROW = "other kernels, not named"  # kernel time no kind named
 # rows, so this row has no time now, a negative loss, and no tok/s if fixed: there is nothing to fix in it
 LIMIT_ROW = "limit of roles not split out"
 ESTIMATE_REST_ROW = "rest, not timed"  # attention, norms, launches and gaps: the token less the weight estimate
-WHERE_COLUMNS = ("row", "ms now", "ms at limit", "ms lost", "share", "tok/s if fixed", "% of peak")  # share: of all the ms lost
+WHERE_COLUMNS = ("row", "ms now", "ms at limit", "ms at chip best", "ms lost", "share", "tok/s if fixed",
+                 "% of peak")  # share: of all the ms lost
 
 
 def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -467,7 +469,8 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
   total = rank(rows, lambda r: 1000.0 / (base - r["lost_ms"]) if base - r["lost_ms"] > 0 and r["what"] != "limit" else None,
                "tok_s_if_fixed")
   words = [f"ms per token at context {tie['context']:.0f}, worst first; tok/s if fixed is the {base:.1f} ms token "
-           f"({1000.0 / base:.1f} tok/s) less that row's lost ms."]
+           f"({1000.0 / base:.1f} tok/s) less that row's lost ms. ms at chip best is the limit: a token's limit is "
+           "its bytes at the bandwidth, and no matrix path moves fewer."]
   if abs(base - token) > 1e-9:
     words.append(f"The rows sum to the {token:.1f} ms token the kernels were measured in ({tie.get('token_source')}); "
                  f"the headline token is {base:.1f} ms untraced.")
@@ -499,21 +502,25 @@ def rank(rows:list[dict[str, Any]], if_fixed, key:str) -> float:
 def table(title:str, columns:tuple[str, ...], rows:list[dict[str, Any]], *, now:float, limit:float, lost:float,
           no_limit:str, if_fixed:tuple[str, str], peak:tuple[str, str], sum_name:str, **fields:Any) -> dict[str, Any]:
   """A where table as every renderer reads it: the rows' numbers and, beside them, each row's cells as text in the
-  order of `columns` (after the row's name) and the sum row's cells. The text summary, the HTML report, the TUI and
-  Emit print the cells; none formats or recomputes a number."""
+  order of `columns` (after the row's name) and the sum row's cells. Each row has two ceilings: limit_ms, the engine's
+  own path (decode: the bytes at the bandwidth), and best_ms, the chip-best path for its data (prefill_work.chip_best;
+  the limit when the row has none). The text summary, the HTML report, the TUI and Emit print the cells; none formats
+  or recomputes a number."""
   f = lambda v, fmt: fmt.format(v) if v is not None else ""  # noqa: E731
   for r in rows:
-    r["cells"] = [f(r["now_ms"], "{:.2f}"), f(r["limit_ms"], "{:.2f}") or no_limit, f(r["lost_ms"], "{:.2f}"),
-                  f(None if r["share"] is None else 100 * r["share"], "{:.0f}%"), f(r.get(if_fixed[0]), if_fixed[1]),
-                  f(r.get(peak[0]), peak[1])]
-  return {"title": title, "lost_ms": lost, "columns": list(columns), "no_limit": no_limit, "rows": rows,
-          "sum_cells": [sum_name, f"{now:.2f}", f"{limit:.2f}", f"{lost:.2f}", "100%", "", ""], **fields}
+    r.setdefault("best_ms", r["limit_ms"])
+    r["cells"] = [f(r["now_ms"], "{:.2f}"), f(r["limit_ms"], "{:.2f}") or no_limit, f(r["best_ms"], "{:.2f}") or no_limit,
+                  f(r["lost_ms"], "{:.2f}"), f(None if r["share"] is None else 100 * r["share"], "{:.0f}%"),
+                  f(r.get(if_fixed[0]), if_fixed[1]), f(r.get(peak[0]), peak[1])]
+  best = sum(r["best_ms"] or 0.0 for r in rows)
+  return {"title": title, "lost_ms": lost, "columns": list(columns), "no_limit": no_limit, "rows": rows, "best_ms": best,
+          "sum_cells": [sum_name, f"{now:.2f}", f"{limit:.2f}", f"{best:.2f}", f"{lost:.2f}", "100%", "", ""], **fields}
 
 
 # --- where the prefill time goes: the same table, with each kernel's ceiling at its path's measured peak ------------
 
 PREFILL_TITLE = "Where the prefill time goes"
-PREFILL_COLUMNS = ("row", "ms now", "ms at ceiling", "ms lost", "share", "prefill ms if fixed", "MFU")
+PREFILL_COLUMNS = ("row", "ms now", "ms at engine path", "ms at chip best", "ms lost", "share", "prefill ms if fixed", "MFU")
 NO_CEILING = "no ceiling"  # a kernel with no operations or bytes the model knows (norms, quantize, copies): all its time is lost
 
 
@@ -526,7 +533,8 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   table). depth: a session's turn, `length` tokens appended after `depth` in the cache (collectors/session.py)."""
   if not attr or not attr.get("rows"):
     return None
-  rows = [{"name": r["name"], "what": r["what"], "now_ms": r["ms"], "limit_ms": r.get("ceiling_ms"), "mfu_pct": r.get("mfu_pct"),
+  rows = [{"name": r["name"], "what": r["what"], "now_ms": r["ms"], "limit_ms": r.get("ceiling_ms"),
+           "best_ms": r.get("best_ms", r.get("ceiling_ms")), "best_path": r.get("best_path"), "mfu_pct": r.get("mfu_pct"),
            "path": r.get("path"), "bound": r.get("bound"), "calls": r.get("calls"), "refused": r.get("refused"),
            "flops": r.get("flops"), "compute_ms": r.get("compute_ms"), "bytes": r.get("bytes"), "memory_ms": r.get("memory_ms"),
            "peak_tflops": r.get("peak_tflops"), "template": r.get("template")} for r in attr["rows"]]
@@ -538,9 +546,9 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   compute = sum(r.get("compute_ms") or 0.0 for r in rows)
   what = f"{length}-token turn after {depth} tokens in the cache" if depth else f"{length}-token prefill"
   words = [f"ms of one {what}, worst first; prefill ms if fixed is the {base:.1f} ms untraced prefill less "
-           "that row's lost ms. ms at ceiling is max(operations / the measured peak of the path the kernel's instructions "
-           f"use, bytes / bandwidth); MFU is operations over that peak for the row's time; {NO_CEILING}: the model "
-           "counts no work for the kernel, so all of its time is lost."]
+           "that row's lost ms. ms at engine path is max(operations / the measured peak of the path the kernel's "
+           f"instructions use, bytes / bandwidth); {CHIP_BEST_WORDS}. ms lost and MFU are against the engine path; "
+           f"{NO_CEILING}: the model counts no work for the kernel, so all of its time is lost."]
   unpaired = [r["name"] for r in rows if str(r.get("refused") or "").startswith("no ceiling: a matrix kernel")]
   if unpaired:
     words.append(f"{', '.join(unpaired)}: matrix kernels no role could be paired with ({attr.get('ambiguous', {}).get('reason') if attr.get('ambiguous') else 'their launches fit no role'}); "

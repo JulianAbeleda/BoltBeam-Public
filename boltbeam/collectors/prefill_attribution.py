@@ -134,7 +134,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     ts = slot["t"]
     t = {"template": " + ".join(x["template"] for x in ts), "path": _merge_paths([x["path"] for x in ts])}
     rows.append(_row(f"{role} {quant}", "role", t, slot["calls"], slot["us"], slot["flops"], slot["bytes"], peaks,
-                     bandwidth_gbs, roles=[(role, quant)], role_source="the engine's own program metadata (role, M, N, K)"))
+                     bandwidth_gbs, quant, roles=[(role, quant)], role_source="the engine's own program metadata (role, M, N, K)"))
   roles = [{**r, "nk": r["n"] * r["k"]} for r in roles if (r["role"], str(r["quant"])) not in named]
   kinds = pairing.layer_kinds(profile or {}) or ({"attention": layers} if layers else {})
   weight = {t["template"] for t in templates if t["path"]["status"] in ("one", "mixed", "not_found")
@@ -162,7 +162,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     us = sum(l["wall_us"] for l, _, _, _ in it["launches"])
     t = {"template": " + ".join(sorted(it["templates"])), "path": _merge_paths([by_t[x]["path"] for x in sorted(it["templates"])])}
     _, _, k0, r0 = it["launches"][0]
-    rows.append(_row(f"{item['role']} {item['quant']}", "role", t, calls, us, flops, nbytes, peaks, bandwidth_gbs,
+    rows.append(_row(f"{item['role']} {item['quant']}", "role", t, calls, us, flops, nbytes, peaks, bandwidth_gbs, item["quant"],
                      roles=[(r["role"], r["quant"]) for r in parts], skipped=max(it["need"] * r0 // k0 - calls, 0),
                      tokens_per_call=sorted(m for _, m, _, _ in it["launches"])[calls // 2],
                      **({"fused": k0} if k0 > 1 else {}), **({"split": r0} if r0 > 1 else {})))
@@ -189,7 +189,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     if kind == "attention" and att:
       t = {"path": _merge_paths(list(o["templates"].values())), "template": " + ".join(sorted(o["templates"]))}
       rows.append(_row("attention", "attention", t, o["calls"], o["wall_us"], att["flops"], att["bytes"], peaks, bandwidth_gbs,
-                       note=att["words"]))
+                       formats.get("kv") or "F16", note=att["words"]))
     elif kind == "recurrent" and rec:
       rows.append(_recurrent_row(o, rec, peaks, bandwidth_gbs, work.recurrent_executed(
         profile or {}, length or int(sum(chunk_widths)), formats.get("recurrent_form"))))
@@ -236,9 +236,11 @@ def _merge_paths(paths:list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _row(name:str, what:str, t:dict[str, Any], calls:int, wall_us:float, flops:float, nbytes:float,
-         peaks:dict[str, float], bandwidth_gbs:float | None, **extra:Any) -> dict[str, Any]:
-  """One row: time, operations, bytes, the path its instructions use, and its ceiling. A row whose kernel code was
-  not found has no compute ceiling and says why (refused); a kernel with no matrix instruction is bound by bytes."""
+         peaks:dict[str, float], bandwidth_gbs:float | None, fmt:str | None = None, **extra:Any) -> dict[str, Any]:
+  """One row: time, operations, bytes, the path its instructions use, and its ceiling; and the chip-best ceiling, the
+  same work on the fastest measured path that holds the row's data format `fmt` exactly (prefill_work.chip_best). A
+  row whose kernel code was not found has no compute ceiling and says why (refused); a kernel with no matrix
+  instruction is bound by bytes."""
   path = t["path"]
   peak = _peak(t, peaks)
   ms = wall_us / 1000.0
@@ -253,9 +255,13 @@ def _row(name:str, what:str, t:dict[str, Any], calls:int, wall_us:float, flops:f
       refused = (f"no ceiling: the path {path['words']} would put the kernel {c['ms']:.2f} ms over its {ms:.2f} ms "
                  f"({'above the peak' if c['bound'] == 'compute' else 'faster than the bandwidth'})")
       c = {"ms": None, "compute_ms": None, "memory_ms": None, "bound": None}
+  best_ms, best = work.best_ms(flops, nbytes, fmt, peaks, bandwidth_gbs, c["ms"], peak if c["ms"] is not None else None)
+  if best_ms is not None and best_ms > ms * PEAK_SLACK:  # the same guard: no ceiling above the time it ran in
+    best_ms, best = None, None
   return {"name": name, "what": what, "calls": calls, "ms": ms, "flops": flops, "bytes": nbytes, "template": t["template"],
           "path": path["words"], "path_status": path["status"], "peak_tflops": peak,
-          "ceiling_ms": c["ms"], "compute_ms": c["compute_ms"], "memory_ms": c["memory_ms"], "bound": c["bound"],
+          "ceiling_ms": c["ms"], "best_ms": best_ms, "best_path": best,
+          "compute_ms": c["compute_ms"], "memory_ms": c["memory_ms"], "bound": c["bound"],
           "mfu_pct": work.mfu(flops, ms, peak) if path["status"] in ("one", "mixed") and not refused else None,
           "refused": refused, "mixed": path["status"] == "mixed", **({"name_source": path["name_source"]} if path.get("from_name") else {}),
           **({"path_shares": work.path_shares(path["paths"])} if path["status"] == "mixed" else {}), **extra}

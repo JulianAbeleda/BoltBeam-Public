@@ -92,12 +92,20 @@ The paths:
     builds `warp.MmaF16BF16Op(dtype, Float32, (16, 8, 16))` in delta_rule_cp_sm120.py (lines 436, 872, 2074,
     3837). Its SIMT fixup (line 2463) has no matrix instruction. The row stays bound by its bytes.
 
-| engine | format | length | chunk | measured ms | roofline ms | % of roofline |
-|---|---|---|---|---|---|---|
-| vLLM | AWQ INT4 g128 | 512 | 1 x 512 | 133.49 | 103.26 | 77.4 |
-| llama.cpp | Q4_K_M | 512 | 1 x 512 (ubatch 512) | 124.86 (first run, see above) | 29.00 | 23.2 |
-| vLLM | AWQ INT4 g128 | 2048 | 1 x 2048 | 503.37 | 414.25 | 82.3 |
-| llama.cpp | Q4_K_M | 2048 | 4 x 512 (ubatch 512) | 503.42 | 119.51 | 23.7 |
+| engine | format | length | chunk | measured ms | roofline ms (engine path) | % | roofline ms (chip best) | % |
+|---|---|---|---|---|---|---|---|---|
+| vLLM | AWQ INT4 g128 | 512 | 1 x 512 | 133.49 | 103.26 | 77.4 | 29.03 | 21.7 |
+| llama.cpp | Q4_K_M | 512 | 1 x 512 (ubatch 512) | 124.86 (first run, see above) | 29.00 | 23.2 | 29.00 | 23.2 |
+| vLLM | AWQ INT4 g128 | 2048 | 1 x 2048 | 503.37 | 414.25 | 82.3 | 114.45 | 22.7 |
+| llama.cpp | Q4_K_M | 2048 | 4 x 512 (ubatch 512) | 503.42 | 119.51 | 23.7 | 119.51 | 23.7 |
+
+- The chip-best roofline (2026-10-12, `prefill_work.chip_best`): each row on the fastest measured path that holds
+  its weights exactly. INT4 weights are exact on int8, so vLLM's INT4 rows move from bf16 (251.5 TFLOPS) to int8
+  (about 1,000): 3.6 times lower at both lengths. llama.cpp already runs every weight on int8, so its two columns
+  are equal. Against the same chip-best basis the engines sit at 22 to 24% at both lengths.
+- vLLM's figures: its saved captures re-attributed with the walk (no GPU), each at the clock its capture held; the
+  engine-path column reproduces the one above (414.27 against 414.25 at 2048, rounding of the clock). llama.cpp's:
+  `prefill_work.best_ms` over each saved trace's rows.
 
 - In wall time the two engines tie: llama.cpp is 6% faster at 512, and they are equal at 2048.
 - vLLM sits much closer to its roofline. Its roofline is 3.5 times higher because its matrix path is bf16. Marlin
@@ -123,12 +131,14 @@ weights, no KV). The 8B rows use the BF16 safetensors for vLLM. For llama.cpp th
 the box. Converting a new BF16 GGUF would have taken 16 GB. F16 and BF16 are both 2 bytes per weight, so the bytes
 are the same.
 
-| engine | model | format | measured tok/s | roofline tok/s | % of roofline |
-|---|---|---|---|---|---|
-| vLLM | 27B | AWQ INT4 g128 + BF16 head | 85.60 | 111.09 | 77.1 |
-| llama.cpp | 27B | Q4_K_M | 71.38 | 92.78 | 76.9 |
-| vLLM | 8B | BF16 | 100.14 | 111.83 | 89.5 |
-| llama.cpp | 8B | F16 | 100.21 | 111.83 | 89.6 |
+| engine | model | format | measured tok/s | roofline tok/s (engine path) | chip best | % of roofline |
+|---|---|---|---|---|---|---|
+| vLLM | 27B | AWQ INT4 g128 + BF16 head | 85.60 | 111.09 | 111.09 | 77.1 |
+| llama.cpp | 27B | Q4_K_M | 71.38 | 92.78 | 92.78 | 76.9 |
+| vLLM | 8B | BF16 | 100.14 | 111.83 | 111.83 | 89.5 |
+| llama.cpp | 8B | F16 | 100.21 | 111.83 | 111.83 | 89.6 |
+
+At batch 1 the limit is bytes at the bandwidth; no matrix path moves fewer, so the chip-best limit is the same.
 
 Bytes per token per row (the decode work), from each run's profile:
 
@@ -242,10 +252,10 @@ Still open:
 No GPU ran. The saved vLLM nsys exports were re-attributed with the current code. Each capture kept the clock it
 had saved.
 
-| length | roofline ms before | after | measured ms | % of roofline before | after |
-|---|---|---|---|---|---|
-| 512 | 100.76 | 103.26 | 133.49 | 75.5 | 77.4 |
-| 2048 | 404.85 | 414.25 | 503.37 | 80.4 | 82.3 |
+| length | roofline ms before | after | chip best | measured ms | % of roofline before | after |
+|---|---|---|---|---|---|---|
+| 512 | 100.76 | 103.26 | 29.03 | 133.49 | 75.5 | 77.4 |
+| 2048 | 404.85 | 414.25 | 114.45 | 503.37 | 80.4 | 82.3 |
 
 - Resolved: in_proj_ba (bf16 from the kernel name) and the recurrent row (the delta-rule kernels, fp16 from the
   kernel name). No refused ceiling is left in the vLLM prefill traces.

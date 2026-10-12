@@ -13,12 +13,12 @@
 │                                                                              │
 │ ## Where the token goes (estimate)                                           │
 │ ms per token at context 128, worst first; tok/s if fixed is the 55.1 ms      │
-│ token (18.1 tok/s) less that row's lost ms. Estimate: each weight kernel was │
-│ timed alone; the rest of the token (untimed weights, attention, norms,       │
-│ launches and gaps) is the difference (estimate from isolated times).         │
+│ token (18.1 tok/s) less that row's lost ms. ms at chip best is the limit: a  │
+│ token's limit is its bytes at the bandwidth, and no matrix path moves fewer. │
+│ Estimate: each weight kernel was timed alone; the rest of the token (untimed │
+│ weights, attention, norms, launches and gaps) is the difference (estimate    │
+│ from isolated times).                                                        │
 │                                                                              │
-│ ```                                                                          │
-│ row              ms now ms at limit ms lost share tok/s if fixed % of peak   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │

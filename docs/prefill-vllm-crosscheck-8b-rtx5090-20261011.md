@@ -70,14 +70,19 @@ TFLOPS; 1694 GB/s), recomputed from each run's rows so all three use one basis.
 The weight GEMM rows of both BF16 runs use the bf16 path. cuBLAS hides that code (see the next section). Since
 2026-10-11 BoltBeam reads that path from the kernel's name, labelled "from the kernel name" (item 7).
 
-| engine | format | length | chunk | measured ms | roofline ms | % of roofline |
-|---|---|---|---|---|---|---|
-| vLLM | BF16 | 512 | 1 x 512 | 38.30 | 29.32 | 76.6 |
-| llama.cpp | BF16 | 512 | 1 x 512 (ubatch 512) | 47.36 | 28.80 | 60.8 |
-| llama.cpp | Q4_K_M | 512 | 1 x 512 (ubatch 512) | 34.58 | 7.55 | 21.8 |
-| vLLM | BF16 | 2048 | 1 x 2048 | 145.69 | 118.78 | 81.5 |
-| llama.cpp | BF16 | 2048 | 4 x 512 (ubatch 512) | 187.94 | 115.10 | 61.2 |
-| llama.cpp | Q4_K_M | 2048 | 4 x 512 (ubatch 512) | 141.59 | 32.05 | 22.6 |
+| engine | format | length | chunk | measured ms | roofline ms (engine path) | % | roofline ms (chip best) | % |
+|---|---|---|---|---|---|---|---|---|
+| vLLM | BF16 | 512 | 1 x 512 | 38.30 | 29.32 | 76.6 | 29.32 | 76.6 |
+| llama.cpp | BF16 | 512 | 1 x 512 (ubatch 512) | 47.36 | 28.80 | 60.8 | 28.80 | 60.8 |
+| llama.cpp | Q4_K_M | 512 | 1 x 512 (ubatch 512) | 34.58 | 7.55 | 21.8 | 7.55 | 21.8 |
+| vLLM | BF16 | 2048 | 1 x 2048 | 145.69 | 118.78 | 81.5 | 118.78 | 81.5 |
+| llama.cpp | BF16 | 2048 | 4 x 512 (ubatch 512) | 187.94 | 115.10 | 61.2 | 115.10 | 61.2 |
+| llama.cpp | Q4_K_M | 2048 | 4 x 512 (ubatch 512) | 141.59 | 32.05 | 22.6 | 32.05 | 22.6 |
+
+The chip-best roofline (2026-10-12, `prefill_work.chip_best`) puts each row on the fastest measured path that holds
+its weights exactly. Here it equals the engine path on every row: BF16 weights have one exact path, bf16, and
+llama.cpp already runs Q4_K and Q6_K on int8, the fastest. Attention's own paths are already as fast as the exact
+path for its cache's format.
 
 - At BF16, vLLM is faster: 19% less time at 512 and 22% less at 2048.
 - vLLM's roofline is a little higher because it does the last-layer FFN that llama.cpp prunes.
@@ -140,12 +145,17 @@ The BF16 run here uses current code.
 No GPU ran. The saved traces hold each row's operations, bytes, time and the peaks at the capture's clock. The rows
 refused for "kernel code not found" were recomputed with the path from the kernel's name.
 
-| run | length | roofline ms before | after | measured ms | % of roofline before | after |
-|---|---|---|---|---|---|---|
-| vLLM BF16 | 512 | 1.08 | 32.51 | 38.30 | 2.8 | 84.9 |
-| vLLM BF16 | 2048 | 5.77 | 121.62 | 145.69 | 4.0 | 83.5 |
-| llama.cpp BF16 | 512 | 1.14 | 9.52 | 47.36 | 2.4 | 20.1 |
-| llama.cpp BF16 | 2048 | 5.53 | 37.45 | 187.94 | 2.9 | 19.9 |
+| run | length | roofline ms before | after | chip best | measured ms | % of roofline before | after |
+|---|---|---|---|---|---|---|---|
+| vLLM BF16 | 512 | 1.08 | 32.51 | 32.51 | 38.30 | 2.8 | 84.9 |
+| vLLM BF16 | 2048 | 5.77 | 121.62 | 121.62 | 145.69 | 4.0 | 83.5 |
+| llama.cpp BF16 | 512 | 1.14 | 9.52 | 9.52 | 47.36 | 2.4 | 20.1 |
+| llama.cpp BF16 | 2048 | 5.53 | 37.45 | 37.45 | 187.94 | 2.9 | 19.9 |
+
+The chip best column (2026-10-12) is `prefill_work.best_ms` over the same saved rows. It needs no engine path, so
+the "before" rows refused for "kernel code not found" have one; it equals "after" because bf16 is BF16's one exact
+path. The grouped llama.cpp FFN row's chip-best ceiling is refused by the same guard (above its measured time, at
+the capture's wrong clock).
 
 - Resolved in vLLM: gate_up_proj, down_proj, qkv_proj and o_proj, all bf16 from the kernel name.
 - Resolved in llama.cpp: attn_qo and attn_kv.
