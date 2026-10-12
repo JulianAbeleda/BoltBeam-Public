@@ -646,6 +646,8 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
   finally:
     if own_bridge:
       bridge.close()
+  from boltbeam.collectors import kernel_oracle
+  kernel_oracle.cache_check(run, provider, ADAPTED_KERNEL[(provider, backend)], backend, rows_out)
   measured = [r for r in rows_out if r.get("status") == "measured"]
   kernel_us = sum(r["wall_us"] for r in measured)
   whole = {"scope": "whole_step", "decode_tokens": 1, "wall_us": kernel_us, "measurement_scope": "summed_isolated_kernels",
