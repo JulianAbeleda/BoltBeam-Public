@@ -524,6 +524,37 @@ PREFILL_COLUMNS = ("row", "ms now", "ms at engine path", "ms at chip best", "ms 
 NO_CEILING = "no ceiling"  # a kernel with no operations or bytes the model knows (norms, quantize, copies): all its time is lost
 
 
+# The captured prefill against the untraced median: a capture stands for the engine's prefill end to end only when
+# its first-to-last-kernel wall time is within this share of the untraced median. Derived from the good RTX 5090
+# captures (llama.cpp and vLLM, 27B, 512 to 32K tokens): the widest was +5.46% (a throttled 2048 capture); the band is
+# that rounded up to the next whole percent. The rows of a capture outside it still stand; only the end-to-end claim
+# does not.
+END_TO_END_BAND = 0.06
+
+
+def end_to_end(attr:dict[str, Any], untraced_ms:float | None) -> dict[str, Any]:
+  """Whether a capture confirms the untraced prefill end to end. The kernels plus the gaps always equal the captured
+  wall time (attribute_prefill); this checks that captured wall time against the untraced median, within
+  END_TO_END_BAND. gap_growth_ms is its own figure: the capture's idle beyond what the untraced prefill leaves room
+  for (the gaps less the untraced time over the kernels' busy time; zero when the gaps fit in it). An engine's own timing
+  sums to the untraced prefill already, so there is nothing to check."""
+  captured, gaps, busy = attr.get("profiled_wall_ms"), float(attr.get("gaps_ms") or 0.0), float(attr.get("busy_ms") or 0.0)
+  if untraced_ms is None or not captured:
+    return {"confirms": None, "words": "no untraced prefill at this length: the capture is not checked end to end"}
+  if abs(float(attr["wall_ms"]) - float(untraced_ms)) < 1e-9 and abs(float(attr["wall_ms"]) - captured) > 1e-9:
+    return {"confirms": None, "words": "the rows sum to the untraced prefill (the engine's own timing): no capture to check"}
+  diff = captured - float(untraced_ms)
+  share = diff / float(untraced_ms)
+  growth = max(gaps - max(float(untraced_ms) - busy, 0.0), 0.0)
+  ok = abs(share) <= END_TO_END_BAND
+  return {"confirms": ok, "captured_ms": captured, "untraced_ms": float(untraced_ms), "diff_ms": diff, "diff_pct": 100 * share,
+          "band_pct": 100 * END_TO_END_BAND, "gaps_ms": gaps, "gap_growth_ms": growth,
+          "words": (f"the captured prefill took {captured:.1f} ms against the {float(untraced_ms):.1f} ms untraced median "
+                    f"({100 * share:+.1f}%, band ±{100 * END_TO_END_BAND:.0f}%); its gaps are {gaps:.1f} ms, "
+                    f"{growth:.1f} ms more than the untraced prefill leaves room for"
+                    + ("" if ok else ". The rows stand, but this capture does not confirm the prefill end to end"))}
+
+
 def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, length:int,
                        depth:int = 0) -> dict[str, Any] | None:
   """A captured prefill (prefill_attribution.attribute_prefill) as the where table: every role row, attention, every
@@ -556,6 +587,9 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   if abs(base - wall) > 1e-9:
     words.append(f"The rows sum to the {wall:.1f} ms the captured prefill took from its first kernel to its last; the "
                  f"untraced prefill is {base:.1f} ms.")
+  e2e = attr.get("end_to_end") or {}
+  if e2e.get("confirms") is False:
+    words.append(f"Not confirmed end to end: {e2e['words']}.")
   mixed = [r["name"] for r in rows if " + " in str(r.get("path") or "") and r.get("limit_ms") is not None]
   if mixed:
     words.append(f"{', '.join(mixed)}: instructions on more than one path; its operations are split over them by its instruction sites, each part at its own path's peak.")
@@ -563,4 +597,5 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   return table(title, PREFILL_COLUMNS, rows, now=wall, limit=limit, lost=total, no_limit=NO_CEILING,
                if_fixed=("ms_if_fixed", "{:.1f}"), peak=("mfu_pct", "{:.1f}%"), sum_name="= prefill", estimate=False,
                token_ms=wall, base_ms=base, limit_ms=limit, words=" ".join(words), workload="prefill", length=length,
-               mfu_pct=100.0 * compute / base if base else None, **({"depth": depth} if depth else {}))
+               mfu_pct=100.0 * compute / base if base else None, **({"depth": depth} if depth else {}),
+               **({"end_to_end": e2e} if e2e else {}))

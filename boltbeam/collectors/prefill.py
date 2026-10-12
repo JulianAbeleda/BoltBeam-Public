@@ -554,6 +554,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   its lengths, its untraced turn times, its own capture and trace file (collectors/session.py)."""
   from boltbeam.collectors.prefill_attribution import attribute_prefill
   from boltbeam.target.targets import get_target
+  from boltbeam.workflow import tie_out
   from boltbeam.workflow.common import load_manifest, read_json
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional, run_bandwidth
   manifest = load_manifest(run)
@@ -599,6 +600,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
                              formats=cap.get("formats"), cache=last_level_cache(target), depth=depth,
                              observed=cap["paths"].get("observed"))
+    attr["end_to_end"] = tie_out.end_to_end(attr, truth_ms.get(int(length)))
     per_chunk = len(cap["launches"]) / 2 / max(len(cap["chunk"]), 1) if cap["warmup"] else len(cap["launches"]) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
                                    "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen,
