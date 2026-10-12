@@ -220,3 +220,72 @@ than committed to this documentation-only change:
 
 Related audits: [27B baseline](prefill-audit-27b-rtx5090-20261011.md) and
 [vLLM cross-check](prefill-vllm-crosscheck-27b-rtx5090-20261011.md).
+
+## Clean loop: the GDN commit alone (2026-10-12, later)
+
+Three fixes landed first. Then one GPU run.
+
+### The fixes
+
+- End-to-end check (`tie_out.end_to_end`). Each captured length now compares its captured wall time with the
+  untraced median. The band is 6%. The widest good capture differs by +5.46% (the 10-11 audit at 2048, throttled).
+  A capture outside the band keeps its rows but is marked as not confirming end to end. The gap growth is its own
+  figure: the gaps less the room the untraced time leaves over the kernels' busy time.
+  - Upstream 2048: 501.0 ms against 468.2 ms, +7.0%. Flagged. Gap growth 32.8 ms.
+  - Upstream 512 (-3.2%), baseline 512 (-2.6%) and 2048 (+1.1%) pass.
+- Pruned last layer (`pairing.PRUNED`). The llama.cpp adapter reports pruning when a prefill has more GEMV launches
+  than output calls. A pruned row's work is its layers less one at every token, plus one layer at the output tokens.
+  - Upstream: both Q4_K GEMVs now pair. Gate and up share one GEMV (fused 2); down takes the other.
+  - Upstream FFN work: 17,250,197,176,320 at 512 and 68,999,184,384,000 at 2048. Both equal the model with the
+    pruned layer exactly.
+  - Baseline: no pruning reported. Every row is unchanged.
+
+### What ran
+
+- Engine: b9592 (`ac4cddeb0`) plus only upstream `24e41838e` ("ggml-cuda: assign four GDN state columns per warp"),
+  cherry-picked cleanly as `17409f511` in a fresh clone. It changes one file, `gated_delta_net.cu`.
+- Build: the baseline's flags (Release, CUDA, architecture 120, nvcc, `LLAMA_CURL=OFF`).
+- BoltBeam `df47488`. The same pipeline and flags as above, at 512 and 2048. One run, exit 0 in 33 seconds.
+- Baseline: the saved loop27-baseline capture, re-attributed under `df47488`. No new baseline run.
+- GPU compute processes were empty before and after. The box's own model server stayed stopped.
+
+### Prediction, recorded before the run (13:43:10 UTC)
+
+Band per row and length: |change| <= max(3% of the baseline ms, 0.05 ms).
+
+1. The recurrent row falls by more than the band at both lengths. Direction only.
+   Inside it, the GDN kernel falls and ssm_conv stays within the band.
+2. Every other row stays within the band.
+3. No row appears or disappears. Every row keeps its calls, FLOPs and bytes. No pruned layer.
+4. Rows plus gaps equal the captured wall time. Both lengths confirm end to end. Gaps stay within the band.
+
+### Result
+
+| Check | 512 | 2048 | Predicted | Held |
+|---|---|---|---|---|
+| recurrent ms | 18.774 -> 10.433 (-8.341) | 76.596 -> 42.464 (-34.132) | falls beyond band | yes |
+| GDN kernel ms | 18.209 -> 9.868 | 74.198 -> 40.056 | falls | yes |
+| ssm_conv ms | 0.565 -> 0.565 | 2.398 -> 2.408 | within band | yes |
+| largest other row change | attn_gate -0.072 (band 0.149) | ffn_down +0.285 (band 2.417) | within band | yes, all 26 rows |
+| rows appeared or gone | none | none | none | yes |
+| calls, FLOPs, bytes | all equal | all equal | equal | yes |
+| pruned layer | none | none | none | yes |
+| kernels + gaps = captured | residual 5e-15 ms | residual 1e-14 ms | equal | yes |
+| captured vs untraced | 112.6 vs 116.1 (-3.0%) | 473.6 vs 468.9 (+1.0%) | within 6% | yes |
+| gaps ms | 0.484 -> 0.482 | 5.153 -> 5.570 (+0.417, band 0.155) | within band | no at 2048 |
+
+Untraced medians: 124.546 -> 116.073 ms (-8.473) at 512 and 501.438 -> 468.872 ms (-32.566) at 2048. They follow
+the recurrent row's captured drop (-8.341 and -34.132).
+
+### Verdict
+
+The strict loop closes on every kernel row. The target moved, every other row stayed within its band, the work
+did not change, and both captures confirm end to end. One stated clause missed: the 2048 gaps grew 0.417 ms
+against a 0.155 ms band. That is 0.09% of the prefill, and the untraced time confirms the capture. The miss is
+reported, not repaired. No second run was made.
+
+The earlier failure came from the full upstream checkout, not from BoltBeam: with the GDN commit alone, nothing
+else moved.
+
+Evidence on the box: `~/storage/bbeng/tmp/loop27-cp/`, `loop27-cp-pipeline.log`, `loop27-cp-summary.txt`,
+`loop27cp-prediction.txt`; the engine clone `~/storage/loop27-cp`.
