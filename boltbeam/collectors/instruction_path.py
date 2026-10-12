@@ -364,8 +364,9 @@ def ncu_observe(argv:list[str], env:dict[str, str] | None, out:pathlib.Path, tem
   out.mkdir(parents=True, exist_ok=True)
   names = "|".join(re.escape(t.split("<", 1)[0].split("::")[-1]) for t in sorted(templates))
   rep = out / "ncu"
-  proc = subprocess.run([tool, "--profile-from-start", "off", "--section", "SourceCounters", "--kernel-name",
-                         f"regex:{names}", "--launch-count", str(launches), "-f", "-o", str(rep), *argv],
+  from boltbeam.profiler.ncu_counters import ncu_command
+  proc = subprocess.run(ncu_command(argv, out=str(rep), ncu=tool, sections=("SourceCounters",), kernel_name=f"regex:{names}",
+                                    launch_count=launches),
                         capture_output=True, text=True, timeout=7200, env={**os.environ, **(env or {})})
   (out / "ncu.log").write_text(proc.stdout + proc.stderr)
   if proc.returncode != 0 or not rep.with_suffix(".ncu-rep").exists():

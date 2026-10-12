@@ -31,17 +31,26 @@ _SIDE_ALIASES = {"tinygrad": "ours", "ours": "ours", "reference": "reference"}
 
 # ---- collection ---------------------------------------------------------------------------------------------------
 
+# ncu's default --clock-control base locks the GPU at its base clock for every profiled kernel: every duration it
+# reports is then slower than the clock the engine runs at. BoltBeam compares ncu's times with its own and with the
+# engine's token, so every ncu command it builds runs at the free clock. Not a parameter: there is no caller for which
+# locked clocks are right.
+CLOCK_CONTROL = "none"
+
+
 def ncu_command(target_cmd:Sequence[str], *, out:str, ncu:str="ncu", sections:Iterable[str]=NCU_SECTIONS,
-                cache_control:str="all", clock_control:str="none", profile_from_start:str="off", nvtx:bool=False,
+                metrics:Iterable[str]=(), cache_control:str="all", profile_from_start:str="off", nvtx:bool=False,
                 kernel_name:str | None=None, launch_count:int | None=None, sudo_mem_max:str | None=None,
                 env:Mapping[str, str] | None=None) -> list[str]:
-  """The ncu argv for one target command; with ``sudo_mem_max`` wrapped in a memory-capped root scope."""
+  """The one ncu argv BoltBeam builds, for one target command, always at the free clock (CLOCK_CONTROL); with
+  ``sudo_mem_max`` wrapped in a memory-capped root scope."""
   cmd = [ncu, "--profile-from-start", profile_from_start, "--target-processes", "all"]
   for section in sections: cmd += ["--section", section]
+  if metrics: cmd += ["--metrics", ",".join(metrics)]
   if nvtx: cmd.append("--nvtx")
   if kernel_name: cmd += ["--kernel-name", kernel_name]
   if launch_count is not None: cmd += ["--launch-count", str(launch_count)]
-  cmd += ["--cache-control", cache_control, "--clock-control", clock_control, "-f", "-o", str(out), *target_cmd]
+  cmd += ["--cache-control", cache_control, "--clock-control", CLOCK_CONTROL, "-f", "-o", str(out), *target_cmd]
   env_args = [f"{k}={v}" for k, v in (env or {}).items()]
   if sudo_mem_max: return ["sudo", "systemd-run", "--scope", "-q", "-p", f"MemoryMax={sudo_mem_max}", "env", *env_args, *cmd]
   return (["env", *env_args] if env_args else []) + cmd
@@ -216,4 +225,4 @@ def to_hw_trace(doc:Mapping[str, Any], *, model_id:str, target_id:str, workload:
 
 
 __all__ = ["LEGACY_SCHEMAS", "NCU_SECTIONS", "SCHEMA", "collect", "export_raw_csv", "import_raw_csv", "load_counters",
-           "mark_gemm", "ncu_command", "parse_kernel_row", "read_raw_csv", "to_hw_trace", "top_stall_reasons"]
+           "mark_gemm", "CLOCK_CONTROL", "ncu_command", "parse_kernel_row", "read_raw_csv", "to_hw_trace", "top_stall_reasons"]
