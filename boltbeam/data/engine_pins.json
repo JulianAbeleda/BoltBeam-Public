@@ -1,9 +1,57 @@
 {
- "schema": "boltbeam.engine_pins.v1",
- "about": "The one table of engine versions BoltBeam measures. A run records the build it ran; the engine-upgrade audit names both pins and says when a build differs from its pin. Changing a pin is its own [target] or [repo] commit that cites the upgrade audit justifying it (docs/engine-upgrade-audit.md).",
- "engines": {
-  "llama.cpp": {"tag": "b11571", "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
-                "audit": "docs/engine-upgrade-llama-b11571-rtx5090-20261012.md"},
-  "vllm": {"version": "0.31.0", "audit": "docs/prefill-vllm-crosscheck-27b-rtx5090-20261011.md"}
- }
+  "schema": "boltbeam.engine_pins.v1",
+  "about": "The one table of engine versions BoltBeam measures. A run records the build it ran; the engine-upgrade audit names both pins and says when a build differs from its pin. Changing a pin is its own [target] or [repo] commit that cites the upgrade audit justifying it (docs/engine-upgrade-audit.md).",
+  "engines": {
+    "llama.cpp": {
+      "tag": "b11571",
+      "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
+      "audit": "docs/engine-upgrade-llama-b11571-rtx5090-20261012.md",
+      "history": [
+        {
+          "date": "2026-10-11",
+          "tag": "b9592",
+          "sha": "ac4cddeb0dbd778f650bf568f6f08344a06abe3a",
+          "doc": "docs/prefill-audit-27b-rtx5090-20261011.md"
+        },
+        {
+          "date": "2026-10-12",
+          "tag": "b11571",
+          "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
+          "doc": "docs/engine-upgrade-llama-b11571-rtx5090-20261012.md"
+        }
+      ]
+    },
+    "vllm": {
+      "version": "0.31.0",
+      "audit": "docs/prefill-vllm-crosscheck-27b-rtx5090-20261011.md",
+      "history": [
+        {
+          "date": "2026-10-11",
+          "version": "0.31.0",
+          "doc": "docs/prefill-vllm-crosscheck-27b-rtx5090-20261011.md"
+        }
+      ]
+    },
+    "tensorrt-llm": {
+      "version": "1.2.1",
+      "history": []
+    },
+    "tinygrad": {
+      "sha": "caa752ac4",
+      "checkout": "detached",
+      "history": []
+    },
+    "ollama": {
+      "version": "unknown",
+      "reason": "ollama --version printed nothing",
+      "history": []
+    }
+  },
+  "toolchain": {
+    "driver": "595.99.02",
+    "cuda": "13.2",
+    "torch": "2.13.0+cu130",
+    "nsight_systems": "2026.1.3",
+    "nsight_compute": "2026.2.1"
+  }
 }

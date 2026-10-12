@@ -461,7 +461,8 @@ def engine_pin(provider:str) -> dict[str, Any] | None:
 def pin_label(pin:dict[str, Any] | None) -> str:
   if not pin:
     return "no pin"
-  return f"{pin['tag']} ({pin['sha'][:9]})" if pin.get("tag") else f"version {pin.get('version')}"
+  return (f"{pin['tag']} ({pin['sha'][:9]})" if pin.get("tag") else
+          f"commit {pin['sha']}" if pin.get("sha") else f"version {pin.get('version')}")
 
 
 def run_build(run:pathlib.Path) -> str | None:
@@ -480,9 +481,9 @@ def pin_check(provider:str, build:str | None) -> dict[str, Any]:
   """A build against its engine's pin: a llama.cpp build_commit matches when the pinned sha starts with it; a vLLM
   version when equal. Says plainly when they differ or the build is unknown."""
   pin = engine_pin(provider)
-  if build is None:
+  if build is None or build == "unknown":
     return {"pin": pin, "build": None, "matches": None, "words": f"{provider}: the run recorded no engine build"}
-  ok = None if not pin else (str(pin.get("sha", "")).startswith(build) if pin.get("sha") else str(pin.get("version")) == build)
+  ok = None if not pin or pin.get("version") == "unknown" else (str(pin.get("sha", "")).startswith(build) if pin.get("sha") else str(pin.get("version")) == build)
   words = (f"{provider} build {build} has no pin" if ok is None else f"{provider} build {build} is the pin {pin_label(pin)}" if ok
            else f"{provider} build {build} is NOT the pin {pin_label(pin)}: this run measured another build")
   return {"pin": pin, "build": build, "matches": ok, "words": words}

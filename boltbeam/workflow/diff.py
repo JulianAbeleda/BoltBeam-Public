@@ -111,6 +111,7 @@ def audit(a:pathlib.Path, b:pathlib.Path) -> dict[str, Any]:
   from boltbeam.collectors import providers
   from boltbeam.workflow.common import load_manifest
   from boltbeam.workflow.screen import run_provider
+  from boltbeam.collectors.toolchain import changes
   ma, mb = load_manifest(a), load_manifest(b)
   refuse_unless_same([("workload", ma.get("workload"), mb.get("workload")), ("model", _model(a, ma), _model(b, mb)),
                       ("target", ma.get("target_id"), mb.get("target_id")), ("provider", run_provider(a), run_provider(b))])
@@ -138,6 +139,7 @@ def audit(a:pathlib.Path, b:pathlib.Path) -> dict[str, Any]:
                   "untraced_ms": (tb["untraced_ms"] - ta["untraced_ms"]) if ta["untraced_ms"] and tb["untraced_ms"] else None,
                   "unchanged": held})
   return {"schema": AUDIT_SCHEMA, "before": a.name, "after": b.name, "builds": builds, "provider": run_provider(a), "pins": pins,
+          "toolchain": changes(ma, mb),
           "model": _model(a, ma), "target": ma.get("target_id"), "workload": ma.get("workload"), "parts": parts,
           "band": f"max({100 * BAND_PCT:.0f}% of the before time, {BAND_FLOOR_MS} ms)",
           "end_to_end_band": f"±{100 * tie.END_TO_END_BAND:.0f}%"}
@@ -155,6 +157,9 @@ def audit_lines(d:dict[str, Any]) -> list[str]:
   out = [f"Engine upgrade audit: {d['after']} ({d['builds'][1]}) against {d['before']} ({d['builds'][0]}), "
          f"{d['workload']}; band {d['band']}, end to end {d['end_to_end_band']}.",
          f"  pinned: {providers.pin_label(d['pins'][0]['pin'])}. Before: {d['pins'][0]['words']}. After: {d['pins'][1]['words']}."]
+  for t in d.get("toolchain", []):
+    out.append(f"  {t['name']}: {t['before']} -> {t['after']} "
+               f"({'CHANGED' if t['changed'] else 'unchanged' if t['known'] else 'unknown'}; pin {t['pin']})")
   for p in d["parts"]:
     out.append(f"  {p['part']}: {'unchanged outside moved rows' if p['unchanged'] else 'changed'}")
     for r in sorted(p["rows"], key=lambda r: -max(r["before_ms"] or 0, r["after_ms"] or 0)):

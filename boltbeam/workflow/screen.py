@@ -999,6 +999,8 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
   def guarded(key:str, work, *, probe:str | None, probe_reason:str | None = None, last:bool = True):
     def step():
       try:
+        from boltbeam.collectors.toolchain import record
+        record(run, provider)
         work()
       except Exception as exc:  # the reason must outlive the log: a reopened screen reads it from the run
         _write_measure_status(args.run, "failed", collector=plan["collector"], reason=f"{key}: {exc}",

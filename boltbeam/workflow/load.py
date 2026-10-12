@@ -93,8 +93,10 @@ def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str 
     contexts = (CAP,)  # the depths derived up to the binding cap (collectors/session.py)
   contexts = contexts or (128, 512)
   write_json(out / "workload_profile.json", _workload_profile(profile, selected_target, workload, contexts))
+  from boltbeam.collectors.toolchain import snapshot
   manifest = {
     "schema": SCHEMA_RUN_MANIFEST,
+    "toolchain": snapshot(),
     "model_id": profile.model_id,
     "model_path": str(model_path),
     "model_format": fmt,

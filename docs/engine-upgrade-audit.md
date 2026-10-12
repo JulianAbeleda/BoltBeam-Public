@@ -9,8 +9,19 @@ Every engine BoltBeam measures has one pinned version, in one table:
 `boltbeam/data/engine_pins.json`.
 
 - llama.cpp: a release build tag (`bNNNNN`) and its full commit sha. Never moving master.
-- vLLM: its release version.
-- The tinygrad fork has no pin: no BoltBeam code references a fork revision.
+- vLLM and TensorRT-LLM: their release versions.
+- The tinygrad fork: its checked-out commit.
+- Ollama: its version, or `unknown` with the reason when the binary reports none.
+
+Each entry keeps a `history` of measured versions, with date and evidence document.
+An installed engine that has not been measured has an empty history. The pin file also
+holds the current toolchain: driver, CUDA toolkit, torch, Nsight Systems and Nsight Compute.
+Pins describe the reference installation; they never supply missing runtime observations.
+
+Every new run manifest records `toolchain` with a UTC timestamp and observed versions.
+Measurement steps refresh it before running, using the selected engine’s Python for torch.
+Missing tools record `unknown`. The audit reports each tool’s before and after versions
+and current pin; older manifests with no toolchain remain explicitly unknown.
 
 Every run records the build it measured. llama.cpp reports `build_commit`; vLLM reports its version. The run's
 manifest carries it under `engine`, with the pin check (`providers.record_build`). When the build differs from the
@@ -39,6 +50,7 @@ from one place (`workflow/diff.refuse_unless_same`).
 ## What it reports
 
 - Its header names the pin and each run's build against it.
+- Toolchain changes, including driver, CUDA and torch, are named alongside the engine build.
 - Each row, per prompt length (prefill) or per context (decode):
   - before and after ms, the change, and its band: max(3% of the before time, 0.05 ms). The floor keeps tiny
     rows from flagging on noise.
