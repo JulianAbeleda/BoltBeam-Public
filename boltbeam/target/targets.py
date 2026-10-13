@@ -108,10 +108,10 @@ def get_target(name:str) -> TargetProfile:
 
 def uncertainty(src:dict | None) -> float | None:
   """A measured figure's own relative uncertainty, kept beside it (a fact source, a path of one, or a probe's read):
-  the probe's spread over its launch shapes and repeats. None when it has none, so a guard says not checked and never
-  borrows a constant. A probe read saved before the field existed carries its spread and cold-to-sustained drift."""
-  src = src or {}
-  u = src.get("uncertainty", max(src.get("spread") or 0, src.get("drift") or 0) if "spread" in src else None)
+  the spread of the probe's repeated runs at its best launch shape. None when it has none, so a guard says not checked
+  and never borrows a constant. A shape spread (how much the launch shape matters) is not an uncertainty and is never
+  read here."""
+  u = (src or {}).get("uncertainty")
   return float(u) if isinstance(u, (int, float)) and math.isfinite(u) and u >= 0 else None
 
 

@@ -1,7 +1,7 @@
 """Evaluator: classify normalized evidence into a CandidateDecision (audit-brain-build-scope BB5).
 
 This module is the promotion contract. It reads NormalizedEvidence rows only (never raw producer fields),
-compares against the ONE threshold table (eval/thresholds.py) and the ONE candidate manifest (manifest.py),
+compares against the tiers (eval/thresholds.py, values in data/policy.json) and the ONE candidate manifest (manifest.py),
 and emits a typed CandidateDecision whose invariants are enforced by that dataclass (notably: no PROMOTE
 without a rollback). It measures nothing and runs no GPU/model code — a search result is not a win until
 downstream measurement proves it, and here we only read the proof.
@@ -20,7 +20,8 @@ from boltbeam.target.targets import target_backend_status, target_capability
 from boltbeam.artifacts.base import NormalizedEvidence, EvidenceRow, EvidenceFlags
 from boltbeam.ledger.model import CandidateDecision, EvidenceRef
 from boltbeam.manifest import Candidate, load_candidates
-from boltbeam.eval.thresholds import classify_tier, is_protected_regression, TierResult, SPEED_EQUIVALENT_BAND_PCT
+from boltbeam.core.policy import value
+from boltbeam.eval.thresholds import classify_tier, is_protected_regression, TierResult
 from boltbeam.eval.contracts import promotion_requirements
 from boltbeam.math.kv_cache import classify_kv_slope
 
@@ -391,7 +392,7 @@ def evaluate(candidate:Candidate, evidences:list[NormalizedEvidence], *, model_i
                     f"speed-equivalent ({delta:.1f}%) reduces hand-written surface but correctness/route/rollback not all confirmed",
                     tier=tier_for, guardrails=guardrails,
                     next_action="confirm correctness, route-binding, and a rollback knob to promote the purity replacement")
-    if spread is not None and abs(delta) > SPEED_EQUIVALENT_BAND_PCT:
+    if spread is not None and abs(delta) > value("equal_speed_pct"):
       return decide(Verdict.DIAGNOSTIC.value,
                     f"no measurable change: {delta:+.1f}% is inside the {spread:.1f}% run-to-run noise",
                     tier=tier_for, guardrails=guardrails, next_action="measure with less noise before judging speed")

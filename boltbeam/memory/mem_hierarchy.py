@@ -6,11 +6,11 @@ from typing import Any
 
 from boltbeam.artifacts.base import EvidenceSource, sha256_json
 from boltbeam.core.facts import Fact
+from boltbeam.core.policy import value
 from boltbeam.profiler.ontology import tier_observation, unsupported
 from boltbeam.roofline.roofline_ceiling import resolve_achieved_ceiling
 from boltbeam.vocab import SCHEMA_MEMORY_HIERARCHY_PROFILE
 
-_PLATEAU_BAND = 0.08
 _CANONICAL_CACHE_TIERS = ("l0", "l1", "l2", "last_level_cache")
 
 
@@ -38,7 +38,7 @@ def _detect_plateaus(curve: list[tuple[int, float]]) -> list[list[tuple[int, flo
   for point in curve:
     trial = run + [point]
     med = statistics.median(g for _, g in trial)
-    if not run or all(abs(g - med) <= _PLATEAU_BAND * abs(med) for _, g in trial):
+    if not run or all(abs(g - med) <= value("cache_tier_plateau_share") * abs(med) for _, g in trial):
       run = trial
     else:
       if len(run) >= 2: plateaus.append(run)

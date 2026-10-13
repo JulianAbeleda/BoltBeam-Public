@@ -14,7 +14,7 @@ output projection, the FFN. The block's kernels are the ones tie_out.kind_of nam
   rows     a profile row's fine class sets its stage (vocab.STAGE): input stages take input-side slots, output stages
            output-side slots in the data flow's order (vocab.OUTPUT_ORDER), the gate projection either side, the
            head the tail of the unit; a template serves one weight format; within one template on the input side
-           more operations per launch is more time per launch, and two rows within GAP_RATIO are one row
+           more operations per launch is more time per launch, and two rows within the policy same_row_work_ratio are one row
   checks   a launch cannot read a role's weights faster than the measured bandwidth or run its operations past its
            path's measured peak; a launch may serve several calls (a fused kernel) or a call several launches (a
            product cut along M), by a whole ratio the slot count gives
@@ -36,10 +36,10 @@ import statistics
 from typing import Any, Callable
 
 from boltbeam.collectors.instruction_path import template
+from boltbeam.core.policy import value
 from boltbeam.vocab import OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE
 from boltbeam.workflow.tie_out import UNATTRIBUTED, kind_of
 
-GAP_RATIO = 1.3  # input-side rows of one format whose operations per launch are within this cannot be told apart by time
 MAX_FUSED = 3  # calls one launch may serve (gate and up fused: 2)
 MAX_SPLIT = 4  # launches one call may take (a library that cuts a product along M)
 MAX_NODES = 50_000
@@ -367,7 +367,7 @@ def _carriers(rows:list[dict[str, Any]], prune:dict[str, Any] | None) -> list[di
 
 def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> list[dict[str, Any]]:
   """One item per (row, kind) with its launches in the window and its sides; head rows on the tail; input-side rows
-  of one format and kind whose operations are within GAP_RATIO joined. carry: {role: format} (_carriers), the format
+  of one format and kind whose operations are within the policy same_row_work_ratio joined. carry: {role: format} (_carriers), the format
   whose row runs the pruned layer when the role's formats each run in some layers only."""
   items: list[dict[str, Any]] = []
   per_role: dict[tuple[str, str], float] = collections.Counter()  # (role, kind) -> launches per layer over its formats
@@ -400,7 +400,7 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
   for it in sorted(items, key=lambda i: (str(i["kind"]), str(i["quant"]), -(i.get("nk") or 0))):
     last = out[-1] if out else None
     if (last and it["kind"] and last["kind"] == it["kind"] and last["quant"] == it["quant"] and it["sides"] == last["sides"] == {"input"}
-        and it.get("nk") and last.get("nk") and last["nk"] < it["nk"] * GAP_RATIO
+        and it.get("nk") and last.get("nk") and last["nk"] < it["nk"] * value("same_row_work_ratio")
         and kinds_allowed(last["row"], kinds) == kinds_allowed(it["row"], kinds)):
       total = last["need"] + it["need"]
       last.update(role=" + ".join(sorted(set(last["role"].split(" + ")) | {it["role"]})), need=total, parts=last["parts"] + [it["row"]],

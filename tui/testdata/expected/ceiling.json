@@ -108,16 +108,16 @@
   "kind": "ceiling",
   "model_id": "Qwen3-8B",
   "peak_bandwidth_gbs": 97.2,
-  "peak_tflops": 3.152,
+  "peak_tflops": 3.121,
   "prefill": {
     "bytes_moved": 7623716864.0,
     "context": 512,
-    "floor_ms": 2458.6711975634516,
+    "floor_ms": 2483.0924750785007,
     "regime": "compute",
     "roles": [
       {
         "bytes_moved": 3246391296.0,
-        "floor_ms": 1177.3006801218273,
+        "floor_ms": 1188.9944709208587,
         "quant": "Q4_K",
         "regime": "compute",
         "role": "ffn_gate_up",
@@ -126,11 +126,11 @@
           "m": 512,
           "n": 12288
         },
-        "share": 0.47883616210599245
+        "share": 0.47883616210599234
       },
       {
         "bytes_moved": 1283457024.0,
-        "floor_ms": 392.43356004060917,
+        "floor_ms": 396.3314903069529,
         "quant": "Q4_K",
         "regime": "compute",
         "role": "attn_qo",
@@ -139,11 +139,11 @@
           "m": 512,
           "n": 4096
         },
-        "share": 0.15961205403533085
+        "share": 0.15961205403533077
       },
       {
         "bytes_moved": 811597824.0,
-        "floor_ms": 294.32517003045683,
+        "floor_ms": 297.2486177302147,
         "quant": "Q4_K",
         "regime": "compute",
         "role": "ffn_down",
@@ -152,11 +152,11 @@
           "m": 512,
           "n": 4096
         },
-        "share": 0.11970904052649811
+        "share": 0.11970904052649808
       },
       {
         "bytes_moved": 1045168128.0,
-        "floor_ms": 294.32517003045683,
+        "floor_ms": 297.2486177302147,
         "quant": "Q6_K",
         "regime": "compute",
         "role": "ffn_down",
@@ -165,11 +165,11 @@
           "m": 512,
           "n": 4096
         },
-        "share": 0.11970904052649811
+        "share": 0.11970904052649808
       },
       {
         "bytes_moved": 670281728.0,
-        "floor_ms": 202.17822732994924,
+        "floor_ms": 204.18640581352133,
         "quant": "Q6_K",
         "regime": "compute",
         "role": "lm_head",
@@ -178,11 +178,11 @@
           "m": 512,
           "n": 151936
         },
-        "share": 0.08223068929684796
+        "share": 0.08223068929684794
       },
       {
         "bytes_moved": 410517504.0,
-        "floor_ms": 73.58129250761421,
+        "floor_ms": 74.31215443255367,
         "quant": "Q4_K",
         "regime": "compute",
         "role": "attn_kv",
@@ -191,11 +191,11 @@
           "m": 512,
           "n": 1024
         },
-        "share": 0.029927260131624528
+        "share": 0.02992726013162452
       },
       {
         "bytes_moved": 156303360.0,
-        "floor_ms": 24.527097502538073,
+        "floor_ms": 24.770718144184556,
         "quant": "Q6_K",
         "regime": "compute",
         "role": "attn_kv",
@@ -204,12 +204,12 @@
           "m": 512,
           "n": 1024
         },
-        "share": 0.009975753377208178
+        "share": 0.009975753377208173
       }
     ],
-    "tok_s": 208.24256635348112
+    "tok_s": 206.1944954280503
   },
-  "ridge_intensity": 32.42798353909465,
+  "ridge_intensity": 32.109053497942384,
   "schema": "boltbeam.tui.v1",
   "target": {
     "backend": "Metal",
@@ -223,13 +223,13 @@
     "matrix_tflops": {},
     "memory_bandwidth_gbs": 97.2,
     "peak_tflops": {
-      "fp16": 3.152
+      "fp16": 3.121
     },
     "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
     "scope_observed_at": "2026-10-09",
     "source": "registry"
   },
   "truth_status": "modeled",
-  "uncertainty": 0.0756,
+  "uncertainty": 0.0206,
   "weights": null
 }

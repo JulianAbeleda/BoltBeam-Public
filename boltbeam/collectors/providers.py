@@ -197,8 +197,7 @@ def available(target, *, tinygrad_root:pathlib.Path | None = None) -> list[dict[
 
 # --- is the GPU free ---------------------------------------------------------------------------------------
 
-BUSY_PCT = 40  # the lowest of SAMPLES Apple GPU utilization reads at or above this: another program uses the GPU
-SAMPLES = 3  # the desktop alone reads 0 to 15 percent; a model decoding holds it near 100
+SAMPLES = 3  # Apple GPU utilization reads; the lowest at or above the policy gpu_busy_pct means another program
 
 
 def _run(argv:list[str]) -> str:
@@ -283,7 +282,8 @@ def gpu_free(backend:str, *, run=_run, uuids:set[str] | None = None, me:int | No
           time.sleep(0.5)
         reads.append(apple_busy(run(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"])))
       pct = min((r for r in reads if r is not None), default=None)
-      if pct is None or pct < BUSY_PCT:
+      from boltbeam.core.policy import value
+      if pct is None or pct < value("gpu_busy_pct"):
         return {"free": True, "holders": [],
                 "reason": f"the GPU is {pct if pct is not None else 'not reported as'}% busy"}
       return {"free": False, "holders": [], "reason": f"the GPU is {pct}% busy; the driver does not say which "

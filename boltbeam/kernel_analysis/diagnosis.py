@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from boltbeam.core.facts import TruthStatus
+from boltbeam.core.policy import value
 from boltbeam.kernel_analysis.contrast import PairContrast
 from boltbeam.kernel_analysis.model import KernelEvidence
 
@@ -19,8 +20,6 @@ SUPPORTED, PLAUSIBLE, CONTRADICTED, UNKNOWN = "supported", "plausible", "contrad
 HIGH, MEDIUM, LOW, CONF_UNKNOWN = "high", "medium", "low", "unknown"
 _CONF_ORDER = [CONF_UNKNOWN, LOW, MEDIUM, HIGH]
 
-MOSTLY_ZERO_THRESHOLD = 0.9
-LOW_CORRELATION_THRESHOLD = 0.9
 
 
 @dataclass(frozen=True)
@@ -223,7 +222,7 @@ def _mostly_zero(ctx: DiagnosisContext) -> list[Hypothesis]:
   c = ctx.evidence.correctness
   if c is None or _num(c.zero_fraction) is None:
     return []
-  if c.zero_fraction < MOSTLY_ZERO_THRESHOLD:
+  if c.zero_fraction < value("mostly_zero_share"):
     return []
   return [Hypothesis("numerical.mostly_zero", "numerical",
                      "output is mostly zero; consistent with a bounded write/address defect "
@@ -239,7 +238,7 @@ def _low_correlation(ctx: DiagnosisContext) -> list[Hypothesis]:
   c = ctx.evidence.correctness
   if c is None or _num(c.correlation) is None:
     return []
-  if c.correlation >= LOW_CORRELATION_THRESHOLD:
+  if c.correlation >= value("low_correlation"):
     return []
   return [Hypothesis("numerical.low_correlation", "numerical",
                      "output correlates poorly with the reference; consistent with a structural (not scaling) error",

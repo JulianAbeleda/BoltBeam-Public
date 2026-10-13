@@ -42,17 +42,18 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from boltbeam.core.policy import value
+
 SAMPLES, WARMUPS = 20, 10  # warmups let the GPU clock ramp up before the first timed sample
 # the dispatch floor: an empty kernel's launches, each after a sweep as every timed launch is, after WARMUPS. Measured
 # with no warmups and no sweep it read 4.2 to 6.4 µs on a 5090 between runs; this way 3.8 to 4.0, and Nsight Compute
 # puts what a timed kernel carries over its own duration at 2.9 to 4.3 (docs/kernel-timer.md, "Checked against
 # Nsight Compute")
 FLOOR_SAMPLES = 60
-# a kernel whose median is under NOISY_FLOOR_MULTIPLE x the dispatch floor is mostly floor, and the floor's own jitter
+# a kernel whose median is under the policy noisy_floor_multiple x the dispatch floor is mostly floor, and the floor's own jitter
 # is most of its spread (attn_kv Q6_K on a 5090 read 8.05 then 10.30 µs between two passes): it is sampled
 # NOISY_SAMPLES times in all, the spread reported, and the row says why. One rule for both backends.
-NOISY_FLOOR_MULTIPLE, NOISY_SAMPLES = 3.0, 60
-NOISY_RULE = {"spread_pct": 10.0, "floor_share": 1 / NOISY_FLOOR_MULTIPLE}
+NOISY_SAMPLES = 60
 
 # the flush kernel per backend: a sweep over a buffer larger than the last-level cache, run before each timed sample;
 # "mode" says what the sweep does to the cache lines: "read" leaves them clean, "store" leaves them dirty
@@ -188,13 +189,13 @@ def _percentile(values:list[float], q:float) -> float:
 
 def more_samples(samples_us:list[float], floor_us:float | None) -> tuple[int, str | None]:
   """How many more samples a kernel needs and why: (count, words) under the floor rule, (0, None) otherwise. The
-  one rule: a median under NOISY_FLOOR_MULTIPLE x the dispatch floor is sampled NOISY_SAMPLES times in all."""
+  one rule: a median under the policy noisy_floor_multiple x the dispatch floor is sampled NOISY_SAMPLES times in all."""
   if floor_us is None or not samples_us:
     return 0, None
-  med = statistics.median(samples_us)
-  if med >= NOISY_FLOOR_MULTIPLE * floor_us or len(samples_us) >= NOISY_SAMPLES:
+  med, multiple = statistics.median(samples_us), value("noisy_floor_multiple")
+  if med >= multiple * floor_us or len(samples_us) >= NOISY_SAMPLES:
     return 0, None
-  return NOISY_SAMPLES - len(samples_us), (f"median {med:.1f} µs is under {NOISY_FLOOR_MULTIPLE:.0f} x the {floor_us:.1f} µs dispatch "
+  return NOISY_SAMPLES - len(samples_us), (f"median {med:.1f} µs is under {multiple:.0f} x the {floor_us:.1f} µs dispatch "
                                            f"floor: sampled {NOISY_SAMPLES} times, the spread reported")
 
 
@@ -203,7 +204,7 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
   """Compile (a library per source is reused through `libraries`), bind, check the first output, then time.
   Returns {"correctness", "samples", "median_us", "min_us", "spread_pct", "gbs", "pipeline", "label"}; with a
   failed check the samples are empty and nothing was timed. With the run's dispatch floor (floor_us) a kernel
-  under NOISY_FLOOR_MULTIPLE x it is sampled NOISY_SAMPLES times (more_samples); timing.more_samples says so."""
+  under the policy noisy_floor_multiple x it is sampled NOISY_SAMPLES times (more_samples); timing.more_samples says so."""
   import math
   import struct
   libraries = libraries if libraries is not None else {}

@@ -91,6 +91,19 @@ from one place (`workflow/diff.refuse_unless_same`).
 A part reads "unchanged outside moved rows" only when no row moved, no work changed, no row came or went, the gaps
 held, and both sides confirm end to end. An upgrade is expected to move rows; the audit says which.
 
+## Chip figures and stated choices
+
+The audit's noise is measured, never a constant:
+- A row's band is the range of its n before runs.
+- A chip figure (read bandwidth, a matrix peak) carries `uncertainty` in `data/targets.json`. It is the spread of
+  the probe's repeated whole runs at its best launch shape. A run's own read is one probe run, so it uses the
+  registry's figure for its chip. A figure without one is "not checked".
+- `shape_spread` beside it records how much the launch shape matters. It is data only; no guard reads it.
+
+The stated choices are in one table, `boltbeam/data/policy.json`, each with its reason, read through
+`core.policy.value`. Examples: a 1% change counts as equal speed; a protected context may not slow by more than 1%.
+A missing entry is an error, not a default.
+
 ## Worked example
 
 The earlier clean loop test used the former fixed bands ([loop-test-27b-prefill-rtx5090-20261012.md](loop-test-27b-prefill-rtx5090-20261012.md)):

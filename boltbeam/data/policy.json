@@ -1,0 +1,20 @@
+{
+  "schema": "boltbeam.policy.v1",
+  "note": "Stated choices, one table (docs/coding-principles.md: centralize; prefer data over code). Read only through core.policy.value. A noise tolerance is never here: it is a measured uncertainty (targets.uncertainty) or not checked.",
+  "policy": {
+    "equal_speed_pct": {"value": 1.0, "reason": "a whole-workload change within this many percent counts as equal speed: not a win and not a regression"},
+    "tier_a_min_pct": {"value": 5.0, "reason": "a gain of at least this many percent is a broad win, promotable by default when the guardrails pass"},
+    "tier_b_min_pct": {"value": 2.0, "reason": "a gain of at least this many percent is a residual win, promotable with clean rollback and no protected regression"},
+    "protected_regression_max_pct": {"value": 1.0, "reason": "a protected context that slows by more than this many percent fails the guardrail"},
+    "cache_tier_plateau_share": {"value": 0.08, "reason": "sweep points within this share of their run's median are one cache tier; a step to the next tier is larger"},
+    "dram_full_read_share": {"value": 0.02, "reason": "a role whose DRAM bytes are within this share of its weight bytes counts as reading its weights from DRAM"},
+    "same_row_work_ratio": {"value": 1.3, "reason": "input-side rows of one format whose work per launch is within this ratio are reported as one row"},
+    "noisy_spread_pct": {"value": 10.0, "reason": "a timed row whose samples spread more than this many percent (half of P90 - P10 over the median) is labelled noisy"},
+    "noisy_floor_multiple": {"value": 3.0, "reason": "a kernel whose median is under this multiple of the dispatch floor is mostly floor: sampled more and labelled noisy"},
+    "at_ceiling_pct": {"value": 80.0, "reason": "a kernel at or above this percent of its roofline is called at the ceiling"},
+    "headroom_pct": {"value": 50.0, "reason": "a kernel from this percent up to at_ceiling_pct is called moderate headroom; below it, large headroom"},
+    "mostly_zero_share": {"value": 0.9, "reason": "an output with at least this share of zeros is called mostly zero"},
+    "low_correlation": {"value": 0.9, "reason": "an output whose correlation with the reference is below this is called low correlation"},
+    "gpu_busy_pct": {"value": 40.0, "reason": "an Apple GPU whose lowest utilization read is at least this percent is in use by another program (the desktop alone reads 0 to 15)"}
+  }
+}

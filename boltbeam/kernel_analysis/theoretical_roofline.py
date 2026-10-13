@@ -487,11 +487,6 @@ def tiered_model_roofline(profile: Mapping[str, Any], *, peak_flops: float, tier
   }
 
 
-# thresholds for the roofline verdict
-_AT_CEILING_PCT = 80.0
-_HEADROOM_PCT = 50.0
-
-
 def assess_evidence(evidence, *, peak_flops: float, peak_bw_bytes_s: float) -> dict[str, Any]:
   """Judge one measured kernel against its own theoretical roofline: place its shape, and if timing is
   measured, report the fraction of the attainable ceiling it reached and what to do about it.
@@ -522,9 +517,10 @@ def assess_evidence(evidence, *, peak_flops: float, peak_bw_bytes_s: float) -> d
   out.update({"measured": True, "measured_flops_per_s": achieved_flops,
               "measured_ms": median_ms, "pct_of_roofline": pct,
               "measured_truth_status": "measured"})
-  if pct >= _AT_CEILING_PCT:
+  from boltbeam.core.policy import value
+  if pct >= value("at_ceiling_pct"):
     out["verdict"] = f"at the {point.regime} ceiling ({pct:.0f}% of roofline) — little headroom"
-  elif pct >= _HEADROOM_PCT:
+  elif pct >= value("headroom_pct"):
     out["verdict"] = f"{pct:.0f}% of the {point.regime} roofline — moderate headroom"
   else:
     out["verdict"] = (f"{pct:.0f}% of the {point.regime} roofline — large headroom; "

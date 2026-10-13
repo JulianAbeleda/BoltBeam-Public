@@ -146,8 +146,9 @@
             "scope": "NVIDIA GeForce RTX 5090, driver 595.84",
             "method": "BoltBeam cuda_bandwidth --gib 4 --reps 10 --runs 4: native CUDA read, best of 10 per launch shape, 7 shapes, then 5 s sustained, four whole runs (1701.3 / 1701.0 / 1701.3 / 1701.4)",
             "value_gbs": 1701.4,
-            "uncertainty": 0.0037,
-            "uncertainty_source": "the probe's spread over its 7 launch shapes and 4 runs, (max - min) / max: 1695.5 to 1701.4 GB/s; cold to sustained 0.05%; measured 2026-10-13",
+            "uncertainty": 0.0002,
+            "uncertainty_source": "the spread of 4 whole runs at the best launch shape, (max - min) / max: 1701.0 to 1701.4 GB/s; measured 2026-10-13",
+            "shape_spread": 0.0033,
             "superseded": "tinygrad-arkey bw_peak_cuda.cu read 1693.3 GB/s (4 GiB, 32 passes, 2026-09-23), 0.48% below this probe's range: the two probes differ by more than either one's spread",
             "sustained_check": {"observed_at": "2026-10-09", "probe": "BoltBeam native CUDA read probe, 4 GiB",
                                 "cold_gbs": 1701.5, "sustained_gbs": 1701.7, "sustained_mean_gbs": 1698.3,
@@ -171,7 +172,7 @@
             "paths": {
               "fp16": {
                 "tops": 251.4,
-                "uncertainty": 0.0181,
+                "uncertainty": 0.0004, "shape_spread": 0.0084,
                 "sm_mhz": 2895.0,
                 "ops_per_sm_per_clock": 510.8,
                 "instruction": "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32",
@@ -181,7 +182,7 @@
               },
               "fp16_f16acc": {
                 "tops": 497.7,
-                "uncertainty": 0.0247,
+                "uncertainty": 0.0014, "shape_spread": 0.0243,
                 "sm_mhz": 2872.0,
                 "ops_per_sm_per_clock": 1019.3,
                 "instruction": "mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16",
@@ -191,7 +192,7 @@
               },
               "bf16": {
                 "tops": 251.5,
-                "uncertainty": 0.0246,
+                "uncertainty": 0.002, "shape_spread": 0.0233,
                 "sm_mhz": 2895.0,
                 "ops_per_sm_per_clock": 511.0,
                 "instruction": "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32",
@@ -201,7 +202,7 @@
               },
               "int8": {
                 "tops": 995.8,
-                "uncertainty": 0.0254,
+                "uncertainty": 0.0054, "shape_spread": 0.0256,
                 "sm_mhz": 2872.0,
                 "ops_per_sm_per_clock": 2039.5,
                 "instruction": "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32",
@@ -211,7 +212,7 @@
               },
               "fp8": {
                 "tops": 502.8,
-                "uncertainty": 0.0223,
+                "uncertainty": 0.0004, "shape_spread": 0.0222,
                 "sm_mhz": 2895.0,
                 "ops_per_sm_per_clock": 1021.7,
                 "instruction": "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32",
@@ -221,7 +222,7 @@
               },
               "fp4": {
                 "tops": 1988.9,
-                "uncertainty": 0.0263,
+                "uncertainty": 0.0012, "shape_spread": 0.0204,
                 "sm_mhz": 2872.0,
                 "ops_per_sm_per_clock": 4073.6,
                 "instruction": "mma.sync.aligned.m16n8k64.row.col.kind::mxf4.block_scale.scale_vec::2X.f32.e2m1.e2m1.f32.ue8m0",
@@ -231,7 +232,7 @@
               },
               "fp32_fma": {
                 "tops": 119.7,
-                "uncertainty": 0.0767,
+                "uncertainty": 0.0058, "shape_spread": 0.0654,
                 "sm_mhz": 2887.0,
                 "ops_per_sm_per_clock": 243.8,
                 "instruction": "fma.rn.f32",
@@ -242,7 +243,7 @@
               },
               "tf32": {
                 "tops": 125.7,
-                "uncertainty": 0.0193,
+                "uncertainty": 0.0102, "shape_spread": 0.0216,
                 "sm_mhz": 2898.0,
                 "ops_per_sm_per_clock": 255.1,
                 "instruction": "mma.sync.aligned.m16n8k8.row.col.f32.tf32.tf32.f32",
@@ -252,7 +253,7 @@
                 "observed_at": "2026-10-11"
               }
             },
-            "uncertainty_source": "per path, BoltBeam cuda_compute --runs 4 on 2026-10-13: the spread over its 4 launch shapes and 4 runs (burst and plateau), (max - min) / max; every rate above lies inside its path's range",
+            "uncertainty_source": "per path, BoltBeam cuda_compute --runs 4 on 2026-10-13: the spread of the 4 runs' plateau rates at the best launch shape, (max - min) / max; every rate above is within that batch's best x (1 + uncertainty); shape_spread is the spread over the launch shapes, data only",
             "superseded": "2026-09-23 tinygrad-arkey mma_peak_cuda.cu / imma_peak_cuda.cu read fp16 237.1 TF and int8 947.0 TOPS at 2947 MHz pinned (92.4% of 512 and 2048 ops per SM per clock); this probe reads 99.7 to 99.8% of the same rates"
           },
           "peak_tflops": {
@@ -294,7 +295,7 @@
     {
       "target_id": "apple_m3_10c", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
       "lds_bytes_per_cu": null, "vram_bytes": null, "vector_load_bits": 128,
-      "compute_units": null, "memory_bandwidth_gbs": 97.2, "peak_tflops": {"fp16": 3.152},
+      "compute_units": null, "memory_bandwidth_gbs": 97.2, "peak_tflops": {"fp16": 3.121},
       "dot_primitives": ["simdgroup_matrix"],
       "dequant_primitives": [],
       "backend_status": "descriptor_only",
@@ -318,8 +319,9 @@
             "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
             "method": "boltbeam metal-bandwidth: read-only float4 sum over 1 GiB, best of five per launch shape",
             "value_gbs": 97.2,
-            "uncertainty": 0.0756,
-            "uncertainty_source": "boltbeam metal-bandwidth --runs 4 on 2026-10-13: best 97.1 GB/s (runs 96.7 / 95.2 / 97.1 / 97.0); the spread over its 6 launch shapes and 4 runs, (max - min) / max; the weak shapes (fewer threadgroups) set the width",
+            "uncertainty": 0.0206,
+            "uncertainty_source": "boltbeam metal-bandwidth --runs 4 on 2026-10-13: the spread of 4 whole runs at the best launch shape, (max - min) / max: 95.1 to 97.1 GB/s; 97.2 is within 97.1 x (1 + uncertainty)",
+            "shape_spread": 0.1397,
             "vendor_spec_gbs": 100.0,
             "vendor_url": "https://support.apple.com/en-us/118551",
             "observed_at": "2026-10-09"
@@ -327,13 +329,15 @@
           "peak_tflops": {
             "kind": "measurement",
             "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
-            "method": "tinygrad-arkey extra/llm_research/wmma_peak_metal.py, simdgroup_multiply_accumulate plateau, fp16 in and fp32 accumulate",
-            "value_tflops": 3.152,
-            "uncertainty": 0.0864,
-            "uncertainty_source": "boltbeam metal-bandwidth --runs 4 matrix probe on 2026-10-13: best 3.138 (runs 3.138 / 3.126 / 3.132 / 3.121), the spread over its 4 launch shapes and 4 runs; 3.152 lies 0.45% above that best, inside the range",
+            "method": "boltbeam metal-bandwidth --runs 4: simdgroup 8x8 fp16 multiply-accumulate into fp32, best of 5 per launch shape, 4 shapes, four whole runs (3.117 / 3.120 / 3.112 / 3.121)",
+            "value_tflops": 3.121,
+            "uncertainty": 0.0029,
+            "uncertainty_source": "the spread of 4 whole runs at the best launch shape, (max - min) / max; measured 2026-10-13",
+            "shape_spread": 0.0819,
+            "superseded": "tinygrad-arkey wmma_peak_metal.py plateau 3.152 (2026-09-22), 1.0% above this probe's range: a value and its uncertainty come from one probe",
             "dtype": "fp16",
             "note": "matrix unit; Apple publishes no FLOPS figure for M-series",
-            "observed_at": "2026-09-22"
+            "observed_at": "2026-10-13"
           }
         },
         "same_type_quant_kv_flash_fastpath": false,

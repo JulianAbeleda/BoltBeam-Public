@@ -9,7 +9,7 @@
     "peak_bandwidth_gbs": 97.2,
     "status": "modeled",
     "tok_s": 20.78565690996941,
-    "uncertainty": 0.0756
+    "uncertainty": 0.0206
   },
   "engine": {
     "build": null,

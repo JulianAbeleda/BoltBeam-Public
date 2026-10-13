@@ -94,7 +94,7 @@
       "matrix_tflops": {},
       "memory_bandwidth_gbs": 97.2,
       "peak_tflops": {
-        "fp16": 3.152
+        "fp16": 3.121
       },
       "scope": "MacBook Air (13-inch, M3, 2024), 10-core GPU",
       "scope_observed_at": "2026-10-09",

@@ -12,7 +12,7 @@ why.
     the launches that follow a    the timed samples (the sweep kernel also reads the warm activations back in)
     sweep kernel
     per role                      ncu's own duration, the DRAM bytes read, the weight bytes: checked when the DRAM
-                                  bytes are the weight bytes (CACHE_SLACK)
+                                  bytes are the weight bytes (policy dram_full_read_share)
 
 The metrics are kept to one pass: with more, ncu replays the kernel and the later passes find the L2 the first pass
 filled, so no L2 counter is asked for. The L2 hit share is derived: 1 less the DRAM bytes over the bytes the kernel
@@ -34,7 +34,6 @@ from boltbeam.collectors import kernel_timer
 
 METRICS = ("gpu__time_duration.sum", "dram__bytes_op_read.sum", "launch__grid_size")  # one pass on an RTX 5090
 CHILD_ENV = "BOLTBEAM_ORACLE_CHILD"  # set in the timer run under ncu, so it does not start a third
-CACHE_SLACK = 0.02  # the weights count as read from DRAM when the DRAM bytes are within 2% of them
 CHECKED = "checked by Nsight Compute: the timed launches' DRAM bytes against the weight bytes"
 _SCALE = {"byte": 1, "Kbyte": 1e3, "Mbyte": 1e6, "Gbyte": 1e9}  # ncu's byte prefixes are decimal
 
@@ -94,7 +93,8 @@ def check(group:list[dict[str, Any]], row:dict[str, Any]) -> dict[str, Any]:
   dram = statistics.median(x["dram_bytes"] for x in group)
   weights = float(row["bytes"])
   warm = float(((row.get("timing") or {}).get("warm") or [None, 0])[1])
-  ok = abs(dram - weights) <= CACHE_SLACK * weights
+  from boltbeam.core.policy import value
+  ok = abs(dram - weights) <= value("dram_full_read_share") * weights
   return {"status": "checked", "words": CHECKED, "launches": len(group), "ncu_us": statistics.median(x["us"] for x in group),
           "dram_bytes": dram, "weight_bytes": weights, "dram_over_weights": dram / weights if weights else None,
           "l2_hit_pct": max(0.0, 100.0 * (1 - dram / (weights + warm))) if weights + warm else None, "passed": ok,

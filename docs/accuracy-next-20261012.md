@@ -169,6 +169,9 @@ probe's spread over its launch shapes and whole repeated runs, (max - min) / max
 A figure with no measured uncertainty is "not checked" in every guard. No constant replaces it. The documented
 run-to-run range (tok/s) is kept as a record; it is no longer part of any guard.
 
+The definition below (launch shapes and repeats together) was replaced the same day by the repeat spread at the
+best launch shape: see "Best-shape uncertainty" at the end.
+
 ### Measured, 2026-10-13
 
 Four whole runs of each probe. Four is the n the repeat rule asks for a pin. One GPU batch of about 90 seconds;
@@ -228,15 +231,81 @@ See [the engine-upgrade audit](engine-upgrade-audit.md).
 
 ### Literal tolerances still in the code
 
-These remain in `boltbeam/` and still decide a verdict or a label. None is a measured uncertainty:
+The list that stood here was classified and resolved: see "The policy table" below.
 
-- `eval/thresholds.py`: speed-equivalent 1%, tier A 5%, tier B 2%, protected regression 1%.
-- `roofline/roofline_ceiling.py`: ramp 3% and throttle 5% pick the cold or sustained read.
-- `memory/mem_hierarchy.py`: plateau 8%.
-- `collectors/kernel_oracle.py`: DRAM bytes within 2% count as a full weight read.
-- `collectors/pairing.py`: `GAP_RATIO` 1.3 merges input rows whose times cannot be told apart.
-- `workflow/tie_out.py`: `NOISY_RULE` names a noisy isolated reading.
-- `kernel_analysis/theoretical_roofline.py` (80% at ceiling, 50% headroom), `kernel_analysis/diagnosis.py` (0.9).
-- `collectors/providers.py`: 40% GPU busy means another program uses the GPU.
-- Arithmetic and numeric checks, not measurement noise: `diff.TIE_RESIDUAL_MS` (0.001 ms),
-  `metal_native.TOLERANCE` (1e-3).
+## Best-shape uncertainty, 2026-10-13
+
+Classify evidence before fixing mechanisms. A slow launch shape is not uncertainty in the peak. It is a separate
+fact: how much the shape matters. The probes now write two fields:
+
+- `uncertainty`: the spread of the whole runs' figures, each at its run's best launch shape, (max - min) / max.
+  One run has none.
+- `shape_spread`: the spread over every run's launch shapes. Data only; no guard reads it.
+
+`targets.uncertainty` stays the one reader and reads only `uncertainty`. A saved read's old `spread` field is no
+longer taken as an uncertainty. A run's own read is one probe run, so its guards use the registry's figure for
+its chip.
+
+Re-measured with n = 4 per probe: the M3 on the Mac (Metal, no model server running), and the RTX 5090 in one batch
+of about 90 seconds. The box's model server was stopped and restored: health ok, one completion, build b11571.
+
+| Chip and figure | Value | Old uncertainty | New uncertainty | Shape spread |
+| --- | ---: | ---: | ---: | ---: |
+| RTX 5090 read | 1,701.4 GB/s | 0.37% | 0.02% | 0.33% |
+| RTX 5090 fp16 / bf16 / tf32 | 251.4 / 251.5 / 125.7 | 1.81% / 2.46% / 1.93% | 0.04% / 0.20% / 1.02% | 0.8% / 2.3% / 2.2% |
+| RTX 5090 fp16 accumulate / int8 / fp8 / fp4 | 497.7 / 995.8 / 502.8 / 1,988.9 | 2.47% / 2.54% / 2.23% / 2.63% | 0.14% / 0.54% / 0.04% / 0.12% | 2.4% / 2.6% / 2.2% / 2.0% |
+| RTX 5090 fp32 FMA | 119.7 | 7.67% | 0.58% | 6.5% |
+| M3 read | 97.2 GB/s | 7.56% | 2.06% | 14.0% |
+| M3 fp16 matrix | 3.121 (was 3.152) | 8.64% | 0.29% | 8.2% |
+
+Every 5090 rate in the registry is within that batch's best x (1 + its uncertainty), so the values stay. The M3
+read's 97.2 is within 97.1 x 1.0206. The M3 fp16 matrix value changed. The old 3.152 came from a different probe.
+It lies 1.0% above this probe's whole range (3.112 to 3.121). A value and its uncertainty come from one probe, so the
+registry now holds 3.121.
+
+### Verdicts that changed
+
+The same saved decode captures were re-attributed from their raw traces with the old and the new code, on private
+copies. No GPU.
+
+- llama.cpp 27B, all three runs: the role table is refused again: "roles below their floor beyond measured repeat
+  spread and the floor's uncertainty: lm_head". The floor uses that run's own read, 1,692.7 GB/s. lm_head reads about
+  1,698 GB/s, 0.34% faster. The read probe's repeat spread at its best shape is 0.02%. So the gap is not noise: in
+  that run a real kernel read faster than the probe's best shape. The shape spread had hidden this.
+- `check_window`: every capture is now checked at ±0.02% instead of ±0.90%. All 14 still pass.
+- Pairings: unchanged in every capture.
+- A pairing test fixture that used the old 1,693.3 now uses the registry's 1,701.4. With 1,693.3 and the new bound,
+  lm_head (1,699 GB/s) is refused.
+
+## The policy table
+
+Prefer data over code, and centralize. Each literal tolerance was classified:
+(a) policy, a stated choice; (b) a noise tolerance that should be measured; (c) arithmetic.
+Every (a) moved to one table, `boltbeam/data/policy.json`, with a one-line reason each. It is read only through
+`core.policy.value`. A missing entry raises; no code keeps a default. The old constants are removed.
+
+| Literal | Where | Class | What happened |
+| --- | --- | --- | --- |
+| equal speed 1% | `eval/thresholds.py` | a | `equal_speed_pct` |
+| tier A 5%, tier B 2% | `eval/thresholds.py` | a | `tier_a_min_pct`, `tier_b_min_pct` |
+| protected regression 1% | `eval/thresholds.py` | a | `protected_regression_max_pct` |
+| ramp 3%, throttle 5% | `roofline/roofline_ceiling.py` | b | the samples' own repeat spread; one sample each: "not checked", sustained used |
+| plateau 8% | `memory/mem_hierarchy.py` | a | `cache_tier_plateau_share` |
+| DRAM slack 2% | `collectors/kernel_oracle.py` | a | `dram_full_read_share` |
+| `GAP_RATIO` 1.3 | `collectors/pairing.py` | a | `same_row_work_ratio`: a ratio of work that sets the report's grain, not a time |
+| `NOISY_RULE` 10% and floor multiple 3 | `kernel_timer.py`, `tie_out.py` | a | `noisy_spread_pct`, `noisy_floor_multiple` |
+| at ceiling 80%, headroom 50% | `kernel_analysis/theoretical_roofline.py` | a | `at_ceiling_pct`, `headroom_pct` |
+| mostly zero 0.9, low correlation 0.9 | `kernel_analysis/diagnosis.py` | a | `mostly_zero_share`, `low_correlation` |
+| GPU busy 40% | `collectors/providers.py` | a | `gpu_busy_pct` |
+| noise spread multiplier 1.0 | `eval/thresholds.py` | c | left: it multiplies a measured spread by one |
+| tie residual 0.001 ms, Metal tolerance 1e-3 | `diff.py`, `metal_native.py` | c | left |
+
+### Open
+
+- The probes keep one cold and one sustained figure per run, so a probe's regime now reads "not checked". Repeated
+  cold and sustained samples would measure it. Both measured chips read the same figure as before.
+- `same_row_work_ratio` is a stated choice. A measured test of whether two rows' times can be told apart (from the
+  capture's own per-launch spread) does not exist.
+- `evidence.THROTTLE_SHARE`, `LAUNCH_HEAVY` and `KV_SHARE` were not in the list and were not classified.
+- The lm_head refusal: whether a floor should be the larger of the probe and the fastest measured kernel is a
+  policy decision. It was not changed.

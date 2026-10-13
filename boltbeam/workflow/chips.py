@@ -91,7 +91,7 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
       "memory_bandwidth_gbs": {"kind": "measurement", "scope": scope, "method": read["method"],
                                "value_gbs": read["read_gbs"], "observed_at": today,
                                # cold burst, sustained series, the regime between them, and the measured uncertainty
-                               **{k: read.get(k) for k in ("regime", "cold_gbs", "sustained_gbs", "spread", "drift", "uncertainty")
+                               **{k: read.get(k) for k in ("regime", "cold_gbs", "sustained_gbs", "shape_spread", "drift", "uncertainty")
                                   if read.get(k) is not None}},
       # a probe of every matrix path (cuda_compute) keeps each path's rate and clock; the fp16-only probe a lower bound
       "matrix_tflops": fact_source(matrix, scope=scope, today=today) if matrix.get("paths") else

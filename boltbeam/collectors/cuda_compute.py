@@ -231,7 +231,7 @@ def fact_source(result:dict[str, Any], *, scope:str, today:str) -> dict[str, Any
           "clock_policy": result["clock_policy"].get("policy"), "throttled": result["telemetry"].get("throttled"),
           "paths": {r["path"]: ({"tops": r["tops"], "sm_mhz": r["sm_mhz"], "ops_per_sm_per_clock": r["ops_per_sm_per_clock"],
                                  "instruction": r["ptx"], "words": r["words"], "throttled": r["clock"].get("throttled"),
-                                 **({"uncertainty": r["uncertainty"]} if "uncertainty" in r else {}),
+                                 **{k: r[k] for k in ("uncertainty", "shape_spread") if k in r},
                                  "power_w_mean": (r["clock"].get("power_w") or {}).get("mean")}
                                 if r.get("available") else {"available": False, "reason": r["reason"], "instruction": r["ptx"]})
                     for r in result["paths"]}}
@@ -242,7 +242,7 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--device", type=int, default=0)
   p.add_argument("--seconds", type=float, default=SECONDS)
   p.add_argument("--reps", type=int, default=5)
-  p.add_argument("--runs", type=int, default=1, help="whole probe runs; each path's uncertainty spans all of them")
+  p.add_argument("--runs", type=int, default=1, help="whole probe runs; each path's uncertainty is their spread at the best shape")
   p.add_argument("--path", action="append", choices=[x.name for x in PATHS], help="only this path (repeatable)")
   a = p.parse_args(argv)
   paths = tuple(x for x in PATHS if not a.path or x.name in a.path)

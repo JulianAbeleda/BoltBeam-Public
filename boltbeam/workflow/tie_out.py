@@ -45,7 +45,7 @@ REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slo
 # reading, the suffix says why it is not firm (noisy_words). One rule for both backends; reason_word keeps the firm
 # word for the readers that key on it (the HTML rule tables).
 NOISY = "{word}; noisy: {why}"
-from boltbeam.collectors.kernel_timer import NOISY_RULE
+from boltbeam.core.policy import value
 from boltbeam.roofline.prefill_work import CHIP_BEST_WORDS
 
 NOISY_FLOOR = "{floor:.1f} µs floor under a {us:.1f} µs kernel"
@@ -161,12 +161,12 @@ def noisy_words(spread_pct:float | None, us_per_call:float | None = None, floor_
   the clock: on a 5090 a 3 MB kernel under a 4 µs floor swings 8 to 10 µs between passes while the chip's
   run-to-run band is ±1.4%, so the band is the wrong yardstick (a sample spread and a run-to-run band are two
   different statistics). Noisy when the samples' half-spread (P90 - P10 over the median, halved, as ±) is over
-  NOISY_RULE["spread_pct"], the gap between "at the limit" and a clearly slow row; or when the dispatch floor is over
-  NOISY_RULE["floor_share"] of the measured time. why names what fired: "±14.0%", "4.1 µs floor under a 7.5 µs
+  the policy noisy_spread_pct, the gap between "at the limit" and a clearly slow row; or when the dispatch floor is over
+  1 / noisy_floor_multiple of the measured time. why names what fired: "±14.0%", "4.1 µs floor under a 7.5 µs
   kernel", or both joined by a comma. Nothing without a spread or a floor (an in-model row)."""
   half = float(spread_pct) / 2.0 if spread_pct is not None else None
-  wide = half is not None and half > NOISY_RULE["spread_pct"]
-  floored = floor_us is not None and us_per_call is not None and us_per_call > 0 and floor_us > NOISY_RULE["floor_share"] * us_per_call
+  wide = half is not None and half > value("noisy_spread_pct")
+  floored = floor_us is not None and us_per_call is not None and us_per_call > 0 and floor_us * value("noisy_floor_multiple") > us_per_call
   if not (wide or floored):
     return False, half, None
   why = ([f"±{half:.1f}%"] if half is not None else []) + ([NOISY_FLOOR.format(floor=floor_us, us=us_per_call)] if floored else [])
@@ -219,8 +219,8 @@ def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tu
   if any(r.get("less_floor_ms") is not None for r in roles):
     rule += ISOLATED_RULE.format(floor_words=floor_words(floor_us) or "less the dispatch floor")
   if floor_us is not None or any(r.get("spread_pct") is not None for r in roles):
-    rule += (f" Noisy: the role's own samples spread more than ±{NOISY_RULE['spread_pct']:.0f}% (half of P90 - P10 over the "
-             f"median), or the dispatch floor is over {100 * NOISY_RULE['floor_share']:.0f}% of its measured time (the kernel is "
+    rule += (f" Noisy: the role's own samples spread more than ±{value('noisy_spread_pct'):.0f}% (half of P90 - P10 over the "
+             f"median), or the dispatch floor is over {100 / value('noisy_floor_multiple'):.0f}% of its measured time (the kernel is "
              "mostly floor), so the word is not firm.")
   return out, rule
 

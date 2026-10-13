@@ -24,16 +24,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-# sustained must beat cold by at least this fraction to call it a clock-ramp regime (vs flat / noise).
-_RAMP_EPS = 0.03
-# sustained below cold by more than this fraction is a genuine sustained-throttle regime (a thermal lever).
-_THROTTLE_EPS = 0.05
-
 
 @dataclass(frozen=True)
 class CeilingResolution:
   achieved_gbs: float                    # THE denominator to feed derive_roofline_plan(achieved_gbs=...)
-  regime: str                            # clocks_ramp_up | sustained_throttle | flat
+  regime: str                            # clocks_ramp_up | sustained_throttle | flat | not checked
   cold_gbs: float | None
   sustained_gbs: float | None
   raw_peak_gbs: float | None
@@ -53,6 +48,12 @@ def _best(samples:list[float] | None) -> float | None:
   return max(vals) if vals else None
 
 
+def _repeat_spread(*sides:list[float] | None) -> float | None:
+  """The samples' own measured uncertainty, (max - min) / max, the wider side; None unless each side repeats."""
+  vals = [[float(s) for s in (x or []) if s and s > 0] for x in sides]
+  return max((max(v) - min(v)) / max(v) for v in vals) if all(len(v) > 1 for v in vals) else None
+
+
 def resolve_achieved_ceiling(*, cold_samples:list[float] | None = None, sustained_samples:list[float] | None = None,
                              raw_peak_gbs:float | None = None,
                              reference_kernel_gbs:float | None = None) -> CeilingResolution:
@@ -68,10 +69,15 @@ def resolve_achieved_ceiling(*, cold_samples:list[float] | None = None, sustaine
   warnings: list[str] = []
 
   # pick the streaming ceiling: sustained is the honest one; fall back to cold with a warning if that's all we have.
-  if sustained is not None and cold is not None:
-    if sustained >= cold * (1.0 + _RAMP_EPS):
+  # cold and sustained differ only beyond the samples' own repeat spread; with no repeats it is not checked, and
+  # the sustained figure is the one a decode sees (rule 1)
+  u = _repeat_spread(cold_samples, sustained_samples)
+  if sustained is not None and cold is not None and u is None:
+    regime, achieved = "not checked", sustained
+  elif sustained is not None and cold is not None:
+    if sustained > cold * (1.0 + u):
       regime, achieved = "clocks_ramp_up", sustained
-    elif sustained <= cold * (1.0 - _THROTTLE_EPS):
+    elif sustained < cold * (1.0 - u):
       regime, achieved = "sustained_throttle", sustained
       warnings.append(f"sustained ({sustained:.0f}) is materially below cold ({cold:.0f}) GB/s: the target THROTTLES "
                       "under continuous load. This is a THERMAL/power lever, not a codegen one — the sustained number "

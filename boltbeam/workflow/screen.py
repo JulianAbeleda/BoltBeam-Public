@@ -178,7 +178,7 @@ def bandwidth_uncertainty(target, read:dict[str, Any] | None = None) -> float | 
   from boltbeam.target.targets import fact_uncertainty, uncertainty
   if read and read.get("source") == "explicit --peak-gbs":
     return None
-  return uncertainty(read) if read and ("uncertainty" in read or "spread" in read) else fact_uncertainty(target)
+  return uncertainty(read) if read and "uncertainty" in read else fact_uncertainty(target)
 
 
 def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "fp16",
