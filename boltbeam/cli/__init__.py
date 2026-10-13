@@ -55,7 +55,7 @@ def _listing(helps:dict[str, str]) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-  ap = argparse.ArgumentParser(prog="boltbeam", description="Translate weights into codegen search.",
+  ap = argparse.ArgumentParser(prog="boltbeam", description="Audit where inference time goes against a measured roofline.",
                                formatter_class=argparse.RawDescriptionHelpFormatter)
   sub = ap.add_subparsers(dest="cmd", required=True, metavar="<command>",
                           help="one of the commands listed below")

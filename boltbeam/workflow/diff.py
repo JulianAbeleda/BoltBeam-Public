@@ -31,6 +31,8 @@ class DiffRefused(ValueError):
 def refuse_unless_same(fields:list[tuple[str, Any, Any]]) -> None:
   """Raise DiffRefused naming the first field the runs differ in (or that one of them lacks)."""
   for name, x, y in fields:
+    if x is None and y is None:
+      raise DiffRefused(f"neither run recorded its {name}")
     if x != y or x is None:
       raise DiffRefused(f"the runs differ in {name}: {x!r} and {y!r}")
 
@@ -107,6 +109,10 @@ def _decode_side(run:pathlib.Path, record:dict | None = None) -> dict[str, dict[
         key = role_label(role["role"], role["quant"], role.get("shape"))
         rows[key] = {"now_ms": role["actual_ms"], "calls": role.get("calls_per_token"), "limit_ms": role.get("ideal_ms")}
   token, busy, untraced = t.get("token_ms"), t.get("busy_ms"), t.get("untraced_ms")
+  if t.get("isolated"):  # kernels timed alone: no captured token, so no gaps and no end-to-end check; the rows repeat
+    return {f"decode {t.get('context')}": {"rows": rows, "tie": {
+      "captured_ms": None, "busy_ms": busy, "gaps_ms": None, "residual_ms": None, "untraced_ms": untraced,
+      "end_to_end": {"confirms": None, "words": "the kernels were timed alone: there is no captured token to check end to end"}}}}
   attr = {"profiled_wall_ms": token, "wall_ms": token, "busy_ms": busy, "gaps_ms": (token - busy) if token and busy else None}
   from boltbeam.workflow.repeat_bands import find
   e2e = tie.end_to_end(attr, untraced, "token", band=find(run, f"decode {t.get('context')}", record=record)) if token and busy is not None else {"confirms": None, "words": "no captured token"}

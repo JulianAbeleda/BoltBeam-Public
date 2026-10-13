@@ -57,6 +57,8 @@ type Facts struct {
 	CTail       []string
 	Spin        string
 	Confirm     string              // the run id waiting for a second enter before it is deleted
+	CompareFrom string              // the saved run picked as "before"; Saved runs then picks the "after"
+	Compared    *Compared           // the last comparison of two saved runs, or why it was refused
 	Batch       int                 // streams decoded at once; 0 means 1
 	BatchTyped  string              // digits typed on the batch picker
 	Measurement string              // how roles are timed, as picked: in_model or generic; "" is Python's default here
@@ -141,6 +143,7 @@ const (
 	pageWorkload
 	pageBatch
 	pageMeasurement
+	pageCompare
 )
 
 func none(Facts) string { return "" }
@@ -156,6 +159,7 @@ var steps = []step{
 	{"Workload", "", none, func(Facts) (string, string) { return "", "" }, workloadBody, workloadActions},
 	{"Batch", "", none, batchLine, batchBody, batchActions},
 	{"Measurement", "", none, func(Facts) (string, string) { return "", "" }, measurementBody, measurementActions},
+	{"Compare", "", none, compareLine, compareRunsBody, compareActions},
 }
 
 // picker reports whether a page is one of the three pickers Setup opens.
@@ -539,7 +543,8 @@ func runActions(f Facts) []action {
 	case f.failedStage() != "":
 		return []action{{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)}}
 	case f.ReadOnly:
-		out = append(out, action{"Back to saved runs", "page", fmt.Sprint(pageSaved)})
+		out = append(out, action{"Back to saved runs", "page", fmt.Sprint(pageSaved)},
+			action{"Compare with another saved run (this one is before)", "comparefrom", f.Run.ID})
 	case f.Run != nil && f.outputDone():
 		if dir, ok := f.savedAs(f.Run.ID); ok {
 			out = append(out, action{mark("pass") + " Saved to " + dir, "", ""})
@@ -573,24 +578,97 @@ func savedBody(f Facts, width int) string {
 	return b.String()
 }
 
+// --- Compare: two saved runs, as the seam words them -------------------------------------------------------------
+
+// Compared is one comparison on screen: the two ids, the seam's lines, or the refusal.
+type Compared struct {
+	Before, After string
+	Lines         []string
+	Err           string
+}
+
+func compareLine(f Facts) (string, string) {
+	switch {
+	case f.Compared == nil:
+		return "run", "comparing…"
+	case f.Compared.Err != "":
+		return "fail", "not compared"
+	}
+	return "pass", f.Compared.Before + " (before) and " + f.Compared.After + " (after)"
+}
+
+func compareRunsBody(f Facts, width int) string {
+	c := f.Compared
+	switch {
+	case c == nil:
+		return stMuted.Render("Comparing…")
+	case c.Err != "":
+		return stWarn.Render(glyphWarn+" Not compared: "+c.Err+".") + "\n" +
+			stMuted.Render("Compare two runs of the same model, chip, engine and workload; two replays of one trace may differ in engine.")
+	}
+	return strings.Join(c.Lines, "\n")
+}
+
+func compareActions(f Facts) []action {
+	return []action{{"Back to saved runs", "page", fmt.Sprint(pageSaved)}, {"[ Back to setup ]", "page", fmt.Sprint(pageSetup)}}
+}
+
+// crossEngines says the two saved runs are replays from different engines: replay-cross, not diff.
+func (f Facts) crossEngines(a, b string) bool {
+	if f.Saved == nil {
+		return false
+	}
+	engine := map[string]string{}
+	for _, r := range f.Saved.Runs {
+		if r.Workload != nil && *r.Workload == "replay" {
+			engine[r.ID] = r.Provider
+		}
+	}
+	ea, oka := engine[a]
+	eb, okb := engine[b]
+	return oka && okb && ea != eb
+}
+
 func savedActions(f Facts) []action {
 	out := []action{}
+	if f.CompareFrom != "" {
+		out = append(out, action{stInfo.Render("Pick the after run to compare with " + f.CompareFrom + ". The same model, chip and " +
+			"engine compare row by row; two replays of one trace may differ in engine."), "note", ""})
+	}
 	if f.Saved != nil {
 		for _, r := range f.Saved.Runs {
 			pct := "not measured"
-			if r.PctOfLimit != nil {
+			switch {
+			case r.PctOfLimit != nil:
 				pct = fmt.Sprintf("%.0f%% of limit", *r.PctOfLimit)
+			case r.RooflinePct != nil: // a replay: the session against its roofline
+				pct = fmt.Sprintf("%.0f%% of roofline", *r.RooflinePct)
+			case r.Measured:
+				pct = "measured"
 			}
 			when := strings.Replace(r.SavedAt, "T", " ", 1)
 			if len(when) > 16 {
 				when = when[:16] // to the minute
 			}
-			label := fmt.Sprintf("%s · %s · %s · %s · %s", deref(r.ModelID), deref(r.TargetID), r.Provider, when, pct)
+			engine := r.Provider
+			if r.Workload != nil {
+				engine += " " + *r.Workload
+			}
+			label := fmt.Sprintf("%s · %s · %s · %s · %s", deref(r.ModelID), deref(r.TargetID), engine, when, pct)
 			if f.Confirm == r.ID {
 				label = stBad.Render("Press d again to delete saved run " + r.ID + " · any other key keeps it")
 			}
+			if f.CompareFrom != "" {
+				if r.ID != f.CompareFrom {
+					out = append(out, action{label, "compare", r.ID})
+				}
+				continue
+			}
 			out = append(out, action{label, "opensaved", r.ID})
 		}
+	}
+	if f.CompareFrom != "" {
+		return append(out, action{"[ Cancel compare ]", "comparecancel", ""})
 	}
 	out = append(out, cleanAction(f)...)
 	return append(out, action{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)})
@@ -1015,11 +1093,18 @@ func resultLine(f Facts) (string, string) {
 		return "fail", "comparing kernels failed: " + p.Failed
 	}
 	res := f.Run.Results
+	if s := res.Loss.Session; res.Measured && s != nil && s.Focus != nil && len(res.Loss.Runtimes) > 0 && res.Ceiling.TokS != nil {
+		r := res.Loss.Runtimes[0]
+		return "pass", fmt.Sprintf("%.1f tokens per second at depth %s · %.0f%% of the limit", r.TokS, count(s.Focus), r.TokS / *res.Ceiling.TokS * 100)
+	}
 	if res.Measured && res.Timing.TokS != nil {
 		if res.Ceiling.TokS != nil && *res.Ceiling.TokS > 0 {
 			return "pass", fmt.Sprintf("%.1f tokens per second · %.0f%% of the limit", *res.Timing.TokS, *res.Timing.TokS / *res.Ceiling.TokS * 100)
 		}
 		return "pass", fmt.Sprintf("%.1f tokens per second measured", *res.Timing.TokS)
+	}
+	if rp := res.Loss.Replay; res.Measured && rp != nil && len(rp.Rows) > 0 {
+		return "pass", fmt.Sprintf("replay measured · %d turns", len(rp.Rows))
 	}
 	if f.Run.Report != nil {
 		return "open", "nothing measured yet · enter opens " + *f.Run.Report

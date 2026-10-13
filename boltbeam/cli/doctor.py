@@ -52,7 +52,9 @@ def _gpu(gpu:dict[str, Any]) -> list[dict[str, Any]]:
     where = {"registry": "built in", "generated": "measured on this machine"}.get(profile.get("source") or "", profile.get("source") or "")
     out.append(row("chip profile", True, f"{profile['id']} ({where})"))
   else:
-    out.append(row("chip profile", False, f"none yet for {gpu.get('name')}; autoscan would save it as {profile.get('id')}",
+    out.append(row("chip profile", False, f"none yet for {gpu.get('name')}. A run does not measure the chip by itself, "
+                   f"and without its measured bandwidth and compute peak every ceiling is refused. autoscan saves the "
+                   f"profile as {profile.get('id')}",
                    f"{AUTOSCAN}   (measures this GPU once, about a minute, and saves the profile)"))
   return out
 

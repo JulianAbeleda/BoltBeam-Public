@@ -122,6 +122,7 @@ type savedRunMsg struct {
 	err error
 }
 type cleanedMsg struct{ err error }
+type comparedMsg Compared
 type othersMsg struct {
 	path   string
 	others *seam.Ceilings
@@ -520,6 +521,18 @@ func (m Model) openSaved(id string) tea.Cmd {
 	return func() tea.Msg { r, err := m.client.ShowSaved(id); return savedRunMsg{r, err} }
 }
 
+// compareSaved asks the seam to compare two saved runs; Python decides and words the result.
+func (m Model) compareSaved(before, after string) tea.Cmd {
+	cross := m.f.crossEngines(before, after)
+	return func() tea.Msg {
+		c, err := m.client.CompareSaved(before, after, cross)
+		if err != nil {
+			return comparedMsg{Before: before, After: after, Err: err.Error()}
+		}
+		return comparedMsg{Before: before, After: after, Lines: c.Lines}
+	}
+}
+
 // deleteSaved removes a saved run, after the second press.
 func (m Model) deleteSaved(id string) tea.Cmd {
 	return func() tea.Msg {
@@ -847,9 +860,13 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			m.note = "The saved run could not be read: " + msg.err.Error()
 			return m, nil
 		}
+		m.note = ""
 		m.f.Run, m.f.Job, m.f.Tail, m.f.ReadOnly, m.runSet = msg.run, nil, nil, true, true
 		m.cursor, m.row = pageRun, 0
 		m.view.GotoTop()
+	case comparedMsg:
+		c := Compared(msg)
+		m.f.Compared = &c
 	case cleanedMsg:
 		if msg.err != nil {
 			m.note = "Cleaning failed: " + msg.err.Error()
@@ -1084,7 +1101,19 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 	case "save":
 		return m, m.saveRun()
 	case "opensaved":
+		m.note = "Reading saved run " + a.arg + "…"
 		return m, m.openSaved(a.arg)
+	case "comparefrom":
+		m.f.CompareFrom, m.cursor, m.row = a.arg, pageSaved, 0
+		return m, m.loadSaved()
+	case "comparecancel":
+		m.f.CompareFrom, m.row = "", 0
+		return m, nil
+	case "compare":
+		before := m.f.CompareFrom
+		m.f.CompareFrom, m.f.Compared, m.cursor, m.row = "", nil, pageCompare, 0
+		m.view.GotoTop()
+		return m, m.compareSaved(before, a.arg)
 	case "deletesaved":
 		if m.f.Confirm != a.arg {
 			m.f.Confirm = a.arg

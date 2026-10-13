@@ -648,7 +648,7 @@ func tieOutBody(t *seam.TieOut) string {
 		fmt.Fprintf(&b, "The limit is %.3f ms at context 1 and %.3f ms at context %.0f.\n", t.LimitMsCtx1, t.LimitMs, t.Context)
 	}
 	if t.UntracedMs != nil && t.TokenSource != nil && strings.HasPrefix(*t.TokenSource, "the captured run") {
-		fmt.Fprintf(&b, "Tracing slowed the token: %.3f ms here, %.3f ms untraced.\n", *t.TokenMs, *t.UntracedMs)
+		b.WriteString(tokenEndToEnd(*t) + "\n")
 	}
 	if t.Missing != nil {
 		b.WriteString(stMuted.Render("Missing: "+*t.Missing) + "\n")
@@ -699,6 +699,7 @@ func whereBody(w *seam.Where) string {
 			break
 		}
 	}
+	b.WriteString(whereEndToEnd(w.EndToEnd))
 	return b.String()
 }
 
@@ -747,7 +748,7 @@ func replayBody(r *seam.Replay) string {
 	for _, row := range r.Rows {
 		rows = append(rows, row.Cells)
 	}
-	b.WriteString(table(append(rows, r.Total)))
+	b.WriteString(replayTable(append(rows, r.Total)))
 	if len(r.Unmodelled) > 0 {
 		b.WriteString(stMuted.Render("Not in the ceiling: "+strings.Join(r.Unmodelled, "; ")+".") + "\n")
 	}
@@ -770,6 +771,185 @@ func replayBody(r *seam.Replay) string {
 			}
 			b.WriteString(table(append([][]string{head}, d.Rows...)))
 		}
+	}
+	return b.String()
+}
+
+// sessionHeadline is a session run's headline: the turn at the focus depth against the limit at that depth. The
+// run's first timing row is the shallowest depth; set against the focus depth's limit it overstated the share
+// (4,094 against 13,831 tok/s read 30%; the 16,384-depth turn is 3,580, 26%). The other depths are in the table.
+func sessionHeadline(res seam.Results) string {
+	s := res.Loss.Session
+	if s == nil || s.Focus == nil || len(res.Loss.Runtimes) == 0 || res.Ceiling.TokS == nil || *res.Ceiling.TokS <= 0 {
+		return ""
+	}
+	r := res.Loss.Runtimes[0]
+	ratio := r.TokS / *res.Ceiling.TokS
+	return fmt.Sprintf("%s %s measured for a turn at depth %s. The limit at that depth is %.1f.\n%s %.0f%% of the limit\n",
+		stAccent.Render(glyphBolt), stHeader.Render(fmt.Sprintf("%.1f tokens per second", r.TokS)), count(s.Focus),
+		*res.Ceiling.TokS, bar(ratio, 20), ratio*100)
+}
+
+// whereEndToEnd is the capture against its untraced time as one status line; the where words say it in full.
+func whereEndToEnd(e *seam.EndToEnd) string {
+	if e == nil || e.CapturedMs == nil || e.UntracedMs == nil {
+		return ""
+	}
+	diff := ""
+	if e.DiffPct != nil {
+		diff = fmt.Sprintf(" (%+.1f%%)", *e.DiffPct)
+	}
+	head := fmt.Sprintf("End to end: captured %.1f ms, untraced %.1f ms%s: ", *e.CapturedMs, *e.UntracedMs, diff)
+	switch {
+	case e.Confirms == nil:
+		return stMuted.Render(head+notChecked) + "\n"
+	case *e.Confirms:
+		return stOK.Render(head+fmt.Sprintf("confirmed within the repeat band of ±%.3f ms.", deref0(e.BandMs))) + "\n"
+	}
+	return stWarn.Render(glyphWarn+" "+head+fmt.Sprintf("not confirmed: outside the repeat band of ±%.3f ms. The rows stand.", deref0(e.BandMs))) + "\n"
+}
+
+// notChecked is a check with no repeat band for its setup; notCheckedHow, said once per page, is how to get one, so
+// "not checked" never reads as a fault.
+const (
+	notChecked    = "not checked: no repeat band matches this setup."
+	notCheckedHow = "Not checked is expected on a first run. A verdict needs the spread of two identical runs: run the same " +
+		"setup twice, then `python -m boltbeam.workflow.screen repeat-bands --before A --after B --out bands.json`, and " +
+		"give later runs `--bands bands.json`."
+)
+
+func deref0(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// tokenEndToEnd is a decode capture's token against the untraced median, with the repeat check and, when the two
+// were taken at different contexts, that fact: they are then not one setup.
+func tokenEndToEnd(t seam.TieOut) string {
+	pct := 100 * (*t.TokenMs - *t.UntracedMs) / *t.UntracedMs
+	line := fmt.Sprintf("End to end: the captured token is %.3f ms, the untraced median %.3f ms (%+.1f%%).", *t.TokenMs, *t.UntracedMs, pct)
+	if t.UntracedContext != nil && float64(*t.UntracedContext) != t.Context {
+		line += fmt.Sprintf(" The untraced time is at context %d and the capture at context %.0f, so they are not one setup.", *t.UntracedContext, t.Context)
+	}
+	band := deref(t.Band)
+	if band == "" || strings.HasPrefix(band, "not checked") {
+		return line + "\n" + stMuted.Render("Repeat check: "+notChecked)
+	}
+	return line + "\n" + stMuted.Render("Repeat check: "+band+".")
+}
+
+// runEngineBody names the engine build against the pin table and the toolchain the run recorded
+// (docs/engine-upgrade-audit.md). A run from before either was recorded says so; nothing is filled from the pins.
+func runEngineBody(e *seam.RunEngine) string {
+	if e == nil {
+		return ""
+	}
+	var b strings.Builder
+	switch {
+	case e.Build == nil:
+		b.WriteString(stMuted.Render("Engine build: not recorded (the run predates the pin check).") + "\n")
+	case e.Build.Matches != nil && !*e.Build.Matches:
+		b.WriteString(stWarn.Render(glyphWarn+" Engine build: "+e.Build.Words+".") + "\n")
+	default:
+		b.WriteString(stMuted.Render("Engine build: "+e.Build.Words+".") + "\n")
+	}
+	if e.Toolchain == nil {
+		b.WriteString(stMuted.Render("Toolchain: not recorded (the run predates it).") + "\n")
+		return b.String()
+	}
+	parts, missing := []string{}, []string{}
+	for _, k := range []string{"driver", "cuda", "torch", "nsight_systems", "nsight_compute"} {
+		if v, ok := e.Toolchain.Versions[k]; ok && v != "unknown" {
+			parts = append(parts, k+" "+v)
+		} else if ok {
+			missing = append(missing, k)
+		}
+	}
+	if v, ok := e.Toolchain.Runtime["cuda"]; ok && v != "unknown" {
+		parts = append(parts, "torch's CUDA "+v)
+	}
+	when := e.Toolchain.RecordedAt
+	if len(when) > 16 {
+		when = strings.Replace(when[:16], "T", " ", 1)
+	}
+	line := "Toolchain (" + when + " UTC): " + strings.Join(parts, ", ")
+	switch {
+	case len(parts) == 0:
+		line = "Toolchain (" + when + " UTC): none of " + strings.Join(missing, ", ") + " found on this machine"
+	case len(missing) > 0:
+		line += "; not found: " + strings.Join(missing, ", ")
+	}
+	b.WriteString(stMuted.Render(line+".") + "\n")
+	return b.String()
+}
+
+// roleChecks says how many per-role rows have a measured repeat band for this setup; without one a row is shown,
+// and its verdict is "not checked".
+func roleChecks(roles []seam.RoleLoss) string {
+	checked, seen := 0, 0
+	for _, r := range roles {
+		if r.CheckStatus == nil {
+			continue
+		}
+		seen++
+		if *r.CheckStatus == "checked" {
+			checked++
+		}
+	}
+	switch {
+	case seen == 0:
+		return ""
+	case checked == 0:
+		return stMuted.Render("Per-role repeat check: not checked: no repeat band matches this setup.") + "\n"
+	}
+	return stMuted.Render(fmt.Sprintf("Per-role repeat check: %d of %d roles checked against the measured repeat band of this setup.", checked, seen)) + "\n"
+}
+
+// pairingBody says which roles the capture could not pair, with the solver's reason, and whether the pairing as a
+// whole is unsure (collectors/pairing.py ambiguous).
+func pairingBody(l seam.Loss) string {
+	var b strings.Builder
+	if a := l.Ambiguous; a != nil {
+		b.WriteString(stWarn.Render(glyphWarn+" Pairing is not certain: "+a.Reason+". Read the per-role rows as unsure.") + "\n")
+	}
+	for _, u := range l.UnpairedRoles {
+		why := ""
+		if u.Reason != nil {
+			why = ": " + *u.Reason
+		}
+		b.WriteString(stMuted.Render("Unpaired, so in not attributed: "+word(plainRole, u.Role)+" "+u.Quant+why+".") + "\n")
+	}
+	return b.String()
+}
+
+// replayTable is the per-turn table. When it is wider than the page, the FLAGS column leaves the table and becomes
+// one line per flag naming its turns, so no flag is cut off at the page edge.
+func replayTable(rows [][]string) string {
+	t := table(rows)
+	last := len(rows[0]) - 1
+	if maxWidth(t) <= tableWidth || last < 1 || rows[0][last] != "FLAGS" {
+		return t
+	}
+	turns, order := map[string][]string{}, []string{}
+	cut := make([][]string, len(rows))
+	for i, row := range rows {
+		cut[i] = row[:min(len(row), last)]
+		if i == 0 || len(row) <= last {
+			continue
+		}
+		for _, flag := range strings.Fields(row[last]) {
+			if _, ok := turns[flag]; !ok {
+				order = append(order, flag)
+			}
+			turns[flag] = append(turns[flag], row[0])
+		}
+	}
+	var b strings.Builder
+	b.WriteString(table(cut))
+	for _, flag := range order {
+		b.WriteString(stMuted.Render(fmt.Sprintf("%s: %d turns (%s)", flag, len(turns[flag]), strings.Join(turns[flag], ", "))) + "\n")
 	}
 	return b.String()
 }
@@ -915,6 +1095,9 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		provider = "llama.cpp"
 	}
 	title := "Measured with " + lossTitle(provider, l.Capture)
+	if l.Capture == nil && (l.Per != nil || l.Replay != nil) { // prefill and replay: kernels from the capture
+		title = "Measured with " + provider + " · kernels from the capture"
+	}
 	if batch > 1 {
 		title += fmt.Sprintf(" · batch %d", batch)
 	}
@@ -988,13 +1171,8 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	}
 	b.WriteString(searchBody(l.Search))
 	b.WriteString(findingsBody(l.Roles, l.Findings))
-	if len(l.UnpairedRoles) > 0 {
-		names := []string{}
-		for _, u := range l.UnpairedRoles {
-			names = append(names, word(plainRole, u.Role)+" "+u.Quant)
-		}
-		b.WriteString(stMuted.Render("Not split out, so in not attributed: "+strings.Join(names, ", ")+".") + "\n")
-	}
+	b.WriteString(roleChecks(l.Roles))
+	b.WriteString(pairingBody(l))
 	for _, n := range l.NotTimed {
 		b.WriteString(stMuted.Render(fmt.Sprintf("%s %s: not timed: %s; left out of the floor rule and the sums.", word(plainRole, n.Role), n.Quant, deref(n.Reason))) + "\n")
 	}
@@ -1183,6 +1361,8 @@ func resultBody(f Facts, width int) string {
 	res := f.Run.Results
 	var b strings.Builder
 	switch {
+	case sessionHeadline(res) != "":
+		b.WriteString(sessionHeadline(res))
 	case res.Timing.TokS != nil && res.Ceiling.TokS != nil && *res.Ceiling.TokS > 0:
 		ratio := *res.Timing.TokS / *res.Ceiling.TokS
 		fmt.Fprintf(&b, "%s %s measured. The limit is %.1f.\n", stAccent.Render(glyphBolt),
@@ -1198,9 +1378,12 @@ func resultBody(f Facts, width int) string {
 			}
 			fmt.Fprintf(&b, "%s\n", stWarn.Render(glyphWarn+" Graph replay failed on this run"+why+": the token ran without graphs."))
 		}
+	case res.Loss.Replay != nil && len(res.Loss.Replay.Rows) > 0: // a replay's headline is per session, in its table
+		fmt.Fprintf(&b, "%s %s The session against its roofline is below.\n", stAccent.Render(glyphBolt),
+			stHeader.Render(fmt.Sprintf("Replay measured: %d turns.", len(res.Loss.Replay.Rows))))
 	case res.Ceiling.TokS != nil:
 		fmt.Fprintf(&b, "%s %.1f tokens per second at best. Nothing measured yet.\n", stAccent.Render(glyphBolt), *res.Ceiling.TokS)
-	default:
+	case res.Ceiling.Reason != "":
 		fmt.Fprintf(&b, "%s\n", stMuted.Render("No speed limit for this chip: "+res.Ceiling.Reason))
 	}
 	batch := 1
@@ -1210,9 +1393,11 @@ func resultBody(f Facts, width int) string {
 	if s := measurementSentence(res.Measurement); s != "" && res.Loss.Estimate == nil { // the method line says it otherwise
 		b.WriteString(stMuted.Render(s) + "\n")
 	}
+	b.WriteString(runEngineBody(res.Engine))
 	b.WriteString(lossBodyAt(hereLoss(f, res.Loss), batch))
 	b.WriteString(batchTable(res.Batches))
-	if res.Timing.DominantBucket != nil {
+	inconclusive := res.Timing.DominantBucket != nil && *res.Timing.DominantBucket == "timing_inconclusive"
+	if res.Timing.DominantBucket != nil && !(inconclusive && (res.Loss.WhereTokenGoes != nil || res.Loss.Replay != nil)) { // "not clear yet" under a where table is stale
 		fmt.Fprintf(&b, "Where the time goes: %s\n", named(plainBucket, *res.Timing.DominantBucket))
 	}
 	for _, n := range res.Blocked {
@@ -1253,6 +1438,9 @@ func resultBody(f Facts, width int) string {
 			rows = append(rows, []string{word(plainRole, g.Role), g.Quant, named(plainRegime, g.Classification)})
 		}
 		b.WriteString("\n" + table(rows))
+	}
+	if strings.Contains(b.String(), "not checked") {
+		b.WriteString("\n" + stMuted.Render(notCheckedHow) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

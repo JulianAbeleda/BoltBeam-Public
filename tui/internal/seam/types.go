@@ -213,6 +213,11 @@ type Saved struct {
 		SavedAt    string   `json:"saved_at"`
 		TokS       *float64 `json:"tok_s"`
 		PctOfLimit *float64 `json:"pct_of_limit"`
+		// Workload is decode, prefill, session or replay; Measured is the run's own flag (a replay has no tok/s
+		// headline); RooflinePct is a replay's session share of its roofline. All nil or false from an older Python.
+		Workload    *string  `json:"workload"`
+		Measured    bool     `json:"measured"`
+		RooflinePct *float64 `json:"roofline_pct"`
 	} `json:"runs"`
 }
 
@@ -518,6 +523,31 @@ type Results struct {
 	Batches     []BatchRow   `json:"batches"`
 	// Probe is BoltBeam's own kernel (reference) per role: GB/s and share of peak, not the engine's kernel.
 	Probe *Probe `json:"probe"`
+	// Engine is the engine the run measured with, its build against the pin table and the toolchain it recorded.
+	Engine *RunEngine `json:"engine"`
+}
+
+// RunEngine is results.engine: the provider, the weight format, the build check (providers.record_build) and the
+// toolchain (collectors/toolchain.snapshot). Build and Toolchain are nil on a run that predates them.
+type RunEngine struct {
+	Provider     string          `json:"provider"`
+	WeightFormat *string         `json:"weight_format"`
+	Build        *EngineBuild    `json:"build"`
+	Toolchain    *ToolchainFacts `json:"toolchain"`
+}
+
+// EngineBuild is the run's build against its pin: Matches is nil when the run recorded no build.
+type EngineBuild struct {
+	Build   *string `json:"build"`
+	Matches *bool   `json:"matches"`
+	Words   string  `json:"words"`
+}
+
+// ToolchainFacts is what the run observed: driver, CUDA, torch and the profilers, "unknown" when a tool was missing.
+type ToolchainFacts struct {
+	RecordedAt string            `json:"recorded_at"`
+	Versions   map[string]string `json:"versions"`
+	Runtime    map[string]string `json:"runtime"`
 }
 
 // Probe is the building-block probe's rows (workflow/screen.py probe_rows): "measured" with rows, or "absent".
@@ -622,6 +652,10 @@ type Loss struct {
 	Others          []OtherLoss `json:"others"`
 	// UnpairedRoles are roles the capture could not split out by calls and bytes; their time is in not attributed.
 	UnpairedRoles []UnpairedRole `json:"unpaired_roles"`
+	// Ambiguous is set when the pairing search could not settle on one answer (collectors/pairing.py): its reason.
+	Ambiguous *struct {
+		Reason string `json:"reason"`
+	} `json:"ambiguous"`
 	// NotTimed are limit roles the kernel timer had no adapter for, each with its reason.
 	NotTimed []NotTimedRole `json:"not_timed"`
 	// TieOut is the measured token line by line against the limit (workflow/tie_out.py); RoleRule is the
@@ -686,6 +720,8 @@ type Session struct {
 	Warm       string       `json:"warm"`
 	MaxContext string       `json:"max_context"`
 	Compaction string       `json:"compaction"`
+	// Focus is the depth whose turn was captured and whose ceiling the run's limit is (workflow/session.py).
+	Focus *int `json:"focus"`
 }
 
 // Replay is the replay table as cells and its headline as lines (workflow/replay.py): the renderers print them.
@@ -751,6 +787,19 @@ type Where struct {
 	// SumCells is the sum row as text, Cells on each row the row as text after its name, in Columns' order: the
 	// renderers print them and format no number of their own (one table for decode and prefill).
 	SumCells []string `json:"sum_cells"`
+	// EndToEnd is the captured wall against the untraced median (workflow/tie_out.end_to_end); nil on decode.
+	EndToEnd *EndToEnd `json:"end_to_end"`
+}
+
+// EndToEnd is one capture checked against its untraced time. Confirms is nil when no repeat band matches the
+// setup ("not checked"), true within the band, false outside it.
+type EndToEnd struct {
+	Confirms   *bool    `json:"confirms"`
+	CapturedMs *float64 `json:"captured_ms"`
+	UntracedMs *float64 `json:"untraced_ms"`
+	DiffPct    *float64 `json:"diff_pct"`
+	BandMs     *float64 `json:"band_ms"`
+	Status     string   `json:"status"`
 }
 
 // WhereRow is one part of the token. LimitMs is nil where the limit has no bytes for it ("no limit"); Share and
@@ -805,6 +854,9 @@ type TieOut struct {
 	Refused         *string   `json:"refused"`
 	Isolated        bool      `json:"isolated"` // the kernels were timed alone: only the ideal and the token are tied out
 	Estimate        *Estimate `json:"estimate"`
+	// Band is the repeat check in words: "not checked: ..." without a matching repeat band; CheckStatus is its word.
+	Band        *string `json:"band"`
+	CheckStatus *string `json:"check_status"`
 }
 
 type TieLine struct {
@@ -829,9 +881,10 @@ type TieKernel struct {
 }
 
 type UnpairedRole struct {
-	Role  string `json:"role"`
-	Quant string `json:"quant"`
-	Count int    `json:"count"`
+	Role   string  `json:"role"`
+	Quant  string  `json:"quant"`
+	Count  int     `json:"count"`
+	Reason *string `json:"reason"`
 }
 
 // NotTimedRole is a limit role the kernel timer had no adapter for: shown with its reason, left out of the floor
@@ -888,6 +941,10 @@ type RoleLoss struct {
 	Candidates    *int       `json:"candidates"` // plans the kernel search measured for this role
 	// Evidence points into the run's raw JSON (workflow/evidence.py): the kernel rows, the search, the machine.
 	Evidence []Pointer `json:"evidence"`
+	// BandMs is the role's measured repeat band for this exact setup; CheckStatus is "checked" with one, else
+	// "not checked" (workflow/repeat_bands.py). Both nil from an older Python.
+	BandMs      *float64 `json:"band_ms"`
+	CheckStatus *string  `json:"check_status"`
 }
 
 // Pointer is one place in the run folder: a file, and a path inside it (empty for the whole file).

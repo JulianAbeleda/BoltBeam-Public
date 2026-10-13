@@ -596,7 +596,7 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
                  f"untraced prefill is {base:.1f} ms.")
   e2e = attr.get("end_to_end") or {}
   if e2e.get("confirms") is None and e2e:
-    words.append(e2e["words"])
+    words.append(e2e["words"][:1].upper() + e2e["words"][1:] + ".")
   if e2e.get("confirms") is False:
     words.append(f"Not confirmed end to end: {e2e['words']}.")
   mixed = [r["name"] for r in rows if " + " in str(r.get("path") or "") and r.get("limit_ms") is not None]

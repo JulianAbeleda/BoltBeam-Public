@@ -1,11 +1,36 @@
 # Using BoltBeam from the command line
 
-BoltBeam reads a model file and tells you how fast it could ever run on a chip, where the
-time actually goes, and whether a change helped. It never runs the model. A compiler does
-that; BoltBeam keeps the books.
+BoltBeam reads a model file, works out how fast it could ever run on a chip, runs it in an engine, and shows where
+the time actually goes. The [README](../README.md) has the five-minute first run. This page is the command line
+underneath it: the audit pipeline first, then the model-only commands, then the older campaign commands.
 
-Everything below was run on a MacBook Air (M3) against `Qwen3-8B.gguf`. Commands that need a
+Everything below was run on a MacBook Air (M3) against an 8B Q4_K GGUF unless it says otherwise. Commands that need a
 GPU or the tinygrad fork are marked.
+
+## The audit pipeline
+
+One command runs a whole audit: read the model, read the machine, the ceilings, measure in the engine, time each
+role, write the report.
+
+```
+python -m boltbeam.workflow.screen pipeline MODEL --run runs/a --target TARGET --provider ENGINE \
+  --workload decode|prefill|session|replay --analyze --no-search [--bands bands.json]
+python -m boltbeam.workflow.screen results --run runs/a          # the same facts the screen shows, as JSON
+python -m boltbeam.workflow.screen repeat-bands --before runs/a --after runs/b --out bands.json
+python -m boltbeam.workflow.screen diff --before runs/a --after runs/b          # the engine-upgrade audit
+python -m boltbeam.workflow.screen replay-cross --a runs/a --b runs/b           # two engines, one replay trace
+python -m boltbeam.workflow.screen autoscan                       # measure this GPU once when it has no chip profile
+```
+
+`--provider` is `llama.cpp` (default), `tinygrad`, `vllm`, `ollama` or `tensorrt-llm`. `--role-time` picks
+`in-model` (a capture of the real token), `generic` (the engine's kernels timed alone) or `auto`. `python -m
+boltbeam.workflow.screen --help` lists every subcommand; the screen (`boltbeam tui`) reads the same ones.
+
+Engines are found, not configured. `doctor` and the screen look in the usual places (PATH, Homebrew, `~/env`,
+`~/storage/*`, the fork next to the checkout, venvs under `~/env` and `~/storage`) and remember what they found in
+`~/.boltbeam/engines.json`. Set an env var (`BOLTBEAM_LLAMA_BENCH`, `BOLTBEAM_TINYGRAD_ROOT`, `BOLTBEAM_VLLM_PYTHON`,
+`BOLTBEAM_OLLAMA`, `BOLTBEAM_TRTLLM_PYTHON`, `BOLTBEAM_GGML_CUDA_SRC`) only when the scan misses; an env var always
+wins.
 
 ## Getting it running
 
@@ -257,7 +282,19 @@ compiler. Any producer that emits the normalised artifacts in `schemas/` works i
 
 ## Reading the output
 
-Every command writes JSON with a `schema` field, and the schemas are in `schemas/`. A number
+Every command writes JSON with a `schema` field, and the schemas are in `schemas/`. A run folder holds:
+
+| file | what it holds |
+|---|---|
+| `run_manifest.json` | the stages, the engine build against its pin, the toolchain |
+| `model_profile.json` | tensor census, roles, shapes, quant types |
+| `timing_trace.json` | the untraced whole-step times |
+| `<engine>_timing_trace.json`, `prefill_trace.json` | the captured kernels, paired with roles |
+| `machine_facts.json` | this GPU's measured read bandwidth |
+| `repeat_bands.json` | the repeat bands the run was given (`--bands`) |
+| `search_space.json`, `route_policy.json`, `measurement_plan.json` | the search space, the route policy, what to measure next |
+| `summary.md`, `report.html` | the human-readable report |
+ A number
 carries its status where one exists: `hardware` when a chip reported it, `measurement` when
 someone measured it, `modeled` when it was derived. When you see `modeled`, it is arithmetic,
 not an observation.

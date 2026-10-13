@@ -316,6 +316,37 @@ func (c Client) Emit(id string) (*Emitted, []byte, error) {
 	return &e, raw, err
 }
 
+// Compared is `screen diff` (the engine-upgrade audit, or two replays turn by turn) or `screen replay-cross` (two
+// engines on one trace), as the lines the seam already words. The seam refuses, naming the field, two runs that
+// differ in workload, model, target or engine, or a run with no recorded build.
+type Compared struct {
+	Lines []string `json:"lines"`
+}
+
+// CompareSaved compares two saved runs: replay-cross when both are replays from different engines, else diff.
+func (c Client) CompareSaved(before, after string, cross bool) (*Compared, error) {
+	for _, id := range []string{before, after} {
+		if id == "" || id != filepath.Base(id) || strings.HasPrefix(id, ".") {
+			return nil, fmt.Errorf("saved run id must be a folder name: %q", id)
+		}
+	}
+	a, b := filepath.Join(c.Saved, before), filepath.Join(c.Saved, after)
+	args := []string{"diff", "--before", a, "--after", b}
+	if cross {
+		args = []string{"replay-cross", "--a", a, "--b", b}
+	} else {
+		for _, dir := range []string{a, b} { // a run started with --bands keeps them as repeat_bands.json
+			if bands := filepath.Join(dir, "repeat_bands.json"); fileExists(bands) {
+				args = append(args, "--bands", bands)
+				break
+			}
+		}
+	}
+	var out Compared
+	_, _, err := c.decode(&out, nil, "boltbeam.workflow.screen", args...)
+	return &out, err
+}
+
 // EmitSaved writes the gameplan of a saved run, the way ShowSaved reads one.
 func (c Client) EmitSaved(id string) (*Emitted, []byte, error) {
 	if id == "" || id != filepath.Base(id) || strings.HasPrefix(id, ".") {
@@ -644,4 +675,9 @@ func (p Progress) Fraction(inStage float64) float64 {
 // weight is an estimate, not a last time.
 func (p Progress) Over(inStage float64) bool {
 	return p.Current != "" && !p.Setup && !p.Estimate && len(p.Expect) == p.Total && p.Done < len(p.Expect) && inStage > p.Expect[p.Done]
+}
+
+func fileExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
 }

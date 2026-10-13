@@ -40,13 +40,15 @@ the log while a run goes, `d` (twice) deletes a saved run, `q` quits.
 
 ## The three screens
 
-**Setup.** Three choices and a button.
+**Setup.** The choices and a button.
 
 ```text
-Model    Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K       ›
-Chip     apple_m3_10c · this Mac · 97.2 GB/s             ›
-Engine   llama.cpp                                       ›
-Batch    1                                               ›
+Model       model.gguf · 18 layers · F32/Q8_0              ›
+Chip        apple_m3_10c · this Mac · 97.2 GB/s            ›
+Engine      llama.cpp                                      ›
+Workload    decode                                         ›
+Batch       1                                              ›
+Measurement generic (kernel timer)                         ›
 
 [ Run ]
 [ Emit ] Run first
@@ -55,8 +57,10 @@ Saved runs (2)                                           ›
 
 Model lists the model files next to the current one and in `~/models`, or takes a typed path. Chip is this
 machine, detected (autoscan: a known profile is used, a new GPU is measured into `~/.boltbeam/chips/<id>.json`,
-`BOLTBEAM_CHIPS_DIR` moves that folder). Engine is llama.cpp or tinygrad; an engine this machine lacks is named
-with why. `[ Run ]` is greyed until all three are set. Setup does not show the speed limit; Run does.
+`BOLTBEAM_CHIPS_DIR` moves that folder). Engine is one of llama.cpp, tinygrad, vLLM, Ollama and TensorRT-LLM; an
+engine this machine lacks is named with why. Workload is decode, prefill, session or replay. Measurement is in-model
+(a capture of the real token) or generic (the engine's kernels timed alone). `[ Run ]` is greyed until model, chip
+and engine are set. Setup does not show the speed limit; Run does.
 
 `[ Emit ]` sits under Run. Run measures the model's roles against the roofline and, with the kernel search on, finds
 faster kernel plans; Emit turns the run on screen into a gameplan: per role, worst first, what kernel to emit for this
@@ -84,14 +88,26 @@ percent is marked an estimate (`~37%`). When the run ends the top box shows:
   [docs/kernel-timer.md](../docs/kernel-timer.md));
 - the findings the run's own facts give: launch heavy, a failed graph replay the engine reported, KV dominated,
   throttled, unexplained; each with its lever and the files behind it;
-- BoltBeam's own kernel (reference) per role: GB/s and share of peak from the probe, labelled as not the engine's.
+- BoltBeam's own kernel (reference) per role: GB/s and share of peak from the probe, labelled as not the engine's;
+- the engine build against the pin table (`boltbeam/data/engine_pins.json`) and the toolchain the run recorded. A
+  run from before either was recorded says "not recorded";
+- the end-to-end check: the captured token (decode) or the captured prefill and replay turns against their untraced
+  median, with the repeat band. Without a band for the exact setup it says "not checked". That is expected on a first
+  run; the page says once how to make a band (two identical runs, then `screen repeat-bands`);
+- pairing flags: "Pairing is not certain" with the solver's reason, and each unpaired role with its reason.
 
 The bottom box holds `[ Save run ]`, "Open the full report (report.html)" and `[ Back to setup ]`. A run is
 temporary (`<runs>/.work`) until saved; Save exports the run, `results.json`, `report.html` and `summary.txt` to
 `<runs>/saved`. The report has the same numbers as the screen; it is written by the same seam.
 
-**Saved runs.** Every saved run, newest first, in the top box: model, chip, engine, date and the share of the limit
-reached. Enter opens one to read. `d` twice deletes one.
+**Saved runs.** Every saved run, newest first, in the top box: model, chip, engine and workload, date, and the share
+of the limit reached (a replay: of its roofline). Enter opens one to read. `d` twice deletes one.
+
+**Compare.** On a saved run, "Compare with another saved run" makes it the before run; Saved runs then picks the
+after run. Two runs of one model, chip, engine and workload give the engine-upgrade audit row by row
+(`screen diff`, [docs/engine-upgrade-audit.md](../docs/engine-upgrade-audit.md)); when the before run carries
+`repeat_bands.json` its bands are used. Two replays of one trace on different engines give `screen replay-cross`,
+turn by turn. Runs that differ in model, target or engine are refused, and the page names the field.
 
 **Gameplan.** The markdown Emit wrote, as plain text: the header (model, chip, engine, batch, the measured token
 against the limit), then one block per role ordered by lost ms (the estimate column for isolated runs, said so) with

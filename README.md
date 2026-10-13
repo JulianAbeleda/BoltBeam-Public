@@ -9,148 +9,146 @@
 > Published so the numbers in those articles can be checked. MIT licensed.
 
 
-**Turn model weights into a codegen search problem.**
+**Where does your model's inference time go, and how far is each part from what the chip can do?**
 
-BoltBeam reads a model file. It works out which operations decide the speed. It computes the fastest the
-model could ever run on a given chip. Then it emits a bounded search space and a route policy for a compiler
-to explore. It measures. It does not guess.
+BoltBeam audits inference time against a measured roofline. It runs your model in a real engine, captures every
+kernel, pairs each kernel with the model role it serves, and puts each one beside the fastest that role could run
+on this chip. The chip's limits are measured on the chip, not read off a data sheet.
 
-It works the same way on AMD, NVIDIA and Apple Metal. It reads rocprof, Nsight Compute, Metal and llama.cpp
-timings into one schema, so their numbers can be compared.
+It answers, per role and per kernel:
 
-```text
-model weights
-  -> tensor census            what tensors exist, what shape, what quant
-  -> role profile             which are attention, FFN, SSM, embedding
-  -> speed limit              the roofline: the fastest each role could run on this chip
-  -> candidate search space   the bounded set worth measuring
-  -> measured route policy    what actually won, and the evidence
-```
+- **How fast could it go?** The ceiling for each row: its bytes over the measured bandwidth, or its operations over
+  the measured peak of the matrix path its instructions use, whichever binds. A second ceiling, "chip best", is the
+  same work on the fastest path this chip has for those weights.
+- **Where does the time go?** Every millisecond of a decode token, a prefill, a turn at session depth, or a replayed
+  chat session, in ranked rows: ms now, ms at the limit, ms lost, and tokens per second if that row alone were fixed.
+- **Does it add up?** The rows plus the idle gaps equal the captured time, and the captured time is checked against
+  the untraced time inside a measured repeat band.
+- **Does a second engine agree?** The same model in another engine must show the same work and the same ceilings.
+- **Did an engine upgrade change anything?** The engine-upgrade audit compares two builds row by row and names what
+  moved beyond run-to-run noise ([docs/engine-upgrade-audit.md](docs/engine-upgrade-audit.md)).
 
-The facts drive the search. Nobody writes "if 14B, try this."
-
-More reading: [docs/CLI.md](docs/CLI.md) walks the command line end to end.
-[docs/README.md](docs/README.md) is the index of every doc.
-[docs/maintaining.md](docs/maintaining.md) is for people who work on BoltBeam itself.
+Engines: llama.cpp, vLLM, Ollama, TensorRT-LLM and a tinygrad fork. Chips: Apple Metal and NVIDIA CUDA, measured
+the same way. BoltBeam says where the time goes. Why a kernel is slow is the engine developer's question.
 
 ## Install
 
-Python 3.10 or newer. No dependencies. Three commands:
+Python 3.10 or newer. No dependencies.
 
 ```bash
 git clone https://github.com/JulianAbeleda/BoltBeam-Public.git
 cd BoltBeam-Public
 python3 -m pip install .
-boltbeam doctor
-boltbeam tui
 ```
 
-`boltbeam doctor` says what this machine has for BoltBeam, one row each, and the one thing to do for each gap:
-the Python, the GPU and its chip profile, each engine (llama.cpp, tinygrad, vLLM, Ollama, TensorRT-LLM) with the
-path it was found at, the kernel source, the capture tool (xctrace on a Mac, nsys on NVIDIA), Go and the screen
-binary. It ends with `ready to run` or `N things to set up`. It is a report: exit 0 either way; `--json` for agents.
+A stock macOS names Python 3.9 as `python3`. BoltBeam refuses it and says so. Name a newer one, for example
+`python3.12 -m pip install .`. Without installing, `python3 -m boltbeam.cli <command>` does the same as
+`boltbeam <command>`. `boltbeam selfcheck` runs the core path on a tiny synthetic model, with no GPU and no model
+file, and prints PASS or FAIL per step.
+
+On Linux with an NVIDIA GPU, [docs/linux.md](docs/linux.md) goes from a bare Ubuntu to the first report. On a
+rented H100, `tools/pod-setup.sh` does it in one command ([docs/h100-pod.md](docs/h100-pod.md)).
+
+## Your first run, in five minutes
+
+You need one model file the engine reads (a GGUF for llama.cpp) and the engine. These steps ran on a MacBook Air
+(M3) with Homebrew's llama.cpp and a 270M-parameter Q8_0 GGUF.
+
+**1. Check the machine.**
+
+```bash
+boltbeam doctor
+```
 
 ```text
-python         found      3.12.13 (/usr/local/bin/python3.12)
+python         found      3.12.13 (/opt/homebrew/opt/python@3.12/bin/python3.12)
 GPU            found      Apple M3
 chip profile   found      apple_m3_10c (built in)
 llama.cpp      found      /opt/homebrew/bin/llama-bench (path); per-role time: boltbeam-kernel-timer-isolated
-tinygrad       found      ../tinygrad-arkey-exp (scan: ..); per-role time: tinygrad-profile-events
-ollama         not found  ollama was not found in $BOLTBEAM_OLLAMA or on PATH
-                          -> install it, or export BOLTBEAM_OLLAMA=<its path>; the next scan finds the usual places
+vllm           n/a        BoltBeam runs vLLM on NVIDIA GPUs only; apple_m3_10c is Metal
 capture tool   not found  metal-system-trace is not installed
                           -> install Xcode (xctrace comes with it)
 Go             found      go1.26.5 at /opt/homebrew/bin/go
-boltbeam-tui   found      ~/.cache/boltbeam/boltbeam-tui
-2 things to set up
+...
 ```
 
-Engines are found, not configured. `doctor` and the screen look in the usual places (PATH, Homebrew, `~/env`,
-`~/storage/*`, the fork next to the checkout, venvs under `~/env` and `~/storage`) and remember what they found in
-`~/.boltbeam/engines.json`. Set an env var (`BOLTBEAM_LLAMA_BENCH`, `BOLTBEAM_TINYGRAD_ROOT`, `BOLTBEAM_VLLM_PYTHON`,
-`BOLTBEAM_OLLAMA`, `BOLTBEAM_TRTLLM_PYTHON`, `BOLTBEAM_GGML_CUDA_SRC`) only when the scan misses; an env var always wins.
+One row per thing BoltBeam can use, and one fix per gap. It always exits 0. What matters for a first run:
 
-`boltbeam selfcheck` builds a tiny synthetic model and runs the core path on it. It needs no GPU, no network
-and no model file. It prints PASS or FAIL for each step and exits 1 on any failure:
+- **chip profile.** If it says `not found`, run the command it prints (`python -m boltbeam.workflow.screen
+  autoscan`). That measures this GPU's bandwidth and compute peak once, in about a minute. A run does not do it for
+  you, and without it every ceiling is refused.
+- **an engine** that says `found`.
+- **capture tool.** Without it, per-role time on a Mac uses BoltBeam's kernel timer: each of the engine's own
+  kernels timed alone ("isolated"). With Xcode it is a capture of the real token ("in-model").
+
+**2. Run one audit.** Either on the screen:
+
+```bash
+boltbeam tui
+```
+
+Setup opens with this machine's chip and the first engine found. Pick the model (Setup lists the files in
+`~/models`, or type a path), leave the workload on `decode`, and press **Run**. On the M3 the run took about 30 seconds. Or from the command line, with the chip id doctor printed:
+
+```bash
+python -m boltbeam.workflow.screen pipeline model.gguf --run runs/first --target apple_m3_10c \
+  --provider llama.cpp --workload decode --analyze --no-search
+```
+
+This one took 11 seconds. It writes `runs/first/summary.md` and `runs/first/report.html`.
+
+**3. Read the result.** The top of the page, from the M3 run:
 
 ```text
-PASS  inspect
-PASS  roofline-theoretical
-PASS  load
-PASS  autoscan
-PASS  analyze
-PASS  output
-PASS  screen ceiling
-PASS  screen results
-checked: schema id and required keys
-selfcheck: PASS
+⚡ 215.4 tokens per second measured. The limit is 342.2.
+█████████████░░░░░░░ 63% of the limit
+⚠ Engine build: llama.cpp build 48d22e295 is NOT the pin b11571 (097cf33d9): this run measured another build.
+Measured with llama.cpp · isolated, timed by BoltBeam's kernel timer
+Where the token goes (estimate)
+ROW               MS NOW  MS AT LIMIT  MS AT CHIP BEST  MS LOST  SHARE  TOK/S IF FIXED  % OF PEAK
+ffn_gate_up Q8_0  1.44    0.51         0.51             0.92     54%    268.8           23.3%
+attn_qo Q8_0      0.38    0.13         0.13             0.25     15%    227.7           22.0%
+attn_kv Q8_0      0.25    0.06         0.06             0.19     11%    224.5           16.6%
+...
+= token           4.64    2.95         2.95             1.70     100%
+Per-role repeat check: not checked: no repeat band matches this setup.
 ```
 
-Without installing, `python3 -m boltbeam.cli <command>` does the same as `boltbeam <command>`.
-A stock macOS names Python 3.9 as `python3`. BoltBeam refuses it and says so. Name a newer one, for example
-`python3.12`.
+- The headline is the untraced decode against the roofline: 63% of what this chip allows for this model.
+- Each row is one role. **MS LOST** is how far it is from its limit. **TOK/S IF FIXED** is what fixing that row
+  alone is worth. Here the feed-forward input projection loses the most: 0.92 ms of 1.70.
+- "(estimate)" means the kernels were timed alone, not inside the token. A capture tool removes the estimate.
+- The engine build is checked against BoltBeam's pinned version. A different build is measured and said, not refused.
 
-On Linux with an NVIDIA GPU, [docs/linux.md](docs/linux.md) goes from a bare Ubuntu to the first report.
-On a rented H100, `tools/pod-setup.sh` does the same with one command ([docs/h100-pod.md](docs/h100-pod.md)).
-
-## The screen (TUI)
-
-The screen is a Go program in [tui/](tui/README.md). It reads BoltBeam through the same commands as below.
+**4. Run it twice.** A first run always says **not checked**. That is expected, not a fault. A verdict ("moved",
+"confirmed end to end") needs to know how much the same setup moves between two runs. Run the identical setup
+again, derive the repeat bands, and give them to later runs:
 
 ```bash
-boltbeam tui                 # the screens
-boltbeam tui --json chips    # any boltbeam-tui command, as one JSON object, for agents
+python -m boltbeam.workflow.screen pipeline model.gguf --run runs/second --target apple_m3_10c \
+  --provider llama.cpp --workload decode --analyze --no-search
+python -m boltbeam.workflow.screen repeat-bands --before runs/first --after runs/second --out bands.json
+python -m boltbeam.workflow.screen pipeline model.gguf --run runs/third --target apple_m3_10c \
+  --provider llama.cpp --workload decode --analyze --no-search --bands bands.json
 ```
 
-`boltbeam tui` builds `boltbeam-tui` into `~/.cache/boltbeam/` (or `$BOLTBEAM_TUI_DIR`) the first time and again when
-the Go source changes, then runs it with `--repo` set to this checkout and `--python` set to the interpreter that
-ran it. It needs Go at the version `tui/go.mod` names; without one it prints the install line (go.dev/dl) and exits 2.
-It downloads nothing.
+The third run reads `Per-role repeat check: 5 of 5 roles checked against the measured repeat band of this setup.`
+Bands belong to one exact setup: the same chip, engine build, model, workload, contexts and settings. They are never
+borrowed from another.
 
-It has three screens:
+## Next steps
 
-1. **Setup.** Pick a model, a chip and an engine (llama.cpp or tinygrad). The chip starts as this machine.
-   Press **Run**.
-2. **Run.** Run finds the speed limit, checks the GPU is free, runs the building-block probe, measures with the
-   engine, times each role and writes the report. When it ends, it shows the measured tokens per second against
-   the limit, where the time went, and what to try next. **Save run** keeps it.
-3. **Saved runs.** Every run you saved. Open one to see its results again.
-
-On a chip that is not this machine, Run gives the speed limit only. Measuring needs the chip itself.
-[tui/README.md](tui/README.md) has the keys, the environment and the JSON mode for agents.
-
-Per-role time needs no Xcode: BoltBeam compiles the engine's own shipped kernels and times them alone through
-its Metal bridge ([docs/kernel-timer.md](docs/kernel-timer.md)). The tinygrad engine needs the fork:
-`BOLTBEAM_TINYGRAD_ROOT` names its checkout (default `../tinygrad-arkey-exp`), `BOLTBEAM_TINYGRAD_VENV` its venv
-folder, or `BOLTBEAM_TINYGRAD_PYTHON` its interpreter. The older name `TINYGRAD_ROOT` is still read.
-
-## The core commands
-
-`boltbeam --help` lists the core group first. Every other command is listed after it, under "Advanced and
-campaign commands". Those still run. Scripts and the records call them by name.
-
-```bash
-boltbeam inspect model.gguf --target nvidia_sm120                       # 1. what is in the model
-boltbeam roofline-theoretical model.gguf --target nvidia_sm120 --context 1   # 2. the speed limit
-boltbeam load model.gguf --run runs/model --target nvidia_sm120         # 3. stage a run folder
-boltbeam analyze --run runs/model                                       # 4. search space and measurement plan
-boltbeam output --run runs/model                                        # 5. policy, provider plan, report.html
-```
-
-1. `inspect` reads GGUF, Safetensors, AWQ, GPTQ, ONNX and MLX. It lists the layers, each role's shape and
-   quant, and the architecture class. It needs no GPU.
-2. `roofline-theoretical` gives the fastest each role could run, from the bytes it must read and the chip's
-   measured memory speed and matrix peak. It needs no GPU.
-3. `load` writes the model facts into a run folder. `boltbeam autoscan --run runs/model` then records this
-   machine's facts in the same folder.
-4. `analyze` emits the search space and says exactly which measurements to take next.
-5. `output` packages the run: the route policy, the provider plan and a readable report.
-
-Measurements come back with `ingest-timing`, `ingest-probe`, `import-hw-trace` or `metal-measure`.
-`evaluate` and `ledger` record what won and what lost. A refuted route drops out of the search, so nobody
-pays for it twice.
-
-Targets: `boltbeam/data/targets.json` lists the chips BoltBeam knows, with the source of every number.
+| you want to | read |
+|---|---|
+| prefill, session depth, or a replayed chat session | the Workload line in Setup; `--workload prefill`, `session`, `replay` ([tui/README.md](tui/README.md)) |
+| compare two engines, or two builds of one engine | [docs/engine-upgrade-audit.md](docs/engine-upgrade-audit.md); on the screen, Saved runs, then Compare |
+| time your own kernel against the roofline | [docs/guide-time-your-kernel.md](docs/guide-time-your-kernel.md) |
+| add an engine | [docs/guide-add-an-engine.md](docs/guide-add-an-engine.md) |
+| use the screen and its JSON mode for agents | [tui/README.md](tui/README.md) |
+| the command line end to end | [docs/CLI.md](docs/CLI.md) |
+| how the timer and its limits were measured | [docs/kernel-timer.md](docs/kernel-timer.md) |
+| everything else, and the dated audit records | [docs/README.md](docs/README.md) |
+| work on BoltBeam itself | [docs/maintaining.md](docs/maintaining.md) |
 
 ## Check the article numbers
 
@@ -167,19 +165,3 @@ Each cited number lives in one of these places:
 
 `bench/` holds the raw measurement records. [docs/README.md](docs/README.md) lists the records the
 articles cite.
-
-## Outputs
-
-Every stage writes a versioned JSON contract into the run folder. The JSON Schemas are in `schemas/`.
-
-| file | what it holds |
-|---|---|
-| `model_profile.json` | tensor census, roles, shapes, quant types |
-| `search_space.json` | legal route families and candidate knobs per role |
-| `route_policy.json` | the seed or selected route policy |
-| `measurement_plan.json` | what to measure next, and why |
-| `hw_trace.json` | provider-neutral kernel trace (rocprof, Nsight Compute, llama.cpp) |
-| `timing_profile.json` | classified timing buckets and role attribution |
-| `kernel_analysis.json` | eligibility, contrasts, hypotheses, next experiment |
-| `provider_plan.json` | the handoff to a provider, written by `output` |
-| `report.html` | the human-readable run report |

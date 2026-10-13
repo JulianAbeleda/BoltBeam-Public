@@ -204,7 +204,8 @@ def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "f
   bw = (read or {}).get("gbs") or target.memory_bandwidth_gbs
   if not bw:
     raise Refused(f"target {target.target_id!r} carries no memory_bandwidth_gbs, so there is no memory ceiling; "
-                  "pass --peak-gbs or add a measured figure to boltbeam/data/targets.json")
+                  "on the machine with this GPU, `python -m boltbeam.workflow.screen autoscan` measures it once and "
+                  "saves a chip profile; or pass --peak-gbs, or add a measured figure to boltbeam/data/targets.json")
   decode = model_roofline(profile, peak_flops=peak_flops, peak_bw_bytes_s=bw * 1e9, context=1)
   prefill = model_roofline(profile, peak_flops=peak_flops, peak_bw_bytes_s=bw * 1e9, context=context)
   return {
@@ -464,6 +465,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
              unpaired_roles=table.get("unpaired_roles") or [], not_timed=table.get("not_timed") or [],
              attribution=table.get("attribution"), unpaired_launches=table.get("unpaired_launches") or [],
              joint_role_groups=table.get("joint_role_groups") or [],
+             ambiguous=(_optional(run, providers.TRACES[shown]) or {}).get("ambiguous"),
              source=_source(shown, capture, target))
   out["tie_out"] = tie.tie_out(run, provider=shown, table=table, trace=_optional(run, providers.TRACES[shown]),
                                limit_ms=limit_ms, profile=profile, bandwidth_gbs=bw,
@@ -815,7 +817,10 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
     "blocked": blocked(plan),
     "report": "report.html" if (run / "report.html").exists() else None,
     "engine": {"provider": run_provider(run), "weight_format": _optional(run, MEASURE_STATUS).get("weight_format")
-               or (providers.weight_format(profile) if profile else None)},
+               or (providers.weight_format(profile) if profile else None),
+               # the build the run measured against the pin table, and the toolchain it recorded (providers.record_build,
+               # collectors/toolchain.record); None when the run predates them
+               "build": manifest.get("engine"), "toolchain": manifest.get("toolchain")},
     "batches": batch_rows(run, manifest, profile, ceil),
   }
 
@@ -879,18 +884,17 @@ def show(run:pathlib.Path) -> dict[str, Any]:
   report = _optional(run, "analysis_report.json")
   plan = _optional(run, "measurement_plan.json")
   meta = profile.get("metadata", {}) or {}
-  out = summary(run)
+  out, res = summary(run), results(run)
   out.update({
     "schema": SCHEMA, "kind": "run", "model_path": manifest.get("model_path"),
     "model": {"architecture": profile.get("architecture"), "architecture_class": profile.get("architecture_class"),
               "layer_count": profile.get("layer_count"), "hidden_size": profile.get("hidden_size"),
               "ffn_size": profile.get("ffn_size"), "vocab_size": profile.get("vocab_size"),
               "role_count": len(profile.get("roles", []) or []), "quant_types": list(meta.get("quant_types", []) or [])},
-    # the report's own ladder, text only: the same sentence report.html and summary.md print
     # the report's own ladder, text only: the same sentence report.html and summary.md print, without the code marks
-    "next_step": next_step(report, plan, results(run).get("probe"), _optional(run, MEASURE_STATUS)).replace("`", ""),
+    "next_step": next_step(report, plan, res.get("probe"), _optional(run, MEASURE_STATUS)).replace("`", ""),
     "artifacts": list(manifest.get("artifacts", []) or []),
-    "results": results(run),
+    "results": res,
   })
   return out
 
@@ -1544,11 +1548,14 @@ def saved(root:pathlib.Path) -> dict[str, Any]:
       if not (is_run(d) and (d / SAVE_RECORD).exists()):
         continue
       rec, manifest, res = read_json(d / SAVE_RECORD), load_manifest(d), _optional(d, "results.json")
-      timing, ceil = res.get("timing") or {}, res.get("ceiling") or {}
+      timing, ceil, loss = res.get("timing") or {}, res.get("ceiling") or {}, res.get("loss") or {}
+      if loss.get("session") and loss.get("runtimes"):  # the limit is the focus depth's: so is the turn set against it
+        timing = {"tok_s": loss["runtimes"][0].get("tok_s")}
       pct = (100.0 * timing["tok_s"] / ceil["tok_s"]) if timing.get("tok_s") and ceil.get("tok_s") else None
       rows.append({"id": d.name, "dir": str(d), "model_id": manifest.get("model_id"), "target_id": manifest.get("target_id"),
                    "provider": run_provider(d), "saved_at": rec.get("saved_at"), "tok_s": timing.get("tok_s"),
-                   "pct_of_limit": pct})
+                   "pct_of_limit": pct, "workload": manifest.get("workload"), "measured": bool(res.get("measured")),
+                   "roofline_pct": ((res.get("loss") or {}).get("replay") or {}).get("headline", {}).get("e_pct")})
   rows.sort(key=lambda r: r["saved_at"] or "", reverse=True)
   return {"schema": SCHEMA, "kind": "saved", "root": str(root), "runs": rows}
 
@@ -1712,9 +1719,9 @@ def main(argv:list[str] | None = None) -> int:
       p.add_argument("--role-time", default="auto", choices=["auto", "in-model", "generic"])
   args = parser.parse_args(argv)
   if args.command == "repeat-bands":
-    from boltbeam.workflow.repeat_bands import save
+    from boltbeam.workflow import repeat_bands
     try:
-      save(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser(), pathlib.Path(args.out).expanduser())
+      repeat_bands.save(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser(), pathlib.Path(args.out).expanduser())
     except (ValueError, FileNotFoundError) as exc:
       parser.error(str(exc))
     print(f"measured repeat bands written to {args.out}")

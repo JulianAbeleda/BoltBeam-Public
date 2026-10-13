@@ -10,6 +10,7 @@ about (narrow, extended by a data edit).
 """
 from __future__ import annotations
 
+import functools
 import json
 import pathlib
 from dataclasses import dataclass, field
@@ -65,11 +66,16 @@ def load_quant_registry(path:str | pathlib.Path | None = None, *, activations:bo
   """The weight quants; with activations, also the formats an engine only reads and writes activations in (a row
   marked "activation_only": q8_1, fp32), which no weight route or limit may take."""
   p = pathlib.Path(path) if path else _DEFAULT_PATH
-  data = json.loads(p.read_text())
+  return dict(_registry(str(p), p.stat().st_mtime_ns, activations))
+
+
+@functools.lru_cache(maxsize=8)
+def _registry(p:str, _mtime:int, activations:bool) -> dict[str, QuantCapability]:
+  """One parse per file version: the roofline asks per GEMM, about a million times for a long replay."""
+  data = json.loads(pathlib.Path(p).read_text())
   if data.get("schema") != SCHEMA_QUANT_REGISTRY:
     raise ValueError(f"{p} is not a {SCHEMA_QUANT_REGISTRY} registry")
-  caps = {row["name"]: _from_row(row) for row in data["quants"] if activations or not row.get("activation_only")}
-  return caps
+  return {row["name"]: _from_row(row) for row in data["quants"] if activations or not row.get("activation_only")}
 
 
 def quant_capability(name:str, path:str | pathlib.Path | None = None) -> QuantCapability | None:

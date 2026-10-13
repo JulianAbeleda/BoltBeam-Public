@@ -344,7 +344,9 @@ def build_timing_trace(manifest:dict[str, Any], request:dict[str, Any], evidence
   rows: list[dict[str, Any]] = []
   for ctx, b in sorted(bench.items()):
     rows.append({"scope": "whole_step", "context": ctx, "wall_us": 1e6 / b["tok_s"], "tok_s": b["tok_s"],
-                 "stddev_tok_s": b["stddev_tok_s"], "source": "llama-bench"})
+                 "stddev_tok_s": b["stddev_tok_s"], "source": "llama-bench", "engine": b.get("engine", {}),
+                 # the same row llama_bench_decode writes on CUDA: the token window and the build the run measured
+                 **{k: b[k] for k in ("decode_tokens", "build") if b.get(k)}})
     for role in request.get("priority_roles", []):
       probe = by_key.get((role["role"], role["quant"], tuple(role["shape"])))
       if probe is None:

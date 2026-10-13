@@ -187,7 +187,8 @@ def resolve_peak_flops(target, dtype:str, override_tflops:float | None) -> float
   raise SystemExit(
     f"target {target.target_id!r} carries no peak_tflops, so there is no compute ceiling to "
     f"place this model against (backend_status={target.backend_status!r}).\n"
-    f"Supply a measured ceiling with --peak-tflops <TFLOP/s>, or add one to "
+    f"On the machine with this GPU, `python -m boltbeam.workflow.screen autoscan` measures its bandwidth and compute "
+    f"peak once and saves a chip profile. Or supply a measured ceiling with --peak-tflops <TFLOP/s>, or add one to "
     f"boltbeam/data/targets.json once it has been measured on the hardware.")
 
 

@@ -81,7 +81,9 @@
       "tok_s": 20.78565690996941
     },
     "engine": {
+      "build": null,
       "provider": "llama.cpp",
+      "toolchain": null,
       "weight_format": "GGUF Q4_K+Q6_K"
     },
     "id": "qwen3-8b-apple_m3_10c-001",
