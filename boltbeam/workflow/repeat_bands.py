@@ -11,6 +11,24 @@ from boltbeam.workflow.common import load_manifest, read_json, write_json
 
 SCHEMA = "boltbeam.repeat_bands.v1"
 ARTIFACT = "repeat_bands.json"
+PLAN_SCHEMA = "boltbeam.repeat_plan.v1"
+PIN_RUNS = 4  # runs a band needs, fixed before collection, before it may justify an engine pin; fewer is a weak verdict
+RULE = ("a row moved when the after value lies outside the range of n independent before runs of its exact setup; "
+        "with no change, that happens with probability 2/(n+1) per row (exchangeable runs)")
+
+
+def strength(n:int) -> dict:
+  """The band's n, its false-move rate per row and whether its verdicts are weak (fewer runs than PIN_RUNS)."""
+  return {"n": n, "false_move_rate": 2 / (n + 1), "weak": n < PIN_RUNS}
+
+
+def plan(n:int, out:pathlib.Path) -> dict:
+  """Fix n before any repeat is collected: the plan's time precedes every run a band built on it may use."""
+  if n < 2:
+    raise ValueError("a band needs at least two runs")
+  record = {"schema": PLAN_SCHEMA, "n": n, "planned_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+  write_json(out, record)
+  return record
 
 
 def _read(run:pathlib.Path, name:str) -> dict:
@@ -60,21 +78,34 @@ def _date(run:pathlib.Path) -> str:
   return str(date)
 
 
-def _spread(a:float, b:float) -> dict:
-  if not all(math.isfinite(x) and x >= 0 for x in (a, b)):
-    raise ValueError("repeat measurements must be finite nonnegative times")
-  mean = (a + b) / 2
-  return {"before_ms": a, "after_ms": b, "reference_ms": mean, "width_ms": abs(b - a),
-          "width_pct": 100 * abs(b - a) / mean if mean else None}
+def _spread(xs:list[float]) -> dict:
+  if len(xs) < 2 or not all(isinstance(x, (int, float)) and math.isfinite(x) and x >= 0 for x in xs):
+    raise ValueError("repeat measurements must be at least two finite nonnegative times")
+  mean = sum(xs) / len(xs)
+  return {"runs_ms": list(xs), "low_ms": min(xs), "high_ms": max(xs), "reference_ms": mean, "width_ms": max(xs) - min(xs),
+          "width_pct": 100 * (max(xs) - min(xs)) / mean if mean else None}
 
 
-def calibrate(a:pathlib.Path, b:pathlib.Path) -> dict:
-  """Absolute row spread and its relative equivalent, from two independent repeats of one setup."""
+def _runs(row:dict) -> list:
+  return row.get("runs_ms") or [row.get("before_ms"), row.get("after_ms")]  # a band saved as a pair: n = 2
+
+
+def _when(date:str) -> datetime.datetime:
+  d = datetime.datetime.fromisoformat(str(date).replace("Z", "+00:00"))
+  return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+
+
+def calibrate(runs:list[pathlib.Path], fixed:dict | None = None) -> dict:
+  """Each row's range over n independent repeats of one setup (n >= 2), with n and its false-move rate. With a plan
+  (plan()), n must be the planned n and every run must come after the plan."""
   from boltbeam.workflow import diff
-  if a.resolve() == b.resolve():
-    raise ValueError("a repeat pair needs two distinct runs")
-  sa, sb = scope(a), scope(b)
-  diff.refuse_unless_same([(k, sa[k], sb[k]) for k in sa])
+  if len(runs) < 2 or len({r.resolve() for r in runs}) != len(runs):
+    raise ValueError("a band needs at least two distinct runs")
+  a = runs[0]
+  sa = scope(a)
+  for b in runs[1:]:
+    sb = scope(b)
+    diff.refuse_unless_same([(k, sa[k], sb[k]) for k in sa])
   if not sa["model"]["profile"] or not sa["model"]["path"] or not sa["request"].get("contexts"):
     raise ValueError("repeat scope needs model profile, model path and requested contexts")
   if not sa["build"] or sa["build"] == "unknown":
@@ -83,24 +114,23 @@ def calibrate(a:pathlib.Path, b:pathlib.Path) -> dict:
     base = sa["capture"]["window"].get("context")
     if base not in sa["request"]["contexts"]:
       raise ValueError("capture context differs from the requested setup; this pair cannot calibrate that setup")
-  A, B = sides(a), sides(b)
-  if not A or A.keys() != B.keys():
+  S = [sides(r) for r in runs]
+  x = S[0]
+  if not x or any(y.keys() != x.keys() for y in S):
     raise ValueError("repeat captures must cover the same nonempty workload parts")
   parts = {}
-  for part in A:
-    x, y = A[part], B[part]
-    if x["rows"].keys() != y["rows"].keys():
+  for part in x:
+    if any(y[part]["rows"].keys() != x[part]["rows"].keys() for y in S):
       raise ValueError(f"{part}: repeat row sets differ")
     rows = {}
-    for key, row in x["rows"].items():
-      if any(diff._differs(row.get(f), y["rows"][key].get(f)) for f in diff.WORK):
+    for key, row in x[part]["rows"].items():
+      if any(diff._differs(row.get(f), y[part]["rows"][key].get(f)) for y in S for f in diff.WORK):
         raise ValueError(f"{part}/{key}: repeat work differs")
-      rows[key] = {**_spread(row["now_ms"], y["rows"][key]["now_ms"]),
-                   "work": {f: row[f] for f in diff.WORK if f in row}}
+      rows[key] = {**_spread([y[part]["rows"][key]["now_ms"] for y in S]), "work": {f: row[f] for f in diff.WORK if f in row}}
     timing = {}
     for key in ("captured_ms", "untraced_ms", "gaps_ms"):
-      if x["tie"].get(key) is not None and y["tie"].get(key) is not None:
-        timing[key] = _spread(x["tie"][key], y["tie"][key])
+      if all(y[part]["tie"].get(key) is not None for y in S):
+        timing[key] = _spread([y[part]["tie"][key] for y in S])
     parts[part] = {"rows": rows, "timing": timing}
   from boltbeam.collectors.providers import TRACES
   def capture_evidence(run):
@@ -111,13 +141,18 @@ def calibrate(a:pathlib.Path, b:pathlib.Path) -> dict:
     return _read(run, filename)
   sources = [{"run": r.name, "date": _date(r), "build": sa["build"],
               "timing_sha256": sha256_json(_read(r, "timing_trace.json")),
-              "capture_sha256": sha256_json(capture_evidence(r))} for r in (a, b)]
-  return {"schema": SCHEMA, "scope": sa, "sources": sources, "parts": parts,
-          "rule": "absolute difference between two independent repeats; no statistical confidence claim or constant floor"}
+              "capture_sha256": sha256_json(capture_evidence(r))} for r in runs]
+  if fixed is not None:
+    if fixed.get("schema") != PLAN_SCHEMA or fixed.get("n") != len(runs):
+      raise ValueError(f"the plan fixed n = {fixed.get('n')} before collection; {len(runs)} runs were given")
+    if any(_when(s["date"]) < _when(fixed["planned_at"]) for s in sources):
+      raise ValueError("a run predates the plan: n was not fixed before collection")
+  return {"schema": SCHEMA, "scope": sa, "sources": sources, "parts": parts, **strength(len(runs)),
+          "plan": fixed, "rule": RULE}
 
 
-def save(a:pathlib.Path, b:pathlib.Path, out:pathlib.Path) -> dict:
-  record = calibrate(a, b)
+def save(runs:list[pathlib.Path], out:pathlib.Path, fixed:dict | None = None) -> dict:
+  record = calibrate(runs, fixed)
   existing = read_json(out) if out.exists() else {}
   history = existing.get("calibrations", [existing] if existing.get("scope") else [])
   write_json(out, {"schema": SCHEMA, "calibrations": [*history, record]})
@@ -135,19 +170,34 @@ def find(run:pathlib.Path, part:str, *, record:dict | None = None) -> dict | Non
   record = next((r for r in reversed(candidates) if r.get("scope") == setup), {})
   if not record:
     return None
-  if len(record.get("sources", [])) != 2 or any(not r.get("date") or not r.get("build") for r in record["sources"]):
+  n = len(record.get("sources", []))
+  if n < 2 or any(not r.get("date") or not r.get("build") for r in record["sources"]):
     return None
   result = record.get("parts", {}).get(part)
   if not result:
     return None
   for row in [*result.get("rows", {}).values(), *result.get("timing", {}).values()]:
     try:
-      measured = _spread(row["before_ms"], row["after_ms"])
+      measured = _spread(_runs(row))
     except (KeyError, ValueError, TypeError):
       return None
-    if any(row.get(k) != v for k, v in measured.items()):
+    if len(measured["runs_ms"]) != n or any(row.get(k) != v for k, v in measured.items() if k in row):
       return None
-  return result
+    row.update(measured)  # a pair saved before n was recorded reads as its two runs
+  return {**result, **strength(n), "plan": record.get("plan"), "sources": record["sources"]}
+
+
+def pin_words(band:dict | None) -> str | None:
+  """Why this band cannot justify an engine pin, or None when it can: n fixed by a plan before collection, at least
+  PIN_RUNS, and every run after the plan."""
+  if not band:
+    return "no matching repeat band for the before build"
+  fixed, n = band.get("plan") or {}, band.get("n", 0)
+  if n < PIN_RUNS:
+    return f"the before band has {n} runs; a pin change needs at least {PIN_RUNS}, fixed before collection"
+  if not fixed or fixed.get("n") != n:
+    return f"the before band's n = {n} was not fixed before collection (screen repeat-plan)"
+  return None
 
 
 def width(band:dict | None, key:str, *, work:dict | None = None) -> float | None:

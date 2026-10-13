@@ -152,7 +152,7 @@ These are the checks the existing adapters pass. Run them on a real GPU; a unit 
 ```bash
 python -m boltbeam.workflow.screen pipeline MODEL --run runs/a --target T --provider myengine --workload decode --analyze --no-search
 python -m boltbeam.workflow.screen pipeline MODEL --run runs/b --target T --provider myengine --workload decode --analyze --no-search
-python -m boltbeam.workflow.screen repeat-bands --before runs/a --after runs/b --out bands.json
+python -m boltbeam.workflow.screen repeat-bands --runs runs/a runs/b runs/c runs/d --out bands.json
 python -m boltbeam.workflow.screen pipeline MODEL --run runs/c --target T --provider myengine --workload decode --analyze --no-search --bands bands.json
 ```
 

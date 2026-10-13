@@ -16,7 +16,7 @@ role, write the report.
 python -m boltbeam.workflow.screen pipeline MODEL --run runs/a --target TARGET --provider ENGINE \
   --workload decode|prefill|session|replay --analyze --no-search [--bands bands.json]
 python -m boltbeam.workflow.screen results --run runs/a          # the same facts the screen shows, as JSON
-python -m boltbeam.workflow.screen repeat-bands --before runs/a --after runs/b --out bands.json
+python -m boltbeam.workflow.screen repeat-bands --runs runs/a runs/b runs/c runs/d --out bands.json
 python -m boltbeam.workflow.screen diff --before runs/a --after runs/b          # the engine-upgrade audit
 python -m boltbeam.workflow.screen replay-cross --a runs/a --b runs/b           # two engines, one replay trace
 python -m boltbeam.workflow.screen autoscan                       # measure this GPU once when it has no chip profile

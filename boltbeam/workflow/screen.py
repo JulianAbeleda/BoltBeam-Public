@@ -172,17 +172,13 @@ def _block(report:dict[str, Any], context:int) -> dict[str, Any]:
           "roles": _roles(report)}
 
 
-def plausibility_band(target, read:dict[str, Any] | None = None) -> float:
-  """The chip's one plausibility band, as a ± fraction: the largest of the read probe's spread over its launch
-  shapes, its cold to sustained difference, the chip's documented run-to-run range (half its width around the
-  middle), and 1%. The probe's numbers come from this machine's facts when the bandwidth is theirs, else from the
-  chip's fact source; the documented range is the chip's."""
-  src = ((getattr(target, "capabilities", None) or {}).get("fact_sources") or {}).get("memory_bandwidth_gbs") or {}
-  probe = (read or {}).get("band") if read and read.get("band") is not None else \
-    max(float(src.get("band") or 0.0), float(src.get("spread") or 0.0), float(src.get("drift") or 0.0))
-  rr = src.get("run_to_run") or {}
-  documented = (rr["high"] - rr["low"]) / (rr["high"] + rr["low"]) if rr.get("high") and rr.get("low") else 0.0
-  return round(max(float(probe or 0.0), documented, 0.01), 4)
+def bandwidth_uncertainty(target, read:dict[str, Any] | None = None) -> float | None:
+  """The memory speed's own measured uncertainty: this machine's read probe's when the speed is its read, else the
+  registry figure's (targets.uncertainty). None: the guards that need it say not checked."""
+  from boltbeam.target.targets import fact_uncertainty, uncertainty
+  if read and read.get("source") == "explicit --peak-gbs":
+    return None
+  return uncertainty(read) if read and ("uncertainty" in read or "spread" in read) else fact_uncertainty(target)
 
 
 def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "fp16",
@@ -210,7 +206,7 @@ def ceiling(profile:dict[str, Any], target, *, context:int = 512, dtype:str = "f
   prefill = model_roofline(profile, peak_flops=peak_flops, peak_bw_bytes_s=bw * 1e9, context=context)
   return {
     "schema": SCHEMA, "kind": "ceiling", "model_id": profile["model_id"], "target": target_facts(target),
-    "peak_bandwidth_gbs": bw, "bandwidth_source": (read or {}).get("short"), "band": plausibility_band(target, read), "peak_tflops": peak_flops / 1e12, "truth_status": decode["truth_status"],
+    "peak_bandwidth_gbs": bw, "bandwidth_source": (read or {}).get("short"), "uncertainty": bandwidth_uncertainty(target, read), "peak_tflops": peak_flops / 1e12, "truth_status": decode["truth_status"],
     "ridge_intensity": decode["ridge_intensity"], "assumptions": decode["assumptions"],
     "decode": _block(decode, 1), "prefill": _block(prefill, context),
     # what the limit counts and what it excludes, with reasons (profile/weight_ledger.py)
@@ -353,7 +349,8 @@ def _measured_vs_ceiling(manifest:dict[str, Any], profile:dict[str, Any], run:pa
   return {"status": "modeled", "context": block["context"], "tok_s": block["tok_s"], "floor_ms": block["floor_ms"],
           "bytes_moved": block["bytes_moved"],
           "peak_bandwidth_gbs": c["peak_bandwidth_gbs"], "bandwidth_source": c["bandwidth_source"],
-          "band": c.get("band"), "_roles": block["roles"]}
+          # each floor carries the memory speed's measured uncertainty beside it (None: its floor rule is not checked)
+          "uncertainty": c.get("uncertainty"), "_roles": [{**r, "floor_uncertainty": c.get("uncertainty")} for r in block["roles"]]}
 
 
 def run_provider(run:pathlib.Path) -> str:
@@ -838,7 +835,7 @@ def prefill_ceiling(ceil:dict[str, Any], loss:dict[str, Any], token:dict[str, An
   length = w["length"]
   return {"status": "modeled", "context": length, "floor_ms": w["limit_ms"], "tok_s": length / w["limit_ms"] * 1e3,
           "bytes_moved": None, "peak_bandwidth_gbs": ceil.get("peak_bandwidth_gbs"), "bandwidth_source": ceil.get("bandwidth_source"),
-          "band": ceil.get("band"), "basis": PREFILL_CEILING_BASIS}
+          "uncertainty": ceil.get("uncertainty"), "basis": PREFILL_CEILING_BASIS}
 
 
 def replay_ceiling(ceil:dict[str, Any], loss:dict[str, Any]) -> dict[str, Any]:
@@ -848,7 +845,7 @@ def replay_ceiling(ceil:dict[str, Any], loss:dict[str, Any]) -> dict[str, Any]:
     return {"status": "absent", "reason": loss.get("reason") or "no turn ceiling: the run lacks the profile or the ledger"}
   return {"status": "modeled", "context": h["deepest_prefix"], "floor_ms": h["roofline_ms"], "tok_s": None, "bytes_moved": None,
           "peak_bandwidth_gbs": ceil.get("peak_bandwidth_gbs"), "bandwidth_source": ceil.get("bandwidth_source"),
-          "band": ceil.get("band"), "basis": h.get("basis")}
+          "uncertainty": ceil.get("uncertainty"), "basis": h.get("basis")}
 
 
 def batch_rows(run:pathlib.Path, manifest:dict[str, Any], profile:dict[str, Any], ceil:dict[str, Any]) -> list[dict[str, Any]]:
@@ -1684,9 +1681,12 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--replay-trace", default=None, help="a replay: a boltbeam.replay_trace.v1 file or a shape's name "
                                                       "(default: the default shape in data/replay_shapes.json)")
   p.add_argument("--server-argv", default=None, help="a replay: the user's llama-server command, as one string")
-  p = sub.add_parser("repeat-bands", help="derive per-row bands from two identical repeat runs (no GPU)")
-  p.add_argument("--before", required=True)
-  p.add_argument("--after", required=True)
+  p = sub.add_parser("repeat-plan", help="fix n before collecting repeats (an engine pin needs n >= 4 fixed so)")
+  p.add_argument("--n", type=int, default=4)
+  p.add_argument("--out", required=True)
+  p = sub.add_parser("repeat-bands", help="derive per-row bands from n >= 2 identical repeat runs (no GPU)")
+  p.add_argument("--runs", nargs="+", required=True, help="the before runs, all of one exact setup")
+  p.add_argument("--plan", help="the repeat-plan file written before these runs were collected")
   p.add_argument("--out", required=True, help="repeat_bands.json; existing calibrations are retained")
   p = sub.add_parser("replay-trace", help="write a shape's counts-only replay trace")
   p.add_argument("--out", required=True)
@@ -1718,13 +1718,18 @@ def main(argv:list[str] | None = None) -> int:
       p.add_argument("--batch", type=int, default=1, help="capture one decode step of this many streams")
       p.add_argument("--role-time", default="auto", choices=["auto", "in-model", "generic"])
   args = parser.parse_args(argv)
-  if args.command == "repeat-bands":
-    from boltbeam.workflow import repeat_bands
+  if args.command in ("repeat-bands", "repeat-plan"):
+    from boltbeam.workflow import repeat_bands as rb
     try:
-      repeat_bands.save(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser(), pathlib.Path(args.out).expanduser())
+      if args.command == "repeat-plan":
+        print(f"n = {rb.plan(args.n, pathlib.Path(args.out).expanduser())['n']} fixed in {args.out}")
+        return 0
+      fixed = read_json(pathlib.Path(args.plan).expanduser()) if args.plan else None
+      got = rb.save([pathlib.Path(r).expanduser() for r in args.runs], pathlib.Path(args.out).expanduser(), fixed)
     except (ValueError, FileNotFoundError) as exc:
       parser.error(str(exc))
-    print(f"measured repeat bands written to {args.out}")
+    print(f"measured repeat bands written to {args.out}: n = {got['n']}, false-move rate {got['false_move_rate']:.0%} per row"
+          + (" (weak)" if got["weak"] else ""))
     return 0
   if args.command == "pipeline":
     return pipeline(args)

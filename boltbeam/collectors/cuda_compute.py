@@ -231,6 +231,7 @@ def fact_source(result:dict[str, Any], *, scope:str, today:str) -> dict[str, Any
           "clock_policy": result["clock_policy"].get("policy"), "throttled": result["telemetry"].get("throttled"),
           "paths": {r["path"]: ({"tops": r["tops"], "sm_mhz": r["sm_mhz"], "ops_per_sm_per_clock": r["ops_per_sm_per_clock"],
                                  "instruction": r["ptx"], "words": r["words"], "throttled": r["clock"].get("throttled"),
+                                 **({"uncertainty": r["uncertainty"]} if "uncertainty" in r else {}),
                                  "power_w_mean": (r["clock"].get("power_w") or {}).get("mean")}
                                 if r.get("available") else {"available": False, "reason": r["reason"], "instruction": r["ptx"]})
                     for r in result["paths"]}}
@@ -241,10 +242,14 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--device", type=int, default=0)
   p.add_argument("--seconds", type=float, default=SECONDS)
   p.add_argument("--reps", type=int, default=5)
+  p.add_argument("--runs", type=int, default=1, help="whole probe runs; each path's uncertainty spans all of them")
   p.add_argument("--path", action="append", choices=[x.name for x in PATHS], help="only this path (repeatable)")
   a = p.parse_args(argv)
   paths = tuple(x for x in PATHS if not a.path or x.name in a.path)
-  sys.stdout.write(json.dumps(measure_paths(a.device, reps=a.reps, seconds=a.seconds, paths=paths), indent=1, sort_keys=True) + "\n")
+  from boltbeam.collectors.cuda_bandwidth import repeated
+  runs = [measure_paths(a.device, reps=a.reps, seconds=a.seconds, paths=paths) for _ in range(a.runs)]
+  got = {**runs[0], "runs": a.runs, "paths": [repeated([r["paths"][i] for r in runs], "tops", "tops") for i in range(len(paths))]}
+  sys.stdout.write(json.dumps(got, indent=1, sort_keys=True) + "\n")
   return 0
 
 

@@ -26,9 +26,9 @@ import collections
 from typing import Any
 
 from boltbeam.collectors import pairing
+from boltbeam.target.targets import upper
 from boltbeam.collectors.attribution import share_overlap
 from boltbeam.collectors.instruction_path import FROM_NAME, kernel_path, template
-from boltbeam.collectors.pairing import PEAK_SLACK
 from boltbeam.roofline import prefill_work as work
 from boltbeam.workflow.tie_out import kind_of
 
@@ -64,6 +64,14 @@ def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True) -> 
   raise ValueError(f"the capture's {len(timed)} launches are not a warm-up prefill and a measured one of the same kernels")
 
 
+def _u(t:dict[str, Any], unc:dict[str, Any]) -> float | None:
+  """The measured uncertainty of a template's path peak (the widest of a mixed template's paths); None when a path
+  has none (targets.fact_uncertainty)."""
+  p, us = t["path"], unc.get("peaks") or {}
+  vals = [us.get(n) for n in ([p["path"]] if p["status"] == "one" else p["paths"] if p["status"] == "mixed" else [])]
+  return max(vals) if vals and None not in vals else None
+
+
 def _peak(t:dict[str, Any], peaks:dict[str, float]) -> float | None:
   """The template's path peak; for a mixed template the peak its paths make together for its instruction mix
   (prefill_work.effective_peak: each path's share of the operations at its own peak)."""
@@ -81,7 +89,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                       program_roles:dict[str, dict[str, Any]] | None = None, untraced_ms:float | None = None,
                       warmup:bool | str = True, formats:dict[str, Any] | None = None,
                       cache:dict[str, float] | None = None, depth:int = 0,
-                      observed:dict[str, dict[str, int]] | None = None, prune:dict[str, Any] | None = None) -> dict[str, Any]:
+                      observed:dict[str, dict[str, int]] | None = None, prune:dict[str, Any] | None = None,
+                      unc:dict[str, Any] | None = None) -> dict[str, Any]:
   """The measured prefill split by role, attention and other kernels, each with operations, bytes, path and ceiling.
   roles: {role, quant, n, k, count (per chunk), weight_bytes (per launch), role_class or fine}. kernel_paths: template
   -> {path: sites}. outputs: the engine calls that each ended in an output (its last token's work, the output head, once
@@ -94,7 +103,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   observed: template -> {path: instructions} ncu saw a closed kernel execute (instruction_path.ncu_observe). prune: the
   engine adapter's {stages, outputs, words} when the engine runs its last layer's rows of those stages at the output
   tokens only (pairing.pair): those launches are their own row, the role at output width."""
-  formats = formats or {}
+  formats, unc = formats or {}, unc or {}  # unc: {"bandwidth": u, "peaks": {path: u}}, each measured or absent
   acts = formats.get("activations")
   gemm = lambda m, n, k, wb: work.gemm(m, n, k, wb, acts)["bytes"]  # noqa: E731
   if proof := formats.get("matrix_grid_constraint"):
@@ -139,13 +148,14 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     ts = slot["t"]
     t = {"template": " + ".join(x["template"] for x in ts), "path": _merge_paths([x["path"] for x in ts])}
     rows.append(_row(f"{role} {quant}", "role", t, slot["calls"], slot["us"], slot["flops"], slot["bytes"], peaks,
-                     bandwidth_gbs, quant, roles=[(role, quant)], role_source="the engine's own program metadata (role, M, N, K)"))
+                     bandwidth_gbs, quant, roles=[(role, quant)], role_source="the engine's own program metadata (role, M, N, K)", unc=unc))
   roles = [{**r, "nk": r["n"] * r["k"]} for r in roles if (r["role"], str(r["quant"])) not in named]
   kinds = pairing.layer_kinds(profile or {}) or ({"attention": layers} if layers else {})
   weight = {t["template"] for t in templates if t["path"]["status"] in ("one", "mixed", "not_found")
             and not t.get("attention") and not t.get("recurrent") and not any(id(l) in paired for l in t["launches"])}
   got = pairing.pair(shared, roles, kinds=kinds, widths=chunk_widths, outputs=outputs, candidate=weight.__contains__,
-                     bandwidth_gbs=bandwidth_gbs, peak_of=lambda t: _peak(by_t[t], peaks) if t in by_t else None, prune=prune)
+                     bandwidth_gbs=upper(bandwidth_gbs, unc.get("bandwidth")), prune=prune,
+                     peak_of=lambda t: upper(_peak(by_t[t], peaks), _u(by_t[t], unc)) if t in by_t else None)
   per_item: dict[tuple, dict[str, Any]] = {}  # one row per role set, over every layer kind it ran in
   for p in got["placed"]:
     key = (tuple(sorted((x["role"], str(x["quant"])) for x in p["item"]["parts"])), p["item"]["kind"] == pairing.PRUNED)
@@ -172,7 +182,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                      roles=[(r["role"], r["quant"]) for r in parts], skipped=max(it["need"] * r0 // k0 - calls, 0),
                      tokens_per_call=sorted(m for _, m, _, _ in it["launches"])[calls // 2],
                      **({"fused": k0} if k0 > 1 else {}), **({"split": r0} if r0 > 1 else {}),
-                     **({"pruned_layer": prune.get("words")} if pruned and prune else {})))
+                     **({"pruned_layer": prune.get("words")} if pruned and prune else {}), unc=unc))
   unpaired = [f"{u['item']['role']} {u['item']['quant']}: {u['reason']}" for u in got["unplaced"]]
   ambiguous = ({"reason": "; ".join(unpaired)} if unpaired else None) or got.get("ambiguous")
   others: dict[str, dict[str, Any]] = {}
@@ -196,10 +206,10 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     if kind == "attention" and att:
       t = {"path": _merge_paths(list(o["templates"].values())), "template": " + ".join(sorted(o["templates"]))}
       rows.append(_row("attention", "attention", t, o["calls"], o["wall_us"], att["flops"], att["bytes"], peaks, bandwidth_gbs,
-                       formats.get("kv") or "F16", note=att["words"]))
+                       formats.get("kv") or "F16", note=att["words"], unc=unc))
     elif kind == "recurrent" and rec:
       rows.append(_recurrent_row(o, rec, peaks, bandwidth_gbs, work.recurrent_executed(
-        profile or {}, length or int(sum(chunk_widths)), formats.get("recurrent_form"))))
+        profile or {}, length or int(sum(chunk_widths)), formats.get("recurrent_form")), unc=unc))
     elif (fix := _fixup_row(kind, o, ordered, shapes, formats, mean_m, bandwidth_gbs, cache)) is not None:
       rows.append(fix)
     else:
@@ -243,14 +253,15 @@ def _merge_paths(paths:list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _row(name:str, what:str, t:dict[str, Any], calls:int, wall_us:float, flops:float, nbytes:float,
-         peaks:dict[str, float], bandwidth_gbs:float | None, fmt:str | None = None, **extra:Any) -> dict[str, Any]:
+         peaks:dict[str, float], bandwidth_gbs:float | None, fmt:str | None = None, unc:dict[str, Any] | None = None,
+         **extra:Any) -> dict[str, Any]:
   """One row: time, operations, bytes, the path its instructions use, and its ceiling; and the chip-best ceiling, the
   same work on the fastest measured path that holds the row's data format `fmt` exactly (prefill_work.chip_best). A
   row whose kernel code was not found has no compute ceiling and says why (refused); a kernel with no matrix
   instruction is bound by bytes."""
   path = t["path"]
   peak = _peak(t, peaks)
-  ms = wall_us / 1000.0
+  ms, u = wall_us / 1000.0, 0.0
   if path["status"] == "not_found" or (path["status"] in ("one", "mixed") and peak is None):
     c = {"ms": None, "compute_ms": None, "memory_ms": None, "bound": None}
     refused = f"no ceiling: {path['words'] if path['status'] == 'not_found' else 'no measured peak for ' + path['words']}"
@@ -258,24 +269,28 @@ def _row(name:str, what:str, t:dict[str, Any], calls:int, wall_us:float, flops:f
     c = work.ceiling(flops if peak else 0.0, nbytes, peak, bandwidth_gbs,
                      work.compute_ms(flops, path["paths"], peaks) if path["status"] == "mixed" else None)
     refused = None
-    if path.get("from_name") and c["ms"] and c["ms"] > ms * PEAK_SLACK:  # a name's path may not beat the guards
+    u = _u(t, unc or {}) if c["bound"] == "compute" else (unc or {}).get("bandwidth")  # the binding figure's
+    if path.get("from_name") and c["ms"] and u is not None and c["ms"] > ms * (1 + u):  # a name's path may not beat it
       refused = (f"no ceiling: the path {path['words']} would put the kernel {c['ms']:.2f} ms over its {ms:.2f} ms "
                  f"({'above the peak' if c['bound'] == 'compute' else 'faster than the bandwidth'})")
       c = {"ms": None, "compute_ms": None, "memory_ms": None, "bound": None}
   best_ms, best = work.best_ms(flops, nbytes, fmt, peaks, bandwidth_gbs, c["ms"], peak if c["ms"] is not None else None)
-  if best_ms is not None and best_ms > ms * PEAK_SLACK:  # the same guard: no ceiling above the time it ran in
+  bu = [(unc or {}).get("bandwidth"), ((unc or {}).get("peaks") or {}).get(best) if best else _u(t, unc or {})]
+  guard = max(bu) if None not in bu else None  # the same guard: no ceiling above the time it ran in, beyond both figures
+  if best_ms is not None and guard is not None and best_ms > ms * (1 + guard):
     best_ms, best = None, None
   return {"name": name, "what": what, "calls": calls, "ms": ms, "flops": flops, "bytes": nbytes, "template": t["template"],
           "path": path["words"], "path_status": path["status"], "peak_tflops": peak,
           "ceiling_ms": c["ms"], "best_ms": best_ms, "best_path": best,
           "compute_ms": c["compute_ms"], "memory_ms": c["memory_ms"], "bound": c["bound"],
           "mfu_pct": work.mfu(flops, ms, peak) if path["status"] in ("one", "mixed") and not refused else None,
-          "refused": refused, "mixed": path["status"] == "mixed", **({"name_source": path["name_source"]} if path.get("from_name") else {}),
+          "refused": refused, "mixed": path["status"] == "mixed",
+          **({} if guard is not None and u is not None else {"guard": "not checked: no measured uncertainty for the ceiling's figures"}), **({"name_source": path["name_source"]} if path.get("from_name") else {}),
           **({"path_shares": work.path_shares(path["paths"])} if path["status"] == "mixed" else {}), **extra}
 
 
 def _recurrent_row(o:dict[str, Any], rec:dict[str, Any], peaks:dict[str, float], bandwidth_gbs:float | None,
-                   executed:dict[str, Any] | None = None) -> dict[str, Any]:
+                   executed:dict[str, Any] | None = None, unc:dict[str, Any] | None = None) -> dict[str, Any]:
   """The recurrent kernels as one row with the recurrent block's work (prefill_work.recurrent). Their code issues no
   matrix instruction, so the compute side is the measured fp32 vector rate; a kernel whose code was found to use a
   matrix path keeps that path. With no measured fp32 rate the row is bound by its bytes alone and says so."""
@@ -290,7 +305,7 @@ def _recurrent_row(o:dict[str, Any], rec:dict[str, Any], peaks:dict[str, float],
     path = {"status": "none", "paths": {}, "path": None, "words": "no matrix instruction; no measured fp32 vector rate"}
   t = {"path": path, "template": " + ".join(sorted(o["templates"]))}
   row = _row("recurrent", "recurrent", t, o["calls"], o["wall_us"], rec["flops"], rec["bytes"], peaks, bandwidth_gbs,
-             note=rec["words"])
+             note=rec["words"], unc=unc)
   if executed:  # what the engine's algorithm executes, beside the model's work; the ceiling is not changed by it
     row.update(executed_flops=executed["flops"], executed_words=executed["words"])
   return row

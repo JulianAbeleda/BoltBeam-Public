@@ -336,9 +336,9 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
   corr = (((request or {}).get("candidate_space") or {}).get("seed") or {}).get("correctness") if request else None
   oracle = (f"{corr.get('oracle')}, atol {corr.get('atol')}, rtol {corr.get('rtol')}" if isinstance(corr, dict)
             else _nr(REQUEST.format(stem=stem), "candidate_space.seed.correctness"))
-  band_words = f"±{100 * band:.1f}%" if isinstance(band, (int, float)) else _nr("results", "ceiling.band")
+  band_words = f"±{100 * band:.1f}%" if isinstance(band, (int, float)) else _nr("results", "ceiling.uncertainty")
   lines.append(f"check: correctness against the reference ({oracle}), then a Run whose tie-out puts {role} {quant} within {band_words} "
-               f"of {_f(plan_us, '{:.1f}', POLICY, where + '.kernel.plan_us')} µs per call (the chip's band)")
+               f"of {_f(plan_us, '{:.1f}', POLICY, where + '.kernel.plan_us')} µs per call (the chip's measured uncertainty)")
   if request:
     ptrs.append(_ptr(REQUEST.format(stem=stem), "target"))
   return _layer("promotion", True, lines, {**facts, "plan": best.get("plan") or c.get("plan"), "plan_us": plan_us, "model_us": model_us,
@@ -462,7 +462,7 @@ def gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None
   t = loss.get("tie_out") or {}
   token = next((x for x in loss.get("runtimes") or [] if not x.get("per_role")), None)
   ceil = res.get("ceiling") or {}
-  band = ceil.get("band")
+  band = ceil.get("uncertainty")  # the bandwidth's measured uncertainty (screen.bandwidth_uncertainty)
   from boltbeam.workflow.screen import measurement_words
   header = {
     "model_id": res.get("model_id"), "target_id": res.get("target_id"), "engine": (res.get("engine") or {}).get("provider") or loss.get("provider"),

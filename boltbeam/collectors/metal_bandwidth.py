@@ -116,6 +116,9 @@ def measure_matrix_tflops(iters:int = 4096, reps:int = 5) -> dict:
 
 
 def run_cli(args) -> int:
-  out = measure_read_gbs()
+  from boltbeam.collectors.cuda_bandwidth import repeated
+  runs = max(1, getattr(args, "runs", 1))
+  out = {"read": repeated([measure_read_gbs() for _ in range(runs)], "read_gbs", "gbs"),
+         "matrix": repeated([measure_matrix_tflops() for _ in range(runs)], "tflops", "tflops")} if runs > 1 else measure_read_gbs()
   sys.stdout.write(json.dumps(out, indent=1, sort_keys=True) + "\n")
   return 0

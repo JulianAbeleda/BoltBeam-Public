@@ -32,7 +32,7 @@ import pathlib
 from typing import Any, Iterable
 
 from boltbeam.collectors import pairing
-from boltbeam.collectors.pairing import BLOCKS, PEAK_SLACK  # noqa: F401  (the decode readers import them from here)
+from boltbeam.collectors.pairing import BLOCKS  # noqa: F401  (the decode readers import it from here)
 
 ROLE_SOURCE = "attributed_by_bytes_and_count"
 
@@ -57,7 +57,8 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
               classes:dict[tuple[str, str], str] | None = None) -> dict[str, Any]:
   """Pair kernel groups with roles by the layer walk. roles: the ceiling's decode roles (role, quant, bytes_moved,
   floor_ms, and fine or part_roles for an engine's packed matrix). counts: calls per token per (role, quant). kinds:
-  layers per block kind (pairing.layer_kinds); classes: (role, quant) -> fine class. Returns {"pairs": [...], "groups":
+  layers per block kind (pairing.layer_kinds); classes: (role, quant) -> fine class. peak_gbs: the bandwidth at the top
+  of its measured uncertainty (targets.upper), None not checked. Returns {"pairs": [...], "groups":
   every group with its role or None (a group several roles share is one row per role), "unpaired", "ambiguous",
   "rule", "structure"}."""
   rows = [{"role": r["role"], "quant": r["quant"], "count": int(counts[(r["role"], r["quant"])]),
@@ -212,17 +213,21 @@ class CaptureRefused(RuntimeError):
 
 
 def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_ms:float | None,
-                 long_kernels:int, band:float = 0.01) -> None:
+                 long_kernels:int, band:float | None) -> str:
   """Refuse a window with no kernels, or with more GPU time per token than the captured run took per token by more
-  than the chip's plausibility band (screen.plausibility_band)."""
+  than the chip's measured uncertainty (screen.bandwidth_uncertainty). Returns what was checked: with no measured
+  uncertainty the token comparison is not checked."""
   if not window:
     raise CaptureRefused(f"{method} captured {long_kernels} kernels, but none ran only in the decode tokens: the "
                          "decode's kernels were not visible to it (for llama.cpp on CUDA, its CUDA graphs)")
   per_token = sum(g["wall_us"] for g in window) / tokens / 1000.0
-  if token_ms and per_token > token_ms * (1 + band):
+  if not token_ms or band is None:
+    return "not checked: " + ("no captured token time" if not token_ms else "the chip has no measured uncertainty")
+  if per_token > token_ms * (1 + band):
     raise CaptureRefused(f"{method} counted {per_token:.2f} ms of GPU time per token, more than the {token_ms:.2f} ms "
-                         f"the captured run took per token by more than ±{100 * band:.1f}%, so it counted work "
+                         f"the captured run took per token by more than its measured ±{100 * band:.2f}%, so it counted work "
                          "outside the decode tokens")
+  return f"checked: kernels within the captured token by the measured ±{100 * band:.2f}%"
 
 
 def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str, model_id:str, target,
@@ -243,8 +248,8 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   # a decode capture is paired with the decode ceiling's bytes whatever the run's workload (a replay, a session):
   # any other workload reads the prefill block, whose role bytes are not one decode token's
   ceil = _measured_vs_ceiling({**manifest, "workload": "decode"}, profile, pathlib.Path(run))
-  check_window(window, method=method, tokens=tokens, token_ms=token_ms, long_kernels=long_kernels,
-               band=max(float(ceil.get("band") or 0.0), 0.01))
+  window_check = check_window(window, method=method, tokens=tokens, token_ms=token_ms, long_kernels=long_kernels,
+                              band=ceil.get("uncertainty"))
   counts = {(r["role"], r["quant"]): int(r["count"]) for r in profile.get("roles", []) if r.get("count")}
   classes = {(r["role"], r["quant"]): r.get("role_class") for r in profile.get("roles", [])}
   roles, pairing_roles, packed = ceil.get("_roles") or [], "the profile's roles", {}
@@ -257,7 +262,8 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
                for m in got]
       counts = {(m["role"], m["quant"]): m["count"] for m in got}
       packed = {(m["role"], m["quant"]): m["part_roles"] for m in got}
-  result = attribute(window, roles, counts, tokens, ceil.get("peak_bandwidth_gbs"), kinds=pairing.layer_kinds(profile), classes=classes)
+  from boltbeam.target.targets import upper
+  result = attribute(window, roles, counts, tokens, upper(ceil.get("peak_bandwidth_gbs"), ceil.get("uncertainty")), kinds=pairing.layer_kinds(profile), classes=classes)
   if packed:  # one measured duration belongs to the packed launch, not separate byte-weighted part timings
     from collections import Counter
     from boltbeam.role_key import role_key
@@ -281,7 +287,8 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
                      "batch": batch}]
                    + trace_rows(result, context=context, time_source=method),
            "pairs": result["pairs"], "unpaired_roles": result["unpaired"], "ambiguous": result["ambiguous"],
-           "pairing_rule": result["rule"], "structure": result["structure"], "overlap": overlap, "pairing_roles": pairing_roles}
+           "pairing_rule": result["rule"], "structure": result["structure"], "overlap": overlap, "pairing_roles": pairing_roles,
+           "window_check": window_check}
   if packed:
     from boltbeam.artifacts.tinygrad_profile_events import matrix_work_coverage
     work = matrix_work_coverage(trace["rows"], profile, tokens, batch=batch)

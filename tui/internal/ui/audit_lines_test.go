@@ -81,7 +81,7 @@ func TestNotCheckedIsExplainedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := plain(resultBody(Facts{Run: &seam.Run{Results: res}}, 200))
-	if strings.Count(got, "Not checked is expected on a first run") != 1 || !strings.Contains(got, "screen repeat-bands --before A --after B") {
+	if strings.Count(got, "Not checked is expected on a first run") != 1 || !strings.Contains(got, "screen repeat-bands --runs A B") {
 		t.Fatalf("explanation:\n%s", got)
 	}
 }

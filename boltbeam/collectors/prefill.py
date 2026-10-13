@@ -617,6 +617,9 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
          "target_id": target.target_id, "bandwidth_gbs": bw, "bandwidth_source": bw_source,
          "peaks": dict(target.matrix_tflops or {}), "peaks_source": ((target.capabilities or {}).get("fact_sources") or {}).get("matrix_tflops"),
          "lengths": {}, **({"depth": depth} if depth else {})}
+  from boltbeam.target.targets import fact_uncertainty  # each figure's own measured uncertainty, for the guards
+  out["uncertainty"] = {"bandwidth": ceil.get("uncertainty"),
+                        "peaks": {p: fact_uncertainty(target, "matrix_tflops", p) for p in out["peaks"]}}
   per_chunk = None  # launches per engine chunk, from the last capture: the next capture's size is estimated from it
   from boltbeam.collectors.capture_settings import contexts, require_supported
   if provider not in ("llama.cpp", "vllm"):
@@ -646,7 +649,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              program_roles=cap.get("program_roles"), warmup=cap["warmup"],
                              untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
                              formats=cap.get("formats"), cache=last_level_cache(target), depth=depth,
-                             observed=cap["paths"].get("observed"), prune=cap.get("prune"))
+                             observed=cap["paths"].get("observed"), prune=cap.get("prune"), unc=out["uncertainty"])
     from boltbeam.workflow.repeat_bands import find
     attr["end_to_end"] = tie_out.end_to_end(attr, truth_ms.get(int(length)), band=find(run, f"prefill {length}"))
     per_chunk = len(cap["launches"]) / cap.get("copies", 2 if cap["warmup"] else 1) / max(len(cap["chunk"]), 1)

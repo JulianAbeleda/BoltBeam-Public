@@ -39,7 +39,6 @@ from boltbeam.collectors.instruction_path import template
 from boltbeam.vocab import OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE
 from boltbeam.workflow.tie_out import UNATTRIBUTED, kind_of
 
-PEAK_SLACK = 1.05  # a measured peak or bandwidth may be beaten by measurement noise only
 GAP_RATIO = 1.3  # input-side rows of one format whose operations per launch are within this cannot be told apart by time
 MAX_FUSED = 3  # calls one launch may serve (gate and up fused: 2)
 MAX_SPLIT = 4  # launches one call may take (a library that cuts a product along M)
@@ -52,7 +51,7 @@ RULE = ("the block kernels (attention, recurrent) mark the layers; the launches 
         "side is one role in every layer of that kind; a row's fine class puts it on a side and, on the output side, in the "
         "data flow's order; a template serves one weight format; on the input side more operations per launch is more "
         "time, and two rows within the gap are one row; no launch reads a role's weights faster than the bandwidth or runs "
-        f"past its path's peak; a launch may serve up to {MAX_FUSED} calls or a call take up to {MAX_SPLIT} launches, by a "
+        f"past its path's peak, each at the top of its measured uncertainty (not checked without one); a launch may serve up to {MAX_FUSED} calls or a call take up to {MAX_SPLIT} launches, by a "
         "whole ratio; the head pairs on the unit's tail by bytes; the pairing placing the most weight bytes wins, and rows "
         "that could exchange their launches are left unpaired and said")
 FLAT_RULE = ("no layer structure (no launch times, or no attention or recurrent kernel named): a role takes kernel groups "
@@ -260,8 +259,19 @@ def flat_groups(groups:list[dict[str, Any]], m:float = 1) -> list[dict[str, Any]
   return out
 
 
+def _place(g:dict[str, Any]) -> str:
+  """A slot group in words: input slots count back from the layer's block (-1 is the launch just before it), output
+  slots forward from it (0 is the first launch after it)."""
+  if g["side"] == "input":
+    return f"launch {-g['slot']} before the {g['kind']} block"
+  if g["side"] == "output":
+    return f"launch {g['slot'] + 1} after the {g['kind']} block"
+  return f"the {g['side']} group {g['slot']}"
+
+
 def _fits(item:dict[str, Any], g:dict[str, Any], k:int, r:int, bandwidth_gbs:float | None, peak:float | None) -> bool:
-  """One launch of the group, serving k calls of the item at M / r rows: within the bandwidth and the peak."""
+  """One launch of the group, serving k calls of the item at M / r rows: within the bandwidth and the peak, each the
+  top of its measured uncertainty (targets.upper); None is not checked."""
   # Explicit call semantics constrain candidates before timing bounds. Missing dimensions do not prove a
   # match; they simply leave the candidate unresolved for the ambiguity check.
   if not projection_candidate(g.get("template", "")) and not all(
@@ -279,9 +289,9 @@ def _fits(item:dict[str, Any], g:dict[str, Any], k:int, r:int, bandwidth_gbs:flo
     if launch.get("matrix_calls") is not None and launch["matrix_calls"] != k:
       return False
   us = g["median_us"]
-  if bandwidth_gbs and item["weight_bytes"] * k / (us * 1e-6) > bandwidth_gbs * 1e9 * PEAK_SLACK:
+  if bandwidth_gbs and item["weight_bytes"] * k / (us * 1e-6) > bandwidth_gbs * 1e9:  # bounds: targets.upper
     return False
-  if peak and item.get("nk") and 2.0 * (g["m"] / r) * item["nk"] * k / (us * 1e-6) > peak * 1e12 * PEAK_SLACK:
+  if peak and item.get("nk") and 2.0 * (g["m"] / r) * item["nk"] * k / (us * 1e-6) > peak * 1e12:
     return False
   return True
 
@@ -619,7 +629,8 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
                    and (f["template"] == g["template"] or (fmt.get(key(f)) == q) == serves)
                    and _fits(p["item"], f, p["fused"], p["split"], bandwidth_gbs, peak_of(f["template"]))), None)
       if twin is not None:
-        found.append(f"{p['item']['role']} {p['item']['quant']} could have taken {twin['slot']} for {g['slot']}: equal eligible launches without distinguishing semantic evidence")
+        found.append(f"{p['item']['role']} {p['item']['quant']} took {_place(g)}, but {_place(twin)} fits it equally; "
+                     "no semantic evidence tells them apart")
         out[id(p["item"])] = (p["item"], found[-1])
         break
     return found, out

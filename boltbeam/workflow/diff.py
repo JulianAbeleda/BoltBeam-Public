@@ -38,10 +38,11 @@ def refuse_unless_same(fields:list[tuple[str, Any, Any]]) -> None:
 
 
 def row_changes(rows_a:dict[Any, dict[str, Any]], rows_b:dict[Any, dict[str, Any]], *, band:bool = False,
-                widths:dict[str, float | None] | None = None) -> list[dict[str, Any]]:
+                widths:dict[str, dict | None] | None = None, n:int | None = None) -> list[dict[str, Any]]:
   """Rows keyed alike on both sides, after less before: now_ms and lost_ms, or only_in. With band: each row's before
-  and after time, its measured repeat band, whether it moved beyond it (None without a band), and the work
-  fields that changed."""
+  and after time, its before band (the range of n before runs, repeat_bands.RULE), whether the after time lies outside
+  it (None without a band), n and the false-move rate, and the work fields that changed."""
+  from boltbeam.workflow.repeat_bands import strength
   out = []
   for k in sorted(set(rows_a) | set(rows_b), key=lambda k: tuple(str(x) for x in (k if isinstance(k, tuple) else (k,)))):
     a, b = rows_a.get(k), rows_b.get(k)
@@ -51,9 +52,10 @@ def row_changes(rows_a:dict[Any, dict[str, Any]], rows_b:dict[Any, dict[str, Any
          "only_in": None if both else ("before" if a is not None else "after")}
     if band:
       before, after = (a or {}).get("now_ms"), (b or {}).get("now_ms")
-      width = (widths or {}).get(k)
-      r.update(before_ms=before, after_ms=after, band_ms=width, moved=(abs(r["now_ms"]) > width if both and width is not None else None),
-               checked=both and width is not None,
+      rng = (widths or {}).get(k)
+      r.update(before_ms=before, after_ms=after, band_ms=rng and rng["width_ms"],
+               moved=(not rng["low_ms"] <= after <= rng["high_ms"]) if both and rng else None,
+               checked=both and rng is not None, **(strength(n) if n and rng else {}),
                work_changed=[f for f in WORK if both and _differs(a.get(f), b.get(f))])
     out.append(r)
   return out
@@ -142,19 +144,18 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
   if not (A and B):
     raise DiffRefused("a run holds no captured where table")
   parts = []
+  from boltbeam.workflow import repeat_bands as rb
   for key in sorted(set(A) & set(B), key=lambda k: (k.split()[0], float(k.split()[1]))):
-    from boltbeam.workflow import repeat_bands as rb
-    ba, bb = rb.find(a, key, record=bands), rb.find(b, key, record=bands)
-    widths = {}
-    for name, row in A[key]["rows"].items():
-      wa, wb = rb.width(ba, name, work=row), rb.width(bb, name, work=B[key]["rows"].get(name, {}))
-      widths[name] = max(wa, wb) if wa is not None and wb is not None else None
-    rows = row_changes(A[key]["rows"], B[key]["rows"], band=True, widths=widths)
+    ba = rb.find(a, key, record=bands)  # the before build's band: the after value is judged against its n runs
+    if ba and _timing_sha(b) in {s.get("timing_sha256") for s in ba["sources"]}:
+      raise DiffRefused(f"{b.name} is one of its own band's runs: a holdout is never judged by a band it made")
+    n = (ba or {}).get("n")
+    widths = {name: (ba["rows"][name] if rb.width(ba, name, work=row) is not None else None)
+              for name, row in A[key]["rows"].items()}
+    rows = row_changes(A[key]["rows"], B[key]["rows"], band=True, widths=widths, n=n)
     ta, tb = A[key]["tie"], B[key]["tie"]
-    gap_widths = [(band or {}).get("timing", {}).get("gaps_ms", {}).get("width_ms") for band in (ba, bb)]
-    gap_width = max(gap_widths) if all(w is not None for w in gap_widths) else None
     gaps = row_changes({"gaps": {"now_ms": ta["gaps_ms"] or 0.0}}, {"gaps": {"now_ms": tb["gaps_ms"] or 0.0}},
-                       band=True, widths={"gaps": gap_width})[0]
+                       band=True, widths={"gaps": (ba or {}).get("timing", {}).get("gaps_ms")}, n=n)[0]
     kernels = sum(r["now_ms"] for r in rows if r["now_ms"] is not None) + sum(
       (r["after_ms"] or 0.0) - (r["before_ms"] or 0.0) for r in rows if r["only_in"])
     wall = (tb["captured_ms"] - ta["captured_ms"]) if ta["captured_ms"] and tb["captured_ms"] else None
@@ -164,12 +165,19 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
     parts.append({"part": key, "rows": rows, "gaps": gaps, "before": ta, "after": tb, "kernels_ms": kernels,
                   "captured_ms": wall, "reconciles": wall is not None and abs(wall - kernels - gaps["now_ms"]) <= TIE_RESIDUAL_MS,
                   "untraced_ms": (tb["untraced_ms"] - ta["untraced_ms"]) if ta["untraced_ms"] and tb["untraced_ms"] else None,
-                  "unchanged": held if checked else None, "status": "checked" if checked else "not checked"})
+                  "unchanged": held if checked else None, "status": "checked" if checked else "not checked",
+                  **(rb.strength(n) if n else {}), "pin_refused": rb.pin_words(ba)})
   return {"schema": AUDIT_SCHEMA, "before": a.name, "after": b.name, "builds": builds, "provider": run_provider(a), "pins": pins,
           "toolchain": changes(ma, mb),
           "model": _model(a, ma), "target": ma.get("target_id"), "workload": ma.get("workload"), "parts": parts,
-          "band": "per-row measured repeat spread, or not checked",
+          "band": f"the range of n before runs per row ({rb.RULE}), or not checked",
+          "justifies_pin": bool(parts) and not any(p["pin_refused"] for p in parts),
           "end_to_end_band": "measured repeat spread, or not checked"}
+
+
+def _timing_sha(run:pathlib.Path) -> str:
+  from boltbeam.artifacts.base import sha256_json
+  return sha256_json(_read(run / "timing_trace.json"))
 
 
 def _model(run:pathlib.Path, manifest:dict[str, Any]) -> str | None:
@@ -184,13 +192,18 @@ def audit_lines(d:dict[str, Any]) -> list[str]:
   out = [f"Engine upgrade audit: {d['after']} ({d['builds'][1]}) against {d['before']} ({d['builds'][0]}), "
          f"{d['workload']}; band {d['band']}, end to end {d['end_to_end_band']}.",
          f"  pinned: {providers.pin_label(d['pins'][0]['pin'])}. Before: {d['pins'][0]['words']}. After: {d['pins'][1]['words']}."]
+  refused = sorted({p["pin_refused"] for p in d["parts"] if p.get("pin_refused")})
+  out.append("  pin change: " + ("this audit can justify it" if d.get("justifies_pin") else "NOT justified: " + "; ".join(refused)))
   for t in d.get("toolchain", []):
     out.append(f"  {t['name']}: {t['before']} -> {t['after']} "
                f"({'CHANGED' if t['changed'] else 'unchanged' if t['known'] else 'unknown'}; pin {t['pin']})")
   for p in d["parts"]:
-    out.append(f"  {p['part']}: {'not checked' if p['unchanged'] is None else 'unchanged outside moved rows' if p['unchanged'] else 'changed'}")
+    how = (f"; n = {p['n']} before runs, false-move rate {p['false_move_rate']:.0%} per row{' (WEAK)' if p['weak'] else ''}"
+           if p.get("n") else "")
+    out.append(f"  {p['part']}: {'not checked' if p['unchanged'] is None else 'unchanged outside moved rows' if p['unchanged'] else 'changed'}{how}")
     for r in sorted(p["rows"], key=lambda r: -max(r["before_ms"] or 0, r["after_ms"] or 0)):
-      verdict = (f"only {r['only_in']}" if r["only_in"] else ("not checked" if not r["checked"] else "MOVED" if r["moved"] else "within band")
+      verdict = (f"only {r['only_in']}" if r["only_in"] else ("not checked" if not r["checked"] else ("MOVED" if r["moved"] else "within band")
+                 + (f" (n {r['n']}, false-move {r['false_move_rate']:.0%}{', weak' if r['weak'] else ''})" if r.get("n") else ""))
                  + (f"; work changed: {', '.join(r['work_changed'])}" if r["work_changed"] else ""))
       out.append(f"    {str(r['key'])[:40]:40} {f(r['before_ms'], '{:.3f}'):>9} -> {f(r['after_ms'], '{:.3f}'):>9} "
                  f"({f(r['now_ms'])}, band {f(r['band_ms'], '{:.6f}')})  {verdict}")

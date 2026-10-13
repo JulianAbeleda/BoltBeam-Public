@@ -72,7 +72,7 @@ unattributed. Allocation and memory placement are not recorded.
 ### Sampling rule, specified before any more repeats
 
 Two runs cannot support a per-row moved or held verdict: by construction a fresh run falls outside a two-run
-spread half of the time. No repeats were collected under the rule below; adopting it is a policy decision.
+spread half of the time. No repeats were collected under the rule below. The rule was adopted afterwards; see "Measured uncertainty" below.
 
 - Decision: a row of an exact setup moved when the after value lies outside the range of n independent before
   runs of that setup.
@@ -101,7 +101,7 @@ read probe's best launch shape, 1,692.7 GB/s; `lm_head` reads at about 1,698 GB/
 spread 0.9%, and its cold to sustained difference is 0.15%. The refusal compares the gap with the measured row's
 repeat spread (0.00007 ms) only; the floor's own measured uncertainty is not part of the comparison. That is where
 the refusal comes from. Whether the probe's spread belongs in the floor check is a policy decision; it was not
-changed.
+changed here. It was decided and changed afterwards: see "Measured uncertainty" below.
 
 ## 2. Profiling overhead
 
@@ -145,6 +145,98 @@ remains the supported 8B route, with one run and no repeat band.
 
 ## Remaining review findings
 
-- Two literal tolerances still decide verdicts: `attribution.check_window` refuses a capture at the larger of the
-  chip band and 1%, and pairing rejects an assignment above 105% of the measured bandwidth or peak.
+Both are resolved in "Measured uncertainty" below.
+
+- `attribution.check_window` refused a capture at the larger of the chip band and 1%. It now uses the bandwidth's
+  measured uncertainty, and says "not checked" without one.
+- Pairing rejected an assignment above 105% of the measured bandwidth or peak. It now uses each figure times
+  (1 + its measured uncertainty), and applies no bound without one.
 - Without a repeat band, a capture whose kernels exceed its token is no longer refused; it reads "not checked".
+
+## Measured uncertainty
+
+Each measured bandwidth and peak in `boltbeam/data/targets.json` now carries `uncertainty` beside its value: the
+probe's spread over its launch shapes and whole repeated runs, (max - min) / max, with no floor. The probes write it
+(`--runs N`; `cuda_bandwidth.repeated`). `targets.uncertainty` is the one reader. Every guard reads it:
+
+| Guard | Before | Now |
+| --- | --- | --- |
+| captured kernels against the captured token (`check_window`) | larger of chip band and 1% | bandwidth uncertainty |
+| pairing: a launch faster than the bandwidth or peak | 105% | figure x (1 + its uncertainty) |
+| prefill ceiling above the time a row ran in | 105% | the binding figure's uncertainty |
+| role or token below its floor (`tinygrad_role_time.refusal`) | the row's repeat spread | repeat spread + floor x uncertainty |
+
+A figure with no measured uncertainty is "not checked" in every guard. No constant replaces it. The documented
+run-to-run range (tok/s) is kept as a record; it is no longer part of any guard.
+
+### Measured, 2026-10-13
+
+Four whole runs of each probe. Four is the n the repeat rule asks for a pin. One GPU batch of about 90 seconds;
+the box's model server was stopped and restored (health, one completion, build b11571).
+
+| Chip and figure | Value | Uncertainty | Notes |
+| --- | ---: | ---: | --- |
+| RTX 5090 read | 1,701.4 GB/s | 0.37% | 7 shapes x 4 runs, 1,695.5 to 1,701.4; replaces 1,693.3 |
+| RTX 5090 fp16 / bf16 / tf32 | 251.4 / 251.5 / 125.7 | 1.81% / 2.46% / 1.93% | registered rates inside the range |
+| RTX 5090 fp16 accumulate / int8 / fp8 / fp4 | 497.7 / 995.8 / 502.8 / 1,988.9 | 2.47% / 2.54% / 2.23% / 2.63% | fp4 throttled |
+| RTX 5090 fp32 FMA | 119.7 | 7.67% | one launch shape reads 114.9 |
+| M3 read | 97.2 GB/s | 7.56% | 6 shapes x 4 runs; runs 95.2 to 97.1 |
+| M3 fp16 matrix | 3.152 | 8.64% | this probe's best is 3.138; 3.152 is inside its range |
+
+The 5090 read value changed. The old 1,693.3 came from a different probe and lies 0.48% below this probe's whole
+range. A value and its uncertainty must come from one probe, so the registry now holds this probe's 1,701.4. The two
+probes differ by more than either one's spread: the spread does not cover a change of method.
+
+On the M3 the width comes from the weaker launch shapes (fewer threadgroups), not from repeats: the per-run best
+moves 2.0% (read) and 0.5% (matrix). The definition follows the request ("its launch shapes and repeats"). It makes
+the M3 guards loose. Whether only the near-best shapes should count is open.
+
+### Verdicts that changed
+
+The saved decode captures (llama.cpp 8B and 27B x3, vLLM 8B and 27B x3, corrected Ollama 8B and 27B x1) were
+re-attributed from their raw nsys traces with the old and the new code, on private copies. No GPU.
+
+- llama.cpp 27B, all three runs: the table was refused for `lm_head` below its floor. It is now accepted. `lm_head`
+  reads "at the limit (within measured repeat spread and floor uncertainty ±0.005615 ms)". That run's own read probe
+  spread 0.9%; the reading is 0.34% below the floor. Every other 27B role is checked.
+- Pairings: unchanged in every capture. No role became unpaired and none became paired.
+- `check_window`: every capture is checked against its run's own read uncertainty (0.90%) and passes.
+
+### The 8B bands, re-derived
+
+The bands were re-derived from the same saved captures after the Q/O pairing fix: runs 1 and 2 make the band, run 3
+is the holdout. n = 2, so every verdict is labelled weak, with a false-move rate of 2/3 per row.
+
+| Setup | Holdout rows outside the two-run range |
+| --- | ---: |
+| llama.cpp 8B | 7 / 13 |
+| llama.cpp 27B | 16 / 19 |
+| vLLM 8B | 9 / 10 |
+| vLLM 27B | 9 / 15 |
+| All | 41 / 57 = 72% (2/3 expected by chance) |
+
+The earlier "half outside" table used |x3 - x1| > |x2 - x1|; the range rule counts a row outside when x3 leaves
+[min, max] of runs 1 and 2, which happens 2/3 of the time by chance. The bands and verdicts are private evidence
+beside the earlier folders.
+
+### The repeat rule, adopted
+
+A row moved when the after value lies outside the range of n before runs. The band records n. Every verdict prints
+n and 2/(n+1). Fewer than 4 runs is weak. An engine pin needs n >= 4 fixed by `screen repeat-plan` before
+collection; the audit refuses to justify a pin otherwise and says why. A run is never judged by a band it made.
+See [the engine-upgrade audit](engine-upgrade-audit.md).
+
+### Literal tolerances still in the code
+
+These remain in `boltbeam/` and still decide a verdict or a label. None is a measured uncertainty:
+
+- `eval/thresholds.py`: speed-equivalent 1%, tier A 5%, tier B 2%, protected regression 1%.
+- `roofline/roofline_ceiling.py`: ramp 3% and throttle 5% pick the cold or sustained read.
+- `memory/mem_hierarchy.py`: plateau 8%.
+- `collectors/kernel_oracle.py`: DRAM bytes within 2% count as a full weight read.
+- `collectors/pairing.py`: `GAP_RATIO` 1.3 merges input rows whose times cannot be told apart.
+- `workflow/tie_out.py`: `NOISY_RULE` names a noisy isolated reading.
+- `kernel_analysis/theoretical_roofline.py` (80% at ceiling, 50% headroom), `kernel_analysis/diagnosis.py` (0.9).
+- `collectors/providers.py`: 40% GPU busy means another program uses the GPU.
+- Arithmetic and numeric checks, not measurement noise: `diff.TIE_RESIDUAL_MS` (0.001 ms),
+  `metal_native.TOLERANCE` (1e-3).

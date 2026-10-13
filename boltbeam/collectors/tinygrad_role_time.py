@@ -199,7 +199,7 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
 
 INCOMPLETE = "incomplete measurement"
 OVERCOUNTED = "overcounted measurement"
-AT_LIMIT_NOISE = "at the limit (within measured repeat spread ±{ms:.6f} ms)"
+AT_LIMIT_NOISE = "at the limit (within measured repeat spread and floor uncertainty ±{ms:.6f} ms)"
 
 def noise_band(band:dict | None) -> dict[str, Any]:
   """Only a scoped repeat calibration supplies an uncertainty band."""
@@ -211,26 +211,27 @@ def noise_band(band:dict | None) -> dict[str, Any]:
 
 def refusal(table:dict[str, Any], limit_ms:float | None) -> str | None:
   """Why a loss table cannot be a result, or None. A floor is a lower bound: nothing real runs below it, beyond
-  measurement noise. A role or a token below its floor by no more than its noise band is accepted (loss() labels
-  it); further below is refused. The captured run's own token time is an upper bound: kernels that run one after
+  measurement noise: the row's measured repeat spread plus the floor's own measured uncertainty (floor x u). A role or
+  a token below its floor by no more than that is accepted (loss() labels it); further below is refused; without
+  either measurement the floor rule is not checked. The captured run's own token time is an upper bound: kernels that run one after
   another fit inside it."""
   token_ms = table.get("token_ms")
   from boltbeam.workflow.repeat_bands import width
   total = table.get("band") or noise_band(None)
-  spread = total["width_ms"]
+  spread, u = total["width_ms"], table.get("floor_uncertainty")
   if spread is not None and token_ms and table["kernel_ms"] - token_ms > spread:
     return f"{OVERCOUNTED}: kernel time exceeds captured token by more than its measured repeat spread"
-  if spread is not None and limit_ms and not table.get("isolated") and limit_ms - table["kernel_ms"] > spread:
-    return f"{INCOMPLETE}: kernel time is below the floor beyond its measured repeat spread"
+  if spread is not None and u is not None and limit_ms and not table.get("isolated") and limit_ms - table["kernel_ms"] > spread + limit_ms * u:
+    return f"{INCOMPLETE}: kernel time is below the floor beyond its measured repeat spread and the floor's uncertainty"
   from boltbeam.role_key import role_label
   below = []
   for row in table["roles"]:
     key = role_label(row["role"], row["quant"], row.get("shape"))
     delta = width(total["calibration"], key, work={"calls": row.get("calls_per_token"), "limit_ms": row["ideal_ms"]})
-    if delta is not None and row["ideal_ms"] - row["actual_ms"] > delta:
+    if delta is not None and u is not None and row["ideal_ms"] - row["actual_ms"] > delta + row["ideal_ms"] * u:
       below.append(key)
   if below:
-    return f"{INCOMPLETE}: roles below their floor beyond measured repeat spread: {', '.join(below)}"
+    return f"{INCOMPLETE}: roles below their floor beyond measured repeat spread and the floor's uncertainty: {', '.join(below)}"
   return None
 
 
@@ -284,13 +285,15 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
     from boltbeam.role_key import role_label
     delta = width(chip["calibration"], role_label(c["role"], c["quant"], shape_nk(c)),
                   work={"calls": got["calls"] / tokens, "limit_ms": c["floor_ms"]})
-    noise = delta is not None and 0 < c["floor_ms"] - ms <= delta
+    u = c.get("floor_uncertainty")  # the floor's own measured uncertainty (screen._measured_vs_ceiling); None: not checked
+    tol = delta + c["floor_ms"] * u if delta is not None and u is not None else None
+    noise = tol is not None and 0 < c["floor_ms"] - ms <= tol
     out.append({"role": c["role"], "quant": c["quant"], "shape": list(shape_nk(c) or []) or None, "ideal_ms": c["floor_ms"], "actual_ms": ms,
                 "lost_ms": ms - c["floor_ms"], "calls_per_token": got["calls"] / tokens,
                 "less_floor_ms": got["us_less_floor"] / tokens / 1000.0 if floor_us is not None else None,
                 "spread_pct": got["spread_pct"],
-                "within_noise": noise, "check_status": "checked" if delta is not None else "not checked",
-                "band_ms": delta, "label": AT_LIMIT_NOISE.format(ms=delta) if noise else None})
+                "within_noise": noise, "check_status": "checked" if tol is not None else "not checked",
+                "band_ms": delta, "floor_uncertainty": u, "label": AT_LIMIT_NOISE.format(ms=tol) if noise else None})
   total_lost = sum(max(r["lost_ms"], 0.0) for r in out)
   for r in out: r["share"] = (max(r["lost_ms"], 0.0) / total_lost) if total_lost > 0 else 0.0
   out.sort(key=lambda r: -r["lost_ms"])
@@ -298,6 +301,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   table = {"status": "measured", "source": "measured in tinygrad's runtime", "device": trace.get("target_id"),
            "tokens": tokens, "kernel_ms": whole_ms, "tok_s": whole.get("wall_tok_s", whole["tok_s"]), "roles": out,
            "isolated": whole.get("measurement_scope") == "summed_isolated_kernels", "floor_us": floor_us,
+           "floor_uncertainty": next((c.get("floor_uncertainty") for c in ceiling_roles), None),
            "not_attributed_ms": whole_ms - sum(r["actual_ms"] for r in out), "token_ms": whole.get("token_ms"),
            "unpaired_roles": list(trace.get("unpaired_roles") or []) + [
              {"role": c["role"], "quant": c["quant"], "shape": list(shape_nk(c) or []) or None,

@@ -93,7 +93,7 @@ percent is marked an estimate (`~37%`). When the run ends the top box shows:
   run from before either was recorded says "not recorded";
 - the end-to-end check: the captured token (decode) or the captured prefill and replay turns against their untraced
   median, with the repeat band. Without a band for the exact setup it says "not checked". That is expected on a first
-  run; the page says once how to make a band (two identical runs, then `screen repeat-bands`);
+  run; the page says once how to make a band (n identical runs, then `screen repeat-bands --runs`);
 - pairing flags: "Pairing is not certain" with the solver's reason, and each unpaired role with its reason.
 
 The bottom box holds `[ Save run ]`, "Open the full report (report.html)" and `[ Back to setup ]`. A run is

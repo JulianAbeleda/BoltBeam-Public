@@ -11,14 +11,14 @@
     }
   ],
   "ceiling": {
-    "band": 0.01,
     "bandwidth_source": null,
     "bytes_moved": 4676301568.0,
     "context": 1,
     "floor_ms": 48.110098436213995,
     "peak_bandwidth_gbs": 97.2,
     "status": "modeled",
-    "tok_s": 20.78565690996941
+    "tok_s": 20.78565690996941,
+    "uncertainty": 0.0756
   },
   "engine": {
     "build": null,

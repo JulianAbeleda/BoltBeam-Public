@@ -203,6 +203,7 @@ def _register_metal_measure(sub) -> None:
 
 def _register_metal_bandwidth(sub) -> None:
   p = sub.add_parser("metal-bandwidth", help="measure this Mac GPU's read-only memory speed, the number the speed limit needs")
+  p.add_argument("--runs", type=int, default=1, help="whole runs of the read and matrix probes; the uncertainty spans them")
   p.set_defaults(fn=cmd_metal_bandwidth)
 
 

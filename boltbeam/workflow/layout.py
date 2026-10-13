@@ -297,8 +297,8 @@ def short_source(source:str | None, measured_at:str | None = None) -> str:
 
 
 def _ceiling_facts(got:dict[str, Any]) -> dict[str, Any]:
-  """A probe's cold, sustained, regime and plausibility band, as a machine-facts row keeps them."""
-  return {k: got[k] for k in ("regime", "cold_gbs", "sustained_gbs", "spread", "drift", "band") if got.get(k) is not None}
+  """A probe's cold, sustained, regime and measured uncertainty, as a machine-facts row keeps them."""
+  return {k: got[k] for k in ("regime", "cold_gbs", "sustained_gbs", "spread", "drift", "uncertainty") if got.get(k) is not None}
 
 
 def read_bandwidth(facts:dict[str, Any] | None, layout:str = "one") -> dict[str, Any] | None:
@@ -310,7 +310,8 @@ def read_bandwidth(facts:dict[str, Any] | None, layout:str = "one") -> dict[str,
   g = facts["gpus"][0]
   if not g.get("read_gbs"):
     return None
-  return {"gbs": g["read_gbs"], "source": g.get("read_source"), "target_id": g.get("target_id"), "band": g.get("band"),
+  return {"gbs": g["read_gbs"], "source": g.get("read_source"), "target_id": g.get("target_id"),
+          **{k: g[k] for k in ("spread", "drift", "uncertainty") if g.get(k) is not None},
           "measured": str(g.get("read_source") or "").startswith("measured"),
           "short": short_source(g.get("read_source"), facts.get("measured_at"))}
 

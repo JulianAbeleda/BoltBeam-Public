@@ -813,9 +813,9 @@ func whereEndToEnd(e *seam.EndToEnd) string {
 // "not checked" never reads as a fault.
 const (
 	notChecked    = "not checked: no repeat band matches this setup."
-	notCheckedHow = "Not checked is expected on a first run. A verdict needs the spread of two identical runs: run the same " +
-		"setup twice, then `python -m boltbeam.workflow.screen repeat-bands --before A --after B --out bands.json`, and " +
-		"give later runs `--bands bands.json`."
+	notCheckedHow = "Not checked is expected on a first run. A verdict needs the range of n identical runs (n = 2 is weak; " +
+		"a row then reads moved by chance 2/(n+1) of the time): run the same setup n times, then " +
+		"`python -m boltbeam.workflow.screen repeat-bands --runs A B ... --out bands.json`, and give later runs `--bands bands.json`."
 )
 
 func deref0(p *float64) float64 {

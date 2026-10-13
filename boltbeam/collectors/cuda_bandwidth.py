@@ -82,16 +82,27 @@ FACT_KEYS = ("sm_count", "shared_mem_per_sm_bytes", "l2_cache_bytes", "clock_khz
 
 
 def plausibility(cold:float, shapes:list[float], sustained:float | None) -> dict[str, Any]:
-  """The chip's read ceiling and its one plausibility band. The ceiling is roofline_ceiling.resolve_achieved_ceiling's
+  """The chip's read ceiling and its measured uncertainty. The ceiling is roofline_ceiling.resolve_achieved_ceiling's
   pick between the cold burst and the sustained series (sustained when the clocks ramp or throttle, the larger when
-  flat). The band is the larger of the probe's spread over its launch shapes, the cold to sustained difference, and
-  1%: a measured kernel within it of the floor is at the limit, further below is refused."""
+  flat). The uncertainty is the larger of the probe's spread over its launch shapes (every repeat's shapes, when the
+  probe repeats) and the cold to sustained difference, with no floor (targets.uncertainty)."""
   from boltbeam.roofline.roofline_ceiling import resolve_achieved_ceiling
   res = resolve_achieved_ceiling(cold_samples=[cold], sustained_samples=[sustained] if sustained else None)
   spread = (max(shapes) - min(shapes)) / max(shapes) if shapes else 0.0
   drift = abs(sustained - cold) / sustained if sustained else 0.0
   return {"read_gbs": res.achieved_gbs, "regime": res.regime, "cold_gbs": cold, "sustained_gbs": sustained,
-          "spread": round(spread, 4), "drift": round(drift, 4), "band": round(max(spread, drift, 0.01), 4)}
+          "spread": round(spread, 4), "drift": round(drift, 4), "uncertainty": round(max(spread, drift), 4)}
+
+
+def repeated(runs:list[dict[str, Any]], value:str, shape_value:str) -> dict[str, Any]:
+  """Whole probe runs as one figure: the best run, and beside it the uncertainty over every run: the spread of every
+  launch shape's best and every run's figure, (max - min) / max, or a run's own when wider; no floor. A failed path
+  (no figure) stays as it is."""
+  if not all(r.get(value) for r in runs):
+    return runs[0]
+  xs = [s[shape_value] for r in runs for s in r.get("shapes", [])] + [r[value] for r in runs]
+  u = max([(max(xs) - min(xs)) / max(xs)] + [r.get("uncertainty") or 0.0 for r in runs])
+  return {**max(runs, key=lambda r: r[value]), "runs": len(runs), "run_values": [r[value] for r in runs], "uncertainty": round(u, 4)}
 
 
 def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | None = None, bridge=None,
@@ -160,8 +171,10 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--device", type=int, default=0)
   p.add_argument("--gib", type=int, default=1)
   p.add_argument("--reps", type=int, default=10)
+  p.add_argument("--runs", type=int, default=1, help="whole probe runs; the uncertainty spans all of them")
   a = p.parse_args(argv)
-  sys.stdout.write(json.dumps(measure_read_gbs(a.device, gib=a.gib, reps=a.reps), indent=1, sort_keys=True) + "\n")
+  got = repeated([measure_read_gbs(a.device, gib=a.gib, reps=a.reps) for _ in range(a.runs)], "read_gbs", "gbs")
+  sys.stdout.write(json.dumps(got, indent=1, sort_keys=True) + "\n")
   return 0
 
 

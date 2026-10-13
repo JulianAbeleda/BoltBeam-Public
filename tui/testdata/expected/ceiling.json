@@ -4,7 +4,6 @@
     "peak flops at the matrix-engine dtype; no cache reuse credit beyond a single weight stream",
     "modeled ceiling \u2014 a measured A/B overrides it and calibrates the error"
   ],
-  "band": 0.01,
   "bandwidth_source": null,
   "decode": {
     "bytes_moved": 4676301568.0,
@@ -231,5 +230,6 @@
     "source": "registry"
   },
   "truth_status": "modeled",
+  "uncertainty": 0.0756,
   "weights": null
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 
@@ -103,6 +104,26 @@ def get_target(name:str) -> TargetProfile:
   except KeyError as exc:
     known = ", ".join(sorted(TARGETS))
     raise SystemExit(f"unknown target {name!r}. Known targets: {known}") from exc
+
+
+def uncertainty(src:dict | None) -> float | None:
+  """A measured figure's own relative uncertainty, kept beside it (a fact source, a path of one, or a probe's read):
+  the probe's spread over its launch shapes and repeats. None when it has none, so a guard says not checked and never
+  borrows a constant. A probe read saved before the field existed carries its spread and cold-to-sustained drift."""
+  src = src or {}
+  u = src.get("uncertainty", max(src.get("spread") or 0, src.get("drift") or 0) if "spread" in src else None)
+  return float(u) if isinstance(u, (int, float)) and math.isfinite(u) and u >= 0 else None
+
+
+def fact_uncertainty(target, fact:str = "memory_bandwidth_gbs", path:str | None = None) -> float | None:
+  """uncertainty() of one registry figure: the bandwidth, or one matrix path's peak."""
+  src = ((getattr(target, "capabilities", None) or {}).get("fact_sources") or {}).get(fact) or {}
+  return uncertainty((src.get("paths") or {}).get(path) if path else src)
+
+
+def upper(value:float | None, u:float | None) -> float | None:
+  """The most a measured figure can be within its uncertainty; None (not checked) when either is unknown."""
+  return value * (1 + u) if value and u is not None else None
 
 
 def target_backend_status(name:str) -> str:
