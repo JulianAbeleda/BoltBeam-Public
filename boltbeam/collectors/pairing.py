@@ -383,7 +383,7 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
           need -= int(per_layer) * units  # the unit's last layer runs this row at output width: its own item
           items.append({"row": r, "parts": [r], "need": int(per_layer) * prune["units"], "kind": PRUNED, "stages": stg,
                         **_facts(r), "slack": 0, "sides": {PRUNED}})
-        items.append({"row": r, "parts": [r], "need": need, "kind": k, "stages": stg, **_facts(r),
+        items.append({"row": r, "parts": [r], "need": need, "kind": k, "stages": stg, **_facts(r), "per_layer": per_layer,
                       "slack": min(int(per_layer) * units, need - 1) if kinds[k] > 1 else 0,
                       "sides": {s for s in ("input", "output") if None in sides or s in sides}})
   out: list[dict[str, Any]] = []
@@ -394,7 +394,7 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
         and kinds_allowed(last["row"], kinds) == kinds_allowed(it["row"], kinds)):
       total = last["need"] + it["need"]
       last.update(role=" + ".join(sorted(set(last["role"].split(" + ")) | {it["role"]})), need=total, parts=last["parts"] + [it["row"]],
-                  slack=last.get("slack", 0) + it.get("slack", 0),
+                  slack=last.get("slack", 0) + it.get("slack", 0), per_layer=last.get("per_layer", 1) + it.get("per_layer", 1),
                   weight_bytes=(last["weight_bytes"] * last["need"] + it["weight_bytes"] * it["need"]) / total,
                   nk=(last["nk"] * last["need"] + it["nk"] * it["need"]) / total, count=last["count"] + it["count"])
       continue
@@ -484,18 +484,25 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
   state = {"nodes": nodes}
   # each row runs at least one launch per layer on its side: a gap's first launches are the earlier layer's output
   # rows', its last launches the later layer's input rows' (less the launches inside the block)
+  # A row whose format runs in only some layers (a mixed quant per layer) is no launch in every layer: such rows
+  # count together per role and side, once when their layers cover every layer.
   min_out: dict[str, int] = collections.Counter()
   min_in: dict[str, int] = collections.Counter()
+  partial: dict[tuple[str, str, str], float] = collections.Counter()
   for it in items:
     if it["kind"] in (None, PRUNED):
       continue
-    if it["sides"] == {"output"}:
-      min_out[it["kind"]] += 1
-    elif it["sides"] == {"input"}:
-      min_in[it["kind"]] += 1
-    elif it["stages"] >= {"in", "out"}:
-      min_out[it["kind"]] += 1
-      min_in[it["kind"]] += 1
+    both = it["stages"] >= {"in", "out"}
+    for side, mins in (("output", min_out), ("input", min_in)):
+      if it["sides"] == {side} or both:
+        share = it.get("per_layer", 1) / (2 if both else 1)
+        if share >= 1:
+          mins[it["kind"]] += 1
+        else:
+          partial[(it["kind"], side, it["role"])] += share
+  for (kind, side, _), share in partial.items():
+    if share >= 1:
+      (min_out if side == "output" else min_in)[kind] += 1
   inside = collections.Counter()  # input launches inside a block, per kind
   for g in groups:
     if g["side"] == "input" and g.get("inside"):

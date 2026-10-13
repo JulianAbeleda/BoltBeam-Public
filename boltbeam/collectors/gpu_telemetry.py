@@ -25,7 +25,7 @@ from typing import Any
 
 INTERVAL_S = 0.05
 LIBRARY = "libnvidia-ml.so.1"
-_CLOCK_SM, _TEMP_GPU = 1, 0  # nvmlClockType_t NVML_CLOCK_SM; nvmlTemperatureSensors_t NVML_TEMPERATURE_GPU
+_CLOCK_SM, _CLOCK_MEM, _TEMP_GPU = 1, 2, 0  # nvmlClockType_t NVML_CLOCK_SM, NVML_CLOCK_MEM; NVML_TEMPERATURE_GPU
 # nvmlClocksEventReasons bits: the ones that slow the clock below what the work asks for
 THROTTLE_REASONS = {0x4: "software power cap", 0x8: "hardware slowdown", 0x20: "software thermal slowdown",
                     0x40: "hardware thermal slowdown", 0x80: "hardware power brake"}
@@ -59,6 +59,7 @@ class _Nvml:
     ok = self.lib.nvmlDeviceGetCurrentClocksEventReasons(self.handle, ctypes.byref(reasons)) == 0
     mw = self._uint("nvmlDeviceGetPowerUsage")
     return {"t": time.monotonic(), "sm_mhz": self._uint("nvmlDeviceGetClockInfo", ctypes.c_int(_CLOCK_SM)),
+            "mem_mhz": self._uint("nvmlDeviceGetClockInfo", ctypes.c_int(_CLOCK_MEM)),
             "power_w": mw / 1000.0 if mw is not None else None,
             "temp_c": self._uint("nvmlDeviceGetTemperature", ctypes.c_int(_TEMP_GPU)),
             "reasons": reasons.value if ok else None, "mem_mib": self.memory_mib()[0]}
@@ -89,6 +90,7 @@ def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None
   every = samples
   samples = [s for s in every if not (s.get("reasons") or 0) & IDLE] or every  # the GPU at work, not loading a model
   clocks = [s["sm_mhz"] for s in samples if s.get("sm_mhz")]
+  memory = [s["mem_mhz"] for s in samples if s.get("mem_mhz")]  # a weight read's rate follows the memory clock
   power = [s["power_w"] for s in samples if s.get("power_w") is not None]
   temps = [s["temp_c"] for s in samples if s.get("temp_c") is not None]
   top = top_mhz or (max(clocks) if clocks else None)
@@ -100,6 +102,7 @@ def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None
       (seen if slow else held)[w] = (seen if slow else held).get(w, 0) + 1
   out = {"samples": len(samples), "all_samples": len(every), "interval_s": INTERVAL_S,
          "sm_mhz": {"mean": round(statistics.fmean(clocks), 1), "min": min(clocks), "max": max(clocks)} if clocks else None,
+         "mem_mhz": {"mean": round(statistics.fmean(memory), 1), "min": min(memory), "max": max(memory)} if memory else None,
          "power_w": {"mean": round(statistics.fmean(power), 1), "max": round(max(power), 1)} if power else None,
          "temp_c_max": max(temps) if temps else None, "power_limit_w": power_limit_w,
          "throttle": {w: round(n / len(samples), 3) for w, n in sorted(seen.items())},
@@ -114,10 +117,10 @@ def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None
 
 def compact(samples:list[dict[str, Any]]) -> list[list[Any]]:
   """The raw samples kept with a measurement, so its summary can be read again: [seconds from the first, SM MHz,
-  W, C, reason bits]."""
+  W, C, reason bits, memory MHz]."""
   t0 = samples[0]["t"] if samples else 0.0
   return [[round(s["t"] - t0, 3), s.get("sm_mhz"), round(s["power_w"], 1) if s.get("power_w") is not None else None,
-           s.get("temp_c"), s.get("reasons")] for s in samples]
+           s.get("temp_c"), s.get("reasons"), s.get("mem_mhz")] for s in samples]
 
 
 def words(s:dict[str, Any]) -> str:

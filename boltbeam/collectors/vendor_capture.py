@@ -27,6 +27,9 @@ import subprocess
 from typing import Any, Callable
 
 
+TELEMETRY = "telemetry.json"  # the GPU's clocks, power and temperature through one capture, beside it
+
+
 class NoCapture(RuntimeError):
   """No outside view of the GPU here. The message says why, in one sentence."""
 
@@ -215,10 +218,18 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   out.mkdir(parents=True, exist_ok=True)
   cwd = cwd or out
   log = out / "capture.log"
-  with open(log, "w") as fh:
+  import contextlib
+  from boltbeam.collectors import gpu_telemetry
+  # the clocks the captured kernels ran at (NVIDIA's management library): a repeat's row moves with them, so a
+  # capture without them cannot say whether a difference between repeats was the clock
+  tele = gpu_telemetry.Telemetry(0) if backend == "CUDA" else None
+  with open(log, "w") as fh, (tele or contextlib.nullcontext()):
     wrapped = wrap(p["tool"], argv, out, env or {}, flush_ms, *((True,) if profiler_range else ())) if backend == "CUDA" else wrap(p["tool"], argv, out, env or {})
     proc = subprocess.run(wrapped, stdout=fh, stderr=subprocess.STDOUT, timeout=timeout_s,
                           cwd=cwd, env={**os.environ, **(env or {})})
+  import json
+  if tele is not None:
+    (out / TELEMETRY).write_text(json.dumps({"summary": tele.summary(), "samples": gpu_telemetry.compact(tele.samples)}) + "\n")
   if proc.returncode != 0:
     raise RuntimeError(f"{p['method']} exited {proc.returncode}: {log.read_text()[-300:]}")
   launches = read(p["tool"], out)
