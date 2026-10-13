@@ -41,6 +41,7 @@ LAYERS = ("bubblebeam", "futuresight", "measured", "promotion")
 LAYER_TITLE = {"bubblebeam": "BubbleBeam", "futuresight": "FutureSight", "measured": "Measured", "promotion": "Promotion"}
 AT_LIMIT = "at the limit, nothing to gain"
 NOT_SEARCHED = "not searched: run with the kernel search on"
+NOT_SEARCHED_ENGINE = "not searched: run with --provider tinygrad (the tinygrad fork, BOLTBEAM_TINYGRAD_ROOT)"
 TOP_REASONS = 2  # rejection reasons named per layer
 FIRST_ORDER = 3  # candidates named from FutureSight's measurement order
 
@@ -305,7 +306,8 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
     return _layer("promotion", True, lines, {**facts, "plan": "nothing to emit"}, ptrs)
   if verdict == "not_searched":
     why = (status or {}).get("reason") or reason
-    lines.append(NOT_SEARCHED + (f" ({why})" if why and why != reason else ""))  # the verdict line said it once
+    hint = NOT_SEARCHED_ENGINE if (why or "").startswith(role_compare.TINYGRAD_ONLY) else NOT_SEARCHED
+    lines.append(hint + (f" ({why})" if why and why != reason else ""))  # the verdict line said it once
     return _layer("promotion", True, lines, {**facts, "plan": NOT_SEARCHED, "why_off": why}, ptrs + ([_ptr(STATUS, "reason")] if status else []))
   # applied or found, not applied: the plan, its gain, the emitter, the record, the check
   rows, kk = shape

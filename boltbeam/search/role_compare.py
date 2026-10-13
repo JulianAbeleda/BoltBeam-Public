@@ -1194,6 +1194,9 @@ def detect(backend:str | None) -> str | None:
   return None
 
 
+TINYGRAD_ONLY = "the kernel search runs in tinygrad only"  # search_applies' answer for another engine; Emit reads it
+
+
 def search_applies(backend:str | None, provider:str, *, root:pathlib.Path | None = None,
                    capability_fn:Callable[[pathlib.Path, list[str]], dict[str, Any]] | None = None,
                    detect_fn:Callable[[str | None], str | None] | None = None) -> str | None:
@@ -1202,7 +1205,7 @@ def search_applies(backend:str | None, provider:str, *, root:pathlib.Path | None
   detection of the GPU (its bridge opens one), never a list of backend names. Without the fork checked out the
   provider cannot be asked; readiness() names the fix for that."""
   if provider != "tinygrad":
-    return f"the kernel search runs in tinygrad only; this run used {provider}"
+    return f"{TINYGRAD_ONLY}; this run used {provider}"
   row = runtime_row(backend)
   if row is None:
     return f"the search runtime table (data/search_runtime.json) has no row for {backend or 'an unknown backend'}"

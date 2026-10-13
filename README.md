@@ -33,7 +33,15 @@ the same way. BoltBeam says where the time goes. Why a kernel is slow is the eng
 
 ## Install
 
-Python 3.10 or newer. No dependencies.
+On a Mac with Homebrew:
+
+```bash
+brew install JulianAbeleda/tap/boltbeam
+```
+
+`boltbeam` opens the screen; `brew upgrade boltbeam` takes a new version. Runs are kept in `~/boltbeam-runs`.
+
+From source, with Python 3.10 or newer. No dependencies.
 
 ```bash
 git clone https://github.com/JulianAbeleda/BoltBeam-Public.git

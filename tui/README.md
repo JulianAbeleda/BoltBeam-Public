@@ -109,7 +109,7 @@ after run. Two runs of one model, chip, engine and workload give the engine-upgr
 `repeat_bands.json` its bands are used. Two replays of one trace on different engines give `screen replay-cross`,
 turn by turn. Runs that differ in model, target or engine are refused, and the page names the field.
 
-**Gameplan.** The markdown Emit wrote, as plain text: the header (model, chip, engine, batch, the measured token
+**Gameplan.** The markdown Emit wrote, drawn in the screen's styles (headings and bold rendered, markers dropped): the header (model, chip, engine, batch, the measured token
 against the limit), then one block per role ordered by lost ms (the estimate column for isolated runs, said so) with
 the role's shape, bytes per call, calls per token, µs per call, GB/s and share of peak, its reason word and search
 verdict, and the search's lineage in four layers, each read off the run's own files: BubbleBeam (the legal dimensions

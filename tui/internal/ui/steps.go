@@ -328,12 +328,12 @@ func emitLine(f Facts) (string, string) {
 	return "pass", fmt.Sprintf("%d roles, worst first · gameplan.md and gameplan.json written to the run", len(f.Plan.Plan.Roles))
 }
 
-// emitBody is the gameplan as Python wrote it: the markdown, shown as plain text. Nothing is rendered here twice.
+// emitBody is the gameplan as Python wrote it: the same markdown, drawn in the screen's styles (renderMarkdown).
 func emitBody(f Facts, width int) string {
 	if f.Plan == nil {
 		return stMuted.Render("No gameplan yet. Emit on Setup writes one from the run on screen: per role, worst first, what kernel to emit.")
 	}
-	return strings.TrimRight(f.Plan.Markdown, "\n")
+	return renderMarkdown(strings.TrimRight(f.Plan.Markdown, "\n"))
 }
 
 func emitActions(f Facts) []action {

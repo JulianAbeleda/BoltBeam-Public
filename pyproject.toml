@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boltbeam"
-version = "0.1.0"
+version = "0.2.0"
 description = "Translate model weights into codegen search profiles."
 readme = "README.md"
 requires-python = ">=3.10"

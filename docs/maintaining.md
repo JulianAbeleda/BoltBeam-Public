@@ -46,6 +46,18 @@ when the trunk prunes something the outer branches keep.
 The published articles link into the mirror by path. Never move or rename a file an article links to.
 [README.md](README.md) in this folder lists those files.
 
+## Releasing to Homebrew
+
+`brew install JulianAbeleda/tap/boltbeam` installs the formula in
+[homebrew-tap](https://github.com/JulianAbeleda/homebrew-tap), which builds a tagged mirror tarball. A release:
+
+1. Bump `version` in `pyproject.toml` on `main` and push.
+2. Publish the mirror.
+3. `tools/release_brew.sh VERSION` (try `--dry-run` first). It refuses unless `origin/main` names the version and the
+   mirror's head is its snapshot, tags the mirror `vVERSION`, and points the formula's `url` and `sha256` at the tag.
+
+Users then take it with `brew update && brew upgrade boltbeam`.
+
 ## Scripts
 
 | script | what it does |
@@ -53,6 +65,7 @@ The published articles link into the mirror by path. Never move or rename a file
 | `sz.py` | the size budget and the duplicate-authority check (the `pre-commit` hook) |
 | `tools/install_hooks.py` | installs the hooks: the commit-message checker and `pre-commit` |
 | `tools/check_commit_msg.py` | enforces `[subsystem]` prefixes and `NFC` marking |
+| `tools/release_brew.sh` | tags the mirror and points the Homebrew formula at the tag |
 | `tools/sync_branches.sh` | carries the trunk outward to `dev` and `exp` |
 | `tools/classify_bench.py` | classifies `bench/` artifacts as verdict or measurement |
 | `tools/export_route_manifest_snapshot.py` | the only exporter for the tinygrad EXP snapshot |

@@ -63,7 +63,7 @@ func labels(acts []action) []string {
 	return out
 }
 
-// Pressing Emit asks Python; its answer opens the Gameplan page with the markdown as plain text and an action
+// Pressing Emit asks Python; its answer opens the Gameplan page with the markdown drawn (no # or ** left) and an action
 // that opens gameplan.md. The page is golden at 80 and 110 columns.
 func TestEmitPageShowsTheGameplan(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
@@ -94,9 +94,14 @@ func TestEmitPageShowsTheGameplan(t *testing.T) {
 			t.Fatalf("the answer must open the Gameplan page: cursor %d", page.cursor)
 		}
 		view := mm.View()
-		for _, want := range []string{"# Gameplan: Qwen3-8B on apple_m3_10c", "7 roles, worst first", "Open the gameplan (gameplan.md)", "[ Back to setup ]"} {
+		for _, want := range []string{"Gameplan: Qwen3-8B on apple_m3_10c", "7 roles, worst first", "Open the gameplan (gameplan.md)", "[ Back to setup ]"} {
 			if !strings.Contains(view, want) {
 				t.Errorf("%d cols: missing %q in:\n%s", cols, want, view)
+			}
+		}
+		for _, raw := range []string{"# Gameplan", "## 1.", "**BubbleBeam**", "```"} {
+			if strings.Contains(view, raw) {
+				t.Errorf("%d cols: markdown marker %q drawn as text", cols, raw)
 			}
 		}
 		for _, l := range strings.Split(view, "\n") {
