@@ -56,7 +56,7 @@
         "int8": 995.8,
         "tf32": 125.7
       },
-      "memory_bandwidth_gbs": 1701.4,
+      "memory_bandwidth_gbs": 1707.4,
       "peak_tflops": {
         "fp16": 104.8,
         "fp32": 104.8,

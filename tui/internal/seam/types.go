@@ -658,6 +658,8 @@ type Loss struct {
 	} `json:"ambiguous"`
 	// NotTimed are limit roles the kernel timer had no adapter for, each with its reason.
 	NotTimed []NotTimedRole `json:"not_timed"`
+	// CeilingRefused are rows below their own floor beyond measured noise: their ceiling is refused, the rest keep theirs.
+	CeilingRefused []CeilingRefusedRole `json:"ceiling_refused"`
 	// TieOut is the measured token line by line against the limit (workflow/tie_out.py); RoleRule is the
 	// sentence, with its numbers, behind each role's Reason.
 	TieOut     *TieOut      `json:"tie_out"`
@@ -894,6 +896,16 @@ type NotTimedRole struct {
 	Quant  string  `json:"quant"`
 	Status string  `json:"status"`
 	Reason *string `json:"reason"`
+}
+
+// CeilingRefusedRole is a row measured below its own floor beyond its repeat spread and the floor's uncertainty: its
+// time is measured, its ceiling is in doubt, so it is out of the losses and shares (collectors/tinygrad_role_time.py loss).
+type CeilingRefusedRole struct {
+	Role     string  `json:"role"`
+	Quant    string  `json:"quant"`
+	IdealMs  float64 `json:"ideal_ms"`
+	ActualMs float64 `json:"actual_ms"`
+	Reason   string  `json:"reason"`
 }
 
 type Runtime struct {

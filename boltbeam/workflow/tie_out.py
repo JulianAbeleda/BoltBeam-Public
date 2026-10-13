@@ -315,14 +315,14 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
     out["refused"] = (f"{provider}'s profiling mode inflates kernel times on this GPU, so its tie-out cannot be shown "
                       f"({numbers})" if not outside else numbers)
     return out
-  roles = table["roles"]
-  weight_ideal = sum(r["ideal_ms"] for r in roles)
+  roles, doubted = table["roles"], table.get("ceiling_refused") or []
+  weight_ideal = sum(r["ideal_ms"] for r in roles + doubted)
   weight_above = sum(r["actual_ms"] - r["ideal_ms"] for r in roles)
-  other_busy = busy - sum(r["actual_ms"] for r in roles)
+  other_busy = busy - sum(r["actual_ms"] for r in roles + doubted)
   other_ideal = limit - weight_ideal
   lines = [{"label": f"limit at context {context:.0f} (ideal)", "ms": limit, "how": "derived"}]
   if roles:
-    taken = {(r["role"], r["quant"]) for r in roles}
+    taken = {(r["role"], r["quant"]) for r in roles + doubted}
     outside_roles = roles_outside_limit(profile, taken | {(u["role"], u["quant"]) for u in table.get("unpaired_roles") or []})
     parts: dict[str, float] = {}
     loose = []  # GEMVs no role took and no outside role names: weight time the limit does not know, its own line
@@ -340,6 +340,9 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
         parts[k] = parts.get(k, 0.0) + ms
     loose_ms = sum(l["ms"] for l in loose)
     lines.append({"label": "weight kernels above their ideal", "ms": weight_above, "how": "measured"})
+    if doubted:  # a row below its own floor: its time is measured, its ceiling refused (tinygrad_role_time.loss)
+      lines.append({"label": "ceiling refused: " + ", ".join(f"{r['role']} {r['quant']}" for r in doubted),
+                    "ms": sum(r["actual_ms"] - r["ideal_ms"] for r in doubted), "how": "measured, below its floor"})
     if loose:
       lines.append({"label": UNATTRIBUTED_LABEL, "ms": loose_ms, "how": "measured", "kernels": sorted(loose, key=lambda l: -l["ms"])})
     lines.append({"label": "other kernels above their ideal", "ms": other_busy - loose_ms - other_ideal, "how": "measured",

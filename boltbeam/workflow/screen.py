@@ -460,7 +460,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   out.update(roles=roles, role_rule=rule, not_attributed_ms=table["not_attributed_ms"], capture=capture,
              check_status=table.get("check_status", "not checked"), band=table.get("band"),
              unpaired_roles=table.get("unpaired_roles") or [], not_timed=table.get("not_timed") or [],
-             attribution=table.get("attribution"), unpaired_launches=table.get("unpaired_launches") or [],
+             ceiling_refused=table.get("ceiling_refused") or [], attribution=table.get("attribution"), unpaired_launches=table.get("unpaired_launches") or [],
              joint_role_groups=table.get("joint_role_groups") or [],
              ambiguous=(_optional(run, providers.TRACES[shown]) or {}).get("ambiguous"),
              source=_source(shown, capture, target))
@@ -1473,6 +1473,11 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     lines.append(f"Attribution incomplete: {sum(r['calls'] for r in unresolved)} launches lack logical program metadata; work is not checked.")
   for n in loss.get("not_timed") or []:  # a limit role the timer had no adapter for: its own row, out of the floor rule and the sums
     lines.append(f"  {n['role']:<{w}} {n['quant']:<5} not timed: {n.get('reason') or n.get('status')}; left out of the floor rule and the sums")
+  for n in loss.get("ceiling_refused") or []:  # a row below its own floor: out of the losses and shares, said here
+    lines.append(f"  {n['role']:<{w}} {n['quant']:<5} {n['ideal_ms']:7.3f} {n['actual_ms']:7.3f}  {n['reason']}")
+  if refused := loss.get("ceiling_refused"):
+    lines.append(f"Totals exclude {len(refused)} row{'s' if len(refused) > 1 else ''} whose ceiling is refused: "
+                 + ", ".join(f"{n['role']} {n['quant']}" for n in refused) + ". The other rows keep their ceilings.")
   if not roles and why_no_roles:
     lines.append(f"Per role: {why_no_roles}")
   elif not roles and loss.get("missing"):

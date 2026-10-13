@@ -308,4 +308,72 @@ Every (a) moved to one table, `boltbeam/data/policy.json`, with a one-line reaso
   capture's own per-launch spread) does not exist.
 - `evidence.THROTTLE_SHARE`, `LAUNCH_HEAVY` and `KV_SHARE` were not in the list and were not classified.
 - The lm_head refusal: whether a floor should be the larger of the probe and the fastest measured kernel is a
-  policy decision. It was not changed.
+  policy decision. It was not changed. Resolved without that policy: see "The probe's missing shape" below.
+
+## The probe's missing shape, 2026-10-13
+
+Classify evidence before fixing mechanisms. The 27B `lm_head` read about 1,698 GB/s. The read probe's best in that
+run was 1,692.7 GB/s, with a repeat spread of 0.02%. So a real kernel beat the probe. That is evidence about the
+probe, not about the kernel. The floor was not raised to the fastest kernel: that would be circular.
+
+### Where the gap was
+
+The `lm_head` launch, from the saved capture and the engine's CUDA source (read only): `mul_mat_vec_q` on Q6_K,
+a grid of 248,320 blocks (one block per matrix row), 128 threads per block, about 4.2 KB per block, 4-byte loads,
+no grid-stride loop. Every probe shape was a grid-stride loop of 16-byte loads with at most 16 blocks per SM.
+
+### The fix
+
+`collectors/cuda_bandwidth.py` adds one launch family: one block per contiguous chunk, a grid that covers the buffer
+once. Six shapes: threads, bytes per block and load width of (128, 1 KiB, 16), (128, 4 KiB, 4), (128, 4 KiB, 16),
+(256, 4 KiB, 4), (256, 16 KiB, 16), (512, 64 KiB, 16). It is a launch shape, not a model rule.
+
+Measured on the RTX 5090, n = 4, one GPU batch of about 30 seconds. The box's model server was stopped and restored:
+health ok, one completion, build b11571.
+
+| Figure | Before | Now |
+| --- | ---: | ---: |
+| read | 1,701.4 GB/s | 1,707.4 GB/s |
+| uncertainty (best-shape run spread) | 0.02% | 0.01% |
+| shape spread | 0.33% | 0.67% |
+| best shape | grid-stride, 512 threads, 8 blocks per SM | 128 threads, 4 KiB per block, 4-byte loads |
+
+The four runs read 1,707.3, 1,707.2, 1,707.4 and 1,707.3. A wider exploratory sweep (64 to 512 threads, 512 B to
+64 KiB per block, both load widths) found nothing faster than 1,706.9 in its single pass. The grid-stride shapes
+read 1,695.6 to 1,699.9 in the same batch.
+
+Against the new figure, `lm_head` sits under the ceiling. Its floor becomes 0.6111 ms; it reads 0.6143 ms, 0.5%
+above. The saved 27B runs carry their own read (1,692.7 GB/s) from the old probe, so they keep their own floor.
+A new run's read uses the new probe.
+
+### The M3
+
+The Metal probe has the same kind of grid-stride kernel, but its largest grid (16,384 threadgroups over 1 GiB,
+64 KiB each) is already close to one group per chunk. No saved M3 role reads above the registry's 97.2 GB/s: the
+fastest is the llama.cpp 8B `lm_head` at 93.8 GB/s, then the 8B `ffn_down` rows at about 80. There is no gap to
+explain, so the Metal probe was not changed.
+
+## Refuse the row, not the table
+
+Unknown is not pass, for the row whose ceiling is in doubt. Before, one role below its floor beyond its repeat
+spread and the floor's uncertainty refused the whole role table. Now:
+
+- That row's ceiling is refused, with the reason: how far below its floor, and the tolerance it broke.
+- Its time stays measured. It counts in not attributed and in the tie-out, on its own line
+  ("ceiling refused: ..."), so the tie-out still adds up.
+- The other rows keep their ceilings and verdicts. The losses and shares leave the refused row out.
+- The summary and the TUI say it plainly: "Totals exclude 1 row whose ceiling is refused: ... The other rows keep
+  their ceilings."
+- A whole token below its floor beyond noise still refuses the table, as before.
+
+### Verdicts that changed
+
+The saved decode captures (llama.cpp 8B and 27B x3, vLLM 8B and 27B x3, Ollama 8B and 27B x1) were re-attributed
+from their raw traces with the old and the new code, on private copies. No GPU.
+
+- llama.cpp 27B, all three runs: the role table was refused. It is now accepted, with nine roles checked:
+  six at the limit and three too small to fill memory. `lm_head` alone has its ceiling refused: 0.0019 to
+  0.0021 ms below its floor, against a tolerance of ±0.00013 ms.
+- `check_window`: every capture is checked at ±0.01% (the new uncertainty) instead of ±0.02%. All 14 still pass.
+- Pairings, unpaired roles and holdouts: unchanged in every capture.
+- The 8B captures: no verdict changed.

@@ -1176,6 +1176,12 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	for _, n := range l.NotTimed {
 		b.WriteString(stMuted.Render(fmt.Sprintf("%s %s: not timed: %s; left out of the floor rule and the sums.", word(plainRole, n.Role), n.Quant, deref(n.Reason))) + "\n")
 	}
+	for _, n := range l.CeilingRefused {
+		b.WriteString(stWarn.Render(fmt.Sprintf("%s %s: %.3f ms against a %.3f ms floor: %s.", word(plainRole, n.Role), n.Quant, n.ActualMs, n.IdealMs, n.Reason)) + "\n")
+	}
+	if len(l.CeilingRefused) > 0 {
+		b.WriteString(stWarn.Render(fmt.Sprintf("Totals exclude %d row(s) whose ceiling is refused. The other rows keep their ceilings.", len(l.CeilingRefused))) + "\n")
+	}
 	if l.RoleSourceWords != nil {
 		b.WriteString(stMuted.Render("Per-role source: "+*l.RoleSourceWords) + "\n")
 	}

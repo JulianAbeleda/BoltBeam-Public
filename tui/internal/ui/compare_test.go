@@ -376,3 +376,17 @@ func TestFindingsNameTheEvidenceFiles(t *testing.T) {
 		t.Errorf("the screen shows file names only:\n%s", body)
 	}
 }
+
+// A row below its own floor refuses that row's ceiling only: the other rows stay, and the totals say one is excluded.
+func TestLossBodyRefusesOneRowNotTheTable(t *testing.T) {
+	l := seam.Loss{Status: "modeled", LimitTokS: fp(19.2), LimitMs: fp(52.0), Provider: "llama.cpp", RolesProvider: sp("llama.cpp"),
+		Roles: []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 10.58, LostMs: 2.30, Share: 1}},
+		CeilingRefused: []seam.CeilingRefusedRole{{Role: "lm_head", Quant: "Q6_K", IdealMs: 0.6164, ActualMs: 0.6143,
+			Reason: "ceiling refused: 0.002100 ms below its floor"}}}
+	body := plain(lossBody(l))
+	for _, want := range []string{"10.58", "0.614 ms against a 0.616 ms floor: ceiling refused", "Totals exclude 1 row(s) whose ceiling is refused"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in:\n%s", want, body)
+		}
+	}
+}

@@ -43,6 +43,17 @@ extern "C" __global__ void readsum(const int4* __restrict__ a, unsigned long lon
     out[blockIdx.x] = (float)r;  // one write per block, so nothing is optimised away
   }
 }
+// one block per contiguous chunk and a grid that covers the buffer once, no grid-stride loop: the shape of a
+// matrix-vector kernel that gives each block its own rows. W is the load width (int: 4 bytes, int4: 16 bytes).
+#define CHUNK(NAME, W, FOLD) extern "C" __global__ void NAME(const W* __restrict__ a, unsigned long long n, \
+    unsigned int per_block, float* out) { \
+  int acc = 0; \
+  unsigned long long i0 = (unsigned long long)blockIdx.x * per_block; \
+  for (unsigned int j = threadIdx.x; j < per_block && i0 + j < n; j += blockDim.x) { W v = a[i0 + j]; acc ^= FOLD; } \
+  if (acc == 0x7fffffff) out[blockIdx.x] = (float)acc;  /* a write the compiler cannot rule out, so every load stays */ \
+}
+CHUNK(readchunk4, int, v)
+CHUNK(readchunk16, int4, v.x ^ v.y ^ v.z ^ v.w)
 """
 MATRIX_SRC = r"""
 #include <cuda_fp16.h>
@@ -70,12 +81,15 @@ extern "C" __global__ void mmaloop(float* out, int iters) {
 }
 """
 READ_SHAPES = ((256, 4), (256, 8), (256, 16), (512, 4), (512, 8), (1024, 2), (1024, 4))  # threads, blocks per SM
+# threads, bytes per block, load bytes: one block per chunk, the grid covers the buffer (a launch shape, not a model rule)
+CHUNK_SHAPES = ((128, 1024, 16), (128, 4096, 4), (128, 4096, 16), (256, 4096, 4), (256, 16384, 16), (512, 65536, 16))
 MATRIX_SHAPES = ((128, 4), (256, 2), (256, 4), (512, 2))
 MATRIX_ACC = 8
 MATRIX_NOTE = "lower bound, prefill only; decode is memory-bound"
 MATRIX_METHOD = ("BoltBeam cuda_bandwidth: native CUDA WMMA 16x16x16 fp16 multiply-accumulate into fp32, 8 accumulators "
                  "in registers, {iters} steps, best of {reps} per launch shape")
-METHOD = "BoltBeam cuda_bandwidth: native CUDA read-only kernel, 16-byte loads over {gib} GiB, best of {reps} per launch shape"
+METHOD = ("BoltBeam cuda_bandwidth: native CUDA read-only kernels over {gib} GiB, a grid-stride loop of 16-byte loads and "
+          "one block per contiguous chunk, best of {reps} per launch shape")
 SUSTAIN_S = 5.0  # about the length of a decode capture
 FACT_KEYS = ("sm_count", "shared_mem_per_sm_bytes", "l2_cache_bytes", "clock_khz", "memory_clock_khz", "memory_bus_bits",
              "total_global_mem_bytes")
@@ -115,26 +129,32 @@ def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | N
   """Read bandwidth of one GPU: best of `reps` per launch shape, then the best shape back to back for sustain_s."""
   cuda = bridge or Cuda(device, nvcc=nvcc)
   try:
-    pso = cuda.pipeline(cuda.library(CUDA_SRC), "readsum")["pso"]
+    lib = cuda.library(CUDA_SRC)
+    pso = {k: cuda.pipeline(lib, k)["pso"] for k in ("readsum", "readchunk4", "readchunk16")}
     sms = cuda.facts()["sm_count"] or 1
     nbytes = (gib << 30) // 16 * 16
-    a, out = cuda.buffer(length=nbytes), cuda.buffer(length=1024 * 64 * sms * 4)
+    a, out = cuda.buffer(length=nbytes), cuda.buffer(length=max(1024 * 64 * sms, nbytes // min(c for _, c, _ in CHUNK_SHAPES)) * 4)
     n4 = struct.pack("<Q", nbytes // 16)
+    shapes = [({"threads": t, "blocks": per_sm * sms}, "readsum", [a, n4, out]) for t, per_sm in READ_SHAPES]
+    shapes += [({"threads": t, "blocks": -(-nbytes // c), "chunk_bytes": c, "load_bytes": w}, f"readchunk{w}",
+                [a, struct.pack("<Q", nbytes // w), struct.pack("<I", c // w), out]) for t, c, w in CHUNK_SHAPES]
+    def go(shape):
+      meta, name, args = shape
+      return cuda.dispatch(pso[name], args, (meta["blocks"], 1, 1), (meta["threads"], 1, 1))
     rows = []
-    for threads, per_sm in READ_SHAPES:
-      blocks = per_sm * sms
-      launch = lambda: cuda.dispatch(pso, [a, n4, out], (blocks, 1, 1), (threads, 1, 1))  # noqa: E731
-      best = min(samples(launch, warmups=1, count=reps))  # the one loop; a bandwidth keeps its best launch
-      rows.append({"threads": threads, "blocks": blocks, "best_ms": best / 1000.0, "gbs": nbytes / (best * 1e-6) / 1e9})
-    best = max(rows, key=lambda r: r["gbs"])
+    for shape in shapes:
+      best = min(samples(lambda: go(shape), warmups=1, count=reps))  # the one loop; a bandwidth keeps its best launch
+      rows.append({**shape[0], "best_ms": best / 1000.0, "gbs": nbytes / (best * 1e-6) / 1e9})
+    i = max(range(len(rows)), key=lambda k: rows[k]["gbs"])
+    best = rows[i]
     # sustained: the best shape back to back for sustain_s seconds, as a decode reads (the clocks settle under load)
     series, done = [], 0.0
     while not series or done < sustain_s * 1e6:  # at least one launch, then until the seconds are up
-      us = cuda.dispatch(pso, [a, n4, out], (best["blocks"], 1, 1), (best["threads"], 1, 1))
+      us = go(shapes[i])
       series.append(nbytes / (us * 1e-6) / 1e9)
       done += us
     result = {"device": device, "name": cuda.name, "bytes": nbytes, "reps": reps, "shapes": rows,
-              "best_shape": {"threads": best["threads"], "blocks": best["blocks"]},
+              "best_shape": shapes[i][0],
               "sustained": {"seconds": done / 1e6, "launches": len(series), "best_gbs": round(max(series), 1),
                             "mean_gbs": round(sum(series) / len(series), 1), "min_gbs": round(min(series), 1)}}
   finally:
