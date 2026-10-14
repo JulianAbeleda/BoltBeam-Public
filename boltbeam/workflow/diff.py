@@ -138,7 +138,7 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
   for run, got in zip((a, b), builds):
     if got is None:
       raise DiffRefused(f"{run.name} recorded no engine build: an audit of an unknown build is not compared")
-  pins = [providers.pin_check(run_provider(a), x) for x in builds]
+  pins = [providers.pin_check(run_provider(r), x, providers.run_build_number(r), providers.run_build_installed(r)) for r, x in zip((a, b), builds)]
   side = _prefill_sides if ma.get("workload") == "prefill" else _decode_side
   A, B = side(a, bands), side(b, bands)
   if not (A and B):

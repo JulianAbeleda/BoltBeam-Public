@@ -1,0 +1,20 @@
+{
+  "ninja_file": "~/storage/bbeng/cache/.cache/flashinfer/0.7.0.post1/120f/cached_ops/xqa_input_bf16_kv_cache_e4m3_output_bf16_page_size_32_head_dim_256_head_group_ratio_6_use_sliding_window_False_use_spec_dec_False_spec_q_seq_len_1/build.ninja",
+  "ninja_sha256": "66aa2ec9aba7e8f073921ee671938bf6aca761a59fba962d39dca73b11a4d71e",
+  "source_identity": "d90db8ed00409583c3119b314b529507325ffc7f78000cb4ff97d307eda02ef7",
+  "measurement_method": "live_cgroup_peak",
+  "measured_targets": {
+    "~/storage/bbeng/cache/.cache/flashinfer/0.7.0.post1/120f/cached_ops/xqa_input_bf16_kv_cache_e4m3_output_bf16_page_size_32_head_dim_256_head_group_ratio_6_use_sliding_window_False_use_spec_dec_False_spec_q_seq_len_1/xqa_mha.cuda.o": 170192896,
+    "~/storage/bbeng/cache/.cache/flashinfer/0.7.0.post1/120f/cached_ops/xqa_input_bf16_kv_cache_e4m3_output_bf16_page_size_32_head_dim_256_head_group_ratio_6_use_sliding_window_False_use_spec_dec_False_spec_q_seq_len_1/xqa_xqa_wrapper.cuda.o": 270733312,
+    "~/storage/bbeng/cache/.cache/flashinfer/0.7.0.post1/120f/cached_ops/xqa_input_bf16_kv_cache_e4m3_output_bf16_page_size_32_head_dim_256_head_group_ratio_6_use_sliding_window_False_use_spec_dec_False_spec_q_seq_len_1/csrc_flashinfer_xqa_binding.cuda.o": 305598464
+  },
+  "compiler_peak_bytes": 305598464,
+  "build_identity": "3680c947dc7cbd91b8e026084b1f7fc78f6fdab16526f767a09ed628db90434c",
+  "parallel_build": {
+    "jobs": 16,
+    "available_memory_bytes": 30674309120,
+    "cpu_count": 16,
+    "memory_limit_bytes": 30368710656,
+    "compiler_peak_bytes": 305598464
+  }
+}

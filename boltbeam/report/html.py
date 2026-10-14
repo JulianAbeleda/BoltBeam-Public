@@ -1072,4 +1072,5 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
     '<button id="theme" class="toggle" type="button">theme</button></header>'
     f"{sections}"
     '<p class="foot">Written by <code>boltbeam output</code> from the same results the TUI shows. Times are ms per token.</p>'
+    f'<p class="foot">{_e((results.get("engine_update") or {}).get("words", ""))}</p>'
     f"</div><script>{_JS}</script></body></html>\n")

@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "seconds": 431.44546470500063,
+  "memory_limit_bytes": 26895613952,
+  "memory_peak_bytes": 3777843200,
+  "unit": "boltbeam-job-9778732e4eab46808fa7881631239d2f.service",
+  "failure_reason": null
+}

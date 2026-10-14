@@ -30,6 +30,17 @@ it) and the shared libraries this process loaded: vLLM's own view of what it ran
 from __future__ import annotations
 
 import argparse, json, os, random, statistics, time
+from pathlib import Path
+
+import build_jobs
+
+# Direct driver invocation gets the same policy; multiprocessing workers start
+# fresh Python interpreters and import sitecustomize through PYTHONPATH.
+_runtime = str(Path(__file__).resolve().parent)
+os.environ["PYTHONPATH"] = os.pathsep.join([_runtime, *([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])])
+os.environ.setdefault("BOLTBEAM_BUILD_LIMIT", "1")
+os.environ.setdefault("BOLTBEAM_REQUIRE_PREBUILT", "1")
+build_jobs.install_ninja_limit()
 
 
 def main() -> int:
@@ -48,20 +59,61 @@ def main() -> int:
   ap.add_argument("--max-num-batched-tokens", type=int)
   ap.add_argument("--dtype", default="auto")
   ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+  ap.add_argument("--speculative-config", default=os.environ.get("BOLTBEAM_VLLM_SPECULATIVE_CONFIG"),
+                  help="explicit MTP configuration; recorded in the measurement")
+  ap.add_argument("--quality-suite", help="JSON prompts and expected JSON answers for a bounded smoke check")
+  ap.add_argument("--quality-thinking", action="store_true", help="enable thinking for quality prompts")
+  ap.add_argument("--quality-max-tokens", type=int, help="answer budget including thinking (default: 4096 on, 128 off)")
+  ap.add_argument("--quality-only", action="store_true", help="run quality checks without decode benchmarks")
   a = ap.parse_args()
+  if a.quality_max_tokens is None:
+    a.quality_max_tokens = 4096 if a.quality_thinking else 128
+  if a.quality_max_tokens <= 0:
+    ap.error("--quality-max-tokens must be positive")
+  if a.quality_only and not a.quality_suite:
+    ap.error("--quality-only requires --quality-suite")
+  a.speculative_config = json.loads(a.speculative_config) if a.speculative_config else None
   from vllm import LLM, SamplingParams
   from vllm.inputs import TokensPrompt
   contexts = [int(x) for x in a.contexts.split(",") if x]
   batches = [int(x) for x in a.batches.split(",")]
   if a.prefill:
     return prefill(a)
-  if not contexts:
+  if not contexts and not a.quality_only:
     ap.error("decode needs explicit --contexts")
-  max_len = a.model_context_limit or max(contexts) + max(a.tokens, a.once or 0) + 8
+  max_len = a.model_context_limit or max(
+    max(contexts, default=0) + max(a.tokens, a.once or 0) + 8,
+    a.quality_max_tokens + 512 if a.quality_suite and (a.quality_thinking or a.quality_only) else 0)
   llm = LLM(model=a.model, dtype=a.dtype, max_model_len=max_len, enable_prefix_caching=False,
+            language_model_only=True, speculative_config=a.speculative_config,
             gpu_memory_utilization=a.gpu_memory_utilization, max_num_seqs=max(max(batches), 1), seed=0,
             **({"max_num_batched_tokens": a.max_num_batched_tokens, "enable_chunked_prefill": True} if a.max_num_batched_tokens else {}))
   vocab = llm.get_tokenizer().vocab_size
+  if a.quality_suite:
+    tokenizer = llm.get_tokenizer()
+    suite = json.load(open(a.quality_suite))
+    quality_prompts = [tokenizer.apply_chat_template([
+      {"role": "system", "content": "Answer with only a JSON object containing the key answer. No explanation."},
+      {"role": "user", "content": c["prompt"]}], tokenize=False, add_generation_prompt=True, enable_thinking=a.quality_thinking) for c in suite]
+    if any(len(tokenizer.encode(prompt, add_special_tokens=False)) + a.quality_max_tokens > max_len
+           for prompt in quality_prompts):
+      raise ValueError("Quality prompt and generation budget exceed --model-context-limit")
+    quality_started = time.perf_counter()
+    responses = llm.generate(quality_prompts, SamplingParams(max_tokens=a.quality_max_tokens, temperature=0.0), use_tqdm=False)
+    checks = []
+    for case, response in zip(suite, responses):
+      text = response.outputs[0].text
+      from quality_checks import grade_response
+      checks.append(grade_response(case, text, response.outputs[0].token_ids,
+                                   thinking=a.quality_thinking, finish_reason=response.outputs[0].finish_reason))
+    print(json.dumps({"quality": checks, "passed": sum(c["passed"] for c in checks), "total": len(checks),
+                      "strict_passed": sum(c["strict_passed"] for c in checks),
+                      "thinking": a.quality_thinking, "max_tokens": a.quality_max_tokens,
+                      "temperature": 0.0, "seconds": time.perf_counter() - quality_started,
+                      "speculative_config": a.speculative_config}), flush=True)
+
+  if a.quality_only:
+    return 0
 
   def prompts(context:int, batch:int) -> list:
     # stream s: ids 1000+s, 1001+s, ... so no two streams share a prefix
@@ -92,6 +144,7 @@ def main() -> int:
       step_ms = (long_s - short_s) * 1000.0 / (a.tokens - 1)
       print(json.dumps({"context": context, "batch": batch, "tokens": a.tokens, "long_s": long_s, "short_s": short_s,
                         "engine": {"build": __import__("vllm").__version__, "max_model_len": max_len,
+                                   "speculative_config": a.speculative_config,
                                    "max_num_batched_tokens": int(llm.llm_engine.vllm_config.scheduler_config.max_num_batched_tokens),
                                    "chunked_prefill": bool(llm.llm_engine.vllm_config.scheduler_config.enable_chunked_prefill)},
                         "step_ms": step_ms, "tok_s_stream": 1000.0 / step_ms, "tok_s_total": batch * 1000.0 / step_ms}),
@@ -103,6 +156,7 @@ def prefill(a) -> int:
   from vllm import LLM, SamplingParams
   from vllm.inputs import TokensPrompt
   llm = LLM(model=a.model, dtype=a.dtype, max_model_len=a.prefill + 8, enable_prefix_caching=False,
+            language_model_only=True, speculative_config=a.speculative_config,
             gpu_memory_utilization=a.gpu_memory_utilization, max_num_seqs=1, seed=0, disable_log_stats=False,
             **({"max_num_batched_tokens": a.max_num_batched_tokens, "enable_chunked_prefill": True} if a.max_num_batched_tokens else {}))
   vocab = llm.get_tokenizer().vocab_size
@@ -122,6 +176,7 @@ def prefill(a) -> int:
     call()
   sc = llm.llm_engine.vllm_config.scheduler_config
   line = {"length": a.prefill, "seed": a.seed, "max_num_batched_tokens": int(sc.max_num_batched_tokens),
+          "speculative_config": a.speculative_config,
           "chunked_prefill": bool(sc.enable_chunked_prefill), "vllm": __import__("vllm").__version__}
   if a.capture:
     import torch

@@ -15,6 +15,8 @@ BoltBeam audits inference time against a measured roofline. It runs your model i
 kernel, pairs each kernel with the model role it serves, and puts each one beside the fastest that role could run
 on this chip. The chip's limits are measured on the chip, not read off a data sheet.
 
+![BoltBeam on an M5 MacBook Air: Qwen3-8B on llama.cpp, the run, then where each millisecond of the token goes](docs/media/boltbeam-demo.gif)
+
 It answers, per role and per kernel:
 
 - **How fast could it go?** The ceiling for each row: its bytes over the measured bandwidth, or its operations over

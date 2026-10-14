@@ -48,15 +48,8 @@ The published articles link into the mirror by path. Never move or rename a file
 
 ## Releasing to Homebrew
 
-`brew install JulianAbeleda/tap/boltbeam` installs the formula in
-[homebrew-tap](https://github.com/JulianAbeleda/homebrew-tap), which builds a tagged mirror tarball. A release:
-
-1. Bump `version` in `pyproject.toml` on `main` and push.
-2. Publish the mirror.
-3. `tools/release_brew.sh VERSION` (try `--dry-run` first). It refuses unless `origin/main` names the version and the
-   mirror's head is its snapshot, tags the mirror `vVERSION`, and points the formula's `url` and `sha256` at the tag.
-
-Users then take it with `brew update && brew upgrade boltbeam`.
+[release-runbook.md](release-runbook.md) is the runbook: bump the version on `main`, publish the mirror from a
+worktree of `origin/dev`, run `tools/release_brew.sh VERSION`, and check the install as a user would.
 
 ## Scripts
 

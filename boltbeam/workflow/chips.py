@@ -24,6 +24,10 @@ from boltbeam.workflow.autoscan import _hardware_profile, chip_profile_id
 
 Measure = Callable[[], dict[str, Any]]
 _SMI_FACTS = "driver_version,clocks.max.sm,clocks.max.memory,power.limit"
+# whole runs of the read probe a scan makes: their spread at the best launch shape is the bandwidth's uncertainty,
+# which the per-role checks need (a launch cannot read faster than the bandwidth); one run has none, and every such
+# check would then say not checked (cuda_bandwidth.repeated, metal-bandwidth --runs)
+READ_RUNS = 3
 
 
 def _today() -> str:
@@ -141,7 +145,9 @@ def autoscan(*, remeasure:bool = False, hardware:dict[str, Any] | None = None,
   today = _today()
   try:
     read_probe, matrix_probe = probes(device.get("vendor") or "")
-    row = profile_row(device, read_probe(), matrix_probe(), driver() if device.get("vendor") == "nvidia" else {},
+    from boltbeam.collectors.cuda_bandwidth import repeated
+    read = repeated([read_probe() for _ in range(READ_RUNS)], "read_gbs", "gbs")
+    row = profile_row(device, read, matrix_probe(), driver() if device.get("vendor") == "nvidia" else {},
                       today=today)
   except (RuntimeError, OSError, subprocess.SubprocessError, KeyError) as exc:  # the probe's own words, not a guess
     return {**_view(device, profile.get("id") if profile.get("status") == "known" else None, profile.get("status") or "new",

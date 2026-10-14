@@ -1,0 +1,8 @@
+{
+  "exit_code": 1,
+  "seconds": 55.458374718000414,
+  "memory_limit_bytes": 27054657536,
+  "memory_peak_bytes": 6182301696,
+  "unit": "boltbeam-job-5d02df4d7a3d417ab3460bc19fb51050.service",
+  "failure_reason": "terminated by signal: TERM"
+}

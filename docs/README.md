@@ -17,6 +17,8 @@ Read these in order. They describe BoltBeam as it is today.
 - [linux.md](linux.md): Linux with an NVIDIA GPU, from a bare Ubuntu to the first report: CUDA on PATH, nsys, llama.cpp with CUDA, the model, the optional engines, `boltbeam doctor`, `boltbeam tui`.
 - [h100-pod.md](h100-pod.md): a rented H100 (RunPod) from the bare image to the first report with one command, `tools/pod-setup.sh`; what to rent, what comes back, the cost, what the multi-GPU session adds.
 
+- [short-context-quants-rtx5090-20261014.md](short-context-quants-rtx5090-20261014.md): Qwen3.8 short-context graphs-on comparison and same-GGUF engine control.
+
 ## How a part works
 
 Undated reference pages. Each describes one part of the tool and is kept current with it.
@@ -40,11 +42,14 @@ Undated reference pages. Each describes one part of the tool and is kept current
 ## Working on BoltBeam
 
 - [maintaining.md](maintaining.md): for people who work on BoltBeam itself: install for development, scripts, the public mirror.
+- [release-runbook.md](release-runbook.md): a new version on Homebrew, from the version bump to the user's `brew upgrade`.
 - [branch-flow.md](branch-flow.md): what each branch holds and how the trunk reaches the others.
 - [coding-principles.md](coding-principles.md): BoltBeam Coding Principles
 - [commit-discipline.md](commit-discipline.md): BoltBeam Commit Discipline
 
 ## Audit records, October 2026
+
+- [Q4_K_M versus AWQ and NVFP4](quant-comparison-rtx5090-20261014.md): matched replay, engine versus format distinctions, tuning evidence and FP8-cache capacity.
 
 The current measurement work, newest first. Each is a dated record: what was run, the numbers, what passed and
 what failed. Later records can correct earlier ones; the correction says so and the earlier record stays as written.

@@ -104,7 +104,7 @@ def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> d
   return {"ms": statistics.median(samples), "samples_ms": samples, "chunk": chunk, "telemetry": tele.summary(),
           "telemetry_samples": gpu_telemetry.compact(tele.samples),
           "source": f"llama-bench -p {length} -n 0, {len(samples)} repetitions after its warm-up, untraced",
-          "engine": {"build": row.get("build_commit"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
+          "engine": {"build": row.get("build_commit"), "build_number": row.get("build_number"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
                      "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd,
                      "n_ctx": int(row.get("n_prompt") or length) + int(row.get("n_gen") or 0),
                      "n_ctx_source": "llama-bench sizes its context to n_prompt + n_gen + n_depth",

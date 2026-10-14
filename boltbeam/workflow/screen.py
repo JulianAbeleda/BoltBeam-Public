@@ -986,7 +986,7 @@ def _parse_batches(text:str | None) -> list[int]:
   return sorted({1, *(int(x) for x in (text or "1").split(",") if x.strip())})
 
 
-def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
+def _measure_steps(args, plan:dict[str, Any], say=lambda _: None) -> list[tuple[str, Any]]:
   provider = plan.get("provider") or providers.DEFAULT
   layout, gpus = plan.get("layout") or "one", plan.get("gpus") or 1
   batches = _parse_batches(getattr(args, "batch", None))
@@ -1045,7 +1045,7 @@ def _measure_steps(args, plan:dict[str, Any]) -> list[tuple[str, Any]]:
     from boltbeam.collectors import prefill as pf, replay as rp, session as ss
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
     mod = {"prefill": pf, "session": ss, "replay": rp}[args.workload]
-    timing = guarded("timing", lambda: mod.measure(out_dir(), provider, root=root), probe="absent",
+    timing = guarded("timing", lambda: mod.measure(out_dir(), provider, root=root, say=say), probe="absent",
                      probe_reason=llama_bench_decode.PROBE_ABSENT)
     return [timing]
   if provider == tinygrad_role_time.PROVIDER:
@@ -1142,7 +1142,7 @@ def pipeline(args, out=sys.stdout) -> int:
                         measurement=_role_time_arg(args))
     if analyze_all and not plan["reason"]:  # the machine's measured facts, reused when this machine has them
       steps.append(("machine", lambda: machine(pathlib.Path(args.run), root=root)))
-    steps += _measure_steps(args, plan)
+    steps += _measure_steps(args, plan, say=say)
   if args.probe:  # a CUDA probe with no GPU on this machine wrote no evidence: nothing to ingest
     steps.append(("ingest_probe", lambda: ingest_probe_run(args.run, args.probe)
                   if pathlib.Path(args.probe).exists() else None))
@@ -1310,6 +1310,8 @@ def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | Non
   from boltbeam.workflow.common import write_json
   devs = lay.devices(_hardware_profile()["gpu"])
   cached = None if remeasure else lay.cached_machine(run, devs)
+  if cached is not None and any((now := profile_read(g)) is not None and now[0] != g.get("read_gbs") for g in cached.get("gpus") or []):
+    cached = None  # the chip profile was measured again since: one measurement, the profile's (profile_read)
   if cached is not None:
     facts = {**cached, "reused": True}
   else:

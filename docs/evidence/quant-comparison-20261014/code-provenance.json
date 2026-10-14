@@ -1,0 +1,12 @@
+{
+  "files": {
+    "~/BoltBeam/boltbeam/collectors/replay.py": "4a63b0d9803a13a50a879059dfeb11904116e39460de3ffb6af6d4d5a2f9a7a5",
+    "~/BoltBeam/boltbeam/collectors/gpu_telemetry.py": "00708c98f125c12103dac2b19820128fb89ee2a37e60de39d2eb4c6ddecbdbbc",
+    "~/storage/bbeng/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/warmup/kernel_warmup.py": "69d9f633e353d02898b0e0054613f10596747341ea23e4369c1cdfd88ec2cac5",
+    "~/storage/bbeng/vllm-venv/lib/python3.12/site-packages/vllm/v1/worker/gpu_model_runner.py": "bb903dffcb5a6e5b8a477daf0854b3812e135349d61fc20c6133f91cd3c9752a",
+    "~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja": "687ac76c7b83362b7b55fe805a4a51963bb489905dc1f3e36ffcbdba6c29b89d"
+  },
+  "repo_head": "9965ab07fdbad41fa3bf482262417c53cc15f2c2",
+  "repo_status": " M boltbeam/collectors/engine_common.py\n M boltbeam/collectors/prefill.py\n M boltbeam/collectors/prefill_attribution.py\n M boltbeam/collectors/providers.py\n M boltbeam/collectors/replay.py\n M boltbeam/data/quants.json\n M boltbeam/kernel_analysis/theoretical_roofline.py\n M boltbeam/profile/ir.py\n M boltbeam/profile/loaders.py\n M boltbeam/quantization/quant.py\n M boltbeam/report/html.py\n M boltbeam/roofline/prefill_work.py\n M boltbeam/runtime/vllm_decode_drive.py\n M boltbeam/workflow/replay.py\n M boltbeam/workflow/screen.py\n M boltbeam/workflow/tie_out.py\n M tui/internal/seam/types.go\n M tui/internal/ui/audit_lines_test.go\n M tui/internal/ui/render.go\n M tui/internal/ui/render_test.go\n?? tests/\n",
+  "note": "Existing working tree changes retained; collector hashes identify actual code used. No engine source files changed by this audit."
+}

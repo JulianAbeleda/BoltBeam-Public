@@ -1,0 +1,79 @@
+Replay provenance and matched chat-300 audit
+All dates below use America/New_York (UTC-04:00).
+
+Original table provenance:
+
+awq
+Folder: ~/storage/bbeng/tmp/tui27-20261013/runs/vllm-replay
+Run toolchain timestamp: 2026-10-13T21:06:27.955965-04:00
+Engine evidence: vLLM 0.31.0 in replay_server.log; historical source revision not recorded
+Exact launched command: ~/storage/bbeng/vllm-venv/bin/python -m vllm.entrypoints.openai.api_server --model ~/storage/bbeng/models/Qwen3.8-27B-W4A16-AWQ --served-model-name arkey-local --max-model-len 114688 --gpu-memory-utilization 0.95 --max-num-seqs 1 --enable-prefix-caching --chat-template ~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja --host 127.0.0.1 --port 48689
+Power: 600.0 W, automatic GPU clocks
+Results: {"turns": 300, "ttft_ms": 429.07553049735725, "wall_ms": 2126.563341007568, "stream_ms": 1677.8994039923418, "total_s": 653.6262586496887, "throttled": 66}
+(APIServer pid=213386) INFO 10-13 21:06:34 [api_utils.py:347]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.31.0
+2026-10-13 21:07:49,543 - INFO - autotuner.py:3554 - flashinfer.jit: [Autotuner]: Saved 0 configs to ~/storage/bbeng/cache/vllm/flashinfer_autotune_cache/0.7.0.post1/120f/a0e3b2f9869fed1636351f3c0005bba88faf011e25f6150ac4070e40b8aac7a5/autotune_configs.json (0 new, 0 from previous config)
+
+q4
+Folder: ~/storage/bbeng/tmp/tui27-20261013/runs/llama-replay
+Run toolchain timestamp: 2026-10-13T20:35:54.151377-04:00
+Engine evidence: version: 0.6.0-dev (build 11571, commit 097cf33d9)
+Exact launched command: ~/env/llama.cpp/build-cuda/bin/llama-server --model ~/storage/models/Qwen3.8-27B-Q4_K_M.gguf --alias arkey-local --ctx-size 262144 --gpu-layers all --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0 --chat-template-file ~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja --host 127.0.0.1 --port 60627
+Power: 600.0 W, automatic GPU clocks
+Results: {"turns": 300, "ttft_ms": 490.4366340051638, "wall_ms": 2492.071925502387, "stream_ms": 2039.3500214995584, "total_s": 774.3395849031222, "throttled": 237}
+
+nvfp4
+Folder: ~/storage/bbeng/tmp/boltbeam-inference-tuned-20261014/runs/nvfp4-replay
+Run toolchain timestamp: 2026-10-14T10:34:42.546651-04:00
+Engine evidence: 0.31.0
+Exact launched command: ~/storage/bbeng/vllm-venv/bin/python -m vllm.entrypoints.openai.api_server --model ~/storage/bbeng/models/Qwen3.8-27B-NVFP4-NVIDIA --served-model-name nvfp4-27b --language-model-only --max-model-len 114688 --gpu-memory-utilization 0.95 --max-num-seqs 1 --max-num-batched-tokens 2048 --enable-prefix-caching --chat-template ~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja --host 127.0.0.1 --port 53467
+Power: 600.0 W, automatic GPU clocks
+Results: {"turns": 300, "ttft_ms": 313.15863549752976, "wall_ms": 2320.094179496664, "stream_ms": 1991.4278860014747, "total_s": 712.2431940160168, "throttled": 55}
+(APIServer pid=467561) INFO 10-14 10:34:49 [api_utils.py:347]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.31.0
+2026-10-14 10:36:06,560 - INFO - autotuner.py:3554 - flashinfer.jit: [Autotuner]: Saved 80 configs to ~/storage/bbeng/cache/vllm/flashinfer_autotune_cache/0.7.0.post1/120f/2e1836adb380a6267703920ae21f0d9b2998fb687d1ef146d86eb963a31281a2/autotune_configs.json (80 new, 0 from previous config)
+2026-10-14 10:36:06,690 - WARNING - autotuner.py:2271 - flashinfer.jit: [AutoTuner]: No tuned config covers fp4_gemm input_shapes=((1, 2560), (2560, 248320), (128, 320), (320, 248320), (), (0,), (1, 248320), (0,), (0,), (41943040,)); falling back to runner=CutlassFp4GemmRunner tactic=-1.  This shape is outside the tuning bucket range -- expand tuning_buckets / max_num_tokens during the next tuning pass to avoid this perf cliff.
+2026-10-14 10:36:06,757 - WARNING - autotuner.py:2271 - flashinfer.jit: [AutoTuner]: No tuned config covers fp4_gemm input_shapes=((2, 2560), (2560, 248320), (128, 320), (320, 248320), (), (0,), (2, 248320), (0,), (0,), (41943040,)); falling back to runner=CutlassFp4GemmRunner tactic=-1.  This shape is outside the tuning bucket range -- expand tuning_buckets / max_num_tokens during the next tuning pass to avoid this perf cliff.
+
+The original llama.cpp column is the October 13 run above, not the October 11 run in docs/replay-27b-rtx5090-20261011.md. Its raw timing trace and server log are present.
+The NVFP4 replay began after commit 1bd1969 (2026-10-14 10:24:54 -0400). It saved 80 configs, not zero. Its log still reports output-head FP4 fallback for M=1 and M=2. Nonzero saved count does not imply complete coverage.
+AWQ also logged Saved 0 configs, but uses Marlin linear kernels; its autotune pass took ~31 ms and logged no missing-helper/tactic failures. Zero alone is not diagnostic for an engine without eligible FlashInfer GEMMs.
+
+Checkpoint tensor bytes, headers only (not measured GPU traffic):
+W4A16-AWQ: {"attention": 3799163136, "mlp": 8890616832, "lm_head": 2542796800, "embedding": 2542796800, "other": 1320960, "vision": 921460192, "mtp": 849398784}
+Attention + MLP + lm_head: 15232576768 bytes
+NVFP4-NVIDIA: {"mlp": 9625929216, "attention": 7265360512, "other": 1320960, "embedding": 2542796800, "vision": 921460192, "lm_head": 715161608, "mtp": 849398784}
+Attention + MLP + lm_head: 17606451336 bytes
+NVFP4/AWQ ratio for these roles = 1.1559 approximately. Excludes embedding, vision, MTP and other tensors; includes tensor scales/metadata. Actual traffic also depends on repacking, caches, KV/recurrent state and activations.
+Median per-turn (wall - TTFT), computed before taking the median: AWQ 1677.8994039923418 ms; NVFP4 1991.4278860014747 ms. This difference is observed, not a causal attribution.
+
+Matched rerun:
+Current vLLM package: 0.31.0, embedded source commit db9527a46. Installed vLLM and FlashInfer Python files match wheel RECORD hashes. llama.cpp: b11571, commit 097cf33d9.
+Q4 exception: CUDA graphs disabled with GGML_CUDA_DISABLE_GRAPHS=1 after the graph-enabled attempt failed around turn 208 with CUDA launch timeout and NVIDIA Xid 8. An identical retry was manually stopped early after finding upstream report https://github.com/ggml-org/llama.cpp/issues/27330. This workaround changes engine execution overhead; do not interpret this Q4 result as its best graph-enabled speed or a quant-only comparison.
+Same counts trace and seed 0; 300 turns, 37354 requested completion tokens; same template and source documents; 114688 context; BF16 K/V; 2048 token batch; single sequence; prefix caching; speculation off; thinking off; unchanged 600 W power limit and automatic clocks. llama.cpp microbatch explicitly 2048. Model outputs feed subsequent history, so equal shape/seed does not guarantee identical content or tokenized histories. Cross-engine scheduling, attention and recurrent-state implementations remain different.
+NVFP4 keeps the prebuilt guard enabled. FP8 disk cache hits are checked in a second fresh process; FP4 may legitimately retune because this FlashInfer disk schema omits policy metadata. Output-head coverage gap is reported explicitly.
+All 300 turns, including cold first turn, are included in the main table; startup excluded. Throttled means BoltBeam telemetry sees a throttle reason with SM clock below 98% of the highest busy clock seen so far, not merely the presence of a power-cap flag.
+
+nvfp4: {"turns": 300, "ttft_ms": 316.5565745002823, "ttft_p95_ms": 548.273105006956, "wall_ms": 2353.016689499782, "wall_p95_ms": 3704.381467003259, "stream_ms": 2025.5324130012013, "total_s": 723.3241721659944, "decode_tok_s": 58.908027699075646, "throttled_turns": 30, "throttled_warm_turns": 29, "completion_tokens": 37354, "build": "0.31.0", "environment": {"BOLTBEAM_BUILD_PROFILE": "~/storage/bbeng/tmp/nvfp4-27b-20261013/prebuild-memory.json", "VLLM_USE_FLASHINFER_SAMPLER": "0", "BOLTBEAM_REQUIRE_PREBUILT": "1", "FLASHINFER_LOGGING_LEVEL": "info"}, "settings": {"n_batch": 2048, "n_ctx": 114688, "n_ubatch": 2048, "prefix_cache": true, "source": {"n_batch": "the command", "n_ctx": "the command", "n_ubatch": "the command", "prefix_cache": "the command", "speculative_config": "not enabled in the command", "type_k": "the model's dtype (auto)"}, "speculative_config": null, "type_k": "bf16"}, "start": {"utc": "2026-10-14T15:50:40.861302+00:00", "power": "power.limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz]\n600.00 W, 3135 MHz, 14001 MHz\n"}, "end": {"utc": "2026-10-14T16:03:56.723571+00:00"}, "power_limit_w": 600.0, "max_temperature_c": 89}
+Folder: ~/storage/bbeng/tmp/replay-audit-20261014/nvfp4
+Exact command: ~/storage/bbeng/vllm-venv/bin/python -m vllm.entrypoints.openai.api_server --model ~/storage/bbeng/models/Qwen3.8-27B-NVFP4-NVIDIA --served-model-name matched --language-model-only --max-model-len 114688 --gpu-memory-utilization 0.95 --max-num-seqs 1 --max-num-batched-tokens 2048 --dtype bfloat16 --kv-cache-dtype auto --seed 0 --enable-prefix-caching --chat-template ~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja --host 127.0.0.1 --port 54547
+
+awq: {"turns": 300, "ttft_ms": 444.52421750247595, "ttft_p95_ms": 840.5987200021627, "wall_ms": 2146.615691999614, "wall_p95_ms": 3391.4693869955954, "stream_ms": 1676.006346999202, "total_s": 658.7213893180086, "decode_tok_s": 71.0998454772849, "throttled_turns": 61, "throttled_warm_turns": 60, "completion_tokens": 37354, "build": "0.31.0", "environment": {"BOLTBEAM_BUILD_PROFILE": "~/storage/bbeng/tmp/nvfp4-27b-20261013/prebuild-memory.json", "VLLM_USE_FLASHINFER_SAMPLER": "0", "BOLTBEAM_REQUIRE_PREBUILT": "1", "FLASHINFER_LOGGING_LEVEL": "info"}, "settings": {"n_batch": 2048, "n_ctx": 114688, "n_ubatch": 2048, "prefix_cache": true, "source": {"n_batch": "the command", "n_ctx": "the command", "n_ubatch": "the command", "prefix_cache": "the command", "speculative_config": "not enabled in the command", "type_k": "the model's dtype (auto)"}, "speculative_config": null, "type_k": "bf16"}, "start": {"utc": "2026-10-14T16:04:45.553315+00:00", "power": "power.limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz]\n600.00 W, 3135 MHz, 14001 MHz\n"}, "end": {"utc": "2026-10-14T16:17:15.514857+00:00"}, "power_limit_w": 600.0, "max_temperature_c": 94}
+Folder: ~/storage/bbeng/tmp/replay-audit-20261014/awq
+Exact command: ~/storage/bbeng/vllm-venv/bin/python -m vllm.entrypoints.openai.api_server --model ~/storage/bbeng/models/Qwen3.8-27B-W4A16-AWQ --served-model-name matched --language-model-only --max-model-len 114688 --gpu-memory-utilization 0.95 --max-num-seqs 1 --max-num-batched-tokens 2048 --dtype bfloat16 --kv-cache-dtype auto --seed 0 --enable-prefix-caching --chat-template ~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja --host 127.0.0.1 --port 47337
+
+q4: {"turns": 300, "ttft_ms": 491.5540649999457, "ttft_p95_ms": 685.6456859968603, "wall_ms": 2990.9169969978393, "wall_p95_ms": 5028.3931020021555, "stream_ms": 2486.456136502966, "total_s": 922.8201834239952, "decode_tok_s": 48.167558455303165, "throttled_turns": 248, "throttled_warm_turns": 247, "completion_tokens": 37354, "build": "097cf33d9", "environment": {"BOLTBEAM_BUILD_PROFILE": "~/storage/bbeng/tmp/nvfp4-27b-20261013/prebuild-memory.json", "VLLM_USE_FLASHINFER_SAMPLER": "0", "BOLTBEAM_REQUIRE_PREBUILT": "1", "GGML_CUDA_DISABLE_GRAPHS": "1", "FLASHINFER_LOGGING_LEVEL": "info"}, "settings": {"cache_ram_mib": null, "ctx_checkpoints": null, "flash_attn": "on", "n_batch": 2048, "n_ctx": 114688, "n_ubatch": 2048, "source": {"cache_ram_mib": "not logged", "ctx_checkpoints": "not logged", "flash_attn": "the command", "n_batch": "the command", "n_ctx": "the server's log", "n_ubatch": "the command", "type_k": "the command", "type_v": "the command"}, "type_k": "bf16", "type_v": "bf16"}, "start": {"utc": "2026-10-14T16:29:57.372006+00:00", "power": "power.limit [W], clocks.max.sm [MHz], clocks.max.memory [MHz]\n600.00 W, 3135 MHz, 14001 MHz\n"}, "end": {"utc": "2026-10-14T16:45:29.500106+00:00"}, "power_limit_w": 600.0, "max_temperature_c": 95}
+Folder: ~/storage/bbeng/tmp/replay-audit-20261014/q4
+Exact command: ~/env/llama.cpp/build-cuda/bin/llama-server --model ~/storage/models/Qwen3.8-27B-Q4_K_M.gguf --alias matched --ctx-size 114688 --gpu-layers all --parallel 1 --batch-size 2048 --ubatch-size 2048 --cache-type-k bf16 --cache-type-v bf16 --seed 0 --flash-attn on --chat-template-file ~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja --host 127.0.0.1 --port 44101
+
+
+Final matched result table (all 300 turns, startup excluded):
+Engine | median TTFT ms | median reply ms | total seconds | median decode tok/s | throttled turns
+awq | 444.5 | 2146.6 | 658.7 | 71.10 | 61/300
+nvfp4 | 316.6 | 2353.0 | 723.3 | 58.91 | 30/300
+q4 | 491.6 | 2990.9 | 922.8 | 48.17 | 248/300
+
+Validation: all three completed every turn with exactly the requested completion token counts. Same trace SHA and 600 W limit verified. See validation.json.
+NVFP4/AWQ completion-time ordering survives the rerun. This is a result for these checkpoints/configurations; it does not establish universal AWQ superiority. NVFP4 first-token latency remains lower.
+The output-head fallback contribution has not been isolated. Weight tensor sizes cannot alone determine measured traffic or kernel efficiency. A targeted output-head tuning A/B would be needed for causal attribution.
+The first graph-enabled Q4 attempt timed out; the short identical retry was stopped manually to apply the upstream workaround. The completed Q4 column uses GGML_CUDA_DISABLE_GRAPHS=1. Its result is therefore conditional on that workaround.
+Original AWQ omitted --max-num-batched-tokens; its startup autotune log confirms an effective 2048-token pass. Original llama.cpp used 262144 context and q8_0 KV, unlike these reruns.
+The per-turn checkpoint hook was added after the first Q4 timeout. It writes timing rows outside each measured request interval; other collector logic is unchanged.

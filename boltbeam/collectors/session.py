@@ -168,7 +168,7 @@ def llama_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) 
           "telemetry": tele.summary(), "telemetry_samples": gpu_telemetry.compact(tele.samples),
           "source": (f"llama-bench -p {TURN} -n {DECODE} -d {depth}: the prompt after {depth} tokens it filled untimed "
                      f"(its own random ids, fixed seed), {len(samples)} repetitions after its warm-up, untraced"),
-          "engine": {"build": row.get("build_commit"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
+          "engine": {"build": row.get("build_commit"), "build_number": row.get("build_number"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
                      "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd}}
 
 

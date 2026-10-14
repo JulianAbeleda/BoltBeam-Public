@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import collections
 import itertools
+import re
 import statistics
 from typing import Any, Callable
 
@@ -421,6 +422,18 @@ def _facts(r:dict[str, Any]) -> dict[str, Any]:
   return {"role": r["role"], "quant": r["quant"], "count": r["count"], "weight_bytes": float(r["weight_bytes"]), "nk": r.get("nk")}
 
 
+# A weight format a kernel's name states: tinygrad's q4k_g3_lanemap_gemv, llama.cpp's kernel_mul_mv_q6_K_f32. Only the
+# GGUF block formats are read (an f16/f32 in a name is the activation's type, not the weights'); a name stating two
+# formats (a weight and an activation quant, mul_mat_q4_K_q8_1) or none states nothing.
+_FORMAT_WORD = re.compile(r"(?<![a-z0-9])(q[2-8])_?(k|0|1)(?![a-z0-9])")
+
+
+def stated_format(name:str) -> str | None:
+  """The GGUF weight format a kernel name states (Q4_K, Q6_K, Q8_0), or None."""
+  got = {f"{q.upper()}_{'K' if b == 'k' else b}" for q, b in _FORMAT_WORD.findall(name.lower())}
+  return got.pop() if len(got) == 1 else None
+
+
 def _bind(items:list[dict[str, Any]], groups:list[dict[str, Any]]) -> tuple[dict[tuple[str, str], str], dict[tuple[str, str], tuple[int, int]]]:
   """Which weight format each template serves and at what launch ratio, from the counts: a template serves one format,
   and a format's rows fill its templates' launches (less what a unit's last layer skips), each template at one whole
@@ -428,7 +441,9 @@ def _bind(items:list[dict[str, Any]], groups:list[dict[str, Any]]) -> tuple[dict
   Counted over the layers' weight launches, each once (a gap launch is a slot on both sides). Keyed (kind, template) for
   every kind the template runs in. Among the ways the counts balance, the one skipping the fewest calls; none, or
   two such, bind nothing: the walk then binds a
-  template when a row takes it (decode, where every kernel is a candidate)."""
+  template when a row takes it (decode, where every kernel is a candidate). A template whose name states a format
+  (stated_format) serves only that one: the counts alone cannot tell apart formats that run equally often (Q4_K_M's
+  attn_v and ffn_down run in half the layers each, as Q6_K or Q4_K)."""
   fmt: dict[tuple[str, str], str] = {}
   ratios: dict[tuple[str, str], tuple[int, int]] = {}
   for scope in ({g["kind"] for g in groups if g["kind"] == "flat"}, {g["kind"] for g in groups if g["kind"] not in ("flat", "tail", PRUNED)}):
@@ -448,15 +463,18 @@ def _bind(items:list[dict[str, Any]], groups:list[dict[str, Any]]) -> tuple[dict
       need[i["quant"]] += i["need"]
       slack[i["quant"]] += i.get("slack", 0)
     tmpls, formats = sorted(slots), sorted(need)
-    if not tmpls or not formats or len(formats) ** len(tmpls) > 4096:
+    if not tmpls or not formats:
+      continue
+    stated = {t: f for t in tmpls if (f := stated_format(t)) in need}
+    if len(formats) ** (len(tmpls) - len(stated)) > 4096:
       continue
     one = [(1, 1)]
     more = one + [(1, r) for r in range(2, MAX_SPLIT + 1)] + [(k, 1) for k in range(2, MAX_FUSED + 1)]
     for opts in (one, more):
-      if (len(formats) * len(opts)) ** len(tmpls) > 4096:
+      if (len(formats) * len(opts)) ** (len(tmpls) - len(stated)) * len(opts) ** len(stated) > 4096:
         break
       found: dict[int, list] = collections.defaultdict(list)  # calls the combo leaves skipped -> combos
-      for combo in itertools.product([(f, kr) for f in formats for kr in opts], repeat=len(tmpls)):
+      for combo in itertools.product(*[[(f, kr) for f in ([stated[t]] if t in stated else formats) for kr in opts] for t in tmpls]):
         if any(slots[t] * k % r for t, (_, (k, r)) in zip(tmpls, combo)):
           continue
         total = collections.Counter()
@@ -472,6 +490,9 @@ def _bind(items:list[dict[str, Any]], groups:list[dict[str, Any]]) -> tuple[dict
               fmt[(kind, t)] = f
               ratios[(kind, t)] = kr
         break
+    for t, f in stated.items():  # a stated format binds even when the counts leave the ratios open
+      for kind in kinds_of[t]:
+        fmt.setdefault((kind, t), f)
   return fmt, ratios
 
 

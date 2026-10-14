@@ -137,6 +137,15 @@ def _xctrace_read(tool:str, out:pathlib.Path) -> list[dict[str, Any]]:
 _METAL_SUFFIX = re.compile(r"\s*\(\s*[^()]*\(\d+\)\s*\)\s*0x[0-9a-fA-F]+\s*$")
 
 
+# A command buffer the runtime did not name: Metal's own "Command Buffer 0:Compute Command 0". It may hold a whole token's
+# kernels (llama.cpp encodes its graph so), and nothing in it says which kernel ran or for how long.
+_UNNAMED = re.compile(r"^Command Buffer \d+:\w+ Command \d+ encoders=\d+$")
+
+
+def unnamed(key:str) -> bool:
+  return bool(_UNNAMED.match(key))
+
+
 def metal_label(formatted:str) -> str:
   return re.sub(r"\s+", " ", _METAL_SUFFIX.sub("", formatted)).strip()
 
@@ -146,11 +155,14 @@ def read_metal_rows(gpu:list[dict[str, Any]], submissions:list[dict[str, Any]]) 
   dispatches: the key is the interval's label (its process and buffer address cut) and its encoder count, so a
   runtime that puts one kernel in each command buffer (tinygrad with JIT=2) is seen per kernel, and one that
   batches the graph (llama.cpp) is seen per batch. Rows of other programs (WindowServer), vertex and fragment
-  rows, and nested rows (event-depth above 0, already inside a depth-0 row) are not counted."""
+  rows, and nested rows (event-depth above 0, already inside a depth-0 row) are not counted. The GPU can pause a
+  command buffer mid-run (another program's work, the display): the trace then shows it as back-to-back rows of one
+  buffer and one label, which are one launch, its time the rows' sum (an M5 capture split 48 of 20,751 buffers so)."""
   from boltbeam.collectors import metal_system_trace as mst
   encoders = {mst._text(r.get("cmdbuffer-id")): mst._number(r.get("num-encoders")) for r in submissions}
   out = []
-  for row in gpu:
+  last = None  # (buffer, label) of the row kept before
+  for row in sorted(gpu, key=lambda r: mst._number(r.get("start")) or 0):
     cb = mst._text(row.get("cmdbuffer-id"))
     ns = mst._number(row.get("duration"))
     if cb not in encoders or ns is None:
@@ -159,6 +171,10 @@ def read_metal_rows(gpu:list[dict[str, Any]], submissions:list[dict[str, Any]]) 
       continue
     label = metal_label(mst._text(row.get("event-label")) or "") or "command buffer"
     start = mst._number(row.get("start"))
+    if last == (cb, label):
+      out[-1]["wall_us"] += ns / 1000.0
+      continue
+    last = (cb, label)
     out.append({"key": f"{label} encoders={encoders[cb]}", "wall_us": ns / 1000.0,
                 **({"start_us": start / 1000.0} if start is not None else {})})
   return out

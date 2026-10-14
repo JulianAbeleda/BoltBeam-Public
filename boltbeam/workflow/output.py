@@ -121,6 +121,8 @@ def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str
   lines += ["", "## Artifacts", ""]
   for artifact in manifest.get("artifacts", []):
     lines.append(f"- `{artifact}`")
+  if (res.get("engine_update") or {}).get("words"):
+    lines += ["", res["engine_update"]["words"]]
   return "\n".join(lines) + "\n"
 
 
@@ -202,9 +204,17 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
     "includes_runner_plan": bool(runner),
   }
   write_json(out / "provider_plan.json", provider_plan)
-  write_json(out / "output_manifest.json", output_manifest)
   from boltbeam.workflow.screen import results as screen_results
   res = screen_results(out)
+  import time
+  from boltbeam.collectors.providers import latest_llama, run_build
+  from boltbeam.workflow.screen import run_provider
+  update = (_load_optional(out, "output_manifest.json").get("engine_update") or {})
+  if run_provider(out) == "llama.cpp" and (update.get("build") != run_build(out) or
+      str(update.get("checked_at", ""))[:10] != time.strftime("%Y-%m-%d", time.gmtime())):
+    update = latest_llama(run_build(out))
+  res["engine_update"] = output_manifest["engine_update"] = update if run_provider(out) == "llama.cpp" else {}
+  write_json(out / "output_manifest.json", output_manifest)
   measure = _load_optional(out, "measure_status.json")
   (out / "summary.md").write_text(_summary_md(manifest, profile, report, plan, primitive, timing, runner, res, measure),
                                   encoding="utf-8")
@@ -218,6 +228,6 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   (out / "report.html").write_text(
     render_run_html(manifest=final, profile=profile, report=report, plan=plan, policy=policy,
                     providers=providers, primitive=primitive, timing=timing, runner=runner,
-                    source_run=str(out), results=screen_results(out), measure=measure,
+                    source_run=str(out), results=screen_results(out) | {"engine_update": res["engine_update"]}, measure=measure,
                     gameplan=gameplan.MD_FILE if (out / gameplan.MD_FILE).is_file() else None), encoding="utf-8")
   return final

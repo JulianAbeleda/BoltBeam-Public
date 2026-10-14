@@ -1,8 +1,9 @@
 """Which model role each captured GPU kernel ran for in a decode, for any provider.
 
 A capture from outside the provider (nsys, rocprofv3, metal-system-trace) sees kernels, not roles. Kernel names
-differ per provider and per build, so this module reads them for one thing only: the kind words the tie-out already
-uses for the attention and recurrent rows (tie_out.kind_of), whose kernels serve no weight role. Otherwise a name
+differ per provider and per build, so this module reads them for two things only: the kind words the tie-out already
+uses for the attention and recurrent rows (tie_out.kind_of), whose kernels serve no weight role, and a GGUF weight
+format a name states (pairing.stated_format: q4k_, mul_mv_q6_K), which that kernel alone may serve. Otherwise a name
 is only an opaque key that groups launches of one program (with its launch geometry, when the capture has it).
 
 The pairing is the layer walk (collectors/pairing.py, docs/pairing-layer-walk-20261011.md): the block kernels mark
@@ -158,18 +159,59 @@ def share_overlap(launches:list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
   return out, {"sum_us": total, "union_us": union}
 
 
+BLOCK_CUT_RULE = ("the block kernels cut the window: they run only in prefill and decode, so the long capture's block "
+                  "launches past the short one's count are the extra tokens; every launch from the first of them on is "
+                  "decode, and before it only the launches past the short capture's last block (the shared token's "
+                  "output side and tail, the first extra layer's input side) are differenced, per kernel; a model "
+                  "load that runs a decode kernel a varying number of times never enters the window")
+
+
+def block_cut(long:list[dict[str, Any]], short:list[dict[str, Any]]) -> tuple[list[dict[str, Any]], float] | None:
+  """The decode window's launches, cut by time at the block kernels (BLOCK_CUT_RULE), and the GPU time left out before
+  the cut. None when either capture lacks launch times or block kernels, or the long one has no extra block launch:
+  the per-kernel difference then decides."""
+  from boltbeam.workflow.tie_out import kind_of
+  if any(l.get("start_us") is None for l in [*long, *short]):
+    return None
+  is_block = lambda l: kind_of({"kernel": str(l["key"])}) in BLOCKS  # noqa: E731
+  bl = sorted(l["start_us"] for l in long if is_block(l))
+  bs = sorted(l["start_us"] for l in short if is_block(l))
+  if not bs or len(bl) <= len(bs):
+    return None
+  shared_last, first_extra, short_last = bl[len(bs) - 1], bl[len(bs)], bs[-1]
+  after = [l for l in long if l["start_us"] >= first_extra]
+  region = sorted((l for l in long if shared_last < l["start_us"] < first_extra), key=lambda l: l["start_us"])
+  in_short: dict[str, int] = {}
+  for l in short:
+    if l["start_us"] > short_last:
+      in_short[str(l["key"])] = in_short.get(str(l["key"]), 0) + 1
+  by_key: dict[str, list[dict[str, Any]]] = {}
+  for l in region:
+    by_key.setdefault(str(l["key"]), []).append(l)
+  extra = [l for k, ls in by_key.items() for l in ls[len(ls) - min(len(ls), max(0, len(ls) - in_short.get(k, 0))):]]
+  kept = after + extra
+  return kept, sum(l["wall_us"] for l in long) - sum(l["wall_us"] for l in kept)
+
+
 def shared_window(long:list[dict[str, Any]], short:list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
   """The decode window from two captures, each first reduced to its share of the GPU busy time."""
   long_s, lo = share_overlap(long)
   short_s, so = share_overlap(short)
-  window = difference(groups(long_s), groups(short_s))
   facts = {"rule": OVERLAP_RULE, "long_sum_us": lo["sum_us"], "long_union_us": lo["union_us"],
            "short_sum_us": so["sum_us"], "short_union_us": so["union_us"],
            "overlap_us": lo["sum_us"] - lo["union_us"]}
+  if (cut := block_cut(long_s, short_s)) is not None:
+    kept, outside = cut
+    facts.update(outside_us=outside, window_rule=BLOCK_CUT_RULE)
+    return groups(kept), facts
+  window = difference(groups(long_s), groups(short_s))
   # the extra tokens run last. A kernel whose extra launches all ran before the step both captures made (the
-  # heaviest kernel's last launch before its extra ones) differs only in the engine's start-up (a warm-up sized
-  # by the token count, graph capture): not decode work, though a per-kernel difference would count it
-  heavy = max(window, key=lambda g: g["wall_us"], default=None)
+  # most-launched kernel's last launch before its extra ones) differs only in the engine's start-up (a warm-up sized
+  # by the token count, graph capture, a model load whose launch count varies run to run): not decode work, though a
+  # per-kernel difference would count it. The edge comes from the kernel with the most extra launches, a decode
+  # kernel that runs many times in every token, never from the heaviest: a load kernel can be the heaviest (tinygrad
+  # on the M5: 5 extra launches of a ~200 ms load kernel were half the "token")
+  heavy = max((g for g in window if g.get("before_us") is not None), key=lambda g: (g["calls"], g["wall_us"]), default=None)
   edge = heavy.get("before_us") if heavy else None
   if edge is not None:
     kept = [g for g in window if g.get("from_us") is None or g["from_us"] > edge]
@@ -212,6 +254,11 @@ class CaptureRefused(RuntimeError):
   """The capture cannot be a measurement. The message says why."""
 
 
+class UnnamedCapture(CaptureRefused):
+  """The capture holds the token, but only in command buffers the engine did not name: no kernel to pair. The
+  engine's kernels timed alone (the generic measurement) can still split it (providers.role_time)."""
+
+
 def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_ms:float | None,
                  long_kernels:int, band:float | None) -> str:
   """Refuse a window with no kernels, or with more GPU time per token than the captured run took per token by more
@@ -250,6 +297,10 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   ceil = _measured_vs_ceiling({**manifest, "workload": "decode"}, profile, pathlib.Path(run))
   window_check = check_window(window, method=method, tokens=tokens, token_ms=token_ms, long_kernels=long_kernels,
                               band=ceil.get("uncertainty"))
+  from boltbeam.collectors.vendor_capture import unnamed
+  if window and all(unnamed(g.get("key", "")) for g in window):  # nothing to pair: no group is a kernel
+    raise UnnamedCapture(f"{method} saw only command buffers {provider} did not name, not its kernels, so it cannot "
+                         "split the token by role")
   counts = {(r["role"], r["quant"]): int(r["count"]) for r in profile.get("roles", []) if r.get("count")}
   classes = {(r["role"], r["quant"]): r.get("role_class") for r in profile.get("roles", [])}
   roles, pairing_roles, packed = ceil.get("_roles") or [], "the profile's roles", {}

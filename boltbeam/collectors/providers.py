@@ -405,6 +405,39 @@ def _layout(run:pathlib.Path) -> tuple[str, int]:
 CROSS_CHECK = "isolated_timing_trace.json"  # the engine's kernels timed alone, beside an in-model capture
 
 
+def _captured(run:pathlib.Path, provider:str, *, target, root, model:str, model_id:str, context:int, batch:int,
+              tokens:int) -> dict[str, Any]:
+  """The per-role trace from a vendor capture of the engine's own run (or tinygrad's)."""
+  from boltbeam.search import role_compare
+  if provider in DRIVEN:
+    if why := ENGINES[provider].available(target) or reads(provider, model):
+      raise RuntimeError(why)
+    return ENGINES[provider].role_time(run, target=target, model=model, model_id=model_id, context=context, batch=batch, tokens=tokens)
+  if provider == tinygrad_role_time.PROVIDER:
+    root = pathlib.Path(root) if root else role_compare.default_fork_root()
+    if why := tinygrad_role_time.available(target, root):
+      raise RuntimeError(why)
+    return tinygrad_role_time.role_time_captured(run, root=root, python=role_compare.fork_python(root), model=model,
+                                                 model_id=model_id, target=target, context=context, tokens=tokens)
+  layout, gpus = _layout(run)
+  return llama_bench_decode.role_time(run, target=target, model=model, model_id=model_id, layout=layout, gpus=gpus,
+                                      context=context, batch=batch, tokens=tokens)
+
+
+def _fell_back(run:pathlib.Path, why:str) -> None:
+  """measure_status.json says the roles were timed generically after the in-model capture could not split them."""
+  from boltbeam.collectors import engine_kernels
+  from boltbeam.workflow.common import write_json
+  from boltbeam.workflow.screen import MEASURE_STATUS
+  status = run / MEASURE_STATUS
+  m = json.loads(status.read_text()) if status.exists() else {}
+  cap = m.setdefault("capture", {})
+  cap.update(method=engine_kernels.METHOD, reason=None, cross_check=None,
+             measurement={**(cap.get("measurement") or {}), "chosen": "generic", "label": MEASUREMENT_LABEL["generic"],
+                          "fallback": why, "reason": None})
+  write_json(status, m)
+
+
 def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None, batch:int = 1,
               context:int | None = None, say:Callable[[str], None] = lambda _: None,
               step:Callable[[int, int], None] | None = None, measurement:str = "auto") -> dict[str, Any]:
@@ -431,23 +464,21 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
   if how["method"] is None:
     raise RuntimeError(f"{provider} per role is not possible here: {how['reason']}")
   model, model_id = str(manifest.get("model_path")), str(manifest.get("model_id"))
-  from boltbeam.collectors import engine_kernels
+  from boltbeam.collectors import attribution, engine_kernels
   if how["method"] == engine_kernels.METHOD:  # no vendor tool here: the engine's own kernels, timed alone
     trace = engine_kernels.collect(run, provider, say=say, step=step)
-  elif provider in DRIVEN:
-    if why := ENGINES[provider].available(target) or reads(provider, model):
-      raise RuntimeError(why)
-    trace = ENGINES[provider].role_time(run, target=target, model=model, model_id=model_id, context=context, batch=batch, tokens=tokens)
-  elif provider == tinygrad_role_time.PROVIDER:
-    root = pathlib.Path(root) if root else role_compare.default_fork_root()
-    if why := tinygrad_role_time.available(target, root):
-      raise RuntimeError(why)
-    trace = tinygrad_role_time.role_time_captured(run, root=root, python=role_compare.fork_python(root), model=model,
-                                                  model_id=model_id, target=target, context=context, tokens=tokens)
   else:
-    layout, gpus = _layout(run)
-    trace = llama_bench_decode.role_time(run, target=target, model=model, model_id=model_id, layout=layout, gpus=gpus,
-                                         context=context, batch=batch, tokens=tokens)
+    try:
+      trace = _captured(run, provider, target=target, root=root, model=model, model_id=model_id, context=context,
+                        batch=batch, tokens=tokens)
+    except attribution.UnnamedCapture as exc:
+      # the capture holds the token but names no kernel: the engine's kernels timed alone split it instead, when this
+      # engine ships them here; the run then says it fell back, and why, from what the capture saw
+      if engine_kernels.available(provider, target.backend, llama_bench_decode.find(llama_bench_decode.DEFAULT)) is not None:
+        raise
+      trace = engine_kernels.collect(run, provider, say=say, step=step)
+      _fell_back(run, str(exc))
+      how = {**how, "cross_check": None}
   if how.get("cross_check") == engine_kernels.METHOD:  # the in-model capture stands; the isolated numbers sit beside it
     try:
       engine_kernels.collect(run, provider, say=say, step=step, out=CROSS_CHECK)
@@ -491,23 +522,85 @@ def run_build(run:pathlib.Path) -> str | None:
   return None
 
 
-def pin_check(provider:str, build:str | None) -> dict[str, Any]:
-  """A build against its engine's pin: a llama.cpp build_commit matches when the pinned sha starts with it; a vLLM
-  version when equal. Says plainly when they differ or the build is unknown."""
+def _trace_field(run:pathlib.Path, key:str) -> Any:
+  import json
+  p = run / "timing_trace.json"
+  for r in (json.loads(p.read_text()).get("rows") or []) if p.exists() else []:
+    got = r[key] if r.get(key) is not None else (r.get("engine") or {}).get(key)  # prefill and session rows keep it in engine
+    if got is not None:
+      return got
+  return None
+
+
+def run_build_number(run:pathlib.Path) -> int | None:
+  """llama.cpp's build number (11429) a run measured, from its untraced rows; None for older runs and other engines."""
+  got = _trace_field(run, "build_number")
+  return int(got) if got is not None else None
+
+
+def run_build_installed(run:pathlib.Path) -> str | None:
+  """The day the measured llama-bench arrived on the machine (its file's date); None for older runs."""
+  return _trace_field(run, "build_installed")
+
+
+def _pin_number(pin:dict[str, Any] | None) -> int | None:
+  tag = str((pin or {}).get("tag") or "")
+  return int(tag[1:]) if tag[:1] == "b" and tag[1:].isdigit() else None
+
+
+def _pin_date(pin:dict[str, Any] | None) -> str | None:
+  """When the pin was set: the earliest history entry with its tag (or version)."""
+  same = [h.get("date") for h in (pin or {}).get("history") or []
+          if h.get("date") and (h.get("tag"), h.get("version")) == (pin.get("tag"), pin.get("version") if not pin.get("tag") else None)]
+  return min(same) if same else None
+
+
+def pin_check(provider:str, build:str | None, number:int | None = None, installed:str | None = None) -> dict[str, Any]:
+  """A build beside its engine's pin. A llama.cpp build_commit matches when the pinned sha starts with it; a vLLM
+  version when equal. The words state both as facts, the build that ran (with its build number and the day it was
+  installed, when known) and the pin with the day it was set, so a reader sees the two versions side by side."""
   pin = engine_pin(provider)
   if build is None or build == "unknown":
     return {"pin": pin, "build": None, "matches": None, "words": f"{provider}: the run recorded no engine build"}
   ok = None if not pin or pin.get("version") == "unknown" else (str(pin.get("sha", "")).startswith(build) if pin.get("sha") else str(pin.get("version")) == build)
-  words = (f"{provider} build {build} has no pin" if ok is None else f"{provider} build {build} is the pin {pin_label(pin)}" if ok
-           else f"{provider} build {build} is NOT the pin {pin_label(pin)}: this run measured another build")
-  return {"pin": pin, "build": build, "matches": ok, "words": words}
+  pinned = _pin_number(pin)
+  gap = number - pinned if number is not None and pinned is not None else None
+  ran = f"{provider} build {number} ({build})" if number is not None else f"{provider} build {build}"
+  ran += f", installed {installed}" if installed else ""
+  set_on = f", set {d}" if (d := _pin_date(pin)) else ""
+  words = (f"{ran} · no pin" if ok is None else f"{ran} · the pin {pin_label(pin)}{set_on}" if ok
+           else f"{ran} · pin {pin_label(pin)}{set_on}")
+  return {"pin": pin, "build": build, "build_number": number, "installed": installed, "builds_from_pin": gap,
+          "matches": ok, "words": words}
 
 
 def record_build(run:pathlib.Path, provider:str) -> dict[str, Any]:
   """The run's engine build and its pin check, written into the run's manifest (engine)."""
   from boltbeam.workflow.common import load_manifest, write_manifest
-  got = {"provider": provider, **pin_check(provider, run_build(run))}
+  got = {"provider": provider, **pin_check(provider, run_build(run), run_build_number(run), run_build_installed(run))}
   manifest = load_manifest(run)
   manifest["engine"] = got
   write_manifest(run, manifest)
   return got
+
+
+def latest_llama(build:str | None) -> dict[str, Any]:
+  """Snapshot upstream at report creation; a mismatch suggests a rerun, never changes the pin."""
+  import datetime
+  import urllib.request
+  out = {"build": build, "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+         "source": "https://api.github.com/repos/ggml-org/llama.cpp/commits/master"}
+  if not build or not re.fullmatch(r"[0-9a-f]{7,40}", build):
+    return out | {"words": "llama.cpp latest-version check unavailable: the run has no comparable commit."}
+  try:
+    with urllib.request.urlopen(out["source"], timeout=3) as response:
+      sha = json.load(response)["sha"]
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+      raise ValueError("invalid upstream commit")
+    matches = sha.startswith(build)
+    words = (f"llama.cpp {build} matches upstream master" if matches else
+             f"llama.cpp reminder: this run used {build}; latest upstream master is {sha[:9]}. "
+             "Keep the pinned result for reproducibility; rerun with the latest version before drawing conclusions about bugs or performance")
+    return out | {"latest": sha, "matches": matches, "words": f"{words} (checked {out['checked_at']})."}
+  except (OSError, ValueError, KeyError, TypeError) as exc:
+    return out | {"words": f"Could not verify the latest llama.cpp version (checked {out['checked_at']}).", "error": str(exc)}

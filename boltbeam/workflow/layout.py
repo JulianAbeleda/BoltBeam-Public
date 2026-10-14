@@ -215,9 +215,10 @@ def run_places_of(run:pathlib.Path) -> list[pathlib.Path]:
 
 
 def cached_machine(run:pathlib.Path, devs:list[dict[str, Any]]) -> dict[str, Any] | None:
-  """The machine facts in this run, or the newest facts of the same GPUs (same uuids) in any run under the same
-  root: the one measurement every run of this machine then uses, until an explicit remeasure."""
-  uuids = [d.get("uuid") for d in devs]
+  """The machine facts in this run, or the newest facts of the same GPUs (same uuid, name and chip, in order) in any
+  run under the same root: the one measurement every run of this machine then uses, until an explicit remeasure.
+  An Apple GPU has no uuid, so the name and chip are what keep a copied-over M3's facts off an M5."""
+  ids = [(d.get("uuid"), d.get("name"), d.get("target_id")) for d in devs]
   found = []
   for p in [run / MACHINE, *(q for folder in run_places_of(run) if folder.is_dir() for q in folder.glob(f"*/{MACHINE}"))]:
     if p.exists():
@@ -225,7 +226,7 @@ def cached_machine(run:pathlib.Path, devs:list[dict[str, Any]]) -> dict[str, Any
         facts = json.loads(p.read_text())
       except (OSError, ValueError):
         continue
-      if facts.get("uuids") == uuids:
+      if [(g.get("uuid"), g.get("name"), g.get("target_id")) for g in facts.get("gpus") or []] == ids:
         found.append((str(facts.get("measured_at") or ""), p.stat().st_mtime, facts))
   return max(found, key=lambda f: (f[0], f[1]))[2] if found else None
 

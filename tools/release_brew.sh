@@ -43,7 +43,7 @@ head_msg="$(gh api "repos/$mirror/commits/main" --jq .commit.message)"
 [[ "$head_msg" == *"mirror private main $src"* ]] || die "the mirror's head is '$head_msg', not the snapshot of $src: publish the mirror first"
 
 step "tag $tag on the mirror at ${head_sha:0:7}"
-tagged="$(gh api "repos/$mirror/git/ref/tags/$tag" --jq .object.sha 2>/dev/null || true)"
+tagged="$(gh api "repos/$mirror/git/ref/tags/$tag" --jq .object.sha 2>/dev/null)" || tagged=""  # a 404 prints its body
 if [[ -n "$tagged" ]]; then
   [[ "$tagged" == "$head_sha" ]] || die "$tag already exists on the mirror at ${tagged:0:7}, not the head ${head_sha:0:7}"
   echo "$tag is already there"

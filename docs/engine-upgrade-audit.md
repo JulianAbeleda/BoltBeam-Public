@@ -120,3 +120,19 @@ Capture commands use the persisted request and the settings observed during its 
 decode token count, engine context allocation and chunk size. `--chunk-size` records an explicit request; unsupported
 adapters refuse it. Missing allocation or token evidence requires a fresh measurement rather than a guessed capture.
 The torch build string and its runtime CUDA are recorded separately from the CUDA compiler version.
+
+## Latest llama.cpp reminder in reports
+
+`boltbeam output` compares the commit recorded by the run with upstream llama.cpp
+`master`, using GitHub's commits API. A different commit adds a reminder at the end
+of `report.html` and `summary.md`: keep the pinned result, then rerun on the latest
+version before drawing conclusions about bugs or performance. A matching commit
+is stated without the rerun nudge. A missing commit or failed lookup is reported as
+unverified, never as an outdated build. This checks upstream source, not the newest
+release tag, and does not install a binary or change the pin.
+
+The check has a three-second network timeout. Its source, UTC check time, run commit,
+upstream commit and message are saved in `output_manifest.json` as `engine_update`.
+Regenerating the report reuses that snapshot for the same run commit on the same UTC
+day; the next day's generation refreshes it. Rendering saved facts makes no network
+request. The comparison is commit equality, not an ancestry test for custom forks.

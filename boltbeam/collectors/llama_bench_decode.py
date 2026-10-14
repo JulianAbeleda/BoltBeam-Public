@@ -208,8 +208,17 @@ def bench_decode(llama_bench:str, model:pathlib.Path, depth:int, layout_args:lis
   rows = json.loads(proc.stdout[proc.stdout.find("["):])
   row = next(r for r in rows if int(r.get("n_gen", 0)) > 0)
   return {"tok_s": float(row["avg_ts"]), "stddev_tok_s": float(row.get("stddev_ts", 0.0)), "command": cmd,
-          "build": row.get("build_commit"), "backends": row.get("backends"), "gpu": row.get("gpu_info"),
+          "build": row.get("build_commit"), "build_number": row.get("build_number"), "build_installed": _installed(llama_bench), "backends": row.get("backends"), "gpu": row.get("gpu_info"),
           "decode_tokens": int(row.get("n_gen", GEN_TOKENS)), "engine": {k: row[k] for k in ("n_ubatch", "n_batch", "type_k", "type_v", "flash_attn") if k in row}}
+
+
+def _installed(llama_bench:str) -> str | None:
+  """The day the llama-bench binary was put on this machine (its file's date): when this build arrived here."""
+  import datetime
+  try:
+    return datetime.date.fromtimestamp(pathlib.Path(llama_bench).resolve().stat().st_mtime).isoformat()
+  except OSError:
+    return None
 
 
 def _here() -> str | None:
@@ -244,10 +253,19 @@ def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path
   return {"target": target, "model": path, "llama_bench": bench}
 
 
+# what bench_decode measured about the engine build, carried onto every whole-step row (providers.pin_check reads it)
+BUILD_FIELDS = ("build", "build_number", "build_installed")
+
+
+def build_facts(b:dict[str, Any]) -> dict[str, Any]:
+  return {k: b[k] for k in BUILD_FIELDS if b.get(k) is not None}
+
+
 def build_timing_trace(manifest:dict[str, Any], bench:dict[int, dict[str, Any]], peak_gbs:float | None) -> dict[str, Any]:
   """The trace from the measured decodes. Pure: the tests feed it numbers."""
   rows = [{"scope": "whole_step", "context": ctx, "wall_us": 1e6 / b["tok_s"], "tok_s": b["tok_s"],
-           "stddev_tok_s": b["stddev_tok_s"], "source": "llama-bench", "engine": b.get("engine", {}), "decode_tokens": b.get("decode_tokens"), **({"build": b["build"]} if b.get("build") else {})}
+           "stddev_tok_s": b["stddev_tok_s"], "source": "llama-bench", "engine": b.get("engine", {}), "decode_tokens": b.get("decode_tokens"),
+           **build_facts(b)}
           for ctx, b in sorted(bench.items())]
   trace = {
     "schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],

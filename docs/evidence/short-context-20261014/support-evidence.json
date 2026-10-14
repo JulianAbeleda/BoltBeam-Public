@@ -1,0 +1,15 @@
+{
+  "llama_commit": "529ac893e754e95a50469b2122f5efe28dfc08a0",
+  "plugin_commit": "e2b8ad532b8b5ea175100202c30430c1d2b5e6a8",
+  "inspection": "No AWQ quant_method branch in the current HF converter and no AWQ ggml runtime type. AWQ references in MPT/Gemma are calibration/conversion compatibility, not native loading of this AWQ checkpoint. vLLM in-tree loader has no GGUF: support is an out-of-tree plugin.",
+  "sources": [
+    "https://github.com/ggml-org/llama.cpp/issues/4701",
+    "https://docs.vllm.ai/en/latest/features/quantization/gguf/",
+    "https://github.com/vllm-project/vllm-gguf-plugin"
+  ],
+  "sha256": {
+    "~/storage/bbeng/llama-latest-20261014/conversion/base.py": "ff1a8a85f3b90ae71a21119cd98ae23d6bc4d31a956b305734e597dd4a114f2e",
+    "~/storage/bbeng/llama-latest-20261014/ggml/include/ggml.h": "475beaa7e959be8c383279d9ce9d5191f37426e6b338270cfb12b26a798129d3",
+    "~/storage/bbeng/vllm-venv/lib/python3.12/site-packages/vllm/model_executor/model_loader/__init__.py": "dc3b882166685d1ac1b06c605ecbb6fdfb8f04470172bf665c60956ecb63bf85"
+  }
+}

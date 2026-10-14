@@ -86,19 +86,19 @@ func TestNotCheckedIsExplainedOnce(t *testing.T) {
 	}
 }
 
-// The engine build against its pin and the recorded toolchain are on the page; an older run says it has none.
+// The engine build beside its pin and the recorded toolchain are on the page; an older run says it has none.
 func TestRunEngineBodyNamesBuildAndToolchain(t *testing.T) {
 	if got := plain(runEngineBody(&seam.RunEngine{Provider: "llama.cpp"})); !strings.Contains(got, "Engine build: not recorded") ||
 		!strings.Contains(got, "Toolchain: not recorded") {
 		t.Errorf("older run: %q", got)
 	}
 	e := seam.RunEngine{Provider: "llama.cpp", Build: &seam.EngineBuild{Build: sp("097cf33d9"), Matches: bp(false),
-		Words: "llama.cpp build 097cf33d9 is not the pin b11571 (abc)"},
+		Words: "llama.cpp build 11429 (d81235049), installed 2026-10-13 · pin b11571 (097cf33d9), set 2026-10-12"},
 		Toolchain: &seam.ToolchainFacts{RecordedAt: "2026-10-12T20:24:33+00:00",
 			Versions: map[string]string{"driver": "595.99.02", "cuda": "13.2", "torch": "unknown"}, Runtime: map[string]string{"cuda": "13.0"}}}
 	got := runEngineBody(&e)
-	if !strings.Contains(got, glyphWarn) || !strings.Contains(plain(got), "is not the pin b11571") {
-		t.Errorf("a build off its pin is a warning: %q", plain(got))
+	if strings.Contains(got, glyphWarn) || !strings.Contains(plain(got), "Engine build: llama.cpp build 11429 (d81235049), installed 2026-10-13 · pin b11571") {
+		t.Errorf("a build off its pin is stated beside the pin, not warned about: %q", plain(got))
 	}
 	if want := "Toolchain (2026-10-12 20:24 UTC): driver 595.99.02, cuda 13.2, torch's CUDA 13.0; not found: torch."; !strings.Contains(plain(got), want) {
 		t.Errorf("want %q in %q", want, plain(got))

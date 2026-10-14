@@ -1,0 +1,14 @@
+{
+  "old_commit": "097cf33d9",
+  "new_commit": "529ac893e754e95a50469b2122f5efe28dfc08a0",
+  "old_binary_sha256": "0f484c58e1727e195d0792c83aced661915c72617ddab3644325a9e010e8d7e7",
+  "stimuli_sha256": {
+    "trace.json": "27d053e141f9b7836e02cff9e82895f09baac52b342661ea25c8c7f042136ae3",
+    "messages-through-user-200.json": "c6558abae68567f251c4d69a29e00556953c41ecb6079a6b9935ffd1e2a32295",
+    "tail-users.json": "b43b4d514cdb2e74690a3dc19b062b3140bb59652744897b6254bcee8da037ed"
+  },
+  "graphs": "GGML_CUDA_DISABLE_GRAPHS removed from child environment; server log verifies graph reuse",
+  "settings": "Same model, BF16 KV, context 114688, batch and microbatch 2048, seed 0, template, 600W automatic clocks; run graphs on.",
+  "new_binary_sha256": "a2ff76c8750dc9141fdd81ae3cff273bbf83fdedbb878318e2b33ad035703681",
+  "probe_sha256": "2a55d639fff3959d455fb11d8768feeb1400d5dfa7d06575c3e079a9148ea40e"
+}

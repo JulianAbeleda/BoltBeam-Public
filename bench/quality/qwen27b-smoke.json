@@ -1,0 +1,84 @@
+[
+  {
+    "prompt": "What is 17 + 25?",
+    "answer": 42
+  },
+  {
+    "prompt": "What is 137 * 29?",
+    "answer": 3973
+  },
+  {
+    "prompt": "What is 936 / 24?",
+    "answer": 39
+  },
+  {
+    "prompt": "What is 2 raised to the tenth power?",
+    "answer": 1024
+  },
+  {
+    "prompt": "What is 17 * 19?",
+    "answer": 323
+  },
+  {
+    "prompt": "Write five eighths as a decimal.",
+    "answer": 0.625,
+    "accepted_answers": [
+      "0.625"
+    ]
+  },
+  {
+    "prompt": "Sort [3,1,2] ascending.",
+    "answer": [
+      1,
+      2,
+      3
+    ]
+  },
+  {
+    "prompt": "How many minutes are in 3 hours?",
+    "answer": 180
+  },
+  {
+    "prompt": "Nora has locker B12. Omar has locker C07. What is Nora\u2019s locker code?",
+    "answer": "B12"
+  },
+  {
+    "prompt": "The blue box contains pears; the red box contains apples. Which box contains pears?",
+    "answer": "blue",
+    "accepted_answers": [
+      "blue box"
+    ]
+  },
+  {
+    "prompt": "Invoice: four items at 12.50 each. What is the total?",
+    "answer": 50
+  },
+  {
+    "prompt": "Given x=[10,20,30,40], what is Python x[2]?",
+    "answer": 30
+  },
+  {
+    "prompt": "What is Python len(set([1,2,2,3]))?",
+    "answer": 3
+  },
+  {
+    "prompt": "What is Python sum(range(6))?",
+    "answer": 15
+  },
+  {
+    "prompt": "What is Python \"bolt\"[::-1]?",
+    "answer": "tlob"
+  },
+  {
+    "prompt": "If all glips are red and Zed is a glip, what color is Zed?",
+    "answer": "red"
+  },
+  {
+    "prompt": "Read this table: Ada=7, Ben=12, Cal=5. What is Ben\u2019s value?",
+    "answer": 12
+  },
+  {
+    "prompt": "Return the boolean value of Python 3 < 5 and 8 < 4.",
+    "answer": false
+  }
+]

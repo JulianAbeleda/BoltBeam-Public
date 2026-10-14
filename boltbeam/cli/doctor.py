@@ -50,7 +50,13 @@ def _gpu(gpu:dict[str, Any]) -> list[dict[str, Any]]:
   out = [row("GPU", True, name + (f", driver {gpu['driver_version']}" if gpu.get("driver_version") else ""))]
   if profile.get("status") == "known":
     where = {"registry": "built in", "generated": "measured on this machine"}.get(profile.get("source") or "", profile.get("source") or "")
-    out.append(row("chip profile", True, f"{profile['id']} ({where})"))
+    if profile.get("source") == "generated" and reg.TARGETS.get(profile["id"]) and reg.fact_uncertainty(reg.TARGETS[profile["id"]]) is None:
+      # a profile scanned before the scan measured its read's spread: every per-role check says not checked
+      out.append(row("chip profile", False, f"{profile['id']} ({where}) has no measured bandwidth uncertainty, so the "
+                     "per-role checks (no launch reads faster than the bandwidth) say not checked",
+                     f"{AUTOSCAN} --remeasure   (plugged in, Low Power Mode off)"))
+    else:
+      out.append(row("chip profile", True, f"{profile['id']} ({where})"))
   else:
     out.append(row("chip profile", False, f"none yet for {gpu.get('name')}. A run does not measure the chip by itself, "
                    f"and without its measured bandwidth and compute peak every ceiling is refused. autoscan saves the "

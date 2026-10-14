@@ -1,0 +1,438 @@
+{
+  "awq": {
+    "folder": "~/storage/bbeng/tmp/tui27-20261013/runs/vllm-replay",
+    "toolchain": {
+      "recorded_at": "2026-10-14T01:06:27.955965+00:00",
+      "runtime": {
+        "cuda": "13.0"
+      },
+      "versions": {
+        "cuda": "13.2",
+        "driver": "595.99.02",
+        "nsight_compute": "2026.2.1",
+        "nsight_systems": "2026.1.3",
+        "torch": "2.13.0+cu130"
+      }
+    },
+    "trace_mtime_utc": "2026-10-14T01:18:57.465470+00:00",
+    "server": {
+      "argv": [
+        "~/storage/bbeng/vllm-venv/bin/python",
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        "~/storage/bbeng/models/Qwen3.8-27B-W4A16-AWQ",
+        "--served-model-name",
+        "arkey-local",
+        "--max-model-len",
+        "114688",
+        "--gpu-memory-utilization",
+        "0.95",
+        "--max-num-seqs",
+        "1",
+        "--enable-prefix-caching",
+        "--chat-template",
+        "~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja"
+      ],
+      "attention_paths": {
+        "bf16": 541376,
+        "fp16": 541376
+      },
+      "binary": "~/storage/bbeng/vllm-venv/bin/python",
+      "command": [
+        "~/storage/bbeng/vllm-venv/bin/python",
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        "~/storage/bbeng/models/Qwen3.8-27B-W4A16-AWQ",
+        "--served-model-name",
+        "arkey-local",
+        "--max-model-len",
+        "114688",
+        "--gpu-memory-utilization",
+        "0.95",
+        "--max-num-seqs",
+        "1",
+        "--enable-prefix-caching",
+        "--chat-template",
+        "~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "48689"
+      ],
+      "model": "vllm.entrypoints.openai.api_server",
+      "request": "greedy, ignore_eos, exactly the trace's reply tokens, prompt cache on, streamed, thinking off in the template",
+      "scope": "server",
+      "settings": {
+        "n_batch": null,
+        "n_ctx": 114688,
+        "n_ubatch": null,
+        "prefix_cache": true,
+        "source": {
+          "n_batch": "vLLM's default",
+          "n_ctx": "the command",
+          "n_ubatch": "vLLM's default",
+          "prefix_cache": "the command",
+          "type_k": "the model's dtype (auto)"
+        },
+        "type_k": "bf16"
+      },
+      "sha256": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f",
+      "version": null,
+      "words_source": "the Python 3.12.3 standard library's top-level modules (/usr/lib/python3.12), in name order",
+      "workload": "replay"
+    },
+    "clock_policy": {
+      "clock_settable": false,
+      "policy": "fixed_power",
+      "why": "The current user does not have permission to change clocks for GPU 00000000:06:00.0.",
+      "words": "fixed power: the clock cannot be set by this user, so the board runs at its own power limit, unchanged, and the clock it chose is logged (realism; a rate is quoted with its clock)"
+    },
+    "telemetry": {
+      "all_samples": 73505,
+      "held": {
+        "hardware slowdown": 0.009,
+        "hardware thermal slowdown": 0.009,
+        "software power cap": 0.077
+      },
+      "interval_s": 0.05,
+      "mem_mhz": {
+        "max": 14001,
+        "mean": 13394.0,
+        "min": 405
+      },
+      "memory_mib": {
+        "total": 32607.0,
+        "used_max": 30119.0
+      },
+      "power_limit_w": 600.0,
+      "power_w": {
+        "max": 560.0,
+        "mean": 449.5
+      },
+      "samples": 73505,
+      "sm_mhz": {
+        "max": 2940,
+        "mean": 2786.3,
+        "min": 217
+      },
+      "temp_c_max": 93,
+      "throttle": {
+        "hardware slowdown": 0.004,
+        "hardware thermal slowdown": 0.004,
+        "software power cap": 0.034,
+        "software thermal slowdown": 0.002
+      },
+      "throttled": true,
+      "top_mhz": 2940,
+      "words": "SM clock 2786 MHz mean (217-2940) over 73505 busy samples, 450 W mean, 560 W max of 600 W, 93 C max; THROTTLED: hardware slowdown in 0% of samples, hardware thermal slowdown in 0% of samples, software power cap in 3% of samples, software thermal slowdown in 0% of samples (hardware slowdown set in 1% of samples, hardware thermal slowdown set in 1% of samples, software power cap set in 8% of samples with the clock held within 2% of 2940 MHz)"
+    },
+    "summary": {
+      "turns": 300,
+      "ttft_ms": 429.07553049735725,
+      "wall_ms": 2126.563341007568,
+      "stream_ms": 1677.8994039923418,
+      "total_s": 653.6262586496887,
+      "throttled": 66
+    },
+    "log_evidence": [
+      "(APIServer pid=213386) INFO 10-13 21:06:34 [api_utils.py:347]  \u2584\u2584 \u2584\u2588 \u2588     \u2588     \u2588 \u2580\u2584\u2580 \u2588  version 0.31.0",
+      "2026-10-13 21:07:49,543 - INFO - autotuner.py:3554 - flashinfer.jit: [Autotuner]: Saved 0 configs to ~/storage/bbeng/cache/vllm/flashinfer_autotune_cache/0.7.0.post1/120f/a0e3b2f9869fed1636351f3c0005bba88faf011e25f6150ac4070e40b8aac7a5/autotune_configs.json (0 new, 0 from previous config)"
+    ]
+  },
+  "q4": {
+    "folder": "~/storage/bbeng/tmp/tui27-20261013/runs/llama-replay",
+    "toolchain": {
+      "recorded_at": "2026-10-14T00:35:54.151377+00:00",
+      "runtime": {
+        "cuda": "unknown"
+      },
+      "versions": {
+        "cuda": "13.2",
+        "driver": "595.99.02",
+        "nsight_compute": "2026.2.1",
+        "nsight_systems": "2026.1.3",
+        "torch": "unknown"
+      }
+    },
+    "trace_mtime_utc": "2026-10-14T00:48:57.264276+00:00",
+    "server": {
+      "argv": [
+        "~/env/llama.cpp/build-cuda/bin/llama-server",
+        "--model",
+        "~/storage/models/Qwen3.8-27B-Q4_K_M.gguf",
+        "--alias",
+        "arkey-local",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8080",
+        "--ctx-size",
+        "262144",
+        "--gpu-layers",
+        "all",
+        "--parallel",
+        "1",
+        "--cache-type-k",
+        "q8_0",
+        "--cache-type-v",
+        "q8_0",
+        "--chat-template-file",
+        "~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja"
+      ],
+      "attention_paths": {
+        "fp16": 34560,
+        "fp16_f16acc": 33120
+      },
+      "binary": "~/env/llama.cpp/build-cuda/bin/llama-server",
+      "command": [
+        "~/env/llama.cpp/build-cuda/bin/llama-server",
+        "--model",
+        "~/storage/models/Qwen3.8-27B-Q4_K_M.gguf",
+        "--alias",
+        "arkey-local",
+        "--ctx-size",
+        "262144",
+        "--gpu-layers",
+        "all",
+        "--parallel",
+        "1",
+        "--cache-type-k",
+        "q8_0",
+        "--cache-type-v",
+        "q8_0",
+        "--chat-template-file",
+        "~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "60627"
+      ],
+      "model": "~/storage/models/Qwen3.8-27B-Q4_K_M.gguf",
+      "request": "greedy, ignore_eos, exactly the trace's reply tokens, prompt cache on, streamed, thinking off in the template",
+      "scope": "server",
+      "settings": {
+        "cache_ram_mib": null,
+        "ctx_checkpoints": null,
+        "flash_attn": "auto",
+        "n_batch": 2048,
+        "n_ctx": null,
+        "n_ubatch": 512,
+        "source": {
+          "cache_ram_mib": "not logged",
+          "ctx_checkpoints": "not logged",
+          "flash_attn": "llama.cpp's default",
+          "n_batch": "llama.cpp's default",
+          "n_ctx": "not logged",
+          "n_ubatch": "llama.cpp's default",
+          "type_k": "the command",
+          "type_v": "the command"
+        },
+        "type_k": "q8_0",
+        "type_v": "q8_0"
+      },
+      "sha256": "0f484c58e1727e195d0792c83aced661915c72617ddab3644325a9e010e8d7e7",
+      "version": "version: 0.6.0-dev (build 11571, commit 097cf33d9)",
+      "words_source": "the Python 3.12.3 standard library's top-level modules (/usr/lib/python3.12), in name order",
+      "workload": "replay"
+    },
+    "clock_policy": {
+      "clock_settable": false,
+      "policy": "fixed_power",
+      "why": "The current user does not have permission to change clocks for GPU 00000000:06:00.0.",
+      "words": "fixed power: the clock cannot be set by this user, so the board runs at its own power limit, unchanged, and the clock it chose is logged (realism; a rate is quoted with its clock)"
+    },
+    "telemetry": {
+      "all_samples": 77188,
+      "held": {
+        "software power cap": 0.025
+      },
+      "interval_s": 0.05,
+      "mem_mhz": {
+        "max": 14001,
+        "mean": 13801.2,
+        "min": 13801
+      },
+      "memory_mib": {
+        "total": 32607.0,
+        "used_max": 28785.0
+      },
+      "power_limit_w": 600.0,
+      "power_w": {
+        "max": 607.0,
+        "mean": 513.9
+      },
+      "samples": 77188,
+      "sm_mhz": {
+        "max": 2955,
+        "mean": 2837.7,
+        "min": 2430
+      },
+      "temp_c_max": 91,
+      "throttle": {
+        "software power cap": 0.659
+      },
+      "throttled": true,
+      "top_mhz": 2955,
+      "words": "SM clock 2838 MHz mean (2430-2955) over 77188 busy samples, 514 W mean, 607 W max of 600 W, 91 C max; THROTTLED: software power cap in 66% of samples (software power cap set in 2% of samples with the clock held within 2% of 2955 MHz)"
+    },
+    "summary": {
+      "turns": 300,
+      "ttft_ms": 490.4366340051638,
+      "wall_ms": 2492.071925502387,
+      "stream_ms": 2039.3500214995584,
+      "total_s": 774.3395849031222,
+      "throttled": 237
+    },
+    "log_evidence": []
+  },
+  "nvfp4": {
+    "folder": "~/storage/bbeng/tmp/boltbeam-inference-tuned-20261014/runs/nvfp4-replay",
+    "toolchain": {
+      "recorded_at": "2026-10-14T14:34:42.546651+00:00",
+      "runtime": {
+        "cuda": "13.0"
+      },
+      "versions": {
+        "cuda": "13.2",
+        "driver": "595.99.02",
+        "nsight_compute": "2026.2.1",
+        "nsight_systems": "2026.1.3",
+        "torch": "2.13.0+cu130"
+      }
+    },
+    "trace_mtime_utc": "2026-10-14T14:48:11.332574+00:00",
+    "server": {
+      "argv": [
+        "~/storage/bbeng/vllm-venv/bin/python",
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        "~/storage/bbeng/models/Qwen3.8-27B-NVFP4-NVIDIA",
+        "--served-model-name",
+        "nvfp4-27b",
+        "--language-model-only",
+        "--max-model-len",
+        "114688",
+        "--gpu-memory-utilization",
+        "0.95",
+        "--max-num-seqs",
+        "1",
+        "--max-num-batched-tokens",
+        "2048",
+        "--enable-prefix-caching",
+        "--chat-template",
+        "~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja"
+      ],
+      "attention_paths": {
+        "bf16": 541376,
+        "fp16": 541376
+      },
+      "binary": "~/storage/bbeng/vllm-venv/bin/python",
+      "build": "0.31.0",
+      "command": [
+        "~/storage/bbeng/vllm-venv/bin/python",
+        "-m",
+        "vllm.entrypoints.openai.api_server",
+        "--model",
+        "~/storage/bbeng/models/Qwen3.8-27B-NVFP4-NVIDIA",
+        "--served-model-name",
+        "nvfp4-27b",
+        "--language-model-only",
+        "--max-model-len",
+        "114688",
+        "--gpu-memory-utilization",
+        "0.95",
+        "--max-num-seqs",
+        "1",
+        "--max-num-batched-tokens",
+        "2048",
+        "--enable-prefix-caching",
+        "--chat-template",
+        "~/.local/libexec/arkey/templates/qwen35-toolcall-fix.jinja",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "53467"
+      ],
+      "model": "vllm.entrypoints.openai.api_server",
+      "request": "greedy, ignore_eos, exactly the trace's reply tokens, prompt cache on, streamed, thinking off in the template",
+      "scope": "server",
+      "settings": {
+        "n_batch": 2048,
+        "n_ctx": 114688,
+        "n_ubatch": 2048,
+        "prefix_cache": true,
+        "source": {
+          "n_batch": "the command",
+          "n_ctx": "the command",
+          "n_ubatch": "the command",
+          "prefix_cache": "the command",
+          "speculative_config": "not enabled in the command",
+          "type_k": "the model's dtype (auto)"
+        },
+        "speculative_config": null,
+        "type_k": "bf16"
+      },
+      "sha256": "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f",
+      "version": null,
+      "words_source": "the Python 3.12.3 standard library's top-level modules (/usr/lib/python3.12), in name order",
+      "workload": "replay"
+    },
+    "clock_policy": {
+      "clock_settable": false,
+      "policy": "fixed_power",
+      "why": "The current user does not have permission to change clocks for GPU 00000000:06:00.0.",
+      "words": "fixed power: the clock cannot be set by this user, so the board runs at its own power limit, unchanged, and the clock it chose is logged (realism; a rate is quoted with its clock)"
+    },
+    "telemetry": {
+      "all_samples": 79482,
+      "held": {
+        "software power cap": 0.007
+      },
+      "interval_s": 0.05,
+      "mem_mhz": {
+        "max": 13801,
+        "mean": 13514.8,
+        "min": 405
+      },
+      "memory_mib": {
+        "total": 32607.0,
+        "used_max": 30711.0
+      },
+      "power_limit_w": 600.0,
+      "power_w": {
+        "max": 603.6,
+        "mean": 400.7
+      },
+      "samples": 79482,
+      "sm_mhz": {
+        "max": 2947,
+        "mean": 2816.8,
+        "min": 217
+      },
+      "temp_c_max": 91,
+      "throttle": {
+        "software power cap": 0.038
+      },
+      "throttled": true,
+      "top_mhz": 2947,
+      "words": "SM clock 2817 MHz mean (217-2947) over 79482 busy samples, 401 W mean, 604 W max of 600 W, 91 C max; THROTTLED: software power cap in 4% of samples (software power cap set in 1% of samples with the clock held within 2% of 2947 MHz)"
+    },
+    "summary": {
+      "turns": 300,
+      "ttft_ms": 313.15863549752976,
+      "wall_ms": 2320.094179496664,
+      "stream_ms": 1991.4278860014747,
+      "total_s": 712.2431940160168,
+      "throttled": 55
+    },
+    "log_evidence": [
+      "(APIServer pid=467561) INFO 10-14 10:34:49 [api_utils.py:347]  \u2584\u2584 \u2584\u2588 \u2588     \u2588     \u2588 \u2580\u2584\u2580 \u2588  version 0.31.0",
+      "2026-10-14 10:36:06,560 - INFO - autotuner.py:3554 - flashinfer.jit: [Autotuner]: Saved 80 configs to ~/storage/bbeng/cache/vllm/flashinfer_autotune_cache/0.7.0.post1/120f/2e1836adb380a6267703920ae21f0d9b2998fb687d1ef146d86eb963a31281a2/autotune_configs.json (80 new, 0 from previous config)",
+      "2026-10-14 10:36:06,690 - WARNING - autotuner.py:2271 - flashinfer.jit: [AutoTuner]: No tuned config covers fp4_gemm input_shapes=((1, 2560), (2560, 248320), (128, 320), (320, 248320), (), (0,), (1, 248320), (0,), (0,), (41943040,)); falling back to runner=CutlassFp4GemmRunner tactic=-1.  This shape is outside the tuning bucket range -- expand tuning_buckets / max_num_tokens during the next tuning pass to avoid this perf cliff.",
+      "2026-10-14 10:36:06,757 - WARNING - autotuner.py:2271 - flashinfer.jit: [AutoTuner]: No tuned config covers fp4_gemm input_shapes=((2, 2560), (2560, 248320), (128, 320), (320, 248320), (), (0,), (2, 248320), (0,), (0,), (41943040,)); falling back to runner=CutlassFp4GemmRunner tactic=-1.  This shape is outside the tuning bucket range -- expand tuning_buckets / max_num_tokens during the next tuning pass to avoid this perf cliff."
+    ]
+  }
+}

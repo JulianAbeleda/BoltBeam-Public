@@ -1,0 +1,2 @@
+display_active, display_mode, driver_version
+Disabled, [Requested functionality has been deprecated], 595.99.02

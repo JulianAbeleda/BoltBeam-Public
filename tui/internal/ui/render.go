@@ -850,9 +850,7 @@ func runEngineBody(e *seam.RunEngine) string {
 	switch {
 	case e.Build == nil:
 		b.WriteString(stMuted.Render("Engine build: not recorded (the run predates the pin check).") + "\n")
-	case e.Build.Matches != nil && !*e.Build.Matches:
-		b.WriteString(stWarn.Render(glyphWarn+" Engine build: "+e.Build.Words+".") + "\n")
-	default:
+	default: // the build that ran beside the pin, both as facts: a build other than the pin is not a fault
 		b.WriteString(stMuted.Render("Engine build: "+e.Build.Words+".") + "\n")
 	}
 	if e.Toolchain == nil {
