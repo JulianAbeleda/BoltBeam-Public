@@ -4,8 +4,9 @@
 
 > This is the public mirror of BoltBeam, the tool behind the write-ups on
 > [research.arkey.ai](https://research.arkey.ai). It follows the project's `main` branch, which is the
-> runnable product and the records of what was measured; tests, experiments and raw campaign evidence
-> live on the inner branches and stay in the private repository (see `docs/branch-flow.md`).
+> runnable product, the records of what was measured, and the raw evidence behind them (server logs,
+> commands and traces, with machine paths redacted). Tests and experiments live on the inner branches and
+> stay in the private repository (see `docs/branch-flow.md`).
 > Published so the numbers in those articles can be checked. MIT licensed.
 
 
