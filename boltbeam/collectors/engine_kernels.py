@@ -623,7 +623,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
       from boltbeam.collectors import boltbeam_gemv
       x = boltbeam_gemv.vector(f"{r['role']}:{quant}", cols)
       spec = setup["spec"](setup, quant, rows, cols, weights, x)
-      got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries, floor_us=floor_us)
+      got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries, floor_us=floor_us, dram_gbs=peak_gbs)
       symbol = got["pipeline"].get("symbol")
       row.update(kernel=spec.kernel, tensor=tensor, bytes=size, correctness=got["correctness"], timed_by=f"{WORDS}: {spec.label}",
                  geometry={**spec.record, "thread_execution_width": got["pipeline"]["thread_execution_width"],
@@ -636,7 +636,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
         rows_out.append(row)
         continue
       med = got["median_us"]
-      less = kernel_timer.less_floor_us(med, floor_us)  # shown beside the measured time, never in its place
+      less = kernel_timer.less_floor_us(med, floor_us, at_dram_us=size / (peak_gbs * 1e3) if peak_gbs else None)  # shown beside the measured time, never in its place
       row.update(status="measured", us_per_call=med, us_per_call_less_floor=less, min_us=got["min_us"], samples=len(got["samples"]),
                  spread_pct=got["spread_pct"], wall_us=med * r["count"], wall_us_less_floor=less * r["count"], gbs=size / (med * 1e3),
                  timing={**got["timing"], "dispatch_floor_us": floor_us,

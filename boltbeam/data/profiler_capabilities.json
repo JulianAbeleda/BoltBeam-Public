@@ -282,7 +282,7 @@
         "Hardware counters, registers and the compiled ISA are not exposed by Metal without Instruments; those probe fields stay absent."
       ],
       "calibration_notes": [
-        "Every timed probe sample follows a 64 MiB flush, so weights come from DRAM.",
+        "Every timed probe sample follows a 256 MiB flush (doubled while a kernel still reads faster than DRAM), so weights come from DRAM.",
         "Each probe output is checked against a pure-Python dequantize-and-dot reference before timing.",
         "Whole-step tokens per second is llama-bench decode at the requested depth; nothing else stands in for it."
       ]

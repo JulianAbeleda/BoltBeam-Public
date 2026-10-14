@@ -51,9 +51,18 @@ the version and the sha256 of the file it read, and for the CUDA source the one 
 
 ## What an isolated time means
 
-The kernel runs alone after a sweep of a buffer larger than the last-level cache (64 MiB on Apple, 256 MiB on
+The kernel runs alone after a sweep of a buffer larger than the last-level cache (256 MiB on Apple and on
 NVIDIA), so its weights come from DRAM whatever their size. In the model the same kernel runs between other
 kernels. An in-model capture sees that; this does not.
+
+A sweep the size of the cache is not enough. On an M5 (2026-10-14) the old 64 MiB sweep left small weights in the
+system level cache some rounds and not others: llama.cpp's 9.4 MB attn_q GEMV read 94 to 151 GB/s round to round
+against the 132 GB/s this GPU reads from DRAM, and the run's per-role table showed attention at 103 to 127% of peak.
+With 256 MiB and with 1 GiB it read 119 to 120 GB/s in every round. The read probe was not the cause: grid-stride
+and chunked access, idle and after load, all read 130 to 133 GB/s. Apple does not report its cache's size, so a
+fixed size is a guess on the next chip: given the GPU's measured DRAM read, the timer treats any swept kernel that
+reads faster than it (by more than 5%) as a cache hit, doubles the sweep and times it again, up to 4 GiB or half the
+working set. Each pass is recorded on the row (`timing.cache_check`).
 
 The sweep reads on both backends. Until 2026-10-10 it stored, and a store leaves dirty lines that drain into DRAM
 during the next kernel. On an M4 that was a fixed cost of about 60 µs per launch, which made a 2.4 MB kernel 2 to 4

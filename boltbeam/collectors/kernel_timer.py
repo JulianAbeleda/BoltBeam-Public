@@ -14,8 +14,13 @@ launches with `samples` too: there is no second warm-and-time loop in the tree. 
 (best of N for a bandwidth), stated where they use it.
 
 Flushing: before each timed sample a kernel sweeps a buffer larger than the chip's last-level cache, so the timed
-kernel reads its weights from DRAM. The sizes are per backend (FLUSH): 64 MiB on Apple (the system level cache),
-256 MiB on NVIDIA (a 5090's L2 is 96 MiB; a copy-engine copy does not evict it, a kernel does). The sweep READS on
+kernel reads its weights from DRAM. The sizes are per backend (FLUSH): 256 MiB on Apple (the system level cache),
+256 MiB on NVIDIA (a 5090's L2 is 96 MiB; a copy-engine copy does not evict it, a kernel does). One read pass over a
+buffer the size of the cache does not evict reliably: on an M5 a 64 MiB sweep left a 9.4 MB weight 94 to 151 GB/s
+against a 132 GB/s DRAM read, round to round, where 256 MiB and 1 GiB both held it at 119 to 120. A cache's size is
+not readable on every backend, so a size alone cannot be trusted: with the chip's read bandwidth (dram_gbs) a swept
+kernel that reads faster than DRAM is a cache hit the sweep left behind, and time_spec doubles the sweep and times it
+again (CACHE_RULE); the row records every pass. The sweep READS on
 both: a store leaves dirty lines that drain into DRAM during the next kernel. On an M4 that was a fixed cost of about
 60 us per launch, which made a 2.4 MB kernel 2 to 4 times slower and a 28 MB kernel 20% slower than inside the model
 (docs/in-model-vs-generic-m4-20261010.md). On a 5090 the cost grew with the bytes the kernel pulled through the L2:
@@ -58,7 +63,7 @@ NOISY_SAMPLES = 60
 # the flush kernel per backend: a sweep over a buffer larger than the last-level cache, run before each timed sample;
 # "mode" says what the sweep does to the cache lines: "read" leaves them clean, "store" leaves them dirty
 FLUSH = {
-  "Metal": {"bytes": 64 << 20, "kernel": "sweep", "mode": "read", "empty": "empty", "threads": 256, "source": """
+  "Metal": {"bytes": 256 << 20, "kernel": "sweep", "mode": "read", "empty": "empty", "threads": 256, "source": """
 #include <metal_stdlib>
 using namespace metal;
 kernel void sweep(device const float* b [[buffer(0)]], device float* o [[buffer(1)]], constant uint& n [[buffer(2)]],
@@ -77,13 +82,23 @@ extern "C" __global__ void empty(float* b) { if (blockIdx.x * blockDim.x + threa
 WARM_RULE = ("the activation vector is read back in after the sweep: inside the model the kernel before wrote it and it is "
              "still in the cache, the weights are not")
 
+# a swept kernel reading faster than the chip's DRAM read (beyond CACHE_MARGIN, the probe's own run-to-run spread) read
+# cached weights: the sweep doubles, up to MAX_SWEEP_BYTES and half the working set, and the kernel is timed again
+CACHE_MARGIN, MAX_SWEEP_BYTES = 0.05, 4 << 30
+CACHE_RULE = ("a swept kernel read faster than this GPU's measured DRAM read: its weights were still in the cache, so the "
+              "sweep was doubled and the kernel timed again")
 
-def less_floor_us(us:float, floor_us:float | None) -> float | None:
+
+def less_floor_us(us:float, floor_us:float | None, *, at_dram_us:float | None = None) -> float | None:
   """A launch's time less the dispatch floor measured beside it, never below 0; None without a floor. The one rule
-  for every "less the floor" number: the row writes it, the tie-out reads it and says so."""
+  for every "less the floor" number: the row writes it, the tie-out reads it and says so. With at_dram_us (the
+  launch's bytes at the GPU's measured DRAM read) it never goes below that either: the floor is not an additive cost,
+  and what of it would make a kernel outrun DRAM ran under the kernel's own reads (an M5's 3.4 MB GEMV read 102.9% of
+  peak less a 2.9 µs floor, 94% as measured)."""
   if floor_us is None:
     return None
-  return max(0.0, us - floor_us)
+  less = max(0.0, us - floor_us)
+  return less if at_dram_us is None else min(us, max(less, at_dram_us))
 
 
 def bridge_for(backend:str, **kw:Any):
@@ -154,7 +169,7 @@ class Flusher:
 
   def __init__(self, bridge, backend:str):
     row = FLUSH[backend]
-    self.row = row
+    self.row = dict(row)  # its own copy: grow() changes this flusher's size, not the backend's default
     lib = bridge.library(row["source"])
     self.flush_pso = bridge.pipeline(lib, row["kernel"])["pso"]
     self.empty_pso = bridge.pipeline(lib, row["empty"])["pso"]
@@ -167,6 +182,15 @@ class Flusher:
     words = nbytes // 4
     groups = max(1, -(-words // self.row["threads"]))
     return self.bridge.dispatch(self.flush_pso, [buf, self.small, struct.pack("<I", words)], (groups, 1, 1), (self.row["threads"], 1, 1))
+
+  def grow(self, limit:int) -> bool:
+    """Double the swept buffer, not past `limit` bytes; False when it cannot grow."""
+    size = min(self.row["bytes"] * 2, limit)
+    if size <= self.row["bytes"]:
+      return False
+    self.bridge.release(self.buf)
+    self.buf, self.row["bytes"] = self.bridge.buffer(length=size), size
+    return True
 
   def __call__(self, warm:list[tuple[int, int]] = ()) -> float:
     """The sweep, then each (buffer, bytes) in `warm` read back in: the weights leave the cache, the activations stay."""
@@ -200,11 +224,14 @@ def more_samples(samples_us:list[float], floor_us:float | None) -> tuple[int, st
 
 
 def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:int = WARMUPS, count:int = SAMPLES,
-              libraries:dict[str, int] | None = None, floor_us:float | None = None) -> dict[str, Any]:
+              libraries:dict[str, int] | None = None, floor_us:float | None = None,
+              dram_gbs:float | None = None) -> dict[str, Any]:
   """Compile (a library per source is reused through `libraries`), bind, check the first output, then time.
   Returns {"correctness", "samples", "median_us", "min_us", "spread_pct", "gbs", "pipeline", "label"}; with a
   failed check the samples are empty and nothing was timed. With the run's dispatch floor (floor_us) a kernel
-  under the policy noisy_floor_multiple x it is sampled NOISY_SAMPLES times (more_samples); timing.more_samples says so."""
+  under the policy noisy_floor_multiple x it is sampled NOISY_SAMPLES times (more_samples); timing.more_samples says so.
+  With the GPU's DRAM read (dram_gbs) a swept kernel faster than it is timed again behind a doubled sweep (CACHE_RULE);
+  timing.cache_check lists each pass."""
   import math
   import struct
   libraries = libraries if libraries is not None else {}
@@ -249,10 +276,17 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
         result["correctness"]["reason"] = "the kernel's output is not finite"
       if not passed:
         return result
-    result["samples"] = samples(launch, warmups=warmups, count=count, before=before)
-    extra, why_more = more_samples(result["samples"], floor_us)
-    if extra:
-      result["samples"] += samples(launch, warmups=0, count=extra, before=before)
+    def timed() -> tuple[list[float], str | None]:
+      got = samples(launch, warmups=warmups, count=count, before=before)
+      extra, why = more_samples(got, floor_us)
+      return (got + samples(launch, warmups=0, count=extra, before=before), why) if extra else (got, why)
+    result["samples"], why_more = timed()
+    passes, read_gbs = [], lambda: spec.bytes_read / (statistics.median(result["samples"]) * 1e3)  # noqa: E731
+    while flush is not None and dram_gbs and read_gbs() > dram_gbs * (1 + CACHE_MARGIN):
+      passes.append({"flush_bytes": flush.row["bytes"], "gbs": round(read_gbs(), 1)})
+      if not flush.grow(min(MAX_SWEEP_BYTES, bridge.working_set_bytes // 2 - spec.bytes_read)):
+        break
+      result["samples"], why_more = timed()
   finally:
     for buf in owned:
       bridge.release(buf)
@@ -263,5 +297,8 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
                 timing={"warmups": warmups, "samples": len(result["samples"]), "cache": f"swept ({flush.row['mode']})" if flush else "not flushed",
                         "flush_bytes": flush.row["bytes"] if flush else 0, "flush_mode": flush.row["mode"] if flush else None,
                         "clock": bridge.CLOCK, "more_samples": why_more,
-                        "warm": [WARM_RULE, sum(n for _, n in warm)] if flush and warm else None})
+                        "warm": [WARM_RULE, sum(n for _, n in warm)] if flush and warm else None,
+                        "cache_check": {"rule": CACHE_RULE, "dram_gbs": dram_gbs, "passes": passes,
+                                        "settled": spec.bytes_read / (med * 1e3) <= dram_gbs * (1 + CACHE_MARGIN)}
+                                       if passes else None})
   return result

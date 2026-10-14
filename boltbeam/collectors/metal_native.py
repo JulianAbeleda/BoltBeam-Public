@@ -273,7 +273,7 @@ def measure_probe(bridge, flusher, probe:dict[str, Any], model:pathlib.Path, dat
     weights = f.read(size)
   x = gemv.vector(f"{probe['probe_id']}", cols)
   spec = gemv.spec(backend, quant, rows, cols, weights, x)
-  got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries)
+  got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries, dram_gbs=target_gbs)
   row["correctness"] = got["correctness"]
   if not got["samples"]:
     row["status"] = "correctness_failed"
