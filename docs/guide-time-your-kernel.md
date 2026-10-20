@@ -136,9 +136,9 @@ is needed). Do not borrow another chip's number.
 These come from the RTX 5090 accuracy work. They apply to any kernel you time this way.
 
 - **Small kernels are good to about ±12%.** A 3 µs recurrent projection read −10.7% against Nsight Compute in one
-  battery and +12.7% in the next ([accuracy-battery-rtx5090-20261012.md](accuracy-battery-rtx5090-20261012.md),
+  battery and +12.7% in the next (`accuracy-battery-rtx5090-20261012.md`,
   section 4). Three later repeats of the same kernel gave 1.8, 2.7 and 3.4 µs less floor against a steady 2.7 µs in
-  Nsight ([accuracy-fixes-20261012.md](accuracy-fixes-20261012.md)). The empty-launch subtraction is an estimate,
+  Nsight (`accuracy-fixes-20261012.md`). The empty-launch subtraction is an estimate,
   not a correction. Under about 3 dispatch floors, treat the number as a rough size.
 - **Large kernels are close.** lm_head (614 µs) read −0.1%. The Q8_0 projections of 22 to 41 µs read within 3%.
 - **Fused routes differ.** In a model, llama.cpp runs some projections as one fused launch. The timer runs the plain

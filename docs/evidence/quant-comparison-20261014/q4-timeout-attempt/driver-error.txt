@@ -1,4 +1,0 @@
-[Wed Oct 14 12:27:11 2026] NVRM: krcWatchdog_IMPL: RC watchdog: GPU is probably locked!  Notify Timeout Seconds: 7
-[Wed Oct 14 12:27:11 2026] NVRM: GPU at PCI:0000:06:00: GPU-c800ade9-21ea-2e55-f75c-6d7a458fb186
-[Wed Oct 14 12:27:11 2026] NVRM: GPU Board Serial Number: 0
-[Wed Oct 14 12:27:11 2026] NVRM: Xid (PCI:0000:06:00): 8, pid=515170, name=llama-server, channel 0x00000006

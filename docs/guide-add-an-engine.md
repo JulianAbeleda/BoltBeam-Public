@@ -143,7 +143,7 @@ Then:
 These are the checks the existing adapters pass. Run them on a real GPU; a unit test cannot show them.
 
 - **Work matches.** The captured matrix work per token equals the model's own inventory, to the FLOP
-  ([accuracy-fixes-20261012.md](accuracy-fixes-20261012.md)). A missing matrix means the capture or the pairing lost
+  (`accuracy-fixes-20261012.md`). A missing matrix means the capture or the pairing lost
   a kernel.
 - **Every role pairs.** No `unpaired` roles, no `ambiguous` pairing. The screen shows both when they happen.
 - **The arithmetic ties out.** Kernels plus gaps equal the captured wall within 0.001 ms.
@@ -158,7 +158,7 @@ python -m boltbeam.workflow.screen pipeline MODEL --run runs/c --target T --prov
 
 - **Cross-engine.** Run a second engine on the same model. The work and the ceilings must agree; only the times may
   differ. The vLLM and llama.cpp cross-checks are worked examples
-  ([prefill-vllm-crosscheck-27b-rtx5090-20261011.md](prefill-vllm-crosscheck-27b-rtx5090-20261011.md)).
+  (`prefill-vllm-crosscheck-27b-rtx5090-20261011.md`).
 
 ## What the adapter does not do
 

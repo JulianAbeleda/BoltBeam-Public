@@ -69,7 +69,7 @@ logs/                 pod-setup-<time>.log (every command and the printed tables
 The per-role table in `results.json` (`loss.roles`) carries, for each weight role, µs per call, the same less the
 dispatch floor, GB/s, the percent of the measured peak and the reason word; `loss.tie_out.lines` is the tie-out
 against the token. [kernel-timer.md](kernel-timer.md) says how to read them, and
-[in-model-vs-generic-rtx5090-20261010.md](in-model-vs-generic-rtx5090-20261010.md) is the same pair of runs on
+`in-model-vs-generic-rtx5090-20261010.md` is the same pair of runs on
 the RTX 5090, the number to set the H100's beside.
 
 ## Cost

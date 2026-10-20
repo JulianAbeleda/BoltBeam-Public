@@ -81,9 +81,8 @@ python tools/promote_routes.py --model <model-id> \
 ```
 
 They take the model, target, quant set and context ladder as arguments. A second model is a different
-invocation, not a second copy of the script. Their verdicts are records, so those stay on `main`: see
-`bench/` and
-[task_workflow/output/model-agnostic-same-run-tools-20260731.md](task_workflow/output/model-agnostic-same-run-tools-20260731.md).
+invocation, not a second copy of the script. Their verdicts are records: the raw measurements are in `bench/`, the write-up
+(`task_workflow/output/model-agnostic-same-run-tools-20260731.md`) is on `dev`.
 
 ## The command list
 
@@ -164,13 +163,10 @@ The house rules are in [coding-principles.md](coding-principles.md) and
 ## Further reading
 
 - [branch-flow.md](branch-flow.md): branch layout and sync procedure
-- [task_workflow/](task_workflow/): how delegated work is specified and recorded
-- [exp-metal-mr0-mr13-runbook.md](exp-metal-mr0-mr13-runbook.md): the Apple Metal MR0 to MR13 workflow
-- [INTEGRATION_TINYGRAD.md](../INTEGRATION_TINYGRAD.md): the tinygrad integration boundary
 
 ### Development apparatus
 
-The [apparatus boundary record](apparatus-boundary-20261011.md) lists the experiment, search,
+The apparatus boundary record (`apparatus-boundary-20261011.md`, on `dev`) lists the experiment, search,
 analysis, runtime and policy helpers retained on dev with their tests. The packed-quant oracle
 and descriptor-policy reproduction module commands also live on dev. Main retains the product
 CLI, screen and their subprocess drivers; importing a helper only from a test does not admit it to main.

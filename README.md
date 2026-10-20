@@ -158,7 +158,7 @@ borrowed from another.
 | use the screen and its JSON mode for agents | [tui/README.md](tui/README.md) |
 | the command line end to end | [docs/CLI.md](docs/CLI.md) |
 | how the timer and its limits were measured | [docs/kernel-timer.md](docs/kernel-timer.md) |
-| everything else, and the dated audit records | [docs/README.md](docs/README.md) |
+| everything else | [docs/README.md](docs/README.md) |
 | work on BoltBeam itself | [docs/maintaining.md](docs/maintaining.md) |
 
 ## Check the article numbers
@@ -171,7 +171,7 @@ Each cited number lives in one of these places:
 | a chip's memory speed, matrix peak, SM count | `boltbeam/data/targets.json`, with the measurement in `bench/<target>-facts-<date>/README.md` |
 | how a weight format packs, and its refuted routes | `boltbeam/data/quants.json` |
 | a route was promoted or refuted, and why | `boltbeam/data/candidates.json` (the candidate registry) |
-| a closed experiment and its numbers | the dated record in `docs/`, for example `docs/14b-aggregate-fusion-closeout-20260702.md` |
+| a closed experiment and its numbers | the cited record in `docs/`, for example `docs/14b-aggregate-fusion-closeout-20260702.md` |
 | the speed limit for a model on a chip | rerun it: `boltbeam roofline-theoretical MODEL.gguf --target TARGET --context 1` |
 
 `bench/` holds the raw measurement records. [docs/README.md](docs/README.md) lists the records the

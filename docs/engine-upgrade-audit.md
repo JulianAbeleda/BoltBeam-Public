@@ -106,7 +106,7 @@ A missing entry is an error, not a default.
 
 ## Worked example
 
-The earlier clean loop test used the former fixed bands ([loop-test-27b-prefill-rtx5090-20261012.md](loop-test-27b-prefill-rtx5090-20261012.md)):
+The earlier clean loop test used the former fixed bands (`loop-test-27b-prefill-rtx5090-20261012.md`):
 b9592 against b9592 plus one GDN commit. Only the recurrent row moved; the 2048 gaps moved 0.417 ms against a
 0.155 ms band; everything else held, and both sides confirm end to end.
 
