@@ -101,7 +101,17 @@ func TestNoLimitForAChipNobodyChose(t *testing.T) {
 		t.Fatalf("limit shown for an unchosen chip:\n%s", body)
 	}
 	f.Picked = true
-	if body := plain(chipPickerBody(f, 100)); !strings.Contains(body, "Speed limit on amd_gfx1100") {
-		t.Fatalf("a picked chip shows its limit:\n%s", body)
+	if body := plain(chipPickerBody(f, 100)); !strings.Contains(body, "GPU: amd_gfx1100") || strings.Contains(body, "tokens per second") {
+		t.Fatalf("a picked chip shows a hardware summary:\n%s", body)
+	}
+}
+
+func TestChipComputeFormatsHaveStableOrder(t *testing.T) {
+	target := seam.Target{MatrixTFLOPS: map[string]float64{"fp8": 200, "bf16": 100, "fp4": 400}}
+	want := "bf16 100 TFLOP/s matrix, fp4 400 TFLOP/s matrix, fp8 200 TFLOP/s matrix"
+	for i := 0; i < 30; i++ {
+		if got := tflops(target); got != want {
+			t.Fatalf("unstable chip display: %s", got)
+		}
 	}
 }

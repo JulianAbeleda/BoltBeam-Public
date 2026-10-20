@@ -23,7 +23,7 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     clean-work --work DIR --before ISO         remove temporary runs started before ISO (never --keep ones)
     results  --run DIR | --run ID --root DIR   what won per role, the timing against the ceiling, the regimes
     emit     --run DIR | --run ID --root DIR   Emit: write <run>/gameplan.json and gameplan.md (workflow/gameplan.py), the
-                                               run's per-role table turned into what kernel to emit per role, worst first,
+                                               run's measured work turned into investigations, or per-role kernel instructions when supported,
                                                from the run's own files only; prints where, the plan and its markdown.
                                                Refused (exit 1) before a run has a per-role table. Refreshes report.html.
     pipeline MODEL --run DIR --target T        load, autoscan, analyze, [measure], [ingest-probe, ingest-timing], output;
@@ -247,9 +247,11 @@ def stage_rows(manifest:dict[str, Any], measure:dict[str, Any] | None = None) ->
   return rows
 
 
-def blocked(plan:dict[str, Any]) -> list[dict[str, Any]]:
+def blocked(plan:dict[str, Any], run:pathlib.Path | None = None) -> list[dict[str, Any]]:
+  """Outstanding requests after accounting for evidence ingested since planning."""
   return [{"need": need, "request": request} for block, need, request in NEEDS
-          if (plan.get(block) or {}).get("status") == "requested"]
+          if (plan.get(block) or {}).get("status") == "requested"
+          and not (run is not None and _optional(run, block + ".json"))]
 
 
 def summary(run:pathlib.Path) -> dict[str, Any]:
@@ -260,7 +262,7 @@ def summary(run:pathlib.Path) -> dict[str, Any]:
     "id": run.name, "model_id": manifest.get("model_id"), "model_format": manifest.get("model_format"),
     "target_id": manifest.get("target_id"), "workload": manifest.get("workload"),
     "latest_stage": manifest.get("latest_stage"), "status": report.get("status", "not_analyzed"),
-    "stages": stage_rows(manifest, _optional(run, MEASURE_STATUS)), "blocked": blocked(plan),
+    "stages": stage_rows(manifest, _optional(run, MEASURE_STATUS)), "blocked": blocked(plan, run),
     "measured": {"probe": (run / "primitive_profile.json").exists(), "timing": (run / "timing_profile.json").exists()},
     "report": "report.html" if (run / "report.html").exists() else None,
     "measure": _optional(run, MEASURE_STATUS) or None,
@@ -354,8 +356,16 @@ def _measured_vs_ceiling(manifest:dict[str, Any], profile:dict[str, Any], run:pa
 
 
 def run_provider(run:pathlib.Path) -> str:
-  """The provider step 4 measured this run with. Runs from before providers were measured with llama-bench."""
-  return (_optional(run, MEASURE_STATUS).get("provider")) or providers.DEFAULT
+  """Resolve the measured engine, including imported whole-step traces.
+
+  Only legacy runs without either declaration default to llama-bench. Conflicting
+  declarations are evidence of a mixed run, not a reason to pick one silently.
+  """
+  status = _optional(run, MEASURE_STATUS).get("provider")
+  trace = _optional(run, "timing_trace.json").get("provider")
+  if status and trace and status != trace:
+    raise ValueError(f"measurement provider {status!r} differs from timing trace {trace!r}")
+  return providers.check(trace or status or providers.DEFAULT)
 
 
 def _provider_table(run:pathlib.Path, provider:str, ceil:dict[str, Any], limit_ms:float, *, repeat_evidence:bool = False) -> tuple[dict | None, dict]:
@@ -374,6 +384,9 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   The floor rule (tinygrad_role_time.refusal) holds for every provider's table."""
   provider = run_provider(run)
   target = get_target(manifest.get("target_id"))
+  from boltbeam.workflow import captured_decode
+  if manifest.get('workload') == 'decode' and (run/captured_decode.TRACE).is_file():
+    return captured_decode.loss_block(run,provider,token)
   # facts of the run only: what this machine could capture is `providers`, never part of the pinned results
   plan = None
   if manifest.get("workload") in ("prefill", "session", "replay"):  # the untraced prompt and where its time goes
@@ -676,9 +689,12 @@ def cross_check(run:pathlib.Path, bandwidth_gbs:float | None) -> dict[str, Any] 
   if not trace:
     return None
   cap = trace.get("capture") or {}
-  rows, floor_us = [], None
+  rows, not_measured, floor_us = [], [], None
   for i, r in enumerate(trace.get("rows") or []):
     if r.get("scope") != "kernel" or r.get("status") != "measured":
+      if r.get("scope") == "kernel":
+        not_measured.append({"role": r.get("role"), "quant": r.get("quant"),
+                             "reason": r.get("reason") or r.get("status") or "not measured"})
       continue
     less = r.get("us_per_call_less_floor")
     if less is not None:
@@ -690,7 +706,9 @@ def cross_check(run:pathlib.Path, bandwidth_gbs:float | None) -> dict[str, Any] 
                  "gbs": gbs, "pct_peak": (100.0 * gbs / bandwidth_gbs) if gbs and bandwidth_gbs else None,
                  "evidence": [{"file": providers.CROSS_CHECK, "path": f"rows[{i}]"}]})
   return {"method": cap.get("method"), "words": _capture_words(cap.get("method")), "reason": cap.get("reason"), "rows": rows,
-          "columns_words": tie.ISOLATED_COLUMNS.format(floor_words=tie.floor_words(floor_us)) if floor_us is not None else None}
+          "not_measured": not_measured,
+          "columns_words": (tie.ISOLATED_COLUMNS.format(floor_words=tie.floor_words(floor_us)) +
+                            ". Empty-launch subtraction is an estimate, not a measured additive correction") if floor_us is not None else None}
 
 
 def probe_rows(run:pathlib.Path, bandwidth_gbs:float | None) -> dict[str, Any]:
@@ -750,7 +768,10 @@ def compare_ready(run:pathlib.Path, root:pathlib.Path | None = None) -> dict[str
 
 
 def results(run:pathlib.Path, *, repeat_evidence:bool = False) -> dict[str, Any]:
-  return results_core(run, beside=True, repeat_evidence=repeat_evidence)
+  from boltbeam.workflow.report_validation import require
+  res = results_core(run, beside=True, repeat_evidence=repeat_evidence)
+  res['validation'] = require(run, res)
+  return res
 
 
 def the_token(run:pathlib.Path) -> dict[str, Any] | None:
@@ -760,6 +781,9 @@ def the_token(run:pathlib.Path) -> dict[str, Any] | None:
   provider = run_provider(run)
   role_trace = _optional(run, providers.TRACES[provider])
   near = tie.attended_context(role_trace, provider) if role_trace else None
+  captured=_optional(run,'decode_capture.json')
+  if captured.get('contexts'):
+    near=float(next(iter(captured['contexts'])))
   return tie.measured_step(_optional(run, "timing_trace.json"), provider, near=near)
 
 
@@ -780,6 +804,14 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
     ceil = prefill_ceiling(ceil, loss, token)
   elif manifest.get("workload") == "replay":  # one ceiling: the sum of the turns' rooflines (workflow/replay.py)
     ceil = replay_ceiling(ceil, loss)
+  elif manifest.get("workload") == "decode" and token and ceil.get("status") == "modeled":
+    ceil = decode_ceiling(ceil, loss, token, profile, run_provider(run), run)
+  engine_build = manifest.get("engine")
+  if not (engine_build or {}).get("build"):
+    recorded = providers.run_build(run)
+    if recorded:
+      engine_build = {"provider": run_provider(run), **providers.pin_check(
+        run_provider(run), recorded, providers.run_build_number(run))}
   return {
     "schema": SCHEMA, "kind": "results", "id": run.name, "model_id": manifest.get("model_id"),
     "target_id": manifest.get("target_id"), "workload": manifest.get("workload"),
@@ -796,7 +828,10 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
     "timing": {
       "status": "classified" if timing else "absent",
       "dominant_bucket": timing.get("dominant_timing_bucket"),
-      "next_actions": list(timing.get("next_actions", []) or []),
+      "next_actions": (["Review the captured operation table; the separate whole-step timing profile does not classify individual kernels.",
+                        *list(timing.get("next_actions", []) or [])[1:]]
+                       if loss.get("semantic_capture") and timing.get("dominant_timing_bucket")=="timing_inconclusive"
+                       else list(timing.get("next_actions", []) or [])),
       # THE measured token (tie_out.measured_step): the same row the tie-out uses; also lists the other contexts
       "context": context, "total_us": (token.get("wall_us") or 1000.0 * token["ms"]) if token else chosen.get("total_us"),
       "tok_s": token["tok_s"] if token else None,
@@ -811,19 +846,47 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
     "regimes": [{"role": r.get("role"), "quant": r.get("quant"), "shape": r.get("shape"),
                  "classification": r.get("classification"), "visible_bottleneck": r.get("visible_bottleneck"),
                  "next_action": r.get("next_action")} for r in primitive.get("quant_gemv_regimes", []) or []],
-    "blocked": blocked(plan),
+    "blocked": blocked(plan, run),
     "report": "report.html" if (run / "report.html").exists() else None,
     "engine": {"provider": run_provider(run), "weight_format": _optional(run, MEASURE_STATUS).get("weight_format")
                or (providers.weight_format(profile) if profile else None),
                # the build the run measured against the pin table, and the toolchain it recorded (providers.record_build,
                # collectors/toolchain.record); None when the run predates them
-               "build": manifest.get("engine"), "toolchain": manifest.get("toolchain")},
+               "build": engine_build, "toolchain": manifest.get("toolchain")},
     "batches": batch_rows(run, manifest, profile, ceil),
   }
 
 
 PREFILL_CEILING_BASIS = ("the sum of the prefill's kernels' ceilings: each max(operations / the measured peak of its "
                          "instructions' path, bytes / bandwidth)")
+
+
+def decode_ceiling(ceil:dict[str, Any], loss:dict[str, Any], token:dict[str, Any],
+                   profile:dict[str, Any], provider:str, run:pathlib.Path | None = None) -> dict[str, Any]:
+  """Compare the untraced token with its own context's limit, keeping the capture's separate basis.
+
+  The weight-only floor remains the input to batch limits; otherwise adding each batch's KV read
+  would count the headline's context twice.
+  """
+  from boltbeam.workflow import tie_out as tie
+  if loss.get('semantic_capture'):
+    return {**ceil,'context':token['context'],'floor_ms':loss['limit_ms'],
+            'tok_s':loss['limit_tok_s'],'bytes_moved':None,
+            '_operation_limit':True,
+            'basis':"sum of captured operation limits, including attention and recurrent state work"}
+  weight = ceil["floor_ms"]
+  element, _ = providers.kv_element(provider, run)
+  limit = weight + tie.kv_ms(profile, token["context"], element, ceil["peak_bandwidth_gbs"])
+  loss.update(limit_ms=limit, limit_tok_s=1000.0 / limit, limit_context=token["context"])
+  for runtime in loss.get("runtimes", []):
+    if runtime.get("isolated"):
+      continue
+    basis = (loss.get("tie_out") or {}).get("limit_ms") if runtime.get("per_role") else limit
+    if basis is not None and runtime.get("provider") == provider:
+      runtime["lost_ms"] = runtime["ms"] - basis
+  return {**ceil, "_weight_floor_ms": weight, "context": token["context"],
+          "floor_ms": limit, "tok_s": 1000.0 / limit,
+          "bytes_moved": limit * ceil["peak_bandwidth_gbs"] * 1e6}
 
 
 def prefill_ceiling(ceil:dict[str, Any], loss:dict[str, Any], token:dict[str, Any] | None) -> dict[str, Any]:
@@ -857,7 +920,7 @@ def batch_rows(run:pathlib.Path, manifest:dict[str, Any], profile:dict[str, Any]
   if not points or ceil.get("status") != "modeled":
     return []
   provider = trace.get("provider") or run_provider(run)
-  element, _ = providers.kv_element(provider)
+  element, _ = providers.kv_element(provider, run)
   params = sum(float(r.get("rows") or 0) * float(r.get("cols") or 0) * float(r.get("count") or 1)
                for r in profile.get("roles") or [])
   try:
@@ -866,12 +929,19 @@ def batch_rows(run:pathlib.Path, manifest:dict[str, Any], profile:dict[str, Any]
     peak_flops = None
   out = []
   for p in points:
-    lim = tie.batch_limit(weight_ms=ceil["floor_ms"], profile=profile, context=float(p["context"]), batch=int(p["batch"]),
+    if ceil.get('_operation_limit'):
+      if p['context']!=ceil['context'] or p['batch']!=1:
+        lim={'status':'absent','reason':'no matching captured operation limit','bound':'not captured'}
+      else:
+        lim={'batch':1,'context':p['context'],'step_ms':ceil['floor_ms'],
+             'tok_s_stream':ceil['tok_s'],'tok_s_total':ceil['tok_s'],'bound':'per operation'}
+    else:
+      lim = tie.batch_limit(weight_ms=ceil.get("_weight_floor_ms", ceil["floor_ms"]), profile=profile, context=float(p["context"]), batch=int(p["batch"]),
                           element_bytes=element, bandwidth_gbs=ceil["peak_bandwidth_gbs"], params=params or None,
                           peak_flops=peak_flops)
     out.append({"context": p["context"], "batch": p["batch"], "step_ms": p["step_ms"], "tok_s_stream": p["tok_s_stream"],
                 "tok_s_total": p["tok_s_total"], "source": p.get("source"), "limit": lim,
-                "pct_of_limit": 100.0 * lim["step_ms"] / p["step_ms"] if p["step_ms"] else None})
+                "pct_of_limit": 100.0 * lim["step_ms"] / p["step_ms"] if p["step_ms"] and 'step_ms' in lim else None})
   return out
 
 
@@ -889,7 +959,7 @@ def show(run:pathlib.Path) -> dict[str, Any]:
               "ffn_size": profile.get("ffn_size"), "vocab_size": profile.get("vocab_size"),
               "role_count": len(profile.get("roles", []) or []), "quant_types": list(meta.get("quant_types", []) or [])},
     # the report's own ladder, text only: the same sentence report.html and summary.md print, without the code marks
-    "next_step": next_step(report, plan, res.get("probe"), _optional(run, MEASURE_STATUS)).replace("`", ""),
+    "next_step": ((res.get("loss") or {}).get("replay") or {}).get("next_step") or next_step(report, plan, res.get("probe"), _optional(run, MEASURE_STATUS)).replace("`", ""),
     "artifacts": list(manifest.get("artifacts", []) or []),
     "results": res,
   })
@@ -1093,10 +1163,21 @@ def replay_command(args) -> dict[str, Any]:
     d = rw.diff(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser(),
                 bands=read_json(args.bands) if getattr(args, "bands", None) else None)
     return {**d, "lines": rw.diff_lines(d)}
+  if args.command=='replay-review':
+    from boltbeam.collectors.forced_replay import publish
+    publish(pathlib.Path(args.run),read_json(args.inputs))
+    output_run(pathlib.Path(args.run))
+    return results(pathlib.Path(args.run))
   trace = rt.shape(args.shape)
   rt.write(trace, pathlib.Path(args.out).expanduser())
   return {"schema": SCHEMA, "out": args.out, "label": rt.label(trace), "source": trace["source"]}
 
+
+
+def _engine_settings(args) -> dict | None:
+  """The engine settings a run requests, from the command line; None when it requests none."""
+  settings = {k: getattr(args, k, None) for k in ("chunk_size", "attention_backend")}
+  return {k: v for k, v in settings.items() if v is not None} or None
 
 def _load(args) -> dict[str, Any]:
   """Step 0: the run folder. A replay also stages its trace and the server command (collectors/replay.stage), and its
@@ -1107,9 +1188,13 @@ def _load(args) -> dict[str, Any]:
     run = pathlib.Path(args.run)
     run.mkdir(parents=True, exist_ok=True)
     contexts = (rp.stage(run, getattr(args, "replay_trace", None), getattr(args, "server_argv", None)),)
+  if getattr(args,'forced_replay',False) or (args.workload=='replay' and args.provider=='vllm'
+      and getattr(args,'analyze',False) and get_target(args.target).backend=='CUDA'):
+    if args.workload!='replay' or args.provider!='vllm':raise ValueError('--forced-replay requires vLLM replay')
+    (pathlib.Path(args.run)/'forced_replay_request.json').write_text('{}')
   result = load_run(args.model, args.run, target_id=args.target, model_id=args.id, workload=args.workload,
-                  contexts=contexts, target_source="user",
-                  engine_settings=({"chunk_size": args.chunk_size} if getattr(args, "chunk_size", None) is not None else None))
+                  contexts=contexts, target_source="user", provider=getattr(args, "provider", None),
+                  engine_settings=_engine_settings(args))
   if getattr(args, "bands", None):
     from boltbeam.workflow.common import write_json
     from boltbeam.workflow.repeat_bands import ARTIFACT, SCHEMA as BAND_SCHEMA
@@ -1150,7 +1235,11 @@ def pipeline(args, out=sys.stdout) -> int:
     steps.append(("ingest_timing", lambda: ingest_timing_run(args.run, args.timing)))
   if args.probe or args.timing:
     steps.append(("analyze", lambda: analyze_run(args.run)))  # the plan and the report read the new evidence
-  steps.append(("output", lambda: output_run(args.run)))
+  # A full audit must collect role evidence before publishing a report. The
+  # strict evidence gate is expected to reject the intermediate weight-only
+  # model for architectures whose executed work has not been captured yet.
+  if not (analyze_all and plan and not plan['reason']):
+    steps.append(("output", lambda: output_run(args.run)))
   # the per-role capture this machine has, as the plan recorded it (an older plan without it is asked now)
   can_time = plan and (plan.get("capture") or providers.capture_method(plan["provider"], get_target(args.target).backend)).get("method")
   if analyze_all and plan and not plan["reason"]:  # one press: per-role time, same engine, search, report again
@@ -1271,16 +1360,16 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
   can run on this machine (one GPU unless more are found)."""
   from boltbeam.workflow import layout as lay
   n = gpu_count if gpu_count is not None else len(lay.devices(_hardware_profile()["gpu"]))
-  rows = [{**p, "layouts": lay.layouts(n, p["provider"])} for p in providers.available(target, tinygrad_root=root)]
+  rows = [{**p, "layouts": lay.layouts(n, p["provider"])} for p in providers.available(target, tinygrad_root=root, cached=True)]
   return {"schema": SCHEMA, "kind": "providers", "target_id": target.target_id, "default": providers.DEFAULT,
           "gpu_count": n, "providers": rows}
 
 
-def engines() -> dict[str, Any]:
+def engines(*, cached:bool = False) -> dict[str, Any]:
   """Look for every engine on this machine now and save what was found (collectors/engine_scan.py): one row per
   item with its path and how it was found. The screen runs this at boot; `providers` then sees the saved paths."""
   from boltbeam.collectors import engine_scan
-  got = engine_scan.scan_and_save()
+  got = engine_scan.cached_or_scan() if cached else engine_scan.scan_and_save()
   return {"schema": SCHEMA, "kind": "engines", "file": got["file"], "scanned_at": got["scanned_at"],
           "seconds": got["seconds"], "engines": engine_scan.rows(got)}
 
@@ -1352,7 +1441,14 @@ def where_lines(w:dict[str, Any] | None) -> list[str]:
   as wide as its widest cell. The summary and the gameplan print these lines; the cells are the table's own."""
   if not w:
     return []
-  cells = [list(w["columns"])] + [[r["name"], *r["cells"]] for r in w["rows"]] + [list(w["sum_cells"])]
+  cells=[list(w['columns'])]
+  section=None
+  for row in w['rows']:
+    if row.get('section') and row['section']!=section:
+      section=row['section']
+      cells.append([section,*(['']*(len(w['columns'])-1))])
+    cells.append([row['name'],*row['cells']])
+  cells+=([list(w['baseline_cells'])] if w.get('baseline_cells') else [])+[list(w['sum_cells'])]
   width = [max(len(row[i]) for row in cells) for i in range(len(cells[0]))]
   out = [w["title"] + (" (estimate)" if w["estimate"] else "") + ":", f"  {w['words']}"]
   for row in cells:
@@ -1428,6 +1524,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
         lines.append("      " + ", ".join(f"{p['kind']} {p['ms']:.3f}" for p in l["parts"]))
     lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
   lines += where_lines(loss.get("where_token_goes"))
+  lines += where_lines(loss.get("capture_comparison"))
   lines += curve_lines(loss.get("prefill_curve"))
   lines += prefill_audit.lines(loss.get("prefill_audit"))
   from boltbeam.workflow.session import lines as session_lines
@@ -1484,7 +1581,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     lines.append(f"Per role: {why_no_roles}")
   elif not roles and loss.get("missing"):
     lines.append(f"Per role: {loss['missing']}")
-  if (cc := loss.get("cross_check")) and cc.get("rows"):
+  if (cc := loss.get("cross_check")) and (cc.get("rows") or cc.get("not_measured")):
     lines.append(f"Cross-check ({cc.get('words')}):")
     if cc.get("columns_words"):
       lines.append(f"  {cc['columns_words']}")
@@ -1492,6 +1589,8 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
       less = f" {r['us_per_call_less_floor']:8.1f} us less floor" if r.get("us_per_call_less_floor") is not None else ""
       g = f" {r['gbs']:6.1f} GB/s" if r.get("gbs") is not None else ""
       lines.append(f"  {r['role']:<12} {r['quant']:<5} {r['us_per_call']:8.1f} us{less}{g}")
+    for r in cc.get("not_measured") or []:
+      lines.append(f"  {r['role']} {r['quant']}: not measured: {r['reason']}")
   probe = res.get("probe") or {}
   if probe.get("rows"):
     lines.append(f"{probe.get('label')}:")
@@ -1532,10 +1631,14 @@ def save(run:pathlib.Path, to_root:pathlib.Path) -> dict[str, Any]:
   dest = to_root.expanduser().resolve() / run.name
   if dest == run.resolve():
     raise Refused(f"{run} is already saved in {to_root}")
+  res = results(run)  # validate before replacing a previously saved report
   if dest.exists():
     shutil.rmtree(dest)
   shutil.copytree(run, dest)
-  res = results(dest)
+  # Regenerate all presentation artifacts from the same current evidence.
+  # Copying an older report/validation file can otherwise contradict results.json.
+  from boltbeam.workflow.output import output_run
+  output_run(dest)
   (dest / "results.json").write_text(pretty_json(res))
   (dest / "summary.txt").write_text(summary_text(res, _why_no_roles(dest, res)))
   record = {"saved_at": datetime.datetime.now().isoformat(timespec="seconds"), "from": str(run)}
@@ -1552,6 +1655,9 @@ def saved(root:pathlib.Path) -> dict[str, Any]:
       if not (is_run(d) and (d / SAVE_RECORD).exists()):
         continue
       rec, manifest, res = read_json(d / SAVE_RECORD), load_manifest(d), _optional(d, "results.json")
+      validation = _optional(d, "report_validation.json")
+      if validation.get("status") == "failed":
+        res = {}  # a previously saved success cannot override the current validation failure
       timing, ceil, loss = res.get("timing") or {}, res.get("ceiling") or {}, res.get("loss") or {}
       if loss.get("session") and loss.get("runtimes"):  # the limit is the focus depth's: so is the turn set against it
         timing = {"tok_s": loss["runtimes"][0].get("tok_s")}
@@ -1559,6 +1665,7 @@ def saved(root:pathlib.Path) -> dict[str, Any]:
       rows.append({"id": d.name, "dir": str(d), "model_id": manifest.get("model_id"), "target_id": manifest.get("target_id"),
                    "provider": run_provider(d), "saved_at": rec.get("saved_at"), "tok_s": timing.get("tok_s"),
                    "pct_of_limit": pct, "workload": manifest.get("workload"), "measured": bool(res.get("measured")),
+                   "validation_failed": validation.get("status") == "failed",
                    "roofline_pct": ((res.get("loss") or {}).get("replay") or {}).get("headline", {}).get("e_pct")})
   rows.sort(key=lambda r: r["saved_at"] or "", reverse=True)
   return {"schema": SCHEMA, "kind": "saved", "root": str(root), "runs": rows}
@@ -1666,6 +1773,8 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--workload", default="decode", choices=[w.value for w in Workload])
   p.add_argument("--bands", help="repeat calibration artifact; only an exact setup match can supply bands")
   p.add_argument("--chunk-size", type=int, help="requested engine chunk size; unsupported adapters refuse it")
+  p.add_argument("--attention-backend", help="requested attention backend by the engine's name for it (vLLM: "
+                 "TRITON_ATTN, ROCM_ATTN, ...); recorded with the run, and adapters that cannot honor it refuse it")
   p.add_argument("--ctxs", default=None, help="decode contexts (default 128,512) or prompt lengths (default: the sweep "
                                               "to the model's own cap, prefill_work.sweep; a session: cap for the derived depths)")
   p.add_argument("--probe", default=None, help="boltbeam.probe_evidence.v1 JSON to ingest after analyze")
@@ -1685,6 +1794,7 @@ def main(argv:list[str] | None = None) -> int:
                       "each kernel alone) or auto (in-model when this machine has it, else generic)")
   p.add_argument("--no-search", action="store_true",
                  help="with --analyze: skip the per-role kernel search (a quick run)")
+  p.add_argument("--forced-replay", action="store_true", help="vLLM CUDA: scripted production capture, exact pairing and forced native repeats")
   p.add_argument("--replay-trace", default=None, help="a replay: a boltbeam.replay_trace.v1 file or a shape's name "
                                                       "(default: the default shape in data/replay_shapes.json)")
   p.add_argument("--server-argv", default=None, help="a replay: the user's llama-server command, as one string")
@@ -1695,6 +1805,9 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--runs", nargs="+", required=True, help="the before runs, all of one exact setup")
   p.add_argument("--plan", help="the repeat-plan file written before these runs were collected")
   p.add_argument("--out", required=True, help="repeat_bands.json; existing calibrations are retained")
+  p = sub.add_parser("replay-review", help="reconcile retained forced replay captures without GPU measurement")
+  p.add_argument("--run", required=True)
+  p.add_argument("--inputs", required=True, help="local capture manifest; raw tokens remain local")
   p = sub.add_parser("replay-trace", help="write a shape's counts-only replay trace")
   p.add_argument("--out", required=True)
   p.add_argument("--shape", default=None, help="a shape in data/replay_shapes.json")
@@ -1714,7 +1827,8 @@ def main(argv:list[str] | None = None) -> int:
     p = sub.add_parser(name)
     p.add_argument("--target", required=True)
     p.add_argument("--tinygrad-root", default=None)
-  sub.add_parser("engines", help="look for every engine on this machine now and save what was found")
+  sub.add_parser("engines", help="look for every engine on this machine now and save what was found").add_argument(
+    "--cached", action="store_true", help="reuse saved discovery when settings and paths still match")
   for name in ("compare", "compare-ready", "role-time"):
     p = sub.add_parser(name)
     p.add_argument("--run", required=True)
@@ -1760,7 +1874,7 @@ def main(argv:list[str] | None = None) -> int:
     elif args.command == "providers":
       out = provider_list(_target_arg(args.target), pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None)
     elif args.command == "engines":
-      out = engines()
+      out = engines(cached=args.cached)
     elif args.command == "gpu-free":
       out = gpu_free(_target_arg(args.target))
     elif args.command == "ceiling":
@@ -1781,7 +1895,7 @@ def main(argv:list[str] | None = None) -> int:
     elif args.command == "emit":
       from boltbeam.workflow import gameplan
       run = _run_arg(args)
-      out = gameplan.emit(run, results(run))
+      out = gameplan.emit(run)  # Emit validates before writing and invalidates stale plans on failure
       output_run(run)  # the report links gameplan.md once it exists
     elif args.command == "compare-ready":
       out = compare_ready(pathlib.Path(args.run).expanduser(),

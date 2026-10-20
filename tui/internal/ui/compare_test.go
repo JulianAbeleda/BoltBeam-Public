@@ -156,8 +156,8 @@ func TestLossBody(t *testing.T) {
 		Roles:           []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 10.58, LostMs: 2.30, Share: 0.25, CallsPerToken: 18}},
 		NotAttributedMs: fp(4.46), Source: sp("measured in tinygrad's Metal runtime")}
 	body := plain(lossBody(l))
-	for _, want := range []string{"The limit is 52.0 ms per token at context 1.", "llama.cpp: 17.9 tokens per second, 55.8 ms per token, 3.8 ms lost.",
-		"needs Instruments", "tinygrad per role: 65.9 ms of GPU time per token, 13.8 ms lost.", "Measured with llama.cpp · roles not timed", "measured in tinygrad's Metal runtime",
+	for _, want := range []string{"Modeled roofline: 52.0 ms per token at context 1.", "llama.cpp: 17.9 tok/s · 55.8 ms per token · 3.8 ms above roofline.",
+		"needs Instruments", "tinygrad per role: 65.9 ms of GPU time per token · 13.8 ms above roofline.", "Measured with llama.cpp · roles not timed", "measured in tinygrad's Metal runtime",
 		"feed-forward out", "8.27", "10.58", "2.30", "25%", "not attributed", "4.46"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)

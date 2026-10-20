@@ -55,19 +55,18 @@ Measurement generic (kernel timer)                         ›
 Saved runs (2)                                           ›
 ```
 
-Model lists the model files next to the current one and in `~/models`, or takes a typed path. Chip is this
+Model searches beside the current model and recursively under `~/models`, or takes a typed path. Checkpoint folders appear once, with the model name and format/quantization label; weight shards are not separate choices. Chip is this
 machine, detected (autoscan: a known profile is used, a new GPU is measured into `~/.boltbeam/chips/<id>.json`,
 `BOLTBEAM_CHIPS_DIR` moves that folder). Engine is one of llama.cpp, tinygrad, vLLM, Ollama and TensorRT-LLM; an
-engine this machine lacks is named with why. Workload is decode, prefill, session or replay. Measurement is in-model
+engine this machine lacks or that cannot read the selected format is unavailable. Switching formats chooses a compatible engine and resets the previous engine’s measurement choice. Chip shows a simple GPU, memory-bandwidth and driver summary. Workload is decode, prefill, session or replay. Measurement is in-model
 (a capture of the real token) or generic (the engine's kernels timed alone). `[ Run ]` is greyed until model, chip
 and engine are set. Setup does not show the speed limit; Run does.
 
-`[ Emit ]` sits under Run. Run measures the model's roles against the roofline and, with the kernel search on, finds
-faster kernel plans; Emit turns the run on screen into a gameplan: per role, worst first, what kernel to emit for this
-exact shape, built only from what the run recorded, with the check that must pass. It is what a person or an agent
-follows to write the kernel into the tinygrad fork; it writes no kernel itself. The row is muted with "Run first" until
-the run on screen has finished with a per-role table. Pressing it has Python write `<run>/gameplan.json` and
-`<run>/gameplan.md` (`boltbeam/workflow/gameplan.py`, the one writer) and opens the Gameplan screen.
+`[ Emit ]` sits under Run. Completed captured-engine reports offer **Emit gap report**: measured timings,
+modeled differences, unknown ceilings, and timing corrections, with no generic optimization recommendations.
+This works across formats, engines, and supported workload breakdowns. Runs with kernel-search evidence retain
+per-role implementation gameplans. Emit writes `<run>/gameplan.json` and `<run>/gameplan.md` and opens the
+Gameplan screen. It changes no kernels or engine settings.
 
 **Run.** One press runs the pipeline: read the model, check the machine, the speed limit, the GPU free check, the
 building-block probe (BoltBeam's own kernels on the model's real bytes), the real decode with the engine, per-role
@@ -109,7 +108,10 @@ after run. Two runs of one model, chip, engine and workload give the engine-upgr
 `repeat_bands.json` its bands are used. Two replays of one trace on different engines give `screen replay-cross`,
 turn by turn. Runs that differ in model, target or engine are refused, and the page names the field.
 
-**Gameplan.** The markdown Emit wrote, drawn in the screen's styles (headings and bold rendered, markers dropped): the header (model, chip, engine, batch, the measured token
+**Gameplan.** Gap reports use the same bordered tables and cumulative decode accounting as Run. Unknown savings
+and timing qualifications stay explicit. Kernel-specific gameplans show the search evidence described below.
+
+The markdown Emit wrote, drawn in the screen's styles (headings and bold rendered, markers dropped): the header (model, chip, engine, batch, the measured token
 against the limit), then one block per role ordered by lost ms (the estimate column for isolated runs, said so) with
 the role's shape, bytes per call, calls per token, µs per call, GB/s and share of peak, its reason word and search
 verdict, and the search's lineage in four layers, each read off the run's own files: BubbleBeam (the legal dimensions
@@ -193,3 +195,29 @@ colour (`go test ./internal/ui -update` rewrites them). The live Go test skips w
 
 Go tests live beside the code (`_test.go`) because Go's toolchain treats them as part of the package; they
 travel with the product on `main`. The Python tests follow the branch rule and live on `dev`.
+
+### Scripted vLLM replay audits
+
+A CUDA vLLM replay with `--analyze` uses forced replay automatically. `--forced-replay`
+also selects it explicitly on the pipeline command. The server command remains the
+user's production command: compilation and CUDA graphs stay enabled for timing.
+The labeling pass temporarily disables graph replay while retaining compilation.
+
+BoltBeam records the session once, keeps its output token script locally, measures
+30 paired forcing-cost samples, runs five forced native reference sessions, and
+captures timing plus per-turn labels. It refuses on the first changed token,
+cache count, scheduler step or kernel sequence. It checks GPU occupancy before
+each pass and stops only servers that it started.
+
+Run, HTML and **Emit replay report** share the reconciled table. Timing qualification
+may remain FAILED even when arithmetic and pairing pass; Emit preserves that status.
+Missing memory counters or instruction paths stay explicit. Modeled partial limits
+are labeled partial; they are never presented as a complete session floor. Token
+forcing is a separate measured diagnostic, not added again to session time.
+
+For a retained capture, `python -m boltbeam.workflow.screen replay-review --run RUN
+--inputs INPUTS.json` performs CPU-only reconciliation. The local input manifest
+names `script`, `paired`, `reference`, `graph`, and `segments` (one timing/label path
+pair per turn), with optional `cost` and `calibration` (`run`, `context`,
+`instruction_paths`). The public result stores script hashes and lengths, not token
+content. Raw scripts, responses, worker logs and capture paths remain in the local run.

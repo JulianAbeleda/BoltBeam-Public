@@ -1,4 +1,6 @@
-"""Read-only GPU memory speed of one NVIDIA GPU, with a small native CUDA kernel through BoltBeam's CUDA bridge.
+"""Read-only GPU memory speed of one NVIDIA or AMD GPU, with a small native kernel through BoltBeam's CUDA or HIP
+bridge. The read kernels are plain CUDA C, which hipcc compiles unchanged; the bridge decides the toolchain, and the
+result names the API it ran on (cuda_read_bandwidth or hip_read_bandwidth), never one for the other.
 
     python -m boltbeam.collectors.cuda_bandwidth [--device N] [--gib 1] [--reps 10]
 
@@ -88,7 +90,7 @@ MATRIX_ACC = 8
 MATRIX_NOTE = "lower bound, prefill only; decode is memory-bound"
 MATRIX_METHOD = ("BoltBeam cuda_bandwidth: native CUDA WMMA 16x16x16 fp16 multiply-accumulate into fp32, 8 accumulators "
                  "in registers, {iters} steps, best of {reps} per launch shape")
-METHOD = ("BoltBeam cuda_bandwidth: native CUDA read-only kernels over {gib} GiB, a grid-stride loop of 16-byte loads and "
+METHOD = ("BoltBeam cuda_bandwidth: native {api} read-only kernels over {gib} GiB, a grid-stride loop of 16-byte loads and "
           "one block per contiguous chunk, best of {reps} per launch shape")
 SUSTAIN_S = 5.0  # about the length of a decode capture
 FACT_KEYS = ("sm_count", "shared_mem_per_sm_bytes", "l2_cache_bytes", "clock_khz", "memory_clock_khz", "memory_bus_bits",
@@ -124,6 +126,12 @@ def repeated(runs:list[dict[str, Any]], value:str, shape_value:str) -> dict[str,
           **({"uncertainty": spread(xs)} if len(xs) > 1 else {})}
 
 
+def parallel_units(facts:dict[str, Any]) -> int:
+  """How many units a grid is spread over, as the bridge's driver counts them: CUDA's SMs, HIP's multiprocessors
+  (work-group processors on RDNA). It sizes launch grids only; it is not a compute-unit count."""
+  return facts.get("sm_count") or facts.get("multiprocessor_count") or 1
+
+
 def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | None = None, bridge=None,
                      sustain_s:float = SUSTAIN_S) -> dict[str, Any]:
   """Read bandwidth of one GPU: best of `reps` per launch shape, then the best shape back to back for sustain_s."""
@@ -131,7 +139,7 @@ def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | N
   try:
     lib = cuda.library(CUDA_SRC)
     pso = {k: cuda.pipeline(lib, k)["pso"] for k in ("readsum", "readchunk4", "readchunk16")}
-    sms = cuda.facts()["sm_count"] or 1
+    sms = parallel_units(cuda.facts())
     nbytes = (gib << 30) // 16 * 16
     a, out = cuda.buffer(length=nbytes), cuda.buffer(length=max(1024 * 64 * sms, nbytes // min(c for _, c, _ in CHUNK_SHAPES)) * 4)
     n4 = struct.pack("<Q", nbytes // 16)
@@ -161,7 +169,8 @@ def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | N
     if bridge is None:
       cuda.close()
   result.update(plausibility(round(best["gbs"], 1), [r["gbs"] for r in rows], result["sustained"]["best_gbs"]))
-  result.update(schema="boltbeam.cuda_read_bandwidth.v1", method=METHOD.format(gib=gib, reps=reps) +
+  api = getattr(cuda, "API", "CUDA")
+  result.update(schema=f"boltbeam.{api.lower()}_read_bandwidth.v1", method=METHOD.format(api=api, gib=gib, reps=reps) +
                 f"; then the best shape back to back for {sustain_s:.0f} s (sustained)")
   return result
 

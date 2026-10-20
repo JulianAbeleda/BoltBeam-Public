@@ -199,20 +199,23 @@ func chipPageBody(f Facts, width int) string {
 
 // --- Setup ----------------------------------------------------------------------------------------------------
 
-// chipPickerBody is the chosen chip's facts and this model's speed limit on it.
+// chipPickerBody keeps hardware selection separate from model role analysis.
 func chipPickerBody(f Facts, width int) string {
-	var b strings.Builder
-	if f.target() != nil && f.chipKnown() {
-		b.WriteString(chipBody(f, width) + "\n")
+	t := f.target()
+	if t == nil || !f.chipKnown() {
+		return stMuted.Render("Reading the chip…")
 	}
-	if f.Ceiling != nil && f.Ceiling.Decode.TokS != nil && f.chipKnown() { // no limit for a chip nobody chose
-		fmt.Fprintf(&b, "Speed limit on %s: %.1f tokens per second (%.1f ms per token).\n", aboutChip(f), *f.Ceiling.Decode.TokS, f.Ceiling.Decode.FloorMs)
-		if s := f.Ceiling.BandwidthSource; s != nil {
-			b.WriteString(stMuted.Render(fmt.Sprintf("From memory %.1f GB/s, %s.", f.Ceiling.PeakBandwidthGBs, *s)) + "\n")
-		}
+	name := t.ID
+	if f.Targets != nil && f.Targets.ThisMachine != nil && f.Targets.ThisMachine.Name != nil && t.ID == f.ThisMachine {
+		name = *f.Targets.ThisMachine.Name
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "GPU: %s\n%s\n", name, memoryLine(f, *t))
+	if t.ID == f.ThisMachine && f.Driver != "" {
+		fmt.Fprintf(&b, "Driver: %s\n", f.Driver)
 	}
 	if f.MultiGpu != "" {
-		b.WriteString(stWarn.Render(fmt.Sprintf("%d GPUs found: %s.", f.GpuCount, f.MultiGpu)) + "\n")
+		fmt.Fprintf(&b, "%d GPUs: %s\n", f.GpuCount, f.MultiGpu)
 	}
 	return b.String()
 }
@@ -309,14 +312,44 @@ func emitAction(f Facts) action {
 	case f.Emitting:
 		return action{stMuted.Render("[ Emit ] writing the gameplan…"), "", ""}
 	case f.canEmit():
-		return action{stAccent.Render("[ Emit ]"), "emit", ""}
+		label := "[ Emit ]"
+		if f.Run.Results.Loss.Replay != nil && f.Run.Results.Loss.Replay.Forced {
+			label = "[ Emit replay report ]"
+		} else if len(f.Run.Results.Loss.Roles) == 0 && f.hasOptimizationTables() {
+			label = "[ Emit gap report ]"
+		}
+		if f.ReadOnly {
+			label += " saved run " + f.Run.ID
+		}
+		return action{stAccent.Render(label), "emit", ""}
+	}
+	if f.Run != nil && f.outputDone() {
+		return action{stMuted.Render("[ Emit ] no measured work breakdown; see report for " + f.Run.ID), "", ""}
 	}
 	return action{stMuted.Render("[ Emit ] Run first"), "", ""}
 }
 
-// canEmit: the run on screen has finished and holds a per-role table (Python refuses Emit otherwise).
+// canEmit requires a completed run with kernel-specific evidence, a measured breakdown, or a forced replay report.
 func (f Facts) canEmit() bool {
-	return f.Run != nil && f.outputDone() && !f.alive() && len(f.Run.Results.Loss.Roles) > 0
+	return f.Run != nil && f.outputDone() && !f.alive() && (len(f.Run.Results.Loss.Roles) > 0 || f.hasOptimizationTables() || (f.Run.Results.Loss.Replay != nil && f.Run.Results.Loss.Replay.Forced))
+}
+
+func (f Facts) hasOptimizationTables() bool {
+	if f.Run == nil {
+		return false
+	}
+	loss := f.Run.Results.Loss
+	if loss.WhereTokenGoes != nil && len(loss.WhereTokenGoes.Rows) > 0 {
+		return true
+	}
+	if loss.Replay != nil {
+		for _, table := range loss.Replay.Wheres {
+			if (table.Status == "measured" || table.Status == "benchmark_only") && len(table.Rows) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // --- Gameplan (Emit) --------------------------------------------------------------------------------------------
@@ -325,13 +358,28 @@ func emitLine(f Facts) (string, string) {
 	if f.Plan == nil {
 		return "open", "no gameplan yet · Emit on Setup writes one from the run on screen"
 	}
+	if f.Plan.Plan.Kind == "gap_report" {
+		return "pass", "gap report written · gameplan.md and gameplan.json"
+	}
+	if f.Plan.Plan.Kind == "replay_report" {
+		return "pass", "checked replay report emitted; timing qualification remains disclosed"
+	}
 	return "pass", fmt.Sprintf("%d roles, worst first · gameplan.md and gameplan.json written to the run", len(f.Plan.Plan.Roles))
 }
 
 // emitBody is the gameplan as Python wrote it: the same markdown, drawn in the screen's styles (renderMarkdown).
 func emitBody(f Facts, width int) string {
 	if f.Plan == nil {
-		return stMuted.Render("No gameplan yet. Emit on Setup writes one from the run on screen: per role, worst first, what kernel to emit.")
+		return stMuted.Render("No gameplan yet. Emit on Setup writes a gap report from the measured work, or kernel implementation instructions when supported.")
+	}
+	if f.Plan.Plan.Kind == "gap_report" && len(f.Plan.Plan.Tables) > 0 && f.Plan.Plan.Presentation.Summary != "" {
+		var b strings.Builder
+		b.WriteString(renderMarkdown(f.Plan.Plan.Presentation.Summary) + "\n")
+		for _, table := range f.Plan.Plan.Tables {
+			b.WriteString(whereBody(&table))
+		}
+		b.WriteString(renderMarkdown(strings.TrimRight(f.Plan.Plan.Presentation.Details, "\n")))
+		return b.String()
 	}
 	return renderMarkdown(strings.TrimRight(f.Plan.Markdown, "\n"))
 }
@@ -388,10 +436,10 @@ func modelChoices(f Facts) []action {
 		if path == f.Path {
 			mark = stAccent.Render("● ")
 		}
-		out = append(out, action{mark + path, "file", path})
+		out = append(out, action{mark + modelLabel(path), "file", path})
 	}
 	if f.Path != "" && !contains(f.Files, f.Path) {
-		out = append(out, action{stAccent.Render("● ") + f.Path, "file", f.Path})
+		out = append(out, action{stAccent.Render("● ") + modelLabel(f.Path), "file", f.Path})
 	}
 	typed := "  Type a path"
 	if f.Editing {
@@ -436,6 +484,7 @@ func engineBody(f Facts, width int) string {
 	b.WriteString("The engine is the runtime that decodes the model. Only engines found on " + here() + " can be picked. " +
 		"They are looked for at start; an env var (BOLTBEAM_LLAMA_BENCH, BOLTBEAM_TINYGRAD_ROOT, …) overrides what was found.\n\n")
 	for _, p := range f.Providers.Providers {
+		p = f.modelProvider(p)
 		if !p.Available {
 			continue // the picker lists these, with why, under one row
 		}
@@ -458,6 +507,7 @@ func engineActions(f Facts) []action {
 	}
 	out := []action{}
 	for _, p := range f.Providers.Providers {
+		p = f.modelProvider(p)
 		chosen := "  "
 		if p.Provider == f.Engine {
 			chosen = stAccent.Render("● ")
@@ -639,6 +689,8 @@ func savedActions(f Facts) []action {
 		for _, r := range f.Saved.Runs {
 			pct := "not measured"
 			switch {
+			case r.ValidationFailed:
+				pct = "FAILED validation"
 			case r.PctOfLimit != nil:
 				pct = fmt.Sprintf("%.0f%% of limit", *r.PctOfLimit)
 			case r.RooflinePct != nil: // a replay: the session against its roofline
@@ -721,12 +773,32 @@ func (f Facts) provider(name string) *seam.ProviderRow {
 	if f.Providers == nil {
 		return nil
 	}
-	for i, p := range f.Providers.Providers {
+	for _, p := range f.Providers.Providers {
 		if p.Provider == name {
-			return &f.Providers.Providers[i]
+			p = f.modelProvider(p)
+			return &p
 		}
 	}
 	return nil
+}
+
+// modelProvider combines installed-engine availability with its declared formats.
+func (f Facts) modelProvider(p seam.ProviderRow) seam.ProviderRow {
+	if f.Profile == nil || len(p.Formats) == 0 {
+		return p
+	}
+	format := f.Profile.Metadata.FormatFamily
+	if format == "" {
+		return p
+	}
+	for _, supported := range p.Formats {
+		if format == supported {
+			return p
+		}
+	}
+	reason := p.Provider + " cannot read " + format + "; choose " + strings.Join(p.Formats, " or ")
+	p.Available, p.State, p.Reason = false, "not_compatible", &reason
+	return p
 }
 
 // with names a run's provider for a label: " · llama.cpp", or "" when the run does not say.
@@ -818,7 +890,7 @@ func modelActions(f Facts) []action {
 		out[0].label = f.Input + stCursor.Render("▏")
 	}
 	for _, path := range f.Files {
-		out = append(out, action{"Read " + path, "file", path})
+		out = append(out, action{"Read " + modelLabel(path), "file", path})
 	}
 	return out
 }

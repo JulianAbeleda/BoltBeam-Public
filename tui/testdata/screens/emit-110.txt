@@ -4,21 +4,21 @@
 │ Gameplan: Qwen3-8B on apple_m3_10c                                                                         │
 │                                                                                                            │
 │ Run qwen3-8b-apple_m3_10c-005 · llama.cpp · batch 1 · GGUF Q4_K+Q6_K                                       │
-│ Measured 55.1 ms per token (18.1 tok/s); the limit is 48.0 ms (20.8 tok/s); 87% of the limit; 7.1 ms per   │
+│ Measured 55.1 ms per token (18.1 tok/s); the limit is 48.2 ms (20.7 tok/s); 87% of the limit; 6.9 ms per   │
 │ token lost.                                                                                                │
 │ Per-role source: isolated (BoltBeam kernel timer, llama.cpp kernels from ggml 0.19.0 at                    │
 │ /opt/homebrew/opt/ggml/libexec/libggml-metal.so).                                                          │
 │   evidence: timing_trace.json › rows[0], machine_facts.json › gpus[0], measure_status.json                 │
 │                                                                                                            │
 │ Where the token goes (estimate)                                                                            │
-│ ms per token at context 128, worst first; tok/s if fixed is the 55.1 ms token (18.1 tok/s) less that row's │
-│ lost ms. ms at chip best is the limit: a token's limit is its bytes at the bandwidth, and no matrix path   │
-│ moves fewer. Estimate: each weight kernel was timed alone; the rest of the token (untimed weights,         │
-│ attention, norms, launches and gaps) is the difference (estimate from isolated times).                     │
+│ Context 128 · 55.12 ms/token. No model = measured time, unknown savings. Roofline is an upper bound.       │
+│ Estimate from isolated weight timings; the remaining time is inferred. % of peak uses isolated time minus  │
+│ the measured dispatch floor. +tok/s allocates headroom by time difference; cumulative reconciles the       │
+│ roofline. These are accounting shares, not predicted speedups.                                             │
 │                                                                                                            │
-│ row              ms now ms at limit ms at chip best ms lost share tok/s if fixed % of peak                 │
-│ attn_kv Q4_K       4.26        1.31            1.31    2.95   43%           19.2     26.6%                 │
-│ attn_qo Q4_K       9.27        6.99            6.99    2.28   33%           18.9     65.0%                 │
+│ row                 ms now ms at limit ms at chip best ms above limit share + Tok/S if roofline cumulativ… │
+│ Model operations                                                                                           │
+│ attn_kv Q4_K          4.26        1.31            1.31           2.95   43%                +1.1          … │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                                                  │
@@ -26,5 +26,5 @@
 │ ▸ Open the gameplan (gameplan.md)                                                                          │
 │   [ Back to setup ]                                                                                        │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-Wrote gameplan.md and gameplan.json in <runs>/.work/qwen3-8b-apple_m3_10c-005.
+Wrote gameplan.md and gameplan.json for qwen3-8b-apple_m3_10c-005.
  ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit

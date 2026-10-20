@@ -3,8 +3,45 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestNestedCheckpointsAreSelectableWithoutShards(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, "models")
+	for _, name := range []string{"Example-AWQ", "Example-NVFP4"} {
+		dir := filepath.Join(root, "engine-checkpoints", name)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		cfg := `{"model_type":"qwen3","quantization_config":{"quant_method":"awq"}}`
+		if strings.HasSuffix(name, "NVFP4") {
+			cfg = `{"model_type":"qwen3","quantization_config":{"quant_method":"modelopt","quant_algo":"NVFP4"}}`
+		}
+		for file, data := range map[string]string{"config.json": cfg, "model-00001-of-00002.safetensors": "weights", "model-00002-of-00002.safetensors": "weights"} {
+			if err := os.WriteFile(filepath.Join(dir, file), []byte(data), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	m := Model{}
+	got := m.findFiles()().(filesMsg)
+	if len(got) != 2 {
+		t.Fatalf("want two checkpoints, got %v", got)
+	}
+	for i, quant := range []string{"AWQ", "NVFP4"} {
+		want := "Example-" + quant + " · Safetensors / " + quant
+		if label := modelLabel(got[i]); label != want {
+			t.Fatalf("got %q, want %q", label, want)
+		}
+		choices := modelChoices(Facts{Files: []string{got[i]}})
+		if choices[0].arg != got[i] {
+			t.Fatal("selection lost checkpoint path")
+		}
+	}
+}
 
 // The Model picker lists every model file in the model's folder, in name order, with no cap: on the 5090 box a
 // folder of 16 .gguf files showed 10 and hid both 27B models and the 8B the wrapper passed (2026-10-10).

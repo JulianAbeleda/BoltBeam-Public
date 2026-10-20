@@ -12,6 +12,8 @@ import shutil
 import subprocess
 from typing import Any
 
+from boltbeam.target import toolkits
+
 from boltbeam.vocab import (SCHEMA_HARDWARE_PROFILE, SCHEMA_PROVIDER_CAPABILITIES,
                             SCHEMA_RUNTIME_PROFILE, SCHEMA_SCAN_EVIDENCE)
 from boltbeam.target.targets import (TARGETS, family_target, is_exact_target, is_local, match_target,
@@ -38,14 +40,7 @@ def _run_command(argv:tuple[str, ...]) -> tuple[int, str, str]:
 
 
 def _tool_path(name:str, resolver) -> str | None:
-  found = resolver(name)
-  if found:
-    return str(found)
-  if name == "nvcc":
-    conventional = pathlib.Path("/usr/local/cuda/bin/nvcc")
-    if conventional.is_file():
-      return str(conventional)
-  return None
+  return toolkits.tool(name, resolver)
 
 
 def _as_int(value:str) -> int | None:
@@ -79,18 +74,23 @@ def match_facts(device:dict[str, Any]) -> dict[str, Any]:
          "memory_gib": _gib(device.get("memory_bytes") or device.get("unified_memory_bytes"))}
   if device.get("vendor") == "apple":
     out.update(apple_soc=device.get("apple_soc"), gpu_cores=device.get("gpu_cores"))
+  elif device.get("vendor") == "amd":
+    out["compute_units"] = device.get("compute_units")
   else:
     out["compute_capability"] = device.get("compute_capability")
   return out
 
 
 def chip_profile_id(device:dict[str, Any]) -> str | None:
-  """The id a profile made for this device gets, derived from the hardware: nvidia_<name>_<GiB>g or
-  apple_<soc>_<cores>c_<GiB>g. None when the scan lacks a fact the id needs."""
+  """The id a profile made for this device gets, derived from the hardware: nvidia_<name>_<GiB>g,
+  amd_<name>_<GiB>g or apple_<soc>_<cores>c_<GiB>g. None when the scan lacks a fact the id needs."""
   gib = _gib(device.get("memory_bytes") or device.get("unified_memory_bytes"))
   if device.get("vendor") == "nvidia" and device.get("name") and gib:
     name = re.sub(r"^NVIDIA\s+", "", device["name"])
     return f"nvidia_{_slug(name)}_{gib}g"
+  if device.get("vendor") == "amd" and device.get("name") and gib:
+    name = re.sub(r"^AMD\s+", "", device["name"])
+    return f"amd_{_slug(name)}_{gib}g"
   if device.get("vendor") == "apple" and device.get("apple_soc") and device.get("gpu_cores") and gib:
     return f"apple_{_slug(device['apple_soc'])}_{device['gpu_cores']}c_{gib}g"
   return None
@@ -101,6 +101,55 @@ def _profile(device:dict[str, Any], matched:str | None) -> dict[str, Any]:
   if matched:
     return {"status": "known", "source": "generated" if is_local(matched) else "registry", "id": matched}
   return {"status": "new", "source": None, "id": chip_profile_id(device)}
+
+
+def _known(value:Any) -> Any:
+  """amd-smi writes "N/A" for a fact the driver does not expose; that is unknown, not a value."""
+  return None if value in (None, "", "N/A") else value
+
+
+# amd-smi's size units in bytes. Its "MB" counts MiB: 32624 "MB" is the 34,208,743,424 bytes the kernel's
+# mem_info_vram_total reports for the same card. A unit not listed leaves the size unknown.
+_AMD_SMI_UNITS = {"B": 1, "KB": 1 << 10, "MB": 1 << 20, "GB": 1 << 30}
+
+
+def _probe_amd(amd_smi:str, run_command) -> tuple[list[dict[str, Any]], str | None]:
+  """Every AMD GPU from one `amd-smi static` call: name, gfx target, compute units, VRAM, PCI address, driver.
+  The gfx target the driver reports is the architecture; nothing is inferred from the name."""
+  argv = (amd_smi, "static", "--asic", "--vram", "--bus", "--driver", "--json")
+  code, stdout, stderr = run_command(argv)
+  if code != 0:
+    return [], (stderr.strip() or f"amd-smi exited with status {code}")
+  try:
+    data = json.loads(stdout)
+  except json.JSONDecodeError as exc:
+    return [], f"amd-smi returned output that is not JSON: {exc}"
+  rows = data.get("gpu_data", []) if isinstance(data, dict) else data
+  devices = []
+  for row in rows if isinstance(rows, list) else []:
+    asic, vram, bus, driver = (row.get(k) or {} for k in ("asic", "vram", "bus", "driver"))
+    size = vram.get("size") or {}
+    scale, value = _AMD_SMI_UNITS.get(size.get("unit")), _as_int(str(size.get("value")))
+    memory_bytes = value * scale if scale and value is not None else None
+    arch = _known(asic.get("target_graphics_version"))
+    device = {"vendor": "amd", "name": _known(asic.get("market_name")), "architecture": arch,
+              "compute_units": asic.get("num_compute_units") if isinstance(asic.get("num_compute_units"), int) else None,
+              "memory_bytes": memory_bytes}
+    matched = match_target(match_facts(device))
+    target_id = matched or (f"amd_{arch}" if arch else None)
+    devices.append({
+      **device,
+      "uuid": _known(asic.get("asic_serial")),
+      "pci_bus_id": _known(bus.get("bdf")),
+      "memory_type": _known(vram.get("type")),
+      "memory_bus_bits": vram.get("bit_width") if isinstance(vram.get("bit_width"), int) else None,
+      "target_id": target_id,
+      "target_registered": target_id in TARGETS if target_id else False,
+      "driver_version": _known(driver.get("version")),
+      "match": match_facts(device),
+      "profile": _profile(device, matched),
+    })
+  return devices, None if devices else "amd-smi returned no GPU rows"
 
 
 def _probe_nvidia(nvidia_smi:str, run_command) -> tuple[list[dict[str, Any]], str | None]:
@@ -234,7 +283,8 @@ def _hardware_profile(*, run_command=_run_command, tool_resolver=None,
   mem = _meminfo()
   resolver = tool_resolver or shutil.which
   tool_paths = {name: _tool_path(name, resolver)
-                for name in ("nvidia-smi", "rocm-smi", "rocminfo", "hipcc", "nvcc", "system_profiler")}
+                for name in ("nvidia-smi", "amd-smi", "rocm-smi", "rocminfo", "rocprofv3", "hipcc", "nvcc",
+                             "system_profiler")}
   gpu: dict[str, Any] = {
     "status": "not_probed",
     "notes": ["No supported GPU probe was available; provider-specific evidence may add hardware facts."],
@@ -277,6 +327,13 @@ def _hardware_profile(*, run_command=_run_command, tool_resolver=None,
       }
     else:
       gpu.update(status="probe_failed", notes=[error or "nvidia-smi probe failed"])
+  elif tool_paths["amd-smi"]:
+    devices, error = _probe_amd(tool_paths["amd-smi"], run_command)
+    if devices:
+      gpu = {**gpu, "status": "detected", **devices[0], "devices": devices,
+             "notes": ["Primary GPU is the first device returned by amd-smi."]}
+    else:
+      gpu.update(status="probe_failed", notes=[error or "amd-smi probe failed"])
   return {
     "schema": SCHEMA_HARDWARE_PROFILE,
     "cpu": {

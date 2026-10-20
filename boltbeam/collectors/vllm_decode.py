@@ -7,10 +7,11 @@ Whole step: the offline LLM API at a fixed context and batch, N tokens minus 1 t
 docstring says how). This is chosen over `vllm bench latency`: that reports whole requests, prefill included, so
 its per-token time depends on the prompt; the difference of two calls with the same prefill is the decode alone.
 
-Per role: the driver under nsys (--cuda-graph-trace=node, so the kernels inside vLLM's CUDA graphs are seen),
-twice, N and 1 tokens, subtracted and attributed by bytes and count (engine_common.captured_role_time). The
-capture runs the engine in the driver's own process (VLLM_ENABLE_V1_MULTIPROCESSING=0) so nsys traces one
-process; the timed run keeps vLLM's default.
+Per role: production CUDA-graph timing is joined to compiled graphless labels by exact kernel sequence.
+Only single-stream captures are supported; other batches refuse rather than subtract independent programs.
+The join reads Nsight Systems' trace, so per role is NVIDIA only; on AMD (vLLM's ROCm build) the whole step is
+measured and per role refuses.
+The capture runs in-process (VLLM_ENABLE_V1_MULTIPROCESSING=0); whole-step timing keeps vLLM's default.
 """
 from __future__ import annotations
 
@@ -22,8 +23,8 @@ from boltbeam.collectors import engine_common as ec
 PROVIDER = "vllm"
 PROVIDER_ID = "vllm/offline-llm-decode"
 TRACE = "vllm_timing_trace.json"
-FORMATS = ("safetensors",)  # vLLM reads a Hugging Face folder; BoltBeam does not run vLLM on a GGUF
-BACKENDS = ("CUDA",)
+FORMATS = ("safetensors", "awq", "gptq")  # vLLM reads a Hugging Face folder; BoltBeam does not run vLLM on a GGUF
+BACKENDS = ("CUDA", "AMD")  # vLLM's CUDA and ROCm builds; the target's backend says which this machine has
 ENV = "BOLTBEAM_VLLM_PYTHON"
 DRIVER = ec.RUNTIME / "vllm_decode_drive.py"
 TOKENS, REPS = 64, 3
@@ -43,7 +44,7 @@ def python(env:dict[str, str] | None = None) -> str | None:
 def available(target, env:dict[str, str] | None = None) -> str | None:
   """Why vLLM cannot measure this target here, or None when it can."""
   if target.backend not in BACKENDS:
-    return f"BoltBeam runs vLLM on NVIDIA GPUs only; {target.target_id} is {target.backend}"
+    return f"BoltBeam runs vLLM on {' or '.join(BACKENDS)} GPUs; {target.target_id} is {target.backend}"
   py = python(env)
   if py is None:
     return f"vLLM was not found: set ${ENV} to the python of the venv vLLM is installed in"
@@ -67,16 +68,12 @@ def argv(model:str, contexts:list[int], batches:list[int], *, tokens:int = TOKEN
 def whole_step(model:str, contexts:list[int], batches:list[int], *, log:pathlib.Path | None = None,
                tokens:int = TOKENS, settings:list[str] | None = None) -> list[dict[str, Any]]:
   rows = ec.run_driver([*argv(model, contexts, batches, tokens=tokens), *(settings or [])], log=log, env={**ec.venv_env(python()), **RUN_ENV})
-  return [ec.point(r["context"], r["batch"], r["step_ms"], tokens=r["tokens"], engine=r.get("engine", {}), source="vLLM offline LLM API, "
+  return [ec.point(r["context"], r["batch"], r["step_ms"], tokens=r["tokens"], engine=r.get("engine", {}),
+                   step_samples_ms=r.get('step_samples_ms'),repeat_band_ms=r.get('repeat_band_ms'),source="vLLM offline LLM API, "
                    "N tokens minus 1 token, CUDA graphs on, vLLM's own sampler") for r in rows]
 
 
 def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int, batch:int = 1,
               tokens:int = ROLE_TOKENS) -> dict[str, Any]:
-  from boltbeam.collectors.capture_settings import context_limit
-  limit = context_limit(run, context, 'max_model_len')
-  from boltbeam.collectors.capture_settings import vllm_flags
-  flags = vllm_flags(run, context, capture=True)
-  return ec.captured_role_time(run, provider=PROVIDER, trace=TRACE, target=target, model_id=model_id,
-                               context=context, tokens=tokens, batch=batch, env={**ec.venv_env(python()), **CAPTURE_ENV},
-                               argv_for=lambda n: [*argv(model, [context], [batch], tokens=n, reps=1, once=n, context_limit=limit), *flags])
+  from boltbeam.collectors.vllm_semantic_decode import collect
+  return collect(run,target=target,model=model,context=context,tokens=tokens,batch=batch)

@@ -58,9 +58,21 @@ def check(provider:str) -> str:
   return provider
 
 
-def kv_element(provider:str) -> tuple[int, str]:
+def kv_element(provider:str, run:pathlib.Path | None = None) -> tuple[float, str]:
   """KV cache bytes per element in this engine as it runs by default, and where that fact comes from (each
   adapter's KV_ELEMENT)."""
+  if run is not None:
+    for name in (TRACES.get(provider), 'timing_trace.json'):
+      if not name or not (run / name).is_file():
+        continue
+      for row in json.loads((run / name).read_text()).get('rows', []):
+        engine = row.get('engine') or {}
+        dtype = engine.get('kv_cache_dtype') or engine.get('type_k')
+        if dtype:
+          from boltbeam.roofline.prefill_work import elem_bytes
+          normalized = {'bfloat16': 'BF16', 'float16': 'F16', 'float32': 'F32',
+                        'fp8': 'FP8_E4M3', 'fp8_e4m3': 'FP8_E4M3'}.get(dtype, dtype.upper())
+          return elem_bytes(normalized), f'{name}: resolved engine KV cache dtype {dtype}'
   m = ENGINES.get(provider)
   return getattr(m, "KV_ELEMENT", None) or (2, "f16 assumed")
 
@@ -163,11 +175,13 @@ def capture_method(provider:str, backend:str, measurement:str = "auto") -> dict[
   return {"method": p["method"], "reason": None, "cross_check": engine_kernels.METHOD if isolated is None else None}
 
 
-def _why(name:str, target, tinygrad_root:pathlib.Path | None) -> str | None:
+def _why(name:str, target, tinygrad_root:pathlib.Path | None, *, cached:bool = False) -> str | None:
   if name == llama_bench_decode.PROVIDER:
     return llama_bench_decode.available()
   if name == tinygrad_role_time.PROVIDER:
     return tinygrad_role_time.available(target, tinygrad_root)
+  if cached and name == trtllm_decode.PROVIDER:
+    return trtllm_decode.available(target, cached=True)
   return ENGINES[name].available(target)
 
 
@@ -182,12 +196,12 @@ def state(name:str, target, why:str | None) -> str:
   return "not_compatible" if backends is not None and target.backend not in backends else "not_here"
 
 
-def available(target, *, tinygrad_root:pathlib.Path | None = None) -> list[dict[str, Any]]:
+def available(target, *, tinygrad_root:pathlib.Path | None = None, cached:bool = False) -> list[dict[str, Any]]:
   """Every provider, whether it can measure this target on this machine, the weights it reads, and how step 5
   would time its roles."""
   out = []
   for name in NAMES:
-    why = _why(name, target, tinygrad_root)
+    why = _why(name, target, tinygrad_root, cached=cached)
     out.append({"provider": name, "available": why is None, "state": state(name, target, why), "reason": why, "formats": list(FORMATS[name]),
                 "capture": capture_method(name, target.backend),
                 "measurement": measurement_options(name, target.backend),
@@ -349,7 +363,8 @@ def engine_trace(manifest:dict[str, Any], *, provider:str, provider_id:str, coll
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
   ones = sorted((p for p in points if p["batch"] == 1), key=lambda p: p["context"])
   rows = [{"scope": "whole_step", "context": p["context"], "wall_us": p["step_ms"] * 1000.0, "tok_s": p["tok_s_stream"],
-           "decode_tokens": p.get("tokens"), "batch": 1, "source": p.get("source"), "engine": p.get("engine", {})} for p in ones]
+           "decode_tokens": p.get("tokens"), "batch": 1, "source": p.get("source"), "engine": p.get("engine", {}),
+           **{k:p[k] for k in ('step_samples_ms','repeat_band_ms') if p.get(k) is not None}} for p in ones]
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
            "workload": manifest["workload"], "provider": provider, "provider_id": provider_id,
            "collector_id": collector_id, "weight_format": weights, "timing_source": f"{provider} whole step",
@@ -376,8 +391,8 @@ def measure_engine(run:pathlib.Path, provider:str, *, batches:list[int] | tuple[
   if why := m.available(target) or reads(provider, model):
     raise RuntimeError(why)
   request = read_json(run / "trace_request.json")
-  from boltbeam.collectors.capture_settings import contexts as requested_contexts, require_supported
-  require_supported(run, ("chunk_size",) if provider == "vllm" else ())
+  from boltbeam.collectors.capture_settings import VLLM_SETTINGS, contexts as requested_contexts, require_supported
+  require_supported(run, VLLM_SETTINGS if provider == "vllm" else ())
   contexts = requested_contexts(run)
   options = {}
   if provider == "vllm":
@@ -448,11 +463,11 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
   from boltbeam.target.targets import get_target
   from boltbeam.workflow.common import load_manifest
   check(provider)
-  from boltbeam.collectors.capture_settings import selected_context, require_supported, decode_tokens
+  from boltbeam.collectors.capture_settings import VLLM_SETTINGS, selected_context, require_supported, decode_tokens
   context = selected_context(run, context)
   tokens = decode_tokens(run, context)
   if provider != llama_bench_decode.PROVIDER:
-    require_supported(run, ("chunk_size",) if provider == "vllm" else ())
+    require_supported(run, VLLM_SETTINGS if provider == "vllm" else ())
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
   gpu = gpu_free(target.backend)
@@ -485,6 +500,13 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
     except Exception as exc:  # the cross-check is extra evidence: its failure is recorded, never the run's
       (run / CROSS_CHECK).write_text(json.dumps({"capture": {"method": engine_kernels.METHOD, "reason": f"failed: {exc}"}, "rows": []}))
   from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
+  if trace.get('schema')=='boltbeam.decode_capture.v1':
+    # This ledger already carries per-operation work and verified provenance.
+    # The legacy weight-only loss calculator cannot represent recurrent stages.
+    from boltbeam.workflow.work_evidence import verify
+    for capture in trace['contexts'].values():
+      verify(run,capture)
+    return trace
   ceil = _measured_vs_ceiling(manifest, _optional(run, "model_profile.json"))
   table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), for_decode(run, trace))
   if table and table["status"] != "measured":
@@ -519,7 +541,18 @@ def run_build(run:pathlib.Path) -> str | None:
     got = r.get("build") or e.get("build") or e.get("vllm") or r.get("vllm")
     if got:
       return str(got)
-  return None
+  return _replay_build(run).get("build")
+
+
+def _replay_build(run:pathlib.Path) -> dict[str, Any]:
+  """Read engine identity from retained replay evidence, including older traces."""
+  import json
+  from boltbeam.collectors.replay import build_metadata, SERVER_LOG
+  p = run / "timing_trace.json"
+  trace = json.loads(p.read_text()) if p.exists() else {}
+  server = next((r for r in trace.get("rows") or [] if r.get("scope") == "server"), {})
+  log = run / SERVER_LOG
+  return build_metadata(trace.get("provider"), server.get("version"), log.read_text(errors="replace") if log.exists() else "")
 
 
 def _trace_field(run:pathlib.Path, key:str) -> Any:
@@ -535,6 +568,8 @@ def _trace_field(run:pathlib.Path, key:str) -> Any:
 def run_build_number(run:pathlib.Path) -> int | None:
   """llama.cpp's build number (11429) a run measured, from its untraced rows; None for older runs and other engines."""
   got = _trace_field(run, "build_number")
+  if got is None:
+    got = _replay_build(run).get("build_number")
   return int(got) if got is not None else None
 
 

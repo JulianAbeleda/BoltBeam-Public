@@ -25,6 +25,7 @@ import hashlib
 import json
 import pathlib
 import re
+from functools import lru_cache
 import shutil
 import subprocess
 from typing import Any, Iterable
@@ -50,7 +51,11 @@ def signature(instr:str) -> tuple[str, str] | None:
   types = [p for p in parts[at + 1:] if p not in _SKIP and not p.startswith("kind::")]
   if len(types) < 4:
     return None
-  return types[1], types[3]
+  # Block-scale format/vector length identifies a distinct instruction path. MXFP4
+  # and NVFP4 have the same operands but must not borrow one another's probe.
+  scale = next((p for p in parts if p.startswith("scale_vec::")), None)
+  operand = types[1] + (f"/{types[-1]}/{scale}" if scale else "")
+  return operand, types[3]
 
 
 SIGNATURES = {signature(p.ptx): p.name for p in PATHS}
@@ -88,6 +93,7 @@ def ptx_entries(lines:Iterable[str]) -> dict[str, dict[str, int]]:
   return out
 
 
+@lru_cache(maxsize=4096)
 def template(name:str) -> str:
   """A kernel name cut to its template, as the matcher compares it: no return type, no argument list, no launch
   grid, casts and spaces out (cuda_device.normalise_symbol)."""
@@ -110,14 +116,15 @@ def library_table(library:str | pathlib.Path, *, cache:pathlib.Path | None = Non
                   cuobjdump:str | None = None) -> dict[str, Any]:
   """{template: paths} for every kernel in a CUDA library, from its embedded PTX; cached by the library's sha256.
   The record says which tool read it and the library's hash."""
-  from boltbeam.runtime.cuda_device import default_cache, demangle, find_nvcc
+  from boltbeam.runtime.cuda_device import default_cache, demangle, find_cuda_tool
   lib = pathlib.Path(library)
   sha = hashlib.sha256(lib.read_bytes()).hexdigest()
   cache = cache or default_cache()
-  cached = cache / f"paths-{sha[:16]}.json"
+  decoder = hashlib.sha256(repr(sorted(SIGNATURES.items(), key=str)).encode()).hexdigest()[:12]
+  cached = cache / f"paths-{sha[:16]}-{decoder}.json"
   if cached.exists():
     return json.loads(cached.read_text())
-  tool = cuobjdump or shutil.which("cuobjdump") or (str(pathlib.Path(find_nvcc() or "").with_name("cuobjdump")) if find_nvcc() else None)
+  tool = cuobjdump or find_cuda_tool('cuobjdump')
   if not tool or not pathlib.Path(tool).exists() and not shutil.which(tool):
     raise RuntimeError("cuobjdump is not installed: a kernel's matrix path cannot be read from its library")
   proc = subprocess.Popen([tool, "--dump-ptx", str(lib)], stdout=subprocess.PIPE, text=True)
@@ -143,10 +150,11 @@ def library_table(library:str | pathlib.Path, *, cache:pathlib.Path | None = Non
 # is judged on the same instruction the probe measured: `HMMA.16816.F32.BF16` is whatever the bf16 probe compiles to.
 
 _SASS_MMA = re.compile(r"\b[A-Z]*MMA(?:\.[A-Z0-9_]+)+")
+_SASS_FMA = re.compile(r"\bFFMA(?:\.[A-Z0-9_]+)*\b")
 _SASS_FUNC = re.compile(r"^\s*\.text\.(\S+):")
 
 
-def sass_entries(lines:Iterable[str]) -> dict[str, dict[str, int]]:
+def sass_entries(lines:Iterable[str], *, include_scalar:bool = False) -> dict[str, dict[str, int]]:
   """{mangled function: {matrix opcode: sites}} over nvdisasm output; a function with no matrix opcode has {}."""
   out: dict[str, dict[str, int]] = {}
   cur = None
@@ -156,14 +164,14 @@ def sass_entries(lines:Iterable[str]) -> dict[str, dict[str, int]]:
       cur = m.group(1)
       out.setdefault(cur, {})
       continue
-    if cur and "MMA" in line:
-      for op in _SASS_MMA.findall(line):
+    if cur:
+      for op in _SASS_MMA.findall(line) + (_SASS_FMA.findall(line) if include_scalar else []):
         out[cur][op] = out[cur].get(op, 0) + 1
   return out
 
 
 def sass_signatures(arch:str, *, cache:pathlib.Path | None = None, nvcc:str | None = None,
-                    nvdisasm:str | None = None) -> dict[str, str]:
+                    nvdisasm:str | None = None, include_scalar:bool = False) -> dict[str, str]:
   """{matrix opcode: path} for this GPU: each probe path (cuda_compute.PATHS) compiled for `arch` (sm_XY), its matrix
   opcode read back. A path that does not compile here is left out (its opcodes then read as unknown)."""
   from boltbeam.collectors.cuda_compute import source
@@ -171,19 +179,19 @@ def sass_signatures(arch:str, *, cache:pathlib.Path | None = None, nvcc:str | No
   nvcc = nvcc or find_nvcc()
   out: dict[str, str] = {}
   for p in PATHS:
-    if p.kind != "mma" or not nvcc:
+    if (p.kind != "mma" and not (include_scalar and p.kind == "fma")) or not nvcc:
       continue
     try:
       cubin = build_cubin(nvcc, source(p), cache=cache, arch=arch + p.arch_suffix)
     except RuntimeError:
       continue
-    for ops in _disassemble(cubin, nvdisasm, cache).values():
+    for ops in _disassemble(cubin, nvdisasm, cache, include_scalar=p.kind == "fma").values():
       for op in ops:
         out.setdefault(op, p.name)
   return out
 
 
-def _disassemble(cubin:bytes, nvdisasm:str | None, cache:pathlib.Path | None) -> dict[str, dict[str, int]]:
+def _disassemble(cubin:bytes, nvdisasm:str | None, cache:pathlib.Path | None, *, include_scalar:bool = False) -> dict[str, dict[str, int]]:
   from boltbeam.runtime.cuda_device import default_cache
   tool = nvdisasm or shutil.which("nvdisasm")
   if not tool:
@@ -196,7 +204,7 @@ def _disassemble(cubin:bytes, nvdisasm:str | None, cache:pathlib.Path | None) ->
   proc = subprocess.run([tool, "-c", str(f)], capture_output=True, text=True, timeout=1800)
   if proc.returncode != 0:
     raise RuntimeError(f"nvdisasm {f} exited {proc.returncode}: {proc.stderr.strip()[-200:]}")
-  return sass_entries(proc.stdout.splitlines())
+  return sass_entries(proc.stdout.splitlines(), include_scalar=include_scalar)
 
 
 def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures:dict[str, str], *,
@@ -206,7 +214,7 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
   disassembled. Each opcode is mapped to a path by `signatures` (sass_signatures); one it does not know is
   `unknown:OPCODE`. The library's symbol index and every disassembled cubin's table are cached by hash."""
   import tempfile
-  from boltbeam.runtime.cuda_device import default_cache, demangle, elf_symbols
+  from boltbeam.runtime.cuda_device import default_cache, demangle, elf_symbols, find_cuda_tool
   lib = pathlib.Path(library)
   sha = hashlib.sha256(lib.read_bytes()).hexdigest()
   cache = cache or default_cache()
@@ -216,7 +224,20 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
     index = json.loads(index_file.read_text()) if index_file.exists() else None
   except ValueError:
     index = None
-  tool = cuobjdump or shutil.which("cuobjdump")
+  if index is not None:
+    renamed={s:template(d) for s,d in demangle([s for s in index['symbols'] if s.startswith('_Z')]).items() if s!=d}
+    if renamed:
+      for field in ('symbols','paths'):
+        index[field]={renamed.get(s,s):v for s,v in index[field].items()}
+      index_file.write_text(json.dumps(index,sort_keys=True))
+    # Saved unknown opcodes retain enough evidence to resolve newly measured
+    # paths without rereading multi-GB libraries. Do not guess an opcode alias.
+    for paths in index['paths'].values():
+      for old in list(paths):
+        if old.startswith('unknown:') and old[8:] in signatures:
+          new = signatures[old[8:]]
+          paths[new] = paths.get(new, 0) + paths.pop(old)
+  tool = cuobjdump or find_cuda_tool('cuobjdump')
   with tempfile.TemporaryDirectory(dir=cache) as tmp:
     if index is None or any(t in index["symbols"] and t not in index["paths"] for t in wanted):
       if not tool:
@@ -297,8 +318,9 @@ def kernel_path(name:str, table:dict[str, dict[str, int]], observed:dict[str, di
   known = {p: n for p, n in paths.items() if not p.startswith("unknown:")}
   if not paths:
     return {"path": None, "paths": {}, "status": "none", "words": NO_MATRIX}
-  if not known:
-    return {"path": None, "paths": paths, "status": "not_found", "words": f"matrix instruction of no measured path: {next(iter(paths))[8:]}"}
+  unknown = [p for p in paths if p.startswith("unknown:")]
+  if unknown:
+    return {"path": None, "paths": paths, "status": "not_found", "words": "matrix instruction of no measured path: " + ", ".join(p[8:] for p in unknown)}
   if len(known) == 1:
     p = next(iter(known))
     return {"path": p, "paths": known, "status": "one", "words": p}
@@ -313,7 +335,7 @@ FROM_NCU = "observed by ncu"
 NCU_ENV = "BOLTBEAM_NCU"  # set to 1 to run ncu on a capture's closed kernels
 
 
-def ncu_entries(lines:Iterable[str]) -> dict[str, dict[str, int]]:
+def ncu_entries(lines:Iterable[str], *, include_scalar:bool = False) -> dict[str, dict[str, int]]:
   """{kernel name: {matrix opcode: warp instructions executed}} from `ncu -i R --page source --print-source sass
   --csv`: one "Kernel Name" line per profiled launch, then its SASS lines; launches of one name are summed."""
   import csv
@@ -325,21 +347,24 @@ def ncu_entries(lines:Iterable[str]) -> dict[str, dict[str, int]]:
       out.setdefault(cur, {})
     elif cur is not None and col is None and "Source" in row and "Instructions Executed" in row:
       col = (row.index("Source"), row.index("Instructions Executed"))
-    elif cur is not None and col is not None and len(row) > max(col) and "MMA" in row[col[0]]:
-      n = int(float(row[col[1]] or 0))
-      for op in _SASS_MMA.findall(row[col[0]]):
-        out[cur][op] = out[cur].get(op, 0) + n
+    elif cur is not None and col is not None and len(row) > max(col):
+      ops = _SASS_MMA.findall(row[col[0]]) + (_SASS_FMA.findall(row[col[0]]) if include_scalar else [])
+      if ops:
+        n = int(float(row[col[1]] or 0))
+        for op in ops:out[cur][op] = out[cur].get(op, 0) + n
   return out
 
 
 def ncu_table(entries:dict[str, dict[str, int]], signatures:dict[str, str]) -> dict[str, dict[str, int]]:
   """{template: {path: instructions executed}}: each executed opcode mapped by the probe's own (sass_signatures),
-  one it does not know as unknown:OPCODE; a kernel that executed no matrix instruction has {}."""
+  one it does not know as unknown:OPCODE. Optional scalar evidence applies only when no matrix instruction ran;
+  scalar epilogue instructions do not change a GEMM's matrix-work path."""
   out: dict[str, dict[str, int]] = {}
   for name, ops in entries.items():
     got = out.setdefault(template(name), {})
+    matrix = any(_SASS_MMA.fullmatch(op) and n for op,n in ops.items())
     for op, n in ops.items():
-      if n:
+      if n and (not matrix or not _SASS_FMA.fullmatch(op)):
         p = signatures.get(op) or f"unknown:{op}"
         got[p] = got.get(p, 0) + n
   return out

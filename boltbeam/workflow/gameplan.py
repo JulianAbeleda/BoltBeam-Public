@@ -3,7 +3,8 @@
 Run measures the model's roles against the roofline and, with the kernel search on, finds faster kernel plans. Emit
 reads that run and writes `<run>/gameplan.json` and `<run>/gameplan.md`: per role, worst first, what kernel to emit
 for this exact shape, built only from what the run recorded, with the check that must pass. A person or an agent
-follows it to write the kernel into the tinygrad fork. Emit writes the plan, not the kernel.
+follows it to write the kernel into the tinygrad fork. Emit writes the plan, not the kernel. Captured-engine reports use the shared optimization_plan builder
+for measured gaps and unknowns when kernel-specific search evidence is absent.
 
 Each role block shows the search's lineage in order, every layer read off the run's own files:
   1. BubbleBeam   the legal dimensions proposed for this shape on this chip (the search request's dimensions,
@@ -449,10 +450,21 @@ def _role_block(files:_Files, r:dict[str, Any], i:int, est:dict[str, Any] | None
 
 def gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None) -> dict[str, Any]:
   """The plan for one run from the seam's results (workflow/screen.py results) and the run's files. Refused when the
-  run holds no per-role table: there is nothing to plan from."""
+  run holds neither a per-role table nor a measured work breakdown."""
   loss = res.get("loss") or {}
   roles = loss.get("roles") or []
+  if (loss.get('replay') or {}).get('forced'):
+    return {'schema':SCHEMA,'kind':'replay_report','id':run.name,'replay':loss['replay'],
+            'header':{'model_id':res.get('model_id'),'target_id':res.get('target_id'),'engine':'vllm'},
+            'roles':[],'footer':{'files_read':['forced_replay.json'],'date':str(now or _dt.date.today()),
+                                'sentence':'Measured replay report; no kernel replacement advice.'}}
   if not roles:
+    from boltbeam.workflow import optimization_plan
+    if optimization_plan.tables(res):
+      return optimization_plan.build(run,res,str(now or _dt.date.today()))
+    if res.get("workload") in ("prefill", "session", "replay"):
+      raise Refused(f"Emit does not support {res['workload']} gameplans yet; it requires a decode per-role table. "
+                    "The completed run's report remains available.")
     raise Refused("no per-role table in this run: Run first" + (f" ({loss['missing']})" if loss.get("missing") else ""))
   files = _Files(run)
   manifest = load_manifest(run)
@@ -516,6 +528,12 @@ def _num(v:Any, fmt:str) -> str:
 
 def to_markdown(plan:dict[str, Any]) -> str:
   from boltbeam.workflow.screen import where_lines
+  if plan.get('kind')=='replay_report':
+    from boltbeam.workflow.replay import lines
+    return '# Forced replay report\n\n```text\n'+'\n'.join(lines(plan['replay']))+'\n```\n'
+  if plan.get('kind')=='gap_report':
+    from boltbeam.workflow.optimization_plan import markdown
+    return markdown(plan)
   h = plan["header"]
   out = [f"# Gameplan: {h.get('model_id')} on {h.get('target_id')}", "",
          f"Run {plan['id']} · {h.get('engine')} · batch {h.get('batch')} · {h.get('weight_format') or 'weights ' + NOT_RECORDED}"
@@ -561,12 +579,25 @@ def to_markdown(plan:dict[str, Any]) -> str:
   return "\n".join(out)
 
 
-def emit(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None) -> dict[str, Any]:
+def emit(run:pathlib.Path, res:dict[str, Any] | None = None, *, now:_dt.date | None = None) -> dict[str, Any]:
   """Write gameplan.json and gameplan.md into the run (the one writer) and return where, with the plan and its paper
   version, so a screen shows the same text that was written."""
-  plan = gameplan(run, res, now=now)
-  md = to_markdown(plan)
-  (run / JSON_FILE).write_text(pretty_json(plan), encoding="utf-8")
-  (run / MD_FILE).write_text(md, encoding="utf-8")
+  from boltbeam.workflow.report_validation import require, require_emit, ReportInvalid
+  try:
+    if res is None:
+      from boltbeam.workflow.screen import results_core
+      res = results_core(run)
+    require(run, res)
+    plan = gameplan(run, res, now=now)
+    require_emit(run, res, plan)
+    md = to_markdown(plan)
+    (run / JSON_FILE).write_text(pretty_json(plan), encoding="utf-8")
+    (run / MD_FILE).write_text(md, encoding="utf-8")
+  except Exception as exc:  # boundary: no stale successful advice survives a failed Emit
+    for name in (JSON_FILE, MD_FILE):
+      (run / name).unlink(missing_ok=True)
+    (run / "emit_validation.json").write_text(pretty_json({"status": "failed", "error": str(exc)}), encoding="utf-8")
+    raise
+  (run / "emit_validation.json").write_text(pretty_json({"status": "passed"}), encoding="utf-8")
   return {"schema": SCHEMA, "kind": "emitted", "id": run.name, "dir": str(run), "files": [JSON_FILE, MD_FILE], "plan": plan,
           "markdown": md}

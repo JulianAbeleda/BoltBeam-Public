@@ -304,3 +304,19 @@ func TestFirstRunWeightsAreAnEstimate(t *testing.T) {
 		t.Fatalf("history weights are real last times: %+v", hist)
 	}
 }
+
+func TestBatchResultsWithoutCapturedLimit(t *testing.T) {
+	row := seam.BatchRow{Context: 128, Batch: 2, StepMs: 2, TokSStream: 500, TokSTotal: 1000}
+	row.Limit.Bound = "not captured"
+	got := plain(batchTable([]seam.BatchRow{row}))
+	for _, want := range []string{"500.0", "1000.0", "not captured", "—"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q:\n%s", want, got)
+		}
+	}
+	for _, field := range strings.Fields(got) {
+		if field == "0.0" || strings.Contains(field, "%") {
+			t.Fatalf("invented limit or percentage:\n%s", got)
+		}
+	}
+}

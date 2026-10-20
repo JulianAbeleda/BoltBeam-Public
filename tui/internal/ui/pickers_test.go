@@ -34,7 +34,7 @@ func TestPickersWindowLongListsWithoutDroppingRows(t *testing.T) {
 		f    Facts
 		last string
 	}{
-		{"model files", pageModel, Facts{Files: files, Path: files[0]}, "model-29.gguf"},
+		{"model files", pageModel, Facts{Files: files, Path: files[0]}, "model-29 · GGUF"},
 		{"saved runs", pageSaved, Facts{Saved: &saved}, "10:29"},
 	} {
 		acts := steps[c.page].actions(c.f)

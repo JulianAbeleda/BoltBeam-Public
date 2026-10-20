@@ -81,7 +81,7 @@ def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None
 
 def recurrent(profile:dict[str, Any], length:int, chunks:list[int] | None = None,
               element_bytes:int = 4) -> dict[str, Any] | None:
-  """A recurrent block's prompt work over its layers (Gated DeltaNet / Mamba-style scan plus its short causal
+  """A Gated DeltaNet block's prompt work over its layers, plus its short causal
   convolution), from the profile's recurrent shape. None when the model has no recurrent layers.
 
   The scan keeps an S x S state per head (S = state_size, H = inner_size / S heads) and per token per state column
@@ -92,6 +92,8 @@ def recurrent(profile:dict[str, Any], length:int, chunks:list[int] | None = None
   matrix instruction, so its compute side is the fp32 vector rate; the context depth does not change it (the state
   is fixed-size)."""
   r = (profile.get("metadata") or {}).get("recurrent") or {}
+  if r.get('kind') == 'mamba2':
+    raise ValueError('Mamba2 requires resolved state evidence and SSD stage work; the DeltaNet formula does not apply')
   layers, state, inner = r.get("layer_count"), r.get("state_size"), r.get("inner_size")
   if not (layers and state and inner):
     return None
@@ -256,7 +258,8 @@ def compute_ms(flops:float, paths:dict[str, int], peaks:dict[str, float]) -> flo
 # The matrix paths (cuda_compute.PATHS) that hold a weight format's values exactly and accumulate in fp32 or int32.
 # Integer weights of at most 8 bits (block quants, INTn) are exact as int8, fp16 or bf16 operands, their scales applied
 # outside the product; a float weight only on its own type. fp16 with fp16 accumulation, tf32 and fp8 round.
-FLOAT_WEIGHT_PATHS = {"F16": ("fp16",), "BF16": ("bf16",), "F32": (FP32_PATH,)}
+FLOAT_WEIGHT_PATHS = {"F16": ("fp16",), "BF16": ("bf16",), "F32": (FP32_PATH,),
+                      "FP8_E4M3": ("fp8", "fp16", "bf16"), "NVFP4_G16": ("nvfp4", "fp16", "bf16")}
 INTEGER_WEIGHT_PATHS = ("int8", "fp16", "bf16")
 CHIP_BEST_WORDS = ("ms at chip best is the same bytes at the bandwidth, with the operations at the fastest path this "
                    "chip measured that holds the row's weights exactly (fp32 or int32 accumulate), or the engine's own "
@@ -373,8 +376,9 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
   for r in roles:
     path = weight_path(r["quant"])
     once = r["count"] == 1
-    work_rows = [gemm(1, r["n"], r["k"], r["weight_bytes"], acts)] * outputs if once else \
-                [gemm(w, r["n"], r["k"], r["weight_bytes"], acts) for w in chunks for _ in range(r["count"])]
+    role_acts = (formats.get("activations_by_quant") or {}).get(r["quant"], acts)
+    work_rows = [gemm(1, r["n"], r["k"], r["weight_bytes"], role_acts)] * outputs if once else \
+                [gemm(w, r["n"], r["k"], r["weight_bytes"], role_acts) for w in chunks for _ in range(r["count"])]
     flops, nbytes = sum(x["flops"] for x in work_rows), sum(x["bytes"] for x in work_rows)
     peak = peaks.get(path) if path and not once else None
     if path and not once and peak is None:

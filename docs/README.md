@@ -182,3 +182,5 @@ readable. They are kept as written.
 - [refreshed_loss_stack_14b_20260702.md](notes/refreshed_loss_stack_14b_20260702.md): 14B Decode Loss Stack: Refreshed Under Current Promoted Defaults
 - [tg-p10-reg-scalar-combine-lowering-scope-20260701.md](notes/tg-p10-reg-scalar-combine-lowering-scope-20260701.md): TG-P10 Scope: REG Scalar Combine Lowering For Pure Attention
 - [tinygrad-decouple-runner-contracts-20260702.md](notes/tinygrad-decouple-runner-contracts-20260702.md): Tinygrad Decouple Runner Contracts
+
+- [Arkey FP8 context and client smoke](arkey-fp8-context-20261014.md): automatic 244,608-token sizing at 90% GPU utilization, Codex/Kimi/Crush checks, and limits of the evidence.

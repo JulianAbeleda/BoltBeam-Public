@@ -190,7 +190,7 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 		}
 		return emit(out, raw)
 	case "engines":
-		_, raw, err := client.Engines()
+		_, raw, err := client.Engines(false)
 		if err != nil {
 			return fail(out, err)
 		}

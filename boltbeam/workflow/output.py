@@ -4,7 +4,6 @@ import pathlib
 from typing import Any
 
 from boltbeam.report.html import next_step, render_run_html
-from boltbeam.workflow import gameplan
 from boltbeam.vocab import SCHEMA_OUTPUT_MANIFEST
 from boltbeam.workflow.common import load_manifest, read_json, run_dir, update_manifest, write_json
 
@@ -69,6 +68,10 @@ def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str
                 runner:dict[str, Any], res:dict[str, Any] | None = None, measure:dict[str, Any] | None = None) -> str:
   from boltbeam.workflow.screen import summary_text
   res, measure = res or {}, measure or {}
+  if replay:=(res.get('loss') or {}).get('replay'):
+    if replay.get('forced'):
+      return '\n'.join([f"# BoltBeam Replay Summary: {manifest.get('model_id', 'unknown')}", '',
+                        *replay['headline_lines'], '', replay['words'], '', replay['next_step'], ''])
   probe = res.get("probe")
   measured = measured_line(report, res, measure)
   roles = (res.get("loss") or {}).get("roles") or []
@@ -179,6 +182,7 @@ def _provider_plan(manifest:dict[str, Any], providers:dict[str, Any], plan:dict[
 
 
 def output_run(run:str | pathlib.Path) -> dict[str, Any]:
+  from boltbeam.workflow import gameplan
   out = run_dir(run)
   manifest = load_manifest(out)
   profile = _load_optional(out, "model_profile.json")
@@ -205,7 +209,20 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   }
   write_json(out / "provider_plan.json", provider_plan)
   from boltbeam.workflow.screen import results as screen_results
-  res = screen_results(out)
+  from boltbeam.workflow.report_validation import ReportInvalid
+  try:
+    res = screen_results(out)
+  except Exception as exc:  # report boundary: invalidate stale output on malformed evidence too
+    from html import escape
+    message = str(exc) if isinstance(exc, ReportInvalid) else f"FAILED: report generation: {exc}"
+    write_json(out / 'report_validation.json', {'status': 'failed', 'error': message})
+    (out / 'summary.md').write_text(message + '\n')
+    context = f"{manifest.get('model_id')} · {manifest.get('workload')} · {out.name}"
+    (out / 'report.html').write_text('<!doctype html><meta charset="utf-8"><title>FAILED: report validation</title>'
+        '<h1>FAILED: report does not reconcile with evidence</h1><p>' + escape(context) +
+        '</p><pre style="white-space:pre-wrap">' + escape(message) + '</pre>')
+    raise
+  write_json(out / 'report_validation.json', res['validation'])
   import time
   from boltbeam.collectors.providers import latest_llama, run_build
   from boltbeam.workflow.screen import run_provider
@@ -228,6 +245,6 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   (out / "report.html").write_text(
     render_run_html(manifest=final, profile=profile, report=report, plan=plan, policy=policy,
                     providers=providers, primitive=primitive, timing=timing, runner=runner,
-                    source_run=str(out), results=screen_results(out) | {"engine_update": res["engine_update"]}, measure=measure,
+                    source_run=out.name if (res.get('loss',{}).get('replay') or {}).get('forced') else str(out), results=screen_results(out) | {"engine_update": res["engine_update"]}, measure=measure,
                     gameplan=gameplan.MD_FILE if (out / gameplan.MD_FILE).is_file() else None), encoding="utf-8")
   return final

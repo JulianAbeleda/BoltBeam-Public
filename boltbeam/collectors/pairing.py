@@ -44,6 +44,7 @@ from boltbeam.workflow.tie_out import UNATTRIBUTED, kind_of
 MAX_FUSED = 3  # calls one launch may serve (gate and up fused: 2)
 MAX_SPLIT = 4  # launches one call may take (a library that cuts a product along M)
 MAX_NODES = 50_000
+MAX_LAUNCH_VISITS = 50_000_000  # bound search work as well as nodes on long captures
 MAX_SUM_STEPS = 20_000  # subsets one row's choice may visit
 RECUR = 0.9  # a slot's kernel runs in at least this share of a kind's layers in a unit, or of the units' last layers
 BLOCKS = ("attention", "recurrent")  # kernels tie_out.kind_of names so are the block, never a weight role
@@ -70,11 +71,12 @@ def projection_candidate(name:str) -> bool:
 
 
 def layer_kinds(profile:dict[str, Any]) -> dict[str, int]:
-  """Layers per block kind: the profile's recurrent layers, and the rest attend."""
+  """Use the profile's observed block counts; standalone MoE layers do not attend."""
   md = profile.get("metadata") or {}
   total = int(profile.get("layer_count") or 0)
   rec = int((md.get("recurrent") or {}).get("layer_count") or 0)
-  return {**({"recurrent": rec} if rec else {}), **({"attention": total - rec} if total > rec else {})}
+  att = int((md.get("attention") or {}).get("layer_count", max(total - rec, 0)))
+  return {**({"recurrent": rec} if rec else {}), **({"attention": att} if att else {})}
 
 
 def stages(row:dict[str, Any], per_layer:float | None = None) -> set[str]:
@@ -315,7 +317,8 @@ def assign(groups:list[dict[str, Any]], rows:list[dict[str, Any]], *, units:int,
     best["nodes"] = got["nodes"]
     if got["score"] > best["score"]:
       best.update({k: v for k, v in got.items() if k != "nodes"})
-    if got["nodes"] > MAX_NODES:
+    if got["nodes"] > MAX_NODES or got.get("budget_exhausted"):
+      best["budget_exhausted"] = True
       best["ambiguous"] = got["ambiguous"]  # the walk ran out of nodes: what it found is said as unsure
       break
     if not got["unplaced"]:
@@ -505,6 +508,13 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
   placing the most weight bytes (calls times bytes per call: a light row fused onto a heavy row's launches never
   outbids the heavy row)."""
   best: dict[str, Any] = {"score": (-1, 0.0), "placed": [], "unplaced": [], "ambiguous": None}
+  fit_cache = {}
+  def fits(item, group, fused, split):
+    # Shape/grid/peak feasibility is immutable during the walk; occupancy of slots is not.
+    key = (id(item), id(group), fused, split)
+    if key not in fit_cache:
+      fit_cache[key] = _fits(item, group, fused, split, bandwidth_gbs, peak_of(group["template"]))
+    return fit_cache[key]
   bound, ratios = _bind(items, groups)
   taken: set[int] = set()  # launch ids
   fmt: dict[tuple[str, str], str] = dict(bound)  # (kind, template) -> the weight format it serves
@@ -512,7 +522,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
   out_max: dict[int, int] = {}  # gap -> highest position an output row took
   in_min: dict[int, int] = {}  # gap -> lowest position an input row took
   placed: list[dict[str, Any]] = []
-  state = {"nodes": nodes}
+  state = {"nodes": nodes, "launch_visits": 0}
   # each row runs at least one launch per layer on its side: a gap's first launches are the earlier layer's output
   # rows', its last launches the later layer's input rows' (less the launches inside the block)
   # A row whose format runs in only some layers (a mixed quant per layer) is no launch in every layer: such rows
@@ -552,6 +562,9 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
 
   def _avail(g, side):
     """The group's launches not yet taken that the gap's order allows this side to take."""
+    state["launch_visits"] += len(g["launches"])
+    if state["launch_visits"] > MAX_LAUNCH_VISITS:
+      raise _TooMany(f"pairing search exceeded {MAX_LAUNCH_VISITS:,} launch visits; attribution unresolved")
     out = []
     for x in g["launches"]:
       l, _, gap, pos = x
@@ -601,7 +614,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       if item["need"] * r % k:
         continue
       fit = [(g, ls) for g, ls in cand if ratios.get(key(g), (k, r)) == (k, r)
-             and _fits(item, g, k, r, bandwidth_gbs, peak_of(g["template"])) and ordered(item, g)]
+             and fits(item, g, k, r) and ordered(item, g)]
       opts = [{"n": len(ls), "pick": (g, ls)} for g, ls in fit]
       want, slack = item["need"] * r // k, item.get("slack", 0) * r // k
       if split_in is None:
@@ -633,8 +646,8 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
         identity = lambda it: sorted((r["role"], r["quant"], r.get("n"), r.get("k"), r["count"]) for r in it["parts"])
         if identity(ia) == identity(ib):
           continue  # exchanging identical logical rows changes no attribution
-        if (all(_fits(ia, p["group"], p["fused"], p["split"], bandwidth_gbs, peak_of(p["group"]["template"])) for p in b)
-            and all(_fits(ib, p["group"], p["fused"], p["split"], bandwidth_gbs, peak_of(p["group"]["template"])) for p in a)):
+        if (all(fits(ia, p["group"], p["fused"], p["split"]) for p in b)
+            and all(fits(ib, p["group"], p["fused"], p["split"]) for p in a)):
           found.append(f"{ia['role']} {ia['quant']} and {ib['role']} {ib['quant']} could exchange their launches")
           out[id(ia)] = (ia, found[-1])
           out[id(ib)] = (ib, found[-1])
@@ -659,7 +672,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
   def walk(i, unplaced, strict):
     state["nodes"] += 1
     if state["nodes"] > MAX_NODES:
-      raise _TooMany
+      raise _TooMany(f"more than {MAX_NODES} ways to walk {len(items)} rows over {len(groups)} slot groups")
     if i == len(items):
       record(unplaced)
       return not unplaced
@@ -702,8 +715,9 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
   try:
     if not walk(0, [], True):
       walk(0, [], False)
-  except _TooMany:
-    best["ambiguous"] = {"reason": f"more than {MAX_NODES} ways to walk {len(items)} rows over {len(groups)} slot groups"}
+  except _TooMany as exc:
+    best["budget_exhausted"] = True
+    best["ambiguous"] = {"reason": str(exc)}
   best["nodes"] = state["nodes"]
   return best
 

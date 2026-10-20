@@ -18,7 +18,7 @@ import shutil
 import subprocess
 from typing import Any, Callable
 
-from boltbeam.collectors.cuda_compute import fact_source, matrix_tflops
+from boltbeam.collectors import cuda_compute
 from boltbeam.target import targets as reg
 from boltbeam.workflow.autoscan import _hardware_profile, chip_profile_id
 
@@ -52,8 +52,23 @@ def _nvidia_smi_facts(index:int = 0) -> dict[str, Any]:
           "power_limit_w": num(cells[3])}
 
 
-def _probes(vendor:str) -> tuple[Measure, Measure]:
-  """The read-bandwidth and matrix-rate probes for this vendor, both BoltBeam's own."""
+def _amd_probes(pci_bus_id:str | None) -> tuple[Measure, Measure]:
+  """The read and matrix probes on the scanned AMD GPU, opened through HIP by its PCI address."""
+  from boltbeam.collectors import cuda_bandwidth, hip_compute
+  from boltbeam.runtime.hip_device import Hip, index_of
+  if not pci_bus_id:
+    raise RuntimeError("the scan did not report the GPU's PCI address, which the HIP probes open it by")
+  def read() -> dict[str, Any]:
+    hip = Hip(index_of(pci_bus_id))
+    try:
+      return cuda_bandwidth.measure_read_gbs(hip.device_index, bridge=hip)
+    finally:
+      hip.close()
+  return read, lambda: hip_compute.measure_paths(index_of(pci_bus_id))
+
+
+def _probes(vendor:str, device:dict[str, Any] | None = None) -> tuple[Measure, Measure]:
+  """The read-bandwidth and matrix-rate probes for this vendor's GPU, all BoltBeam's own."""
   if vendor == "apple":
     from boltbeam.collectors import metal_bandwidth as m
     return m.measure_read_gbs, m.measure_matrix_tflops
@@ -61,7 +76,32 @@ def _probes(vendor:str) -> tuple[Measure, Measure]:
     from boltbeam.collectors import cuda_bandwidth as c
     from boltbeam.collectors import cuda_compute
     return c.measure_read_gbs, cuda_compute.measure_paths
+  if vendor == "amd":
+    return _amd_probes((device or {}).get("pci_bus_id"))
   raise RuntimeError(f"no BoltBeam probe for {vendor or 'this'} GPUs yet")
+
+
+# What a measured profile records for each discrete-GPU vendor: the backend, the device facts the driver API gave
+# (and the key of each that sizes a row), where compute units come from, the primitives, and the probe module whose
+# matrix_tflops and fact_source read its result. A vendor is a row here, not a branch in profile_row.
+def _vendors() -> dict[str, dict[str, Any]]:
+  from boltbeam.collectors import cuda_compute, hip_compute
+  return {
+    "nvidia": {"backend": "CUDA", "tinygrad_device": "NV",
+               "scan_method": "nvidia-smi and cudaDeviceGetAttribute (BoltBeam's CUDA matrix probe prints them)",
+               "scan_keys": ("sm_count", "shared_mem_per_sm_bytes", "l2_cache_bytes", "clock_khz", "memory_clock_khz",
+                             "memory_bus_bits", "total_global_mem_bytes"),
+               "lds_key": "shared_mem_per_sm_bytes", "compute_units": lambda device, matrix: matrix.get("sm_count"),
+               "dot_primitives": ["mma_m16n8k16", "dp4a"], "dot_status": "hardware_family", "compute": cuda_compute},
+    "amd": {"backend": "AMD", "tinygrad_device": "AMD",
+            "scan_method": "amd-smi static and hipDeviceGetAttribute (BoltBeam's HIP matrix probe prints them)",
+            "scan_keys": ("multiprocessor_count", "shared_mem_per_block_bytes", "l2_cache_bytes", "clock_khz",
+                          "memory_clock_khz", "memory_bus_bits", "total_global_mem_bytes", "pci_bus_id", "hip_runtime_version"),
+            # amd-smi's compute units; HIP's multiprocessor count is work-group processors on RDNA
+            "lds_key": "shared_mem_per_block_bytes", "compute_units": lambda device, matrix: device.get("compute_units"),
+            # no probe derives AMD's dot instructions yet: none is claimed, so nothing is served on an assumption
+            "dot_primitives": [], "dot_status": "unknown", "compute": hip_compute},
+  }
 
 
 def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any], driver:dict[str, Any],
@@ -71,25 +111,29 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
   if not pid:
     raise RuntimeError(f"the scan of {device.get('name')!r} lacks the name, memory or core count a profile id needs")
   apple = device.get("vendor") == "apple"
-  scope = device.get("name") + (f", {device.get('gpu_cores')}-core GPU" if apple else f", driver {driver.get('driver_version') or device.get('driver_version')}")
+  v = {} if apple else _vendors().get(device.get("vendor"))
+  if v is None:
+    raise RuntimeError(f"no profile shape for {device.get('vendor')!r} GPUs")
+  version = driver.get("driver_version") or device.get("driver_version") or (
+    f"HIP runtime {matrix['hip_runtime_version']}" if matrix.get("hip_runtime_version") else None)
+  scope = device.get("name") + (f", {device.get('gpu_cores')}-core GPU" if apple else f", driver {version}")
   scan = {"kind": "hardware_scan", "scope": scope, "observed_at": today,
-          "method": "system_profiler SPDisplaysDataType and the Metal device" if apple else
-                    "nvidia-smi and cudaDeviceGetAttribute (BoltBeam's CUDA matrix probe prints them)",
+          "method": "system_profiler SPDisplaysDataType and the Metal device" if apple else v["scan_method"],
           **({"working_set_bytes": matrix.get("working_set_bytes"), "unified_memory_bytes": device.get("unified_memory_bytes")} if apple else
-             {k: matrix.get(k) for k in ("sm_count", "shared_mem_per_sm_bytes", "l2_cache_bytes", "clock_khz",
-                                          "memory_clock_khz", "memory_bus_bits", "total_global_mem_bytes")}),
+             {k: matrix.get(k) for k in v["scan_keys"]}),
           **driver}
   match = dict(device.get("match") or {})
   caps = {
     "target_kind": "exact",
     "profile_source": "generated",
-    "tinygrad_device": "METAL" if apple else "NV",
+    "tinygrad_device": "METAL" if apple else v["tinygrad_device"],
     **({} if apple else {"compiler_arch": device.get("architecture")}),
     "match": match,
     "fact_status": {"memory_bandwidth_gbs": "measurement", "matrix_tflops": "measurement_lower_bound",
                     "wave_size": "hardware_family",
                     "vram_bytes": "not_applicable_unified_memory" if apple else "hardware_scan",
-                    "compute_units": "unknown" if apple else "hardware_scan"},
+                    "compute_units": "unknown" if apple else "hardware_scan",
+                    **({} if apple else {"dot_primitives": v["dot_status"]})},
     "fact_sources": {
       "hardware_scan": scan,
       "memory_bandwidth_gbs": {"kind": "measurement", "scope": scope, "method": read["method"],
@@ -98,7 +142,8 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
                                **{k: read.get(k) for k in ("regime", "cold_gbs", "sustained_gbs", "shape_spread", "drift", "uncertainty")
                                   if read.get(k) is not None}},
       # a probe of every matrix path (cuda_compute) keeps each path's rate and clock; the fp16-only probe a lower bound
-      "matrix_tflops": fact_source(matrix, scope=scope, today=today) if matrix.get("paths") else
+      "matrix_tflops": (v["compute"] if not apple else cuda_compute).fact_source(matrix, scope=scope, today=today)
+                       if matrix.get("paths") else
                        {"kind": "measurement", "bound": "lower", "scope": scope, "method": matrix["method"],
                         "value_tflops": matrix["tflops"], "dtype": "fp16", "note": matrix["note"], "observed_at": today},
     },
@@ -106,13 +151,14 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
   if matrix.get("paths"):
     caps["fact_status"]["matrix_tflops"] = "measurement"
   return {
-    "target_id": pid, "backend": "Metal" if apple else "CUDA", "wave_size": 32, "subgroup_size": 32,
-    "lds_bytes_per_cu": None if apple else matrix.get("shared_mem_per_sm_bytes"),
+    "target_id": pid, "backend": "Metal" if apple else v["backend"],
+    "wave_size": matrix.get("warp_size") or 32, "subgroup_size": matrix.get("warp_size") or 32,
+    "lds_bytes_per_cu": None if apple else matrix.get(v["lds_key"]),
     "vram_bytes": None if apple else device.get("memory_bytes"), "vector_load_bits": 128,
-    "compute_units": None if apple else matrix.get("sm_count"),
+    "compute_units": None if apple else v["compute_units"](device, matrix),
     "memory_bandwidth_gbs": read["read_gbs"], "peak_tflops": {},
-    "matrix_tflops": matrix_tflops(matrix) if matrix.get("paths") else {"fp16": matrix["tflops"]},
-    "dot_primitives": ["simdgroup_matrix"] if apple else ["mma_m16n8k16", "dp4a"], "dequant_primitives": [],
+    "matrix_tflops": (v["compute"] if not apple else cuda_compute).matrix_tflops(matrix) if matrix.get("paths") else {"fp16": matrix["tflops"]},
+    "dot_primitives": ["simdgroup_matrix"] if apple else v["dot_primitives"], "dequant_primitives": [],
     "backend_status": "descriptor_only", "capabilities": caps,
   }
 
@@ -130,7 +176,7 @@ def _view(device:dict[str, Any], tid:str | None, status:str, action:str, path:st
 
 
 def autoscan(*, remeasure:bool = False, hardware:dict[str, Any] | None = None,
-             probes:Callable[[str], tuple[Measure, Measure]] = _probes,
+             probes:Callable[[str, dict[str, Any]], tuple[Measure, Measure]] = _probes,
              driver:Callable[[], dict[str, Any]] = _nvidia_smi_facts) -> dict[str, Any]:
   """Match this machine's first GPU to a profile, or measure one. remeasure refreshes a profile made here (a
   registry row is reviewed data and is never rewritten from one machine)."""
@@ -144,7 +190,7 @@ def autoscan(*, remeasure:bool = False, hardware:dict[str, Any] | None = None,
     return _view(device, profile.get("id"), "known", action)
   today = _today()
   try:
-    read_probe, matrix_probe = probes(device.get("vendor") or "")
+    read_probe, matrix_probe = probes(device.get("vendor") or "", device)
     from boltbeam.collectors.cuda_bandwidth import repeated
     read = repeated([read_probe() for _ in range(READ_RUNS)], "read_gbs", "gbs")
     row = profile_row(device, read, matrix_probe(), driver() if device.get("vendor") == "nvidia" else {},

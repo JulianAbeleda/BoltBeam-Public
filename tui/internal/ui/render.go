@@ -262,6 +262,7 @@ func tflops(t seam.Target) string {
 	if len(parts) == 0 {
 		return "compute speed unknown"
 	}
+	slices.Sort(parts)
 	return strings.Join(parts, ", ")
 }
 
@@ -691,12 +692,18 @@ func whereBody(w *seam.Where) string {
 	}
 	var b strings.Builder
 	b.WriteString("\n" + stHeader.Render(title) + "\n")
-	b.WriteString(stMuted.Render(w.Words) + "\n")
+	b.WriteString(stMuted.Render(strings.Join(strings.Fields(w.Words), " ")) + "\n\n")
 	last := strings.ToUpper(w.Columns[len(w.Columns)-1]) // the peak column goes first, then the share
-	for _, drop := range [][]string{nil, {last}, {last, "SHARE"}} {
-		if t := whereTable(w, drop); maxWidth(t) <= tableWidth || len(drop) == 2 {
+	drops := [][]string{nil, {last}, {last, "SHARE"}, {last, "SHARE", "MS AT CHIP BEST"}, {last, "SHARE", "MS AT CHIP BEST", "MS ABOVE LIMIT", "MS LOST"}}
+	for index, drop := range drops {
+		if t := whereTable(w, drop); maxWidth(t) <= tableWidth || index == len(drops)-1 {
 			b.WriteString(t)
 			break
+		}
+	}
+	for i, column := range w.Columns {
+		if column == "+ Tok/S if roofline" && i < len(w.SumCells) && w.SumCells[i] != "" {
+			fmt.Fprintf(&b, "Total at modeled roofline: %s tok/s (%s ms/token).\n", w.SumCells[i], w.SumCells[2])
 		}
 	}
 	b.WriteString(whereEndToEnd(w.EndToEnd))
@@ -739,6 +746,11 @@ func replayBody(r *seam.Replay) string {
 	for _, l := range r.HeadlineLines {
 		b.WriteString(l + "\n")
 	}
+	for _, line := range []string{r.EvidenceWords, r.NotCaptured} {
+		if line != "" {
+			b.WriteString(stMuted.Render(line) + "\n")
+		}
+	}
 	b.WriteString(stMuted.Render(r.Words) + "\n")
 	head := []string{}
 	for _, c := range r.Columns {
@@ -753,8 +765,8 @@ func replayBody(r *seam.Replay) string {
 		b.WriteString(stMuted.Render("Not in the ceiling: "+strings.Join(r.Unmodelled, "; ")+".") + "\n")
 	}
 	for _, w := range r.Wheres {
-		if w.Status != "measured" {
-			b.WriteString(stMuted.Render(w.Words) + "\n")
+		if w.Status != "measured" && w.Status != "benchmark_only" {
+			b.WriteString(stMuted.Render(strings.Join(strings.Fields(w.Words), " ")) + "\n")
 			continue
 		}
 		b.WriteString(whereBody(&w.Where))
@@ -799,7 +811,11 @@ func whereEndToEnd(e *seam.EndToEnd) string {
 	if e.DiffPct != nil {
 		diff = fmt.Sprintf(" (%+.1f%%)", *e.DiffPct)
 	}
-	head := fmt.Sprintf("End to end: captured %.1f ms, untraced %.1f ms%s: ", *e.CapturedMs, *e.UntracedMs, diff)
+	reference := e.Reference
+	if reference == "" || reference == "untraced median" {
+		reference = "untraced"
+	}
+	head := fmt.Sprintf("End to end: captured %.1f ms, %s %.1f ms%s: ", *e.CapturedMs, reference, *e.UntracedMs, diff)
 	switch {
 	case e.Confirms == nil:
 		return stMuted.Render(head+notChecked) + "\n"
@@ -849,12 +865,12 @@ func runEngineBody(e *seam.RunEngine) string {
 	var b strings.Builder
 	switch {
 	case e.Build == nil:
-		b.WriteString(stMuted.Render("Engine build: not recorded (the run predates the pin check).") + "\n")
+		b.WriteString(stMuted.Render("Engine build: not recorded.") + "\n")
 	default: // the build that ran beside the pin, both as facts: a build other than the pin is not a fault
 		b.WriteString(stMuted.Render("Engine build: "+e.Build.Words+".") + "\n")
 	}
 	if e.Toolchain == nil {
-		b.WriteString(stMuted.Render("Toolchain: not recorded (the run predates it).") + "\n")
+		b.WriteString(stMuted.Render("Toolchain: not recorded.") + "\n")
 		return b.String()
 	}
 	parts, missing := []string{}, []string{}
@@ -875,9 +891,9 @@ func runEngineBody(e *seam.RunEngine) string {
 	line := "Toolchain (" + when + " UTC): " + strings.Join(parts, ", ")
 	switch {
 	case len(parts) == 0:
-		line = "Toolchain (" + when + " UTC): none of " + strings.Join(missing, ", ") + " found on this machine"
+		line = "Toolchain (" + when + " UTC): versions not recorded for " + strings.Join(missing, ", ")
 	case len(missing) > 0:
-		line += "; not found: " + strings.Join(missing, ", ")
+		line += "; versions not recorded: " + strings.Join(missing, ", ")
 	}
 	b.WriteString(stMuted.Render(line+".") + "\n")
 	return b.String()
@@ -958,8 +974,20 @@ func whereTable(w *seam.Where, drop []string) string {
 		head = append(head, strings.ToUpper(c))
 	}
 	rows := [][]string{head}
+	section := ""
 	for _, r := range w.Rows {
-		rows = append(rows, append([]string{r.Name}, r.Cells...))
+		if r.Section != "" && r.Section != section {
+			rows = append(rows, []string{r.Section})
+			section = r.Section
+		}
+		cells := append([]string{r.Name}, r.Cells...)
+		for len(cells) < len(head) {
+			cells = append(cells, "")
+		}
+		rows = append(rows, cells)
+	}
+	if len(w.BaselineCells) > 0 {
+		rows = append(rows, w.BaselineCells)
 	}
 	rows = append(rows, w.SumCells)
 	keep := []int{}
@@ -977,7 +1005,111 @@ func whereTable(w *seam.Where, drop []string) string {
 		}
 		rows[j] = cut
 	}
-	return table(rows)
+	return rooflineGrid(rows, len(w.BaselineCells) > 0)
+}
+
+// rooflineGrid reserves numeric columns, wraps headers and centers values inside a bordered table.
+func rooflineGrid(rows [][]string, baseline bool) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	widths := make([]int, len(rows[0]))
+	headers := make([][]string, len(widths))
+	for col, heading := range rows[0] {
+		if col == 0 {
+			headers[col] = []string{heading}
+			continue
+		}
+		headers[col] = strings.Split(ansi.Wordwrap(heading, 9, " "), "\n")
+		for _, line := range headers[col] {
+			widths[col] = max(widths[col], lipgloss.Width(line))
+		}
+		for _, row := range rows[1:] {
+			if col < len(row) {
+				widths[col] = max(widths[col], lipgloss.Width(row[col]))
+			}
+		}
+	}
+	other := 3*len(widths) + 1
+	for _, width := range widths[1:] {
+		other += width
+	}
+	widths[0] = max(tableWidth-other, 14)
+	// Do not fill a wide terminal with needless name padding.
+	nameWidth := 0
+	for _, row := range rows {
+		if len(row) > 0 {
+			nameWidth = max(nameWidth, lipgloss.Width(row[0]))
+		}
+	}
+	widths[0] = min(widths[0], max(nameWidth, 14))
+	var b strings.Builder
+	rule := func(left, joint, right string) {
+		b.WriteString(left)
+		for col, width := range widths {
+			if col > 0 {
+				b.WriteString(joint)
+			}
+			b.WriteString(strings.Repeat("─", width+2))
+		}
+		b.WriteString(right + "\n")
+	}
+	line := func(cells []string, missing bool) {
+		b.WriteString("│")
+		for col, width := range widths {
+			cell := ""
+			if col < len(cells) {
+				cell = truncate(cells[col], width)
+			}
+			if col > 0 && cell == "" && missing {
+				cell = "—"
+			}
+			room := width - lipgloss.Width(cell)
+			left := room / 2
+			if col == 0 {
+				left = 0
+			}
+			b.WriteString(" " + strings.Repeat(" ", left) + cell + strings.Repeat(" ", room-left) + " │")
+		}
+		b.WriteString("\n")
+	}
+	rule("┌", "┬", "┐")
+	height := 1
+	for _, lines := range headers {
+		height = max(height, len(lines))
+	}
+	for index := 0; index < height; index++ {
+		cells := make([]string, len(widths))
+		for col, lines := range headers {
+			if index < len(lines) {
+				cells[col] = lines[index]
+			}
+		}
+		line(cells, false)
+	}
+	rule("├", "┼", "┤")
+	for index, row := range rows[1:] {
+		actual := index + 1
+		if actual == len(rows)-1 || (baseline && actual == len(rows)-2) {
+			rule("├", "┼", "┤")
+		}
+		if len(row) == 1 {
+			if actual > 1 {
+				rule("├", "┼", "┤")
+			}
+			room := 3*len(widths) - 1
+			for _, width := range widths {
+				room += width
+			}
+			label := truncate(row[0], room-2)
+			b.WriteString("│ " + label + strings.Repeat(" ", room-1-lipgloss.Width(label)) + "│\n")
+			rule("├", "┼", "┤")
+		} else {
+			line(row, !(baseline && actual == len(rows)-2))
+		}
+	}
+	rule("└", "┴", "┘")
+	return b.String()
 }
 
 // isolatedTieOut is the tie-out of a run whose kernels were timed alone: only what is measured, the ideal at
@@ -1084,6 +1216,9 @@ func lossBody(l seam.Loss) string { return lossBodyAt(l, 1) }
 
 // lossBodyAt is lossBody for a run that also timed batch > 1: its heading names the batch.
 func lossBodyAt(l seam.Loss, batch int) string {
+	if l.Replay != nil && (l.Replay.Forced || l.Status != "modeled" || l.LimitMs == nil) {
+		return replayBody(l.Replay)
+	}
 	if l.Status != "modeled" || l.LimitMs == nil {
 		return ""
 	}
@@ -1093,7 +1228,9 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		provider = "llama.cpp"
 	}
 	title := "Measured with " + lossTitle(provider, l.Capture)
-	if l.Capture == nil && (l.Per != nil || l.Replay != nil) { // prefill and replay: kernels from the capture
+	if l.Replay != nil {
+		title = "Measured with " + provider + " · server metrics and client clocks"
+	} else if l.Capture == nil && l.Per != nil { // prefill: kernels from the capture
 		title = "Measured with " + provider + " · kernels from the capture"
 	}
 	if batch > 1 {
@@ -1108,12 +1245,15 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	}
 	b.WriteString(tieOutBody(tie))
 	per, at := "per token", " at context 1"
+	if l.LimitContext != nil {
+		at = fmt.Sprintf(" at context %.0f", *l.LimitContext)
+	}
 	if l.Per != nil { // a prefill run: its times are per prefill, its limit the sum of its kernels' ceilings
 		per, at = *l.Per, ""
 	}
-	fmt.Fprintf(&b, "The limit is %.1f ms %s%s.\n", *l.LimitMs, per, at)
+	fmt.Fprintf(&b, "Modeled roofline: %.1f ms %s%s.\n", *l.LimitMs, per, at)
 	for _, r := range l.Runtimes {
-		what := fmt.Sprintf("%.1f tokens per second, %.1f ms %s", r.TokS, r.Ms, per)
+		what := fmt.Sprintf("%.1f tok/s · %.1f ms %s", r.TokS, r.Ms, per)
 		if r.Isolated { // a sum of kernels timed alone is not a token: it has no "lost"
 			fmt.Fprintf(&b, "%s %s per role: %.1f ms, the kernels timed alone and summed.\n", mark("open"), r.Provider, r.Ms)
 			b.WriteString("  " + stMuted.Render("Not a token: attention, norms and gaps are not in it.") + "\n")
@@ -1126,7 +1266,7 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		if r.PerRole {
 			label += " per role"
 		}
-		fmt.Fprintf(&b, "%s %s: %s, %s lost.\n", mark("open"), label, what, stHeader.Render(fmt.Sprintf("%.1f ms", r.LostMs)))
+		fmt.Fprintf(&b, "%s %s: %s · %s above roofline.\n", mark("open"), label, what, stHeader.Render(fmt.Sprintf("%.1f ms", r.LostMs)))
 		if !r.PerRole {
 			b.WriteString("  " + stMuted.Render(r.Note) + "\n")
 		}
@@ -1134,6 +1274,7 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	b.WriteString(sessionBody(l.Session))
 	b.WriteString(replayBody(l.Replay))
 	b.WriteString(whereBody(l.WhereTokenGoes))
+	b.WriteString(whereBody(l.CaptureComparison))
 	b.WriteString(auditBody(l.PrefillAudit))
 	if l.Refused != nil {
 		b.WriteString(stWarn.Render(glyphWarn+" Per role: not shown. ") + *l.Refused + "\n")
@@ -1183,12 +1324,15 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	if l.RoleSourceWords != nil {
 		b.WriteString(stMuted.Render("Per-role source: "+*l.RoleSourceWords) + "\n")
 	}
-	if cc := l.CrossCheck; cc != nil && len(cc.Rows) > 0 {
+	if cc := l.CrossCheck; cc != nil && (len(cc.Rows) > 0 || len(cc.NotMeasured) > 0) {
 		b.WriteString("\n" + stHeader.Render("Cross-check: "+cc.Words) + "\n")
 		if cc.ColumnsWords != nil {
 			b.WriteString(stMuted.Render(*cc.ColumnsWords+".") + "\n")
 		}
 		b.WriteString(rateTable(cc.Rows))
+		for _, r := range cc.NotMeasured {
+			fmt.Fprintf(&b, "%s %s: not measured: %s\n", r.Role, r.Quant, r.Reason)
+		}
 	}
 	b.WriteString(othersBody(l.Others, shown))
 	return b.String()
@@ -1259,6 +1403,9 @@ func compareNote(f Facts) string {
 // this machine cannot compare, and the per-role table once any role has been compared.
 func compareBody(f Facts) string {
 	res := f.Run.Results
+	if res.Loss.Replay != nil {
+		return ""
+	}
 	var b strings.Builder
 	if f.comparing() {
 		p := seam.ReadCompare(f.CTail)
@@ -1369,11 +1516,11 @@ func resultBody(f Facts, width int) string {
 		b.WriteString(sessionHeadline(res))
 	case res.Timing.TokS != nil && res.Ceiling.TokS != nil && *res.Ceiling.TokS > 0:
 		ratio := *res.Timing.TokS / *res.Ceiling.TokS
-		fmt.Fprintf(&b, "%s %s measured. The limit is %.1f.\n", stAccent.Render(glyphBolt),
-			stHeader.Render(fmt.Sprintf("%.1f tokens per second", *res.Timing.TokS)), *res.Ceiling.TokS)
+		fmt.Fprintf(&b, "%s %s measured · roofline %.1f tok/s\n", stAccent.Render(glyphBolt),
+			stHeader.Render(fmt.Sprintf("%.1f tok/s", *res.Timing.TokS)), *res.Ceiling.TokS)
 		fmt.Fprintf(&b, "%s %.0f%% of the limit\n", bar(ratio, 20), ratio*100)
 		for _, a := range res.Timing.Also { // one headline: the other contexts are listed, labelled, never mixed in
-			fmt.Fprintf(&b, "%s\n", stMuted.Render(fmt.Sprintf("Also measured at context %s: %.1f tokens per second (not the headline).", count(a.Context), a.TokS)))
+			fmt.Fprintf(&b, "%s\n", stMuted.Render(fmt.Sprintf("Context %s: %.1f tok/s (additional measurement)", count(a.Context), a.TokS)))
 		}
 		if s := res.Loss.Step; s != nil && s.GraphFailed {
 			why := ""
@@ -1383,7 +1530,11 @@ func resultBody(f Facts, width int) string {
 			fmt.Fprintf(&b, "%s\n", stWarn.Render(glyphWarn+" Graph replay failed on this run"+why+": the token ran without graphs."))
 		}
 	case res.Loss.Replay != nil && len(res.Loss.Replay.Rows) > 0: // a replay's headline is per session, in its table
-		fmt.Fprintf(&b, "%s %s The session against its roofline is below.\n", stAccent.Render(glyphBolt),
+		note := "The session against its roofline is below."
+		if res.Loss.Replay.Forced {
+			note = "Captured session and timing qualification are below."
+		}
+		fmt.Fprintf(&b, "%s %s "+note+"\n", stAccent.Render(glyphBolt),
 			stHeader.Render(fmt.Sprintf("Replay measured: %d turns.", len(res.Loss.Replay.Rows))))
 	case res.Ceiling.TokS != nil:
 		fmt.Fprintf(&b, "%s %.1f tokens per second at best. Nothing measured yet.\n", stAccent.Render(glyphBolt), *res.Ceiling.TokS)
@@ -1758,11 +1909,13 @@ func batchTable(rows []seam.BatchRow) string {
 	t := [][]string{{"BATCH", "CONTEXT", "PER STREAM", "TOTAL tok/s", "LIMIT tok/s", "OF LIMIT", "BOUND BY"}}
 	for _, r := range rows {
 		pct := ""
+		limit := "—"
 		if r.PctOfLimit != nil {
 			pct = fmt.Sprintf("%.0f%%", *r.PctOfLimit)
+			limit = fmt.Sprintf("%.1f", r.Limit.TokSTotal)
 		}
 		t = append(t, []string{fmt.Sprint(r.Batch), fmt.Sprintf("%.0f", r.Context), fmt.Sprintf("%.1f", r.TokSStream),
-			fmt.Sprintf("%.1f", r.TokSTotal), fmt.Sprintf("%.1f", r.Limit.TokSTotal), pct, word(plainLimit, r.Limit.Bound)})
+			fmt.Sprintf("%.1f", r.TokSTotal), limit, pct, word(plainLimit, r.Limit.Bound)})
 	}
 	return "\n" + table(t) + "\n"
 }

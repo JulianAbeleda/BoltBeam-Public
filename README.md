@@ -176,3 +176,16 @@ Each cited number lives in one of these places:
 
 `bench/` holds the raw measurement records. [docs/README.md](docs/README.md) lists the records the
 articles cite.
+
+Engine discovery is cached between TUI launches. Use **Engine → Scan again** after installing a new engine.
+Changes to engine environment settings or missing cached paths trigger a fresh scan automatically.
+
+Work breakdowns share bordered tables with centered numbers and sections for model operations, supporting kernels,
+and timing adjustments across decode, prefill, and replay. Decode shows additive estimated tok/s gains and cumulative
+throughput for both GGUF and captured engine reports. Prefill/replay retain their workload units and attribution limits;
+unknown ceilings are not measurements of recoverable savings.
+
+Emit writes `gameplan.md` and `gameplan.json` from a completed, validated run. Captured-engine reports
+(including vLLM NVFP4/AWQ), prefill, and session/replay work breakdowns produce a shared gap report
+with measured timings, modeled differences, unknown ceilings, timing corrections, and evidence.
+Runs with kernel-search evidence retain their implementation-specific gameplans. Emit does not apply changes.

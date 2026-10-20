@@ -413,11 +413,15 @@ func (c Client) RoleTimeArgv(runDir, provider string) []string {
 	return argv
 }
 
-// Engines looks for every engine on this machine now and saves what was found; Providers then sees the saved
+// Engines reuses saved discovery when cached is true, otherwise scans; Providers then sees the saved
 // paths with no env vars set. The scan reads folders and asks discovered venv interpreters for module specs; no GPU or network.
-func (c Client) Engines() (*Engines, []byte, error) {
+func (c Client) Engines(cached bool) (*Engines, []byte, error) {
 	var e Engines
-	raw, _, err := c.decode(&e, nil, "boltbeam.workflow.screen", "engines")
+	args := []string{"engines"}
+	if cached {
+		args = append(args, "--cached")
+	}
+	raw, _, err := c.decode(&e, nil, "boltbeam.workflow.screen", args...)
 	return &e, raw, err
 }
 

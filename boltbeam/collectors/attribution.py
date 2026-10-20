@@ -137,7 +137,8 @@ def share_overlap(launches:list[dict[str, Any]]) -> tuple[list[dict[str, Any]], 
   every stretch equally among the kernels running in it, so the shares sum to the union of the intervals.
   Launches with no start time are kept as they are (they cannot overlap anything known)."""
   timed = [l for l in launches if "start_us" in l]
-  events = sorted([(l["start_us"], 1, i) for i, l in enumerate(timed)] + [(l["start_us"] + l["wall_us"], -1, i) for i, l in enumerate(timed)],
+  origin = min((l["start_us"] for l in timed), default=0.)
+  events = sorted([(l["start_us"]-origin, 1, i) for i, l in enumerate(timed)] + [(l["start_us"]-origin + l["wall_us"], -1, i) for i, l in enumerate(timed)],
                   key=lambda e: (e[0], e[1]))  # ends before starts at the same instant: touching is not overlap
   share = [0.0] * len(timed)
   active: set[int] = set()
@@ -280,7 +281,7 @@ def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_m
 def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str, model_id:str, target,
                    context:int, tokens:int, out:str, token_ms:float | None = None,
                    long_kernels:int = 0, overlap:dict[str, Any] | None = None, batch:int = 1,
-                   matrices:Any = None) -> dict[str, Any]:
+                   matrices:Any = None, engine:dict[str, Any] | None = None) -> dict[str, Any]:
   """A boltbeam.timing_trace.v1 of one provider's captured decode window, attributed, written to run/out.
   token_ms is the captured run's own time per token, as the runtime printed it. With batch B, a token is one decode
   step of B streams: the weights are read once per step, so a role's calls per step are its count at any batch. Refused (CaptureRefused, no file
@@ -348,5 +349,9 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
     trace["aux_sources"] = {"attribution": {"complete": work["complete"] and not result["unpaired"] and not unresolved,
                                             "matrix_work": work, "unresolved_launches": unresolved,
                                             "source": "the engine's loaded matrix inventory"}}
+  if engine:
+    for row in trace.get('rows', []):
+      if row.get('scope') == 'whole_step':
+        row['engine'] = {**row.get('engine', {}), **engine}
   (pathlib.Path(run) / out).write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
   return trace

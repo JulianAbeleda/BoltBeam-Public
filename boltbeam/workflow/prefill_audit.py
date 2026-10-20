@@ -56,7 +56,7 @@ def entry(row:dict[str, Any], *, length:int, wall:float, base:float, bw:float | 
   launches = f"{calls} launches, " if calls else ""
   claim = f"{row['name']} took {now:.2f} ms [E1] of the {length:,}-token prefill ({launches}{now / wall:.1%} of the captured {wall:.1f} ms [E1])"
   if row["what"] == "gaps":
-    standard = "0 ms: a GPU idle between kernels does no work"
+    standard = "0 ms: attributed kernel work; gaps can include unclassified memory or host activity"
   elif limit is None:
     standard = "none: the model counts no operations or bytes for this kernel" + (f" ({row['refused']})" if row.get("refused") else "")
   else:

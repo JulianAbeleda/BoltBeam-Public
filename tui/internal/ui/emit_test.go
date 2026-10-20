@@ -31,8 +31,8 @@ func TestSetupEmitRowFollowsTheRun(t *testing.T) {
 		t.Fatalf("no run: Emit must say Run first: %+v", labels(acts))
 	}
 	planned := program(s, &s.measured, nil, nil, 80, 24) // run-002 finished, but no per-role table
-	if !hasLabel(setupActions(facts(planned)), "[ Emit ] Run first") {
-		t.Fatal("a run without a per-role table: Emit must say Run first")
+	if !hasLabel(setupActions(facts(planned)), "[ Emit gap report ]") {
+		t.Fatal("a measured work breakdown must offer an optimization plan")
 	}
 	with := program(s, isolatedRun(t), nil, nil, 80, 24)
 	acts = setupActions(facts(with))
@@ -112,9 +112,139 @@ func TestEmitPageShowsTheGameplan(t *testing.T) {
 		golden(t, fmt.Sprintf("emit-%d.txt", cols), view)
 	}
 	// a failed Emit stays on Setup and says why
-	m := program(s, isolatedRun(t), nil, nil, 80, 24)
+	m := program(s, isolatedRun(t), nil, nil, 80, 24).(Model)
 	mm, _ := m.Update(emitMsg{nil, fmt.Errorf("no per-role table in this run: Run first")})
-	if got := mm.(Model); got.cursor != pageSetup || got.note != "Emit failed: no per-role table in this run: Run first" {
+	if got := mm.(Model); got.cursor != pageSetup || got.note != "Emit failed for "+m.runID()+": no per-role table in this run: Run first" {
 		t.Fatalf("a failed Emit: cursor %d note %q", got.cursor, got.note)
+	}
+}
+
+// Returning to Setup must retain the displayed run's location for Emit and Open report.
+func TestSavedRunKeepsOriginOnReturnToSetup(t *testing.T) {
+	s := loadSample(t)
+	m := program(s, isolatedRun(t), nil, nil, 80, 24).(Model)
+	m.f.ReadOnly = true
+	m.cursor = pageRun
+	m.backToSetup()
+	if !m.f.ReadOnly {
+		t.Fatal("saved origin lost on Escape")
+	}
+	m.cursor = pageRun
+	next, _ := m.do(action{"", "page", fmt.Sprint(pageSetup)})
+	if !next.f.ReadOnly {
+		t.Fatal("saved origin lost on Back to setup")
+	}
+}
+
+func TestSavedEmitNamesItsSource(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	s := loadSample(t)
+	m := program(s, isolatedRun(t), nil, nil, 80, 24).(Model)
+	m.f.ReadOnly = true
+	got := emitAction(facts(m))
+	if !strings.Contains(got.label, "saved run "+m.f.Run.ID) {
+		t.Fatalf("Emit must identify its saved source: %s", got.label)
+	}
+}
+
+func TestCapturedOperationEmitOffersOptimizationPlan(t *testing.T) {
+	s := loadSample(t)
+	run := isolatedRun(t)
+	run.Results.Workload = "decode"
+	run.Results.Loss.Roles = nil
+	run.Results.Loss.SemanticCapture = true
+	f := facts(program(s, run, nil, nil, 100, 24))
+	a := emitAction(f)
+	if a.do != "emit" || !strings.Contains(plain(a.label), "Emit gap report") {
+		t.Fatalf("completed captured work must offer the shared optimization plan: %+v", a)
+	}
+}
+
+func TestMultilineFailureNoticeKeepsScreenWithinTerminal(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	m := program(loadSample(t), nil, nil, nil, 170, 55).(Model)
+	m.note = "FAILED: report does not reconcile with evidence\nattention has no finite ceiling; report limit refused"
+	rendered := m.View()
+	if lipgloss.Height(rendered) > m.height {
+		t.Fatalf("failure notice overflows terminal: %d > %d", lipgloss.Height(rendered), m.height)
+	}
+	for _, text := range []string{"BoltBeam", "attention has no finite ceiling", "q quit"} {
+		if !strings.Contains(rendered, text) {
+			t.Fatalf("missing %q in failure view", text)
+		}
+	}
+}
+
+func TestForcedReplayCanEmitItsCheckedReport(t *testing.T) {
+	s := loadSample(t)
+	run := isolatedRun(t)
+	run.Results.Workload = "replay"
+	run.Results.Loss.Roles = nil
+	run.Results.Loss.Replay = &seam.Replay{Forced: true}
+	f := facts(program(s, run, nil, nil, 100, 24))
+	a := emitAction(f)
+	if a.do != "emit" || !strings.Contains(plain(a.label), "Emit replay report") {
+		t.Fatalf("forced replay report must be available: %+v", a)
+	}
+}
+
+func TestMeasuredReplayWithoutFloorStillShowsItsTable(t *testing.T) {
+	s := loadSample(t)
+	run := isolatedRun(t)
+	run.Results.Loss = seam.Loss{Status: "measured", Replay: &seam.Replay{Forced: true, Title: "Captured replay", HeadlineLines: []string{"Timing qualification: FAILED"}, Columns: []string{"turn", "captured ms"}, Rows: []seam.SessionRow{{Cells: []string{"1", "5.000"}}}, Total: []string{"all", "5.000"}}}
+	got := plain(resultBody(facts(program(s, run, nil, nil, 100, 24)), 100))
+	for _, want := range []string{"Captured replay", "Timing qualification: FAILED", "5.000"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, noKernelChoice) {
+		t.Fatal("replay was replaced by kernel-search advice")
+	}
+}
+
+func TestSharedOptimizationEmitAcrossWorkloads(t *testing.T) {
+	for _, workload := range []string{"decode", "prefill", "session", "replay"} {
+		run := isolatedRun(t)
+		run.Results.Workload = workload
+		run.Results.Loss.Roles = nil
+		f := facts(program(loadSample(t), run, nil, nil, 100, 24))
+		if !f.canEmit() || emitAction(f).do != "emit" {
+			t.Fatalf("%s measured breakdown cannot emit", workload)
+		}
+		f.Plan = &seam.Emitted{Plan: seam.Gameplan{Kind: "gap_report"}, Markdown: "# Performance gaps\n\nMeasured gaps."}
+		_, line := emitLine(f)
+		if !strings.Contains(line, "gap report written") || !strings.Contains(emitBody(f, 100), "Measured gaps") {
+			t.Fatal("generic plan not displayed")
+		}
+	}
+}
+
+func TestOptimizationPlanUsesSharedBorderedTables(t *testing.T) {
+	old := tableWidth
+	defer func() { tableWidth = old }()
+	for _, width := range []int{76, 106} {
+		tableWidth = width
+		emitted := &seam.Emitted{Plan: seam.Gameplan{Kind: "gap_report"}, Markdown: "unused wide text table"}
+		emitted.Plan.Presentation.Summary = "# Performance gaps"
+		emitted.Plan.Presentation.Details = "## Gap summary\n\nUntested."
+		emitted.Plan.Tables = []seam.Where{{Title: "Where the token goes", Columns: []string{"row", "ms now", "ms at limit", "ms at chip best", "ms above limit", "share", "+ Tok/S if roofline", "cumulative tok/s", "% of peak"},
+			Rows:          []seam.WhereRow{{Name: "projection", Section: "Model operations", Cells: []string{"5.00", "4.00", "4.00", "1.00", "100%", "+50.0", "250.0", "80%"}}},
+			BaselineCells: []string{"measured throughput", "", "", "", "", "", "200.0", "200.0", ""},
+			SumCells:      []string{"= total at roofline", "5.00", "4.00", "4.00", "1.00", "100%", "250.0", "250.0", ""}}}
+		got := emitBody(Facts{Plan: emitted}, width)
+		for _, want := range []string{"Performance gaps", "┌", "CUMULATIVE", "Model operations", "+50.0", "250.0", "Gap summary"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("missing %q: %s", want, got)
+			}
+		}
+		if strings.Contains(got, "unused wide text") {
+			t.Fatal("used wide Markdown table instead of shared renderer")
+		}
+		for _, line := range strings.Split(got, "\n") {
+			if strings.HasPrefix(line, "│") && maxWidth(line) > width {
+				t.Fatal("Emit table exceeds terminal width")
+			}
+		}
 	}
 }

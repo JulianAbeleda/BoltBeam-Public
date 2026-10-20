@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from boltbeam.collectors import providers
+from boltbeam.runtime.cuda_device import find_nvcc
 
 
 def _read(argv:list[str]) -> str:
@@ -33,7 +34,7 @@ def snapshot(provider:str | None = None) -> dict:
   except (ValueError, TypeError, AttributeError):
     torch, cuda_runtime = raw_torch, "unknown"
   commands = {"driver": ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
-              "cuda": ["nvcc", "--version"], "nsight_systems": ["nsys", "--version"],
+              "cuda": [find_nvcc() or "nvcc", "--version"], "nsight_systems": ["nsys", "--version"],
               "nsight_compute": ["ncu", "--version"]}
   versions = {}
   for key in json.loads(providers.PINS.read_text())["toolchain"]:

@@ -52,3 +52,41 @@ func TestEnginesAreLookedForAtBootThenListed(t *testing.T) {
 		t.Fatalf("[ Scan again ] runs the scan and shows the looking state: scan=%v providers=%v", again.f.EngineScan, again.f.Providers)
 	}
 }
+
+func TestSwitchingModelFormatsSelectsCompatibleEngine(t *testing.T) {
+	s := loadSample(t)
+	m := program(s, nil, nil, nil, 100, 30).(Model)
+	p := &seam.Providers{Providers: []seam.ProviderRow{
+		{Provider: "llama.cpp", Available: true, Formats: []string{"gguf"}},
+		{Provider: "vllm", Available: true, Formats: []string{"safetensors", "awq", "gptq"}},
+	}}
+	for _, c := range []struct{ format, engine string }{{"gguf", "llama.cpp"}, {"safetensors", "vllm"}, {"awq", "vllm"}, {"gguf", "llama.cpp"}} {
+		profile := s.profile
+		profile.Metadata.FormatFamily = c.format
+		m.f.Profile = &profile
+		m.f.Measurement = "generic"
+		old := m.f.Engine
+		next, _ := m.Update(providersMsg{m.f.target().ID, p})
+		m = next.(Model)
+		if m.f.Engine != c.engine {
+			t.Fatalf("%s selected %s, want %s", c.format, m.f.Engine, c.engine)
+		}
+		if old != c.engine && m.f.Measurement != "" {
+			t.Fatal("previous engine's measurement survived switch")
+		}
+		runnable := false
+		for _, a := range setupActions(m.f) {
+			if a.do == "analyze" {
+				runnable = true
+			}
+		}
+		if !runnable {
+			t.Fatalf("Run unavailable for %s with %s", c.format, c.engine)
+		}
+		for _, a := range engineActions(m.f) {
+			if a.do == "engine" && a.arg != c.engine {
+				t.Fatalf("incompatible engine selectable: %+v", a)
+			}
+		}
+	}
+}

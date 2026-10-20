@@ -52,9 +52,19 @@ def python_with(env_var:str, entry:str, env:dict[str, str] | None = None) -> str
 
 def venv_env(python:str) -> dict[str, str]:
   """The environment an activated venv gives: its bin folder first on PATH, so the tools it installed (ninja for
-  FlashInfer's run-time kernel builds) are found."""
+  FlashInfer's run-time kernel builds) are found. Python workers inherit the build limit hook."""
   venv = pathlib.Path(python).parent.parent
-  return {"VIRTUAL_ENV": str(venv), "PATH": f"{pathlib.Path(python).parent}{os.pathsep}{os.environ.get('PATH', '')}"}
+  runtime = str(RUNTIME)
+  existing_pythonpath = os.environ.get("PYTHONPATH", "")
+  from boltbeam.runtime.cuda_device import find_nvcc
+  nvcc = find_nvcc()
+  bins = [str(pathlib.Path(python).parent)]
+  if nvcc:
+    bins.append(str(pathlib.Path(nvcc).parent))
+  bins.extend(os.environ.get('PATH', '').split(os.pathsep))
+  return {"VIRTUAL_ENV": str(venv), "PATH": os.pathsep.join(dict.fromkeys(bins)),
+          "PYTHONPATH": os.pathsep.join([runtime, *([existing_pythonpath] if existing_pythonpath else [])]),
+          "BOLTBEAM_BUILD_LIMIT": "1"}
 
 
 def has_module(python:str, module:str) -> bool:
@@ -108,16 +118,17 @@ def captured_role_time(run:pathlib.Path, *, provider:str, trace:str, argv_for:Ca
   times over N - 1."""
   from boltbeam.collectors import attribution, vendor_capture
   raw = run / "kernel_compare" / f"{provider.replace('.', '_').replace('-', '_')}_capture"
-  got, secs, matrices = {}, {}, None
+  got, secs, matrices, engine = {}, {}, None, {}
   for name, n in (("long", tokens), ("short", 1)):
     got[name] = vendor_capture.capture(target.backend, argv_for(n), raw / name, cwd=cwd, env=env, flush_ms=flush_ms, **({"profiler_range": True} if profiler_range else {}))
     printed = [r for r in json_lines(vendor_capture.program_output(raw / name)) if "seconds" in r]
     secs[name] = printed[-1]["seconds"] if printed else None
     matrices = matrices or (printed[-1].get("matrices") if printed else None)  # the engine's packed GEMMs, if it says
+    engine.update((printed[-1].get("engine") or {}) if printed else {})
   window, overlap = attribution.shared_window(got["long"], got["short"])
   token_ms = ((secs["long"] - secs["short"]) * 1000.0 / (tokens - 1)
               if secs["long"] is not None and secs["short"] is not None else None)
   return attribution.provider_trace(run, window, provider=provider, method=vendor_capture.plan(target.backend)["method"],
                                     model_id=model_id, target=target, context=context, tokens=tokens - 1, out=trace,
                                     token_ms=token_ms, long_kernels=len(got["long"]), overlap=overlap, batch=batch,
-                                    matrices=matrices)
+                                    matrices=matrices, engine=engine)

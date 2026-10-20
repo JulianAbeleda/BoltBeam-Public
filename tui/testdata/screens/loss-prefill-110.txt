@@ -1,0 +1,291 @@
+Measured with llama.cpp · kernels from the capture
+Modeled roofline: 33.3 ms per prefill.
+○ llama.cpp: 14463.8 tok/s · 141.6 ms per prefill · 108.3 ms above roofline.
+  whole prefill of 2048 tokens, measured untraced; 4 forward call(s) of up to 512 tokens (llama-bench
+n_ubatch 512, n_batch 2048)
+
+Where the prefill time goes
+ms of one 2048-token prefill, worst first; prefill ms if fixed is the 141.6 ms untraced prefill less that
+row's lost ms. ms at ceiling is max(operations / the measured peak of the path the kernel's instructions
+use, bytes / bandwidth); MFU is operations over that peak for the row's time; no ceiling: the model counts
+no work for the kernel, so all of its time is lost. The rows sum to the 139.4 ms the captured prefill took
+from its first kernel to its last; the untraced prefill is 141.6 ms. attention: instructions on more than
+one path; the ceiling uses the slowest of them.
+
+┌─────────────────────────────┬────────┬────────────┬─────────┬───────┬─────────┬───────┐
+│ ROW                         │ MS NOW │   MS AT    │ MS LOST │ SHARE │ PREFILL │  MFU  │
+│                             │        │  CEILING   │         │       │  MS IF  │       │
+│                             │        │            │         │       │  FIXED  │       │
+├─────────────────────────────┼────────┼────────────┼─────────┼───────┼─────────┼───────┤
+│ ffn_down + ffn_gate_up Q4_K │ 59.56  │   18.22    │  41.34  │  39%  │  100.3  │ 30.6% │
+│ attn_qo Q4_K                │ 17.70  │    4.97    │  12.73  │  12%  │  128.9  │ 28.1% │
+│ ffn_down Q6_K               │ 15.04  │    3.52    │  11.52  │  11%  │  130.1  │ 23.4% │
+│ mul_mat_q_stream_k_fixup    │  8.51  │ no ceiling │  8.51   │  8%   │  133.1  │   —   │
+│ attention                   │ 10.69  │    4.92    │  5.77   │  5%   │  135.8  │ 46.0% │
+│ rms_norm_f32                │  5.42  │ no ceiling │  5.42   │  5%   │  136.2  │   —   │
+│ unary_gated_op_kernel       │  3.70  │ no ceiling │  3.70   │  3%   │  137.9  │   —   │
+│ quantize_mmq_q8_1           │  3.50  │ no ceiling │  3.50   │  3%   │  138.1  │   —   │
+│ attn_kv Q4_K                │  4.40  │    0.97    │  3.43   │  3%   │  138.2  │ 21.2% │
+│ rope_neox                   │  2.83  │ no ceiling │  2.83   │  3%   │  138.8  │   —   │
+│ gaps (GPU idle)             │  2.69  │    0.00    │  2.69   │  3%   │  138.9  │   —   │
+│ k_bin_bcast                 │  2.34  │ no ceiling │  2.34   │  2%   │  139.3  │   —   │
+│ attn_kv Q6_K                │  2.25  │    0.37    │  1.88   │  2%   │  139.7  │ 13.8% │
+│ k_set_rows                  │  0.39  │ no ceiling │  0.39   │  0%   │  141.2  │   —   │
+│ mul_mat_vec_q               │  0.07  │ no ceiling │  0.07   │  0%   │  141.5  │   —   │
+│ lm_head Q6_K                │  0.31  │    0.30    │  0.01   │  0%   │  141.6  │   —   │
+│ quantize_q8_1               │  0.00  │ no ceiling │  0.00   │  0%   │  141.6  │   —   │
+│ k_get_rows_float            │  0.00  │ no ceiling │  0.00   │  0%   │  141.6  │   —   │
+├─────────────────────────────┼────────┼────────────┼─────────┼───────┼─────────┼───────┤
+│ = prefill                   │ 139.41 │   33.27    │ 106.14  │ 100%  │    —    │   —   │
+└─────────────────────────────┴────────┴────────────┴─────────┴───────┴─────────┴───────┘
+
+Prefill audit at 2,048 tokens
+Every row of the 2,048-token prefill, worst first by ms lost. The untraced prefill is 141.6 ms [E2]; the
+captured rows sum to 139.4 ms [E1]. Rows that each lose under 1% of it are one line.
+[E1] prefill_trace.json lengths.2048.rows: the captured prefill, kernel by kernel, attributed
+[E2] timing_trace.json rows[context=2048]: the untraced prefill, clock and power
+[E3] prefill_trace.json peaks, bandwidth_gbs: the measured peaks (target facts) and bandwidth (measured on
+this GPU (native CUDA probe, 2026-10-10))
+[E4] kernel_compare/prefill_capture/2048/: the engine's own launches as the vendor profiler read them
+1. ffn_down + ffn_gate_up Q4_K
+   claim
+     ffn_down + ffn_gate_up Q4_K took 59.56 ms [E1] of the 2,048-token prefill (352 launches, 42.7% of the
+     captured 139.4 ms [E1])                                                                              
+   standard
+     18.22 ms = max(18.14 TFLOP [E1] / 996 TFLOPS [E3] int8 peak = 18.22 ms; 15.88 GB [E1] / 1,694 GB/s   
+     [E3] = 9.37 ms), compute-bound                                                                       
+   evidence
+     E1 row 'ffn_down + ffn_gate_up Q4_K' from E4; the untraced prefill E2                                
+   re-performance
+     not re-performed: no adapter for mul_mat_q (llama.cpp on CUDA)                                       
+   tie-out
+     59.56 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2]    
+     (the capture differs by -2.2 ms)                                                                     
+   materiality
+     41.34 ms lost [E1, E3], 29.2% of the untraced prefill; the prefill, time to first token, if this row
+     alone were fixed: 100.3 ms from 141.6 ms [E2]                                                        
+   finding
+     30.6% MFU on int8; 3.3x its ceiling                                                                  
+2. attn_qo Q4_K
+   claim
+     attn_qo Q4_K took 17.70 ms [E1] of the 2,048-token prefill (288 launches, 12.7% of the captured 139.4
+     ms [E1])                                                                                             
+   standard
+     4.97 ms = max(4.95 TFLOP [E1] / 996 TFLOPS [E3] int8 peak = 4.97 ms; 5.14 GB [E1] / 1,694 GB/s [E3] =
+     3.03 ms), compute-bound                                                                              
+   evidence
+     E1 row 'attn_qo Q4_K' from E4; the untraced prefill E2                                               
+   re-performance
+     not re-performed: no adapter for mul_mat_q (llama.cpp on CUDA)                                       
+   tie-out
+     17.70 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2]    
+     (the capture differs by -2.2 ms)                                                                     
+   materiality
+     12.73 ms lost [E1, E3], 9.0% of the untraced prefill; the prefill, time to first token, if this row  
+     alone were fixed: 128.9 ms from 141.6 ms [E2]                                                        
+   finding
+     28.1% MFU on int8; 3.6x its ceiling                                                                  
+3. ffn_down Q6_K
+   claim
+     ffn_down Q6_K took 15.04 ms [E1] of the 2,048-token prefill (68 launches, 10.8% of the captured 139.4
+     ms [E1])                                                                                             
+   standard
+     3.52 ms = max(3.50 TFLOP [E1] / 996 TFLOPS [E3] int8 peak = 3.52 ms; 3.95 GB [E1] / 1,694 GB/s [E3] =
+     2.33 ms), compute-bound                                                                              
+   evidence
+     E1 row 'ffn_down Q6_K' from E4; the untraced prefill E2                                              
+   re-performance
+     not re-performed: no adapter for mul_mat_q (llama.cpp on CUDA)                                       
+   tie-out
+     15.04 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2]    
+     (the capture differs by -2.2 ms)                                                                     
+   materiality
+     11.52 ms lost [E1, E3], 8.1% of the untraced prefill; the prefill, time to first token, if this row  
+     alone were fixed: 130.1 ms from 141.6 ms [E2]                                                        
+   finding
+     23.4% MFU on int8; 4.3x its ceiling                                                                  
+4. mul_mat_q_stream_k_fixup
+   claim
+     mul_mat_q_stream_k_fixup took 8.51 ms [E1] of the 2,048-token prefill (996 launches, 6.1% of the     
+     captured 139.4 ms [E1])                                                                              
+   standard
+     none: the model counts no operations or bytes for this kernel                                        
+   evidence
+     E1 row 'mul_mat_q_stream_k_fixup' from E4; the untraced prefill E2                                   
+   re-performance
+     not re-performed: no adapter for mul_mat_q_stream_k_fixup (llama.cpp on CUDA)                        
+   tie-out
+     8.51 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the
+     capture differs by -2.2 ms)                                                                          
+   materiality
+     8.51 ms lost [E1], 6.0% of the untraced prefill; the prefill, time to first token, if this row alone
+     were fixed: 133.1 ms from 141.6 ms [E2]                                                              
+   finding
+     no ceiling: every ms of it counts as lost until the model counts its work                            
+5. attention
+   claim
+     attention took 10.69 ms [E1] of the 2,048-token prefill (288 launches, 7.7% of the captured 139.4 ms
+     [E1])                                                                                                
+   standard
+     4.92 ms = max(1.24 TFLOP [E1] / 251 TFLOPS [E3] fp16 + fp16_f16acc peak = 4.92 ms; 1.96 GB [E1] /    
+     1,694 GB/s [E3] = 1.16 ms), compute-bound; its operations split over its paths by instruction sites,
+     each at its own peak                                                                                 
+   evidence
+     E1 row 'attention' from E4; the untraced prefill E2                                                  
+   re-performance
+     not re-performed: no adapter for flash_attn_ext_f16 (llama.cpp on CUDA)                              
+   tie-out
+     10.69 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2]    
+     (the capture differs by -2.2 ms)                                                                     
+   materiality
+     5.77 ms lost [E1, E3], 4.1% of the untraced prefill; the prefill, time to first token, if this row   
+     alone were fixed: 135.8 ms from 141.6 ms [E2]                                                        
+   finding
+     46.0% MFU on fp16 + fp16_f16acc; 2.2x its ceiling                                                    
+6. rms_norm_f32
+   claim
+     rms_norm_f32 took 5.42 ms [E1] of the 2,048-token prefill (574 launches, 3.9% of the captured 139.4  
+     ms [E1])                                                                                             
+   standard
+     none: the model counts no operations or bytes for this kernel                                        
+   evidence
+     E1 row 'rms_norm_f32' from E4; the untraced prefill E2                                               
+   re-performance
+     not re-performed: no adapter for rms_norm_f32 (llama.cpp on CUDA)                                    
+   tie-out
+     5.42 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the
+     capture differs by -2.2 ms)                                                                          
+   materiality
+     5.42 ms lost [E1], 3.8% of the untraced prefill; the prefill, time to first token, if this row alone
+     were fixed: 136.2 ms from 141.6 ms [E2]                                                              
+   finding
+     no ceiling: every ms of it counts as lost until the model counts its work                            
+7. unary_gated_op_kernel
+   claim
+     unary_gated_op_kernel took 3.70 ms [E1] of the 2,048-token prefill (140 launches, 2.7% of the        
+     captured 139.4 ms [E1])                                                                              
+   standard
+     none: the model counts no operations or bytes for this kernel                                        
+   evidence
+     E1 row 'unary_gated_op_kernel' from E4; the untraced prefill E2                                      
+   re-performance
+     not re-performed: no adapter for unary_gated_op_kernel (llama.cpp on CUDA)                           
+   tie-out
+     3.70 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the
+     capture differs by -2.2 ms)                                                                          
+   materiality
+     3.70 ms lost [E1], 2.6% of the untraced prefill; the prefill, time to first token, if this row alone
+     were fixed: 137.9 ms from 141.6 ms [E2]                                                              
+   finding
+     no ceiling: every ms of it counts as lost until the model counts its work                            
+8. quantize_mmq_q8_1
+   claim
+     quantize_mmq_q8_1 took 3.50 ms [E1] of the 2,048-token prefill (996 launches, 2.5% of the captured   
+     139.4 ms [E1])                                                                                       
+   standard
+     none: the model counts no operations or bytes for this kernel                                        
+   evidence
+     E1 row 'quantize_mmq_q8_1' from E4; the untraced prefill E2                                          
+   re-performance
+     not re-performed: no adapter for quantize_mmq_q8_1 (llama.cpp on CUDA)                               
+   tie-out
+     3.50 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the
+     capture differs by -2.2 ms)                                                                          
+   materiality
+     3.50 ms lost [E1], 2.5% of the untraced prefill; the prefill, time to first token, if this row alone
+     were fixed: 138.1 ms from 141.6 ms [E2]                                                              
+   finding
+     no ceiling: every ms of it counts as lost until the model counts its work                            
+9. attn_kv Q4_K
+   claim
+     attn_kv Q4_K took 4.40 ms [E1] of the 2,048-token prefill (216 launches, 3.2% of the captured 139.4  
+     ms [E1])                                                                                             
+   standard
+     0.97 ms = max(0.93 TFLOP [E1] / 996 TFLOPS [E3] int8 peak = 0.93 ms; 1.64 GB [E1] / 1,694 GB/s [E3] =
+     0.97 ms), memory-bound                                                                               
+   evidence
+     E1 row 'attn_kv Q4_K' from E4; the untraced prefill E2                                               
+   re-performance
+     not re-performed: no adapter for mul_mat_q (llama.cpp on CUDA)                                       
+   tie-out
+     4.40 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the
+     capture differs by -2.2 ms)                                                                          
+   materiality
+     3.43 ms lost [E1, E3], 2.4% of the untraced prefill; the prefill, time to first token, if this row   
+     alone were fixed: 138.2 ms from 141.6 ms [E2]                                                        
+   finding
+     21.2% MFU on int8; 4.5x its ceiling                                                                  
+10. rope_neox
+   claim
+     rope_neox took 2.83 ms [E1] of the 2,048-token prefill (288 launches, 2.0% of the captured 139.4 ms  
+     [E1])                                                                                                
+   standard
+     none: the model counts no operations or bytes for this kernel                                        
+   evidence
+     E1 row 'rope_neox' from E4; the untraced prefill E2                                                  
+   re-performance
+     not re-performed: no adapter for rope_neox (llama.cpp on CUDA)                                       
+   tie-out
+     2.83 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the
+     capture differs by -2.2 ms)                                                                          
+   materiality
+     2.83 ms lost [E1], 2.0% of the untraced prefill; the prefill, time to first token, if this row alone
+     were fixed: 138.8 ms from 141.6 ms [E2]                                                              
+   finding
+     no ceiling: every ms of it counts as lost until the model counts its work                            
+11. gaps (GPU idle)
+   claim
+     gaps (GPU idle) took 2.69 ms [E1] of the 2,048-token prefill (1.9% of the captured 139.4 ms [E1])    
+   standard
+     0 ms: a GPU idle between kernels does no work                                                        
+   evidence
+     E1 row 'gaps (GPU idle)' from E4; the untraced prefill E2                                            
+   re-performance
+     not applicable: the gaps are no kernel                                                               
+   tie-out
+     2.69 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the
+     capture differs by -2.2 ms)                                                                          
+   materiality
+     2.69 ms lost [E1, E3], 1.9% of the untraced prefill; the prefill, time to first token, if this row   
+     alone were fixed: 138.9 ms from 141.6 ms [E2]                                                        
+   finding
+     the GPU sat idle 2.69 ms between kernels                                                             
+12. k_bin_bcast
+   claim
+     k_bin_bcast took 2.34 ms [E1] of the 2,048-token prefill (281 launches, 1.7% of the captured 139.4 ms
+     [E1])                                                                                                
+   standard
+     none: the model counts no operations or bytes for this kernel                                        
+   evidence
+     E1 row 'k_bin_bcast' from E4; the untraced prefill E2                                                
+   re-performance
+     not re-performed: no adapter for k_bin_bcast (llama.cpp on CUDA)                                     
+   tie-out
+     2.34 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the
+     capture differs by -2.2 ms)                                                                          
+   materiality
+     2.34 ms lost [E1], 1.7% of the untraced prefill; the prefill, time to first token, if this row alone
+     were fixed: 139.3 ms from 141.6 ms [E2]                                                              
+   finding
+     no ceiling: every ms of it counts as lost until the model counts its work                            
+13. attn_kv Q6_K
+   claim
+     attn_kv Q6_K took 2.25 ms [E1] of the 2,048-token prefill (72 launches, 1.6% of the captured 139.4 ms
+     [E1])                                                                                                
+   standard
+     0.37 ms = max(0.31 TFLOP [E1] / 996 TFLOPS [E3] int8 peak = 0.31 ms; 0.63 GB [E1] / 1,694 GB/s [E3] =
+     0.37 ms), memory-bound                                                                               
+   evidence
+     E1 row 'attn_kv Q6_K' from E4; the untraced prefill E2                                               
+   re-performance
+     not re-performed: no adapter for mul_mat_q (llama.cpp on CUDA)                                       
+   tie-out
+     2.25 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the
+     capture differs by -2.2 ms)                                                                          
+   materiality
+     1.88 ms lost [E1, E3], 1.3% of the untraced prefill; the prefill, time to first token, if this row   
+     alone were fixed: 139.7 ms from 141.6 ms [E2]                                                        
+   finding
+     13.8% MFU on int8; 6.1x its ceiling                                                                  
+5 rows under 1% each: 0.78 ms now, 0.48 ms lost [E1] (k_set_rows, mul_mat_vec_q, lm_head Q6_K,
+quantize_q8_1, k_get_rows_float)

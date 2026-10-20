@@ -74,7 +74,7 @@ def _workload_profile(profile, target_id:str, workload:str, contexts:tuple[int, 
 def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str | None = None,
              model_id:str | None = None, workload:str = Workload.DECODE.value,
              contexts:tuple[int, ...] | None = None, target_source:str | None = None,
-             engine_settings:dict[str, Any] | None = None) -> dict[str, Any]:
+             engine_settings:dict[str, Any] | None = None, provider:str | None = None) -> dict[str, Any]:
   """A run folder for the model. contexts: the decode contexts, or a prefill's prompt lengths; left out, decode
   takes (128, 512) and a prefill the sweep from the model's own cap (prefill_sweep.json, prefill_work.sweep)."""
   out = run_dir(run)
@@ -87,6 +87,12 @@ def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str 
   write_json(out / "weight_inventory.json", _weight_inventory(profile))
   if contexts is None and workload == Workload.PREFILL.value:
     swept = prefill_sweep(profile.to_json(), selected_target)
+    if provider == "vllm" and swept["binding"] == "model":
+      # LLM.generate requires room for its first output token, even for a prefill-only timing.
+      swept["output_tokens_reserved"] = 1
+      swept["cap"] -= 1
+      swept["lengths"][-1] = swept["cap"]
+      swept["words"] += "; vLLM reserves 1 output token: maximum prompt " + str(swept["cap"])
     write_json(out / "prefill_sweep.json", swept)
     contexts = tuple(swept["lengths"])
   if contexts is None and workload == Workload.SESSION.value:

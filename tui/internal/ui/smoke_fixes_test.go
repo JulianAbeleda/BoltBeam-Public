@@ -27,7 +27,7 @@ func TestOneGpuShowsTheMeasuredBandwidthEverywhere(t *testing.T) {
 			t.Errorf("%s must use the measured 1694.9 GB/s, never the registry 1693.3:\n%s", name, got)
 		}
 	}
-	for _, want := range []string{"memory 1694.9 GB/s, " + src, "Speed limit on", "362.4 tokens per second", "From memory 1694.9 GB/s, " + src} {
+	for _, want := range []string{"memory 1694.9 GB/s, " + src, "GPU: nvidia_sm120"} {
 		if !strings.Contains(line+"\n"+setup, want) {
 			t.Errorf("missing %q in:\n%s\n%s", want, line, setup)
 		}

@@ -216,14 +216,15 @@ def library_paths(libraries:list[pathlib.Path], launches:list[dict[str, Any]] | 
   from boltbeam.collectors.instruction_path import library_table, paths_in_text, sass_signatures, sass_table, template
   kernels: dict[str, dict[str, int]] = {}
   read, seen = [], set()
-  find = lambda name: str(tools / name) if tools and (tools / name).is_file() else shutil.which(name)  # noqa: E731
+  from boltbeam.runtime.cuda_device import find_cuda_tool
+  find = lambda name: find_cuda_tool(name,tools)  # noqa: E731
   for lib in libraries:
     lib = pathlib.Path(lib).resolve()
     if lib in seen or not lib.is_file():
       continue
     seen.add(lib)
     try:
-      table = library_table(lib)
+      table = library_table(lib,cuobjdump=find('cuobjdump'))
     except (RuntimeError, OSError):
       continue
     if table["kernels"]:
@@ -417,18 +418,26 @@ def vllm_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> di
                      "warm-up calls, untraced" if own else
                      f"the wall time of LLM.generate (vLLM reported no request timing), {len(samples)} prompts after "
                      f"{VLLM_WARM} warm-up calls, untraced"),
-          "engine": {"vllm": line.get("vllm"), "max_num_batched_tokens": line["max_num_batched_tokens"],
+          "engine": {**{k: line.get(k) for k in ("activation_dtype", "kv_cache_dtype", "model_type", "max_model_len")}, "vllm": line.get("vllm"), "speculative_config": line.get("speculative_config"), "max_num_batched_tokens": line["max_num_batched_tokens"],
                      "chunked_prefill": line.get("chunked_prefill"), "wall_samples_ms": [s * 1e3 for s in line["wall_samples_s"]],
                      "command": argv, "prompt": PROMPT_WORDS["vllm"]}}
 
 
-def vllm_formats(weights:set[str]) -> dict[str, Any]:
+def vllm_formats(weights:set[str], resolved:dict[str, Any] | None = None, *, require_resolved:bool = False) -> dict[str, Any]:
   """vLLM on a float checkpoint: activations, attention and the cache in the weights' type (the KV cache dtype
   auto), GEMMs writing that type; no stream-k fixups."""
-  fmt = next(iter(weights)) if len(weights) == 1 else "BF16"
-  return {"activations": {"in": fmt, "out": fmt}, "attention_activations": {"in": fmt, "out": fmt}, "kv": fmt,
-          "recurrent_form": VLLM_RECURRENT_FORM,
-          "words": f"{fmt.lower()} activations in and out, attention and the KV cache in {fmt.lower()} (dtype auto)"}
+  fmt = next(iter(weights)) if len(weights) == 1 and weights <= {"F16", "BF16"} else "BF16"
+  resolved = resolved or {}
+  names = {"bfloat16": "BF16", "float16": "F16", "fp8_e4m3": "FP8_E4M3", "fp8": "FP8_E4M3"}
+  if require_resolved and (resolved.get('activation_dtype') not in names or
+                          resolved.get('kv_cache_dtype') not in (*names, 'auto')):
+    raise ValueError('attention work requires recorded supported activation and KV cache formats')
+  fmt = names.get(resolved.get('activation_dtype'), fmt)
+  kv = names.get(resolved.get('kv_cache_dtype'), fmt)
+  return {"activations": {"in": fmt, "out": fmt}, "attention_activations": {"in": fmt, "out": fmt}, "kv": kv,
+          "recurrent_form": VLLM_RECURRENT_FORM if resolved.get('model_type') in (None, 'qwen3_5', 'qwen3_next') else None,
+          "activations_by_quant": {q: {"in": q, "out": fmt} for q in weights if q in {"NVFP4_G16", "FP8_E4M3"}},
+          "words": f"{fmt.lower()} activations in and out; KV cache {kv.lower()} " + ("(resolved by engine)" if resolved else "(dtype auto assumed)")}
 
 
 VLLM_RECURRENT_FORM = {"name": "chunked_wy", "chunk": 64}  # vLLM's prefill runs the gated delta rule chunked (WY), chunk 64
@@ -438,18 +447,41 @@ def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, A
   """The measured call alone (the driver marks it for nsys), the engine in this process so nsys sees it."""
   from boltbeam.collectors import vendor_capture, vllm_decode as vd
   from boltbeam.collectors.capture_settings import vllm_flags
-  argv, env = _vllm(model, length, "--capture", *vllm_flags(run, length, capture=True))
+  profile = json.loads((run/'model_profile.json').read_text())
+  semantic = ((profile.get('metadata') or {}).get('recurrent') or {}).get('kind') == 'mamba2'
+  argv, env = _vllm(model, length, "--capture", *(['--semantic-dispatch'] if semantic else []), *vllm_flags(run, length, capture=True))
   raw = run / RAW / str(length)
+  if semantic:
+    # Reuse the measured autotuner choice across the timing/counter processes.
+    # Otherwise each process can choose a different tile, invalidating traffic.
+    env = {**env, 'TRITON_CACHE_AUTOTUNING':'1'}
   launches = vendor_capture.capture(target.backend, argv, raw, env={**env, **vd.CAPTURE_ENV}, profiler_range=True)
   line = json.loads([x for x in vendor_capture.program_output(raw).splitlines() if x.startswith('{"length"')][-1])
+  proof = None
+  if semantic:
+    import hashlib
+    from boltbeam.collectors import semantic_capture, vllm_semantic_work, cuda_memory
+    launches = vllm_semantic_work.attach(semantic_capture.read(raw/'capture.sqlite'),pathlib.Path(model),profile,
+                                         ssd_chunk=line['mamba_chunk_size'],routing=line.get('routing'))
+    # AOT compilation may set a private Triton cache only in the timing process.
+    # Reuse that observed cache, rather than letting the counter process retune.
+    counter_env={**env,**vd.CAPTURE_ENV,'TRITON_CACHE_DIR':line['triton_cache_dir']}
+    launches, memory_file = cuda_memory.collect(argv,counter_env,raw,launches,line)
+    facts = raw/'semantic_work.json'
+    facts.write_text(json.dumps({'engine':line,'launches':launches},indent=1))
+    proof={'schema':'boltbeam.semantic_work.v1','execution_mode':line['execution_mode'],
+           'model_profile_sha256':hashlib.sha256((run/'model_profile.json').read_bytes()).hexdigest(),
+           'sources':[{'file':str(f.relative_to(run)),'sha256':hashlib.sha256(f.read_bytes()).hexdigest()}
+                      for f in (facts,memory_file) if f is not None]}
   chunk = vllm_chunk(length, line)
   tools = pathlib.Path(vd.python() or "").parent.parent
   bins = sorted(tools.glob("lib/python*/site-packages/nvidia/*/bin"))
   paths = library_paths([pathlib.Path(p) for p in line.get("libraries") or []], launches,
                         tools=bins[0] if bins else None, jit_caches=line.get("jit_caches"))
   return {"launches": launches, "chunk": chunk["widths"], "outputs": chunk["outputs"], "warmup": False,
-          "formats": vllm_formats(weight_quants(run)), "method": vendor_capture.plan(target.backend)["method"],
+          "formats": vllm_formats(weight_quants(run), line), "method": vendor_capture.plan(target.backend)["method"],
           "matrices": line.get("matrices"), "captured_ms": line["wall_s"] * 1e3, "window": line.get("window_monotonic"),
+          "work_evidence":proof,
           "paths": observe_closed(argv, {**env, **vd.CAPTURE_ENV}, raw, launches, paths, tools=bins[0] if bins else None)}
 
 
@@ -568,13 +600,15 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   return out
 
 
-def last_level_cache(target) -> dict[str, float] | None:
+def last_level_cache(target) -> dict[str, Any] | None:
   """The chip's last-level cache: its size and measured read bandwidth, from the target's facts; None if either is
   not recorded."""
   facts = (target.capabilities or {}).get("fact_sources") or {}
   size = next((v.get("l2_cache_bytes") for v in facts.values() if isinstance(v, dict) and v.get("l2_cache_bytes")), None)
-  gbs = (facts.get("l2_bandwidth_gbs") or {}).get("value_gbs")
-  return {"bytes": float(size), "gbs": float(gbs)} if size and gbs else None
+  rate = facts.get("l2_bandwidth_gbs") or {}
+  gbs = rate.get("value_gbs")
+  return {"bytes": float(size), "gbs": float(gbs),
+          **({'calibration':rate['calibration']} if rate.get('calibration') else {})} if size and gbs else None
 
 
 def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -649,14 +683,20 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              program_roles=cap.get("program_roles"), warmup=cap["warmup"],
                              untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
                              formats=cap.get("formats"), cache=last_level_cache(target), depth=depth,
-                             observed=cap["paths"].get("observed"), prune=cap.get("prune"), unc=out["uncertainty"])
+                             observed=cap["paths"].get("observed"), prune=cap.get("prune"), unc=out["uncertainty"],
+                             measured_ms=cap.get("measured_ms"))
     from boltbeam.workflow.repeat_bands import find
     attr["end_to_end"] = tie_out.end_to_end(attr, truth_ms.get(int(length)), band=find(run, f"prefill {length}"))
     per_chunk = len(cap["launches"]) / cap.get("copies", 2 if cap["warmup"] else 1) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
+                                   "work_evidence":cap.get('work_evidence'),
                                    "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen,
                                    **({"measured_ms": cap["measured_ms"]} if cap.get("measured_ms") else {}),
                                    "peaks_at": peaks, "peaks_clock": peaks_clock, "pairing_roles": pairing_source,
                                    "paths_how": cap["paths"]["how"], "libraries": cap["paths"]["libraries"], **attr}
+    from boltbeam.collectors.semantic_attribution import bind_cache_rate
+    bind_cache_rate(run,run/RAW/str(length),out['lengths'][str(length)],last_level_cache(target))
+    # Preserve completed lengths if a later capture is stopped or rejected.
+    (run / trace).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
   (run / trace).write_text(json.dumps(out, indent=1, sort_keys=True) + "\n")
   return out

@@ -222,5 +222,10 @@
     "tok_s": null,
     "total_us": null
   },
+  "validation": {
+    "checks": 1,
+    "failures": [],
+    "status": "passed"
+  },
   "workload": "decode"
 }

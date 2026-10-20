@@ -1,8 +1,8 @@
 ⚡ BoltBeam                                                            ⠋ (•̀ᴗ•́)⚡
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Chip                                                                         │
-│ memory speed unknown · compute speed unknown                                 │
-│  ·  · memory from  · compute from                                            │
+│ GPU: Apple M3                                                                │
+│ memory speed unknown                                                         │
 │                                                                              │
 │                                                                              │
 │                                                                              │

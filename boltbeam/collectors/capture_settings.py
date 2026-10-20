@@ -6,6 +6,8 @@ from typing import Any
 
 from boltbeam.workflow.common import read_json
 
+# The engine settings the vLLM adapter can honor: the one list every vLLM run and capture checks a request against.
+VLLM_SETTINGS = ("chunk_size", "attention_backend")
 LLAMA_FLAGS = {"chunk_size": "-ub", "batch_size": "-b", "cache_type_k": "-ctk",
                "cache_type_v": "-ctv", "flash_attention": "-fa"}
 LLAMA_FIELDS = {"n_ubatch": "chunk_size", "n_batch": "batch_size", "type_k": "cache_type_k",
@@ -74,8 +76,11 @@ def context_limit(run:pathlib.Path, context:int, field:str) -> int:
 
 
 def vllm_flags(run:pathlib.Path, context:int, *, capture:bool = False) -> list[str]:
-  settings = require_supported(run, ("chunk_size",))
-  size = settings.get("chunk_size")
+  """The driver flags that hold the requested engine settings: the prefill chunk and the attention backend. A
+  capture takes what the untraced run recorded, so the two cannot differ; a recorded value that differs from the
+  request is an error, not a choice."""
+  settings = require_supported(run, VLLM_SETTINGS)
+  size, backend = settings.get("chunk_size"), settings.get("attention_backend")
   if capture:
     engine = observed(run, context)
     if engine.get("chunked_prefill"):
@@ -83,9 +88,20 @@ def vllm_flags(run:pathlib.Path, context:int, *, capture:bool = False) -> list[s
       if size is not None and size != actual:
         raise ValueError("untraced chunk size differs from the request")
       size = actual
+    if engine.get("attention_backend"):
+      actual = engine["attention_backend"]
+      if backend is not None and str(backend).upper() != str(actual).upper():
+        raise ValueError(f"untraced attention backend {actual!r} differs from the request {backend!r}")
+      backend = actual if backend is not None else None
   if size is not None and (type(size) is not int or size <= 0):
     raise ValueError("chunk_size must be a positive integer")
-  return ["--max-num-batched-tokens", str(size)] if size is not None else []
+  if backend is not None and (type(backend) is not str or not backend.strip()):
+    raise ValueError("attention_backend must name one of vLLM's attention backends")
+  flags = [*(["--max-num-batched-tokens", str(size)] if size is not None else []),
+           *(["--attention-backend", backend] if backend is not None else [])]
+  if capture and observed(run, context).get("max_model_len"):
+    flags += ["--model-context-limit", str(context_limit(run, context, "max_model_len"))]
+  return flags
 
 
 def decode_tokens(run:pathlib.Path, context:int) -> int:

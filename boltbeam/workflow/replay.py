@@ -61,6 +61,8 @@ def standard(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   manifest = load_manifest(run)
   profile = _read(run / "model_profile.json")
   server = next((r for r in trace.get("rows") or [] if r.get("scope") == "server"), None)
+  if server and (server.get("settings") or {}).get("speculative_config"):
+    return None  # draft and verification work need their own model; the ordinary token roofline is not valid
   ceil = _measured_vs_ceiling({**manifest, "workload": "decode"}, profile, run)
   if not (profile and server) or ceil.get("status") != "modeled":
     return None
@@ -120,17 +122,23 @@ def _pct(xs:list[float], q:float) -> float:
 def table(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   """The replay table from timing_trace.json: a row per turn with its ceilings, a totals row, the headline."""
   rows = [r for r in trace.get("rows") or [] if r.get("workload") == "replay"]
-  turns = [r for r in rows if r["scope"] == "turn"]
+  turns = [{**r, "ttft_overhead_ms": r["ttft_ms"] - r["prompt_ms"],
+            "overhead_ms": r["wall_ms"] - r["prompt_ms"] - r["predicted_ms"]}
+           for r in rows if r["scope"] == "turn"]
   if not turns:
     return None
+  if (run/'replay_session_capture.json').exists():
+    raise ValueError('legacy step-window replay capture is superseded; use replay-review for complete interval reconciliation')
   s = standard(run, trace)
   run_mhz = ((trace.get("telemetry") or {}).get("sm_mhz") or {}).get("mean")
-  captured = {t["i"] for t in (_read(run / "replay_capture.json").get("turns") or []) if not t.get("failed")}
+  captured = {t["i"] for t in (_read(run / "replay_capture.json").get("turns") or [])
+              if not t.get("failed") and t.get("file") and
+              ((_read(run / t["file"]).get("lengths") or {}).get(str(t.get("prompt_n"))) or {}).get("rows")}
   out_rows, unmodelled = [], set()
   for r in turns:
     c = turn_ceilings(s, r, run_mhz) if s else None
     unmodelled.update((c or {}).get("unmodelled") or [])
-    flags = [f for f, on in (("cold", r["cold"]), ("captured", r["i"] in captured), ("THROTTLED", r.get("throttled")),
+    flags = [f for f, on in (("cold", r["cold"]), ("bench capture", r["i"] in captured), ("THROTTLED", r.get("throttled")),
                              ("compaction", r["compaction"])) if on]
     pct = 100.0 * c["roofline_ms"] / r["wall_ms"] if c and r["wall_ms"] else None
     out_rows.append({"i": r["i"], "turn": r, "ceiling": c, "lost": lost_parts(r, c) if c else None, "flags": flags,
@@ -153,7 +161,7 @@ def table(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   words = [f"{len(turns)} turns of {src.get('name') or 'the trace'} ({src.get('words', '')}) replayed on the user's own "
            f"server command, prompt cache on: {next((r.get('request') for r in rows if r['scope'] == 'server'), '')}. "
            "prefix: every token the turn's prompt holds; cache: what the cache supplied; new: the tokens the turn added; "
-           "recomputed: tokens the cache held last turn and the server processed again; overhead: TTFT less prompt ms; "
+           "recomputed: tokens the cache held last turn and the server processed again; overhead: client wall less server prefill and decode ms (including transport during decode); "
            "ceiling: the turn's roofline at its clock (prefill of the new tokens plus decode) on the engine's paths; chip "
            "best: the same work with each prefill row on the chip-best path for its weights (prefill_work.chip_best); % of "
            "roofline: ceiling over the turn's time, send to last token."]
@@ -166,7 +174,7 @@ def table(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
           "unmodelled": sorted(unmodelled),
           "turns": [{"i": x["i"], "prefix": x["turn"]["prefix"], "ttft_ms": x["turn"]["ttft_ms"],
                      "decode_tok_s": x["turn"].get("decode_tok_s"), "wall_ms": x["turn"]["wall_ms"],
-                     "prompt_ms": x["turn"]["prompt_ms"], "predicted_ms": x["turn"]["predicted_ms"],
+                     "prompt_ms": x["turn"]["prompt_ms"], "predicted_ms": x["turn"]["predicted_ms"], "predicted_n": x["turn"]["predicted_n"],
                      "overhead_ms": x["turn"]["wall_ms"] - x["turn"]["prompt_ms"] - x["turn"]["predicted_ms"],
                      "recomputed": x["turn"]["recomputed"], "cache_n": x["turn"]["cache_n"],
                      "clock_mhz": (x["ceiling"] or {}).get("clock_mhz"), "roofline_ms": (x["ceiling"] or {}).get("roofline_ms"),
@@ -233,8 +241,7 @@ def headline_lines(h:dict[str, Any]) -> list[str]:
 # --- where underneath ----------------------------------------------------------------------------------------------
 
 def wheres(run:pathlib.Path, trace:dict[str, Any]) -> list[dict[str, Any]]:
-  """The captured turns' where tables, tied out to the server's prompt_ms; a turn whose llama-bench time is off the
-  server's by more than the tie-out share is `unmeasured`, with both numbers."""
+  """Keep benchmark evidence separate from validated server attribution, including when no repeat band exists."""
   from boltbeam.collectors import replay as rp
   cap = _read(run / rp.CAPTURE)
   turns = {r["i"]: r for r in trace.get("rows") or [] if r.get("scope") == "turn"}
@@ -245,22 +252,41 @@ def wheres(run:pathlib.Path, trace:dict[str, Any]) -> list[dict[str, Any]]:
       out.append({"title": head, "status": "failed", "words": f"{head}: not captured: {t['failed'][-200:]}"})
       continue
     attr = (_read(run / t["file"]).get("lengths") or {}).get(str(t["prompt_n"]))
+    if not attr or not attr.get("rows"):
+      out.append({"title": head, "status": "unmeasured", "words": f"{head}: no attributed benchmark rows."})
+      continue
     from boltbeam.workflow.repeat_bands import find
     band = find(run, f"turn {t['i']}")
-    confirmation = tie.end_to_end(attr, t["server_ms"], "replay turn", band=band)
-    if confirmation["confirms"] is False:
-      out.append({"title": head, "status": "unmeasured", "words": confirmation["words"]})
-      continue
+    confirmation = tie.end_to_end(attr, t["server_ms"], "benchmark turn", band=band, reference="server prompt_ms")
+    bench_ms = attr.get("measured_ms") or t.get("bench_ms")
+    bench_confirms = rp.ties_out(bench_ms, t["server_ms"], band)
+    validated = confirmation["confirms"] is True and bench_confirms is True
     attr = {**attr, "end_to_end": confirmation}
-    w = tie.where_prefill_goes(attr, untraced_ms=t["server_ms"], length=int(t["prompt_n"]), depth=int(t["cache_n"]))
+    w = tie.where_prefill_goes(attr, untraced_ms=t["server_ms"] if validated else None,
+                              length=int(t["prompt_n"]), depth=int(t["cache_n"]), project_speedup=validated)
     if not w:
       out.append({"title": head, "status": "unmeasured", "words": f"{head}: unmeasured: the capture holds no attributed rows."})
       continue
     above = t["server_ms"] - (attr.get("wall_ms") or 0.0)
-    w["title"] = f"{head}: where {t['prompt_n']:,} tokens after {t['cache_n']:,} go"
-    w["status"] = "measured"
-    w["server_line"] = (f"The server's prompt path above the bench's: {above:+,.1f} ms (server prompt_ms {t['server_ms']:,.1f}, "
-                        f"llama-bench {attr.get('wall_ms') or 0:,.1f}).")
+    w["title"] = f"{head}: llama-bench capture, {t['prompt_n']:,} tokens after {t['cache_n']:,}"
+    w["status"] = "measured" if validated else "benchmark_only"
+    w["server_validated"] = validated
+    w["end_to_end"] = confirmation
+    w["bench_confirms"] = bench_confirms
+    w["bench_ms"] = bench_ms
+    w["server_ms"] = t["server_ms"]
+    w["server_line"] = (f"Server prompt_ms {t['server_ms']:,.1f} ms; benchmark GPU first-to-last kernel "
+                        f"{attr.get('wall_ms') or 0:,.1f} ms; difference {above:+,.1f} ms.")
+    if bench_ms is not None:
+      sample = "last sample" if attr.get("measured_ms") is not None else "recorded sample"
+      w["server_line"] += f" Profiled llama-bench engine timer ({sample}) {bench_ms:,.1f} ms."
+    if attr.get("captured_ms") is not None:
+      w["server_line"] += f" Profiled engine timer (mean) {attr['captured_ms']:,.1f} ms."
+    if not validated:
+      w["words"] = ("Benchmark only: not validated as the server's prompt path. "
+                    "The rows describe a separate llama-bench invocation, which does not reproduce server checkpointing "
+                    "or scheduling. The cause of this run's server difference is not measured by these rows. "
+                    + w["words"])
     w["turn"] = turns.get(t["i"], {}).get("i")
     out.append(w)
   return out
@@ -301,6 +327,7 @@ def decode_where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | Non
            "ms at chip best is the limit: no matrix path moves fewer bytes.")
   if server:
     words += f" The server's own decode at that turn: {server:.2f} ms per token."
+  words += " This is a separate benchmark capture, not a capture of the replay server."
   return {"status": "measured", "title": f"Where a decode token goes at {d['context']:,}", "columns": ["row", "ms now", "ms at limit", "ms at chip best", "ms lost"],
           "rows": rows, "words": words}
 
@@ -309,6 +336,12 @@ def decode_where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | Non
 
 def loss_block(run:pathlib.Path, manifest:dict[str, Any], base:dict[str, Any]) -> dict[str, Any]:
   """The results' loss block for a replay run, on the decode block's keys (base) so every renderer reads it."""
+  from boltbeam.collectors.forced_replay import ARTIFACT
+  if (run/'forced_replay_request.json').exists() and not (run/ARTIFACT).exists():
+    raise ValueError('FAILED: forced replay has no completely reconciled capture')
+  if (run/ARTIFACT).exists():
+    from boltbeam.workflow.forced_replay import loss_block as forced
+    return forced(run,base)
   trace = _read(run / "timing_trace.json")
   t = table(run, trace)
   out = {**base, "workload": "replay", "per": PER, "runtimes": [], "roles": [], "tie_out": None, "where_token_goes": None,
@@ -319,12 +352,24 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], base:dict[str, Any]) -
   h = t["headline"]
   t["wheres"] = wheres(run, trace)
   t["decode_where"] = decode_where(run, trace)
+  cap = _read(run / "replay_capture.json")
+  t["evidence_words"] = "Replay timings: server metrics and client clocks."
+  t["not_captured"] = cap.get("not_captured")
+  server = next((r for r in trace.get("rows", []) if r.get("scope") == "server"), {})
+  if (server.get("settings") or {}).get("speculative_config"):
+    t["evidence_words"] += " MTP is enabled: no ceiling is reported because draft and verification work are not modeled."
+  if not (run / "replay_capture.json").exists():
+    t["not_captured"] = "No turn captured: step 5 (role time) has not run for this run."
+  if any(w.get("rows") for w in t["wheres"]) or (t["decode_where"] or {}).get("rows"):
+    t["evidence_words"] += " Kernel evidence: separate llama-bench captures; see each capture's validation below."
+  elif not t["not_captured"]:
+    t["not_captured"] = "No captured kernel evidence is available; see any capture failures below."
   out.update(status="modeled" if h.get("roofline_ms") else "measured", limit_ms=h.get("roofline_ms"),
              runtimes=[{"provider": out.get("provider"), "tok_s": h.get("decode_tok_s_median"), "ms": h["time_ms"],
                         "lost_ms": h["time_ms"] - h["roofline_ms"] if h.get("roofline_ms") else None, "per_role": False,
                         "note": f"{h['warm_turns']} warm turns replayed on the user's server, client clock"}])
-  if not (run / "replay_capture.json").exists():
-    out["missing"] = "no turn captured: step 5 (role time) has not run for this run"
+  if t["not_captured"]:
+    out["missing"] = t["not_captured"]
   return out
 
 
@@ -333,13 +378,14 @@ def lines(t:dict[str, Any] | None) -> list[str]:
   if not t:
     return []
   out = [t["title"] + ":"] + [f"  {l}" for l in t["headline_lines"]] + [f"  {t['words']}"]
+  out += [f"  {t[k]}" for k in ("evidence_words", "not_captured") if t.get(k)]
   cells = [list(t["columns"])] + [r["cells"] for r in t["rows"]] + [t["total"]]
   width = [max(len(row[i]) for row in cells) for i in range(len(cells[0]))]
   out += [("  " + " ".join(c.rjust(width[i]) for i, c in enumerate(row))).rstrip() for row in cells]
   if t.get("unmodelled"):
     out.append("  Not in the ceiling: " + "; ".join(t["unmodelled"]) + ".")
   for w in t.get("wheres") or []:
-    if w.get("status") != "measured":
+    if w.get("status") not in ("measured", "benchmark_only"):
       out.append(f"  {w['words']}")
       continue
     out += tie_lines(w)

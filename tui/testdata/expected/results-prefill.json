@@ -1,0 +1,1615 @@
+{
+  "batches": [],
+  "blocked": [
+    {
+      "need": "probe_evidence",
+      "request": "probe_request.json"
+    }
+  ],
+  "ceiling": {
+    "band": 0.0142,
+    "bandwidth_source": "measured on this GPU (native CUDA probe, 2026-10-10)",
+    "basis": "the sum of the prefill's kernels' ceilings: each max(operations / the measured peak of its instructions' path, bytes / bandwidth)",
+    "bytes_moved": null,
+    "context": 2048,
+    "floor_ms": 33.270759033601095,
+    "peak_bandwidth_gbs": 1694.4,
+    "status": "modeled",
+    "tok_s": 61555.553870342
+  },
+  "engine": {
+    "provider": "llama.cpp",
+    "weight_format": "GGUF Q4_K+Q6_K"
+  },
+  "id": "llama.cpp-2048",
+  "kind": "results",
+  "loss": {
+    "capture": null,
+    "cross_check": null,
+    "estimate": null,
+    "findings": [],
+    "latency": null,
+    "limit_ms": 33.270759033601095,
+    "limit_tok_s": 61555.553870342,
+    "missing": null,
+    "not_attributed_ms": null,
+    "not_timed": [],
+    "others": [],
+    "per": "per prefill",
+    "prefill": {
+      "clock_policy": {
+        "clock_settable": false,
+        "policy": "fixed_power",
+        "why": "The current user does not have permission to change clocks for GPU 00000000:06:00.0.",
+        "words": "fixed power: the clock cannot be set by this user, so the board runs at its own power limit, unchanged, and the clock it chose is logged (realism; a rate is quoted with its clock)"
+      },
+      "lengths": {
+        "2048": {
+          "batched": true,
+          "ceiling_ms": 33.270759033601095,
+          "chunk": {
+            "batched": true,
+            "calls": 4,
+            "outputs": 1,
+            "size": 512,
+            "widths": [
+              512,
+              512,
+              512,
+              512
+            ],
+            "words": "4 forward call(s) of up to 512 tokens (llama-bench n_ubatch 512, n_batch 2048)"
+          },
+          "engine": {
+            "build": "ac4cddeb0",
+            "command": [
+              "HOME",
+              "-m",
+              "models/Qwen3-8B-Q4_K_M.gguf",
+              "-p",
+              "2048",
+              "-n",
+              "0",
+              "-ngl",
+              "99",
+              "-r",
+              "3",
+              "-o",
+              "json"
+            ],
+            "flash_attn": -1,
+            "n_batch": 2048,
+            "n_ubatch": 512,
+            "type_k": "f16"
+          },
+          "mfu_pct": 23.21513098270919,
+          "ms": 141.594826,
+          "telemetry": {
+            "all_samples": 52,
+            "held": {
+              "software power cap": 0.212
+            },
+            "interval_s": 0.05,
+            "power_limit_w": 600.0,
+            "power_w": {
+              "max": 158.5,
+              "mean": 82.6
+            },
+            "samples": 52,
+            "sm_mhz": {
+              "max": 2932,
+              "mean": 2223.6,
+              "min": 1417
+            },
+            "temp_c_max": 59,
+            "throttle": {},
+            "throttled": false,
+            "top_mhz": 2932,
+            "words": "SM clock 2224 MHz mean (1417-2932) over 52 busy samples, 83 W mean, 158 W max of 600 W, 59 C max; not throttled (software power cap set in 21% of samples with the clock held within 2% of 2932 MHz)"
+          },
+          "throttled": false,
+          "tok_s": 14463.805337067894
+        }
+      }
+    },
+    "prefill_audit": {
+      "collapsed": "5 rows under 1% each: 0.78 ms now, 0.48 ms lost [E1] (k_set_rows, mul_mat_vec_q, lm_head Q6_K, quantize_q8_1, k_get_rows_float)",
+      "entries": [
+        {
+          "fields": [
+            [
+              "claim",
+              "ffn_down + ffn_gate_up Q4_K took 59.56 ms [E1] of the 2,048-token prefill (352 launches, 42.7% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "18.22 ms = max(18.14 TFLOP [E1] / 996 TFLOPS [E3] int8 peak = 18.22 ms; 15.88 GB [E1] / 1,694 GB/s [E3] = 9.37 ms), compute-bound"
+            ],
+            [
+              "evidence",
+              "E1 row 'ffn_down + ffn_gate_up Q4_K' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for mul_mat_q (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "59.56 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "41.34 ms lost [E1, E3], 29.2% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 100.3 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "30.6% MFU on int8; 3.3x its ceiling"
+            ]
+          ],
+          "lost_ms": 41.33964961226444,
+          "name": "ffn_down + ffn_gate_up Q4_K",
+          "share": 0.2919573460421812
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "attn_qo Q4_K took 17.70 ms [E1] of the 2,048-token prefill (288 launches, 12.7% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "4.97 ms = max(4.95 TFLOP [E1] / 996 TFLOPS [E3] int8 peak = 4.97 ms; 5.14 GB [E1] / 1,694 GB/s [E3] = 3.03 ms), compute-bound"
+            ],
+            [
+              "evidence",
+              "E1 row 'attn_qo Q4_K' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for mul_mat_q (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "17.70 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "12.73 ms lost [E1, E3], 9.0% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 128.9 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "28.1% MFU on int8; 3.6x its ceiling"
+            ]
+          ],
+          "lost_ms": 12.727015257892761,
+          "name": "attn_qo Q4_K",
+          "share": 0.08988333555276067
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "ffn_down Q6_K took 15.04 ms [E1] of the 2,048-token prefill (68 launches, 10.8% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "3.52 ms = max(3.50 TFLOP [E1] / 996 TFLOPS [E3] int8 peak = 3.52 ms; 3.95 GB [E1] / 1,694 GB/s [E3] = 2.33 ms), compute-bound"
+            ],
+            [
+              "evidence",
+              "E1 row 'ffn_down Q6_K' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for mul_mat_q (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "15.04 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "11.52 ms lost [E1, E3], 8.1% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 130.1 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "23.4% MFU on int8; 4.3x its ceiling"
+            ]
+          ],
+          "lost_ms": 11.523160891009892,
+          "name": "ffn_down Q6_K",
+          "share": 0.08138122851332076
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "mul_mat_q_stream_k_fixup took 8.51 ms [E1] of the 2,048-token prefill (996 launches, 6.1% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "none: the model counts no operations or bytes for this kernel"
+            ],
+            [
+              "evidence",
+              "E1 row 'mul_mat_q_stream_k_fixup' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for mul_mat_q_stream_k_fixup (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "8.51 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "8.51 ms lost [E1], 6.0% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 133.1 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "no ceiling: every ms of it counts as lost until the model counts its work"
+            ]
+          ],
+          "lost_ms": 8.51422400000738,
+          "name": "mul_mat_q_stream_k_fixup",
+          "share": 0.06013089772084877
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "attention took 10.69 ms [E1] of the 2,048-token prefill (288 launches, 7.7% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "4.92 ms = max(1.24 TFLOP [E1] / 251 TFLOPS [E3] fp16 + fp16_f16acc peak = 4.92 ms; 1.96 GB [E1] / 1,694 GB/s [E3] = 1.16 ms), compute-bound; its operations split over its paths by instruction sites, each at its own peak"
+            ],
+            [
+              "evidence",
+              "E1 row 'attention' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for flash_attn_ext_f16 (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "10.69 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "5.77 ms lost [E1, E3], 4.1% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 135.8 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "46.0% MFU on fp16 + fp16_f16acc; 2.2x its ceiling"
+            ]
+          ],
+          "lost_ms": 5.770127103727589,
+          "name": "attention",
+          "share": 0.04075097421799571
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "rms_norm_f32 took 5.42 ms [E1] of the 2,048-token prefill (574 launches, 3.9% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "none: the model counts no operations or bytes for this kernel"
+            ],
+            [
+              "evidence",
+              "E1 row 'rms_norm_f32' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for rms_norm_f32 (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "5.42 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "5.42 ms lost [E1], 3.8% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 136.2 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "no ceiling: every ms of it counts as lost until the model counts its work"
+            ]
+          ],
+          "lost_ms": 5.415367899997044,
+          "name": "rms_norm_f32",
+          "share": 0.03824552106160322
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "unary_gated_op_kernel took 3.70 ms [E1] of the 2,048-token prefill (140 launches, 2.7% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "none: the model counts no operations or bytes for this kernel"
+            ],
+            [
+              "evidence",
+              "E1 row 'unary_gated_op_kernel' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for unary_gated_op_kernel (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "3.70 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "3.70 ms lost [E1], 2.6% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 137.9 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "no ceiling: every ms of it counts as lost until the model counts its work"
+            ]
+          ],
+          "lost_ms": 3.6977449999991805,
+          "name": "unary_gated_op_kernel",
+          "share": 0.026114972590871224
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "quantize_mmq_q8_1 took 3.50 ms [E1] of the 2,048-token prefill (996 launches, 2.5% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "none: the model counts no operations or bytes for this kernel"
+            ],
+            [
+              "evidence",
+              "E1 row 'quantize_mmq_q8_1' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for quantize_mmq_q8_1 (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "3.50 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "3.50 ms lost [E1], 2.5% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 138.1 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "no ceiling: every ms of it counts as lost until the model counts its work"
+            ]
+          ],
+          "lost_ms": 3.4996410000175238,
+          "name": "quantize_mmq_q8_1",
+          "share": 0.024715881920837443
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "attn_kv Q4_K took 4.40 ms [E1] of the 2,048-token prefill (216 launches, 3.2% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "0.97 ms = max(0.93 TFLOP [E1] / 996 TFLOPS [E3] int8 peak = 0.93 ms; 1.64 GB [E1] / 1,694 GB/s [E3] = 0.97 ms), memory-bound"
+            ],
+            [
+              "evidence",
+              "E1 row 'attn_kv Q4_K' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for mul_mat_q (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "4.40 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "3.43 ms lost [E1, E3], 2.4% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 138.2 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "21.2% MFU on int8; 4.5x its ceiling"
+            ]
+          ],
+          "lost_ms": 3.4297926968826085,
+          "name": "attn_kv Q4_K",
+          "share": 0.024222584919046466
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "rope_neox took 2.83 ms [E1] of the 2,048-token prefill (288 launches, 2.0% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "none: the model counts no operations or bytes for this kernel"
+            ],
+            [
+              "evidence",
+              "E1 row 'rope_neox' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for rope_neox (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "2.83 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "2.83 ms lost [E1], 2.0% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 138.8 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "no ceiling: every ms of it counts as lost until the model counts its work"
+            ]
+          ],
+          "lost_ms": 2.82671249999688,
+          "name": "rope_neox",
+          "share": 0.01996338835147041
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "gaps (GPU idle) took 2.69 ms [E1] of the 2,048-token prefill (1.9% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "0 ms: a GPU idle between kernels does no work"
+            ],
+            [
+              "evidence",
+              "E1 row 'gaps (GPU idle)' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not applicable: the gaps are no kernel"
+            ],
+            [
+              "tie-out",
+              "2.69 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "2.69 ms lost [E1, E3], 1.9% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 138.9 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "the GPU sat idle 2.69 ms between kernels"
+            ]
+          ],
+          "lost_ms": 2.693829999978192,
+          "name": "gaps (GPU idle)",
+          "share": 0.01902491832560458
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "k_bin_bcast took 2.34 ms [E1] of the 2,048-token prefill (281 launches, 1.7% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "none: the model counts no operations or bytes for this kernel"
+            ],
+            [
+              "evidence",
+              "E1 row 'k_bin_bcast' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for k_bin_bcast (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "2.34 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "2.34 ms lost [E1], 1.7% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 139.3 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "no ceiling: every ms of it counts as lost until the model counts its work"
+            ]
+          ],
+          "lost_ms": 2.342909399999189,
+          "name": "k_bin_bcast",
+          "share": 0.016546574943347075
+        },
+        {
+          "fields": [
+            [
+              "claim",
+              "attn_kv Q6_K took 2.25 ms [E1] of the 2,048-token prefill (72 launches, 1.6% of the captured 139.4 ms [E1])"
+            ],
+            [
+              "standard",
+              "0.37 ms = max(0.31 TFLOP [E1] / 996 TFLOPS [E3] int8 peak = 0.31 ms; 0.63 GB [E1] / 1,694 GB/s [E3] = 0.37 ms), memory-bound"
+            ],
+            [
+              "evidence",
+              "E1 row 'attn_kv Q6_K' from E4; the untraced prefill E2"
+            ],
+            [
+              "re-performance",
+              "not re-performed: no adapter for mul_mat_q (llama.cpp on CUDA)"
+            ],
+            [
+              "tie-out",
+              "2.25 ms of the rows' 139.41 ms [E1], first kernel to last; the untraced prefill is 141.6 ms [E2] (the capture differs by -2.2 ms)"
+            ],
+            [
+              "materiality",
+              "1.88 ms lost [E1, E3], 1.3% of the untraced prefill; the prefill, time to first token, if this row alone were fixed: 139.7 ms from 141.6 ms [E2]"
+            ],
+            [
+              "finding",
+              "13.8% MFU on int8; 6.1x its ceiling"
+            ]
+          ],
+          "lost_ms": 1.8821357705381356,
+          "name": "attn_kv Q6_K",
+          "share": 0.013292404981931582
+        }
+      ],
+      "length": 2048,
+      "sources": [
+        {
+          "file": "prefill_trace.json lengths.2048.rows",
+          "id": "E1",
+          "what": "the captured prefill, kernel by kernel, attributed"
+        },
+        {
+          "file": "timing_trace.json rows[context=2048]",
+          "id": "E2",
+          "what": "the untraced prefill, clock and power"
+        },
+        {
+          "file": "prefill_trace.json peaks, bandwidth_gbs",
+          "id": "E3",
+          "what": "the measured peaks (target facts) and bandwidth (measured on this GPU (native CUDA probe, 2026-10-10))"
+        },
+        {
+          "file": "kernel_compare/prefill_capture/2048/",
+          "id": "E4",
+          "what": "the engine's own launches as the vendor profiler read them"
+        }
+      ],
+      "title": "Prefill audit at 2,048 tokens",
+      "words": "Every row of the 2,048-token prefill, worst first by ms lost. The untraced prefill is 141.6 ms [E2]; the captured rows sum to 139.4 ms [E1]. Rows that each lose under 1% of it are one line."
+    },
+    "prefill_curve": {
+      "lengths": [
+        512,
+        2048,
+        8192,
+        32768
+      ],
+      "points": [
+        {
+          "batched": true,
+          "ceiling_ms": 7.62138648327523,
+          "chunk_size": 512,
+          "length": 512,
+          "mfu_pct": 21.097668477117807,
+          "ms": 34.578747,
+          "rows": {
+            "attention": {
+              "mfu_pct": 18.726840700465843,
+              "ms": 1.6453185000023804
+            },
+            "attn_kv Q4_K": {
+              "mfu_pct": 21.47907724940306,
+              "ms": 1.084340999997221
+            },
+            "attn_kv Q6_K": {
+              "mfu_pct": 13.745537016391117,
+              "ms": 0.5648050000001676
+            },
+            "attn_qo Q4_K": {
+              "mfu_pct": 28.574286924566113,
+              "ms": 4.3471520000007
+            },
+            "ffn_down + ffn_gate_up Q4_K": {
+              "mfu_pct": 30.733988680112105,
+              "ms": 14.819472000002396
+            },
+            "ffn_down Q6_K": {
+              "mfu_pct": 23.922465981485736,
+              "ms": 3.678002000000328
+            },
+            "gaps (GPU idle)": {
+              "mfu_pct": null,
+              "ms": 0.2007069999971378
+            },
+            "k_bin_bcast": {
+              "mfu_pct": null,
+              "ms": 0.564244666667888
+            },
+            "k_get_rows_float": {
+              "mfu_pct": null,
+              "ms": 0.0014666666665580123
+            },
+            "k_set_rows": {
+              "mfu_pct": null,
+              "ms": 0.09041200000047683
+            },
+            "lm_head Q6_K": {
+              "mfu_pct": null,
+              "ms": 0.31169999999987585
+            },
+            "mul_mat_q_stream_k_fixup": {
+              "mfu_pct": null,
+              "ms": 2.055711000001058
+            },
+            "mul_mat_vec_q": {
+              "mfu_pct": null,
+              "ms": 0.0733169999999615
+            },
+            "quantize_mmq_q8_1": {
+              "mfu_pct": null,
+              "ms": 0.7942669999948703
+            },
+            "quantize_q8_1": {
+              "mfu_pct": null,
+              "ms": 0.003304000000314166
+            },
+            "rms_norm_f32": {
+              "mfu_pct": null,
+              "ms": 1.324657666666511
+            },
+            "rope_neox": {
+              "mfu_pct": null,
+              "ms": 0.689040500001749
+            },
+            "unary_gated_op_kernel": {
+              "mfu_pct": null,
+              "ms": 0.9048270000005141
+            }
+          },
+          "run": "llama.cpp-512",
+          "throttled": false,
+          "tok_s": 14806.782906274771
+        },
+        {
+          "batched": true,
+          "ceiling_ms": 33.270759033601095,
+          "chunk_size": 512,
+          "length": 2048,
+          "mfu_pct": 23.21513098270919,
+          "ms": 141.594826,
+          "rows": {
+            "attention": {
+              "mfu_pct": 46.03715859516595,
+              "ms": 10.692778500004438
+            },
+            "attn_kv Q4_K": {
+              "mfu_pct": 21.172283078633768,
+              "ms": 4.400213999998756
+            },
+            "attn_kv Q6_K": {
+              "mfu_pct": 13.792306636504682,
+              "ms": 2.251558999999892
+            },
+            "attn_qo Q4_K": {
+              "mfu_pct": 28.07842963594857,
+              "ms": 17.69568600000162
+            },
+            "ffn_down + ffn_gate_up Q4_K": {
+              "mfu_pct": 30.589385213243464,
+              "ms": 59.55810899999691
+            },
+            "ffn_down Q6_K": {
+              "mfu_pct": 23.39666471350444,
+              "ms": 15.042636000003666
+            },
+            "gaps (GPU idle)": {
+              "mfu_pct": null,
+              "ms": 2.693829999978192
+            },
+            "k_bin_bcast": {
+              "mfu_pct": null,
+              "ms": 2.342909399999189
+            },
+            "k_get_rows_float": {
+              "mfu_pct": null,
+              "ms": 0.001633066666816982
+            },
+            "k_set_rows": {
+              "mfu_pct": null,
+              "ms": 0.38993349999957716
+            },
+            "lm_head Q6_K": {
+              "mfu_pct": null,
+              "ms": 0.3117640000001993
+            },
+            "mul_mat_q_stream_k_fixup": {
+              "mfu_pct": null,
+              "ms": 8.51422400000738
+            },
+            "mul_mat_vec_q": {
+              "mfu_pct": null,
+              "ms": 0.07376406666663629
+            },
+            "quantize_mmq_q8_1": {
+              "mfu_pct": null,
+              "ms": 3.4996410000175238
+            },
+            "quantize_q8_1": {
+              "mfu_pct": null,
+              "ms": 0.0038650666665441045
+            },
+            "rms_norm_f32": {
+              "mfu_pct": null,
+              "ms": 5.415367899997044
+            },
+            "rope_neox": {
+              "mfu_pct": null,
+              "ms": 2.82671249999688
+            },
+            "unary_gated_op_kernel": {
+              "mfu_pct": null,
+              "ms": 3.6977449999991805
+            }
+          },
+          "run": "llama.cpp-2048",
+          "throttled": false,
+          "tok_s": 14463.805337067894
+        },
+        {
+          "batched": true,
+          "ceiling_ms": 192.12602330614664,
+          "chunk_size": 512,
+          "length": 8192,
+          "mfu_pct": 30.174608798105456,
+          "ms": 631.420562,
+          "rows": {
+            "attention": {
+              "mfu_pct": 75.88332038890053,
+              "ms": 103.75612499998883
+            },
+            "attn_kv Q4_K": {
+              "mfu_pct": 20.60052573771234,
+              "ms": 18.089358999997376
+            },
+            "attn_kv Q6_K": {
+              "mfu_pct": 13.455177079885873,
+              "ms": 9.231893999998924
+            },
+            "attn_qo Q4_K": {
+              "mfu_pct": 27.029615803733975,
+              "ms": 73.52928399999627
+            },
+            "ffn_down + ffn_gate_up Q4_K": {
+              "mfu_pct": 29.49534182943987,
+              "ms": 247.06897100000083
+            },
+            "ffn_down Q6_K": {
+              "mfu_pct": 22.608171924263285,
+              "ms": 62.26907899999898
+            },
+            "gaps (GPU idle)": {
+              "mfu_pct": null,
+              "ms": 15.287292999963256
+            },
+            "k_bin_bcast": {
+              "mfu_pct": null,
+              "ms": 9.739046533329303
+            },
+            "k_get_rows_float": {
+              "mfu_pct": null,
+              "ms": 0.006731199999696886
+            },
+            "k_set_rows": {
+              "mfu_pct": null,
+              "ms": 1.5143940000045113
+            },
+            "lm_head Q6_K": {
+              "mfu_pct": null,
+              "ms": 1.2481110000000335
+            },
+            "mul_mat_q_stream_k_fixup": {
+              "mfu_pct": null,
+              "ms": 34.99257200001832
+            },
+            "mul_mat_vec_q": {
+              "mfu_pct": null,
+              "ms": 0.2982738666678857
+            },
+            "quantize_mmq_q8_1": {
+              "mfu_pct": null,
+              "ms": 14.38167500004219
+            },
+            "quantize_q8_1": {
+              "mfu_pct": null,
+              "ms": 0.015197866666836974
+            },
+            "rms_norm_f32": {
+              "mfu_pct": null,
+              "ms": 22.17591403333514
+            },
+            "rope_neox": {
+              "mfu_pct": null,
+              "ms": 11.589017499995883
+            },
+            "unary_gated_op_kernel": {
+              "mfu_pct": null,
+              "ms": 15.328509999995585
+            }
+          },
+          "run": "llama.cpp-8192",
+          "throttled": true,
+          "tok_s": 12973.920225296686
+        },
+        {
+          "batched": true,
+          "ceiling_ms": 1713.1918879724624,
+          "chunk_size": 512,
+          "length": 32768,
+          "mfu_pct": 47.12101544344104,
+          "ms": 3622.168403,
+          "rows": {
+            "attention": {
+              "mfu_pct": 83.70959878501289,
+              "ms": 1504.7523629999687
+            },
+            "attn_kv Q4_K": {
+              "mfu_pct": 20.529377687981924,
+              "ms": 72.60820299999975
+            },
+            "attn_kv Q6_K": {
+              "mfu_pct": 13.487346128423521,
+              "ms": 36.83949900001287
+            },
+            "attn_qo Q4_K": {
+              "mfu_pct": 26.201417475048117,
+              "ms": 303.4138589999918
+            },
+            "ffn_down + ffn_gate_up Q4_K": {
+              "mfu_pct": 29.18387238523034,
+              "ms": 998.8234129999913
+            },
+            "ffn_down Q6_K": {
+              "mfu_pct": 22.463805298312938,
+              "ms": 250.6770380000109
+            },
+            "gaps (GPU idle)": {
+              "mfu_pct": null,
+              "ms": 93.18107300060228
+            },
+            "k_bin_bcast": {
+              "mfu_pct": null,
+              "ms": 39.68960906666732
+            },
+            "k_get_rows_float": {
+              "mfu_pct": null,
+              "ms": 0.027867066666856413
+            },
+            "k_set_rows": {
+              "mfu_pct": null,
+              "ms": 6.1886485000452955
+            },
+            "lm_head Q6_K": {
+              "mfu_pct": null,
+              "ms": 4.997493999998396
+            },
+            "mul_mat_q_stream_k_fixup": {
+              "mfu_pct": null,
+              "ms": 141.11036299991514
+            },
+            "mul_mat_vec_q": {
+              "mfu_pct": null,
+              "ms": 1.1875763999954643
+            },
+            "quantize_mmq_q8_1": {
+              "mfu_pct": null,
+              "ms": 58.589009999524805
+            },
+            "quantize_q8_1": {
+              "mfu_pct": null,
+              "ms": 0.061403399999703574
+            },
+            "rms_norm_f32": {
+              "mfu_pct": null,
+              "ms": 88.96707756667396
+            },
+            "rope_neox": {
+              "mfu_pct": null,
+              "ms": 46.09003799994383
+            },
+            "unary_gated_op_kernel": {
+              "mfu_pct": null,
+              "ms": 61.235157999990506
+            }
+          },
+          "run": "llama.cpp-32768",
+          "throttled": true,
+          "tok_s": 9046.51478182529
+        }
+      ],
+      "provider": "llama.cpp",
+      "rows": [
+        "attention",
+        "ffn_down + ffn_gate_up Q4_K",
+        "attn_qo Q4_K",
+        "ffn_down Q6_K",
+        "mul_mat_q_stream_k_fixup",
+        "gaps (GPU idle)",
+        "rms_norm_f32",
+        "attn_kv Q4_K",
+        "unary_gated_op_kernel",
+        "quantize_mmq_q8_1",
+        "rope_neox",
+        "k_bin_bcast",
+        "attn_kv Q6_K",
+        "k_set_rows",
+        "lm_head Q6_K",
+        "mul_mat_vec_q",
+        "quantize_q8_1",
+        "k_get_rows_float"
+      ],
+      "words": "llama.cpp: prefill against prompt length, every length measured for this model on this chip (this run and its sibling prefill runs). MFU is operations over each row's path peak for its time; the whole-prefill MFU is the time the matrix units would need at their peaks over the untraced prefill."
+    },
+    "provider": "llama.cpp",
+    "provider_missing": null,
+    "reason": null,
+    "refused": null,
+    "role_rule": null,
+    "role_source": null,
+    "role_source_words": null,
+    "roles": [],
+    "roles_provider": null,
+    "runtimes": [
+      {
+        "lost_ms": 108.32406696639892,
+        "ms": 141.594826,
+        "note": "whole prefill of 2048 tokens, measured untraced; 4 forward call(s) of up to 512 tokens (llama-bench n_ubatch 512, n_batch 2048)",
+        "per_role": false,
+        "provider": "llama.cpp",
+        "tok_s": 14463.805337067894
+      }
+    ],
+    "source": null,
+    "status": "modeled",
+    "step": null,
+    "tie_out": null,
+    "unpaired_roles": [],
+    "where_token_goes": {
+      "base_ms": 141.594826,
+      "columns": [
+        "row",
+        "ms now",
+        "ms at ceiling",
+        "ms lost",
+        "share",
+        "prefill ms if fixed",
+        "MFU"
+      ],
+      "estimate": false,
+      "length": 2048,
+      "limit_ms": 33.270759033601095,
+      "lost_ms": 106.14161296639935,
+      "mfu_pct": 23.21513098270919,
+      "no_limit": "no ceiling",
+      "rows": [
+        {
+          "bound": "compute",
+          "calls": 352,
+          "cells": [
+            "59.56",
+            "18.22",
+            "41.34",
+            "39%",
+            "100.3",
+            "30.6%"
+          ],
+          "compute_ms": 18.218459387732477,
+          "flops": 18141941858304.0,
+          "limit_ms": 18.218459387732477,
+          "lost_ms": 41.33964961226444,
+          "mfu_pct": 30.589385213243464,
+          "ms_if_fixed": 100.25517638773557,
+          "name": "ffn_down + ffn_gate_up Q4_K",
+          "now_ms": 59.55810899999691,
+          "path": "int8",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.38947636517782236,
+          "what": "role"
+        },
+        {
+          "bound": "compute",
+          "calls": 288,
+          "cells": [
+            "17.70",
+            "4.97",
+            "12.73",
+            "12%",
+            "128.9",
+            "28.1%"
+          ],
+          "compute_ms": 4.968670742108857,
+          "flops": 4947802324992.0,
+          "limit_ms": 4.968670742108857,
+          "lost_ms": 12.727015257892761,
+          "mfu_pct": 28.07842963594857,
+          "ms_if_fixed": 128.86781074210725,
+          "name": "attn_qo Q4_K",
+          "now_ms": 17.69568600000162,
+          "path": "int8",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.11990599070622453,
+          "what": "role"
+        },
+        {
+          "bound": "compute",
+          "calls": 68,
+          "cells": [
+            "15.04",
+            "3.52",
+            "11.52",
+            "11%",
+            "130.1",
+            "23.4%"
+          ],
+          "compute_ms": 3.519475108993774,
+          "flops": 3504693313536.0,
+          "limit_ms": 3.519475108993774,
+          "lost_ms": 11.523160891009892,
+          "mfu_pct": 23.39666471350444,
+          "ms_if_fixed": 130.07166510899012,
+          "name": "ffn_down Q6_K",
+          "now_ms": 15.042636000003666,
+          "path": "int8",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.10856402657700062,
+          "what": "role"
+        },
+        {
+          "bound": null,
+          "calls": 996,
+          "cells": [
+            "8.51",
+            "no ceiling",
+            "8.51",
+            "8%",
+            "133.1",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": null,
+          "limit_ms": null,
+          "lost_ms": 8.51422400000738,
+          "mfu_pct": null,
+          "ms_if_fixed": 133.08060199999264,
+          "name": "mul_mat_q_stream_k_fixup",
+          "now_ms": 8.51422400000738,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.08021570204235241,
+          "what": "kernels"
+        },
+        {
+          "bound": "compute",
+          "calls": 288,
+          "cells": [
+            "10.69",
+            "4.92",
+            "5.77",
+            "5%",
+            "135.8",
+            "46.0%"
+          ],
+          "compute_ms": 4.92265139627685,
+          "flops": 1237554561024.0,
+          "limit_ms": 4.92265139627685,
+          "lost_ms": 5.770127103727589,
+          "mfu_pct": 46.03715859516595,
+          "ms_if_fixed": 135.82469889627242,
+          "name": "attention",
+          "now_ms": 10.692778500004438,
+          "path": "fp16 + fp16_f16acc",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.05436253456553562,
+          "what": "attention"
+        },
+        {
+          "bound": null,
+          "calls": 574,
+          "cells": [
+            "5.42",
+            "no ceiling",
+            "5.42",
+            "5%",
+            "136.2",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": null,
+          "limit_ms": null,
+          "lost_ms": 5.415367899997044,
+          "mfu_pct": null,
+          "ms_if_fixed": 136.17945810000296,
+          "name": "rms_norm_f32",
+          "now_ms": 5.415367899997044,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.05102021486814372,
+          "what": "kernels"
+        },
+        {
+          "bound": null,
+          "calls": 140,
+          "cells": [
+            "3.70",
+            "no ceiling",
+            "3.70",
+            "3%",
+            "137.9",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": null,
+          "limit_ms": null,
+          "lost_ms": 3.6977449999991805,
+          "mfu_pct": null,
+          "ms_if_fixed": 137.89708100000084,
+          "name": "unary_gated_op_kernel",
+          "now_ms": 3.6977449999991805,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.03483784442930743,
+          "what": "kernels"
+        },
+        {
+          "bound": null,
+          "calls": 996,
+          "cells": [
+            "3.50",
+            "no ceiling",
+            "3.50",
+            "3%",
+            "138.1",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": null,
+          "limit_ms": null,
+          "lost_ms": 3.4996410000175238,
+          "mfu_pct": null,
+          "ms_if_fixed": 138.09518499998248,
+          "name": "quantize_mmq_q8_1",
+          "now_ms": 3.4996410000175238,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.03297143224237025,
+          "what": "kernels"
+        },
+        {
+          "bound": "memory",
+          "calls": 216,
+          "cells": [
+            "4.40",
+            "0.97",
+            "3.43",
+            "3%",
+            "138.2",
+            "21.2%"
+          ],
+          "compute_ms": 0.9316257641454108,
+          "flops": 927712935936.0,
+          "limit_ms": 0.9704213031161473,
+          "lost_ms": 3.4297926968826085,
+          "mfu_pct": 21.172283078633768,
+          "ms_if_fixed": 138.1650333031174,
+          "name": "attn_kv Q4_K",
+          "now_ms": 4.400213999998756,
+          "path": "int8",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.03231336514518918,
+          "what": "role"
+        },
+        {
+          "bound": null,
+          "calls": 288,
+          "cells": [
+            "2.83",
+            "no ceiling",
+            "2.83",
+            "3%",
+            "138.8",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": null,
+          "limit_ms": null,
+          "lost_ms": 2.82671249999688,
+          "mfu_pct": null,
+          "ms_if_fixed": 138.76811350000312,
+          "name": "rope_neox",
+          "now_ms": 2.82671249999688,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.02663152010787434,
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "2.69",
+            "0.00",
+            "2.69",
+            "3%",
+            "138.9",
+            ""
+          ],
+          "limit_ms": 0.0,
+          "lost_ms": 2.693829999978192,
+          "mfu_pct": null,
+          "ms_if_fixed": 138.90099600002182,
+          "name": "gaps (GPU idle)",
+          "now_ms": 2.693829999978192,
+          "pct_peak": null,
+          "share": 0.025379584167719047,
+          "what": "gaps"
+        },
+        {
+          "bound": null,
+          "calls": 281,
+          "cells": [
+            "2.34",
+            "no ceiling",
+            "2.34",
+            "2%",
+            "139.3",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": null,
+          "limit_ms": null,
+          "lost_ms": 2.342909399999189,
+          "mfu_pct": null,
+          "ms_if_fixed": 139.2519166000008,
+          "name": "k_bin_bcast",
+          "now_ms": 2.342909399999189,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.0220734293979579,
+          "what": "kernels"
+        },
+        {
+          "bound": "memory",
+          "calls": 72,
+          "cells": [
+            "2.25",
+            "0.37",
+            "1.88",
+            "2%",
+            "139.7",
+            "13.8%"
+          ],
+          "compute_ms": 0.3105419213818036,
+          "flops": 309237645312.0,
+          "limit_ms": 0.3694232294617564,
+          "lost_ms": 1.8821357705381356,
+          "mfu_pct": 13.792306636504682,
+          "ms_if_fixed": 139.71269022946188,
+          "name": "attn_kv Q6_K",
+          "now_ms": 2.251558999999892,
+          "path": "int8",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.017732307979283796,
+          "what": "role"
+        },
+        {
+          "bound": null,
+          "calls": 144,
+          "cells": [
+            "0.39",
+            "no ceiling",
+            "0.39",
+            "0%",
+            "141.2",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": null,
+          "limit_ms": null,
+          "lost_ms": 0.38993349999957716,
+          "mfu_pct": null,
+          "ms_if_fixed": 141.20489250000043,
+          "name": "k_set_rows",
+          "now_ms": 0.38993349999957716,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.0036737099531643277,
+          "what": "kernels"
+        },
+        {
+          "bound": null,
+          "calls": 2,
+          "cells": [
+            "0.07",
+            "no ceiling",
+            "0.07",
+            "0%",
+            "141.5",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": null,
+          "limit_ms": null,
+          "lost_ms": 0.07376406666663629,
+          "mfu_pct": null,
+          "ms_if_fixed": 141.52106193333339,
+          "name": "mul_mat_vec_q",
+          "now_ms": 0.07376406666663629,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 0.0006949589760802614,
+          "what": "kernels"
+        },
+        {
+          "bound": "memory",
+          "calls": 1,
+          "cells": [
+            "0.31",
+            "0.30",
+            "0.01",
+            "0%",
+            "141.6",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": 1244659712.0,
+          "limit_ms": 0.301657865911237,
+          "lost_ms": 0.010106134088962326,
+          "mfu_pct": null,
+          "ms_if_fixed": 141.58471986591104,
+          "name": "lm_head Q6_K",
+          "now_ms": 0.3117640000001993,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 9.521368487363733e-05,
+          "what": "role"
+        },
+        {
+          "bound": null,
+          "calls": 3,
+          "cells": [
+            "0.00",
+            "no ceiling",
+            "0.00",
+            "0%",
+            "141.6",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": null,
+          "limit_ms": null,
+          "lost_ms": 0.0038650666665441045,
+          "mfu_pct": null,
+          "ms_if_fixed": 141.59096093333346,
+          "name": "quantize_q8_1",
+          "now_ms": 0.0038650666665441045,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 3.6414244691831156e-05,
+          "what": "kernels"
+        },
+        {
+          "bound": null,
+          "calls": 2,
+          "cells": [
+            "0.00",
+            "no ceiling",
+            "0.00",
+            "0%",
+            "141.6",
+            ""
+          ],
+          "compute_ms": null,
+          "flops": null,
+          "limit_ms": null,
+          "lost_ms": 0.001633066666816982,
+          "mfu_pct": null,
+          "ms_if_fixed": 141.5931929333332,
+          "name": "k_get_rows_float",
+          "now_ms": 0.001633066666816982,
+          "path": "no matrix instruction",
+          "pct_peak": null,
+          "refused": null,
+          "share": 1.538573440874648e-05,
+          "what": "kernels"
+        }
+      ],
+      "sum_cells": [
+        "= prefill",
+        "139.41",
+        "33.27",
+        "106.14",
+        "100%",
+        "",
+        ""
+      ],
+      "title": "Where the prefill time goes",
+      "token_ms": 139.41237200000043,
+      "words": "ms of one 2048-token prefill, worst first; prefill ms if fixed is the 141.6 ms untraced prefill less that row's lost ms. ms at ceiling is max(operations / the measured peak of the path the kernel's instructions use, bytes / bandwidth); MFU is operations over that peak for the row's time; no ceiling: the model counts no work for the kernel, so all of its time is lost. The rows sum to the 139.4 ms the captured prefill took from its first kernel to its last; the untraced prefill is 141.6 ms. attention: instructions on more than one path; the ceiling uses the slowest of them.",
+      "workload": "prefill"
+    },
+    "workload": "prefill"
+  },
+  "measured": true,
+  "measurement": {
+    "choice": "auto",
+    "chosen": "in_model",
+    "fallback": null,
+    "label": "in-model",
+    "reason": null
+  },
+  "model_id": "qwen3-8b",
+  "probe": {
+    "absent": {},
+    "reason": "no building-block probe in this run: this provider's path does not run BoltBeam's probe kernels, and no fork path writes probe evidence",
+    "rows": [],
+    "status": "absent"
+  },
+  "regimes": [],
+  "report": "report.html",
+  "routes": [
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "compare": null,
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "attn_kv",
+      "selected_route": null,
+      "shape": [
+        1024,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "q6k_route"
+      ],
+      "compare": null,
+      "evidence_refs": [],
+      "quant": "Q6_K",
+      "role": "attn_kv",
+      "selected_route": null,
+      "shape": [
+        1024,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "compare": null,
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "attn_qo",
+      "selected_route": null,
+      "shape": [
+        4096,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "compare": null,
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "ffn_down",
+      "selected_route": null,
+      "shape": [
+        4096,
+        12288
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "q6k_route"
+      ],
+      "compare": null,
+      "evidence_refs": [],
+      "quant": "Q6_K",
+      "role": "ffn_down",
+      "selected_route": null,
+      "shape": [
+        4096,
+        12288
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "lanemap_gemv"
+      ],
+      "compare": null,
+      "evidence_refs": [],
+      "quant": "Q4_K",
+      "role": "ffn_gate_up",
+      "selected_route": null,
+      "shape": [
+        12288,
+        4096
+      ],
+      "status": "unmeasured"
+    },
+    {
+      "candidates": [
+        "q6k_route"
+      ],
+      "compare": null,
+      "evidence_refs": [],
+      "quant": "Q6_K",
+      "role": "lm_head",
+      "selected_route": null,
+      "shape": [
+        151936,
+        4096
+      ],
+      "status": "unmeasured"
+    }
+  ],
+  "schema": "boltbeam.tui.v1",
+  "target_id": "nvidia_sm120",
+  "timing": {
+    "also": [],
+    "context": 2048,
+    "dominant_bucket": "timing_inconclusive",
+    "kernels": [],
+    "next_actions": [
+      "rerun the external trace with whole_step and kernel timing rows"
+    ],
+    "roles": [],
+    "status": "classified",
+    "tok_s": 14463.805337067894,
+    "total_us": 141594.826
+  },
+  "workload": "prefill"
+}

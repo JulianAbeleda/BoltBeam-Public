@@ -9,7 +9,7 @@
                                           (the limit's KV read and any role that could not be split); a GEMV of a
                                           profile role the limit leaves out (an `ssm_in`, a MoE router) is named
                                           after it here
-  + gaps between kernels (GPU idle)       the difference: the measured token minus everything above
+  + gaps between kernels       the difference: the measured token minus everything above
   = measured token                        the captured run's own time per token
 
 Every line is measured or derived from measured facts. The gaps line is the difference and is labelled so; it
@@ -265,7 +265,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   """The tie-out for one provider's measurement. `table` is loss()'s measured table (or None: no kernels here).
   For a capture of B streams the token is one decode step: the weights once, and B streams' KV caches."""
   from boltbeam.collectors.providers import kv_element
-  element, element_source = kv_element(provider)
+  element, element_source = kv_element(provider, run)
   context = attended_context(trace or {}, provider) if trace else None
   batch = int(next((r.get("batch") or 1 for r in (trace or {}).get("rows", []) if r.get("scope") == "whole_step"), 1))
   untraced, untraced_ctx = _step4(run, context, provider) if batch == 1 else (None, None)
@@ -351,7 +351,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   else:
     lines.append({"label": "all kernels above the ideal, not split by role", "ms": busy - limit, "how": "measured"})
   gaps = token - limit - sum(l["ms"] for l in lines[1:])
-  lines.append({"label": ("gaps between kernels (GPU idle)" if outside else "captured wall outside GPU kernels") if gaps >= 0 else
+  lines.append({"label": ("gaps between kernels" if outside else "captured wall outside GPU kernels") if gaps >= 0 else
                 (f"gaps between kernels (below 0, within measured repeat spread ±{spread:.6f} ms)" if spread is not None else
                  "gaps between kernels (below 0; not checked: no repeat band)"), "ms": gaps, "how": "difference"})
   out["lines"] = lines
@@ -413,8 +413,8 @@ def _isolated(out:dict[str, Any], table:dict[str, Any], token:float, limit:float
 # --- where the token goes: the tie-out as one ranked table, read by every renderer ---------------------------------
 
 WHERE_TITLE = "Where the token goes"
-NO_LIMIT = "no limit"  # a row the roofline has no bytes for: all its time is above the limit
-GAPS_ROW = "gaps (GPU idle)"  # the tie-out's gaps line, short enough for an 80-column table
+NO_LIMIT = "no model"  # a row the roofline has no bytes for: all its time is above the limit
+GAPS_ROW = "kernel gaps"  # the tie-out's gaps line, short enough for an 80-column table
 REST_ROW = "other kernels, not named"  # kernel time no kind named
 # the part of the limit no row took: limit roles the capture did not split out. Their kernels' time is in the other
 # rows, so this row has no time now, a negative loss, and no tok/s if fixed: there is nothing to fix in it
@@ -481,20 +481,19 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
           now, 0.0 if gaps else (limit if i == 0 else None))
   total = rank(rows, lambda r: 1000.0 / (base - r["lost_ms"]) if base - r["lost_ms"] > 0 and r["what"] != "limit" else None,
                "tok_s_if_fixed")
-  words = [f"ms per token at context {tie['context']:.0f}, worst first; tok/s if fixed is the {base:.1f} ms token "
-           f"({1000.0 / base:.1f} tok/s) less that row's lost ms. ms at chip best is the limit: a token's limit is "
-           "its bytes at the bandwidth, and no matrix path moves fewer."]
+  words = [f"Context {tie['context']:.0f} · {token:.2f} ms/token. No model = measured time, unknown savings. Roofline is an upper bound."]
   if abs(base - token) > 1e-9:
-    words.append(f"The rows sum to the {token:.1f} ms token the kernels were measured in ({tie.get('token_source')}); "
-                 f"the headline token is {base:.1f} ms untraced.")
+    words.append(f"Captured {token:.1f} ms; untraced {base:.1f} ms.")
     if token > base:
-      words.append(f"The gaps row includes the capture's own overhead, about {token - base:.1f} ms (the captured token less "
-                   "the untraced one), so the gaps' tok/s if fixed is an upper bound.")
+      words.append(f"Capture overhead: {token-base:.1f} ms, included in gaps.")
   if est:
-    words.append(f"Estimate: each weight kernel was timed alone; the rest of the token (untimed weights, attention, norms, launches and gaps) is the difference {ESTIMATE_LABEL}.")
-  return table(WHERE_TITLE, WHERE_COLUMNS, rows, now=token, limit=limit, lost=total, no_limit=NO_LIMIT,
+    words.append("Estimate from isolated weight timings; the remaining time is inferred.")
+    words.append("% of peak uses isolated time minus the measured dispatch floor.")
+  if any(r["name"] == LIMIT_ROW for r in rows):
+    words.append("The negative unsplit-limit row balances the modeled budget; read it with the unsplit kernels.")
+  return decode_progress(table(WHERE_TITLE, WHERE_COLUMNS, rows, now=token, limit=limit, lost=total, no_limit=NO_LIMIT,
                if_fixed=("tok_s_if_fixed", "{:.1f}"), peak=("pct_peak", "{:.1f}%"), sum_name="= token",
-               estimate=bool(est), token_ms=token, base_ms=base, limit_ms=limit, words=" ".join(words))
+               estimate=bool(est), token_ms=token, base_ms=base, limit_ms=limit, words=" ".join(words)))
 
 
 def rank(rows:list[dict[str, Any]], if_fixed, key:str) -> float:
@@ -519,6 +518,11 @@ def table(title:str, columns:tuple[str, ...], rows:list[dict[str, Any]], *, now:
   own path (decode: the bytes at the bandwidth), and best_ms, the chip-best path for its data (prefill_work.chip_best;
   the limit when the row has none). The text summary, the HTML report, the TUI and Emit print the cells; none formats
   or recomputes a number."""
+  for row in rows:
+    row['section']=('Timing adjustments' if row['what'] in ('gaps','overlap','limit') else
+                    'Model operations' if row['limit_ms'] is not None else 'Supporting kernels — no model')
+  section_order={'Model operations':0,'Supporting kernels — no model':1,'Timing adjustments':2}
+  rows.sort(key=lambda row:(section_order[row['section']],-row['lost_ms'],row['name']))
   f = lambda v, fmt: fmt.format(v) if v is not None else ""  # noqa: E731
   for r in rows:
     r.setdefault("best_ms", r["limit_ms"])
@@ -534,11 +538,12 @@ def table(title:str, columns:tuple[str, ...], rows:list[dict[str, Any]], *, now:
 
 PREFILL_TITLE = "Where the prefill time goes"
 PREFILL_COLUMNS = ("row", "ms now", "ms at engine path", "ms at chip best", "ms lost", "share", "prefill ms if fixed", "MFU")
-NO_CEILING = "no ceiling"  # a kernel with no operations or bytes the model knows (norms, quantize, copies): all its time is lost
+NO_CEILING = "no model"  # a kernel with no operations or bytes the model knows (norms, quantize, copies): all its time is lost
 
 
 
-def end_to_end(attr:dict[str, Any], untraced_ms:float | None, what:str = "prefill", *, band:dict | None = None) -> dict[str, Any]:
+def end_to_end(attr:dict[str, Any], untraced_ms:float | None, what:str = "prefill", *, band:dict | None = None,
+               reference:str = "untraced median") -> dict[str, Any]:
   """Whether a capture confirms the untraced prefill end to end. The kernels plus the gaps always equal the captured
   wall time (attribute_prefill); this checks that captured wall time against the untraced median, within
   the matching repeat spread. Without it the result is not checked. gap_growth_ms is its own figure: the capture's idle beyond what the untraced prefill leaves room
@@ -557,16 +562,113 @@ def end_to_end(attr:dict[str, Any], untraced_ms:float | None, what:str = "prefil
   ok = abs(diff) <= width if width is not None else None
   band_words = f"repeat band ±{width:.6f} ms" if width is not None else "not checked: no repeat band for this setup"
   return {"confirms": ok, "captured_ms": captured, "untraced_ms": float(untraced_ms), "diff_ms": diff, "diff_pct": 100 * share,
+          "reference": reference,
           "band_pct": 100 * width / float(untraced_ms) if width is not None else None, "band_ms": width,
           "status": "checked" if ok is not None else "not checked", "gaps_ms": gaps, "gap_growth_ms": growth,
-          "words": (f"the captured {what} took {captured:.1f} ms against the {float(untraced_ms):.1f} ms untraced median "
+          "words": (f"the captured {what} took {captured:.1f} ms against the {float(untraced_ms):.1f} ms {reference} "
                     f"({100 * share:+.1f}%, {band_words}); its gaps are {gaps:.1f} ms, "
                     f"{growth:.1f} ms more than the untraced {what} leaves room for"
                     + ("" if ok is not False else f". The rows stand, but this capture does not confirm the {what} end to end"))}
 
 
+def capture_rows(attr:dict[str, Any]) -> list[dict[str, Any]]:
+  """One numeric row schema for captured decode and prefill tables."""
+  rows = [{"name": r["name"], "what": r["what"], "now_ms": r["ms"], "limit_ms": r.get("ceiling_ms"),
+           "best_ms": r.get("best_ms", r.get("ceiling_ms")), "best_path": r.get("best_path"), "mfu_pct": r.get("mfu_pct"),
+           "path": r.get("path"), "bound": r.get("bound"), "calls": r.get("calls"), "refused": r.get("refused"),
+           "flops": r.get("flops"), "compute_ms": r.get("compute_ms"), "bytes": r.get("bytes"), "memory_ms": r.get("memory_ms"),
+           "peak_tflops": r.get("peak_tflops"), "template": r.get("template"),
+           "limit_range_ms":r.get("ceiling_range_ms")} for r in attr["rows"]]
+  for row in rows:
+    if interval:=row.get('limit_range_ms'):
+      row['name']+=f' [instruction path unconfirmed; limit {interval[0]:.6g}–{interval[1]:.6g} ms]'
+  rows.append({"name": GAPS_ROW, "what": "gaps", "now_ms": attr["gaps_ms"], "limit_ms": 0.0, "mfu_pct": None})
+  return rows
+
+
+def capture_limit_notes(attr:dict[str, Any]) -> list[str]:
+  """Explain signed nominal-limit overruns without changing accounting or validating evidence."""
+  notes = sorted({message for row in attr['rows'] for message in row.get('limitations', [])})
+  peaks = (attr.get('uncertainty') or {}).get('peaks') or {}
+  for row in attr['rows']:
+    if interval:=row.get('ceiling_range_ms'):
+      notes.append(f"{row['name']}: instruction path unconfirmed; limit {interval[0]:.6g}–{interval[1]:.6g} ms from measured SIMT and tensor-core rates. Totals and efficiency use the optimistic endpoint.")
+    limit = row.get('ceiling_ms')
+    if row.get('what') == 'overlap' or limit is None or limit <= row['ms']:
+      continue
+    recorded = ', '.join(f'{path} {100 * peaks[path]:g}%' for path in sorted(row.get('compute_paths') or {}) if path in peaks)
+    notes.append(f"{row['name']}: nominal limit exceeds measured row time by {limit-row['ms']:.6g} ms; "
+                 "the signed loss is retained in the totals even when rounded to negative zero. "
+                 + (f"Recorded compute peak uncertainty: {recorded}." if recorded else "No compute peak uncertainty recorded for this row."))
+  return notes
+
+
+def where_decode_capture_goes(attr:dict[str, Any], *, untraced_ms:float | None,
+                             context:int) -> dict[str, Any]:
+  """A semantically attributed decode step, using the shared row/table arithmetic."""
+  rows=capture_rows(attr)
+  wall=float(attr['wall_ms'])
+  base=float(untraced_ms) if untraced_ms is not None else wall
+  comparable=abs(base-wall)<1e-9 or (attr.get('end_to_end') or {}).get('confirms') is True
+  overlap=any(r['what']=='overlap' for r in rows)
+  for row in rows:
+    row['pct_peak']=(100*row['limit_ms']/row['now_ms']
+                     if row['limit_ms'] is not None and row['now_ms']>0 else None)
+  total=rank(rows,lambda r:None,'tok_s_if_fixed')
+  limit=sum(r['limit_ms'] or 0 for r in rows)
+  words=f"Context {context} · captured {wall:.3f} ms/token. "
+  if untraced_ms is not None and abs(base-wall)>1e-9:
+    words+=f"Untraced {base:.3f} ms. "
+  if not comparable:
+    words+="Capture timing is unqualified. "
+  if overlap:
+    words+="Overlap subtracts concurrent time. "
+  words+="No model = measured time, unknown savings. Roofline is an upper bound. "
+  words+=' '.join(capture_limit_notes(attr))
+  columns=tuple('ms above limit' if c=='ms lost' else '+ Tok/S if roofline' if c=='tok/s if fixed' else c for c in WHERE_COLUMNS)
+  result=table(WHERE_TITLE,columns,rows,now=wall,limit=limit,lost=total,no_limit="no model",
+               if_fixed=('tok_s_if_fixed','≤{:.1f}' if overlap else '{:.1f}'),peak=('pct_peak','{:.1f}%'),sum_name='= token',
+               estimate=False,token_ms=wall,base_ms=base,limit_ms=limit,words=words,
+               workload='decode',context=context)
+  return decode_progress(result)
+
+
+def decode_progress(result:dict[str, Any]) -> dict[str, Any]:
+  """Engine-neutral additive allocation and cumulative decode throughput, in displayed order."""
+  rows=result['rows']
+  limit=result['limit_ms'];base=result['base_ms'];total=result['lost_ms']
+  result['columns']=[('ms above limit' if column=='ms lost' else '+ Tok/S if roofline' if column=='tok/s if fixed' else column) for column in result['columns']]
+  result['roofline_tok_s']=1000/limit if limit>0 else None
+  result['sum_cells'][0]='= total at roofline'
+  result['sum_cells'][6]=f"{1000/limit:.1f}" if limit>0 else ''
+  if limit>0 and base>0:
+    from decimal import Decimal, ROUND_HALF_UP
+    measured=1000/base
+    gain=1000/limit-measured
+    result['measured_tok_s']=measured
+    result['baseline_cells']=['measured throughput', '', '', '', '', '', f'{measured:.1f}', '']
+    # Round cumulative allocation, then difference adjacent totals so displayed tenths add exactly.
+    rounded=lambda value:Decimal(str(value)).quantize(Decimal('.1'), rounding=ROUND_HALF_UP)
+    previous=rounded(measured)
+    cumulative=measured
+    for index,row in enumerate(rows):
+      allocation=gain*row['lost_ms']/total if abs(total)>1e-12 else 0.0
+      row['tok_s_gain']=allocation
+      cumulative+=allocation
+      current=rounded(1000/limit if index==len(rows)-1 else cumulative)
+      row['cells'][5]=f'{current-previous:+.1f}'
+      row['cumulative_tok_s']=float(current)
+      row['cells'].insert(6,f'{current:.1f}')
+      previous=current
+    result['columns'].insert(7,'cumulative tok/s')
+    result['baseline_cells'].insert(7,f'{measured:.1f}')
+    result['sum_cells'].insert(7,result['sum_cells'][6])
+    result['words']+=' +tok/s allocates headroom by time difference; cumulative reconciles the roofline. These are accounting shares, not predicted speedups.'
+  return result
+
+
 def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, length:int,
-                       depth:int = 0) -> dict[str, Any] | None:
+                       depth:int = 0, project_speedup:bool = True) -> dict[str, Any] | None:
   """A captured prefill (prefill_attribution.attribute_prefill) as the where table: every role row, attention, every
   other kernel and the gaps, worst first, summing to the captured prefill's wall time. ms at ceiling is each row's
   max(operations / its path's peak, bytes / bandwidth); MFU is its operations over its time at that peak. prefill ms if
@@ -574,30 +676,29 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   table). depth: a session's turn, `length` tokens appended after `depth` in the cache (collectors/session.py)."""
   if not attr or not attr.get("rows"):
     return None
-  rows = [{"name": r["name"], "what": r["what"], "now_ms": r["ms"], "limit_ms": r.get("ceiling_ms"),
-           "best_ms": r.get("best_ms", r.get("ceiling_ms")), "best_path": r.get("best_path"), "mfu_pct": r.get("mfu_pct"),
-           "path": r.get("path"), "bound": r.get("bound"), "calls": r.get("calls"), "refused": r.get("refused"),
-           "flops": r.get("flops"), "compute_ms": r.get("compute_ms"), "bytes": r.get("bytes"), "memory_ms": r.get("memory_ms"),
-           "peak_tflops": r.get("peak_tflops"), "template": r.get("template")} for r in attr["rows"]]
-  rows.append({"name": GAPS_ROW, "what": "gaps", "now_ms": attr["gaps_ms"], "limit_ms": 0.0, "mfu_pct": None})
+  rows = capture_rows(attr)
   wall = float(attr["wall_ms"])
   base = float(untraced_ms) if untraced_ms else wall
-  total = rank(rows, lambda r: base - r["lost_ms"] if r["what"] != "limit" else None, "ms_if_fixed")
+  e2e = attr.get("end_to_end") or {}
+  comparable = abs(base-wall) < 1e-9 or e2e.get('confirms') is True
+  can_project = project_speedup and comparable
+  total = rank(rows, lambda r: base - r["lost_ms"] if can_project and r["what"] != "limit" else None, "ms_if_fixed")
   limit = sum(r["limit_ms"] or 0.0 for r in rows)
   compute = sum(r.get("compute_ms") or 0.0 for r in rows)
   what = f"{length}-token turn after {depth} tokens in the cache" if depth else f"{length}-token prefill"
-  words = [f"ms of one {what}, worst first; prefill ms if fixed is the {base:.1f} ms untraced prefill less "
-           "that row's lost ms. ms at engine path is max(operations / the measured peak of the path the kernel's "
-           f"instructions use, bytes / bandwidth); {CHIP_BEST_WORDS}. ms lost and MFU are against the engine path; "
-           f"{NO_CEILING}: the model counts no work for the kernel, so all of its time is lost."]
+  projection=("Projected time fixes one row only. " if can_project else
+              "Projected time unavailable: capture timing is unqualified. " if project_speedup else
+              "Server gains unavailable: attribution is unvalidated. ")
+  words=[f"{what} · captured {wall:.1f} ms. "+projection+
+         "Limits use compute and memory; chip best uses the fastest exact path. "
+         "No model = measured time, unknown savings."]
+  words.extend(capture_limit_notes(attr))
   unpaired = [r["name"] for r in rows if str(r.get("refused") or "").startswith("no ceiling: a matrix kernel")]
   if unpaired:
     words.append(f"{', '.join(unpaired)}: matrix kernels no role could be paired with ({attr.get('ambiguous', {}).get('reason') if attr.get('ambiguous') else 'their launches fit no role'}); "
                  "their time is real, their ceiling is not known.")
   if abs(base - wall) > 1e-9:
-    words.append(f"The rows sum to the {wall:.1f} ms the captured prefill took from its first kernel to its last; the "
-                 f"untraced prefill is {base:.1f} ms.")
-  e2e = attr.get("end_to_end") or {}
+    words.append(f"Untraced prefill: {base:.1f} ms.")
   if e2e.get("confirms") is None and e2e:
     words.append(e2e["words"][:1].upper() + e2e["words"][1:] + ".")
   if e2e.get("confirms") is False:
@@ -606,7 +707,8 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   if mixed:
     words.append(f"{', '.join(mixed)}: instructions on more than one path; its operations are split over them by its instruction sites, each part at its own path's peak.")
   title = f"Where the turn goes at depth {depth:,}" if depth else PREFILL_TITLE
-  return table(title, PREFILL_COLUMNS, rows, now=wall, limit=limit, lost=total, no_limit=NO_CEILING,
+  columns = PREFILL_COLUMNS if project_speedup else (*PREFILL_COLUMNS[:6], "server ms if fixed", PREFILL_COLUMNS[7])
+  return table(title, columns, rows, now=wall, limit=limit, lost=total, no_limit=NO_CEILING,
                if_fixed=("ms_if_fixed", "{:.1f}"), peak=("mfu_pct", "{:.1f}%"), sum_name="= prefill", estimate=False,
                token_ms=wall, base_ms=base, limit_ms=limit, words=" ".join(words), workload="prefill", length=length,
                mfu_pct=100.0 * compute / base if base else None, **({"depth": depth} if depth else {}),

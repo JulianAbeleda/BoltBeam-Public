@@ -103,6 +103,24 @@
       "route_families": [],
       "refuted_routes": [],
       "pending_routes": []
+    },
+    {
+      "name": "NVFP4_G16",
+      "block_elems": 16,
+      "block_bytes": 9,
+      "dequant_family": "float_passthrough",
+      "route_families": [],
+      "refuted_routes": [],
+      "pending_routes": []
+    },
+    {
+      "name": "FP8_E4M3",
+      "block_elems": 1,
+      "block_bytes": 1,
+      "dequant_family": "float_passthrough",
+      "route_families": [],
+      "refuted_routes": [],
+      "pending_routes": []
     }
   ]
 }

@@ -18,8 +18,9 @@ The input is a replay trace (trace/replay_trace.py): counts per turn, never chat
 
 Step 5 (`role_time`) captures PICKS turns with llama-bench at the turn's depth with the server's cache types, chunk and
 flash attention (the same build as the server), attributed as a prefill at that depth (prefill.role_time). A capture
-counts only when llama-bench's turn ties out to the server's prompt_ms within TIE_OUT; otherwise that turn's where
-table is `unmeasured`. One decode capture at the deepest turn. The ceilings and the table are workflow/replay.py's.
+is a separate benchmark: it does not reproduce the server's checkpointing and scheduling. Its rows remain
+benchmark-only unless both its engine timer and GPU span match the server's prompt_ms within the matching repeat
+band. One decode capture at the deepest turn. The ceilings and the table are workflow/replay.py's.
 """
 from __future__ import annotations
 
@@ -61,6 +62,8 @@ def stream_chat(url:str, messages:list[dict[str, str]], reply:int, **extra:Any) 
   its chunks, and the client's clock (monotonic) at send, first token and last token."""
   body = json.dumps({"messages": messages, "max_tokens": reply, **REQUEST, **extra}).encode()
   req = urllib.request.Request(url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
+  from boltbeam.collectors.replay_semantics import StreamTokens
+  tokens = StreamTokens() if extra.get("return_token_ids") else None
   text, timings, usage, first = [], {}, {}, None
   sent = time.monotonic()
   with urllib.request.urlopen(req, timeout=3600) as resp:
@@ -69,6 +72,7 @@ def stream_chat(url:str, messages:list[dict[str, str]], reply:int, **extra:Any) 
       if not line.startswith("data:") or line == "data: [DONE]":
         continue
       chunk = json.loads(line[5:])
+      if tokens is not None:tokens.add(chunk)
       for c in chunk.get("choices") or []:
         piece = (c.get("delta") or {}).get("content") or (c.get("delta") or {}).get("reasoning_content")
         if piece:
@@ -77,7 +81,8 @@ def stream_chat(url:str, messages:list[dict[str, str]], reply:int, **extra:Any) 
       timings = chunk.get("timings") or timings
       usage = chunk.get("usage") or usage
   last = time.monotonic()
-  return {"text": "".join(text), "timings": timings, "usage": usage, "t_send": sent, "t_first": first or last, "t_last": last}
+  return {"text": "".join(text), "timings": timings, "usage": usage, "t_send": sent, "t_first": first or last, "t_last": last,
+          **({"response":tokens.finish(usage)} if tokens is not None else {})}
 
 
 llama_chat = stream_chat  # llama.cpp puts its own timings on the last chunk
@@ -94,7 +99,7 @@ def llama_detokenize(url:str, ids:list[int]) -> str:
 FLAGS = {"n_batch": ("-b", "--batch-size"), "n_ubatch": ("-ub", "--ubatch-size"), "type_k": ("-ctk", "--cache-type-k"),
          "type_v": ("-ctv", "--cache-type-v"), "flash_attn": ("-fa", "--flash-attn")}  # llama.cpp's server and llama-bench share them
 DEFAULTS = {"n_batch": 2048, "n_ubatch": 512, "type_k": "f16", "type_v": "f16", "flash_attn": "auto"}  # common/common.h
-LOGGED = {"n_ctx": r"new slot, n_ctx = (\d+)", "ctx_checkpoints": r"context checkpoints enabled, max = (\d+)",
+LOGGED = {"n_ctx": r"(?:new slot, n_ctx|n_ctx_slot)\s*=\s*(\d+)", "ctx_checkpoints": r"context checkpoints enabled, max = (\d+)",
           "cache_ram_mib": r"prompt cache is enabled, size limit: (\d+) MiB"}  # what the server logs at start
 
 
@@ -121,6 +126,17 @@ def llama_settings(argv:list[str], log:str) -> dict[str, Any]:
     m = re.search(pat, log)
     out[key] = int(m.group(1)) if m else None
     out["source"][key] = "the server's log" if m else "not logged"
+  checkpoints = flag_value(argv, ("-ctxcp", "--ctx-checkpoints", "--swa-checkpoints"))
+  if out["ctx_checkpoints"] is None and checkpoints and checkpoints.isdigit():
+    out["ctx_checkpoints"] = int(checkpoints)
+    out["source"]["ctx_checkpoints"] = "the command"
+  if out["n_ctx"] is None:
+    # --ctx-size is shared across slots; prefer the actual per-slot size from the log.
+    ctx = flag_value(argv, ("-c", "--ctx-size"))
+    parallel = flag_value(argv, ("-np", "--parallel"))
+    if ctx and ctx.isdigit() and parallel and parallel.isdigit() and int(parallel) > 0:
+      out["n_ctx"] = int(ctx) // int(parallel)
+      out["source"]["n_ctx"] = "the command's context divided by its parallel slots"
   return out
 
 
@@ -156,12 +172,14 @@ def llama_bench_flags(s:dict[str, Any]) -> list[str]:
 VLLM_METRICS = {"hits": "vllm:prefix_cache_hits_total", "prompt": "vllm:prompt_tokens_total",
                 "generated": "vllm:generation_tokens_total", "prefill_s": "vllm:request_prefill_time_seconds_sum",
                 "decode_s": "vllm:request_decode_time_seconds_sum"}  # vLLM's own counters, read before and after a turn
+VLLM_SPEC_METRICS = {"draft_tokens": "vllm:spec_decode_num_draft_tokens_total",
+                     "accepted_tokens": "vllm:spec_decode_num_accepted_tokens_total"}
 
 
 def vllm_metrics(url:str) -> dict[str, float]:
   text = urllib.request.urlopen(url + "/metrics", timeout=60).read().decode()
   out = {}
-  for key, name in VLLM_METRICS.items():
+  for key, name in (VLLM_METRICS | VLLM_SPEC_METRICS).items():
     out[key] = sum(float(l.rsplit(" ", 1)[1]) for l in text.splitlines() if l.startswith(name + "{") or l.startswith(name + " "))
   return out
 
@@ -171,15 +189,27 @@ def vllm_timings(before:dict[str, float], after:dict[str, float]) -> dict[str, A
   cache_n the prefix-cache hits in tokens, prompt_n the prompt less them, prompt_ms vLLM's prefill time (scheduled to
   first token), predicted_n and predicted_ms its generated tokens and decode time (first token to last)."""
   d = {k: after[k] - before[k] for k in VLLM_METRICS}
+  spec = {k: after.get(k, 0) - before.get(k, 0) for k in VLLM_SPEC_METRICS}
   return {"cache_n": int(d["hits"]), "prompt_n": int(d["prompt"] - d["hits"]), "prompt_ms": d["prefill_s"] * 1e3,
-          "predicted_n": int(d["generated"]), "predicted_ms": d["decode_s"] * 1e3}
+          "predicted_n": int(d["generated"]), "predicted_ms": d["decode_s"] * 1e3,
+          **({"speculative": {**spec, "acceptance": spec["accepted_tokens"] / spec["draft_tokens"]}} if spec["draft_tokens"] > 0 else {})}
 
 
-def vllm_chat(url:str, messages:list[dict[str, str]], reply:int) -> dict[str, Any]:
+def vllm_chat(url:str, messages:list[dict[str, str]], reply:int, *, token_evidence:bool = False) -> dict[str, Any]:
   model = json.loads(urllib.request.urlopen(url + "/v1/models", timeout=60).read())["data"][0]["id"]
   before = vllm_metrics(url)
-  got = stream_chat(url, messages, reply, model=model)
+  got = stream_chat(url, messages, reply, model=model, **({"return_token_ids": True} if token_evidence else {}))
   got["timings"] = vllm_timings(before, vllm_metrics(url))
+  if token_evidence:
+    usage=got["response"]["usage"];timings=got["timings"]
+    if (usage["prompt_tokens"]!=timings["prompt_n"]+timings["cache_n"] or
+        usage["completion_tokens"]!=timings["predicted_n"]):
+      raise ValueError("replay response tokens disagree with server metric deltas")
+    cache=(usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    if cache is not None and cache!=timings["cache_n"]:
+      raise ValueError("replay response cache count disagrees with server metric deltas")
+    # The metrics are observed around this serial request, independently of the worker ledger.
+    usage["prompt_tokens_details"]={**(usage.get("prompt_tokens_details") or {}),"cached_tokens":timings["cache_n"]}
   return got
 
 
@@ -192,7 +222,7 @@ def vllm_detokenize(url:str, ids:list[int]) -> str:
 
 
 VLLM_FLAGS = {"n_ctx": ("--max-model-len",), "n_batch": ("--max-num-batched-tokens",), "type_k": ("--kv-cache-dtype",)}
-VLLM_LOGGED = {"n_ctx": r"max_model_len=(\d+)", "n_batch": r"max_num_batched_tokens=(\d+)"}
+VLLM_LOGGED = {"n_ctx": r"max_model_len=(\d+)", "n_batch": r"max_num_batched_tokens=(\d+)", "type_k": r"kv_cache_dtype=[\"']?([a-z0-9_]+)"}
 
 
 def vllm_settings(argv:list[str], log:str) -> dict[str, Any]:
@@ -211,6 +241,9 @@ def vllm_settings(argv:list[str], log:str) -> dict[str, Any]:
   out["n_ubatch"], out["source"]["n_ubatch"] = out["n_batch"], out["source"]["n_batch"]
   out["prefix_cache"] = "--no-enable-prefix-caching" not in argv
   out["source"]["prefix_cache"] = "the command" if any("prefix-caching" in a for a in argv) else "vLLM's default"
+  spec = flag_value(argv, ("--speculative-config",))
+  out["speculative_config"] = json.loads(spec) if spec else None
+  out["source"]["speculative_config"] = "the command" if spec else "not enabled in the command"
   return out
 
 
@@ -239,8 +272,8 @@ REPLAY_ENGINES: dict[str, dict[str, Callable[..., Any]]] = {
                 "settings": llama_settings, "weight_path": llama_weight_path, "attention_paths": llama_attention_paths,
                 "formats": lambda s, weights: pf.llama_formats(s.get("type_k"), weights), "bench_flags": llama_bench_flags},
   "vllm": {"chat": vllm_chat, "tokenize": vllm_tokenize, "detokenize": vllm_detokenize, "settings": vllm_settings,
-           "weight_path": lambda quant: "bf16",  # Marlin dequantizes packed weights to bf16; float weights run cuBLAS bf16
-           "attention_paths": vllm_attention_paths, "formats": lambda s, weights: pf.vllm_formats({"BF16"}),
+           "weight_path": lambda quant: {"NVFP4_G16": "nvfp4", "FP8_E4M3": "fp8", "F32": "fp32_fma"}.get(quant, "bf16"),
+           "attention_paths": vllm_attention_paths, "formats": lambda s, weights: pf.vllm_formats(weights, {"kv_cache_dtype": s.get("type_k")}),
            "env": vllm_env},
 }
 
@@ -301,6 +334,20 @@ def _version(binary:pathlib.Path) -> str | None:
   return next((l.strip() for l in (out.stdout + out.stderr).splitlines() if l.strip().startswith("version")), None)
 
 
+def build_metadata(provider:str, version:str | None, log:str = "") -> dict[str, Any]:
+  """Parse recorded engine evidence only; a Python executable's version is not a vLLM build."""
+  if provider == "llama.cpp":
+    text = version or ""
+    m = re.search(r"build\s+(\d+),\s*commit\s+([0-9a-f]+)", text)
+    if not m:
+      m = re.search(r"version:\s*(\d+)\s*\(([0-9a-f]+)\)", text)
+    return {"build": m.group(2), "build_number": int(m.group(1))} if m else {}
+  if provider == "vllm":
+    m = re.search(r"Initializing a V\d+ LLM engine \(v([^\s)]+)\)", log)
+    return {"build": m.group(1)} if m else {}
+  return {}
+
+
 def model_of(argv:list[str]) -> str | None:
   for i, a in enumerate(argv):
     if a in ("-m", "--model") and i + 1 < len(argv):
@@ -350,21 +397,31 @@ def turn_row(i:int, got:dict[str, Any], prev:dict[str, Any] | None, t:dict[str, 
           "predicted_ms": pred_ms, "prompt_tokens": us.get("prompt_tokens"), "completion_tokens": us.get("completion_tokens"),
           "tokens_cached": tm.get("tokens_cached"), "trace_new": t["new_tokens"] + t["tool_tokens"],
           "trace_reply": t["reply_tokens"], "needed": growth, "recomputed": max(prompt_n - growth, 0),
-          "ttft_ms": ttft, "wall_ms": (got["t_last"] - got["t_send"]) * 1e3, "overhead_ms": ttft - prompt_ms,
+          "ttft_ms": ttft, "wall_ms": (got["t_last"] - got["t_send"]) * 1e3, "overhead_ms": (got["t_last"] - got["t_send"]) * 1e3 - prompt_ms - pred_ms,
+          "ttft_overhead_ms": ttft - prompt_ms,
           "decode_tok_s": (pred_n - 1) / pred_ms * 1e3 if pred_n > 1 and pred_ms else None,
           "client_tok_s": (pred_n - 1) / stream * 1e3 if pred_n > 1 and stream > 0 else None,
           "telemetry": win, "throttled": win.get("throttled"), "cold": i == 1, "compaction": t["compaction"],
-          **({"draft_n": tm["draft_n"]} if tm.get("draft_n") else {})}
+          **({"draft_n": tm["draft_n"]} if tm.get("draft_n") else {}),
+          **({"speculative": tm["speculative"]} if tm.get("speculative") else {})}
 
 
-def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None) -> pathlib.Path:
+def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None,
+            token_evidence:bool = False) -> pathlib.Path:
   """The trace played on the user's server: timing_trace.json with a load row, a server row and a row per turn."""
+  if (run/'forced_replay_request.json').exists():
+    from boltbeam.collectors.forced_replay import collect
+    return collect(run,provider=provider,say=say)
   from boltbeam.adapters.llama_server_control import serve_argv
   from boltbeam.core.canonical import pretty_json
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
   from boltbeam.workflow.common import load_manifest
   manifest = load_manifest(run)
   eng = engine(provider)
+  if token_evidence and provider!="vllm":raise ValueError("replay token evidence requires the vLLM response adapter")
+  responses=[]
+  response_path=run / "replay_responses.json"
+  response_path.unlink(missing_ok=True)
   trace = rt.read(run / rt.FILE)
   argv = json.loads((run / SERVER).read_text())["argv"]
   binary = pathlib.Path(argv[0]).expanduser()
@@ -381,7 +438,9 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
     env = eng["env"](argv) if "env" in eng else None
     with serve_argv(argv, log_path=run / SERVER_LOG, environ=env) as (url, command, load_s):
       server["command"] = command
-      server["settings"] = eng["settings"](command, (run / SERVER_LOG).read_text(errors="replace"))
+      log = (run / SERVER_LOG).read_text(errors="replace")
+      server["settings"] = eng["settings"](command, log)
+      server.update(build_metadata(provider, server.get("version"), log))
       rows.append({"scope": "load", "workload": "replay", "seconds": round(load_s, 2),
                    "source": "from the server's start to /health answering 200"})
       words = Words(eng, url)
@@ -401,25 +460,33 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
         messages.append({"role": "user", "content": words.take(t["new_tokens"]) + words.take(t["tool_tokens"])})
         say(f"replay: turn {t['i']} of {len(trace['turns'])}")
         try:
-          got = eng["chat"](url, messages, t["reply_tokens"])
+          got = eng["chat"](url, messages, t["reply_tokens"], **({"token_evidence":True} if token_evidence else {}))
         except Exception as exc:  # noqa: BLE001  a turn the server refused ends the replay with its reason
+          if token_evidence:raise  # incomplete identity must not look like a valid shortened capture
           rows.append({"scope": "stopped", "workload": "replay", "i": t["i"], "reason": f"the server failed: {str(exc)[-300:]}"})
           break
         messages.append({"role": "assistant", "content": got["text"]})
         prev = turn_row(t["i"], got, prev, t, tele, t0)
         rows.append(prev)
+        if token_evidence:
+          responses.append({"turn":t["i"],**got["response"]})
+          response_path.write_text(pretty_json(responses))
   turns = [r for r in rows if r["scope"] == "turn"]
   if not turns:
     raise RuntimeError("no turn was replayed: " + "; ".join(r.get("reason", "") for r in rows if r["scope"] == "stopped"))
   server["words_source"] = words.source
+  worker=flag_value(argv,("--worker-cls",)) if provider=="vllm" else None
   out = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
          "workload": "replay", "provider": provider, "provider_id": provider, "collector_id": "replay",
-         "timing_source": "the server's own timings per turn and the client's clock, untraced",
+         "timing_source": "the server's own timings per turn and the client's clock; " +
+                          (f"custom worker {worker}, not an untraced reference" if worker else "untraced"),
          "contexts": [max(r["prefix"] for r in turns)], "rows": [*rows, server],
          "replay_trace": {"source": trace["source"], "turns": len(trace["turns"]), "sha256": trace["source"]["sha256"]},
          "telemetry": tele.summary(), "interval_s": INTERVAL_S, "clock_policy": gpu_telemetry.clock_policy(0),
          "measured": ["turn.prompt_ms, turn.predicted_ms (the server's timings)", "turn.ttft_ms, turn.wall_ms (the client's clock)",
                       "load.seconds"]}
+  if token_evidence:
+    out["response_evidence"]={"file":response_path.name,"sha256":_sha256(response_path),"turns":len(responses)}
   path = run / "timing_trace.json"
   path.write_text(pretty_json(out))
   return path
@@ -459,6 +526,10 @@ def ties_out(bench_ms:float | None, server_ms:float, band:dict | None = None) ->
 def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None) -> dict[str, Any]:
   """The picked turns captured with llama-bench at their depth with the server's flags, attributed, and tied out
   to the server's prompt_ms; one decode capture at the deepest turn: replay_capture.json."""
+  if (run/'forced_replay_request.json').exists():
+    from boltbeam.workflow.forced_replay import checked
+    data=checked(run)
+    return {'method':'nsys','pairing':data['pairing'],'timing_qualification':data['timing_qualification']}
   from boltbeam.collectors import llama_bench_decode as lbd
   from boltbeam.target.targets import get_target
   from boltbeam.workflow.common import load_manifest, read_json

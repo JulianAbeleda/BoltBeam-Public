@@ -370,7 +370,25 @@ def scan(*, home:pathlib.Path | None = None, env:Mapping[str, str] | None = None
 def scan_and_save(env:Mapping[str, str] | None = None, **kw) -> dict[str, Any]:
   """Scan, write the file, and return the result with its path under "file"."""
   result = scan(env=env, **kw)
+  result["environment"] = _environment(os.environ if env is None else env)
   return {**result, "file": str(save(result))}
+
+
+def _environment(env:Mapping[str, str]) -> dict[str, str]:
+  return {key: env.get(key, "") for key in ("PATH", "TINYGRAD_ROOT", *(var for var, _, _ in ITEMS))} | {"platform": sys.platform}
+
+
+def cached_or_scan() -> dict[str, Any]:
+  """Reuse discovery (including missing engines); refresh explicitly or when settings/paths change."""
+  result = load()
+  found = result.get("found")
+  if (result.get("environment") == _environment(os.environ) and isinstance(found, dict)
+      and result.get("scanned_at") and isinstance(result.get("seconds"), (int, float))
+      and all(isinstance(row, dict) and isinstance(row.get("path"), str)
+              and (_is_file(pathlib.Path(row["path"])) or _is_dir(pathlib.Path(row["path"])))
+              for row in found.values())):
+    return {**result, "file": str(engines_file())}
+  return scan_and_save()
 
 
 def rows(result:dict[str, Any]) -> list[dict[str, Any]]:

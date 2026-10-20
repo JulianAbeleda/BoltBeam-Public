@@ -16,6 +16,7 @@ reason that only says the GPU was idle or that an application set the clock is n
 from __future__ import annotations
 
 import ctypes
+import pathlib
 import shutil
 import statistics
 import subprocess
@@ -72,6 +73,67 @@ class _Nvml:
     self.lib.nvmlShutdown()
 
 
+class AmdSysfs:
+  """The same samples as _Nvml for an AMD GPU, from the amdgpu driver's sysfs and hwmon files, which need no
+  library. The card is found by its PCI address (HIP's device order and the kernel's card numbers differ), so the
+  caller names the device as the driver does. A file the driver does not provide reads as unknown. amdgpu reports
+  no throttle reasons, so `reasons` is None: unknown, not "not throttled"."""
+
+  ROOT = "/sys/class/drm"
+
+  def __init__(self, pci_bus_id:str, root:str | None = None):
+    want = pci_bus_id.lower()
+    base = pathlib.Path(root or self.ROOT)
+    found = [d / "device" for d in sorted(base.glob("card[0-9]*")) if (d / "device" / "uevent").is_file()
+             and f"pci_slot_name={want}" in (d / "device" / "uevent").read_text().lower()]
+    if not found:
+      raise OSError(f"no amdgpu card at PCI {pci_bus_id} under {base}")
+    self.device = found[0]
+    self.hwmon = next(iter(sorted((self.device / "hwmon").glob("hwmon*"))), None)
+
+  def _read(self, path:pathlib.Path | None) -> int | None:
+    try:
+      return int(path.read_text().split()[0]) if path else None
+    except (OSError, ValueError, IndexError):
+      return None
+
+  def _hw(self, name:str) -> int | None:
+    return self._read(self.hwmon / name if self.hwmon else None)
+
+  def memory_mib(self) -> tuple[float | None, float | None]:
+    used, total = (self._read(self.device / f) for f in ("mem_info_vram_used", "mem_info_vram_total"))
+    return (used / 2**20 if used is not None else None, total / 2**20 if total is not None else None)
+
+  def sample(self) -> dict[str, Any]:
+    sclk, mclk, uw, mc = self._hw("freq1_input"), self._hw("freq2_input"), self._hw("power1_average"), self._hw("temp1_input")
+    return {"t": time.monotonic(), "sm_mhz": sclk / 1e6 if sclk is not None else None,
+            "mem_mhz": mclk / 1e6 if mclk is not None else None, "power_w": uw / 1e6 if uw is not None else None,
+            "temp_c": mc / 1000 if mc is not None else None, "reasons": None, "mem_mib": self.memory_mib()[0]}
+
+  def power_limit_w(self) -> float | None:
+    uw = self._hw("power1_cap")
+    return uw / 1e6 if uw is not None else None
+
+  def performance_level(self) -> str | None:
+    try:
+      return (self.device / "power_dpm_force_performance_level").read_text().strip()
+    except OSError:
+      return None
+
+  def close(self) -> None:
+    pass
+
+
+def amd_clock_policy(source:AmdSysfs) -> dict[str, Any]:
+  """AMD's clock policy, read without changing anything: setting the clock is a root write to sysfs, which a
+  measurement does not make, so the board runs at its own power limit (fixed power) and the clock it chose is logged.
+  The driver's performance level is recorded as found."""
+  level = source.performance_level()
+  return {"policy": "fixed_power", "clock_settable": False, "words": POLICY_WORDS["fixed_power"],
+          "why": f"amdgpu performance level {level!r}; BoltBeam does not write it" if level else
+                 "amdgpu performance level unreadable; BoltBeam does not write it"}
+
+
 def reason_words(bits:int) -> list[str]:
   return [w for b, w in THROTTLE_REASONS.items() if bits & b]
 
@@ -107,7 +169,8 @@ def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None
          "temp_c_max": max(temps) if temps else None, "power_limit_w": power_limit_w,
          "throttle": {w: round(n / len(samples), 3) for w, n in sorted(seen.items())},
          "held": {w: round(n / len(samples), 3) for w, n in sorted(held.items())}, "top_mhz": top,
-         "throttled": bool(seen)}
+         # a source that reports no throttle reasons (amdgpu) leaves throttling unknown, not false
+         "throttled": bool(seen) if any(s.get("reasons") is not None for s in samples) else None}
   used = [s["mem_mib"] for s in every if s.get("mem_mib") is not None]
   if used:  # what the device held at most while the work ran (a model loading counts: it is held memory)
     out["memory_mib"] = {"used_max": round(max(used), 1), "total": memory_total}
@@ -136,6 +199,8 @@ def words(s:dict[str, Any]) -> str:
     text += f", {s['temp_c_max']} C max"
   if s["throttled"]:
     text += "; THROTTLED: " + ", ".join(f"{w} in {100 * f:.0f}% of samples" for w, f in s["throttle"].items())
+  elif s["throttled"] is None:
+    text += "; throttling unknown (the driver reports no throttle reasons)"
   else:
     text += "; not throttled"
   if s.get("held"):

@@ -23,7 +23,7 @@ func TestReplayHeadlineIsNotNoLimit(t *testing.T) {
 	if strings.Contains(got, "No speed limit") || !strings.Contains(got, "Replay measured: 2 turns.") {
 		t.Fatalf("replay headline:\n%s", got)
 	}
-	if !strings.Contains(got, "kernels from the capture") || strings.Contains(got, "roles not timed") {
+	if !strings.Contains(got, "server metrics and client clocks") || strings.Contains(got, "kernels from the capture") || strings.Contains(got, "roles not timed") {
 		t.Fatalf("replay title:\n%s", got)
 	}
 	if mark, line := resultLine(f); mark != "pass" || line != "replay measured · 2 turns" {
@@ -100,11 +100,11 @@ func TestRunEngineBodyNamesBuildAndToolchain(t *testing.T) {
 	if strings.Contains(got, glyphWarn) || !strings.Contains(plain(got), "Engine build: llama.cpp build 11429 (d81235049), installed 2026-10-13 · pin b11571") {
 		t.Errorf("a build off its pin is stated beside the pin, not warned about: %q", plain(got))
 	}
-	if want := "Toolchain (2026-10-12 20:24 UTC): driver 595.99.02, cuda 13.2, torch's CUDA 13.0; not found: torch."; !strings.Contains(plain(got), want) {
+	if want := "Toolchain (2026-10-12 20:24 UTC): driver 595.99.02, cuda 13.2, torch's CUDA 13.0; versions not recorded: torch."; !strings.Contains(plain(got), want) {
 		t.Errorf("want %q in %q", want, plain(got))
 	}
 	e.Toolchain.Versions, e.Toolchain.Runtime = map[string]string{"driver": "unknown", "cuda": "unknown"}, map[string]string{"cuda": "unknown"}
-	if want := "Toolchain (2026-10-12 20:24 UTC): none of driver, cuda found on this machine."; !strings.Contains(plain(runEngineBody(&e)), want) {
+	if want := "Toolchain (2026-10-12 20:24 UTC): versions not recorded for driver, cuda."; !strings.Contains(plain(runEngineBody(&e)), want) {
 		t.Errorf("a Mac records no CUDA tools: %q", plain(runEngineBody(&e)))
 	}
 }

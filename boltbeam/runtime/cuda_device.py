@@ -65,6 +65,14 @@ def default_cache() -> pathlib.Path:
   return pathlib.Path(os.environ.get("BOLTBEAM_CUDA_CACHE") or pathlib.Path(tempfile.gettempdir()) / "boltbeam-cuda")
 
 
+def find_cuda_tool(name:str, preferred:pathlib.Path | None = None) -> str | None:
+  """Resolve toolkit siblings even when the configured toolkit is not on PATH."""
+  nvcc=find_nvcc()
+  candidates=[str(preferred/name) if preferred else None,shutil.which(name),
+              str(pathlib.Path(nvcc).with_name(name)) if nvcc else None]
+  return next((p for p in candidates if p and pathlib.Path(p).is_file()),None)
+
+
 def build_cubin(nvcc:str, source:str, macros:dict[str, str] | None = None, *, cache:pathlib.Path | None = None,
                 arch:str = "native", includes:list[str] | None = None) -> bytes:
   """Compile CUDA source to a cubin for the GPU in this machine (-arch=native), once per source: the file is cached
@@ -106,7 +114,7 @@ def elf_symbols(cubin:bytes) -> list[str]:
 
 def demangle(names:list[str], filt:str | None = None) -> dict[str, str]:
   """mangled -> demangled through cu++filt (ships with the toolkit); names without it map to themselves."""
-  tool = filt or shutil.which("cu++filt") or shutil.which("c++filt")
+  tool = filt or find_cuda_tool("cu++filt") or shutil.which("c++filt")
   if not tool or not names:
     return {n: n for n in names}
   proc = subprocess.run([tool], input="\n".join(names) + "\n", capture_output=True, text=True, timeout=60)
@@ -301,6 +309,7 @@ class Cuda:
   """One CUDA device with a stream. Every object it returns is released by `close`. `driver` and `compile` are the
   two outside dependencies (libcuda, nvcc); tests pass fakes."""
 
+  API = "CUDA"
   CLOCK = CLOCK
 
   def __init__(self, device:int = 0, *, nvcc:str | None = None, cache:pathlib.Path | None = None, driver=None,

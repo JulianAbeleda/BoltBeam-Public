@@ -57,6 +57,7 @@ class Path:
   extra: str = ""
   words: str = ""
   kind: str = "mma"  # mma: one warp-wide matrix instruction; fma: one fused multiply-add per lane per accumulator
+  scale_bits: int = 0x7F7F7F7F  # unit UE8M0 scales; NVFP4 uses unit UE4M3 instead
 
 
 PATHS = (
@@ -71,6 +72,9 @@ PATHS = (
        16, 8, 64, arch_suffix="a", extra=", {sa}, {{0, 0}}, {sb}, {{0, 0}}",
        words="fp4 e2m1 in with ue8m0 block scales, fp32 accumulate"),
   Path("fp32_fma", "fma.rn.f32", 1, 1, 1, kind="fma", words="fp32 vector fused multiply-add (no matrix instruction)"),
+  Path("nvfp4", "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3",
+       16, 8, 64, arch_suffix="a", extra=", {sa}, {{0, 0}}, {sb}, {{0, 0}}",
+       words="fp4 e2m1 in with ue4m3 block-16 scales, fp32 accumulate", scale_bits=0x38383838),
 )
 
 
@@ -96,7 +100,7 @@ extern "C" __global__ void mma_loop(float* out, int iters) {{
   for (int i = 0; i < {p.a_regs}; i++) a[i] = (seed ^ (i * 0x85EBCA6Bu)) & 0x3F3F3F3Fu;
 #pragma unroll
   for (int i = 0; i < {p.b_regs}; i++) b[i] = (seed ^ (i * 0xC2B2AE35u)) & 0x3F3F3F3Fu;
-  unsigned sa = 0x7F7F7F7Fu, sb = 0x7F7F7F7Fu;
+  unsigned sa = {p.scale_bits}u, sb = {p.scale_bits}u;
   {ctype} c[{ACC}][{acc_n}];
 #pragma unroll
   for (int k = 0; k < {ACC}; k++)

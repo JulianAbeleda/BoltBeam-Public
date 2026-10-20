@@ -22,13 +22,31 @@ from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
 _ACT_BYTES = 2.0  # fp16 activations
 
 
+# float storage labels a reader writes for unquantized tensors, by their width
+_FLOAT_BITS = {"F64": 64.0, "F32": 32.0, "F16": 16.0, "BF16": 16.0, "F8_E4M3": 8.0, "F8_E5M2": 8.0}
+
+
 def bits_per_weight(role: Mapping[str, Any]) -> float:
-  """Bits per stored weight for a role, from its ggml type or an INTn quant label. Defaults to fp16. A group label
-  (INT4_G128_ZP, profile/loaders._group_quant) adds each group's 16-bit scale and, with ZP, its n-bit zero point."""
+  """Bits per stored weight for a role: its physical bytes when the reader counted them, else its ggml type, a float
+  storage label, or an INTn quant label. A role that names no quant defaults to fp16. A group label (INT4_G128_ZP,
+  profile/loaders._group_quant) adds each group's 16-bit scale and, with ZP, its n-bit zero point. A label that is
+  named but not recognised (a raw I32 holding packed integers, say) raises: its width is unknown, and a guessed width
+  would size the limit wrong without a word."""
+  if role.get("weight_bytes") is not None:
+    elements = int(role.get("rows") or 0) * int(role.get("cols") or 0)
+    if elements <= 0 or float(role["weight_bytes"]) <= 0:
+      raise ValueError("physical weight bytes require a positive matrix shape and byte count")
+    return 8 * float(role["weight_bytes"]) / elements
   ggml = role.get("ggml_type")
   if isinstance(ggml, int) and ggml in GGML_BITS_PER_WEIGHT:
     return GGML_BITS_PER_WEIGHT[ggml]
   quant = str(role.get("quant") or "")
+  if not quant:
+    return 16.0
+  if quant in {"NVFP4_G16", "FP8_E4M3"}:
+    return {"NVFP4_G16": 4.5, "FP8_E4M3": 8.0}[quant]
+  if quant.upper() in _FLOAT_BITS:
+    return _FLOAT_BITS[quant.upper()]
   tokens = quant.replace("-", "_").split("_")
   for token in tokens:
     if token.startswith("INT") and token[3:].isdigit():
@@ -37,7 +55,8 @@ def bits_per_weight(role: Mapping[str, Any]) -> float:
       return bits + ((16 + (bits if "ZP" in tokens else 0)) / group if group else 0.0)
     if token.startswith("Q") and token[1:2].isdigit():
       return float(token[1])
-  return 16.0
+  raise ValueError(f"unknown weight storage {quant!r} for role {role.get('role') or role.get('tensor_name') or '?'}: "
+                   "its bits per weight are not known, so its bytes cannot be counted toward the limit")
 
 
 def _execution_setting(execution: Mapping[str, Any] | None, role: str, key: str, default: Any = None) -> Any:

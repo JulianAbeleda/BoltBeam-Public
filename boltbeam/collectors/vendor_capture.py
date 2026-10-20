@@ -26,6 +26,8 @@ import shutil
 import subprocess
 from typing import Any, Callable
 
+from boltbeam.target import toolkits
+
 
 TELEMETRY = "telemetry.json"  # the GPU's clocks, power and temperature through one capture, beside it
 
@@ -43,7 +45,7 @@ def _nsys_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str], f
   # profiler_range: the program marks its measured window itself (cudaProfilerStart/Stop); only that is captured
   flush = [f"--cuda-flush-interval={flush_ms}"] if flush_ms else []
   window = ["--capture-range=cudaProfilerApi", "--capture-range-end=stop"] if profiler_range else []
-  return [tool, "profile", "-t", "cuda", "--cuda-graph-trace=node", *flush, *window, "--force-overwrite", "true",
+  return [tool, "profile", "-t", "cuda,nvtx", "--cuda-graph-trace=node", *flush, *window, "--force-overwrite", "true",
           "-o", str(out / "capture"), *argv]
 
 
@@ -192,7 +194,9 @@ def _find_xctrace() -> str | None:
 VENDORS: dict[str, tuple[str, Callable[[], str | None], Callable[..., list[str]], Callable[..., list[dict[str, Any]]], str]] = {
   "CUDA": ("nsys", lambda: shutil.which("nsys"), _nsys_argv, _nsys_read,
            "install Nsight Systems (it comes with the CUDA toolkit) so nsys is on PATH"),
-  "AMD": ("rocprofv3", lambda: shutil.which("rocprofv3"), _rocprof_argv, _rocprof_read, "install ROCm's rocprofiler-sdk"),
+  # ROCm installs rocprofv3 in its own bin/, which is often not on PATH: target/toolkits.py knows where it is
+  "AMD": ("rocprofv3", lambda: toolkits.tool("rocprofv3", shutil.which), _rocprof_argv, _rocprof_read,
+          "install ROCm's rocprofiler-sdk"),
   "Metal": ("metal-system-trace",
             _find_xctrace,
             lambda tool, argv, out, env: [tool, "record", "--template", "Metal System Trace", "--output",

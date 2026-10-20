@@ -49,7 +49,7 @@ METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18, "Q8_0": 2, "Q5_0": 6, "Q4_0": 2, "Q5_K
 # Q8_0, Q4_0: d. Q5_0: d and the 4 bytes of fifth bits. Q5_K: d, dmin, 12 scale bytes, 32 bytes of fifth bits. The rest of a block is its codes (code_bytes).
 WORKING_SET_SHARE = 0.8  # never ask for more than this share of Metal's recommended working set
 CHECK_ROWS = 9
-TOLERANCE = 1e-3  # max |gpu - cpu| over max |cpu|: float32 sums in a different order
+from boltbeam.math.numerics import TOLERANCE
 # the kernels are adapter 0 of the one kernel timer (collectors/boltbeam_gemv.py); the loop is kernel_timer's
 from boltbeam.collectors import boltbeam_gemv as gemv  # noqa: E402
 from boltbeam.collectors import kernel_timer  # noqa: E402

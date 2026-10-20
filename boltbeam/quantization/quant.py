@@ -52,8 +52,8 @@ class QuantCapability:
 def _from_row(d:dict[str, Any]) -> QuantCapability:
   from boltbeam.profile.gguf import GGML_TYPE_IDS
   from boltbeam.profile.decode_roles import GGML_BLOCK_LAYOUTS
-  kind = GGML_TYPE_IDS[d["name"]]
-  elems, size = GGML_BLOCK_LAYOUTS[kind]
+  kind = GGML_TYPE_IDS.get(d["name"], -1)
+  elems, size = (int(d["block_elems"]), int(d["block_bytes"])) if "block_elems" in d else GGML_BLOCK_LAYOUTS[kind]
   return QuantCapability(name=d["name"], ggml_type=kind, block_elems=elems,
                          block_bytes=size, dequant_family=d["dequant_family"],
                          route_families=tuple(d.get("route_families", ())),

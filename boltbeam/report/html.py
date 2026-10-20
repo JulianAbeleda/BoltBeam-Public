@@ -501,25 +501,28 @@ def _short(label:str) -> str:
 def _ties(loss:dict[str, Any], results:dict[str, Any], m:dict[str, Any]) -> str:
   """The equations behind section 1 and the bar in section 2."""
   t = loss.get("tie_out") or {}
-  limit1 = loss.get("limit_ms")
-  if not limit1 or not m.get("ms") or not m.get("tok_s"):
+  headline_limit = loss.get("limit_ms")
+  if not headline_limit or not m.get("ms") or not m.get("tok_s"):
     return ""
   inputs = {i.get("what", ""): i.get("value") for i in (loss.get("layout") or {}).get("inputs") or []}
   ceil = results.get("ceiling") or {}
-  nbytes = inputs.get("weight bytes per token") or ceil.get("bytes_moved")
+  weight_limit = ceil.get("_weight_floor_ms", t.get("limit_ms_ctx1"))
+  headline_context = str(loss.get("limit_context") or "")
+  nbytes = inputs.get("weight bytes per token")
   bw = next((v for k, v in inputs.items() if k.endswith("read bandwidth")), None) or ceil.get("peak_bandwidth_gbs")
   eqs = [_eq(f"t_{{token}} = \\frac{{1000}}{{{m['tok_s']:.2f}\\ \\text{{tok/s}}}} = {m['ms']:.1f}\\ \\text{{ms}}",
              _t("token") + f"<mo>=</mo><mfrac><mn>1000</mn><mrow>{_mn(m['tok_s'], '{:.2f}')}{_u('tok/s')}</mrow></mfrac>"
              f"<mo>=</mo>{_mn(m['ms'])}{_u('ms')}")]
-  if nbytes and bw:
-    eqs.append(_eq(f"t_{{ideal}}(1) = \\frac{{{nbytes / 1e9:.2f}\\ \\text{{GB}}}}{{{bw:.1f}\\ \\text{{GB/s}}}} = {limit1:.1f}\\ \\text{{ms}}",
-                   _t("ideal", "1") + f"<mo>=</mo><mfrac><mrow>{_mn(nbytes / 1e9, '{:.2f}')}{_u('GB')}</mrow>"
-                   f"<mrow>{_mn(bw)}{_u('GB/s')}</mrow></mfrac><mo>=</mo>{_mn(limit1)}{_u('ms')}"))
+  if weight_limit is not None and bw:
+    nbytes = nbytes or weight_limit * bw * 1e6
+    eqs.append(_eq(f"t_{{weights}} = \\frac{{{nbytes / 1e9:.2f}\\ \\text{{GB}}}}{{{bw:.1f}\\ \\text{{GB/s}}}} = {weight_limit:.1f}\\ \\text{{ms}}",
+                   _t("weights") + f"<mo>=</mo><mfrac><mrow>{_mn(nbytes / 1e9, '{:.2f}')}{_u('GB')}</mrow>"
+                   f"<mrow>{_mn(bw)}{_u('GB/s')}</mrow></mfrac><mo>=</mo>{_mn(weight_limit)}{_u('ms')}"))
   ctx = f'{t["context"]:.0f}' if t.get("context") is not None else None
-  if ctx and t.get("limit_ms") is not None and t.get("kv_ms") is not None:
-    eqs.append(_eq(f"t_{{ideal}}({ctx}) = t_{{ideal}}(1) + t_{{KV}} = {limit1:.1f} + {t['kv_ms']:.1f} = {t['limit_ms']:.1f}\\ \\text{{ms}}",
-                   _t("ideal", ctx) + "<mo>=</mo>" + _t("ideal", "1") + "<mo>+</mo>" + _t("KV")
-                   + f"<mo>=</mo>{_mn(limit1)}<mo>+</mo>{_mn(t['kv_ms'])}<mo>=</mo>{_mn(t['limit_ms'])}{_u('ms')}"))
+  if weight_limit is not None and ctx and t.get("limit_ms") is not None and t.get("kv_ms") is not None:
+    eqs.append(_eq(f"t_{{ideal}}({ctx}) = t_{{weights}} + t_{{KV}} = {weight_limit:.1f} + {t['kv_ms']:.1f} = {t['limit_ms']:.1f}\\ \\text{{ms}}",
+                   _t("ideal", ctx) + "<mo>=</mo>" + _t("weights") + "<mo>+</mo>" + _t("KV")
+                   + f"<mo>=</mo>{_mn(weight_limit)}<mo>+</mo>{_mn(t['kv_ms'])}<mo>=</mo>{_mn(t['limit_ms'])}{_u('ms')}"))
   lines = t.get("lines") or []
   same = t.get("token_ms") is not None and abs(t["token_ms"] - m["ms"]) < 1e-9
   other = "" if same or t.get("token_ms") is None else (
@@ -533,15 +536,15 @@ def _ties(loss:dict[str, Any], results:dict[str, Any], m:dict[str, Any]) -> str:
     mml = f"{_mn(t['token_ms'])}<mo>=</mo>" + "<mo>+</mo>".join(
       _brace(_mn(v), f"{n} ({ctx})" if i == 0 and ctx else n) for i, (n, v) in enumerate(head)) + _u("ms")
     eqs.append(_eq(tex, mml))
-  pct = 100.0 * limit1 / m["ms"]
-  eqs.append(_eq(f"\\text{{lost}} = t_{{token}} - t_{{ideal}}(1) = {m['ms']:.1f} - {limit1:.1f} = {m['lost_ms']:.1f}\\ \\text{{ms}}",
-                 f'<mtext>lost</mtext><mo>=</mo>{_t("token")}<mo>&#x2212;</mo>{_t("ideal", "1")}<mo>=</mo>'
-                 f"{_mn(m['ms'])}<mo>&#x2212;</mo>{_mn(limit1)}<mo>=</mo>{_mn(m['lost_ms'])}{_u('ms')}"))
-  eqs.append(_eq(f"\\text{{roofline share}} = \\frac{{t_{{ideal}}(1)}}{{t_{{token}}}} = \\frac{{{limit1:.1f}}}{{{m['ms']:.1f}}} = {pct:.0f}\\%",
-                 f'<mtext>roofline share</mtext><mo>=</mo><mfrac>{_t("ideal", "1")}{_t("token")}</mfrac><mo>=</mo>'
-                 f"<mfrac>{_mn(limit1)}{_mn(m['ms'])}</mfrac><mo>=</mo><mn>{pct:.0f}</mn><mo>%</mo>"))
+  pct = 100.0 * headline_limit / m["ms"]
+  eqs.append(_eq(f"\\text{{lost}} = t_{{token}} - t_{{ideal}}({headline_context}) = {m['ms']:.1f} - {headline_limit:.1f} = {m['lost_ms']:.1f}\\ \\text{{ms}}",
+                 f'<mtext>lost</mtext><mo>=</mo>{_t("token")}<mo>&#x2212;</mo>{_t("ideal", headline_context)}<mo>=</mo>'
+                 f"{_mn(m['ms'])}<mo>&#x2212;</mo>{_mn(headline_limit)}<mo>=</mo>{_mn(m['lost_ms'])}{_u('ms')}"))
+  eqs.append(_eq(f"\\text{{roofline share}} = \\frac{{t_{{ideal}}({headline_context})}}{{t_{{token}}}} = \\frac{{{headline_limit:.1f}}}{{{m['ms']:.1f}}} = {pct:.0f}\\%",
+                 f'<mtext>roofline share</mtext><mo>=</mo><mfrac>{_t("ideal", headline_context)}{_t("token")}</mfrac><mo>=</mo>'
+                 f"<mfrac>{_mn(headline_limit)}{_mn(m['ms'])}</mfrac><mo>=</mo><mn>{pct:.0f}</mn><mo>%</mo>"))
   lead = (f"The headline is the time for one token. {m['tok_s']:.2f} tok/s rounds to {m['tok_s']:.1f}. "
-          "The limit is the weight bytes over the read bandwidth. The bar below splits the same token.")
+          "The headline limit includes work at the measured context. The bar below splits the same token.")
   if other:
     lead = lead.replace(" The bar below splits the same token.", "")
   tail = f'<p class="muted">{_e(other)}</p>' if other else ""
@@ -555,6 +558,13 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
   who = (f'<p class="who"><b>{_e(manifest.get("model_id") or "unknown model")}</b> on {_e(manifest.get("target_id") or "unknown chip")}'
          f' · {_e(engine.get("provider") or loss.get("provider") or "unknown engine")} · batch {_e(tie.get("batch") or 1)}'
          f' · {_e(engine.get("weight_format") or "unknown weights")}</p>')
+  if (loss.get('replay') or {}).get('headline'):
+    replay=loss['replay'];head=replay['headline']
+    qualification=(replay.get('qualification') or {}).get('status')
+    return _section(1,'The replay',who+f'<div class="hero"><span class="big">{head["time_ms"]/1000:.3f}</span>'
+      '<span class="big-u">seconds per session</span></div>'+
+      (f'<p class="note">{_e(replay["headline_lines"][0])}</p>' if replay.get('overhead_acceptance') else f'<p class="note">Timing qualification: {_e(qualification.upper())}.</p>' if qualification else '')+
+      '<p class="note">Session time is the sum of the included turns. Decode throughput and limits are listed separately below.</p>')
   limit_tok, limit_ms = loss.get("limit_tok_s"), loss.get("limit_ms")
   if limit_tok is None and (results.get("ceiling") or {}).get("status") == "modeled":
     limit_tok = results["ceiling"].get("tok_s")
@@ -587,11 +597,13 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
 
 
 def _ideal_words(loss:dict[str, Any], limit_ms:float) -> str:
-  """The ideal once, at context 1 and, when the bar uses another context, there too with the KV read."""
+  """Name the headline and captured limits using their actual context bases."""
   t = loss.get("tie_out") or {}
-  if t.get("limit_ms") is None or t.get("context") is None or f'{t["limit_ms"]:.1f}' == f"{limit_ms:.1f}":
-    return f"{limit_ms:.1f} ms ideal"
-  return f'{limit_ms:.1f} ms ideal at context 1, {t["limit_ms"]:.1f} ms at context {t["context"]:.0f} with the KV read'
+  context = loss.get("limit_context")
+  words = f"{limit_ms:.1f} ms ideal" + (f" at context {context:.0f}" if context is not None else "")
+  if t.get("limit_ms") is not None and t.get("context") is not None and t["context"] != context:
+    words += f'; captured limit {t["limit_ms"]:.1f} ms at context {t["context"]:.0f}'
+  return words
 
 
 def _seg_class(line:dict[str, Any]) -> str:
@@ -659,6 +671,17 @@ def _where(loss:dict[str, Any]) -> str:
   return _section(2, "Where the time goes", body)
 
 
+def sectioned_cells(w):
+  rows=[]
+  section=None
+  for row in w['rows']:
+    if row.get('section') and row['section']!=section:
+      section=row['section']
+      rows.append([section,*(['']*(len(w['columns'])-1))])
+    rows.append([row['name'],*row['cells']])
+  return rows+([w['baseline_cells']] if w.get('baseline_cells') else [])+[w['sum_cells']]
+
+
 def _where_token(loss:dict[str, Any]) -> str:
   """A where table (tie_out.where_token_goes, where_prefill_goes) as HTML: what each part costs, worst first. The
   cells are the table's own."""
@@ -667,7 +690,15 @@ def _where_token(loss:dict[str, Any]) -> str:
     return ""
   head = "".join(f"<th>{_e(c)}</th>" for c in w["columns"])
   cell = lambda i, c: f'<td class="lost">{_e(c)}</td>' if i == 2 else f"<td>{_e(c)}</td>"  # noqa: E731
-  rows = [f'<tr><td>{_e(r["name"])}</td>{"".join(cell(i, c) for i, c in enumerate(r["cells"]))}</tr>' for r in w["rows"]]
+  rows=[]
+  section=None
+  for r in w['rows']:
+    if r.get('section') and r['section']!=section:
+      section=r['section']
+      rows.append(f'<tr class="sum"><td colspan="{len(w["columns"])}">{_e(section)}</td></tr>')
+    rows.append(f'<tr><td>{_e(r["name"])}</td>{"".join(cell(i,c) for i,c in enumerate(r["cells"]))}</tr>')
+  if w.get("baseline_cells"):
+    rows.append('<tr>'+"".join(f"<td>{_e(c)}</td>" for c in w["baseline_cells"])+'</tr>')
   rows.append(f'<tr class="sum">{"".join(f"<td>{_e(c)}</td>" for c in w["sum_cells"])}</tr>')
   body = (f'<p class="muted" style="margin:0 0 10px">{_e(w["words"])}</p>'
           f'<div class="tscroll"><table class="tie where"><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
@@ -768,6 +799,7 @@ def _replay(loss:dict[str, Any]) -> str:
   if not t:
     return ""
   head = "".join(f'<p style="margin:0 0 4px">{_e(l)}</p>' for l in t["headline_lines"])
+  head += "".join(f'<p class="note">{_e(t[k])}</p>' for k in ("evidence_words", "not_captured") if t.get(k))
   pts = [p for p in t["turns"] if p.get("decode_tok_s")]
   svg = ""
   if len(pts) > 1:
@@ -782,11 +814,11 @@ def _replay(loss:dict[str, Any]) -> str:
            f'<text x="570" y="40">TTFT (max {max(ttft):,.0f} ms)</text><text x="570" y="56">decode tok/s (max {max(tok):.0f})</text></g></svg>')
   body = head + svg + f'<p class="muted" style="margin:10px 0">{_e(t["words"])}</p>' + _cells_table(t["columns"], [r["cells"] for r in t["rows"]] + [t["total"]])
   for w in t.get("wheres") or []:
-    if w.get("status") != "measured":
+    if w.get("status") not in ("measured", "benchmark_only"):
       body += f'<p class="note">{_e(w["words"])}</p>'
       continue
     body += (f'<h3>{_e(w["title"])}</h3><p class="muted">{_e(w["words"])}</p>'
-             + _cells_table(w["columns"], [[r["name"], *r["cells"]] for r in w["rows"]] + [w["sum_cells"]])
+             + _cells_table(w["columns"], sectioned_cells(w))
              + f'<p class="muted">{_e(w["server_line"])}</p>')
   d = t.get("decode_where")
   if d:
@@ -862,6 +894,8 @@ def _per_role(loss:dict[str, Any]) -> str:
              f'Left out of the floor rule and the sums.</p>')
   if cc := loss.get("cross_check"):
     body += _rate_table("Cross-check", cc.get("words") or "", cc.get("rows") or [], cc.get("reason"), cc.get("columns_words"))
+    for r in cc.get("not_measured") or []:
+      body += f'<p class="note">{_e(r["role"])} {_e(r["quant"])}: not measured: {_e(r["reason"])}</p>'
   return _section(3, "Per role, estimated from isolated kernel times" if est else "Per role", body)
 
 
@@ -934,9 +968,9 @@ def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, 
     out.append({"what": found["what"], "ms": found["ms"], "share": found["ms"] / token, "do": found["do"],
                 "rule": found.get("rule") or "a faster kernel found", "evidence": found.get("evidence") or []})
   for l in t.get("lines") or []:
-    if l["how"] == "difference" and l["label"].startswith("gaps between kernels (GPU idle)") and l["ms"] >= GAPS_SHARE * token \
+    if l["how"] == "difference" and l["label"].startswith("gaps between kernels") and l["ms"] >= GAPS_SHARE * token \
         and "launch_heavy" not in found_verdicts:
-      out.append({"what": "Gaps between kernels (GPU idle)", "ms": l["ms"], "share": l["ms"] / token, "do": GAPS_LEVER,
+      out.append({"what": "Gaps between kernels", "ms": l["ms"], "share": l["ms"] / token, "do": GAPS_LEVER,
                   "rule": f"gaps ≥ {GAPS_SHARE:.0%} of the token", "evidence": ev.get("whole_step") or []})
     if l.get("parts") is not None and l["ms"] >= OTHER_SHARE * token:
       parts = l.get("parts") or []
@@ -960,6 +994,8 @@ def next_items(loss:dict[str, Any], compare_runs:bool = True) -> list[dict[str, 
 
 
 def _next(loss:dict[str, Any], policy:dict[str, Any]) -> str:
+  if (replay:=loss.get('replay') or {}).get('forced'):
+    return _section(4, 'Next', '<p>'+_e(replay['next_step'])+'</p>')
   items = next_items(loss)
   routes = [r for r in policy.get("routes", []) or [] if isinstance(r, dict)]
   compared = any(r.get("status") not in (None, "unmeasured") and isinstance(r.get("compare"), dict) for r in routes)
@@ -1021,6 +1057,8 @@ def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, An
   if cap.get("method"):
     from boltbeam.workflow.screen import CAPTURE_WORDS
     rows.append(("Capture", CAPTURE_WORDS.get(cap["method"], cap["method"]) + (f'; {cap["reason"]}' if cap.get("reason") else "")))
+  elif (loss.get("replay") or {}).get("forced"):
+    rows.append(("Capture", "Observed native activity and exact work identity; timing admission is reported separately."))
   elif loss.get("runtimes"):
     rows.append(("Capture", "whole step only, untraced" + (f'; per role: {loss["missing"]}' if loss.get("missing") else "")))
   if loss.get("role_source_words"):
@@ -1042,7 +1080,8 @@ def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, An
   dl += f'<dt>Stages that ran</dt><dd><div class="chips">{_stage_list(manifest, measure)}</div></dd>'
   dl += f'<dt>Files in the run</dt><dd><div class="chips">{files or "none listed"}</div></dd>'
   if gameplan:  # Emit wrote it (workflow/gameplan.py): per role, worst first, what kernel to emit, from this run's files
-    dl += f'<dt>Gameplan</dt><dd><a href="{_e(gameplan)}">{_e(gameplan)}</a>: what to emit per role, worst first (Emit)</dd>'
+    purpose='validated replay report (Emit)' if (loss.get('replay') or {}).get('forced') else 'what to emit per role, worst first (Emit)'
+    dl += f'<dt>Gameplan</dt><dd><a href="{_e(gameplan)}">{_e(gameplan)}</a>: {purpose}</dd>'
   return _section(5, "Facts", f"<dl>{dl}</dl>")
 
 
@@ -1071,6 +1110,6 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
     f'<header class="mast"><div class="mark">BoltBeam</div><div class="run-id">{_e(source_run or model_id)}</div>'
     '<button id="theme" class="toggle" type="button">theme</button></header>'
     f"{sections}"
-    '<p class="foot">Written by <code>boltbeam output</code> from the same results the TUI shows. Times are ms per token.</p>'
+    '<p class="foot">Written by <code>boltbeam output</code> from the same results the TUI shows. Times follow the units shown in each table.</p>'
     f'<p class="foot">{_e((results.get("engine_update") or {}).get("words", ""))}</p>'
     f"</div><script>{_JS}</script></body></html>\n")

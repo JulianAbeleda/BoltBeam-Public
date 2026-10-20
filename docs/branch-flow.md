@@ -1,158 +1,55 @@
-# Branch layout: `master` ⊂ `dev` ⊂ `exp`
+# Branch workflow: exp → dev → main
 
-Three branches. The relationship is **containment by content category**, not a
-promotion pipeline. Work does not graduate from `exp` to `dev` to `master`;
-rather, each branch admits categories of content that the one inside it refuses.
+Develop active work on `exp`, qualify it on `dev`, and promote only finished,
+qualified product changes to `main`. Commit and push coherent increments on
+`exp` so progress is visible. An in-progress commit is not a release.
 
-This mirrors `tinygrad-arkey`, whose README states the convention as:
+## Content boundaries
 
-> - `master`: runnable promoted product surface; no handwritten specialized
->   fallback or research archive.
-> - `dev`: master plus qualification oracles, development tooling, and durable
->   handoffs.
-> - `exp`: active machine-search and hardware experimentation.
-
-The consequence worth stating plainly: **master is lean because of what it
-excludes, not because of what has been approved.** Leanness is a property of the
-admission rule, not of a review gate.
-
-## What each branch admits
-
-### `master` — the runnable product surface
-
-What the project *is*, when someone runs it.
-
-- The pipeline, the CLI, the schemas, the adapters, the analysis it performs.
-- Nothing whose purpose is to *produce knowledge* rather than *be the product*.
-
-Excluded by category, regardless of quality:
-
-- **the test suite** — see below
-- research archives and historical evidence
-- qualification oracles and measurement scaffolding
-- one-off scripts, probes, and campaign tooling
-- models or modules with no live caller
-
-### Why the tests are not on `master`
-
-A test's purpose is to *establish that the product is correct*. That is producing
-knowledge about the product, not being the product — the same category as a
-qualification oracle, which `dev` has always owned. `dev` is defined as "master
-plus what you need to verify it"; the suite is precisely that, so an earlier
-version of this document contradicted its own definition by admitting tests to
-the trunk.
-
-The practical statement: **nothing in `boltbeam/` imports from `tests/`**, and the
-full `inspect -> load -> analyze -> output` pipeline runs on a real GGUF with
-`tests/` absent. The trunk is what ships; it does not carry its own proof.
-
-This is not "tests don't matter". It relocates where correctness is answered, and
-`tools/sync_branches.sh` enforces it: the trunk's first verification is the merge
-into `dev`, which is hard-gated on the suite. A trunk commit that breaks the
-product cannot reach `exp` without failing that gate.
-
-A thing can be correct, tested and useful and still not belong on `master`. The
-question is never "is this good" but "is this the product".
-
-### `dev` — master plus the apparatus
-
-Everything on `master`, plus what you need to *verify* and *develop* it.
-
-- **the test suite** — `tests/`, and `pytest` is run from here
-- qualification oracles and correctness harnesses
-- development and diagnostic tooling
-- durable handoffs and finished investigation records
-
-The admission table below already said "how you check that the tool is correct ->
-`dev`". The suite is the largest instance of that, and it now lives where the rule
-always put it.
-
-This is where BoltBeam's own audit tooling belongs — the meta-development side
-of the boundary the orthogonality audit found is already cleanly separated in
-the code.
-
-### `exp` — active experimentation
-
-Machine search, hardware experimentation, probes in flight.
-
-- Broken intermediate states are fine; the suite need not pass.
-- Most of what lands here should never move inward. Its value is the answer it
-  produces, not the code.
-- Once a probe's verdict is recorded, the code can go; the record stays.
-
-## The admission test
-
-Before adding a file to `master`, ask which of these it is:
-
-| If it is… | It belongs on |
+| Branch | Admitted content |
 | --- | --- |
-| part of what the tool does when run | `master` |
-| how you check that the tool is correct | `dev` |
-| how you found out what to build | `exp` |
-| a record of what you learned | `docs/` on `master` |
+| `main` | Finished runnable product and concise, reviewed product documentation |
+| `dev` | Product plus tests, qualification tooling, and durable development records |
+| `exp` | Active implementation, experiments, probes, and unfinished audit evidence |
 
-That last row matters. A **finding** is product — it is how the project knows
-what it knows. The **probe that produced it** is not. Record the verdict on
-`master`, keep the apparatus on `dev`, delete the probe from `exp`.
+Tests, measurement scaffolding, research archives, and unfinished investigation
+records do not belong on `main`, even when their individual checks pass.
+The branch called `master` in older documentation is `main` in this checkout.
 
-The 13 versioned `perf/` models are the worked example: authored in one burst,
-unreachable from any live path, verdict recorded nowhere. By this rule they were
-never `master` material — they are `exp` apparatus whose finding was never
-written down. See
-`task_workflow/output/perf-model-verdict-record-20260731.md`.
+## Promotion
 
-## Keeping them in sync
+1. Implement, review, commit, and push increments on `exp` with the owning
+   subsystem prefix from `docs/commit-discipline.md`.
+2. Select a complete change for qualification on `dev`. Include its tests and
+   necessary qualification apparatus. Resolve failures and complete the relevant
+   end-to-end review, including Run and Emit when affected. Size and duplicate
+   authority gates must pass; targeted tests alone do not establish readiness.
+3. Promote the qualified product subset to `main`. Keep tests and investigation
+   apparatus on the outer branches. Review the actual staged diff before
+   committing; do not merge the entire experimental tree inward.
+4. Push each completed stage and report its commit and branch. Unfinished work
+   stays on `exp`; a failed gate is reported, not waived to complete promotion.
 
-Because the relationship is containment, **`master` flows outward** — every
-change to the product surface must reach `dev` and `exp`, or they stop being
-supersets and start being forks:
+Evidence intended for publication must be reviewed for machine home paths and
+hostnames, including screenshots. Keep raw machine-specific captures local;
+publish relative artifact references and hashes where provenance is needed.
+Do not substitute invented data when redacting presentation details.
 
-```
-./tools/sync_branches.sh --dry-run   # report what each merge would delete
-./tools/sync_branches.sh             # merge outward, suite-gated at each hop
-git push origin dev exp
-```
+## Synchronization
 
-Do this on every trunk commit, or close to it. The failure mode is visible in
-tinygrad-arkey today: `dev` is 88 commits behind `master`, meaning it is no
-longer "master plus tooling" — it is a fork that happens to share a name. At
-that distance the merge is a project rather than a habit.
+`tools/sync_branches.sh` merges product changes outward from `main` into `dev`
+and `exp`, with qualification gates. This maintains shared product content;
+it is not authorization to originate unfinished changes on `main` and is not
+an inward promotion command.
 
-### The prune case
+Before an outward merge, use `--dry-run` and inspect removals. A product prune
+may delete apparatus that an outer branch should retain. Restore that apparatus
+and its constraining tests on the appropriate outer branch, then validate the
+result. Do not restore excluded apparatus onto `main`.
 
-One situation needs a human, and it is why the script reports before it merges.
-When the trunk **prunes** something the outer branches retain, an ordinary merge
-deletes it there too — the exact opposite of what the layout is for.
+## Correcting accidental publication
 
-The mechanism is an **apparatus commit**: after the prune merges outward,
-restore the retained paths on the outer branch and commit them. `dev` is then
-"trunk plus apparatus" by construction, and the restoration sits above the prune
-in history, so later merges do not re-delete it.
-
-```
-git checkout dev
-git merge main                              # brings the prune; deletes the files
-git checkout <pre-prune-sha> -- <paths>     # put back what dev retains
-git commit -m "[repo] retain <what> as dev apparatus"
-```
-
-**Restore the constraining tests too, not just the code.** The first apparatus
-commit here restored six models but not the test pinning the allowed set, so
-`dev` pinned seven files while holding thirteen and the suite failed. An
-apparatus layer that restores code without the test that constrains it leaves
-the branch self-inconsistent. The sync script fails loudly on exactly that and
-says to fix it on the outer branch, never on the trunk.
-
-Movement inward is not a merge. Promoting something from `exp` to `master`
-means deciding it was product all along, and it lands as an ordinary commit on
-`master` that then flows outward like any other.
-
-## What this is not
-
-Not a review process, an approval gate, or a release train. There is one person
-here. It is a rule about **what kind of thing** each branch holds, so that the
-trunk stays the product and the apparatus has somewhere legitimate to live.
-
-If a change is obviously part of the product — commit it to `master` and merge
-outward. The layout exists so that the *other* categories have a home, not to
-slow down the ones that don't.
+Preserve active work on `exp`, then remove unqualified work and excluded content
+from the current `main` tree with explicit corrective commits. Verify the remote
+branch after pushing. This repairs the current tree; it does not erase earlier
+published history. Do not rewrite shared history without explicit authorization.

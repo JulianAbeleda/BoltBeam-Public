@@ -18,13 +18,17 @@ class TensorRole:
   role_class: str = ""            # fine RoleClass of the representative tensor (audit A1); "" = unclassified
   n_expert: int = 0               # MoE expert-stack depth (audit A5); 0 = dense (2D) weight
   experts_read: int = 0           # experts of the stack the decode reads per token (expert_used_count); 0 = dense
+  weight_bytes: float | None = None  # per matrix, including stored quantization scales when the header names them
 
   @property
   def shape(self) -> tuple[int, int]:
     return (self.rows, self.cols)
 
   def to_json(self) -> dict[str, Any]:
-    return asdict(self)
+    data = asdict(self)
+    if self.weight_bytes is None:
+      data.pop("weight_bytes")
+    return data
 
 
 @dataclass(frozen=True)

@@ -101,7 +101,7 @@ func alive(pid int) bool {
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-// Stop sends SIGTERM. Every stage writes its artifacts and updates run_manifest.json when it finishes, so
+// Stop sends SIGTERM to the job's process group, including the active benchmark. Every stage writes its artifacts and updates run_manifest.json when it finishes, so
 // what is lost is at most the stage in flight; the run folder keeps what landed.
 // Alive is every job in the store whose process is still running: one GPU measurement at a time.
 func (s Store) Alive() []Job {
@@ -128,7 +128,7 @@ func (s Store) Stop(id string) (Job, error) {
 	if !job.Alive {
 		return job, fmt.Errorf("job %s is not running", id)
 	}
-	if err := syscall.Kill(job.PID, syscall.SIGTERM); err != nil {
+	if err := syscall.Kill(-job.PID, syscall.SIGTERM); err != nil {
 		return job, err
 	}
 	return job, nil

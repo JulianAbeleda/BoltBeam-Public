@@ -155,6 +155,9 @@ type tickMsg time.Time
 
 // New builds the model; modelPath and target may be empty, context is the prefill length for the ceiling.
 func New(client seam.Client, store jobs.Store, modelPath, target string, context int) Model {
+	if modelPath == "" {
+		modelPath = savedModel(store.Dir)
+	}
 	in := textinput.New()
 	in.Prompt = ""
 	in.SetValue(modelPath)
@@ -170,7 +173,7 @@ func Start(client seam.Client, store jobs.Store, modelPath, target string, conte
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.scanEngines(), m.loadRuns(), m.findFiles(), m.loadSaved(), m.spin.Tick}
+	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.scanEngines(true), m.loadRuns(), m.findFiles(), m.loadSaved(), m.spin.Tick}
 	if m.f.Path != "" {
 		cmds = append(cmds, m.inspect())
 	}
@@ -178,9 +181,9 @@ func (m Model) Init() tea.Cmd {
 }
 
 // scanEngines looks for every engine in the usual folders and saves what was found (Python: screen engines). It
-// runs at boot, in the background, so the Engine line fills on its own; opening Engine never starts a scan.
-func (m Model) scanEngines() tea.Cmd {
-	return func() tea.Msg { e, _, err := m.client.Engines(); return enginesMsg{e, err} }
+// reuses cached discovery at boot; Scan again forces discovery. Opening Engine never starts a scan.
+func (m Model) scanEngines(cached bool) tea.Cmd {
+	return func() tea.Msg { e, _, err := m.client.Engines(cached); return enginesMsg{e, err} }
 }
 
 // loadProviders asks Python which runtimes can measure the chip on this machine.
@@ -243,37 +246,16 @@ func (m Model) autoscan(remeasure bool) tea.Cmd {
 	return func() tea.Msg { s, _, err := m.client.Autoscan(remeasure); return scanMsg{s, err} }
 }
 
-// findFiles lists model files to pick from: every .gguf and .safetensors in the folder of the current path and in
-// ~/models, in name order, each file once even when the two folders are the same folder under two names (~/models
-// as a link to a data disk). No cap: the picker windows a long list around the cursor. Names only; the model
-// itself is read by Python.
+// findFiles discovers models in the shared store and beside the current selection.
 func (m Model) findFiles() tea.Cmd {
-	dirs := []string{}
+	roots := []string{}
 	if m.f.Path != "" {
-		dirs = append(dirs, filepath.Dir(m.f.Path))
+		roots = append(roots, filepath.Dir(m.f.Path))
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, filepath.Join(home, "models"))
+		roots = append(roots, filepath.Join(home, "models"))
 	}
-	return func() tea.Msg {
-		seen, out := map[string]bool{}, []string{}
-		for _, dir := range dirs {
-			for _, ext := range []string{"*.gguf", "*.safetensors"} {
-				found, _ := filepath.Glob(filepath.Join(dir, ext))
-				for _, p := range found {
-					real, err := filepath.EvalSymlinks(p)
-					if err != nil {
-						real = p
-					}
-					if !seen[real] {
-						seen[real] = true
-						out = append(out, p)
-					}
-				}
-			}
-		}
-		return filesMsg(out)
-	}
+	return func() tea.Msg { return filesMsg(discoverModels(roots)) }
 }
 
 func (m Model) loadRuns() tea.Cmd {
@@ -410,12 +392,16 @@ func (m *Model) rememberEngine() {
 		if r.TargetID != t.ID || r.Measure == nil || r.Measure.Provider == nil {
 			continue
 		}
-		if p := m.f.provider(*r.Measure.Provider); p != nil && p.Available {
-			m.f.Engine = p.Provider
+		if p := m.f.provider(*r.Measure.Provider); p == nil || !p.Available {
+			continue
 		}
+		m.f.Engine = *r.Measure.Provider
 		// the measurement comes back too, when the run picked one in Setup (auto stays Python's default)
 		if c := r.Measure.Capture; c != nil && c.Measurement != nil && c.Measurement.Choice != "auto" && m.f.Measurement == "" {
 			m.f.Measurement = c.Measurement.Choice
+			if m.f.measurementBlocked() != "" {
+				m.f.Measurement = ""
+			}
 		}
 		return
 	}
@@ -727,6 +713,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 	case filesMsg:
 		m.f.Files = msg
+		m.focusModel()
 	case profileMsg:
 		m.f.Reading = false
 		if msg.err != nil {
@@ -734,6 +721,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.f.Profile, m.f.ModelErr = msg.profile, ""
+		m.saveModel()
 		return m, tea.Batch(m.chipChanged(), m.loadOthers())
 	case othersMsg:
 		if msg.path == m.f.Path {
@@ -792,8 +780,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			if p := m.f.engineRow(); (p == nil || !p.Available) && msg.providers != nil {
 				m.f.Engine = "" // the first engine this machine has, until one is picked
 				for _, r := range msg.providers.Providers {
-					if r.Available {
+					if m.f.modelProvider(r).Available {
 						m.f.Engine = r.Provider
+						m.f.Measurement = ""
 						break
 					}
 				}
@@ -892,13 +881,13 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case emitMsg:
 		m.f.Emitting = false
 		if msg.err != nil {
-			m.note = "Emit failed: " + msg.err.Error()
+			m.note = "Emit failed for " + m.runID() + ": " + msg.err.Error()
 			return m, nil
 		}
 		m.f.Plan = msg.plan
 		m.cursor, m.row = pageEmit, 0
 		m.view.GotoTop()
-		m.note = "Wrote gameplan.md and gameplan.json in " + msg.plan.Dir + "."
+		m.note = "Wrote gameplan.md and gameplan.json for " + msg.plan.ID + "."
 	case tickMsg:
 		m.f.advance(clock())
 		id := m.runID()
@@ -1030,7 +1019,7 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.f.Input = m.input.Value()
 		return m, cmd
 	}
-	DetailView(m.f, m.cursor, m.row, m.width, m.height-3, &m.view) // size the scroll before keys move it
+	DetailView(m.f, m.cursor, m.row, m.width, m.detailHeight(), &m.view) // size the scroll before keys move it
 	if key.Matches(msg, keyDel) {
 		if id := m.runRow(); id != "" {
 			return m.do(action{"", "deletesaved", id})
@@ -1079,7 +1068,7 @@ func (m *Model) backToSetup() {
 	if picker(m.cursor) {
 		m.row = m.cursor - pageModel
 	}
-	m.cursor, m.f.ReadOnly = pageSetup, false
+	m.cursor = pageSetup // keep the displayed run's saved origin until a new run replaces it
 	m.skipHeads(1)
 	m.view.GotoTop()
 }
@@ -1146,17 +1135,16 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 	case "page":
 		m.cursor, _ = strconv.Atoi(a.arg)
 		m.row = 0
+		m.focusModel()
 		m.skipHeads(1)
 		m.view.GotoTop()
 		if m.cursor == pageSaved {
 			return m, m.loadSaved()
 		}
-		if m.cursor == pageSetup {
-			m.f.ReadOnly = false
-		}
 		return m, nil
 	case "engine":
 		m.f.Engine, m.f.Layout, m.engineSet = a.arg, "", true
+		m.f.Measurement = ""
 		m.backToSetup()
 		return m, nil
 	case "batch":
@@ -1195,7 +1183,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 			return m, nil
 		}
 		m.f.EngineScan, m.f.Providers, m.note = true, nil, ""
-		return m, m.scanEngines()
+		return m, m.scanEngines(false)
 	case "autoscan":
 		if m.f.Scanning {
 			return m, nil
@@ -1274,6 +1262,10 @@ func footer(back, onRun, running, failed bool) string {
 	return " " + strings.Join(parts, stMuted.Render(" · "))
 }
 
+func (m Model) detailHeight() int {
+	return m.height - 2 - lipgloss.Height(truncate(m.note, m.width))
+}
+
 func (m Model) View() string {
 	left := stAccent.Render(glyphBolt) + " " + gradient("BoltBeam")
 	right := stAccent.Render(m.mood())
@@ -1281,7 +1273,7 @@ func (m Model) View() string {
 		right = m.spin.View() + " " + right
 	}
 	header := left + strings.Repeat(" ", max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
-	room := m.height - 3
+	room := m.detailHeight()
 	view := m.view
 	body := DetailView(m.f, m.cursor, m.row, m.width, room, &view)
 	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.cursor != pageSetup, m.runRow() != "", m.cursor == pageRun && m.f.alive(), m.cursor == pageRun && m.f.failedStage() != "")

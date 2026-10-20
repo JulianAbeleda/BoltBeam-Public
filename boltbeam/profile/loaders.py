@@ -4,6 +4,8 @@ import json
 import math
 import pathlib
 import struct
+import fnmatch
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +33,7 @@ class TensorSpec:
   shape: tuple[int, ...]
   quant: str
   ggml_type: int = -1
+  weight_bytes: int | None = None
 
 
 def detect_model_format(path:str | pathlib.Path) -> str:
@@ -82,6 +85,12 @@ def _quant_config(path:pathlib.Path, cfg:dict[str, Any]) -> dict[str, Any]:
     q = _read_json(path / name)
     if q:
       return q
+  # ModelOpt also ships its declaration separately from transformers' config.json.
+  modelopt = _read_json(path / "hf_quant_config.json").get("quantization") or {}
+  if modelopt.get("quant_algo") == "NVFP4":
+    return {"quant_method": "modelopt", "packed_weights_only": True, "ignore": modelopt.get("exclude_modules", []),
+            "config_groups": {"nvfp4": {"targets": ["Linear"], "weights": {
+              "type": "float", "num_bits": 4, "group_size": modelopt.get("group_size")}}}}
   return {}
 
 
@@ -105,43 +114,117 @@ def _read_safetensors_header(path:pathlib.Path) -> dict[str, Any]:
     return json.loads(f.read(n).decode("utf-8"))
 
 
-# a group-quantized checkpoint (compressed-tensors pack-quantized) stores each weight as these tensors: the packed
-# integers stand for the weight, the rest are its parts (their bytes are in the quant label's bits)
+# a group-quantized checkpoint stores each weight as a packed-integer tensor that stands for the weight, plus parts
+# (scales, zero points) whose bytes are in the quant label's bits. Two exports are read:
+#   compressed-tensors pack-quantized: <name>.weight_packed, int32 [out, in x bits / 32]
+#   AMD Quark (real_quantized):        <name>.weight,        int32 [in, out x bits / 32]  (transposed)
 _PACKED = ".weight_packed"
-_PACKED_PARTS = (".weight_scale", ".weight_zero_point", ".weight_shape", ".weight_g_idx")
+_PACKED_PARTS = (".weight_scale", ".weight_zero_point", ".weight_shape", ".weight_g_idx", ".weight_global_scale")
+_FLOAT_QUANT_PARTS = (".weight_scale_2", ".input_scale", ".input_scale_2", ".output_scale")
+
+
+@dataclass(frozen=True)
+class PackedFormat:
+  """How one checkpoint stores a group-quantized weight: its label (INT4_G128_ZP: 4-bit integers in groups of 128,
+  each group with a 16-bit scale and a 4-bit zero point), the bits per integer, the packed tensor's suffix, and
+  whether the packed tensor is [in, out] rather than [out, in]."""
+  label: str
+  bits: int
+  suffix: str
+  transposed: bool
 # modules a text prompt's prefill does not run: a draft head for speculative decoding, a vision encoder
 _NOT_IN_TEXT_PREFILL = ("mtp", "visual", "vision_tower", "vision_model")
 
 
-def _group_quant(qcfg:dict[str, Any]) -> tuple[str, int] | None:
-  """A pack-quantized checkpoint's weight format, as a label and its bits: INT4_G128_ZP is 4-bit integers in
-  groups of 128, each group with a 16-bit scale and (ZP, asymmetric) a 4-bit zero point."""
+def _group_quant(qcfg:dict[str, Any], names:set[str] | frozenset[str] = frozenset()) -> PackedFormat | None:
+  """A group-quantized checkpoint's weight format, read from its quantization config, or None for any other.
+  compressed-tensors says in its config whether zero points exist (asymmetric). A Quark export can store zero points
+  for a symmetric scheme, and those stored bytes are read every token, so for Quark the zero point is in the label
+  when the file holds weight_zero_point tensors (`names`), whatever the config's flag says."""
   groups = [g.get("weights") or {} for g in (qcfg.get("config_groups") or {}).values() if isinstance(g, dict)]
   w = groups[0] if len(groups) == 1 else {}
-  if qcfg.get("format") != "pack-quantized" or w.get("type") != "int" or not w.get("num_bits") or not w.get("group_size"):
-    return None
-  return f"INT{w['num_bits']}_G{w['group_size']}" + ("" if w.get("symmetric") else "_ZP"), int(w["num_bits"])
+  if qcfg.get("format") == "pack-quantized" and w.get("type") == "int" and w.get("num_bits") and w.get("group_size"):
+    return PackedFormat(f"INT{w['num_bits']}_G{w['group_size']}" + ("" if w.get("symmetric") else "_ZP"),
+                        int(w["num_bits"]), _PACKED, transposed=False)
+  q = (qcfg.get("global_quant_config") or {}).get("weight") or {}
+  export = qcfg.get("export") or {}
+  bits = {"int4": 4, "uint4": 4, "int8": 8, "uint8": 8}.get(str(q.get("dtype")))
+  if (str(qcfg.get("quant_method")).lower() == "quark" and export.get("weight_format") == "real_quantized"
+      and q.get("qscheme") == "per_group" and bits and q.get("group_size")):
+    zp = any(n.endswith(".weight_zero_point") for n in names)
+    return PackedFormat(f"INT{bits}_G{q['group_size']}" + ("_ZP" if zp else ""), bits, ".weight", transposed=True)
+  return None
 
 
 def _safetensors_specs(path:pathlib.Path, default_quant:str | None = None,
                        qcfg:dict[str, Any] | None = None) -> list[TensorSpec]:
   specs: list[TensorSpec] = []
-  group = _group_quant(qcfg or {})
-  for f in _safetensors_files(path):
-    header = _read_safetensors_header(f)
-    for name, meta in header.items():
-      if name == "__metadata__" or not isinstance(meta, dict):
-        continue
-      if set(name.split(".")) & set(_NOT_IN_TEXT_PREFILL) or name.endswith(_PACKED_PARTS):
-        continue
-      dtype = str(meta.get("dtype", "F16")).upper()
-      shape = tuple(int(x) for x in meta.get("shape", ()))
-      if group and name.endswith(_PACKED) and len(shape) == 2:  # [N, K x bits / 32] int32 words: the weight [N, K]
-        name, shape, quant = name[:-len(_PACKED)] + ".weight", (shape[0], shape[1] * 32 // group[1]), group[0]
+  header = {name: meta for f in _safetensors_files(path) for name, meta in _read_safetensors_header(f).items()}
+  group = _group_quant(qcfg or {}, set(header))
+  for name, meta in header.items():
+    if name == "__metadata__" or not isinstance(meta, dict):
+      continue
+    if set(name.split(".")) & set(_NOT_IN_TEXT_PREFILL) or name.endswith(_PACKED_PARTS + _FLOAT_QUANT_PARTS):
+      continue
+    dtype = str(meta.get("dtype", "F16")).upper()
+    shape = tuple(int(x) for x in meta.get("shape", ()))
+    stored = None
+    scheme = _float_quant_scheme(name, qcfg or {})
+    if (qcfg or {}).get("packed_weights_only") and dtype != "U8":
+      scheme = None  # legacy ModelOpt leaves routers and excluded matrices in their header's float dtype
+    if scheme and name.endswith((".weight", _PACKED)) and len(shape) == 2:
+      module = name[:-len(_PACKED)] if name.endswith(_PACKED) else name[:-len(".weight")]
+      bits = int(scheme.get("num_bits") or 0)
+      if bits == 4:
+        if dtype != "U8" or scheme.get("group_size") != 16:
+          raise ValueError(f"{name}: unsupported NVFP4 packing {dtype}, group {scheme.get('group_size')}")
+        shape = (shape[0], shape[1] * 2)
+        quant = "NVFP4_G16"
+        scale = header.get(module + ".weight_scale") or {}
+        if scale and (scale.get("dtype") not in ("F8_E4M3", "F8_E4M3FN") or
+                      tuple(scale.get("shape", [])) != (shape[0], math.ceil(shape[1] / 16))):
+          raise ValueError(f"{name}: NVFP4 scale packing disagrees with the declared matrix")
+      elif bits == 8 and dtype in ("F8_E4M3", "F8_E4M3FN"):
+        quant = "FP8_E4M3"
       else:
-        quant = default_quant or _DTYPE_TO_QUANT.get(dtype, dtype)
-      specs.append(TensorSpec(name=name, shape=shape, quant=quant))
+        raise ValueError(f"{name}: declared float quantization {bits} bits disagrees with {dtype}")
+      parts = [meta, *[header[k] for k in (module + ".weight_scale", module + ".weight_scale_2", module + ".weight_global_scale") if k in header]]
+      if module + ".weight_scale" not in header:
+        raise ValueError(f"{name}: quantized weight has no scale tensor")
+      stored = sum(int(p["data_offsets"][1]) - int(p["data_offsets"][0]) for p in parts)
+      specs.append(TensorSpec(name=module + ".weight", shape=shape, quant=quant, weight_bytes=stored))
+      continue
+    if group and name.endswith(group.suffix) and len(shape) == 2 and (group.suffix == _PACKED or dtype in ("I32", "U32")):
+      # int32 words of `bits`-bit integers along the second axis; the weight is [out, in] either way. Quark's suffix
+      # is plain .weight, so there the int32 dtype is what marks a packed tensor
+      words = shape[1] * 32 // group.bits
+      name = name[:-len(group.suffix)] + ".weight"
+      shape, quant = ((words, shape[0]) if group.transposed else (shape[0], words)), group.label
+    else:
+      if dtype == "U8" and name.endswith(".weight") and len(shape) == 2:
+        raise ValueError(f"{name}: packed U8 weight has no supported declared quantization scheme")
+      quant = default_quant or _DTYPE_TO_QUANT.get(dtype, dtype)
+    specs.append(TensorSpec(name=name, shape=shape, quant=quant))
   return specs
+
+
+def _float_quant_scheme(name:str, cfg:dict[str, Any]) -> dict[str, Any] | None:
+  """Resolve a declared float weight scheme per module; a mixed checkpoint is never one global dtype."""
+  module = name.rsplit(".weight", 1)[0]
+  matches = lambda pattern: bool(re.fullmatch(pattern[3:], module)) if pattern.startswith("re:") else fnmatch.fnmatchcase(module, pattern)
+  if any(matches(pattern) for pattern in cfg.get("ignore", [])):
+    return None
+  fallback = None
+  for group in (cfg.get("config_groups") or {}).values():
+    weights = group.get("weights") or {}
+    if weights.get("type") != "float":
+      continue
+    targets = group.get("targets") or []
+    if any(matches(t) for t in targets if t != "Linear"):
+      return weights
+    if "Linear" in targets:
+      fallback = weights
+  return fallback
 
 
 def _config_for(path:pathlib.Path) -> dict[str, Any]:
@@ -206,10 +289,39 @@ def _is_packed_quant_tensor(name:str) -> bool:
   return any(tok in n for tok in ("qweight", "qzeros", "matmulnbits", "scales", "g_idx"))
 
 
+def _expert_stacks(specs:list[TensorSpec], cfg:dict[str, Any]) -> list[TensorSpec]:
+  """Represent individually stored routed experts as one stack per layer and projection.
+
+  Validate the declared expert count and uniform format before applying top-k reads. Stored bytes
+  are per matrix, matching TensorRole.weight_bytes, not the bytes of all inactive experts.
+  """
+  groups:dict[str, list[tuple[int, TensorSpec]]] = {}
+  out = []
+  for spec in specs:
+    match = re.search(r"\.experts\.(\d+)\.", spec.name)
+    if match and len(spec.shape) == 2 and spec.name.endswith(".weight"):
+      name = spec.name[:match.start()] + ".experts." + spec.name[match.end():]
+      groups.setdefault(name, []).append((int(match[1]), spec))
+    else:
+      out.append(spec)
+  declared = cfg.get("num_experts", cfg.get("n_routed_experts"))
+  for name, entries in groups.items():
+    n = int(declared or len(entries))
+    if sorted(i for i, _ in entries) != list(range(n)):
+      raise ValueError(f"{name}: expert tensors do not cover the declared {n} experts")
+    first = entries[0][1]
+    if any((s.shape, s.quant, s.weight_bytes) != (first.shape, first.quant, first.weight_bytes) for _, s in entries):
+      raise ValueError(f"{name}: mixed expert shapes or formats require separate routing evidence")
+    out.append(TensorSpec(name, (n, *first.shape), first.quant, first.ggml_type, first.weight_bytes))
+  return out
+
+
 def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:list[TensorSpec],
                         model_id:str | None, extra:dict[str, Any] | None = None) -> ModelProfile:
   cfg = {**cfg, **(cfg.get("text_config") or {})}  # a multimodal checkpoint keeps the language model's shape there
+  specs = _expert_stacks(specs, cfg)
   grouped: dict[tuple[str, int, int, str, int], list[str]] = {}
+  physical: dict[tuple[str, int, int, str, int], list[int]] = {}
   classes: dict[tuple[str, int, int, str, int], str] = {}
   tensors_for_arch: list[tuple[str, tuple[int, ...], int, int]] = []
   for spec in specs:
@@ -223,6 +335,8 @@ def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:li
     # one row per (role, shape, quant), as the GGUF reader groups (k and v together); its class is the first tensor's
     key = (role, rows, cols, spec.quant, n_expert)
     grouped.setdefault(key, []).append(spec.name)
+    if spec.weight_bytes is not None:
+      physical.setdefault(key, []).append(spec.weight_bytes)
     classes.setdefault(key, rc.value)
     tensors_for_arch.append((spec.name, spec.shape, spec.ggml_type, 0))
 
@@ -231,7 +345,9 @@ def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:li
   roles = tuple(TensorRole(role=role, tensor_name=names[0], rows=rows, cols=cols, quant=quant,
                            ggml_type=-1, count=len(names), role_class=classes[(role, rows, cols, quant, n_expert)],
                            n_expert=n_expert,
-                           experts_read=experts_read(kv, kv["general.architecture"], n_expert) if n_expert else 0)
+                           experts_read=experts_read(kv, kv["general.architecture"], n_expert) if n_expert else 0,
+                           weight_bytes=sum(physical[(role, rows, cols, quant, n_expert)]) / len(names)
+                           if (role, rows, cols, quant, n_expert) in physical else None)
                 for (role, rows, cols, quant, n_expert), names in sorted(grouped.items()))
   cls, signals = classify_architecture(kv, tensors_for_arch, str(arch) if arch else None)
   meta = {"format_family": fmt, "architecture_signals": signals, "tensor_count": len(specs),
@@ -269,7 +385,15 @@ def _recurrent_from_config(cfg:dict[str, Any], specs:list[TensorSpec]) -> dict[s
   layers = len({s.name.split(".layers.")[1].split(".")[0] for s in specs
                 if ".layers." in s.name and classify_tensor_role(s.name, tuple(s.shape)) is RoleClass.SSM_CONV})
   shape = {k: math.prod(int(cfg[x]) for x in keys) for k, keys in _RECURRENT_CONFIG.items() if all(cfg.get(x) for x in keys)}
-  return {"recurrent": {"layer_count": layers, **shape}} if layers and len(shape) == len(_RECURRENT_CONFIG) else {}
+  mamba = {"conv_kernel": "conv_kernel", "state_size": "ssm_state_size", "group_count": "n_groups"}
+  if all(cfg.get(k) for k in (*mamba.values(), "mamba_num_heads", "mamba_head_dim")):
+    shape = {k: int(cfg[v]) for k, v in mamba.items()}
+    shape["inner_size"] = int(cfg["mamba_num_heads"]) * int(cfg["mamba_head_dim"])
+    shape["kind"] = "mamba2"
+    shape["head_count"] = int(cfg["mamba_num_heads"])
+    if cfg.get("chunk_size"):
+      shape["chunk_size"] = int(cfg["chunk_size"])
+  return {"recurrent": {"layer_count": layers, **shape}} if layers and all(k in shape for k in _RECURRENT_CONFIG) else {}
 
 
 def _kv_from_config(cfg:dict[str, Any]) -> dict[str, Any]:
@@ -281,6 +405,8 @@ def _kv_from_config(cfg:dict[str, Any]) -> dict[str, Any]:
       kv[f"{arch}.{dst}"] = cfg[src]
   if "num_experts" in cfg:
     kv[f"{arch}.expert_count"] = cfg["num_experts"]
+  elif "n_routed_experts" in cfg:
+    kv[f"{arch}.expert_count"] = cfg["n_routed_experts"]
   if "num_experts_per_tok" in cfg:
     kv[f"{arch}.expert_used_count"] = cfg["num_experts_per_tok"]
   if isinstance(cfg.get("ssm"), dict):

@@ -28,9 +28,12 @@ from typing import Any
 from boltbeam.collectors import pairing
 from boltbeam.target.targets import upper
 from boltbeam.collectors.attribution import share_overlap
+from boltbeam.math.numerics import INTERVAL_ATOL
 from boltbeam.collectors.instruction_path import FROM_NAME, kernel_path, template
 from boltbeam.roofline import prefill_work as work
 from boltbeam.workflow.tie_out import kind_of
+
+UNCONFIRMED_SHARE = .02  # Policy: unresolved router paths may cover at most 2% of captured wall time.
 
 STEM_CHARS = 40  # a row named by its template is cut to this many characters; the trace keeps the whole name
 REPEAT = "repeat"  # measured_window: the capture ends in two identical turns (a session's turn, captured twice)
@@ -38,7 +41,8 @@ PRUNED_NAME = ", last layer at output tokens"  # a pruned last layer's row (pair
 UNPAIRED = "no ceiling: a matrix kernel no role could be paired with, so its work is not known"
 
 
-def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True) -> tuple[list[dict[str, Any]], str]:
+def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True,
+                    measured_ms:float | None = None) -> tuple[list[dict[str, Any]], str]:
   """The measured prefill. With warmup (the engine ran a warm-up prefill inside the capture): the second half of the
   launches, when the first half launched the same kernels the same number of times, else refused. Without: every
   launch (a prefill of identical chunks has identical halves too, so halves alone cannot say there was a warm-up).
@@ -51,10 +55,18 @@ def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True) -> 
   count = lambda ls: sorted(collections.Counter(template(l["key"]) for l in ls).items())  # noqa: E731
   if warmup == REPEAT:
     keys = [template(l["key"]) for l in timed]
-    for n in range(1, len(timed) // 2 + 1):
-      if keys[-n:] == keys[-2 * n:-n]:
+    end = max(l['start_us'] + l['wall_us'] for l in timed)
+    candidates = range(1, len(timed) // 2 + 1)
+    if measured_ms:
+      # Try the nearest engine-sized window first; internal n_batch repetitions are shorter.
+      candidates = sorted((n for n in candidates
+                           if abs((end-timed[-n]['start_us'])/1000-measured_ms) <= .1*measured_ms),
+                          key=lambda n: abs((end-timed[-n]['start_us'])/1000-measured_ms))
+    for n in candidates:
+      if keys[-n:] == keys[-2*n:-n]:
         return timed[-n:], (f"the last of two identical turns at the end of the capture ({n} launches each); the "
-                            f"{len(timed) - n} launches before it fill the cache and repeat the turn")
+                            f"{len(timed)-n} launches before it fill the cache and repeat the turn" +
+                            (f"; window checked against the engine's {measured_ms:.3f} ms repetition" if measured_ms else ""))
     raise ValueError(f"the capture's {len(timed)} launches do not end in two identical turns")
   half = len(timed) // 2
   if len(timed) % 2 == 0 and half and count(timed[:half]) == count(timed[half:]):
@@ -90,7 +102,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                       warmup:bool | str = True, formats:dict[str, Any] | None = None,
                       cache:dict[str, float] | None = None, depth:int = 0,
                       observed:dict[str, dict[str, int]] | None = None, prune:dict[str, Any] | None = None,
-                      unc:dict[str, Any] | None = None) -> dict[str, Any]:
+                      unc:dict[str, Any] | None = None, measured_ms:float | None = None,
+                      explicit_overlap:bool = False) -> dict[str, Any]:
   """The measured prefill split by role, attention and other kernels, each with operations, bytes, path and ceiling.
   roles: {role, quant, n, k, count (per chunk), weight_bytes (per launch), role_class or fine}. kernel_paths: template
   -> {path: sites}. outputs: the engine calls that each ended in an output (its last token's work, the output head, once
@@ -105,11 +118,17 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   tokens only (pairing.pair): those launches are their own row, the role at output width."""
   formats, unc = formats or {}, unc or {}  # unc: {"bandwidth": u, "peaks": {path: u}}, each measured or absent
   acts = formats.get("activations")
-  gemm = lambda m, n, k, wb: work.gemm(m, n, k, wb, acts)["bytes"]  # noqa: E731
+  by_quant = formats.get("activations_by_quant") or {}
+  role_acts = {(r["n"], r["k"], r["weight_bytes"]): by_quant.get(r["quant"], acts) for r in roles}
+  gemm = lambda m, n, k, wb: work.gemm(m, n, k, wb, role_acts.get((n, k, wb), acts))["bytes"]  # noqa: E731
   if proof := formats.get("matrix_grid_constraint"):
     launches = [{**l, "matrix_grid_constraint": proof} for l in launches]
-  window, window_words = measured_window(launches, warmup)
+  window, window_words = measured_window(launches, warmup, measured_ms)
   shared, overlap = share_overlap(window)
+  if explicit_overlap:
+    # Keep physical kernel durations for per-kernel efficiency. A separate
+    # subtraction below accounts for time counted in concurrent launches.
+    shared=[dict(l) for l in window]
   ordered = sorted(shared, key=lambda l: l["start_us"])  # the launches in stream order: a fixup follows its GEMM
   begin = min(l["start_us"] for l in window)
   end = max(l["start_us"] + l["wall_us"] for l in window)
@@ -124,10 +143,15 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   templates = sorted(by_t.values(), key=lambda t: -t["wall_us"])
   for t in templates:
     t["path"] = kernel_path(t["name"], kernel_paths, observed)
-    t["attention"] = kind_of({"kernel": t["name"]}) == "attention"  # attention's work is its own row, never a role's
+    t["attention"] = (kind_of({"kernel": t["name"]}) == "attention" or
+                      any(l.get('semantic_kind') == 'attention' for l in t['launches']))
     t["recurrent"] = kind_of({"kernel": t["name"]}) == "recurrent"  # so is a recurrent block's scan and convolution
   rows: list[dict[str, Any]] = []
   paired: set[int] = set()  # launch ids a row holds
+  semantic = any(l.get('semantic_work') for l in shared)
+  if semantic:
+    rows, paired = _semantic_rows(shared, by_t, peaks, bandwidth_gbs, unc, cache)
+    roles = []  # adapter rejects missing matrices; do not guess a second assignment
   shapes: dict[int, list[tuple[dict[str, Any], float]]] = {}  # a paired GEMM launch -> its roles, weighted by count
   named: dict[tuple[str, str], dict[str, Any]] = {}
   for t in templates:  # the engine's own role and (M, N, K) per program
@@ -184,11 +208,12 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                      **({"fused": k0} if k0 > 1 else {}), **({"split": r0} if r0 > 1 else {}),
                      **({"pruned_layer": prune.get("words")} if pruned and prune else {}), unc=unc))
   unpaired = [f"{u['item']['role']} {u['item']['quant']}: {u['reason']}" for u in got["unplaced"]]
-  ambiguous = ({"reason": "; ".join(unpaired)} if unpaired else None) or got.get("ambiguous")
+  reasons = unpaired + ([got["ambiguous"]["reason"]] if got.get("ambiguous") else [])
+  ambiguous = {"reason": "; ".join(reasons)} if reasons else None
   others: dict[str, dict[str, Any]] = {}
   att = work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths, formats.get("kv") or "F16",
                        formats.get("attention_activations") or acts, depth=depth) if profile else None
-  rec = work.recurrent(profile or {}, length or int(sum(chunk_widths)), chunk_widths) if profile else None
+  rec = work.recurrent(profile or {}, length or int(sum(chunk_widths)), chunk_widths) if profile and not semantic else None
   for t in templates:
     for l in t["launches"]:
       if id(l) in paired:
@@ -217,22 +242,109 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       rows.append({"name": kind, "what": "kernels", "calls": o["calls"], "ms": o["wall_us"] / 1000.0, "flops": None,
                    "bytes": None, "path": " | ".join(sorted(paths)), "ceiling_ms": None, "mfu_pct": None,
                    "templates": sorted(o["templates"]), "refused": UNPAIRED if matrix else None})
+  if explicit_overlap and (overlap['union_us']-overlap['sum_us'])/1000 < -INTERVAL_ATOL:
+    rows.append({'name':'concurrent kernel overlap (subtract)', 'what':'overlap',
+                 'calls':0,'ms':(overlap['union_us']-overlap['sum_us'])/1000,
+                 'flops':None,'bytes':None,'ceiling_ms':0.,'best_ms':0.,'mfu_pct':None,
+                 'note':'time counted more than once in the raw kernel durations'})
   busy = sum(r["ms"] for r in rows)
   wall = (end - begin) / 1000.0 if untraced_ms is None else float(untraced_ms)
   return {"window": window_words, "launches": len(window), "wall_ms": wall, "profiled_wall_ms": (end - begin) / 1000.0,
+          "uncertainty": unc or {},
           "wall_source": "the untraced prefill (the engine's own timing slows its run)" if untraced_ms is not None else
                          "the captured prefill, first kernel to last", "busy_ms": busy, "gaps_ms": wall - busy,
-          "overlap": overlap, "chunks": chunk_widths, "rows": sorted(rows, key=lambda r: -r["ms"]),
+          "overlap": overlap, "overlap_policy":"explicit subtraction" if explicit_overlap else "equal shares",
+          "chunks": chunk_widths, "rows": sorted(rows, key=lambda r: -r["ms"]),
           "ambiguous": ambiguous, "matrix_grid_constraint": formats.get("matrix_grid_constraint"), "rule": got["words"], "structure": got["structure"], "prune": prune,
           "templates": [{"template": t["template"], "calls": t["calls"], "ms": t["wall_us"] / 1000.0, "path": t["path"]}
                         for t in templates]}
+
+
+def _semantic_rows(shared, by_t, peaks, bandwidth_gbs, unc, cache):
+  """Engine-neutral rows from validated launch work; never infer missing evidence."""
+  rows, paired = [], set()
+  groups = {}
+  for l in shared:
+    w = l.get('semantic_work')
+    if not w:
+      continue
+    key = (w['name'], w['quant'])
+    g = groups.setdefault(key, {'work':w, 'calls':0, 'us':0., 'flops':0., 'bytes':0., 'templates':set(), 'components':[]})
+    g['calls'] += 1; g['us'] += l['wall_us']; g['flops'] += w['flops']; g['bytes'] += w['bytes']
+    g['templates'].add(template(l['key'])); paired.add(id(l))
+    g['components'].append(w)
+  span=max(l['start_us']+l['wall_us'] for l in shared)-min(l['start_us'] for l in shared) if all('start_us' in l for l in shared) else sum(l['wall_us'] for l in shared)
+  unknown_us=sum(g['us'] for g in groups.values() if any(by_t[t]['path']['status']=='not_found' for t in g['templates']))
+  for (name, quant), g in groups.items():
+    ps = [by_t[t]['path'] for t in sorted(g['templates'])]
+    w = g['work']
+    path = _merge_paths(ps)
+    candidates=None
+    if quant=='F32' and path['status']=='not_found' and w.get('role_classes')==['moe_router'] and unknown_us<=UNCONFIRMED_SHARE*span:
+      if all(peaks.get(p,0)>0 for p in ('fp32_fma','tf32')):
+        candidates={p:peaks[p] for p in ('fp32_fma','tf32')}
+        fastest=max(candidates,key=candidates.get)
+        path={'path':fastest,'paths':{fastest:1},'status':'one','words':'instruction path unconfirmed (SIMT–tensor-core range)'}
+    memory_only=all(c.get('path')=='memory_only' and c['flops']==0 for c in g['components'])
+    if w.get('path')=='memory_only':
+      if not memory_only or any(p.get('paths') for p in ps):raise ValueError('memory-only work conflicts with compute evidence')
+      path={'path':None,'paths':{},'status':'none','words':'memory-only bound; arithmetic, comparisons and conversions excluded'}
+    elif w.get('path') == 'fp32_fma' or (quant=='F32' and path['status']=='none'):
+      if any(p != 'fp32_fma' for p in (path.get('paths') or {})):
+        raise ValueError(f'{name}: scalar work contract conflicts with observed matrix instructions')
+      path = {'path':'fp32_fma','paths':{'fp32_fma':1},'status':'one',
+              'words':'fp32_fma (engine scalar algorithm; no matrix instruction)'}
+    t = {'template':' + '.join(sorted(g['templates'])), 'path':path}
+    row = _row(name, w['what'], t, g['calls'], g['us'], g['flops'], g['bytes'], peaks,
+               bandwidth_gbs, quant, note=w['basis'],
+               role_source='NVTX module ranges joined through CPU launch correlation IDs; checkpoint shape checks', unc=unc)
+    row['limitations'] = sorted({message for component in g['components'] for message in component.get('limitations',[])})
+    if not w.get('requires_memory_evidence') and not row.get('refused') and row.get('peak_tflops') and bandwidth_gbs:
+      components=[]
+      for c in g['components']:
+        compute=c['flops']/(row['peak_tflops']*1e9)
+        memory=c['bytes']/(bandwidth_gbs*1e6)
+        limit=max(compute,memory)
+        best,_=work.best_ms(c['flops'],c['bytes'],quant,peaks,bandwidth_gbs,limit,row['peak_tflops'])
+        components.append({'flops':c['flops'],'bytes':c['bytes'],'compute_ms':compute,
+                           'memory_ms':memory,'ceiling_ms':limit,'best_ms':best})
+      row.update(components=components,memory_rates={'dram_gbs':bandwidth_gbs},
+                 ceiling_ms=sum(c['ceiling_ms'] for c in components),
+                 best_ms=sum(c['best_ms'] for c in components),
+                 compute_ms=sum(c['compute_ms'] for c in components),
+                 memory_ms=sum(c['memory_ms'] for c in components),
+                 bound='compute' if all(c['compute_ms']>=c['memory_ms'] for c in components) else 'memory')
+    if w.get('requires_memory_evidence'):
+      # Tensor sizes are known, but they do not identify the memory tier that
+      # served them. Buffer fit alone cannot establish L2 residency.
+      row.update(ceiling_ms=None, best_ms=None, memory_ms=None, bound=None,
+                 refused='no ceiling: intermediate memory-tier traffic has not been measured')
+      if cache and (row.get('peak_tflops') or memory_only) and all(c.get('memory_traffic') for c in g['components']):
+        from boltbeam.roofline.memory import hierarchy_ms
+        components=[]
+        for c in g['components']:
+          memory=hierarchy_ms(c['memory_traffic'],bandwidth_gbs,cache['gbs'])
+          compute=0. if memory_only else c['flops']/(row['peak_tflops']*1e9)
+          components.append({**memory,'compute_ms':compute,'ceiling_ms':max(compute,memory['memory_ms']),
+                             'traffic':c['memory_traffic']})
+        limit=sum(c['ceiling_ms'] for c in components)
+        row.update(ceiling_ms=limit,best_ms=limit,memory_ms=sum(c['memory_ms'] for c in components),
+                   compute_ms=sum(c['compute_ms'] for c in components),components=components,refused=None,
+                   bound='compute' if all(c['compute_ms']>=c['memory_ms'] for c in components) else 'memory',
+                   memory_basis='NCU measured DRAM/L2 traffic; application replay, cache flushing disabled',
+                   memory_rates={'dram_gbs':bandwidth_gbs,'l2_gbs':cache['gbs']})
+    if candidates and row.get('components') and row.get('ceiling_ms') is not None:
+      high=sum(max(c['flops']/(min(candidates.values())*1e9),c['bytes']/(bandwidth_gbs*1e6)) for c in g['components'])
+      row.update(path_status='unconfirmed',candidate_peaks=candidates,ceiling_range_ms=[row['ceiling_ms'],high],mfu_pct=None)
+    rows.append(row)
+  return rows, paired
 
 
 def stem(tmpl:str) -> str:
   """A template's name without its arguments or a trailing content hash: `mul_mat_q_stream_k_fixup<...>` is
   `mul_mat_q_stream_k_fixup`, `E_64_64_8_16_4_292d...16a14` is `E_64_64_8_16_4`."""
   import re
-  name = re.sub(r"_[0-9a-f]{32,}$", "", tmpl.split("<", 1)[0])
+  name = re.sub(r"_[0-9a-f]{32,}$", "", re.split(r"<(?![^<>]*>::)", tmpl, maxsplit=1)[0])
   return name if len(name) <= STEM_CHARS else name[:STEM_CHARS - 1] + "…"
 
 
@@ -243,6 +355,9 @@ def _merge_paths(paths:list[dict[str, Any]]) -> dict[str, Any]:
       known[k] = known.get(k, 0) + n
   if not known:
     return paths[0] if paths else {"status": "not_found", "paths": {}, "path": None, "words": "no code"}
+  missing = next((p for p in paths if p["status"] == "not_found"), None)
+  if missing is not None:
+    return {**missing, "paths": known}
   named = [p for p in paths if p.get("from_name") and p.get("paths")]
   tag = {"from_name": True, "name_source": named[0]["name_source"]} if named else {}
   label = f" ({FROM_NAME})" if named else ""
@@ -280,9 +395,10 @@ def _row(name:str, what:str, t:dict[str, Any], calls:int, wall_us:float, flops:f
   if best_ms is not None and guard is not None and best_ms > ms * (1 + guard):
     best_ms, best = None, None
   return {"name": name, "what": what, "calls": calls, "ms": ms, "flops": flops, "bytes": nbytes, "template": t["template"],
-          "path": path["words"], "path_status": path["status"], "peak_tflops": peak,
+          "path": path["words"], "path_status": path["status"], "compute_paths":path.get("paths") or {}, "peak_tflops": peak,
           "ceiling_ms": c["ms"], "best_ms": best_ms, "best_path": best,
           "compute_ms": c["compute_ms"], "memory_ms": c["memory_ms"], "bound": c["bound"],
+          "memory_rates":{"dram_gbs":bandwidth_gbs},
           "mfu_pct": work.mfu(flops, ms, peak) if path["status"] in ("one", "mixed") and not refused else None,
           "refused": refused, "mixed": path["status"] == "mixed",
           **({} if guard is not None and u is not None else {"guard": "not checked: no measured uncertainty for the ceiling's figures"}), **({"name_source": path["name_source"]} if path.get("from_name") else {}),

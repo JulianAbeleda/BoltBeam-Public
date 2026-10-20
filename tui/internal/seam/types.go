@@ -215,9 +215,10 @@ type Saved struct {
 		PctOfLimit *float64 `json:"pct_of_limit"`
 		// Workload is decode, prefill, session or replay; Measured is the run's own flag (a replay has no tok/s
 		// headline); RooflinePct is a replay's session share of its roofline. All nil or false from an older Python.
-		Workload    *string  `json:"workload"`
-		Measured    bool     `json:"measured"`
-		RooflinePct *float64 `json:"roofline_pct"`
+		Workload         *string  `json:"workload"`
+		Measured         bool     `json:"measured"`
+		RooflinePct      *float64 `json:"roofline_pct"`
+		ValidationFailed bool     `json:"validation_failed"`
 	} `json:"runs"`
 }
 
@@ -324,11 +325,12 @@ type Capture struct {
 
 // ProviderRow is one runtime from `screen providers`: can it measure here, and how would step 5 time its roles.
 type ProviderRow struct {
-	Provider  string  `json:"provider"`
-	Available bool    `json:"available"`
-	State     string  `json:"state"` // available, not_here or not_compatible: Python decides, the screen words it
-	Reason    *string `json:"reason"`
-	Capture   Capture `json:"capture"`
+	Formats   []string `json:"formats"`
+	Provider  string   `json:"provider"`
+	Available bool     `json:"available"`
+	State     string   `json:"state"` // available, not_here or not_compatible: Python decides, the screen words it
+	Reason    *string  `json:"reason"`
+	Capture   Capture  `json:"capture"`
 	// Layouts are the GPU layouts this engine can run here; one GPU unless the machine has more.
 	Layouts []LayoutRow `json:"layouts"`
 	// BatchOverOne says the engine decodes more than one stream; nil from an older Python means yes.
@@ -595,6 +597,11 @@ type CrossCheck struct {
 	Reason       *string   `json:"reason"`
 	Rows         []RateRow `json:"rows"`
 	ColumnsWords *string   `json:"columns_words"` // which column the rates are on, when the rows carry a floor
+	NotMeasured  []struct {
+		Role   string `json:"role"`
+		Quant  string `json:"quant"`
+		Reason string `json:"reason"`
+	} `json:"not_measured"`
 }
 
 // Latency is the figure the reason rule's Little's law uses, and where it came from (measured floor or assumed).
@@ -632,6 +639,8 @@ type Run struct {
 // loses time. Roles come from that provider's capture, attributed to roles by bytes and count, or from
 // tinygrad's own timing.
 type Loss struct {
+	SemanticCapture bool       `json:"semantic_capture"`
+	LimitContext    *float64   `json:"limit_context"`
 	Status          string     `json:"status"`
 	Reason          *string    `json:"reason"`
 	LimitTokS       *float64   `json:"limit_tok_s"`
@@ -678,7 +687,8 @@ type Loss struct {
 	Estimate        *Estimate `json:"estimate"`
 	// WhereTokenGoes is the tie-out as one ranked table of what each part costs the token
 	// (workflow/tie_out.py where_token_goes); every renderer reads it, none recomputes it.
-	WhereTokenGoes *Where `json:"where_token_goes"`
+	WhereTokenGoes    *Where `json:"where_token_goes"`
+	CaptureComparison *Where `json:"capture_comparison"`
 	// Per is "per prefill" on a prefill run (workflow/prefill.py); nil on decode, whose times are per token.
 	Per *string `json:"per"`
 	// Session is a session run's table, one row per depth (workflow/session.py); nil on other runs.
@@ -728,6 +738,9 @@ type Session struct {
 
 // Replay is the replay table as cells and its headline as lines (workflow/replay.py): the renderers print them.
 type Replay struct {
+	Forced        bool          `json:"forced"`
+	EvidenceWords string        `json:"evidence_words"`
+	NotCaptured   string        `json:"not_captured"`
 	Title         string        `json:"title"`
 	Words         string        `json:"words"`
 	HeadlineLines []string      `json:"headline_lines"`
@@ -788,7 +801,8 @@ type Where struct {
 	Rows     []WhereRow `json:"rows"`
 	// SumCells is the sum row as text, Cells on each row the row as text after its name, in Columns' order: the
 	// renderers print them and format no number of their own (one table for decode and prefill).
-	SumCells []string `json:"sum_cells"`
+	SumCells      []string `json:"sum_cells"`
+	BaselineCells []string `json:"baseline_cells"`
 	// EndToEnd is the captured wall against the untraced median (workflow/tie_out.end_to_end); nil on decode.
 	EndToEnd *EndToEnd `json:"end_to_end"`
 }
@@ -796,6 +810,7 @@ type Where struct {
 // EndToEnd is one capture checked against its untraced time. Confirms is nil when no repeat band matches the
 // setup ("not checked"), true within the band, false outside it.
 type EndToEnd struct {
+	Reference  string   `json:"reference"`
 	Confirms   *bool    `json:"confirms"`
 	CapturedMs *float64 `json:"captured_ms"`
 	UntracedMs *float64 `json:"untraced_ms"`
@@ -807,6 +822,7 @@ type EndToEnd struct {
 // WhereRow is one part of the token. LimitMs is nil where the limit has no bytes for it ("no limit"); Share and
 // TokSIfFixed are nil when nothing is lost in all or the row's loss is the whole token; PctPeak is set for roles.
 type WhereRow struct {
+	Section     string   `json:"section"`
 	Name        string   `json:"name"`
 	What        string   `json:"what"` // role | kernels | rest | limit | gaps
 	NowMs       float64  `json:"now_ms"`
@@ -1014,6 +1030,11 @@ type Emitted struct {
 
 // Gameplan is gameplan.json: the header, one block per role (worst first) with the four lineage layers, the footer.
 type Gameplan struct {
+	Tables       []Where `json:"tables"`
+	Presentation struct {
+		Summary string `json:"summary"`
+		Details string `json:"details"`
+	} `json:"presentation"`
 	Kind      string         `json:"kind"`
 	ID        string         `json:"id"`
 	Header    GameplanHeader `json:"header"`

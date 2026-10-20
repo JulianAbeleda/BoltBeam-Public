@@ -1,13 +1,16 @@
 """Run memory-heavy work as the calling user in an isolated system service."""
 from __future__ import annotations
 import json
+import errno
 import os
 import re
 from pathlib import Path
 import subprocess
 import time
 import uuid
-import build_jobs
+import signal
+from contextlib import contextmanager
+from boltbeam.runtime import build_jobs
 
 GIB = 1024 ** 3
 
@@ -53,6 +56,17 @@ def stop(unit):
   subprocess.run(['sudo', '-n', 'systemctl', 'stop', unit], capture_output=True, timeout=15)
 
 
+@contextmanager
+def cancelled_by_term(unit):
+  """TUI cancellation must stop the owned system service outside its process group."""
+  def terminate(signum, frame):
+    stop(unit)
+    raise KeyboardInterrupt('bounded job cancelled')
+  previous=signal.signal(signal.SIGTERM,terminate)
+  try:yield
+  finally:signal.signal(signal.SIGTERM,previous)
+
+
 def run(command, *, log: Path, limit=None, env=None, cwd=None, timeout=1800,
         samples: Path | None = None) -> dict:
   """Fail closed without system-manager access; never fall back to a user unit.
@@ -72,7 +86,7 @@ def run(command, *, log: Path, limit=None, env=None, cwd=None, timeout=1800,
   stalled = 0.0
   log.parent.mkdir(parents=True, exist_ok=True)
   sample_path = samples or log.with_suffix('.memory.jsonl')
-  with log.open('w') as output, sample_path.open('w') as trace:
+  with cancelled_by_term(unit), log.open('w') as output, sample_path.open('w') as trace:
     process = subprocess.Popen(argv, stdout=output, stderr=subprocess.STDOUT)
     try:
       while process.poll() is None:
@@ -106,8 +120,9 @@ def run(command, *, log: Path, limit=None, env=None, cwd=None, timeout=1800,
               reason = 'memory-pressure: full stalls exceeded 20% for five seconds'
               stop(unit)
               break
-          except FileNotFoundError:
-            pass  # A completed service may already have released its cgroup.
+          except OSError as exc:
+            # cgroup files can vanish or become detached as the service exits.
+            if exc.errno not in (errno.ENOENT, errno.ENODEV):raise
         time.sleep(0.1)
       rc = process.wait(timeout=15)
       final = subprocess.run(['systemctl', 'show', unit, '-p', 'MemoryPeak', '-p', 'Result',
@@ -123,6 +138,11 @@ def run(command, *, log: Path, limit=None, env=None, cwd=None, timeout=1800,
       # completed benchmark. Transient units may already be gone, so retain
       # the --wait termination record as a fallback to the live properties.
       output.flush()
+      # A short linker can finish before the first sample and its transient unit
+      # can disappear before `show`. systemd-run's own accounting remains evidence.
+      logged_peak = re.search(r'^Memory peak: ([\d.]+)([KMGT]?)(?:B)?$', log.read_text(), re.MULTILINE)
+      if logged_peak:
+        peak = max(peak, int(float(logged_peak[1]) * 1024 ** ('', 'K', 'M', 'G', 'T').index(logged_peak[2])))
       killed = re.search(r'^Main processes terminated with: code=(killed|dumped)/status=([^\n]+)',
                          log.read_text(), re.MULTILINE)
       if reason is None and (properties.get('ExecMainCode') in ('2', '3') or killed):

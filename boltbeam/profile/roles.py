@@ -27,7 +27,7 @@ from boltbeam.vocab import RoleClass, role_group_of
 VECTOR_SIDE = 16  # a matrix with a side under this is vector-like (conv taps 4, norm groups 8, a (1, n) scale)
 
 _SSM_TOKENS = ("ssm", "delta", "conv1d", "time_step", "dt_proj", "dt_bias", "a_log", "d_inner",
-               "in_proj_a.", "in_proj_b.", "linear_attn.out_proj.")  # the last three: a gated delta net's HF names
+               "in_proj_a.", "in_proj_b.", "linear_attn.out_proj.", "mixer.in_proj.", "mixer.out_proj.")
 
 
 def is_matrix(dims:tuple[int, ...] | None) -> bool:
@@ -59,6 +59,7 @@ def ssm_tensor_role(name:str) -> str:
 # ssm matrices named by tensor (checked in order inside _ssm_role, after conv and the vector-like state tensors)
 _SSM_MATRIX_PATTERNS: tuple[tuple[str, RoleClass], ...] = (
   ("ssm_in", RoleClass.SSM_IN),
+  ("mixer.in_proj.", RoleClass.SSM_IN),
   ("ssm_out", RoleClass.SSM_OUT),
   ("ssm_alpha", RoleClass.SSM_ALPHA),
   ("ssm_beta", RoleClass.SSM_BETA),
@@ -108,6 +109,17 @@ def classify_tensor_role(name:str, dims:tuple[int, ...] | None = None) -> RoleCl
     return ssm
   if name == "output.weight" or name.endswith("lm_head.weight"):
     return RoleClass.LM_HEAD
+  if ".experts." in name or ".shared_experts." in name:
+    shared = ".shared_experts." in name
+    for projection, expert, common in (
+      ("gate_proj", RoleClass.MOE_EXPERT_GATE, RoleClass.MOE_SHARED_EXPERT_GATE),
+      ("up_proj", RoleClass.MOE_EXPERT_UP, RoleClass.MOE_SHARED_EXPERT_UP),
+      ("down_proj", RoleClass.MOE_EXPERT_DOWN, RoleClass.MOE_SHARED_EXPERT_DOWN),
+    ):
+      if f".{projection}." in name:
+        return common if shared else expert
+  if name.endswith(".mixer.gate.weight"):
+    return RoleClass.MOE_ROUTER
   for token, rc in _PATTERNS:
     if token in name:
       return rc

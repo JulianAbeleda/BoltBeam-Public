@@ -12,6 +12,8 @@ built without the GPU's architecture is greyed with that reason, not discovered 
 from __future__ import annotations
 
 import os
+import json
+import time
 import pathlib
 import subprocess
 from typing import Any
@@ -53,7 +55,43 @@ def probe(py:str) -> str | None:
   return why
 
 
-def available(target, env:dict[str, str] | None = None) -> str | None:
+def cached_probe(py:str) -> str | None:
+  """Picker-only cache; actual runs still call the live compatibility probe."""
+  from boltbeam.collectors import engine_scan
+  path = engine_scan.engines_file().with_name("trtllm-probe.json")
+  root = pathlib.Path(py).parent.parent
+  paths = [pathlib.Path(py), DRIVER, engine_scan.engines_file(),
+           *sorted(root.glob("lib/python*/site-packages/*dist-info"))]
+  stamps = []
+  for item in paths:
+    try:
+      stat = item.stat()
+      stamps.append([str(item), stat.st_mtime_ns, stat.st_size])
+    except OSError:
+      stamps.append([str(item), None, None])
+  driver = pathlib.Path('/proc/driver/nvidia/version')
+  key = {"files": stamps, "driver": driver.read_text() if driver.exists() else None,
+         "env": {k:v for k,v in os.environ.items() if k.startswith(('CUDA_', 'NVIDIA_', 'BOLTBEAM_TRTLLM'))}}
+  try:
+    saved = json.loads(path.read_text())
+    if (saved.get('key') == key and 0 <= time.time()-saved['time'] < 86400
+        and 'reason' in saved and (saved['reason'] is None or isinstance(saved['reason'], str))):
+      return saved['reason']
+  except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    pass
+  _probe_cache.pop(py, None)
+  reason = probe(py)
+  # Timeouts and crashes are transient; only cache structured probe results.
+  if reason is None or not reason.startswith(('the probe could not run:', 'the probe exited ')):
+    try:
+      path.parent.mkdir(parents=True, exist_ok=True)
+      path.write_text(json.dumps({'key':key, 'time':time.time(), 'reason':reason}))
+    except OSError:
+      pass  # Cache failure must not prevent engine selection.
+  return reason
+
+
+def available(target, env:dict[str, str] | None = None, *, cached:bool = False) -> str | None:
   if target.backend not in BACKENDS:
     return f"TensorRT-LLM runs on NVIDIA GPUs only; {target.target_id} is {target.backend}"
   py = python(env)
@@ -61,7 +99,7 @@ def available(target, env:dict[str, str] | None = None) -> str | None:
     return f"TensorRT-LLM was not found: set ${ENV} to the python of the venv it is installed in"
   if not ec.has_module(py, "tensorrt_llm"):
     return f"{py} cannot import tensorrt_llm"
-  return probe(py)
+  return cached_probe(py) if cached else probe(py)
 
 
 def argv(model:str, contexts:list[int], batches:list[int], *, tokens:int = TOKENS, reps:int = REPS,

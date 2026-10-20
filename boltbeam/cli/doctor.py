@@ -42,7 +42,7 @@ def _gpu(gpu:dict[str, Any]) -> list[dict[str, Any]]:
   from boltbeam.workflow import layout as lay
   if gpu.get("status") != "detected":
     why = (gpu.get("notes") or [gpu.get("status") or "no GPU"])[0]
-    return [row("GPU", False, why, "install the GPU's driver tool (nvidia-smi for NVIDIA, rocm-smi for AMD): BoltBeam reads the GPU from it"),
+    return [row("GPU", False, why, "install the GPU's driver tool (nvidia-smi for NVIDIA, amd-smi for AMD): BoltBeam reads the GPU from it"),
             row("chip profile", None, "no GPU")]
   devs = lay.devices(gpu)
   name = lay.summary(devs) or gpu.get("name") or "GPU"

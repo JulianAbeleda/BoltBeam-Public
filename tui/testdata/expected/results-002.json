@@ -3,12 +3,12 @@
   "blocked": [],
   "ceiling": {
     "bandwidth_source": null,
-    "bytes_moved": 4676301568.0,
-    "context": 1,
-    "floor_ms": 48.110098436213995,
+    "bytes_moved": 4695175936.000001,
+    "context": 128,
+    "floor_ms": 48.304279176954736,
     "peak_bandwidth_gbs": 97.2,
     "status": "modeled",
-    "tok_s": 20.78565690996941,
+    "tok_s": 20.702099628413155,
     "uncertainty": 0.0206
   },
   "engine": {
@@ -40,8 +40,9 @@
       "us": 1.0
     },
     "layout": null,
-    "limit_ms": 48.110098436213995,
-    "limit_tok_s": 20.78565690996941,
+    "limit_context": 128,
+    "limit_ms": 48.304279176954736,
+    "limit_tok_s": 20.702099628413155,
     "machine": null,
     "missing": "no per-role time yet: Run with llama.cpp times each role",
     "not_attributed_ms": null,
@@ -57,7 +58,7 @@
     "roles_provider": null,
     "runtimes": [
       {
-        "lost_ms": 9.79378112371652,
+        "lost_ms": 9.59960038297578,
         "ms": 57.903879559930516,
         "note": "whole step, measured untraced, at context 128",
         "per_role": false,
@@ -122,21 +123,35 @@
     "unpaired_roles": [],
     "where_token_goes": {
       "base_ms": 57.903879559930516,
+      "baseline_cells": [
+        "measured throughput",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "17.3",
+        "17.3",
+        ""
+      ],
       "best_ms": 48.304279176954736,
       "columns": [
         "row",
         "ms now",
         "ms at limit",
         "ms at chip best",
-        "ms lost",
+        "ms above limit",
         "share",
-        "tok/s if fixed",
+        "+ Tok/S if roofline",
+        "cumulative tok/s",
         "% of peak"
       ],
       "estimate": false,
       "limit_ms": 48.304279176954736,
       "lost_ms": 9.59960038297578,
-      "no_limit": "no limit",
+      "measured_tok_s": 17.27,
+      "no_limit": "no model",
+      "roofline_tok_s": 20.702099628413155,
       "rows": [
         {
           "best_ms": 48.304279176954736,
@@ -146,32 +161,37 @@
             "48.30",
             "9.60",
             "100%",
+            "+3.4",
             "20.7",
             ""
           ],
+          "cumulative_tok_s": 20.7,
           "limit_ms": 48.304279176954736,
           "lost_ms": 9.59960038297578,
           "name": "kernels and gaps, not split",
           "now_ms": 57.903879559930516,
           "pct_peak": null,
+          "section": "Model operations",
           "share": 1.0,
+          "tok_s_gain": 3.4320996284131553,
           "tok_s_if_fixed": 20.702099628413155,
           "what": "rest"
         }
       ],
       "sum_cells": [
-        "= token",
+        "= total at roofline",
         "57.90",
         "48.30",
         "48.30",
         "9.60",
         "100%",
-        "",
+        "20.7",
+        "20.7",
         ""
       ],
       "title": "Where the token goes",
       "token_ms": 57.903879559930516,
-      "words": "ms per token at context 128, worst first; tok/s if fixed is the 57.9 ms token (17.3 tok/s) less that row's lost ms. ms at chip best is the limit: a token's limit is its bytes at the bandwidth, and no matrix path moves fewer."
+      "words": "Context 128 \u00b7 57.90 ms/token. No model = measured time, unknown savings. Roofline is an upper bound. +tok/s allocates headroom by time difference; cumulative reconciles the roofline. These are accounting shares, not predicted speedups."
     }
   },
   "measured": true,
@@ -515,6 +535,11 @@
     "status": "classified",
     "tok_s": 17.27,
     "total_us": 57900.0
+  },
+  "validation": {
+    "checks": 14,
+    "failures": [],
+    "status": "passed"
   },
   "workload": "decode"
 }
