@@ -102,11 +102,20 @@ def sequence(launches:list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
   return out
 
 
-def _rocprof_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str]) -> list[str]:
+def _rocprof_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str], flush_ms:int | None = None,
+                  profiler_range:bool = False) -> list[str]:
+  # profiler_range: the program opens and closes its window with roctx (runtime/vllm_semantics.hip_profiler_window);
+  # its markers, HIP calls and kernels go to a rocpd database, read as Nsight's tables (rocpd_trace.py)
+  if profiler_range:
+    return [tool, "--kernel-trace", "--marker-trace", "--hip-runtime-trace", "--selected-regions", "--output-format",
+            "rocpd", "-d", str(out), "-o", "capture", "--", *argv]
   return [tool, "--kernel-trace", "--output-format", "csv", "-d", str(out), "-o", "capture", "--", *argv]
 
 
 def _rocprof_read(tool:str, out:pathlib.Path) -> list[dict[str, Any]]:
+  if dbs := sorted(out.rglob("*_results.db")):
+    from boltbeam.collectors import rocpd_trace, semantic_capture
+    return semantic_capture.read(rocpd_trace.export(dbs, out / "capture.sqlite"))
   files = sorted(out.rglob("*kernel_trace.csv"))
   if not files:
     raise RuntimeError(f"rocprofv3 wrote no kernel_trace.csv under {out}")
@@ -226,7 +235,7 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
             profiler_range:bool = False) -> list[dict[str, Any]]:
   """Run argv under the vendor tool and return its kernel launches. NoCapture when there is no tool here.
   flush_ms asks the tool to flush its buffers on a timer, where it can (nsys); profiler_range captures only the
-  window the program marks with the CUDA profiler API (nsys). The program runs in `cwd`, by default the capture
+  window the program marks with the CUDA profiler API (nsys) or roctx (rocprofv3). The program runs in `cwd`, by default the capture
   folder `out`: whatever it drops into its working directory (an old llama.cpp build writes a 421 KB
   llama_decode.dot graph dump on every decode) lands beside its capture, not in the caller's folder. Callers pass
   absolute paths in argv."""
@@ -237,6 +246,8 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   out = pathlib.Path(out).absolute()  # the tool's own output paths must survive the cwd below
   out.mkdir(parents=True, exist_ok=True)
   cwd = cwd or out
+  for stale in out.rglob("*_results.db"):  # rocprofv3's databases are read whole: a capture again starts clean
+    stale.unlink()
   log = out / "capture.log"
   import contextlib
   from boltbeam.collectors import gpu_telemetry
@@ -244,7 +255,8 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   # capture without them cannot say whether a difference between repeats was the clock
   tele = gpu_telemetry.Telemetry(0) if backend == "CUDA" else None
   with open(log, "w") as fh, (tele or contextlib.nullcontext()):
-    wrapped = wrap(p["tool"], argv, out, env or {}, flush_ms, *((True,) if profiler_range else ())) if backend == "CUDA" else wrap(p["tool"], argv, out, env or {})
+    wrapped = (wrap(p["tool"], argv, out, env or {}, flush_ms, *((True,) if profiler_range else ())) if backend in ("CUDA", "AMD")
+               else wrap(p["tool"], argv, out, env or {}))
     proc = subprocess.run(wrapped, stdout=fh, stderr=subprocess.STDOUT, timeout=timeout_s,
                           cwd=cwd, env={**os.environ, **(env or {})})
   import json

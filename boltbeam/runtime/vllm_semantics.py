@@ -10,6 +10,24 @@ from contextlib import contextmanager
 _operation = ContextVar('boltbeam_operation', default=None)
 
 
+def hip_profiler_window():
+  """On ROCm, torch.cuda.profiler.start/stop open and close rocprofv3's --selected-regions window (roctx), which
+  hipProfilerStart does not; torch's nvtx ranges already reach rocprofv3 as roctx markers."""
+  import ctypes,os
+  try:import torch
+  except ImportError:return
+  if not getattr(torch.version,'hip',None) or getattr(torch.cuda.profiler,'_boltbeam_roctx',False):return
+  for name in ('librocprofiler-sdk-roctx.so.1',os.path.join(os.environ.get('ROCM_PATH','/opt/rocm'),'lib','librocprofiler-sdk-roctx.so.1')):
+    try:lib=ctypes.CDLL(name);break
+    except OSError:lib=None
+  if lib is None:raise RuntimeError("ROCm's roctx library (librocprofiler-sdk-roctx) is not here: a capture window cannot open")
+  torch.cuda.profiler.start=lambda:lib.roctxProfilerResume(0);torch.cuda.profiler.stop=lambda:lib.roctxProfilerPause(0)
+  torch.cuda.profiler._boltbeam_roctx=True
+
+
+hip_profiler_window()
+
+
 class GraphProvenance:
   """Start tracing only after vLLM kernel warmup has chosen production tactics."""
   stop_after_graphs = True

@@ -12,12 +12,15 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   from boltbeam.workflow.screen import run_bandwidth
   if batch!=1:
     raise ValueError('semantic graph decode currently requires a single stream')
-  if target.backend!='CUDA':
-    raise RuntimeError(f"vLLM's per-role decode capture joins Nsight Systems' graph trace; {target.backend} has none yet")
+  if target.backend not in ('CUDA','AMD'):
+    raise RuntimeError(f"vLLM's per-role decode capture joins a graph trace from nsys or rocprofv3; {target.backend} has neither")
   profile=json.loads((run/'model_profile.json').read_text())
   raw=run/'kernel_compare'/'vllm_graph_capture'/str(context)
   command=[*vd.argv(model,[context],[batch],tokens=tokens,reps=1,once=tokens),
            *vllm_flags(run,context,capture=True)]
+  if '--tensor-parallel-size' in command:
+    raise RuntimeError("vLLM's per-role decode of a tensor-parallel split is not measured yet: its kernels run in one "
+                       "worker per GPU, while the capture marks each decode step in the engine's process")
   env={**ec.venv_env(vd.python()),**vd.CAPTURE_ENV}
   vendor_capture.capture(target.backend,[*command,'--capture-pass','paired'],raw,env=env,profiler_range=True)
   pair=vllm_two_pass.join(raw/'capture.sqlite',ec.json_lines(vendor_capture.program_output(raw)))
@@ -28,15 +31,23 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   engine=cuda_memory.decode_horizon([s['identity'] for s in steps])
   counter_command=[*command,'--capture-pass','timing','--profile-step','1','--profile-end',str(len(steps))]
   counter_env={**env,'TRITON_CACHE_DIR':engine['triton_cache_dir']}
+  if target.backend=='AMD' and any((l.get('semantic_work') or {}).get('requires_memory_evidence') for s in steps for l in s['launches']):
+    raise ValueError('decode kernels need measured memory traffic, and rocprofv3 has no memory counter on AMD here')
   launches=cuda_memory.collect_horizon(counter_command,counter_env,raw,steps)
   (raw/'semantic_work.json').write_text(json.dumps({'engine':engine,'launches':launches,
                                                  'steps':[s['identity'] for s in steps]},indent=1))
   bins=sorted(Path(vd.python()).parent.parent.glob('lib/python*/site-packages/nvidia/*/bin'))
   tools=bins[0] if bins else None
-  paths=library_paths([Path(p) for p in engine['libraries']],launches,tools=tools,
-                      jit_caches=[engine['triton_cache_dir']])
+  if target.backend=='AMD':  # the code objects rocprofv3 saw loaded (collectors/rocm_isa.py)
+    from boltbeam.collectors import rocm_isa
+    paths=rocm_isa.table(raw/'capture_results.db',jit_caches=[engine['triton_cache_dir']])
+  else:
+    paths=library_paths([Path(p) for p in engine['libraries']],launches,tools=tools,
+                        jit_caches=[engine['triton_cache_dir']])
   closed={ip.template(l['key']) for l in launches if l.get('semantic_work') or
           l.get('semantic_kind')=='attention'}-set(paths['kernels'])
+  if closed and target.backend=='AMD':
+    raise ValueError(f'no code object was read for decode kernels {sorted(closed)[:3]}')
   if closed:
     arch=gpu_arch()
     if not arch or not ip.counters_open():

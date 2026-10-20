@@ -90,9 +90,9 @@ def json_lines(text:str) -> list[dict[str, Any]]:
 
 
 def run_driver(argv:list[str], *, env:dict[str, str] | None = None, log:pathlib.Path | None = None,
-               timeout_s:float = 3600.0) -> list[dict[str, Any]]:
+               timeout_s:float = 3600.0, cwd:pathlib.Path | None = None) -> list[dict[str, Any]]:
   """Run a driver and return its JSON lines. A failure raises with the end of what it printed."""
-  proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, env={**os.environ, **(env or {})})
+  proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, env={**os.environ, **(env or {})}, cwd=cwd)
   if log is not None:
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
@@ -111,13 +111,17 @@ def point(context:int, batch:int, step_ms:float, **extra:Any) -> dict[str, Any]:
 
 def captured_role_time(run:pathlib.Path, *, provider:str, trace:str, argv_for:Callable[[int], list[str]], target,
                        model_id:str, context:int, tokens:int, batch:int = 1, env:dict[str, str] | None = None,
-                       cwd:pathlib.Path | None = None, flush_ms:int | None = None, profiler_range:bool = False) -> dict[str, Any]:
+                       cwd:pathlib.Path | None = None, flush_ms:int | None = None, profiler_range:bool = False,
+                       warm:bool = True) -> dict[str, Any]:
   """An engine's kernels per role, captured from outside and attributed by bytes and count: the path llama.cpp
   takes. Two driver runs at one context and batch, N tokens and 1 (--once), subtracted per kernel: what is left
   is N - 1 decode steps. The captured run's own time per step is the difference of the two runs' printed decode
-  times over N - 1."""
+  times over N - 1. warm runs the 1-token driver once uncaptured first: an engine's start-up can fill on-disk caches
+  (vLLM's Triton autotune, a JIT) in whichever capture runs first, and the subtraction needs both to start up alike."""
   from boltbeam.collectors import attribution, vendor_capture
   raw = run / "kernel_compare" / f"{provider.replace('.', '_').replace('-', '_')}_capture"
+  if warm:
+    run_driver(argv_for(1), env=env, log=raw / "warm.log", cwd=cwd)
   got, secs, matrices, engine = {}, {}, None, {}
   for name, n in (("long", tokens), ("short", 1)):
     got[name] = vendor_capture.capture(target.backend, argv_for(n), raw / name, cwd=cwd, env=env, flush_ms=flush_ms, **({"profiler_range": True} if profiler_range else {}))

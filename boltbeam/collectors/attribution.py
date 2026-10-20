@@ -179,6 +179,21 @@ def block_cut(long:list[dict[str, Any]], short:list[dict[str, Any]]) -> tuple[li
   bs = sorted(l["start_us"] for l in short if is_block(l))
   if not bs or len(bl) <= len(bs):
     return None
+  # the count cuts in the right place only when both captures ran the same block launches up to it. A start-up that
+  # runs block kernels more often in one capture (vLLM's Triton autotune on a cold cache in the first run: 367 extra
+  # launches on the R9700, cutting halfway into the timed prefill) moves the cut into work both captures did
+  before: dict[str, int] = {}
+  for l in long:
+    if is_block(l) and l["start_us"] <= bl[len(bs) - 1]:
+      before[str(l["key"])] = before.get(str(l["key"]), 0) + 1
+  for l in short:
+    if is_block(l):
+      before[str(l["key"])] = before.get(str(l["key"]), 0) - 1
+  if (off := {k: n for k, n in before.items() if n}):
+    k, n = max(off.items(), key=lambda kv: abs(kv[1]))
+    raise CaptureRefused(f"the two captures' start-ups ran block kernels a different number of times ({len(off)} "
+                         f"kernels differ; {k[:80]} by {n:+d} in the long one), so the extra tokens cannot be found by "
+                         "count: a JIT or autotune cache filled in one capture and not the other")
   shared_last, first_extra, short_last = bl[len(bs) - 1], bl[len(bs)], bs[-1]
   after = [l for l in long if l["start_us"] >= first_extra]
   region = sorted((l for l in long if shared_last < l["start_us"] < first_extra), key=lambda l: l["start_us"])

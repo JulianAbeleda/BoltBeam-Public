@@ -71,6 +71,7 @@ def main() -> int:
   ap.add_argument("--dtype", default="auto")
   ap.add_argument("--attention-backend", help="vLLM's attention backend by name (a requested engine setting)")
   ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+  ap.add_argument("--tensor-parallel-size", type=int, default=1, help="GPUs the model is split across (collectors/multi_gpu.py)")
   ap.add_argument("--speculative-config", default=os.environ.get("BOLTBEAM_VLLM_SPECULATIVE_CONFIG"),
                   help="explicit MTP configuration; recorded in the measurement")
   ap.add_argument("--quality-suite", help="JSON prompts and expected JSON answers for a bounded smoke check")
@@ -110,7 +111,7 @@ def main() -> int:
   llm = LLM(model=a.model, dtype=a.dtype, max_model_len=max_len, enable_prefix_caching=False,
             **({'worker_cls':'boltbeam.runtime.vllm_decode_worker.DecodeCaptureWorker'} if a.capture_pass=='paired' else {}),
             language_model_only=True, speculative_config=a.speculative_config,
-            gpu_memory_utilization=a.gpu_memory_utilization, max_num_seqs=max(max(batches), 1), seed=0,
+            gpu_memory_utilization=a.gpu_memory_utilization, tensor_parallel_size=a.tensor_parallel_size, max_num_seqs=max(max(batches), 1), seed=0,
             **({"attention_backend": a.attention_backend} if a.attention_backend else {}),
             **({"max_num_batched_tokens": a.max_num_batched_tokens, "enable_chunked_prefill": True} if a.max_num_batched_tokens else {}))
   vocab = llm.get_tokenizer().vocab_size
@@ -214,7 +215,8 @@ def main() -> int:
                                    "speculative_config": a.speculative_config,
                                    "max_num_batched_tokens": int(llm.llm_engine.vllm_config.scheduler_config.max_num_batched_tokens),
                                    "chunked_prefill": bool(llm.llm_engine.vllm_config.scheduler_config.enable_chunked_prefill),
-                                   "attention_backend": _attention_backend(llm)},
+                                   "attention_backend": _attention_backend(llm),
+                                   "tensor_parallel_size": int(llm.llm_engine.vllm_config.parallel_config.tensor_parallel_size)},
                         "step_ms": step_ms, "tok_s_stream": 1000.0 / step_ms, "tok_s_total": batch * 1000.0 / step_ms}),
             flush=True)
   return 0
@@ -226,7 +228,7 @@ def prefill(a) -> int:
   llm = LLM(model=a.model, dtype=a.dtype, max_model_len=a.model_context_limit or a.prefill + 1, enable_prefix_caching=False,
             **({'compilation_config': {'cudagraph_mode':'NONE'}} if a.semantic_capture else {}),
             language_model_only=True, speculative_config=a.speculative_config,
-            gpu_memory_utilization=a.gpu_memory_utilization, max_num_seqs=1, seed=0, disable_log_stats=False,
+            gpu_memory_utilization=a.gpu_memory_utilization, tensor_parallel_size=a.tensor_parallel_size, max_num_seqs=1, seed=0, disable_log_stats=False,
             **({"attention_backend": a.attention_backend} if a.attention_backend else {}),
             **({"max_num_batched_tokens": a.max_num_batched_tokens, "enable_chunked_prefill": True} if a.max_num_batched_tokens else {}))
   vocab = llm.get_tokenizer().vocab_size

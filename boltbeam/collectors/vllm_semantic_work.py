@@ -34,7 +34,9 @@ def is_projection(key):
   dot='dot_kernel<' in name and 'cublasgemvtensorstridedbatched<' in name
   xmma='_xmma_gemm_' in name and '_execute_kernel' in name and '_cublas' in name
   marlin='marlin::marlin<' in name
-  return (gemm or dot or xmma or marlin) and 'splitkreduce' not in name
+  # ROCm: vLLM's skinny GEMMs (wvSplitK, its int4 and FP8 forms) and hipBLASLt's Tensile kernels (Cijk_)
+  rocm=name.startswith(('wvsplitk','void wvsplitk','cijk_'))
+  return (gemm or dot or xmma or marlin or rocm) and 'splitkreduce' not in name
 
 
 def attach(launches: list[dict], model: Path, profile: dict, *, ssd_chunk: int,

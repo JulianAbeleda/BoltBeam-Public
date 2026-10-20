@@ -9,8 +9,8 @@ its per-token time depends on the prompt; the difference of two calls with the s
 
 Per role: production CUDA-graph timing is joined to compiled graphless labels by exact kernel sequence.
 Only single-stream captures are supported; other batches refuse rather than subtract independent programs.
-The join reads Nsight Systems' trace, so per role is NVIDIA only; on AMD (vLLM's ROCm build) the whole step is
-measured and per role refuses.
+The join reads Nsight Systems' trace on NVIDIA, and rocprofv3's database written as the same tables on AMD
+(collectors/rocpd_trace.py), with each kernel's matrix path read from the code object it ran (collectors/rocm_isa.py).
 The capture runs in-process (VLLM_ENABLE_V1_MULTIPROCESSING=0); whole-step timing keeps vLLM's default.
 """
 from __future__ import annotations

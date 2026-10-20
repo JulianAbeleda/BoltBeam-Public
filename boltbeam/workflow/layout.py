@@ -3,7 +3,8 @@
     one     one GPU          the engine is pinned to GPU 0
     layer   split by layer   llama.cpp -sm layer (its default): each GPU holds a share of the layers and the layers
                              run one GPU after another
-    row     split by rows    llama.cpp -sm row: each weight is split across the GPUs and read on all of them at once
+    row     split by rows    llama.cpp -sm row, vLLM --tensor-parallel-size: each weight is split across the GPUs
+                             and read on all of them at once (collectors/multi_gpu.py picks vLLM's split)
 
 Every input comes from this machine, with its source (machine_facts):
   - the GPUs, from the driver tool (nvidia-smi rows; one Apple GPU on a Mac), each mapped to a registered target
@@ -15,7 +16,8 @@ Every input comes from this machine, with its source (machine_facts):
 
 The limits (layer_limit, row_limit) say their formula and list every input with its source. Measurements are
 cached in the run folder (MACHINE) and reused from the newest run of the same machine; re-measuring is an
-explicit request. Multi-GPU carries LIMITED on every line: no real multi-GPU run has been made yet.
+explicit request. Multi-GPU carries LIMITED on every line: the only real multi-GPU run so far is vLLM split by rows
+(tensor parallel) on two R9700s.
 """
 from __future__ import annotations
 
@@ -27,14 +29,19 @@ import re
 import subprocess
 from typing import Any, Callable
 
-LIMITED = "limited support: no real multi-GPU run yet"
+LIMITED = "limited support: one real multi-GPU run so far (vLLM split by rows on two R9700s)"
 LAYOUTS = {"one": "one GPU", "layer": "split by layer", "row": "split by rows"}
 DEFAULT = "one"
-ENGINE_LAYOUTS = {"llama.cpp": ("one", "layer", "row"), "tinygrad": ("one",)}
-NOT_OFFERED = {"tinygrad": "the tinygrad fork decodes on one device: its LLM decode has no sharded path"}
+ENGINE_LAYOUTS = {"llama.cpp": ("one", "layer", "row"), "tinygrad": ("one",), "vllm": ("one", "row")}
+NOT_OFFERED = {"tinygrad": "the tinygrad fork decodes on one device: its LLM decode has no sharded path",
+               "vllm": "BoltBeam runs vLLM split by rows (tensor parallel); its pipeline split is not measured"}
 MACHINE = "machine_facts.json"
 ACTIVATION_BYTES = 4  # float32 activations cross the GPU boundary (llama.cpp keeps hidden states in f32)
 ROW_TRANSFERS_PER_LAYER = 2  # row split joins partial results after attention and after the feed-forward
+# an engine whose row split joins with a measured all-reduce (collectors/multi_gpu.join): the hidden state's bytes in
+# its dtype, and the joins a token adds beyond the layers' (vLLM's vocab-parallel embedding; its logits gather is left
+# out, so the limit stays a lower bound)
+ENGINE_JOINS = {"vllm": (2, "bfloat16, the model's dtype vLLM all-reduces in", 1)}
 PROBE = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "gpu_probe.py"
 
 
@@ -43,7 +50,7 @@ PROBE = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "gpu_probe.py"
 def devices(gpu:dict[str, Any]) -> list[dict[str, Any]]:
   """Every GPU the probe found, in the driver's order, with its index. One Apple GPU on a Mac."""
   rows = gpu.get("devices") or ([gpu] if gpu.get("name") else [])
-  return [{"index": i, "name": d.get("name"), "target_id": d.get("target_id"), "uuid": d.get("uuid"),
+  return [{"index": i, "name": d.get("name"), "target_id": d.get("target_id"), "uuid": d.get("uuid"), "pci_bus_id": d.get("pci_bus_id"),
            "memory_bytes": d.get("memory_bytes"), "registered": bool(d.get("target_registered", d.get("target_id")))}
           for i, d in enumerate(rows)]
 
@@ -97,8 +104,8 @@ def layouts(n_gpus:int, provider:str) -> list[dict[str, Any]]:
           for k, v in LAYOUTS.items()]
 
 
-def used_gpus(layout:str, devs:list[dict[str, Any]]) -> list[dict[str, Any]]:
-  return devs[:1] if layout == "one" else devs
+def used_gpus(layout:str, devs:list[dict[str, Any]], n:int | None = None) -> list[dict[str, Any]]:
+  return devs[:1] if layout == "one" else devs[:n or None]
 
 
 def engine_args(layout:str, provider:str) -> tuple[list[str], dict[str, str]]:
@@ -137,7 +144,8 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
                     topology:str = "", fallback:Callable[[str | None], float | None] = lambda _: None,
                     metal_read:Callable[[], dict[str, Any]] | None = None,
                     cuda_read:Callable[[int], dict[str, Any]] | None = None,
-                    profile_read:Callable[[dict[str, Any]], tuple[float, str] | None] = lambda _: None) -> dict[str, Any]:
+                    profile_read:Callable[[dict[str, Any]], tuple[float, str] | None] = lambda _: None,
+                    join:Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None) -> dict[str, Any]:
   """Read bandwidth per GPU, and copy bandwidth and latency per GPU pair, with sources.
 
   Read bandwidth, in this order: BoltBeam's native probe for the backend (metal_read on a Mac; cuda_read(index) on
@@ -146,8 +154,9 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
   when nothing else exists, and labelled so. Elsewhere (AMD) it stays a labelled lower bound. probe(args, env) runs
   the fork's gpu_probe.py, which also measures the copies between GPUs. profile_read(gpu) comes first: a chip
   profile made on this machine already holds the GPU's measured read bandwidth and its date (workflow/chips.py), so
-  the limit uses that one number instead of a second measurement."""
-  links = read_topology(topology)
+  the limit uses that one number instead of a second measurement. join(devs) times one all-reduce across them under
+  an engine's own collective (collectors/multi_gpu.join), the row join of an engine that splits that way."""
+  links = topology if isinstance(topology, dict) else read_topology(topology)
   gpus = []
   for d in devs:
     row = {**d, "read_gbs": None, "read_source": None}
@@ -202,8 +211,16 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
         except (RuntimeError, OSError, subprocess.SubprocessError, KeyError, ValueError) as exc:
           pair["source"] = f"not measured: {str(exc)[-160:]}"
       pairs.append(pair)
+  joined = None
+  if join is not None and len(devs) > 1:
+    try:
+      got = join(devs)
+      joined = {**got, "source": f"measured all-reduce across GPUs {', '.join(str(d['index']) for d in devs)} with "
+                f"{got.get('backend')}, graph-captured, best of {got.get('reps')}, {_today()}"}
+    except (RuntimeError, OSError, subprocess.SubprocessError, KeyError, ValueError) as exc:
+      joined = {"joins": [], "source": f"not measured: {str(exc)[-160:]}"}
   return {"schema": "boltbeam.machine_facts.v1", "measured_at": _today(), "gpus": gpus, "pairs": pairs,
-          "uuids": [d.get("uuid") for d in devs]}
+          "uuids": [d.get("uuid") for d in devs], **({"join": joined} if joined else {})}
 
 
 def run_places_of(run:pathlib.Path) -> list[pathlib.Path]:
@@ -238,9 +255,10 @@ def _pair(facts:dict[str, Any], a:int, b:int) -> dict[str, Any] | None:
 
 
 def limit(layout:str, *, bytes_per_token:float, facts:dict[str, Any], hidden_size:int | None, layers:int | None,
-          shares:list[float] | None = None) -> dict[str, Any]:
-  """The decode limit for a layout from the machine facts. Every input is listed with its source."""
-  gpus = facts["gpus"] if layout != "one" else facts["gpus"][:1]
+          shares:list[float] | None = None, gpus_used:int | None = None, provider:str | None = None) -> dict[str, Any]:
+  """The decode limit for a layout from the machine facts. Every input is listed with its source. gpus_used: the GPUs
+  the split ran on (the first that many; every GPU when None)."""
+  gpus = facts["gpus"][:gpus_used or None] if layout != "one" else facts["gpus"][:1]
   n = len(gpus)
   shares = shares or [1.0 / n] * n  # llama.cpp splits evenly unless -ts says otherwise
   inputs = [{"what": f"GPU {g['index']} {g['name']} read bandwidth", "value": g["read_gbs"], "unit": "GB/s",
@@ -254,9 +272,23 @@ def limit(layout:str, *, bytes_per_token:float, facts:dict[str, Any], hidden_siz
     ms = bytes_per_token / (gpus[0]["read_gbs"] * 1e9) * 1e3
     out.update(ms=ms, formula="weight bytes / the GPU's read bandwidth")
     return {**out, "tok_s": 1000.0 / ms}
-  act = (hidden_size or 0) * ACTIVATION_BYTES
+  width, words, extra = ENGINE_JOINS.get(provider or "", (ACTIVATION_BYTES, "float32", 0))
+  act = (hidden_size or 0) * width
   inputs.append({"what": "activation bytes per GPU boundary", "value": act, "unit": "bytes",
-                 "source": f"hidden size {hidden_size} x {ACTIVATION_BYTES} bytes (float32)"})
+                 "source": f"hidden size {hidden_size} x {width} bytes ({words})"})
+  if layout == "row" and provider in ENGINE_JOINS:  # joined by the engine's own all-reduce, measured
+    from boltbeam.collectors.multi_gpu import join_us
+    measured = facts.get("join") or {}
+    one = join_us(measured.get("joins") or [], act)
+    if one is None:
+      return {**out, "ms": None, "reason": f"no measured all-reduce of {act} bytes: {measured.get('source', 'not measured')}"}
+    joins = (layers or 0) * ROW_TRANSFERS_PER_LAYER + extra
+    inputs.append({"what": "one join (all-reduce)", "value": round(one, 2), "unit": "µs", "source": measured["source"]})
+    weights = max(bytes_per_token * s / (g["read_gbs"] * 1e9) * 1e3 for s, g in zip(shares, gpus))
+    ms = weights + joins * one / 1e3
+    return {**out, "ms": ms, "tok_s": 1000.0 / ms, "weights_ms": weights, "transfer_ms": joins * one / 1e3,
+            "support": LIMITED, "formula": f"the slowest GPU's share of weight bytes / its read bandwidth, plus {joins} "
+            f"joins ({ROW_TRANSFERS_PER_LAYER} per layer and {extra} more), each one measured all-reduce of the hidden state"}
   hops = []
   for i in range(n - 1 if layout == "layer" else n):
     a, b = gpus[i]["index"], gpus[(i + 1) % n]["index"]

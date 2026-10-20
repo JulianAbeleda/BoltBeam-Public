@@ -90,8 +90,9 @@ MATRIX_ACC = 8
 MATRIX_NOTE = "lower bound, prefill only; decode is memory-bound"
 MATRIX_METHOD = ("BoltBeam cuda_bandwidth: native CUDA WMMA 16x16x16 fp16 multiply-accumulate into fp32, 8 accumulators "
                  "in registers, {iters} steps, best of {reps} per launch shape")
-METHOD = ("BoltBeam cuda_bandwidth: native {api} read-only kernels over {gib} GiB, a grid-stride loop of 16-byte loads and "
-          "one block per contiguous chunk, best of {reps} per launch shape")
+METHOD = ("BoltBeam cuda_bandwidth: native {api} read-only kernels over {gib} GiB, a grid-stride loop of 16-byte loads and one "
+          "block per contiguous chunk, best of {reps} per launch shape, the launch's fixed cost (the best "
+          "shape over half the buffer) removed")
 SUSTAIN_S = 5.0  # about the length of a decode capture
 FACT_KEYS = ("sm_count", "shared_mem_per_sm_bytes", "l2_cache_bytes", "clock_khz", "memory_clock_khz", "memory_bus_bits",
              "total_global_mem_bytes")
@@ -142,10 +143,11 @@ def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | N
     sms = parallel_units(cuda.facts())
     nbytes = (gib << 30) // 16 * 16
     a, out = cuda.buffer(length=nbytes), cuda.buffer(length=max(1024 * 64 * sms, nbytes // min(c for _, c, _ in CHUNK_SHAPES)) * 4)
-    n4 = struct.pack("<Q", nbytes // 16)
-    shapes = [({"threads": t, "blocks": per_sm * sms}, "readsum", [a, n4, out]) for t, per_sm in READ_SHAPES]
-    shapes += [({"threads": t, "blocks": -(-nbytes // c), "chunk_bytes": c, "load_bytes": w}, f"readchunk{w}",
-                [a, struct.pack("<Q", nbytes // w), struct.pack("<I", c // w), out]) for t, c, w in CHUNK_SHAPES]
+    sized = lambda size: ([({"threads": t, "blocks": per_sm * sms}, "readsum", [a, struct.pack("<Q", size // 16), out])  # noqa: E731
+                           for t, per_sm in READ_SHAPES] +  # every launch shape over the buffer's first `size` bytes
+                          [({"threads": t, "blocks": -(-size // c), "chunk_bytes": c, "load_bytes": w}, f"readchunk{w}",
+                            [a, struct.pack("<Q", size // w), struct.pack("<I", c // w), out]) for t, c, w in CHUNK_SHAPES])
+    shapes = sized(nbytes)
     def go(shape):
       meta, name, args = shape
       return cuda.dispatch(pso[name], args, (meta["blocks"], 1, 1), (meta["threads"], 1, 1))
@@ -155,14 +157,23 @@ def measure_read_gbs(device:int = 0, *, gib:int = 1, reps:int = 10, nvcc:str | N
       rows.append({**shape[0], "best_ms": best / 1000.0, "gbs": nbytes / (best * 1e-6) / 1e9})
     i = max(range(len(rows)), key=lambda k: rows[k]["gbs"])
     best = rows[i]
+    # a launch timed between events carries a fixed cost no read pays (about 16 us on an R9700, 1% of a 1 GiB read):
+    # the best shape over half the buffer gives it, 2 * half - whole, the least of three so its noise can only lower
+    # the rate; a cost that is not under half the whole launch is no fixed cost (a read's time grows with its bytes)
+    timed, half = (lambda s: min(samples(lambda: go(s), warmups=1, count=reps))), sized(nbytes // 2)[i]  # noqa: E731
+    whole = timed(shapes[i])
+    fixed_us = min(2 * timed(half) - whole for _ in range(3))
+    fixed_us = fixed_us if 0 < fixed_us < whole / 2 else 0.0
+    for r in rows:
+      r["gbs"] = nbytes / ((r["best_ms"] * 1000.0 - fixed_us) * 1e-6) / 1e9
     # sustained: the best shape back to back for sustain_s seconds, as a decode reads (the clocks settle under load)
     series, done = [], 0.0
     while not series or done < sustain_s * 1e6:  # at least one launch, then until the seconds are up
       us = go(shapes[i])
-      series.append(nbytes / (us * 1e-6) / 1e9)
+      series.append(nbytes / ((us - fixed_us) * 1e-6) / 1e9)
       done += us
     result = {"device": device, "name": cuda.name, "bytes": nbytes, "reps": reps, "shapes": rows,
-              "best_shape": shapes[i][0],
+              "launch_fixed_us": round(fixed_us, 2), "best_shape": shapes[i][0],
               "sustained": {"seconds": done / 1e6, "launches": len(series), "best_gbs": round(max(series), 1),
                             "mean_gbs": round(sum(series) / len(series), 1), "min_gbs": round(min(series), 1)}}
   finally:

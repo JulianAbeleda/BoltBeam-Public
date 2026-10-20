@@ -534,7 +534,8 @@ def _layout_limit(run:pathlib.Path, profile:dict[str, Any], ceil:dict[str, Any])
   status = _optional(run, MEASURE_STATUS)
   layout = status.get("layout") or "one"
   got = lay.limit(layout, bytes_per_token=ceil.get("bytes_moved") or 0, facts=facts,
-                  hidden_size=profile.get("hidden_size"), layers=profile.get("layer_count"))
+                  hidden_size=profile.get("hidden_size"), layers=profile.get("layer_count"),
+                  gpus_used=status.get("gpus"), provider=status.get("provider"))
   shown = {"gpus": [{k: g.get(k) for k in ("index", "name", "target_id", "read_gbs", "read_source")} for g in facts["gpus"]],
            "pairs": facts.get("pairs", []), "measured_at": facts.get("measured_at"),
            "support": lay.LIMITED if len(facts["gpus"]) > 1 else None}
@@ -874,9 +875,13 @@ def decode_ceiling(ceil:dict[str, Any], loss:dict[str, Any], token:dict[str, Any
             'tok_s':loss['limit_tok_s'],'bytes_moved':None,
             '_operation_limit':True,
             'basis':"sum of captured operation limits, including attention and recurrent state work"}
-  weight = ceil["floor_ms"]
+  from boltbeam.workflow.layout import ENGINE_JOINS
+  layout = loss.get("layout") or {}
+  split = layout["gpus"] if layout.get("ms") and (layout.get("gpus") or 1) > 1 else 1
+  weight = layout["ms"] if split > 1 else ceil["floor_ms"]  # a split's limit is its layout's (weights and joins)
   element, _ = providers.kv_element(provider, run)
-  limit = weight + tie.kv_ms(profile, token["context"], element, ceil["peak_bandwidth_gbs"])
+  # a tensor-parallel split shards the KV heads: each GPU reads its share of the cache at once
+  limit = weight + tie.kv_ms(profile, token["context"], element, ceil["peak_bandwidth_gbs"]) / (split if provider in ENGINE_JOINS else 1)
   loss.update(limit_ms=limit, limit_tok_s=1000.0 / limit, limit_context=token["context"])
   for runtime in loss.get("runtimes", []):
     if runtime.get("isolated"):
@@ -1017,6 +1022,12 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
   if layout not in offered or not offered[layout]["available"]:
     why = offered[layout]["reason"] if layout in offered else f"{lay.LAYOUTS.get(layout, layout)} needs more than one GPU"
     return out | {"reason": f"{provider} cannot run {lay.LAYOUTS.get(layout, layout)} here: {why}", "command": "pick one GPU"}
+  if provider == "vllm" and layout == "row":  # tensor parallel: as many GPUs as the model's heads divide
+    from boltbeam.collectors import multi_gpu
+    if (n := multi_gpu.split_size(model, len(devs))) < 2:
+      return out | {"reason": f"the model's head counts {multi_gpu.heads(model)} divide across none of this machine's "
+                              f"{len(devs)} GPUs, so vLLM cannot split it", "command": "pick one GPU"}
+    out["gpus"], devs = n, devs[:n]
   if provider == tinygrad_role_time.PROVIDER:
     from boltbeam.workflow.autoscan import this_machine_target
     here = this_machine_target()
@@ -1175,8 +1186,14 @@ def replay_command(args) -> dict[str, Any]:
 
 
 def _engine_settings(args) -> dict | None:
-  """The engine settings a run requests, from the command line; None when it requests none."""
+  """The engine settings a run requests, from the command line; None when it requests none. A vLLM run split by rows
+  requests its tensor-parallel size: the most of this machine's GPUs the model's heads divide (multi_gpu.split_size)."""
   settings = {k: getattr(args, k, None) for k in ("chunk_size", "attention_backend")}
+  if getattr(args, "provider", None) == "vllm" and getattr(args, "layout", None) == "row":
+    from boltbeam.collectors import multi_gpu
+    from boltbeam.workflow import layout as lay
+    settings["tensor_parallel_size"] = multi_gpu.split_size(pathlib.Path(args.model).expanduser(),
+                                                            len(lay.devices(_hardware_profile()["gpu"])))
   return {k: v for k, v in settings.items() if v is not None} or None
 
 def _load(args) -> dict[str, Any]:
@@ -1226,7 +1243,7 @@ def pipeline(args, out=sys.stdout) -> int:
                         layout=getattr(args, "layout", None) or "one",
                         measurement=_role_time_arg(args))
     if analyze_all and not plan["reason"]:  # the machine's measured facts, reused when this machine has them
-      steps.append(("machine", lambda: machine(pathlib.Path(args.run), root=root)))
+      steps.append(("machine", lambda: machine(pathlib.Path(args.run), root=root, provider=getattr(args, "provider", None))))
     steps += _measure_steps(args, plan, say=say)
   if args.probe:  # a CUDA probe with no GPU on this machine wrote no evidence: nothing to ingest
     steps.append(("ingest_probe", lambda: ingest_probe_run(args.run, args.probe)
@@ -1392,15 +1409,20 @@ def profile_read(gpu:dict[str, Any]) -> tuple[float, str] | None:
                                   f"{src.get('observed_at', 'date unknown')} (chip profile {tid})")  # tinygrad's device name per backend, for the per-GPU probe
 
 
-def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | None = None) -> dict[str, Any]:
+def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | None = None,
+            provider:str | None = None) -> dict[str, Any]:
   """This machine's GPUs, their measured read bandwidth and the measured copies between them (workflow/layout.py),
-  cached in the run and reused from the newest run of the same GPUs unless remeasure."""
+  cached in the run and reused from the newest run of the same GPUs unless remeasure. An engine that splits by rows
+  with its own all-reduce has that join measured under its python (collectors/multi_gpu.join)."""
   from boltbeam.workflow import layout as lay
   from boltbeam.workflow.common import write_json
   devs = lay.devices(_hardware_profile()["gpu"])
   cached = None if remeasure else lay.cached_machine(run, devs)
   if cached is not None and any((now := profile_read(g)) is not None and now[0] != g.get("read_gbs") for g in cached.get("gpus") or []):
     cached = None  # the chip profile was measured again since: one measurement, the profile's (profile_read)
+  joins = provider in lay.ENGINE_JOINS and len(devs) > 1 and providers.ENGINES[provider].python()
+  if cached is not None and joins and not (cached.get("join") or {}).get("joins"):
+    cached = None  # the engine's join can be measured now and was not
   if cached is not None:
     facts = {**cached, "reused": True}
   else:
@@ -1410,9 +1432,8 @@ def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | Non
     fork = pathlib.Path(root) if root else role_compare.default_fork_root()
     if role_compare.readiness(fork)["ready"] and target.backend in DEVICE_PREFIX:
       probe = lambda args, env: lay.run_probe(str(role_compare.fork_python(fork)), str(fork), args, env)  # noqa: E731
-    topology = ""
-    if target.backend == "CUDA" and len(devs) > 1 and shutil.which("nvidia-smi"):
-      topology = providers._run(["nvidia-smi", "topo", "-m"])
+    from boltbeam.collectors import multi_gpu
+    topology = multi_gpu.topology(target.backend) if len(devs) > 1 else {}
     metal_read = None
     if target.backend == "Metal" and sys.platform == "darwin":
       from boltbeam.collectors import metal_bandwidth
@@ -1425,7 +1446,8 @@ def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | Non
     facts = lay.measure_machine(devs, backend=target.backend, device_prefix=DEVICE_PREFIX.get(target.backend),
                                 probe=probe, topology=topology, metal_read=metal_read, cuda_read=cuda_read,
                                 fallback=lambda tid: get_target(tid).memory_bandwidth_gbs if tid else None,
-                                profile_read=profile_read)
+                                profile_read=profile_read,
+                                join=(lambda used: multi_gpu.join(joins, used)) if joins else None)
     facts["reused"] = False
   write_json(run / lay.MACHINE, {k: v for k, v in facts.items() if k != "reused"})
   return {"schema": SCHEMA, "kind": "machine", **facts}
@@ -1901,7 +1923,8 @@ def main(argv:list[str] | None = None) -> int:
       out = compare_ready(pathlib.Path(args.run).expanduser(),
                           pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None)
     elif args.command == "machine":
-      out = machine(pathlib.Path(args.run).expanduser(), remeasure=args.remeasure,
+      run = pathlib.Path(args.run).expanduser()
+      out = machine(run, remeasure=args.remeasure, provider=run_provider(run),
                     root=pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None)
     elif args.command == "save":
       out = save(pathlib.Path(args.run).expanduser(), pathlib.Path(args.to))
