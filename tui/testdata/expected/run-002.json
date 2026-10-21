@@ -185,7 +185,6 @@
           "",
           "",
           "17.3",
-          "17.3",
           ""
         ],
         "best_ms": 48.304279176954736,
@@ -197,7 +196,6 @@
           "ms above limit",
           "share",
           "+ Tok/S if roofline",
-          "cumulative tok/s",
           "% of peak"
         ],
         "estimate": false,
@@ -215,11 +213,10 @@
               "48.30",
               "9.60",
               "100%",
-              "+3.4",
-              "20.7",
+              "",
               ""
             ],
-            "cumulative_tok_s": 20.7,
+            "cumulative_tok_s": null,
             "limit_ms": 48.304279176954736,
             "lost_ms": 9.59960038297578,
             "name": "kernels and gaps, not split",
@@ -227,8 +224,8 @@
             "pct_peak": null,
             "section": "Model operations",
             "share": 1.0,
-            "tok_s_gain": 3.4320996284131553,
-            "tok_s_if_fixed": 20.702099628413155,
+            "tok_s_gain": null,
+            "tok_s_if_fixed": null,
             "what": "rest"
           }
         ],
@@ -240,12 +237,11 @@
           "9.60",
           "100%",
           "20.7",
-          "20.7",
           ""
         ],
         "title": "Where the token goes",
         "token_ms": 57.903879559930516,
-        "words": "Context 128 \u00b7 57.90 ms/token. No model = measured time, unknown savings. Roofline is an upper bound. +tok/s allocates headroom by time difference; cumulative reconciles the roofline. These are accounting shares, not predicted speedups."
+        "words": "Context 128 \u00b7 57.90 ms/token. No model = measured time, unknown savings. Roofline is an upper bound. Native throughput allocation unavailable: capture timing is unqualified."
       }
     },
     "measured": true,
@@ -591,7 +587,7 @@
       "total_us": 57900.0
     },
     "validation": {
-      "checks": 14,
+      "checks": 13,
       "failures": [],
       "status": "passed"
     },

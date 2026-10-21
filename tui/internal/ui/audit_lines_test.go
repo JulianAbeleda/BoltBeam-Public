@@ -34,10 +34,10 @@ func TestReplayHeadlineIsNotNoLimit(t *testing.T) {
 // The decode tie-out said "Tracing slowed the token" also when the captured token was faster, and never showed the
 // repeat check or that the untraced time was taken at another context.
 func TestTokenEndToEndSaysTheSignTheContextAndTheCheck(t *testing.T) {
-	tie := seam.TieOut{Context: 145, TokenMs: fp(11.382), UntracedMs: fp(11.558), UntracedContext: ip(512),
+	tie := seam.TieOut{Context: 145, TokenMs: fp(11.382), UntracedMs: fp(11.558), UntracedContext: fp(512),
 		Band: sp("not checked: no repeat band for this setup")}
 	got := plain(tokenEndToEnd(tie))
-	for _, want := range []string{"captured token is 11.382 ms, the untraced median 11.558 ms (-1.5%)",
+	for _, want := range []string{"captured token is 11.382 ms, the untraced reference 11.558 ms (-1.5%)",
 		"untraced time is at context 512 and the capture at context 145", "Repeat check: not checked"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in %q", want, got)
@@ -46,9 +46,59 @@ func TestTokenEndToEndSaysTheSignTheContextAndTheCheck(t *testing.T) {
 	if strings.Contains(got, "slowed") {
 		t.Errorf("a faster capture is not slowed: %q", got)
 	}
-	tie.UntracedContext, tie.Band = ip(145), sp("repeat band ±0.120000 ms")
+	tie.UntracedContext, tie.Band = fp(145), sp("repeat band ±0.120000 ms")
 	if got := plain(tokenEndToEnd(tie)); strings.Contains(got, "not one setup") || !strings.Contains(got, "Repeat check: repeat band ±0.120000 ms.") {
 		t.Errorf("same context, checked: %q", got)
+	}
+}
+
+func TestDecodeHostQualificationOverridesKernelRepeatBand(t *testing.T) {
+	var tie seam.TieOut
+	raw := `{"context":2065,"untraced_context":2065,"token_ms":10.5,"untraced_ms":10,
+	 "token_source":"the captured long-minus-short elapsed estimate per token",
+	 "band":"repeat band ±1 ms","timing_match":{"matches":true},
+	 "end_to_end":{"reference":"untraced reference","captured_ms":10.5,"untraced_ms":10,
+	 "diff_pct":5,"band_ms":0.2,"confirms":false}}`
+	if err := json.Unmarshal([]byte(raw), &tie); err != nil {
+		t.Fatal(err)
+	}
+	got := plain(tokenEndToEnd(tie))
+	if !strings.Contains(got, "captured 10.5 ms, untraced reference 10.0 ms (+5.0%)") ||
+		!strings.Contains(got, "not confirmed: outside the repeat band of ±0.200 ms") || strings.Contains(got, "±1 ms") {
+		t.Fatalf("host timing must override kernel reconciliation: %s", got)
+	}
+	if body := plain(tieOutBody(&tie)); !strings.Contains(body, "not confirmed: outside the repeat band") {
+		t.Fatalf("differential capture must display its host verdict: %s", body)
+	}
+	tie.TimingMatch.Matches, tie.TimingMatch.Words = false, "windows differ"
+	if got = plain(tokenEndToEnd(tie)); !strings.Contains(got, "not checked: windows differ") || strings.Contains(got, "not confirmed") {
+		t.Fatalf("window refusal must precede the host verdict: %s", got)
+	}
+}
+
+func TestDecodeTimingPreservesFractionalContextsAndWindowRefusal(t *testing.T) {
+	var res seam.Results
+	raw := `{"timing":{"context":2065.5,"tok_s":70,"also":[{"context":4097.5,"tok_s":70}]},"ceiling":{"context":2065.5,"tok_s":80},
+	 "loss":{"step":{"context":2065.5,"requested_context":2048},"tie_out":{"context":2065.5,"untraced_context":2065.5,
+	 "token_ms":10,"untraced_ms":10,"band":"repeat band ±1 ms",
+	 "timing_match":{"matches":false,"words":"native and captured windows differ"}}}}`
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatal(err)
+	}
+	if *res.Timing.Context != 2065.5 || *res.Ceiling.Context != 2065.5 || *res.Loss.Step.Context != 2065.5 || *res.Timing.Also[0].Context != 4097.5 {
+		t.Fatal("mean attended context was rounded")
+	}
+	body := plain(resultBody(Facts{Run: &seam.Run{Results: res}}, 200))
+	if !strings.Contains(body, "Requested depth 2048; measured mean attended context 2065.5") || !strings.Contains(body, "Context 4097.5:") {
+		t.Fatalf("requested and effective contexts must both remain visible: %s", body)
+	}
+	got := plain(tokenEndToEnd(*res.Loss.TieOut))
+	if !strings.Contains(got, "not checked: native and captured windows differ") || strings.Contains(got, "Repeat check: repeat band") {
+		t.Fatalf("an equal mean context cannot authorize different windows: %s", got)
+	}
+	res.Loss.TieOut.UntracedContext = fp(2064.5)
+	if got = plain(tokenEndToEnd(*res.Loss.TieOut)); !strings.Contains(got, "context 2064.5 and the capture at context 2065.5") {
+		t.Fatalf("fractional context display: %s", got)
 	}
 }
 

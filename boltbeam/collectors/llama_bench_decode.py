@@ -3,7 +3,7 @@
     pipeline MODEL --run RUN --target nvidia_sm120 --measure auto
 
 It answers trace_request.json with a boltbeam.timing_trace.v1 holding one whole_step row per requested depth:
-llama-bench decode (`-p 0 -n N -d CTX`), the measured tokens per second of a real decode on this GPU. The Metal
+fresh llama-bench long/short decode pairs (`-p 0 -n N -d CTX`), estimating tokens 2..N from elapsed differences. The Metal
 collector (metal_native.py) takes the same rows from here.
 
 It writes no probe evidence and no kernel rows. BoltBeam's building-block probe kernels are Metal (MSL) only, and
@@ -18,10 +18,13 @@ streams with its own C-token prompt, then N decode steps of B tokens. Its t_tg o
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 import shutil
 import subprocess
+import statistics
+import tempfile
 from typing import Any, Callable
 
 from boltbeam.core.canonical import pretty_json
@@ -147,6 +150,8 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
   more than one decode capture."""
   from boltbeam.collectors import attribution, vendor_capture
   from boltbeam.workflow import layout as lay
+  if batch == 1:
+    decode_window(context, tokens)
   if layout == "row":
     raise attribution.CaptureRefused("split by rows runs every weight kernel on every GPU at once; per-role "
                                      f"attribution across devices is not built, so this run has the whole step only ({lay.LIMITED})")
@@ -171,46 +176,100 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
   window, overlap = attribution.shared_window(long, short)
   method = vendor_capture.plan(target.backend)["method"]
   printed = vendor_capture.program_output(raw / "long")
+  engine = None
   if batch > 1:
     pts = batched_points(printed, tokens)
     token_ms = pts[-1]["step_ms"] if pts else None
   else:
-    tok_s = bench_tok_s(printed)
-    token_ms = 1000.0 / tok_s if tok_s else None
+    pair = decode_pair(bench_row(printed), bench_row(vendor_capture.program_output(raw / "short")), context, tokens)
+    token_ms = pair["step_ms"]
+    engine = {**pair["engine"], "timing_window": decode_window(context, tokens)}
   return attribution.provider_trace(run, window, provider=PROVIDER, method=method, model_id=model_id,
                                     target=target, context=context, tokens=tokens - 1, out=out,
-                                    token_ms=token_ms, long_kernels=len(long), overlap=overlap, batch=batch)
+                                    token_ms=token_ms, long_kernels=len(long), overlap=overlap, batch=batch, engine=engine)
 
 
-def bench_tok_s(text:str) -> float | None:
-  """The decode tokens per second llama-bench printed in its JSON (`avg_ts` of the n_gen row), or None."""
+def bench_row(text:str) -> dict[str, Any]:
+  """The engine's decode result, allowing diagnostic text before or after the JSON."""
   start = text.find("[")
   while start >= 0:
     try:
       rows = json.JSONDecoder().raw_decode(text[start:])[0]
       row = next((r for r in rows if isinstance(r, dict) and int(r.get("n_gen", 0)) > 0), None)
       if row:
-        return float(row["avg_ts"])
-    except (ValueError, TypeError, KeyError):
+        return row
+    except (ValueError, TypeError):
       pass
     start = text.find("[", start + 1)
-  return None
+  raise ValueError("llama-bench printed no decode JSON row")
+
+
+def decode_window(depth:int, tokens:int) -> dict[str, Any]:
+  """A differential wall estimate and the exact token range used for kernel attribution."""
+  if type(tokens) is not int or tokens < 2 or type(depth) is not int or depth < 0:
+    raise ValueError("decode difference needs at least two tokens at a nonnegative depth")
+  return {"method": "long_minus_short", "long_tokens": tokens, "short_tokens": 1,
+          "context_start": depth + 2, "context_end": depth + tokens,
+          "repetitions": 1, "warmup": False, "process": "fresh_per_sample"}
+
+
+def decode_pair(long:dict, short:dict, depth:int, tokens:int) -> dict[str, Any]:
+  """Subtract synchronized engine elapsed samples, never rates or kernel busy time.
+  The first token is in a separate process: this estimates tokens 2..N and retains its subtraction noise."""
+  decode_window(depth, tokens)
+  fields = ("build_commit", "build_number", "model_filename", "n_batch", "n_ubatch", "type_k", "type_v", "flash_attn")
+  if any(long.get(k) != short.get(k) for k in fields):
+    raise ValueError("decode long/short engine settings differ")
+  times = []
+  for row, count in ((long, tokens), (short, 1)):
+    if any(type(row.get(k)) is not int for k in ("n_gen", "n_depth", "n_prompt")) \
+        or row.get("n_gen") != count or row.get("n_depth") != depth or row.get("n_prompt") != 0:
+      raise ValueError("decode long/short token window differs from the requested work")
+    samples = row.get("samples_ns")
+    if not isinstance(samples, list) or len(samples) != 1 or type(samples[0]) not in (int, float) \
+        or not math.isfinite(samples[0]) or samples[0] <= 0:
+      raise ValueError("decode difference needs one positive elapsed sample per fresh process")
+    times.append(samples[0])
+  if times[0] <= times[1]:
+    raise ValueError("decode long-minus-short elapsed time is not positive")
+  return {"long_ns": times[0], "short_ns": times[1], "step_ms": (times[0] - times[1]) / (tokens - 1) / 1e6,
+          "engine": {k: long[k] for k in ("n_ubatch", "n_batch", "type_k", "type_v", "flash_attn") if k in long}}
+
+
+def bench_tok_s(text:str) -> float | None:
+  """The decode tokens per second llama-bench printed in its JSON (`avg_ts` of the n_gen row), or None."""
+  try:
+    return float(bench_row(text)["avg_ts"])
+  except (ValueError, TypeError, KeyError):
+    return None
 
 
 def bench_decode(llama_bench:str, model:pathlib.Path, depth:int, layout_args:list[str] | None = None,
                  env:dict[str, str] | None = None, cwd:pathlib.Path | None = None) -> dict[str, Any]:
-  """The untraced whole step. The program runs in `cwd`, the run folder: an old llama.cpp build drops a
-  llama_decode.dot graph dump into its working directory on every decode, and it belongs with the run."""
-  cmd = [llama_bench, "-m", str(pathlib.Path(model).absolute()), "-p", "0", "-n", str(GEN_TOKENS), "-d", str(depth), "-ngl", "99",
-         "-r", str(BENCH_REPS), "-o", "json", *(layout_args or [])]
-  proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env={**os.environ, **(env or {})}, cwd=cwd)
-  if proc.returncode != 0:
-    raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
-  rows = json.loads(proc.stdout[proc.stdout.find("["):])
-  row = next(r for r in rows if int(r.get("n_gen", 0)) > 0)
-  return {"tok_s": float(row["avg_ts"]), "stddev_tok_s": float(row.get("stddev_ts", 0.0)), "command": cmd,
+  """Independent fresh long/short pairs with the same lifecycle as the vendor capture.
+  Each pair estimates tokens 2..N; raw commands, stdout and stderr survive even a refused pair in `cwd`."""
+  raw = pathlib.Path(tempfile.mkdtemp(prefix=f"decode-{depth}-", dir=cwd))
+  pairs = []
+  for repeat in range(BENCH_REPS):
+    rows = []
+    for label, count in (("long", GEN_TOKENS), ("short", 1)):
+      cmd = decode_argv(llama_bench, model, depth, count, layout_args)
+      stem = raw / f"{repeat + 1}-{label}"
+      stem.with_suffix(".command.json").write_text(pretty_json(cmd))
+      proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900, env={**os.environ, **(env or {})}, cwd=cwd)
+      stem.with_suffix(".stdout").write_text(proc.stdout)
+      stem.with_suffix(".stderr").write_text(proc.stderr)
+      if proc.returncode != 0:
+        raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
+      rows.append(bench_row(proc.stdout))
+    pairs.append(decode_pair(*rows, depth, GEN_TOKENS))
+  row = rows[0]
+  times = [p["step_ms"] for p in pairs]
+  return {"tok_s": 1000.0 / statistics.mean(times), "stddev_tok_s": statistics.stdev([1000.0 / t for t in times]) if len(times) > 1 else 0.0,
+          "command": decode_argv(llama_bench, model, depth, GEN_TOKENS, layout_args), "raw": str(raw), "samples": pairs,
           "build": row.get("build_commit"), "build_number": row.get("build_number"), "build_installed": _installed(llama_bench), "backends": row.get("backends"), "gpu": row.get("gpu_info"),
-          "decode_tokens": int(row.get("n_gen", GEN_TOKENS)), "engine": {k: row[k] for k in ("n_ubatch", "n_batch", "type_k", "type_v", "flash_attn") if k in row}}
+          "decode_tokens": GEN_TOKENS - 1, "measurement_scope": "differential_decode_elapsed",
+          "engine": {**pairs[0]["engine"], "timing_window": decode_window(depth, GEN_TOKENS)}}
 
 
 def _installed(llama_bench:str) -> str | None:
@@ -266,16 +325,17 @@ def build_timing_trace(manifest:dict[str, Any], bench:dict[int, dict[str, Any]],
   """The trace from the measured decodes. Pure: the tests feed it numbers."""
   rows = [{"scope": "whole_step", "context": ctx, "wall_us": 1e6 / b["tok_s"], "tok_s": b["tok_s"],
            "stddev_tok_s": b["stddev_tok_s"], "source": "llama-bench", "engine": b.get("engine", {}), "decode_tokens": b.get("decode_tokens"),
+           **({"measurement_scope": b["measurement_scope"]} if b.get("measurement_scope") else {}),
            **build_facts(b)}
           for ctx, b in sorted(bench.items())]
   trace = {
     "schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
     "workload": manifest["workload"], "provider_id": PROVIDER_ID, "collector_id": COLLECTOR_ID,
     "timing_source": "llama-bench whole step", "contexts": sorted(bench), "rows": rows,
-    "measured": ["whole_step.tok_s (llama-bench decode at each depth)"],
+    "measured": ["whole_step.tok_s (llama-bench long-minus-short elapsed estimate at each depth)"],
     "absent": ["kernel rows: llama.cpp's per-kernel time needs the vendor profiler (collect-hw-trace)",
                "candidate rows: " + PROBE_ABSENT],
-    "notes": ["Whole-step tokens per second is llama-bench decode at the requested depth; nothing else stands in for it."],
+    "notes": ["Fresh long/short pairs estimate tokens 2..N at each requested depth; the subtracted first token is from a separate process, so its run-to-run noise remains."],
   }
   if peak_gbs:
     trace["peak_gbs"] = peak_gbs
@@ -289,7 +349,7 @@ def batch_points(bench:dict[int, dict[str, Any]], model:pathlib.Path, batches, *
   llama-batched-bench. Reports progress as the second half of the stage (the first half is the decodes)."""
   from boltbeam.workflow import progress
   points = [{"context": ctx, "batch": 1, "step_ms": 1000.0 / b["tok_s"], "tok_s_stream": b["tok_s"],
-             "tok_s_total": b["tok_s"], "tokens": GEN_TOKENS, "source": "llama-bench"} for ctx, b in sorted(bench.items())]
+             "tok_s_total": b["tok_s"], "tokens": b.get("decode_tokens", GEN_TOKENS), "source": "llama-bench"} for ctx, b in sorted(bench.items())]
   wide = sorted({int(b) for b in batches if int(b) > 1})
   if not wide:
     return points

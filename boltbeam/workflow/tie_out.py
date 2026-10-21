@@ -124,12 +124,28 @@ def kv_ms(profile:dict[str, Any], context:float, element_bytes:int, bandwidth_gb
   return per * context / (bandwidth_gbs * 1e9) * 1e3
 
 
+def window_context(row:dict[str, Any]) -> float | None:
+  """Only explicit, internally consistent differential windows replace the requested base context."""
+  window = (row.get("engine") or {}).get("timing_window") or {}
+  if window.get("method") != "long_minus_short":
+    return None
+  from boltbeam.collectors.llama_bench_decode import decode_window
+  expected = decode_window(row.get("context"), window.get("long_tokens"))
+  if window != expected or any(type(window.get(k)) is not int for k in ("long_tokens", "short_tokens", "context_start", "context_end", "repetitions")) \
+      or window.get("warmup") is not False or type(row.get("decode_tokens")) is not int or row["decode_tokens"] != window["long_tokens"] - 1:
+    raise ValueError("decode timing window is inconsistent with the recorded work")
+  mean = (window["context_start"] + window["context_end"]) / 2
+  return int(mean) if mean.is_integer() else mean
+
+
 def attended_context(trace:dict[str, Any], provider:str) -> float | None:
   """The mean context the measured tokens attended to. Captures subtract a 1-token run from an N-token run at the
   same depth, so the window is tokens 2..N; tinygrad's own timing measures tokens 1..N after its warm tokens."""
   whole = next((r for r in trace.get("rows", []) if r.get("scope") == "whole_step"), None)
   if not whole or whole.get("context") is None:
     return None
+  if (explicit := window_context(whole)) is not None:
+    return explicit
   method = (trace.get("capture") or {}).get("method")
   if method == ISOLATED:  # the kernels ran alone: the context is step 4's, as the row carries it
     return float(whole["context"])
@@ -240,14 +256,18 @@ def measured_step(trace:dict[str, Any] | None, provider:str, near:float | None =
   rows = [r for r in trace.get("rows", []) if r.get("scope") == "whole_step" and r.get("tok_s")]
   if not rows:
     return None
-  key = (lambda r: abs(float(r.get("context") or 0) - near)) if near is not None else (lambda r: float(r.get("context") or 0))
+  def context(r):
+    explicit = window_context(r)
+    return explicit if explicit is not None else r.get("context")
+  key = (lambda r: abs(float(context(r) or 0) - near)) if near is not None else (lambda r: float(context(r) or 0))
   row = min(rows, key=key)
   index = trace["rows"].index(row)
-  return {"context": row.get("context"), "tok_s": row["tok_s"], "ms": 1000.0 / row["tok_s"], "wall_us": row.get("wall_us"),
+  return {"context": context(row), "requested_context": row.get("context"), "tok_s": row["tok_s"], "ms": 1000.0 / row["tok_s"], "wall_us": row.get("wall_us"),
           "source": row.get("source"),
+          "timing_window": (row.get("engine") or {}).get("timing_window"),
           "graph_error": row.get("graph_error"), "index": index, "decode_tokens": row.get("decode_tokens"),
           "rule": "nearest the context the per-role capture attended" if near is not None else "the smallest context",
-          "also": [{"context": r.get("context"), "tok_s": r["tok_s"], "ms": 1000.0 / r["tok_s"]} for r in rows if r is not row]}
+          "also": [{"context": context(r), "tok_s": r["tok_s"], "ms": 1000.0 / r["tok_s"]} for r in rows if r is not row]}
 
 
 def _step4(run:pathlib.Path, context:float | None, provider:str) -> tuple[float | None, int | None]:
@@ -276,16 +296,25 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   streams = f" for each of {batch} streams" if batch > 1 else ""
   out = {"provider": provider, "context": context, "limit_ms_ctx1": limit_ms, "limit_ms": limit, "kv_ms": kv,
          "batch": batch,
-         "kv_source": f"KV cache read at context {context:.0f}{streams}: {element} bytes per element, {element_source}",
+         "kv_source": f"KV cache read at context {context:g}{streams}: {element} bytes per element, {element_source}",
          "show_both": kv >= SHOW_BOTH_SHARE * limit_ms, "untraced_ms": untraced, "untraced_context": untraced_ctx,
          "lines": [], "token_ms": None, "token_source": None, "busy_ms": None, "missing": missing, "refused": None,
          "isolated": (trace or {}).get("capture", {}).get("method") == ISOLATED}
   whole = next((r for r in (trace or {}).get("rows", []) if r.get("scope") == "whole_step"), {})
+  if provider == "llama.cpp" and (trace or {}).get("capture", {}).get("method") not in (None, ISOLATED):
+    path = run / "timing_trace.json"
+    native = measured_step(json.loads(path.read_text()), provider, near=context) if path.exists() else None
+    captured_window = (whole.get("engine") or {}).get("timing_window")
+    matches = bool(window_context(whole) is not None and native and native.get("timing_window") == captured_window)
+    out["timing_match"] = {"matches": matches, "native_window": (native or {}).get("timing_window"),
+                           "captured_window": captured_window,
+                           "words": "same differential decode window and fresh-process lifecycle" if matches else
+                                    "native and captured decode timing need matching explicit windows and lifecycles"}
   if table is None:  # no kernel view here: the whole step from step 4 is the token
     if untraced is None:
       return out
     out.update(token_ms=untraced, token_source=f"the untraced whole step at context {untraced_ctx}")
-    out["lines"] = [{"label": f"limit at context {context:.0f} (ideal)", "ms": limit, "how": "derived"},
+    out["lines"] = [{"label": f"limit at context {context:g} (ideal)", "ms": limit, "how": "derived"},
                     {"label": "kernels and gaps, not split", "ms": untraced - limit, "how": "difference"}]
     return out
   busy = table["kernel_ms"]
@@ -295,6 +324,8 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   outside = (trace or {}).get("capture", {}).get("method") not in (None, OWN_TIMING)
   if whole.get("token_ms"):
     token, source = whole["token_ms"], "the captured run's own time per token"
+    if window_context(whole) is not None:
+      source = "the captured long-minus-short elapsed estimate per token"
   else:
     token, source = untraced, f"the untraced whole step at context {untraced_ctx}"
   if not outside:
@@ -307,6 +338,11 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
     return out
   if out["isolated"]:
     return _isolated(out, table, token, limit, context)
+  match = out.get("timing_match") or {}
+  out["end_to_end"] = end_to_end({"measured_ms": whole.get("token_ms"), "wall_ms": token,
+                                  "busy_ms": busy, "gaps_ms": token - busy, "timing_window": match.get("captured_window")},
+                                 untraced, "token", band=(table.get("band") or {}).get("calibration"),
+                                 reference="untraced reference", reference_window=match.get("native_window"))
   spread = (table.get("band") or {}).get("width_ms")
   out["check_status"] = table.get("check_status", "not checked")
   if spread is not None and busy - token > spread:  # idle time cannot be negative beyond noise: the two numbers are not comparable
@@ -320,7 +356,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   weight_above = sum(r["actual_ms"] - r["ideal_ms"] for r in roles)
   other_busy = busy - sum(r["actual_ms"] for r in roles + doubted)
   other_ideal = limit - weight_ideal
-  lines = [{"label": f"limit at context {context:.0f} (ideal)", "ms": limit, "how": "derived"}]
+  lines = [{"label": f"limit at context {context:g} (ideal)", "ms": limit, "how": "derived"}]
   if roles:
     taken = {(r["role"], r["quant"]) for r in roles + doubted}
     outside_roles = roles_outside_limit(profile, taken | {(u["role"], u["quant"]) for u in table.get("unpaired_roles") or []})
@@ -394,7 +430,7 @@ def _isolated(out:dict[str, Any], table:dict[str, Any], token:float, limit:float
   scale = min(1.0, room / weight_base) if weight_base else None
   weight_est = weight_base * scale if scale is not None else None
   out["show_both"] = True
-  out["lines"] = [{"label": f"limit at context {context:.0f} (ideal)", "ms": limit, "how": "derived"},
+  out["lines"] = [{"label": f"limit at context {context:g} (ideal)", "ms": limit, "how": "derived"},
                   {"label": NOT_SPLIT_LABEL, "ms": token - limit, "how": "difference"}]
   scaled = scale is not None and scale < 1.0
   floor = f" {floor_words(floor_us)}" if floor_us is not None else ""  # in weight_how; other_how formats its own
@@ -440,6 +476,8 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
   token, limit = float(tie["token_ms"]), float(tie["limit_ms"])
   base = float(tie["untraced_ms"]) if tie.get("untraced_ms") is not None else token  # measured_step's token
   est = tie.get("estimate")
+  project = bool(est) or ((tie.get("timing_match") or {}).get("matches") is True
+                         and (tie.get("end_to_end") or {}).get("confirms") is True)
   rows: list[dict[str, Any]] = []
   add = lambda name, what, now, at, **kw: rows.append({"name": name, "what": what, "now_ms": now, "limit_ms": at, **kw})  # noqa: E731
   lines = tie["lines"]
@@ -479,13 +517,14 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
       now = l["ms"] + (limit if i == 0 else 0.0)
       add(l["label"].replace(" above the ideal", "").replace(" above their ideal", ""), "gaps" if gaps else "rest",
           now, 0.0 if gaps else (limit if i == 0 else None))
-  total = rank(rows, lambda r: 1000.0 / (base - r["lost_ms"]) if base - r["lost_ms"] > 0 and r["what"] != "limit" else None,
+  total = rank(rows, lambda r: 1000.0 / (base - r["lost_ms"]) if project and base - r["lost_ms"] > 0 and r["what"] != "limit" else None,
                "tok_s_if_fixed")
-  words = [f"Context {tie['context']:.0f} · {token:.2f} ms/token. No model = measured time, unknown savings. Roofline is an upper bound."]
+  words = [f"Context {tie['context']:g} · {token:.2f} ms/token. No model = measured time, unknown savings. Roofline is an upper bound."]
   if abs(base - token) > 1e-9:
     words.append(f"Captured {token:.1f} ms; untraced {base:.1f} ms.")
-    if token > base:
-      words.append(f"Capture overhead: {token-base:.1f} ms, included in gaps.")
+    words.append(f"Difference: {token-base:+.1f} ms; its cause is unassigned.")
+  if not project:
+    words.append("Native throughput allocation unavailable: capture timing is unqualified.")
   if est:
     words.append("Estimate from isolated weight timings; the remaining time is inferred.")
     words.append("% of peak uses isolated time minus the measured dispatch floor.")
@@ -493,7 +532,7 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
     words.append("The negative unsplit-limit row balances the modeled budget; read it with the unsplit kernels.")
   return decode_progress(table(WHERE_TITLE, WHERE_COLUMNS, rows, now=token, limit=limit, lost=total, no_limit=NO_LIMIT,
                if_fixed=("tok_s_if_fixed", "{:.1f}"), peak=("pct_peak", "{:.1f}%"), sum_name="= token",
-               estimate=bool(est), token_ms=token, base_ms=base, limit_ms=limit, words=" ".join(words)))
+               estimate=bool(est), token_ms=token, base_ms=base, limit_ms=limit, words=" ".join(words)), allocate=project)
 
 
 def rank(rows:list[dict[str, Any]], if_fixed, key:str) -> float:
@@ -543,29 +582,32 @@ NO_CEILING = "no model"  # a kernel with no operations or bytes the model knows 
 
 
 def end_to_end(attr:dict[str, Any], untraced_ms:float | None, what:str = "prefill", *, band:dict | None = None,
-               reference:str = "untraced median") -> dict[str, Any]:
-  """Whether a capture confirms the untraced prefill end to end. The kernels plus the gaps always equal the captured
-  wall time (attribute_prefill); this checks that captured wall time against the untraced median, within
-  the matching repeat spread. Without it the result is not checked. gap_growth_ms is its own figure: the capture's idle beyond what the untraced prefill leaves room
+               reference:str = "untraced median", reference_window:dict | None = None) -> dict[str, Any]:
+  """Compare full engine elapsed timers only with identical recorded measurement windows and host-timer repeat bands.
+  The GPU kernel span and its gaps reconcile separately; neither substitutes for the complete host interval.
+  Without matching evidence the result is not checked. gap_growth_ms is its own figure: the capture's idle beyond what the untraced prefill leaves room
   for (the gaps less the untraced time over the kernels' busy time; zero when the gaps fit in it). An engine's own timing
   sums to the untraced prefill already, so there is nothing to check."""
-  captured, gaps, busy = attr.get("profiled_wall_ms"), float(attr.get("gaps_ms") or 0.0), float(attr.get("busy_ms") or 0.0)
+  captured, gaps, busy = attr.get("measured_ms"), float(attr.get("gaps_ms") or 0.0), float(attr.get("busy_ms") or 0.0)
   if untraced_ms is None or not captured:
-    return {"confirms": None, "words": "no untraced prefill at this length: the capture is not checked end to end"}
+    return {"confirms": None, "words": "no matching captured engine elapsed timer and untraced time: the GPU kernel span alone cannot confirm end-to-end timing"}
   if abs(float(attr["wall_ms"]) - float(untraced_ms)) < 1e-9 and abs(float(attr["wall_ms"]) - captured) > 1e-9:
     return {"confirms": None, "words": "the rows sum to the untraced prefill (the engine's own timing): no capture to check"}
   diff = captured - float(untraced_ms)
   share = diff / float(untraced_ms)
   growth = max(gaps - max(float(untraced_ms) - busy, 0.0), 0.0)
   from boltbeam.workflow.repeat_bands import end_to_end_width
-  width = end_to_end_width(band)
+  matched = bool(reference_window) and attr.get("timing_window") == reference_window
+  width = end_to_end_width(band, captured_key="engine_elapsed_ms") if matched else None
   ok = abs(diff) <= width if width is not None else None
-  band_words = f"repeat band ±{width:.6f} ms" if width is not None else "not checked: no repeat band for this setup"
-  return {"confirms": ok, "captured_ms": captured, "untraced_ms": float(untraced_ms), "diff_ms": diff, "diff_pct": 100 * share,
+  band_words = (f"repeat band ±{width:.6f} ms" if width is not None else
+                "not checked: native and captured timing windows differ or are unrecorded" if not matched else
+                "not checked: no engine-elapsed repeat band for this setup")
+  return {"confirms": ok, "captured_ms": captured, "kernel_span_ms": attr.get("profiled_wall_ms"), "untraced_ms": float(untraced_ms), "diff_ms": diff, "diff_pct": 100 * share,
           "reference": reference,
           "band_pct": 100 * width / float(untraced_ms) if width is not None else None, "band_ms": width,
           "status": "checked" if ok is not None else "not checked", "gaps_ms": gaps, "gap_growth_ms": growth,
-          "words": (f"the captured {what} took {captured:.1f} ms against the {float(untraced_ms):.1f} ms {reference} "
+          "words": (f"the captured engine timer for {what} took {captured:.1f} ms against the {float(untraced_ms):.1f} ms {reference} "
                     f"({100 * share:+.1f}%, {band_words}); its gaps are {gaps:.1f} ms, "
                     f"{growth:.1f} ms more than the untraced {what} leaves room for"
                     + ("" if ok is not False else f". The rows stand, but this capture does not confirm the {what} end to end"))}
@@ -633,7 +675,7 @@ def where_decode_capture_goes(attr:dict[str, Any], *, untraced_ms:float | None,
   return decode_progress(result)
 
 
-def decode_progress(result:dict[str, Any]) -> dict[str, Any]:
+def decode_progress(result:dict[str, Any], *, allocate:bool = True) -> dict[str, Any]:
   """Engine-neutral additive allocation and cumulative decode throughput, in displayed order."""
   rows=result['rows']
   limit=result['limit_ms'];base=result['base_ms'];total=result['lost_ms']
@@ -647,6 +689,10 @@ def decode_progress(result:dict[str, Any]) -> dict[str, Any]:
     gain=1000/limit-measured
     result['measured_tok_s']=measured
     result['baseline_cells']=['measured throughput', '', '', '', '', '', f'{measured:.1f}', '']
+    if not allocate:
+      for row in rows:
+        row.update(tok_s_gain=None, cumulative_tok_s=None)
+      return result
     # Round cumulative allocation, then difference adjacent totals so displayed tenths add exactly.
     rounded=lambda value:Decimal(str(value)).quantize(Decimal('.1'), rounding=ROUND_HALF_UP)
     previous=rounded(measured)

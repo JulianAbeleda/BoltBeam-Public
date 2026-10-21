@@ -159,8 +159,16 @@ The workload picker offers four different measurements:
 A valid report means its accounting checks passed. Timing confirmation and token agreement have their own
 verdicts. Session runs retain cold and cached token/probability samples by depth in `session_reference.json`;
 `FAIL` in the next-token column means that comparison failed even if timings are available. Replay benchmark
-captures describe a separate invocation until both their engine timer and GPU span match the server within the
-setup's repeat band. Read those limits in Run and Emit before using a capture to explain server latency.
+captures describe a separate invocation. Timer agreement alone cannot establish the server's execution path;
+server attribution requires matching recorded intervals and repeat-band checks. Read those limits in Run and
+Emit before using a capture to explain server latency.
+
+Timing confirmation compares matching engine elapsed intervals. GPU first-to-last kernel time is a separate
+measurement and excludes host work. Prefill and session compare the final repetition after the same warmup and
+repetition count; their throughput headlines retain the native median. Decode compares fresh long/short process
+pairs to estimate the same generated-token window on both sides, retaining subtraction noise and both the
+requested depth and mean attended context. Older kernel-span bands cannot qualify these host intervals.
+Matching the interval establishes comparability; profiler overhead can still prevent timing confirmation.
 
 ## Next steps
 

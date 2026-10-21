@@ -126,7 +126,8 @@ def where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   if not (attr and row):
     return None
   from boltbeam.workflow.repeat_bands import find
-  attr = {**attr, "end_to_end": tie.end_to_end(attr, row["turn_ms"], "turn", band=find(run, f"prefill {trace['turn_tokens']}"))}
+  attr = {**attr, "end_to_end": tie.end_to_end(attr, row.get("qualification_ms") or row["turn_ms"], "turn", band=find(run, f"prefill {trace['turn_tokens']}"),
+                                             reference="untraced final repetition", reference_window=(row.get("engine") or {}).get("timing_window"))}
   return tie.where_prefill_goes(attr, untraced_ms=row["turn_ms"], length=int(trace["turn_tokens"]), depth=int(depth))
 
 

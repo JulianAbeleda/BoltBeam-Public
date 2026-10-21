@@ -168,14 +168,15 @@ def llama_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) 
   samples = [float(x) / 1e6 for x in row.get("samples_ns") or [row["avg_ns"]]]
   rates = [DECODE / (float(x) / 1e9) for x in gen.get("samples_ns") or [gen["avg_ns"]]]
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
-  return {"ms": statistics.median(samples), "samples_ms": samples, "computed": [TURN] * len(samples),
+  qualified = pf.qualification_sample(row, TURN, depth)
+  return {"ms": statistics.median(samples), "qualification_ms": qualified, "samples_ms": samples, "computed": [TURN] * len(samples),
           "chunk": pf.chunk_record(pf.split_chunks(TURN, ub) if ub else [], f"llama-bench n_ubatch {ub}, n_batch {b}",
                                    outputs=-(-TURN // b) if b else None),
           "decode": {"tok_s": statistics.median(rates), "tokens": DECODE, "from": depth, "samples_tok_s": rates},
           "telemetry": tele.summary(), "telemetry_samples": gpu_telemetry.compact(tele.samples),
           "source": (f"llama-bench -p {TURN} -n {DECODE} -d {depth}: the prompt after {depth} tokens it filled untimed "
                      f"(its own random ids, fixed seed), {len(samples)} repetitions after its warm-up, untraced"),
-          "engine": {"build": row.get("build_commit"), "build_number": row.get("build_number"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
+          "engine": {"timing_window": pf.timing_window(TURN, depth) if qualified is not None else None, "build": row.get("build_commit"), "build_number": row.get("build_number"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
                      "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd}}
 
 
@@ -371,7 +372,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
       check["kind"] = "against llama.cpp, an independent engine, on the same tokens"
     tele = got["telemetry"]
     rows.append({**base, "turn_ms": got["ms"], "wall_us": got["ms"] * 1e3, "tok_s": TURN / got["ms"] * 1e3,
-                 "samples_ms": got["samples_ms"], "computed": got["computed"], "chunk": got["chunk"],
+                 "samples_ms": got["samples_ms"], "qualification_ms": got.get("qualification_ms"), "computed": got["computed"], "chunk": got["chunk"],
                  "batched": got["chunk"]["batched"], "decode": got["decode"], "decode_tok_s": got["decode"]["tok_s"],
                  "check": check, "reference_fill_s": r.get("cold_s"), "telemetry": tele, "throttled": tele.get("throttled"),
                  "telemetry_samples": got.get("telemetry_samples"), "source": got["source"], "engine": got["engine"],

@@ -49,7 +49,8 @@ def tables(run:pathlib.Path) -> dict[int, dict[str, Any]]:
   for length, attr in (trace.get("lengths") or {}).items():
     t = truth.get(int(length)) or {}
     from boltbeam.workflow.repeat_bands import find
-    attr = {**attr, "end_to_end": tie.end_to_end(attr, t.get("prefill_ms"), band=find(run, f"prefill {length}"))}
+    attr = {**attr, "end_to_end": tie.end_to_end(attr, t.get("qualification_ms") or t.get("prefill_ms"), band=find(run, f"prefill {length}"),
+                                               reference="untraced final repetition", reference_window=(t.get("engine") or {}).get("timing_window"))}
     w = tie.where_prefill_goes(attr, untraced_ms=t.get("prefill_ms"), length=int(length))
     if w:
       out[int(length)] = w

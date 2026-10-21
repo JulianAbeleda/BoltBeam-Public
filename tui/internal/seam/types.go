@@ -478,7 +478,7 @@ type Timing struct {
 	Status         string       `json:"status"` // classified | absent
 	DominantBucket *string      `json:"dominant_bucket"`
 	NextActions    []string     `json:"next_actions"`
-	Context        *int         `json:"context"`
+	Context        *float64     `json:"context"`
 	TotalUs        *float64     `json:"total_us"`
 	TokS           *float64     `json:"tok_s"`
 	Also           []AlsoAt     `json:"also"` // the other contexts step 4 measured, labelled, never the headline
@@ -499,7 +499,7 @@ type Regime struct {
 type CeilingRef struct {
 	Status           string   `json:"status"` // modeled | absent
 	Reason           string   `json:"reason"`
-	Context          *int     `json:"context"`
+	Context          *float64 `json:"context"`
 	TokS             *float64 `json:"tok_s"`
 	FloorMs          *float64 `json:"floor_ms"`
 	PeakBandwidthGBs *float64 `json:"peak_bandwidth_gbs"`
@@ -578,19 +578,20 @@ type RateRow struct {
 // Step is THE measured token (tie_out.measured_step): the row every headline reads, with the engine's own account
 // of how it ran (Source) and its graph state, and the other contexts measured (Also, never the headline).
 type Step struct {
-	Context     *int     `json:"context"`
-	TokS        float64  `json:"tok_s"`
-	Ms          float64  `json:"ms"`
-	Source      *string  `json:"source"`
-	Rule        string   `json:"rule"`
-	GraphFailed bool     `json:"graph_failed"`
-	GraphError  *string  `json:"graph_error"`
-	Also        []AlsoAt `json:"also"`
+	Context          *float64 `json:"context"`
+	RequestedContext *int     `json:"requested_context"`
+	TokS             float64  `json:"tok_s"`
+	Ms               float64  `json:"ms"`
+	Source           *string  `json:"source"`
+	Rule             string   `json:"rule"`
+	GraphFailed      bool     `json:"graph_failed"`
+	GraphError       *string  `json:"graph_error"`
+	Also             []AlsoAt `json:"also"`
 }
 
 type AlsoAt struct {
-	Context *int    `json:"context"`
-	TokS    float64 `json:"tok_s"`
+	Context *float64 `json:"context"`
+	TokS    float64  `json:"tok_s"`
 }
 
 // CrossCheck is the engine's kernels timed alone beside an in-model capture.
@@ -857,6 +858,7 @@ type Estimate struct {
 }
 
 type TieOut struct {
+	EndToEnd        *EndToEnd `json:"end_to_end"`
 	Provider        string    `json:"provider"`
 	Context         float64   `json:"context"`
 	LimitMsCtx1     float64   `json:"limit_ms_ctx1"`
@@ -865,7 +867,7 @@ type TieOut struct {
 	KvSource        string    `json:"kv_source"`
 	ShowBoth        bool      `json:"show_both"`
 	UntracedMs      *float64  `json:"untraced_ms"`
-	UntracedContext *int      `json:"untraced_context"`
+	UntracedContext *float64  `json:"untraced_context"`
 	TokenMs         *float64  `json:"token_ms"`
 	TokenSource     *string   `json:"token_source"`
 	BusyMs          *float64  `json:"busy_ms"`
@@ -877,6 +879,10 @@ type TieOut struct {
 	// Band is the repeat check in words: "not checked: ..." without a matching repeat band; CheckStatus is its word.
 	Band        *string `json:"band"`
 	CheckStatus *string `json:"check_status"`
+	TimingMatch *struct {
+		Matches bool   `json:"matches"`
+		Words   string `json:"words"`
+	} `json:"timing_match"`
 }
 
 type TieLine struct {

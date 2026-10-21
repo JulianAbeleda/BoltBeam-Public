@@ -18,6 +18,7 @@ ENGINES holds what differs per engine: how to time one prefill, how to capture o
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 import shutil
@@ -54,6 +55,19 @@ def split_chunks(length:int, size:int) -> list[int]:
 
 
 # --- llama.cpp -------------------------------------------------------------------------------------------------
+
+def timing_window(length:int, depth:int = 0) -> dict:
+  """The host interval compared across native and profiled llama-bench runs."""
+  return {"method": "last_repetition", "repetitions": REPS, "warmup": True, "prompt_tokens": length, "depth": depth}
+
+
+def qualification_sample(row:dict, length:int, depth:int = 0) -> float | None:
+  samples = row.get("samples_ns")
+  if not isinstance(samples, list) or len(samples) != REPS or any(type(x) not in (int, float) or not math.isfinite(x) or x <= 0 for x in samples):
+    return None
+  if row.get("n_prompt") != length or (row.get("n_depth") or 0) != depth or (row.get("n_gen") or 0) != 0:
+    return None
+  return samples[-1] / 1e6
 
 def _bench(run:pathlib.Path) -> str:
   from boltbeam.collectors.llama_bench_decode import ENV, CannotMeasure, find
@@ -102,12 +116,13 @@ def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> d
   row = llama_row(proc.stdout)
   samples = [float(x) / 1e6 for x in row.get("samples_ns") or [row["avg_ns"]]]
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
+  qualified = qualification_sample(row, length)
   chunk = chunk_record(split_chunks(length, ub) if ub else [], f"llama-bench n_ubatch {ub}, n_batch {b}",
                        outputs=-(-length // b) if b else None)
-  return {"ms": statistics.median(samples), "samples_ms": samples, "chunk": chunk, "telemetry": tele.summary(),
+  return {"ms": statistics.median(samples), "qualification_ms": qualified, "samples_ms": samples, "chunk": chunk, "telemetry": tele.summary(),
           "telemetry_samples": gpu_telemetry.compact(tele.samples),
           "source": f"llama-bench -p {length} -n 0, {len(samples)} repetitions after its warm-up, untraced",
-          "engine": {"build": row.get("build_commit"), "build_number": row.get("build_number"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
+          "engine": {"timing_window": timing_window(length) if qualified is not None else None, "build": row.get("build_commit"), "build_number": row.get("build_number"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
                      "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd,
                      "n_ctx": int(row.get("n_prompt") or length) + int(row.get("n_gen") or 0),
                      "n_ctx_source": "llama-bench sizes its context to n_prompt + n_gen + n_depth",
@@ -144,16 +159,15 @@ def llama_formats(type_k:str | None, weights:set[str] | None = None) -> dict[str
 PROMPT_WORDS = {"llama.cpp": "llama-bench's own prompt: token ids drawn by std::rand() % n_vocab (never seeded: one fixed "
                             "sequence; each repetition draws new ids), the KV cache cleared before every repetition, so "
                             "nothing is cached between prompts"}
-COPIES = 3  # a capture's prefills at most: the engine's warm-up and two repetitions (llama_capture)
+COPIES = REPS + 1  # warm-up followed by the same repetition count as the native run
 MAX_CAPTURE_LAUNCHES = 1_000_000  # a capture estimated to hold more launches than this is not taken: its time stands alone
 
 
 def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0, extra:list[str] | None = None,
                   raw:pathlib.Path | None = None) -> dict[str, Any]:
-  """The prompt captured twice after the warm-up, the last one measured (prefill_attribution.REPEAT): llama-bench's
-  first repetition after its warm-up can carry a one-time host cost its later ones do not, and the untraced median it
-  is checked against leaves it out. At a depth, the depth filled then the prompt twice (llama-bench keeps the filled
-  cache for its second repetition). extra: llama_argv's;
+  """The prompt captured with the native run's repetition count after warm-up; attribute the final repetition.
+  Compare its host timer to the native final repetition, separately from the headline median. Cache restoration
+  can rebuild the graph on repetition two, so choosing another repetition changes the lifecycle. extra: llama_argv's;
   raw: the capture's folder, when a run holds more than one capture of one length at one depth."""
   from boltbeam.collectors import vendor_capture
   from boltbeam.collectors.prefill_attribution import REPEAT
@@ -163,10 +177,11 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   settings = llama_flags(run, length, capture=True) if not depth else []
   from boltbeam.workflow.layout import one_gpu
   pin, env = one_gpu(run, "llama.cpp")
-  launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, 2, depth=depth,
+  launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, REPS, depth=depth,
                                                                extra=[*pin, *settings, *(extra or [])]), raw, env=env,
                                     device=run_gpu(run))
   row = llama_row(vendor_capture.program_output(raw))
+  qualified = qualification_sample(row, length, depth)
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   formats = llama_formats(row.get("type_k"), weight_quants(run))
   if target.backend == "CUDA" and target.compute_units:
@@ -179,12 +194,12 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
     except engine_kernels.NoEngineSource:
       pass
   return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1,
-          "warmup": REPEAT, "copies": 2 if depth else COPIES, "formats": formats,
+          "warmup": REPEAT, "copies": REPS if depth else COPIES, "formats": formats, "timing_window": timing_window(length, depth) if qualified is not None else None,
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches, device=run_gpu(run)),
           "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches),
-          "measured_ms": float((row.get("samples_ns") or [row["avg_ns"]])[-1]) / 1e6,  # the repetition attributed
-          "prune": llama_prunes(launches, split_chunks(length, ub), -(-length // b) if b else 1, copies=2 if depth else COPIES)}
+          "measured_ms": qualified,  # never substitute an average for the final repetition
+          "prune": llama_prunes(launches, split_chunks(length, ub), -(-length // b) if b else 1, copies=REPS if depth else COPIES)}
 
 
 LLAMA_PRUNED_STAGES = ("ffn_in", "ffn_out")  # llama.cpp keeps only the output rows (inp_out_ids) before the last FFN
@@ -615,7 +630,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
     tele = got["telemetry"]
     rows.append({"scope": "whole_step", "workload": "prefill", "context": int(length), "prompt_tokens": int(length),
                  "wall_us": got["ms"] * 1e3, "prefill_ms": got["ms"], "tok_s": int(length) / got["ms"] * 1e3,
-                 "samples_ms": got["samples_ms"], "chunk": got["chunk"], "batched": got["chunk"]["batched"],
+                 "samples_ms": got["samples_ms"], "qualification_ms": got.get("qualification_ms"), "chunk": got["chunk"], "batched": got["chunk"]["batched"],
                  **({"replay": got["replay"], "replay_failed": got.get("replay_failed")} if "replay" in got else {}),
                  "telemetry": tele, "throttled": tele.get("throttled"), "telemetry_samples": got.get("telemetry_samples"),
                  "source": got["source"], "engine": got["engine"],
@@ -730,6 +745,8 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              observed=cap["paths"].get("observed"), prune=cap.get("prune"), unc=out["uncertainty"],
                              measured_ms=cap.get("measured_ms"))
     from boltbeam.workflow.repeat_bands import find
+    attr["measured_ms"] = cap.get("measured_ms")
+    attr["timing_window"] = cap.get("timing_window")
     attr["end_to_end"] = tie_out.end_to_end(attr, truth_ms.get(int(length)), band=find(run, f"prefill {length}"))
     per_chunk = len(cap["launches"]) / cap.get("copies", 2 if cap["warmup"] else 1) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",

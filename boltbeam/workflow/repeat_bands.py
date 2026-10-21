@@ -50,7 +50,7 @@ def scope(run:pathlib.Path) -> dict:
                   "replay": "replay_capture.json"}.get(manifest.get("workload"), providers.TRACES[run_provider(run)])
   capture = _read(run, capture_file)
   whole = next((r for r in capture.get("rows", []) if r.get("scope") == "whole_step"), {})
-  methods = {length: {k: attr[k] for k in ("method", "formats") if k in attr}
+  methods = {length: {k: attr[k] for k in ("method", "formats", "timing_window") if k in attr}
              for length, attr in capture.get("lengths", {}).items()}
   return {"target": manifest.get("target_id"), "devices": sorted(machine.get("uuids") or []),
           "engine": run_provider(run), "build": providers.run_build(run) or (manifest.get("engine") or {}).get("build"),
@@ -128,7 +128,7 @@ def calibrate(runs:list[pathlib.Path], fixed:dict | None = None) -> dict:
         raise ValueError(f"{part}/{key}: repeat work differs")
       rows[key] = {**_spread([y[part]["rows"][key]["now_ms"] for y in S]), "work": {f: row[f] for f in diff.WORK if f in row}}
     timing = {}
-    for key in ("captured_ms", "untraced_ms", "gaps_ms"):
+    for key in ("captured_ms", "engine_elapsed_ms", "untraced_ms", "gaps_ms"):
       if all(y[part]["tie"].get(key) is not None for y in S):
         timing[key] = _spread([y[part]["tie"][key] for y in S])
     parts[part] = {"rows": rows, "timing": timing}
@@ -208,9 +208,9 @@ def width(band:dict | None, key:str, *, work:dict | None = None) -> float | None
   return float(value) if isinstance(value, (int, float)) and math.isfinite(value) and value >= 0 else None
 
 
-def end_to_end_width(band:dict | None) -> float | None:
+def end_to_end_width(band:dict | None, *, captured_key:str = "captured_ms") -> float | None:
   timing = (band or {}).get("timing", {})
-  values = [timing.get(k, {}).get("width_ms") for k in ("captured_ms", "untraced_ms")]
+  values = [timing.get(k, {}).get("width_ms") for k in (captured_key, "untraced_ms")]
   return max(values) if all(isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in values) else None
 
 
@@ -242,11 +242,11 @@ def sides(run:pathlib.Path) -> dict:
     for length, attr in captures.get("lengths", {}).items():
       if not attr.get("rows"):
         raise ValueError("cannot calibrate missing session rows")
-      truth = next((r.get("turn_ms") for r in timing.get("rows", [])
+      truth = next((r.get("qualification_ms") or r.get("turn_ms") for r in timing.get("rows", [])
                     if r.get("scope") == "whole_step" and r.get("context") == focus), None)
       result[f"prefill {length}"] = {
         "rows": {r["name"]: {"now_ms": r["ms"], **{f: r.get(f) for f in diff.WORK}} for r in attr["rows"]},
-        "tie": {"captured_ms": attr.get("profiled_wall_ms"), "untraced_ms": truth,
+        "tie": {"captured_ms": attr.get("profiled_wall_ms"), "engine_elapsed_ms": attr.get("measured_ms"), "untraced_ms": truth,
                 "gaps_ms": attr.get("gaps_ms")}}
     return result
   captures = _read(run, replay.CAPTURE)
@@ -259,6 +259,6 @@ def sides(run:pathlib.Path) -> dict:
       raise ValueError("cannot calibrate missing replay rows")
     result[f"turn {turn['i']}"] = {
       "rows": {r["name"]: {"now_ms": r["ms"], **{f: r.get(f) for f in diff.WORK}} for r in attr["rows"]},
-      "tie": {"captured_ms": attr.get("profiled_wall_ms"), "untraced_ms": turn.get("server_ms"),
+      "tie": {"captured_ms": attr.get("profiled_wall_ms"), "engine_elapsed_ms": attr.get("measured_ms"), "untraced_ms": turn.get("server_ms"),
               "gaps_ms": attr.get("gaps_ms")}}
   return result

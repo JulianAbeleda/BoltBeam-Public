@@ -114,6 +114,11 @@ def decode_tokens(run:pathlib.Path, context:int) -> int:
   trace = read_json(run / "timing_trace.json")
   row = next((r for r in trace.get("rows", []) if r.get("scope") == "whole_step" and r.get("context") == context), {})
   tokens = row.get("decode_tokens")
+  window = (row.get("engine") or {}).get("timing_window") or {}
+  if window.get("method") == "long_minus_short":
+    from boltbeam.workflow.tie_out import window_context
+    window_context(row)
+    return window["long_tokens"]
   if type(tokens) is not int or tokens < 2:
     raise ValueError("untraced run must record at least two decode tokens before taking a matching capture")
   return tokens

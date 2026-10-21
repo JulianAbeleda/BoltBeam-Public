@@ -679,6 +679,7 @@ def step_facts(token:dict[str, Any] | None) -> dict[str, Any] | None:
     return None
   graph_failed = "graph replay failed" in str(token.get("source") or "")
   return {"context": token["context"], "tok_s": token["tok_s"], "ms": token["ms"], "source": token.get("source"),
+          **({"requested_context": token["requested_context"]} if token.get("requested_context") not in (None, token["context"]) else {}),
           "rule": token["rule"], "graph_failed": graph_failed, "graph_error": token.get("graph_error"),
           "also": token["also"], "evidence": [{"file": "timing_trace.json", "path": f"rows[{token['index']}]"}]}
 

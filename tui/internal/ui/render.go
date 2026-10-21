@@ -599,7 +599,7 @@ func tieOutBody(t *seam.TieOut) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(stHeader.Render(fmt.Sprintf("Tie-out, ms per token at context %.0f", t.Context)) + "\n")
+	b.WriteString(stHeader.Render(fmt.Sprintf("Tie-out, ms per token at context %g", t.Context)) + "\n")
 	if t.Refused != nil {
 		b.WriteString(stWarn.Render(glyphWarn+" Not tied out. ") + *t.Refused + "\n")
 		return b.String()
@@ -646,9 +646,9 @@ func tieOutBody(t *seam.TieOut) string {
 		fmt.Fprintf(&b, "All kernels sum to %.3f ms against the real token of %.3f ms; the gap is their difference.\n", *t.BusyMs, *t.TokenMs)
 	}
 	if t.ShowBoth {
-		fmt.Fprintf(&b, "The limit is %.3f ms at context 1 and %.3f ms at context %.0f.\n", t.LimitMsCtx1, t.LimitMs, t.Context)
+		fmt.Fprintf(&b, "The limit is %.3f ms at context 1 and %.3f ms at context %g.\n", t.LimitMsCtx1, t.LimitMs, t.Context)
 	}
-	if t.UntracedMs != nil && t.TokenSource != nil && strings.HasPrefix(*t.TokenSource, "the captured run") {
+	if t.UntracedMs != nil && (t.EndToEnd != nil || t.TokenSource != nil && strings.HasPrefix(*t.TokenSource, "the captured run")) {
 		b.WriteString(tokenEndToEnd(*t) + "\n")
 	}
 	if t.Missing != nil {
@@ -841,13 +841,19 @@ func deref0(p *float64) float64 {
 	return *p
 }
 
-// tokenEndToEnd is a decode capture's token against the untraced median, with the repeat check and, when the two
+// tokenEndToEnd is a decode capture's token against the untraced reference, with the repeat check and, when the two
 // were taken at different contexts, that fact: they are then not one setup.
 func tokenEndToEnd(t seam.TieOut) string {
 	pct := 100 * (*t.TokenMs - *t.UntracedMs) / *t.UntracedMs
-	line := fmt.Sprintf("End to end: the captured token is %.3f ms, the untraced median %.3f ms (%+.1f%%).", *t.TokenMs, *t.UntracedMs, pct)
-	if t.UntracedContext != nil && float64(*t.UntracedContext) != t.Context {
-		line += fmt.Sprintf(" The untraced time is at context %d and the capture at context %.0f, so they are not one setup.", *t.UntracedContext, t.Context)
+	line := fmt.Sprintf("End to end: the captured token is %.3f ms, the untraced reference %.3f ms (%+.1f%%).", *t.TokenMs, *t.UntracedMs, pct)
+	if t.UntracedContext != nil && *t.UntracedContext != t.Context {
+		line += fmt.Sprintf(" The untraced time is at context %g and the capture at context %g, so they are not one setup.", *t.UntracedContext, t.Context)
+	}
+	if t.TimingMatch != nil && !t.TimingMatch.Matches {
+		return line + "\n" + stMuted.Render("Repeat check: not checked: "+t.TimingMatch.Words+".")
+	}
+	if t.EndToEnd != nil {
+		return strings.TrimSuffix(whereEndToEnd(t.EndToEnd), "\n")
 	}
 	band := deref(t.Band)
 	if band == "" || strings.HasPrefix(band, "not checked") {
@@ -1522,8 +1528,15 @@ func resultBody(f Facts, width int) string {
 		fmt.Fprintf(&b, "%s %s measured · roofline %.1f tok/s\n", stAccent.Render(glyphBolt),
 			stHeader.Render(fmt.Sprintf("%.1f tok/s", *res.Timing.TokS)), *res.Ceiling.TokS)
 		fmt.Fprintf(&b, "%s %.0f%% of the limit\n", bar(ratio, 20), ratio*100)
+		if s := res.Loss.Step; s != nil && s.Context != nil && s.RequestedContext != nil && *s.Context != float64(*s.RequestedContext) {
+			fmt.Fprintf(&b, "Requested depth %d; measured mean attended context %g.\n", *s.RequestedContext, *s.Context)
+		}
 		for _, a := range res.Timing.Also { // one headline: the other contexts are listed, labelled, never mixed in
-			fmt.Fprintf(&b, "%s\n", stMuted.Render(fmt.Sprintf("Context %s: %.1f tok/s (additional measurement)", count(a.Context), a.TokS)))
+			context := "-"
+			if a.Context != nil {
+				context = fmt.Sprintf("%g", *a.Context)
+			}
+			fmt.Fprintf(&b, "%s\n", stMuted.Render(fmt.Sprintf("Context %s: %.1f tok/s (additional measurement)", context, a.TokS)))
 		}
 		if s := res.Loss.Step; s != nil && s.GraphFailed {
 			why := ""

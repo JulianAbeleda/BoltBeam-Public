@@ -12,21 +12,21 @@ Modeled roofline: 48.3 ms per token at context 128.
   whole step, measured untraced, at context 128
 
 Where the token goes
-Context 128 · 57.90 ms/token. No model = measured time, unknown savings. Roofline is an upper bound. +tok/s allocates headroom by time difference; cumulative reconciles the roofline. These are accounting shares, not predicted speedups.
+Context 128 · 57.90 ms/token. No model = measured time, unknown savings. Roofline is an upper bound. Native throughput allocation unavailable: capture timing is unqualified.
 
-┌──────────────────────┬────────┬───────┬──────────┬──────────┬────────────┐
-│ ROW                  │ MS NOW │ MS AT │ MS ABOVE │ + TOK/S  │ CUMULATIVE │
-│                      │        │ LIMIT │  LIMIT   │    IF    │   TOK/S    │
-│                      │        │       │          │ ROOFLINE │            │
-├──────────────────────┼────────┼───────┼──────────┼──────────┼────────────┤
+┌───────────────────────┬────────┬───────┬───────────┬──────────┬──────────┐
+│ ROW                   │ MS NOW │ MS AT │   MS AT   │ MS ABOVE │ + TOK/S  │
+│                       │        │ LIMIT │ CHIP BEST │  LIMIT   │    IF    │
+│                       │        │       │           │          │ ROOFLINE │
+├───────────────────────┼────────┼───────┼───────────┼──────────┼──────────┤
 │ Model operations                                                         │
-├──────────────────────┼────────┼───────┼──────────┼──────────┼────────────┤
-│ kernels and gaps, n… │ 57.90  │ 48.30 │   9.60   │   +3.4   │    20.7    │
-├──────────────────────┼────────┼───────┼──────────┼──────────┼────────────┤
-│ measured throughput  │        │       │          │   17.3   │    17.3    │
-├──────────────────────┼────────┼───────┼──────────┼──────────┼────────────┤
-│ = total at roofline  │ 57.90  │ 48.30 │   9.60   │   20.7   │    20.7    │
-└──────────────────────┴────────┴───────┴──────────┴──────────┴────────────┘
+├───────────────────────┼────────┼───────┼───────────┼──────────┼──────────┤
+│ kernels and gaps, no… │ 57.90  │ 48.30 │   48.30   │   9.60   │    —     │
+├───────────────────────┼────────┼───────┼───────────┼──────────┼──────────┤
+│ measured throughput   │        │       │           │          │   17.3   │
+├───────────────────────┼────────┼───────┼───────────┼──────────┼──────────┤
+│ = total at roofline   │ 57.90  │ 48.30 │   48.30   │   9.60   │   20.7   │
+└───────────────────────┴────────┴───────┴───────────┴──────────┴──────────┘
 Total at modeled roofline: 20.7 tok/s (48.30 ms/token).
 Per role: no per-role time yet: Run with llama.cpp times each role
 

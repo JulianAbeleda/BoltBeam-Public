@@ -76,18 +76,21 @@ def _read(path:pathlib.Path) -> dict[str, Any]:
 def _prefill_sides(run:pathlib.Path, record:dict | None = None) -> dict[str, dict[str, Any]]:
   """Per captured length: the rows (now_ms and work) and the tie-out."""
   from boltbeam.collectors.prefill import TRACE
-  truth = {int(r["context"]): r["prefill_ms"] for r in _read(run / "timing_trace.json").get("rows") or [] if r.get("prefill_ms")}
+  native = {int(r["context"]): r for r in _read(run / "timing_trace.json").get("rows") or [] if r.get("prefill_ms")}
   out = {}
   for length, attr in (_read(run / TRACE).get("lengths") or {}).items():
     if not attr.get("rows"):
       continue
     rows = {r["name"]: {"now_ms": r["ms"], **{f: r.get(f) for f in ("calls", "flops", "bytes")}} for r in attr["rows"]}
     from boltbeam.workflow.repeat_bands import find
-    e2e = tie.end_to_end(attr, truth.get(int(length)), band=find(run, f"prefill {length}", record=record))
+    row = native.get(int(length)) or {}
+    truth = row.get("qualification_ms") or row.get("prefill_ms")
+    e2e = tie.end_to_end(attr, truth, band=find(run, f"prefill {length}", record=record),
+                       reference="untraced final repetition", reference_window=(row.get("engine") or {}).get("timing_window"))
     out[f"prefill {length}"] = {"rows": rows, "tie": {
-      "captured_ms": attr.get("profiled_wall_ms"), "busy_ms": attr.get("busy_ms"), "gaps_ms": attr.get("gaps_ms"),
+      "captured_ms": attr.get("profiled_wall_ms"), "engine_elapsed_ms": attr.get("measured_ms"), "busy_ms": attr.get("busy_ms"), "gaps_ms": attr.get("gaps_ms"),
       "residual_ms": float(attr["wall_ms"]) - float(attr["busy_ms"]) - float(attr["gaps_ms"]),
-      "untraced_ms": truth.get(int(length)), "end_to_end": e2e}}
+      "untraced_ms": truth, "end_to_end": e2e}}
   return out
 
 
@@ -115,11 +118,16 @@ def _decode_side(run:pathlib.Path, record:dict | None = None) -> dict[str, dict[
     return {f"decode {t.get('context')}": {"rows": rows, "tie": {
       "captured_ms": None, "busy_ms": busy, "gaps_ms": None, "residual_ms": None, "untraced_ms": untraced,
       "end_to_end": {"confirms": None, "words": "the kernels were timed alone: there is no captured token to check end to end"}}}}
-  attr = {"profiled_wall_ms": token, "wall_ms": token, "busy_ms": busy, "gaps_ms": (token - busy) if token and busy else None}
+  attr = {"measured_ms": token, "wall_ms": token, "busy_ms": busy, "gaps_ms": (token - busy) if token and busy else None}
+  match = t.get("timing_match") or {}
+  attr["timing_window"] = match.get("captured_window")
   from boltbeam.workflow.repeat_bands import find
-  e2e = tie.end_to_end(attr, untraced, "token", band=find(run, f"decode {t.get('context')}", record=record)) if token and busy is not None else {"confirms": None, "words": "no captured token"}
+  e2e = tie.end_to_end(attr, untraced, "token", band=find(run, f"decode {t.get('context')}", record=record),
+                     reference="untraced reference", reference_window=match.get("native_window")) if token and busy is not None else {"confirms": None, "words": "no captured token"}
+  if match and not match["matches"]:
+    e2e = {"confirms": None, "words": match["words"], "timing_match": match}
   return {f"decode {t.get('context')}": {"rows": rows, "tie": {
-    "captured_ms": token, "busy_ms": busy, "gaps_ms": attr["gaps_ms"], "residual_ms": 0.0 if token and busy else None,
+    "captured_ms": token, "engine_elapsed_ms": token, "busy_ms": busy, "gaps_ms": attr["gaps_ms"], "residual_ms": 0.0 if token and busy else None,
     "untraced_ms": untraced, "end_to_end": e2e}}}
 
 
