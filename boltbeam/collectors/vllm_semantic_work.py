@@ -34,8 +34,8 @@ def is_projection(key):
   dot='dot_kernel<' in name and 'cublasgemvtensorstridedbatched<' in name
   xmma='_xmma_gemm_' in name and '_execute_kernel' in name and '_cublas' in name
   marlin='marlin::marlin<' in name
-  # ROCm: vLLM's skinny GEMMs (wvSplitK, its int4 and FP8 forms) and hipBLASLt's Tensile kernels (Cijk_)
-  rocm=name.startswith(('wvsplitk','void wvsplitk','cijk_'))
+  # ROCm: vLLM's skinny GEMMs (wvSplitK, its int4 and FP8 forms), its Triton W4A16 GEMM, hipBLASLt's Tensile (Cijk_)
+  rocm=name.startswith(('wvsplitk','void wvsplitk','cijk_','_triton_w4a16'))
   return (gemm or dot or xmma or marlin or rocm) and 'splitkreduce' not in name
 
 

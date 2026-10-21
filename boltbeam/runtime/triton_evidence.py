@@ -11,6 +11,9 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+# what Triton keeps of a compiled kernel: CUDA's cubin and PTX, ROCm's hsaco and AMDGCN, and the shared IR
+ARTIFACTS=('cubin','hsaco','ptx','amdgcn','ttir','ttgir','llir','source')
+
 
 def argument(value):
   if value is None or type(value) in (bool,int,str):return value
@@ -25,13 +28,13 @@ class Capture:
     self.root=Path(root);self.active=False;self.identity_only=False;self.registered={}
 
   def register(self,kernel):
-    binary=kernel.asm['cubin'];digest=hashlib.sha256(binary).hexdigest()
+    binary=kernel.asm.get('cubin') or kernel.asm['hsaco'];digest=hashlib.sha256(binary).hexdigest()
     key=kernel.hash
     if not re.fullmatch(r'[a-zA-Z0-9_-]+',key):raise ValueError('invalid compiled-kernel identity key')
     if key not in self.registered:
       folder=self.root/key;folder.mkdir(parents=True,exist_ok=True)
       artifacts={}
-      for ext in ('cubin','ptx','ttir','ttgir','llir','source'):
+      for ext in ARTIFACTS:
         value=kernel.asm.get(ext)
         if value is None:continue
         content=value if isinstance(value,bytes) else value.encode()
@@ -58,7 +61,9 @@ class Capture:
   @contextmanager
   def install(self):
     from triton.compiler.compiler import CompiledKernel
-    from triton.backends.nvidia.driver import CudaLauncher
+    try:  # the active driver's launcher: HIPLauncher on ROCm, with CudaLauncher's call signature
+      import triton;CudaLauncher=triton.runtime.driver.active.launcher_cls
+    except (ImportError,AttributeError,RuntimeError):from triton.backends.nvidia.driver import CudaLauncher
     from torch._inductor.runtime.triton_heuristics import StaticTritonCompileResult,CachingAutotuner
     from torch._inductor.runtime.static_triton_launcher import StaticallyLaunchedCudaKernel
     import torch
@@ -75,7 +80,7 @@ class Capture:
       kernel=result.kernel
       if not kernel.cubin_path:result.reload_cubin_path()
       path=Path(kernel.cubin_path)
-      asm={ext:p.read_bytes() if ext=='cubin' else p.read_text() for ext in ('cubin','ptx','ttir','ttgir','llir','source')
+      asm={ext:p.read_bytes() if ext in ('cubin','hsaco') else p.read_text() for ext in ARTIFACTS
            if (p:=path.with_suffix('.'+ext)).exists()}
       proxy=SimpleNamespace(hash=kernel.hash,name=kernel.name,asm=asm,
         metadata=SimpleNamespace(num_warps=kernel.num_warps,shared=kernel.shared),

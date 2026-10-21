@@ -8,7 +8,7 @@ from boltbeam.collectors.providers import gpu_free
 from pathlib import Path
 from boltbeam.adapters.llama_server_control import serve_argv,_json_post
 from boltbeam.collectors.replay import vllm_env,Words,REPLAY_ENGINES,flag_value
-from boltbeam.collectors.gpu_telemetry import Telemetry
+from boltbeam.collectors.gpu_telemetry import Telemetry, run_telemetry
 
 
 def stream(url,body):
@@ -48,7 +48,9 @@ def drive(run:Path,mode:str,repeats:int=5):
   from boltbeam.trace.replay_trace import read
   if mode not in ('record','reference','paired','cost') or type(repeats) is not int or repeats<2:
     raise ValueError('replay needs a supported pass and at least two repeats')
-  free=gpu_free('CUDA')
+  from boltbeam.target.targets import get_target  # the run's GPU; a run with no manifest predates AMD (CUDA)
+  facts=run/'run_manifest.json'
+  free=gpu_free(get_target(json.loads(facts.read_text())['target_id']).backend if facts.exists() else 'CUDA')
   if not free['free']:raise RuntimeError(free['reason'])
   if os.environ.get('VLLM_BATCH_INVARIANT') not in (None,'','0'):
     raise ValueError('forced replay requires production compilation, not VLLM_BATCH_INVARIANT')
@@ -69,7 +71,8 @@ def drive(run:Path,mode:str,repeats:int=5):
   if mode=='paired':env['BOLTBEAM_REPLAY_CAPTURE_GRAPHS']='1'
   else:env.pop('BOLTBEAM_REPLAY_CAPTURE_GRAPHS',None)
   script_path=root/'token-script.json'
-  with serve_argv(argv,log_path=out/'server.log',environ=env,startup_timeout_s=900) as (url,command,load), Telemetry() as tele:
+  with serve_argv(argv,log_path=out/'server.log',environ=env,startup_timeout_s=900,
+                  stop_timeout_s=1800 if mode=='paired' else 5) as (url,command,load), run_telemetry(run, make=Telemetry) as tele:
     post=lambda path,data:_json_post(url+path,data,1800)
     def reset():
       with urllib.request.urlopen(urllib.request.Request(url+'/reset_prefix_cache',data=b'{}',

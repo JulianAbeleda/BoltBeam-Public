@@ -165,8 +165,9 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
     argv_for = lambda n: batched_argv(batched, model, context, n, [batch], extra)  # noqa: E731
   else:
     argv_for = lambda n: decode_argv(bench, model, context, n, extra)  # noqa: E731
-  long = vendor_capture.capture(target.backend, argv_for(tokens), raw / "long", env=env)
-  short = vendor_capture.capture(target.backend, argv_for(1), raw / "short", env=env)
+  from boltbeam.workflow.common import run_gpu
+  long = vendor_capture.capture(target.backend, argv_for(tokens), raw / "long", env=env, device=run_gpu(run))
+  short = vendor_capture.capture(target.backend, argv_for(1), raw / "short", env=env, device=run_gpu(run))
   window, overlap = attribution.shared_window(long, short)
   method = vendor_capture.plan(target.backend)["method"]
   printed = vendor_capture.program_output(raw / "long")

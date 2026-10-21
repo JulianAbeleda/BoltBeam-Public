@@ -14,7 +14,8 @@ kernel with no matrix instruction.
 The figure kept is the plateau: the best launch shape from a few short samples, then that shape back to back for
 `seconds` while the amdgpu telemetry (gpu_telemetry.AmdSysfs, found by the device's PCI address) logs the clock; the
 rate is the median launch of the second half and the clock its mean over the same half. Launch grids are sized by
-HIP's multiprocessor count, which on RDNA counts work-group processors; ops_per_mp_per_clock is per that unit.
+HIP's multiprocessor count, which on RDNA counts work-group processors; ops_per_sm_per_clock is per that unit. The
+record's clock keys are every vendor's (prefill_work.CLOCK_KEY): sm_mhz is the core clock the path ran at.
 
 The paths are rows rather than per-chip code, so this does not duplicate cuda_compute's PTX table: the instructions,
 operand types and the record's key ("instruction", not "ptx") are AMD's own.
@@ -31,7 +32,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from boltbeam.collectors import gpu_telemetry
-from boltbeam.collectors.cuda_bandwidth import parallel_units, repeated
+from boltbeam.collectors.cuda_bandwidth import parallel_units, repeated_paths
 from boltbeam.collectors.kernel_timer import samples
 
 ACC = 8  # independent accumulators per wave: enough to hide the instruction's latency
@@ -178,8 +179,8 @@ def measure_path(hip, p:Path, units:int, tele:gpu_telemetry.Telemetry, *, reps:i
   hip.release(out)
   return {"path": p.name, "instruction": p.builtin, "words": p.words, "available": True, "tops": round(rate, 1),
           "burst_tops": round(top["tops"], 1), "shape": {"threads": top["threads"], "blocks": top["blocks"]},
-          "shapes": shapes, "plateau_launches": len(half), "clock": clock, "core_mhz": mhz,
-          "ops_per_mp_per_clock": round(rate * 1e12 / (units * mhz * 1e6), 1) if mhz else None}
+          "shapes": shapes, "plateau_launches": len(half), "clock": clock, "sm_mhz": mhz,
+          "ops_per_sm_per_clock": round(rate * 1e12 / (units * mhz * 1e6), 1) if mhz else None}
 
 
 def measure_paths(device:int = 0, *, reps:int = 5, seconds:float = SECONDS, bridge=None,
@@ -213,7 +214,7 @@ def fact_source(result:dict[str, Any], *, scope:str, today:str) -> dict[str, Any
   amdgpu, which reports no throttle reasons)."""
   return {"kind": "measurement", "bound": "achievable", "scope": scope, "observed_at": today, "method": result["method"],
           "clock_policy": result["clock_policy"].get("policy"), "throttled": result["telemetry"].get("throttled"),
-          "paths": {r["path"]: ({"tops": r["tops"], "core_mhz": r["core_mhz"], "ops_per_mp_per_clock": r["ops_per_mp_per_clock"],
+          "paths": {r["path"]: ({"tops": r["tops"], "sm_mhz": r["sm_mhz"], "ops_per_sm_per_clock": r["ops_per_sm_per_clock"],
                                  "instruction": r["instruction"], "words": r["words"], "throttled": r["clock"].get("throttled"),
                                  **{k: r[k] for k in ("uncertainty", "shape_spread") if k in r},
                                  "power_w_mean": (r["clock"].get("power_w") or {}).get("mean")}
@@ -231,7 +232,7 @@ def main(argv:list[str] | None = None) -> int:
   a = p.parse_args(argv)
   paths = tuple(x for x in PATHS if not a.path or x.name in a.path)
   runs = [measure_paths(a.device, reps=a.reps, seconds=a.seconds, paths=paths) for _ in range(a.runs)]
-  got = {**runs[0], "runs": a.runs, "paths": [repeated([r["paths"][i] for r in runs], "tops", "tops") for i in range(len(paths))]}
+  got = repeated_paths(runs)
   sys.stdout.write(json.dumps(got, indent=1, sort_keys=True) + "\n")
   return 0
 

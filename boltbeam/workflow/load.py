@@ -79,8 +79,10 @@ def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str 
   takes (128, 512) and a prefill the sweep from the model's own cap (prefill_sweep.json, prefill_work.sweep)."""
   out = run_dir(run)
   model_path = pathlib.Path(model).expanduser()
-  selected_target = target_id or "amd_gfx1100"
-  selected_target_source = target_source or ("user" if target_id else "default")
+  if not target_id:  # a run is for the chip the caller names (the screen's chip scan names this machine's)
+    raise ValueError("load_run needs a target_id: no chip is assumed")
+  selected_target = target_id
+  selected_target_source = target_source or "user"
   fmt = detect_model_format(model_path)
   profile = profile_from_model(model_path, model_id=model_id)
   write_json(out / "model_profile.json", profile.to_json())
@@ -103,10 +105,14 @@ def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str 
   if engine_settings:
     workload_profile["engine_settings"] = dict(engine_settings)
   write_json(out / "workload_profile.json", workload_profile)
-  from boltbeam.collectors.toolchain import snapshot
+  from boltbeam.collectors.toolchain import snapshot, vendor_args
+  from boltbeam.target.targets import TARGETS
+  from boltbeam.target.vendors import BY_BACKEND
+  # the target's vendor's toolchain (target/vendors.py); a target with no row records the pinned one, as before
+  row = BY_BACKEND.get(TARGETS[selected_target].backend) if selected_target in TARGETS else None
   manifest = {
     "schema": SCHEMA_RUN_MANIFEST,
-    "toolchain": snapshot(),
+    "toolchain": snapshot(**vendor_args(row.vendor if row else None)),
     "model_id": profile.model_id,
     "model_path": str(model_path),
     "model_format": fmt,

@@ -49,12 +49,15 @@ def read_amd_topology(text:str) -> dict[tuple[int, int], str]:
 
 def topology(backend:str) -> dict[tuple[int, int], str]:
   """The link between each GPU pair from the vendor's tool; empty when the tool is not here or fails."""
-  from boltbeam.target import toolkits
-  from boltbeam.workflow.layout import read_topology
-  argv, read = {"CUDA": (["nvidia-smi", "topo", "-m"], read_topology),
-                "AMD": ([toolkits.tool("amd-smi", shutil.which), "topology"], read_amd_topology)}.get(backend, ([None], None))
+  from boltbeam.target import toolkits, vendors
+  row = vendors.BY_BACKEND.get(backend)
+  if row is None or row.topology is None:
+    return {}
+  (tool, *args), reader = row.topology
+  argv = [toolkits.tool(tool, shutil.which), *args]
   if not argv[0] or not shutil.which(str(argv[0])):
     return {}
+  read = vendors.resolve(reader)
   try:
     proc = subprocess.run([str(a) for a in argv], capture_output=True, text=True, timeout=60)
   except (OSError, subprocess.SubprocessError):

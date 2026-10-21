@@ -12,9 +12,10 @@ Buckets each kernel and diagnoses the dominant one:
 """
 from __future__ import annotations
 from typing import Any
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
+from boltbeam.target.targets import need_peak_gbs
 
-def ingest_schedule_trace(trace: dict[str, Any], peak_gbs: float = DEFAULT_PEAK_MEM_GBS) -> dict[str, Any]:
+def ingest_schedule_trace(trace: dict[str, Any], peak_gbs: float | None = None) -> dict[str, Any]:
+  peak_gbs = need_peak_gbs(peak_gbs, "ingest_schedule_trace")
   kernels = trace.get("kernels", [])
   total_us = trace.get("total_us") or sum(k.get("us", 0) for k in kernels)
   if not kernels:

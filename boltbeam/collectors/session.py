@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import pathlib
 import platform
 import statistics
@@ -120,6 +121,10 @@ def reference(run:pathlib.Path, model:str, ids:list[int], depth:int, warm:bool) 
     row = {"cold": cold, "appended": appended, "self": agree(cold, appended), "command": command, "cold_s": round(fill_s, 1)}
     if warm:
       row["warm"] = completion(url, ids[:depth + TURN], 1, cache=True)
+  path = run / REFERENCE
+  saved = json.loads(path.read_text()) if path.exists() else {}
+  saved[str(depth)] = row
+  path.write_text(json.dumps(saved, indent=1) + "\n")
   return row
 
 
@@ -152,9 +157,11 @@ def llama_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) 
   """llama-bench at the depth: the TURN-token prompt after `depth` tokens it filled untimed, REPS times (its depth
   is filled once and restored for each repetition), and DECODE generated tokens at that depth, its own row."""
   bench = pf._bench(run)
-  cmd = pf.llama_argv(bench, model, TURN, pf.REPS, depth=depth, gen=DECODE)
-  with gpu_telemetry.Telemetry(0) as tele:
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200, cwd=run)
+  from boltbeam.workflow.layout import one_gpu
+  pin, env = one_gpu(run, "llama.cpp")
+  cmd = pf.llama_argv(bench, model, TURN, pf.REPS, depth=depth, gen=DECODE, extra=pin)
+  with gpu_telemetry.run_telemetry(run, 0) as tele:
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200, cwd=run, env={**os.environ, **env})
   if proc.returncode != 0:
     raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
   row, gen = pf.llama_row(proc.stdout), pf.llama_row(proc.stdout, "n_gen")
@@ -180,7 +187,7 @@ def _fork_session(run, model, depth, target, root, mode, extra:list[str]) -> dic
 
 
 def tinygrad_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) -> dict[str, Any]:
-  with gpu_telemetry.Telemetry(0) as tele:
+  with gpu_telemetry.run_telemetry(run, 0) as tele:
     got = _fork_session(run, model, depth, target, root, "truth", ["--warm"] if warm else [])
   computed = got["computed"]
   return {"ms": got["wall_s"] * 1e3, "samples_ms": [s * 1e3 for s in got["samples_s"]], "computed": computed,
@@ -262,6 +269,14 @@ def next_depth(done:list[int], cap:int) -> int | None:
   return d if d < last else last
 
 
+def ladder(cap:int) -> list[int]:
+  """Every derived depth next_depth gives under this cap, in order."""
+  out: list[int] = []
+  while (d := next_depth(out, cap)) is not None:
+    out.append(d)
+  return out
+
+
 def fixed_part(rows:list[dict[str, Any]], per_token:float) -> float | None:
   """What the engine held beside its KV cache, the most over the depths measured (device memory in use less the
   depth's KV)."""
@@ -301,7 +316,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   state = recurrent_state_bytes(profile) or 0.0
   weight_bytes = float((profile.get("metadata", {}).get("weights") or {}).get("total_bytes") or 0.0)
   by_type = cache_bytes(profile)
-  with gpu_telemetry.Telemetry(0) as probe:
+  with gpu_telemetry.run_telemetry(run, 0) as probe:
     pass
   total = ((probe.summary().get("memory_mib") or {}).get("total") or 0.0) * 2**20
   own = {"engine": per_token} if per_token else {}
@@ -316,7 +331,8 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   mc = model_cap(profile)
   upper = min(mc["tokens"] if mc else 1 << 30, cap_now([])["types"]["engine"]["memory"])
   ids = make_tokens(run, model, max(upper, max(asked)) + TURN * (pf.REPS + 4) + CHECK + 64)["ids"]
-  focus = focus_of([c for c in asked if c != CAP] or [FOCUS])
+  # the focus is a depth that runs: the derived one nearest FOCUS when none was asked (8192 is not one)
+  focus = focus_of([c for c in asked if c != CAP] or ladder(cap_now([])["types"]["engine"]["binding"]))
   rows: list[dict[str, Any]] = []
   plan = [c for c in asked if c != CAP]
   done: list[int] = []
@@ -390,7 +406,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
                   "attention_layers": ((profile.get("metadata") or {}).get("attention") or {}).get("layer_count")
                                       or profile.get("layer_count"),
                   "caps": final, "device_bytes": total},
-           "clock_policy": gpu_telemetry.clock_policy(0),
+           "clock_policy": gpu_telemetry.run_clock_policy(run),
            "measured": ["whole_step.turn_ms (TURN tokens appended at depth C, untraced)", "whole_step.decode_tok_s",
                         "compaction.ms", "warm.ms"]}
   out = run / "timing_trace.json"

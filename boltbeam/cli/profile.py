@@ -4,18 +4,19 @@ import json
 import pathlib
 
 from boltbeam.cli._common import _write, _fail, _load_json, _run_manifest_defaults
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
+from boltbeam.target.targets import need_target_id
 
 def _register_schedule_trace(sub) -> None:
   p = sub.add_parser("schedule-trace", help="ingest a scheduler trace -> diagnose occupancy_starved/materialization/fused_ok + fix")
   p.add_argument("trace", help="schedule trace JSON from tinygrad extra/qk_schedule_trace.py")
+  p.add_argument("--peak-gbs", type=float, required=True, help="the traced GPU's peak bandwidth, GB/s")
   p.add_argument("--out", default=None); p.set_defaults(fn=cmd_schedule_trace)
 
 
 
 def cmd_schedule_trace(args) -> int:
   from boltbeam.trace.schedule_trace import ingest_schedule_trace
-  _write(ingest_schedule_trace(_load_json(args.trace)), args.out)
+  _write(ingest_schedule_trace(_load_json(args.trace), peak_gbs=args.peak_gbs), args.out)
   return 0
 
 def _register_import_hw_trace(sub) -> None:
@@ -25,13 +26,13 @@ def _register_import_hw_trace(sub) -> None:
                  help="runtime provider that produced the trace")
   p.add_argument("--run", default=None, help="optional run directory; fills model/target/workload and defaults --out to hw_trace.json")
   p.add_argument("--model-id", default=None, help="BoltBeam model id for the trace; required unless --run supplies it")
-  p.add_argument("--target-id", default=None, help="target id for the trace; defaults to run target or amd_gfx1100")
+  p.add_argument("--target-id", default=None, help="target id for the trace; required unless --run supplies one")
   p.add_argument("--workload", default=None, choices=["decode", "prefill"], help="workload represented by the trace; defaults to run workload or prefill")
   p.add_argument("--context", type=int, default=None, help="prompt/context tokens represented by this trace")
   p.add_argument("--provider-id", default=None, help="provider id to stamp in the trace; defaults to provider/boltbeam")
   p.add_argument("--backend-id", default="amd_kernel_csv",
                  help="private backend adapter id used for this import; backend counter names are normalized before output")
-  p.add_argument("--peak-gbs", type=float, default=DEFAULT_PEAK_MEM_GBS, help="HBM peak GB/s used by downstream roofline analysis")
+  p.add_argument("--peak-gbs", type=float, default=None, help="HBM peak GB/s used by downstream roofline analysis; defaults to the target's")
   p.add_argument("--llama-bench-json", default=None, help="optional llama-bench -o json output for wall elapsed/tok/s")
   p.add_argument("--tinygrad-trace-json", default=None, help="optional tinygrad timing JSON for wall elapsed/tok/s normalization")
   p.add_argument("--weight-inventory", default=None, help="optional weight_inventory.json for estimated physical bytes")
@@ -57,9 +58,13 @@ def cmd_import_hw_trace(args) -> int:
   provider_id = args.provider_id
   if provider_id is None:
     provider_id = "llama.cpp/boltbeam" if args.provider == "llama" else "tinygrad/boltbeam"
+  try:
+    target_id = need_target_id(args.target_id or run_manifest.get("target_id"), "import-hw-trace")
+  except ValueError as exc:
+    return _fail(str(exc))
   common = {
     "model_id": model_id,
-    "target_id": args.target_id or run_manifest.get("target_id") or "amd_gfx1100",
+    "target_id": target_id,
     "workload": args.workload or run_manifest.get("workload") or "prefill",
     "context": args.context,
     "provider_id": provider_id,
@@ -172,7 +177,7 @@ def _register_collect_hw_trace(sub) -> None:
   p.add_argument("--prefill-start-positions", dest="prefill_start_positions", default=None)
   p.add_argument("--prefill-whole-lengths", dest="prefill_whole_lengths", default=None)
   p.add_argument("--provider-id", default=None)
-  p.add_argument("--peak-gbs", type=float, default=DEFAULT_PEAK_MEM_GBS)
+  p.add_argument("--peak-gbs", type=float, default=None, help="defaults to the target's registry bandwidth")
   p.add_argument("--env", action="append", default=[], help="extra provider env override KEY=VALUE")
   p.add_argument("--gpu-health", default="warn", choices=["off", "warn", "fail"],
                  help="check for missing render nodes, D-state GPU tasks, and stale GPU fd holders around collection")

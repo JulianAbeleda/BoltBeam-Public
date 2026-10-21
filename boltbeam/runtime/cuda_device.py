@@ -125,10 +125,11 @@ def demangle(names:list[str], filt:str | None = None) -> dict[str, str]:
 def normalise_symbol(name:str) -> str:
   """A demangled name as the matcher compares it: no spaces, no scalar casts, bools as 0 and 1. cu++filt prints a
   template's non-type arguments with casts and bools as (bool)0: `mul_mat_vec_q<(ggml_type)12, (int)1, (bool)0,
-  (bool)0, (bool)0>`; the adapter writes `mul_mat_vec_q<(ggml_type)12, 1, false, false>`."""
+  (bool)0, (bool)0>`; the adapter writes `mul_mat_vec_q<(ggml_type)12, 1, false, false>`. rocprofv3 prints a
+  function-pointer argument as `&(op_silu(float))`, llvm-objdump -C as `&op_silu(float)`: the parentheses go."""
   s = re.sub(r"\s+", "", name)
   s = re.sub(r"\((?:int|unsigned|long|short|char|bool)\)", "", s)
-  return s.replace("true", "1").replace("false", "0")
+  return re.sub(r"&\(((?:[^()]|\([^()]*\))*)\)", r"&\1", s).replace("true", "1").replace("false", "0")
 
 
 def template_arity(name:str) -> int | None:

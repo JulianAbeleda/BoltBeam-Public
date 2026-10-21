@@ -94,35 +94,44 @@ def origins(graphs:list[list[dict]], replayed:dict[int, dict[int, tuple]]) -> di
   return {(k + found[0], n): launch for k, launches in enumerate(graphs, 1) for n, launch in enumerate(launches)}
 
 
-def export(sources:list[Path], dst:Path) -> Path:
-  """Write dst (an Nsight-shaped capture.sqlite) from rocprofv3's rocpd databases, one per traced process."""
-  dst = Path(dst)
-  dst.unlink(missing_ok=True)
-  out = sqlite3.connect(dst)
-  out.executescript(SCHEMA)
+def windows(sources:list[Path]) -> list[tuple[int, int]]:
+  """The capture windows a --selected-regions trace holds, between each roctxProfilerResume and its Pause."""
+  marks = sorted((m for src in sources for m in sqlite3.connect(src).execute(
+    "select name, start from regions where name in ('roctxProfilerResume','roctxProfilerPause')")), key=lambda m: m[1])
+  return [(a[1], b[1]) for a, b in zip(marks, marks[1:]) if a[0] == "roctxProfilerResume" and b[0] == "roctxProfilerPause"]
+
+
+def export(sources:list[Path], dst:Path, *, window:tuple[int, int] | None = None, nodes:bool = True) -> Path:
+  """Write dst (an Nsight-shaped capture.sqlite) from rocprofv3's rocpd databases, one per traced process. window
+  keeps one capture window (as nsys writes one file per range): its markers, calls, and the kernels its calls
+  launched. nodes writes every replayed graph node's origin (the lineage file); a window file without them resolves
+  its nodes through that one, as semantic_capture.Capture(lineage=) reads nsys's."""
+  (dst := Path(dst)).unlink(missing_ok=True)
+  (out := sqlite3.connect(dst)).executescript(SCHEMA)
   strings: dict[str, int] = {}
   sid = lambda s: strings.setdefault(s, len(strings) + 1) if s is not None else None  # noqa: E731
   for src in sources:
     with sqlite3.connect(src) as db:
-      _copy(db, out, sid)
+      _copy(db, out, sid, window, nodes)
   out.executemany("insert into StringIds values(?,?)", [(i, s) for s, i in strings.items()])
   out.execute("insert into TARGET_INFO_SESSION_START_TIME values(0)")
-  out.commit()
-  out.close()
+  out.commit(), out.close()
   return dst
 
 
-def _copy(db:sqlite3.Connection, out:sqlite3.Connection, sid) -> None:
+def _copy(db:sqlite3.Connection, out:sqlite3.Connection, sid, window, with_nodes) -> None:
   # rocprofv3 writes its tables without indexes; its views join a million call arguments to their calls
   for (table,) in db.execute("select name from sqlite_master where type='table' and "
                              "(name like 'rocpd_arg%' or name like 'rocpd_region%')").fetchall():
     db.execute(f"create index if not exists boltbeam_{table} on {table}(event_id)")
+  inside = (lambda t: True) if window is None else (lambda t: window[0] <= t <= window[1])  # noqa: E731
   out.executemany("insert into NVTX_EVENTS values(?,?,?,null,?,59)",
                   [(s, e, name, tid(p, t)) for name, p, t, s, e in db.execute(
-                    "select name, pid, tid, start, end from regions where category='MARKER_CORE_RANGE_API'")])
-  out.executemany("insert into CUPTI_ACTIVITY_KIND_RUNTIME values(?,?,?,?,?)",
-                  [(s, e, tid(p, t), c, sid(name)) for name, p, t, s, e, c in db.execute(
-                    "select name, pid, tid, start, end, stack_id from regions where category like 'HIP_RUNTIME_API%'")])
+                    "select name, pid, tid, start, end from regions where category='MARKER_CORE_RANGE_API'") if inside(s)])
+  calls = [(s, e, tid(p, t), c, sid(name)) for name, p, t, s, e, c in db.execute(
+           "select name, pid, tid, start, end, stack_id from regions where category like 'HIP_RUNTIME_API%'") if inside(s)]
+  out.executemany("insert into CUPTI_ACTIVITY_KIND_RUNTIME values(?,?,?,?,?)", calls)
+  launched = {c[3] for c in calls}
   rows = db.execute("select k.start, k.end, k.stack_id, k.pid, k.agent_abs_index, k.stream_id, k.graph_exec_id, "
                     "k.graph_node_id, k.name, s.kernel_name, k.grid_x, k.grid_y, k.grid_z, k.workgroup_x, "
                     "k.workgroup_y, k.workgroup_z from kernels k left join kernel_symbols s on s.id = k.kernel_id "
@@ -135,15 +144,15 @@ def _copy(db:sqlite3.Connection, out:sqlite3.Connection, sid) -> None:
   captured = origins(captures(db), replayed)
   kernels, nodes = [], {}
   for (start, end, corr, pid, dev, stream, exec_id, index, name, raw, *dims) in rows:
-    grid, block = shape(dims)
-    graph = None
+    (grid, block), graph = shape(dims), None
     if exec_id:
       launch = captured[exec_id, index]
       graph = node(exec_id, index)
       nodes[graph] = (launch["start"], launch["end"], launch["tid"], graph)
-    if not name.startswith("__amd_rocclr_"):  # ROCm runs copies and fills as kernels; CUDA records them as copies
+    # ROCm runs copies and fills as kernels; CUDA records them as copies
+    if not name.startswith("__amd_rocclr_") and (window is None or corr in launched):
       kernels.append((start, end, corr, pid << 24, dev, stream, graph, sid(name), sid(raw), *grid, *block))
   out.executemany("insert into CUPTI_ACTIVITY_KIND_KERNEL values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", kernels)
-  out.executemany("insert into CUDA_GRAPH_NODE_EVENTS values(?,?,?,?,null)", nodes.values())
+  out.executemany("insert into CUDA_GRAPH_NODE_EVENTS values(?,?,?,?,null)", nodes.values() if with_nodes else ())
   out.executemany("insert into ANALYSIS_FILE values(?,?)",
                   [(str(g), p << 24) for g, p in db.execute("select guid, pid from processes")])

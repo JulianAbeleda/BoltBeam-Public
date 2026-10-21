@@ -203,8 +203,23 @@ def target_kind(name:str | None) -> str | None:
   return target_capability(name, "target_kind", "exact")
 
 
-# The default-target bandwidth fact, derived from the registry so there is exactly one source
-# (LN-130). amd_gfx1100 is the historical default target every peak_gbs parameter assumed.
-DEFAULT_PEAK_MEM_GBS: float = float(next(
-  row["memory_bandwidth_gbs"] for row in json.loads(_DEFAULT_PATH.read_text())["targets"]
-  if row["target_id"] == "amd_gfx1100"))
+def target_peak_gbs(target_id:str | None) -> float | None:
+  """A registry target's memory bandwidth, the one source of a peak_gbs (LN-130); None when no target is named or
+  it records none. No chip's figure stands in for another's: every peak_gbs comes from the run's target."""
+  t = TARGETS.get(str(target_id)) if target_id else None
+  return float(t.memory_bandwidth_gbs) if t and t.memory_bandwidth_gbs else None
+
+
+def need_target_id(target_id:str | None, what:str) -> str:
+  """target_id, or ValueError: a trace names the chip it ran on, never a default one."""
+  if not target_id:
+    raise ValueError(f"{what}: --target-id is required unless --run supplies one; no chip is assumed")
+  return target_id
+
+
+def need_peak_gbs(peak_gbs:float | None, what:str) -> float:
+  """peak_gbs, or ValueError naming what needed it: a bandwidth limit with no bandwidth is not computed."""
+  if peak_gbs is None:
+    raise ValueError(f"{what} needs the target's peak bandwidth (peak_gbs): none was given, and no chip's figure "
+                     "is assumed in its place")
+  return float(peak_gbs)

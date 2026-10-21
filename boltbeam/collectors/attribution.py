@@ -34,6 +34,7 @@ from typing import Any, Iterable
 
 from boltbeam.collectors import pairing
 from boltbeam.collectors.pairing import BLOCKS  # noqa: F401  (the decode readers import it from here)
+from boltbeam.target import vendors
 
 ROLE_SOURCE = "attributed_by_bytes_and_count"
 
@@ -281,8 +282,10 @@ def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_m
   than the chip's measured uncertainty (screen.bandwidth_uncertainty). Returns what was checked: with no measured
   uncertainty the token comparison is not checked."""
   if not window:
+    row = vendors.BY_CAPTURE.get(method)  # the capture's vendor: its graphs hid the kernels (target/vendors.py)
+    graphs = f" (for llama.cpp on {row.backend}, its {row.term('graphs')})" if row and row.term("graphs") else ""
     raise CaptureRefused(f"{method} captured {long_kernels} kernels, but none ran only in the decode tokens: the "
-                         "decode's kernels were not visible to it (for llama.cpp on CUDA, its CUDA graphs)")
+                         f"decode's kernels were not visible to it{graphs}")
   per_token = sum(g["wall_us"] for g in window) / tokens / 1000.0
   if not token_ms or band is None:
     return "not checked: " + ("no captured token time" if not token_ms else "the chip has no measured uncertainty")

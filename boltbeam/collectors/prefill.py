@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from boltbeam.collectors import gpu_telemetry
 from boltbeam.roofline.prefill_work import peaks_at
+from boltbeam.workflow.common import run_gpu
 
 TRACE = "prefill_trace.json"
 RAW = "kernel_compare/prefill_capture"
@@ -91,9 +92,11 @@ def llama_row(text:str, field:str = "n_prompt") -> dict[str, Any]:
 def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> dict[str, Any]:
   bench = _bench(run)
   from boltbeam.collectors.capture_settings import llama_flags
-  cmd = llama_argv(bench, model, length, REPS, extra=llama_flags(run, length))
-  with gpu_telemetry.Telemetry(device) as tele:
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, cwd=run)
+  from boltbeam.workflow.layout import one_gpu
+  pin, env = one_gpu(run, "llama.cpp")
+  cmd = llama_argv(bench, model, length, REPS, extra=[*pin, *llama_flags(run, length)])
+  with gpu_telemetry.run_telemetry(run, device) as tele:
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, cwd=run, env={**os.environ, **env})
   if proc.returncode != 0:
     raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
   row = llama_row(proc.stdout)
@@ -158,8 +161,11 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   raw = raw or run / RAW / (f"{length}-at-{depth}" if depth else str(length))
   from boltbeam.collectors.capture_settings import llama_flags
   settings = llama_flags(run, length, capture=True) if not depth else []
+  from boltbeam.workflow.layout import one_gpu
+  pin, env = one_gpu(run, "llama.cpp")
   launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, 2, depth=depth,
-                                                               extra=[*settings, *(extra or [])]), raw)
+                                                               extra=[*pin, *settings, *(extra or [])]), raw, env=env,
+                                    device=run_gpu(run))
   row = llama_row(vendor_capture.program_output(raw))
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   formats = llama_formats(row.get("type_k"), weight_quants(run))
@@ -175,7 +181,7 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1,
           "warmup": REPEAT, "copies": 2 if depth else COPIES, "formats": formats,
           "method": vendor_capture.plan(target.backend)["method"],
-          "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches),
+          "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches, device=run_gpu(run)),
           "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches),
           "measured_ms": float((row.get("samples_ns") or [row["avg_ns"]])[-1]) / 1e6,  # the repetition attributed
           "prune": llama_prunes(launches, split_chunks(length, ub), -(-length // b) if b else 1, copies=2 if depth else COPIES)}
@@ -208,11 +214,32 @@ def weight_quants(run:pathlib.Path) -> set[str]:
 
 
 def library_paths(libraries:list[pathlib.Path], launches:list[dict[str, Any]] | None = None, *,
-                  tools:pathlib.Path | None = None, jit_caches:list[str] | None = None) -> dict[str, Any]:
+                  tools:pathlib.Path | None = None, jit_caches:list[str] | None = None,
+                  capture:pathlib.Path | None = None, device:dict[str, Any] | None = None) -> dict[str, Any]:
   """The matrix paths of the kernels in the libraries the engine loads (a library without device code is skipped):
   their embedded PTX, then, for captured kernels no PTX holds (a library that ships machine code only), their machine
   code for this GPU (instruction_path.sass_table). tools: a folder with the engine's own cuobjdump/nvdisasm.
-  jit_caches: folders where the engine's compiler (Triton) wrote each kernel it built as <kernel>.ptx."""
+  jit_caches: folders where the engine's compiler (Triton) wrote each kernel it built as <kernel>.ptx.
+  device: the run's GPU (workflow.common.run_gpu), whose vendor picks the reader (INSTRUCTIONS); none named (a run
+  with no hardware profile) reads NVIDIA's, as before the profile named the GPU. A vendor with no reader refuses."""
+  from boltbeam.collectors import rocm_isa
+  if capture is not None and (dbs := sorted(capture.glob("*_results.db"))):  # AMD: the code objects rocprofv3 saw load
+    return rocm_isa.table(dbs, jit_caches=jit_caches, libraries=libraries)
+  vendor = (device or {}).get("vendor") or "nvidia"
+  if vendor not in INSTRUCTIONS:
+    from boltbeam.workflow.chips import NoVendorRow
+    raise NoVendorRow(f"no instruction reader for {vendor} GPUs: their kernels' matrix paths cannot be read")
+  return INSTRUCTIONS[vendor](libraries, launches, tools=tools, jit_caches=jit_caches, device=device or {})
+
+
+def _gfx_paths(libraries:list[pathlib.Path], launches, *, device:dict[str, Any], **_) -> dict[str, Any]:
+  """An AMD GPU with no capture: the libraries' fat binaries for its gfx target."""
+  from boltbeam.collectors import rocm_isa
+  return rocm_isa.library_table(libraries, device.get("architecture"))
+
+
+def _ptx_paths(libraries:list[pathlib.Path], launches, *, tools, jit_caches, device:dict[str, Any]) -> dict[str, Any]:
+  """An NVIDIA GPU: embedded PTX, the JIT caches' PTX, then machine code for its sm_XY target."""
   from boltbeam.collectors.instruction_path import library_table, paths_in_text, sass_signatures, sass_table, template
   kernels: dict[str, dict[str, int]] = {}
   read, seen = [], set()
@@ -242,7 +269,7 @@ def library_paths(libraries:list[pathlib.Path], launches:list[dict[str, Any]] | 
       kernels.update(found)
       wanted -= set(found)
       read.append({"library": d, "sha256": None, "kernels": len(found), "code": "ptx (the engine's JIT cache)"})
-  arch = gpu_arch()
+  arch = device.get("architecture") or gpu_arch()
   if wanted and arch and find("nvdisasm"):
     sigs = sass_signatures(arch, nvdisasm=find("nvdisasm"))
     for lib in sorted(seen):
@@ -259,6 +286,9 @@ def library_paths(libraries:list[pathlib.Path], launches:list[dict[str, Any]] | 
   return {"kernels": kernels, "libraries": read,
           "how": "the engine's loaded libraries: embedded PTX (cuobjdump --dump-ptx), else machine code (nvdisasm) "
                  "with each matrix opcode mapped to the path whose probe compiles to it"}
+
+
+INSTRUCTIONS = {"nvidia": _ptx_paths, "amd": _gfx_paths}  # a GPU vendor's kernel-code reader, by the run's GPU's vendor
 
 
 def gpu_arch(device:int = 0) -> str | None:
@@ -333,7 +363,7 @@ def fork_exec(root, python, target, driver:pathlib.Path, argv:list[str], mode:st
 
 def tinygrad_truth(run:pathlib.Path, model:str, length:int, *, target, root=None, device:int = 0) -> dict[str, Any]:
   root, python = _fork(root)
-  with gpu_telemetry.Telemetry(device) as tele:
+  with gpu_telemetry.run_telemetry(run, device) as tele:
     got = _fork_run(root, python, target, model, length, "truth")
   return {"ms": got["wall_s"] * 1e3, "samples_ms": [s * 1e3 for s in got["samples_s"]],
           "chunk": chunk_record(got["chunks"], "the fork's forward calls during the prompt"), "telemetry": tele.summary(),
@@ -407,7 +437,7 @@ def vllm_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> di
   from boltbeam.collectors import engine_common as ec, vllm_decode as vd
   from boltbeam.collectors.capture_settings import vllm_flags
   argv, env = _vllm(model, length, "--reps", str(REPS), *vllm_flags(run, length))
-  with gpu_telemetry.Telemetry(device) as tele:
+  with gpu_telemetry.run_telemetry(run, device) as tele:
     line = ec.run_driver(argv, env={**env, **vd.RUN_ENV})[-1]
   engine = [s for s in line["engine_samples_s"] if s]
   own = len(engine) == len(line["engine_samples_s"])
@@ -448,21 +478,24 @@ def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, A
   from boltbeam.collectors import vendor_capture, vllm_decode as vd
   from boltbeam.collectors.capture_settings import vllm_flags
   profile = json.loads((run/'model_profile.json').read_text())
-  semantic = ((profile.get('metadata') or {}).get('recurrent') or {}).get('kind') == 'mamba2'
+  # labels the launches by module where geometry cannot pair them: Mamba2's kernels, and ROCm's, whose matrices share
+  # grids and order (two FFN launches after a recurrent block fit one role equally on an R9700)
+  semantic = ((profile.get('metadata') or {}).get('recurrent') or {}).get('kind') == 'mamba2' or target.backend == 'AMD'
   argv, env = _vllm(model, length, "--capture", *(['--semantic-dispatch'] if semantic else []), *vllm_flags(run, length, capture=True))
   raw = run / RAW / str(length)
   if semantic:
     # Reuse the measured autotuner choice across the timing/counter processes.
     # Otherwise each process can choose a different tile, invalidating traffic.
     env = {**env, 'TRITON_CACHE_AUTOTUNING':'1'}
-  launches = vendor_capture.capture(target.backend, argv, raw, env={**env, **vd.CAPTURE_ENV}, profiler_range=True)
+  launches = vendor_capture.capture(target.backend, argv, raw, env={**env, **vd.CAPTURE_ENV}, profiler_range=True,
+                                    device=run_gpu(run))
   line = json.loads([x for x in vendor_capture.program_output(raw).splitlines() if x.startswith('{"length"')][-1])
   proof = None
   if semantic:
     import hashlib
     from boltbeam.collectors import semantic_capture, vllm_semantic_work, cuda_memory
     launches = vllm_semantic_work.attach(semantic_capture.read(raw/'capture.sqlite'),pathlib.Path(model),profile,
-                                         ssd_chunk=line['mamba_chunk_size'],routing=line.get('routing'))
+                                         ssd_chunk=line.get('mamba_chunk_size'),routing=line.get('routing'))
     # AOT compilation may set a private Triton cache only in the timing process.
     # Reuse that observed cache, rather than letting the counter process retune.
     counter_env={**env,**vd.CAPTURE_ENV,'TRITON_CACHE_DIR':line['triton_cache_dir']}
@@ -477,7 +510,7 @@ def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, A
   tools = pathlib.Path(vd.python() or "").parent.parent
   bins = sorted(tools.glob("lib/python*/site-packages/nvidia/*/bin"))
   paths = library_paths([pathlib.Path(p) for p in line.get("libraries") or []], launches,
-                        tools=bins[0] if bins else None, jit_caches=line.get("jit_caches"))
+                        tools=bins[0] if bins else None, jit_caches=line.get("jit_caches"), capture=raw, device=run_gpu(run))
   return {"launches": launches, "chunk": chunk["widths"], "outputs": chunk["outputs"], "warmup": False,
           "formats": vllm_formats(weight_quants(run), line), "method": vendor_capture.plan(target.backend)["method"],
           "matrices": line.get("matrices"), "captured_ms": line["wall_s"] * 1e3, "window": line.get("window_monotonic"),
@@ -592,7 +625,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
            "workload": "prefill", "provider": provider, "provider_id": provider, "collector_id": "prefill",
            "timing_source": "untraced prefill wall time", "contexts": [r["context"] for r in rows], "rows": rows,
-           "clock_policy": gpu_telemetry.clock_policy(0),
+           "clock_policy": gpu_telemetry.run_clock_policy(run),
            "measured": ["whole_step.prefill_ms (the prompt read untraced at the engine's own chunk)"],
            **({"sweep": read_json(run / "prefill_sweep.json")} if (run / "prefill_sweep.json").exists() else {})}
   out = run / "timing_trace.json"
@@ -623,6 +656,19 @@ def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> li
       out.append({"role": r["role"], "quant": r["quant"], "n": int(r["rows"]), "k": int(r["cols"]), "count": int(r["count"]),
                   "weight_bytes": float(c["bytes_moved"]) / int(r["count"]), "role_class": r.get("role_class")})
   return out
+
+
+def capture_peaks(peaks:dict[str, float], source:dict[str, Any] | None, seen:dict[str, Any],
+                  window:list[float] | None) -> tuple[dict[str, float], str]:
+  """The peaks at the clock the measured prefill ran at: seen is the telemetry over the capture's window (the samples
+  next to it), not over the engine's start-up, whose low clocks would scale every peak down. With no window, the whole
+  run's samples stand for it only when the driver marks the idle ones (NVML); amdgpu marks none, so they do not."""
+  busy = window or seen.get("throttled") is not None
+  got = peaks_at(peaks, source, (seen.get("sm_mhz") or {}).get("mean") if busy else None)
+  if not busy and seen.get("sm_mhz"):
+    return got[0], ("peaks at the clock they were measured at: the capture marks no busy window and the driver no "
+                    "idle samples, so the run's mean clock would include the engine's start-up")
+  return got
 
 
 def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None, depth:int = 0,
@@ -669,13 +715,11 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                                                      f"{MAX_CAPTURE_LAUNCHES:,}: the untraced time, MFU and clock stand alone"}
       continue
     say(f"prefill of {length} tokens in the model{f' after {depth} in the cache' if depth else ''}: {provider}")
-    with gpu_telemetry.Telemetry(0) as tele:
+    with gpu_telemetry.run_telemetry(run, 0) as tele:
       cap = (capture or _engine(provider)["capture"])(run, str(manifest["model_path"]), int(length), target, root)
-    # the clock while the measured prefill ran (an adapter that reports its window: the samples next to it), not
-    # over the engine's start-up, whose low clocks would scale every peak down
     w = cap.get("window")
     seen = tele.summary(w[0] - tele.interval_s, w[1] + tele.interval_s) if w else tele.summary()
-    peaks, peaks_clock = peaks_at(dict(target.matrix_tflops or {}), out["peaks_source"], (seen.get("sm_mhz") or {}).get("mean"))
+    peaks, peaks_clock = capture_peaks(dict(target.matrix_tflops or {}), out["peaks_source"], seen, w)
     pairing, pairing_source = engine_roles(roles, cap["matrices"]) if "matrices" in cap else (roles, "the profile's roles")
     attr = attribute_prefill(cap["launches"], [dict(r) for r in pairing], chunk_widths=cap["chunk"], outputs=cap["outputs"],
                              layers=int(profile.get("layer_count") or 0), kernel_paths=cap["paths"]["kernels"],

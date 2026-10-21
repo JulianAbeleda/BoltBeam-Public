@@ -64,7 +64,7 @@ def register(sub) -> None:
   p.add_argument("--counters", action="append", required=True, help="ncu counters JSON (ours and reference; repeatable)")
   p.add_argument("--dims-from", required=True, help="JSON rows with role, n, k (e.g. the kernel audit's vllm_gemm.json)")
   p.add_argument("--lowering", help="boltbeam.gemm_lowering_facts.v1 (roofline + rows bucket)")
-  p.add_argument("--target", default="nvidia_sm120")
+  p.add_argument("--target", required=True)
   p.add_argument("--gemm-rows-per-token", type=int, default=2)
   p.add_argument("--sass", action="append", help="KERNEL_PREFIX=path.sass static opcode census (repeatable)")
   p.add_argument("--census", action="append", help="JSON {kernel_prefix: {OPCODE: count}} (repeatable)")

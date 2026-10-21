@@ -167,6 +167,17 @@ def recurrent_executed(profile:dict[str, Any], length:int, form:dict[str, Any] |
                    f"{heads} heads, {layers} layers (the ceiling counts the model's 7 x {state}^2 per token)"}
 
 
+# A measured path's core clock in MHz, on every vendor: the probes' key (cuda_compute, hip_compute) and the telemetry
+# summary's (gpu_telemetry). Named for NVIDIA's SM, its meaning is the shader core clock; ops_per_sm_per_clock is per
+# the driver API's multiprocessor. Older AMD chip profiles wrote core_mhz: read here, never written.
+CLOCK_KEY, OLD_CLOCK_KEYS = "sm_mhz", ("core_mhz",)
+
+
+def path_clock(row:dict[str, Any]) -> float | None:
+  """The core clock a measured path ran at, in MHz, by CLOCK_KEY or an older profile's key; None when unrecorded."""
+  return next((row[k] for k in (CLOCK_KEY, *OLD_CLOCK_KEYS) if row.get(k)), None)
+
+
 FP32_PATH = "fp32_fma"  # the measured vector path (cuda_compute.PATHS) a kernel with no matrix instruction runs on
 
 
@@ -180,7 +191,7 @@ def peaks_at(peaks:dict[str, float], source:dict[str, Any] | None, sm_mhz:float 
     return dict(peaks), "peaks at the clock they were measured at (no SM clock was observed for this run)"
   out, scaled, measured = {}, [], set()
   for name, tops in peaks.items():
-    at = (paths.get(name) or {}).get("sm_mhz")
+    at = path_clock(paths.get(name) or {})
     if at:
       out[name] = tops * sm_mhz / at
       scaled.append(name)

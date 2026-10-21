@@ -545,11 +545,13 @@ type EngineBuild struct {
 	Words   string  `json:"words"`
 }
 
-// ToolchainFacts is what the run observed: driver, CUDA, torch and the profilers, "unknown" when a tool was missing.
+// ToolchainFacts is what the run observed with its GPU vendor's toolchain (target/vendors.py): the driver, the
+// toolkit, torch and the profilers, "unknown" when a tool was missing. Keys is the versions' recorded order.
 type ToolchainFacts struct {
 	RecordedAt string            `json:"recorded_at"`
 	Versions   map[string]string `json:"versions"`
 	Runtime    map[string]string `json:"runtime"`
+	Keys       []string          `json:"-"`
 }
 
 // Probe is the building-block probe's rows (workflow/screen.py probe_rows): "measured" with rows, or "absent".

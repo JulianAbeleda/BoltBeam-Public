@@ -9,6 +9,7 @@ from boltbeam.profile.ir import ModelProfile, TargetProfile, TensorRole
 from boltbeam.quantization.quant import quant_capability, route_families_for
 from boltbeam.search.emit import emit_search_space
 from boltbeam.synth.fixtures import emit_fixture_manifest
+from boltbeam.target import vendors
 from boltbeam.target.tinygrad_root import resolve_tinygrad_root
 from boltbeam.vocab import role_rank_priority
 from boltbeam.core.canonical import pretty_json
@@ -76,11 +77,9 @@ def _tool_status(tinygrad_root:pathlib.Path) -> dict[str, Any]:
   }
 
 
-# tinygrad DEV backend derived from the target descriptor's backend (not hardcoded to AMD; audit Z4/A9)
-_BACKEND_DEV = {"AMD": "AMD", "CUDA": "NV", "Metal": "METAL"}
 
 
-def _env_prefix(route_flags:dict[str, str], extra:dict[str, str] | None=None, dev:str="AMD") -> str:
+def _env_prefix(route_flags:dict[str, str], extra:dict[str, str] | None=None, *, dev:str) -> str:
   env = {"DEV": dev, "JIT": "1", "PYTHONPATH": "."}
   env.update(route_flags)
   if extra: env.update(extra)
@@ -93,12 +92,12 @@ def _format_cmd(cmd:str) -> str:
 
 def build_tinygrad_commands(model_path:str | pathlib.Path, model_id:str, tinygrad_root:str | pathlib.Path,
                             ctxs:tuple[int, ...], max_context:int,
-                            route_flags:dict[str, str] | None=None, backend:str="AMD") -> dict[str, Any]:
+                            route_flags:dict[str, str] | None=None, *, backend:str) -> dict[str, Any]:
   tg = pathlib.Path(tinygrad_root).expanduser()
   model = pathlib.Path(model_path).expanduser()
   ctxs_s = ",".join(str(x) for x in ctxs)
   flags = route_flags or {"DECODE_Q4K_G3_ANYSHAPE": "1"}
-  dev = _BACKEND_DEV.get(backend, "AMD")
+  dev = vendors.for_backend(backend).tinygrad_device  # from the target's backend (audit Z4/A9)
   role_prefix = _env_prefix(flags, dev=dev)
   runtime_prefix = _env_prefix(flags, {"QK_MODEL": str(model), "QK_CKPTS": ctxs_s}, dev=dev)
 

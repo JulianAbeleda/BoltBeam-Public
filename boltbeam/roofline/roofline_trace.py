@@ -23,7 +23,7 @@ Roofline decomposition. ideal_us = total_bytes / peak is the minimum time if eve
 from __future__ import annotations
 from typing import Any
 from boltbeam.math.roofline import bandwidth_utilization
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
+from boltbeam.target.targets import need_peak_gbs
 from boltbeam.math import roofline as _roofline_math
 
 # kind -> which loss bucket a sub-peak kernel belongs to. The producer tags each kernel's `kind`.
@@ -36,13 +36,14 @@ def _util(phys_bytes: float, us: float, peak_gbs: float) -> float:
   return bandwidth_utilization(phys_bytes, us, peak_gbs)
 
 
-def ingest_roofline(trace: dict[str, Any], peak_gbs: float = DEFAULT_PEAK_MEM_GBS,
+def ingest_roofline(trace: dict[str, Any], peak_gbs: float | None = None,
                     gemv_target: float = 0.85, dead_time_frac: float = 0.10) -> dict[str, Any]:
   """trace = {label?, total_us?, total_bytes, kernels:[{name, us, phys_bytes, kind}]}. Pure analysis.
 
   A non-weight kernel (norm/rope/act/reduce) is split by measured bandwidth: below `dead_time_frac` of peak it is
   launch/latency DEAD TIME (fusible -> elementwise_dilution); at or above it is REAL activation work
   (activation_bound, not free to fuse away). This avoids mislabeling a genuine reduce as reclaimable dilution."""
+  peak_gbs = need_peak_gbs(peak_gbs, "ingest_roofline")
   kernels = trace.get("kernels", [])
   if not kernels:
     return {"schema": "boltbeam.roofline_report.v1", "label": trace.get("label"), "diagnosis": "no_kernels"}

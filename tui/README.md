@@ -95,6 +95,11 @@ percent is marked an estimate (`~37%`). When the run ends the top box shows:
   run; the page says once how to make a band (n identical runs, then `screen repeat-bands --runs`);
 - pairing flags: "Pairing is not certain" with the solver's reason, and each unpaired role with its reason.
 
+Session headlines label the turn's rate as prompt tokens per second; decode speed is a separate column in the
+session table. Progress says "Time the real run", then "Capture and attribute kernels" for every workload.
+If attribution fails, Run says the report is incomplete and measurements and capture logs are kept. Details
+remain behind `l`; Save and Open report are unavailable, and Setup disables Emit with "run failed; see Run for details".
+
 The bottom box holds `[ Save run ]`, "Open the full report (report.html)" and `[ Back to setup ]`. A run is
 temporary (`<runs>/.work`) until saved; Save exports the run, `results.json`, `report.html` and `summary.txt` to
 `<runs>/saved`. The report has the same numbers as the screen; it is written by the same seam.

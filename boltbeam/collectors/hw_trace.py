@@ -11,7 +11,6 @@ from boltbeam.trace.hw_trace import timing_trace_to_hw_trace
 from boltbeam.profiler.capabilities import normalize_collector_id, normalize_provider_id, resolve_profiler_capability
 from boltbeam.workflow.common import load_manifest, run_dir
 from boltbeam.core.canonical import pretty_json
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
 
 
 # tinygrad backends that submit via /dev/kfd directly, bypassing the ROCr HSA/HIP runtime that
@@ -156,7 +155,7 @@ def main(argv:list[str] | None = None) -> int:
   ap.add_argument("--weight-inventory", default=None)
   ap.add_argument("--prefill-chunked", default="1")
   ap.add_argument("--provider-id", default=None)
-  ap.add_argument("--peak-gbs", type=float, default=DEFAULT_PEAK_MEM_GBS)
+  ap.add_argument("--peak-gbs", type=float, default=None, help="defaults to the target's registry bandwidth")
   ap.add_argument("--env", action="append", default=[], help="extra provider env override KEY=VALUE")
   ap.add_argument("--gpu-health", default="warn", choices=["off", "warn", "fail"],
                   help="check for missing render nodes, D-state GPU tasks, and stale GPU fd holders around collection")

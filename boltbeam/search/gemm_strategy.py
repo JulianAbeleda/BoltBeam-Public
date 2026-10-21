@@ -73,7 +73,7 @@ class GemmMachine:
   cost_calibration: Mapping[str, Any] | None = field(default=None, compare=False, hash=False)
 
   @classmethod
-  def from_target(cls, target_id:str="nvidia_sm120", registry:Mapping[str, Any] | None=None) -> "GemmMachine":
+  def from_target(cls, target_id:str, registry:Mapping[str, Any] | None=None) -> "GemmMachine":
     """Read the facts from the target registry's scan rows; a missing fact is an error, never a default."""
     if registry is None:
       from boltbeam.target.targets import TARGETS as registry

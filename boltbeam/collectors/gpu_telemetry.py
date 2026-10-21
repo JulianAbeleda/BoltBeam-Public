@@ -127,7 +127,9 @@ class AmdSysfs:
 def amd_clock_policy(source:AmdSysfs) -> dict[str, Any]:
   """AMD's clock policy, read without changing anything: setting the clock is a root write to sysfs, which a
   measurement does not make, so the board runs at its own power limit (fixed power) and the clock it chose is logged.
-  The driver's performance level is recorded as found."""
+  The driver's performance level is recorded as found. A card whose sysfs is not here has an unknown policy."""
+  if isinstance(source, Unsampled):
+    return {"policy": None, "clock_settable": None, "words": f"the clock policy is unknown: {source.reason}"}
   level = source.performance_level()
   return {"policy": "fixed_power", "clock_settable": False, "words": POLICY_WORDS["fixed_power"],
           "why": f"amdgpu performance level {level!r}; BoltBeam does not write it" if level else
@@ -209,6 +211,53 @@ def words(s:dict[str, Any]) -> str:
   return text
 
 
+class Unsampled:
+  """A GPU with no telemetry source here (no vendor row, or its card not found): Telemetry samples nothing and its
+  summary says why. Never the NVIDIA library in its place."""
+
+  def __init__(self, reason:str):
+    self.reason = reason
+
+
+def source_for(device:dict[str, Any] | None):
+  """The telemetry source for one hardware-profile GPU, from its vendor's row (chips._vendors() "telemetry"): the
+  amdgpu sysfs for an AMD card, found by its PCI address; None for NVIDIA, whose library Telemetry opens by index
+  (the scan's order is NVML's). A vendor with no source, or a card not found, is Unsampled with the reason. No
+  device (a run with no hardware profile) is None, as before the profile named the GPU."""
+  if not device:
+    return None
+  from boltbeam.workflow.chips import NoVendorRow, vendor_row
+  try:
+    return vendor_row(device.get("vendor"), "telemetry")(device)
+  except (NoVendorRow, OSError, KeyError) as exc:
+    return Unsampled(f"no clock samples: {exc}")
+
+
+def opened(source, *args, make=None):
+  """Telemetry(*args) on a source; with no source (NVIDIA's library, by index) called exactly as before there was one."""
+  make = make or Telemetry
+  return make(*args) if source is None else make(*args, source=source)
+
+
+def run_telemetry(run:pathlib.Path, *args, make=None):
+  """Telemetry(*args) on the run's GPU (common.run_gpu), by its vendor's source (source_for)."""
+  from boltbeam.workflow.common import run_gpu
+  return opened(source_for(run_gpu(run)), *args, make=make)
+
+
+def run_clock_policy(run:pathlib.Path) -> dict[str, Any]:
+  """The clock policy the run's GPU holds, decided by its vendor's row (chips._vendors() "clock_policy"); unknown,
+  with the reason, for a vendor with none. A run with no hardware profile asks nvidia-smi, as before."""
+  from boltbeam.workflow.chips import NoVendorRow, vendor_row
+  from boltbeam.workflow.common import run_gpu
+  if (device := run_gpu(run)) is None:
+    return clock_policy(0)
+  try:
+    return vendor_row(device.get("vendor"), "clock_policy")(source_for(device))
+  except NoVendorRow as exc:
+    return {"policy": None, "clock_settable": None, "words": f"the clock policy is unknown: {exc}"}
+
+
 class Telemetry:
   """Samples the GPU in a background thread while the block runs. summary() after the block. On a machine without
   the library the summary says so and nothing is sampled."""
@@ -220,6 +269,9 @@ class Telemetry:
     self._source, self._stop, self._thread, self._limit, self._total = source, threading.Event(), None, None, None
 
   def __enter__(self) -> "Telemetry":
+    if isinstance(self._source, Unsampled):
+      self._nvml, self.reason = None, self._source.reason
+      return self
     try:
       self._nvml = self._source or _Nvml(self.device)
     except OSError as exc:

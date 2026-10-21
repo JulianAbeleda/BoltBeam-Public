@@ -38,6 +38,32 @@ func TestRunningScreens(t *testing.T) {
 	}
 }
 
+func TestSessionAttributionFailureExplainsReportAndDisablesEmit(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	s := loadSample(t)
+	dead := *s.job
+	dead.Alive = false
+	tail := []string{"pipeline steps: 3", "stage measure_timing: start", "stage measure_timing: done",
+		"stage role_time: start", "stage role_time: failed: repeated turn boundary is ambiguous"}
+	m := page(program(s, isolatedRun(t), &dead, tail, 80, 24), pageRun)
+	f := facts(m)
+	view := m.View()
+	for _, want := range []string{"Capture and attribute kernels failed", "Report incomplete", "capture logs are kept", "Show details: l"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("missing %q:\n%s", want, view)
+		}
+	}
+	if f.canEmit() || emitAction(f).do != "" || !strings.Contains(emitAction(f).label, "run failed") {
+		t.Fatal("failed attribution must disable Emit even when an older work breakdown exists")
+	}
+	golden(t, "run-failed-session.txt", view)
+	for _, a := range runActions(f) {
+		if a.do == "save" || a.do == "report" {
+			t.Fatal("a failed run must not offer Save or Open report")
+		}
+	}
+}
+
 // An engine's own error is one sentence in the box: what it said and where inside the engine it was raised. The
 // traceback behind it (the pipeline's "detail:" lines) and the log wait behind l, "Show details".
 func TestFailedScreenKeepsTheTracebackBehindDetails(t *testing.T) {
@@ -100,7 +126,7 @@ func TestSetupStagesAreNotCounted(t *testing.T) {
 		t.Fatalf("%+v", p)
 	}
 	v := page(program(s, &s.planned, s.job, step1, 80, 24), pageRun).View()
-	if !strings.Contains(v, "1 of 6") || !strings.Contains(v, "Time the real decode") {
+	if !strings.Contains(v, "1 of 6") || !strings.Contains(v, "Time the real run") {
 		t.Fatalf("step 1 must read 1 of 6:\n%s", v)
 	}
 	done := append(append([]string{}, step1...), "stage measure_timing: done", "stage ingest_probe: start", "stage ingest_probe: done",

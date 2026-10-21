@@ -153,13 +153,13 @@ class FullKernelCandidateSet:
 
 
 def build_qwen3_8b_buffer2_candidate_set(seed:FullKernelCandidate|dict[str, Any],
-                                         target_id: str = "amd_gfx1100",
+                                         target_id: str,
                                          schedule_template: dict[str, Any] | None = None) -> FullKernelCandidateSet:
   """Clone one admitted buffer-2 schedule into four exact 8B workload descriptors.
 
-  The model identity comes from the seed; the target is a registry-resolved parameter.
-  The legacy default (``amd_gfx1100``) stamps byte-identical output; any registered
-  target mints a valid set whose profile id carries that target's arch instead.
+  The model identity comes from the seed; the target is a registry-resolved parameter the caller names (no chip is
+  assumed): ``amd_gfx1100`` stamps the set this builder always made; any other registered target mints a valid set
+  whose profile id carries that target's arch instead.
 
   ``schedule_template`` is a tinygrad-derived typed schedule body
   (``{"schedule": ..., "static_constraints": ...}``, option A of

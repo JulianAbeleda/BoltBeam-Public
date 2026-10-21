@@ -59,8 +59,8 @@ var plainLimit = map[string]string{"memory": "reading weights", "compute": "doin
 // they live apart from plainStage, which tests/test_report_html.py pins to the report's own table.
 var plainMeasureStage = map[string]string{
 	"measure": "Can %s measure", "measure_probe": "Test blocks on the GPU",
-	"measure_timing": "Time the real decode",
-	"role_time":      "Time each role", "search": "Search faster kernels",
+	"measure_timing": "Time the real run",
+	"role_time":      "Capture and attribute kernels", "search": "Search faster kernels",
 }
 
 // plainVerdict words a role's kernel search verdict; report/html.py PLAIN_VERDICT says the same.
@@ -798,7 +798,7 @@ func sessionHeadline(res seam.Results) string {
 	r := res.Loss.Runtimes[0]
 	ratio := r.TokS / *res.Ceiling.TokS
 	return fmt.Sprintf("%s %s measured for a turn at depth %s. The limit at that depth is %.1f.\n%s %.0f%% of the limit\n",
-		stAccent.Render(glyphBolt), stHeader.Render(fmt.Sprintf("%.1f tokens per second", r.TokS)), count(s.Focus),
+		stAccent.Render(glyphBolt), stHeader.Render(fmt.Sprintf("%.1f prompt tokens per second", r.TokS)), count(s.Focus),
 		*res.Ceiling.TokS, bar(ratio, 20), ratio*100)
 }
 
@@ -858,6 +858,7 @@ func tokenEndToEnd(t seam.TieOut) string {
 
 // runEngineBody names the engine build against the pin table and the toolchain the run recorded
 // (docs/engine-upgrade-audit.md). A run from before either was recorded says so; nothing is filled from the pins.
+// The toolchain is whatever keys the run's vendor recorded, in their recorded order.
 func runEngineBody(e *seam.RunEngine) string {
 	if e == nil {
 		return ""
@@ -874,15 +875,17 @@ func runEngineBody(e *seam.RunEngine) string {
 		return b.String()
 	}
 	parts, missing := []string{}, []string{}
-	for _, k := range []string{"driver", "cuda", "torch", "nsight_systems", "nsight_compute"} {
-		if v, ok := e.Toolchain.Versions[k]; ok && v != "unknown" {
+	for _, k := range toolchainKeys(e.Toolchain) {
+		if v := e.Toolchain.Versions[k]; v != "unknown" {
 			parts = append(parts, k+" "+v)
-		} else if ok {
+		} else {
 			missing = append(missing, k)
 		}
 	}
-	if v, ok := e.Toolchain.Runtime["cuda"]; ok && v != "unknown" {
-		parts = append(parts, "torch's CUDA "+v)
+	for k, v := range e.Toolchain.Runtime { // torch's own runtime, one: cuda or hip
+		if v != "unknown" {
+			parts = append(parts, "torch's "+strings.ToUpper(k)+" "+v)
+		}
 	}
 	when := e.Toolchain.RecordedAt
 	if len(when) > 16 {
@@ -1870,6 +1873,9 @@ func failedBody(f Facts, width int) string {
 	if p.Reason != "" {
 		b.WriteString(p.Reason + "\n")
 	}
+	if p.Failed == "role_time" {
+		b.WriteString("Report incomplete. Measurements and capture logs are kept.\n")
+	}
 	if !f.ShowLog {
 		b.WriteString("\n" + stMuted.Render("Show details: l") + "\n")
 		return b.String()
@@ -1918,4 +1924,14 @@ func batchTable(rows []seam.BatchRow) string {
 			fmt.Sprintf("%.1f", r.TokSTotal), limit, pct, word(plainLimit, r.Limit.Bound)})
 	}
 	return "\n" + table(t) + "\n"
+}
+
+// toolchainKeys is the recorded versions in the run's order; facts built without one (a test) use the order the
+// NVIDIA toolchain was always written in.
+func toolchainKeys(t *seam.ToolchainFacts) []string {
+	if len(t.Keys) > 0 {
+		return t.Keys
+	}
+	return slices.DeleteFunc([]string{"driver", "cuda", "torch", "nsight_systems", "nsight_compute"},
+		func(k string) bool { _, ok := t.Versions[k]; return !ok })
 }

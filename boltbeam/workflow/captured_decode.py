@@ -10,6 +10,14 @@ from boltbeam.workflow import tie_out
 TRACE = 'decode_capture.json'
 
 
+def _graph_trace(run:Path) -> str | None:
+  """How the run's vendor capture traced the engine's graphs (target/vendors.py terms), from the run's target."""
+  from boltbeam.target import vendors
+  from boltbeam.target.targets import get_target
+  from boltbeam.workflow.common import load_manifest
+  return vendors.for_backend(get_target(load_manifest(run).get('target_id')).backend).term('graph_trace')
+
+
 def loss_block(run:Path, provider:str, token:dict | None) -> dict:
   trace=json.loads((run/TRACE).read_text())
   if trace.get('schema')!='boltbeam.decode_capture.v1' or trace.get('provider')!=provider:
@@ -41,8 +49,8 @@ def loss_block(run:Path, provider:str, token:dict | None) -> dict:
       'rows':[{'name':name,'now_ms':value,'cells':[f'{value:.6f}']}
               for name,value in [('untraced median',band['median_ms']),(label,delta)]],
       'sum_cells':['= captured',f"{capture['wall_ms']:.6f}"],
-      'words':capture['end_to_end']['words']+'. Nsight graph-node tracing is enabled in the capture. '
-              'The difference is not assigned to a model operation; this comparison does not alter the measured kernel rows.'}
+      'words':capture['end_to_end']['words']+'. '+(f'{trace_words} is enabled in the capture. ' if (trace_words:=_graph_trace(run)) else '')
+              +'The difference is not assigned to a model operation; this comparison does not alter the measured kernel rows.'}
   table=tie_out.where_decode_capture_goes(capture,untraced_ms=token['ms'],context=context)
   if count>1:
     table['words']+=f' Mean of {count} decode steps, including gaps.'

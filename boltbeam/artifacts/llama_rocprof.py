@@ -7,10 +7,10 @@ import re
 from typing import Any
 
 from boltbeam.vocab import SCHEMA_TIMING_TRACE
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
 
 
 from boltbeam.profile.gguf import GGML_TYPE_NAMES as _GGML_QUANTS
+from boltbeam.target.targets import need_peak_gbs, target_peak_gbs
 
 _ROCPROF_COPY_OPS = {
   2: "host_to_device",
@@ -289,14 +289,16 @@ def _aggregate_kernel_rows(rows:list[dict[str, Any]]) -> list[dict[str, Any]]:
   return [grouped[k] for k in order]
 
 
-def timing_trace_from_rocprof_csv(path:str | pathlib.Path, *, model_id:str, target_id:str = "amd_gfx1100",
+def timing_trace_from_rocprof_csv(path:str | pathlib.Path, *, model_id:str, target_id:str,
                                   workload:str = "prefill", context:int | None = None,
                                   provider_id:str = "llama.cpp/rocprofv3",
-                                  peak_gbs:float = DEFAULT_PEAK_MEM_GBS,
+                                  peak_gbs:float | None = None,
                                   llama_bench_json:str | pathlib.Path | None = None,
                                   weight_inventory:str | pathlib.Path | None = None,
                                   rocprof_json:str | pathlib.Path | None = None,
                                   memory_copy_csv:str | pathlib.Path | None = None) -> dict[str, Any]:
+  # the run target's bandwidth unless given; a target with none refuses (no chip's figure is assumed)
+  peak_gbs = peak_gbs if peak_gbs is not None else need_peak_gbs(target_peak_gbs(target_id), f"timing_trace_from_rocprof_csv for {target_id}")
   if not model_id:
     raise ValueError("model_id is required; pass --model-id or --run")
   src = pathlib.Path(path)

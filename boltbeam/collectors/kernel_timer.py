@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from boltbeam.core.policy import value
+from boltbeam.target import vendors
 
 SAMPLES, WARMUPS = 20, 10  # warmups let the GPU clock ramp up before the first timed sample
 # the dispatch floor: an empty kernel's launches, each after a sweep as every timed launch is, after WARMUPS. Measured
@@ -60,24 +61,28 @@ FLOOR_SAMPLES = 60
 # NOISY_SAMPLES times in all, the spread reported, and the row says why. One rule for both backends.
 NOISY_SAMPLES = 60
 
-# the flush kernel per backend: a sweep over a buffer larger than the last-level cache, run before each timed sample;
-# "mode" says what the sweep does to the cache lines: "read" leaves them clean, "store" leaves them dirty
-FLUSH = {
-  "Metal": {"bytes": 256 << 20, "kernel": "sweep", "mode": "read", "empty": "empty", "threads": 256, "source": """
+# the flush kernels per source dialect (target/vendors.py kernel_dialect): a sweep over a buffer larger than the
+# last-level cache, run before each timed sample, and an empty kernel for the dispatch floor
+FLUSH_SOURCES = {
+  "msl": """
 #include <metal_stdlib>
 using namespace metal;
 kernel void sweep(device const float* b [[buffer(0)]], device float* o [[buffer(1)]], constant uint& n [[buffer(2)]],
                   uint i [[thread_position_in_grid]]) {
   if (i < n && b[i] == 12345.0f) o[0] = 1.0f; }
 kernel void empty(device float* b [[buffer(0)]], uint i [[thread_position_in_grid]]) { if (i == 0xFFFFFFFF) b[0] = 0.0f; }
-"""},
-  "CUDA": {"bytes": 256 << 20, "kernel": "sweep", "mode": "read", "empty": "empty", "threads": 256, "source": """
+""",
+  "cuda": """
 extern "C" __global__ void sweep(const float* b, float* o, unsigned n) {
   unsigned i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i < n && b[i] == 12345.0f) o[0] = 1.0f; }
 extern "C" __global__ void empty(float* b) { if (blockIdx.x * blockDim.x + threadIdx.x == 0xFFFFFFFFu) b[0] = 0.0f; }
-"""},
+""",
 }
+# the flush per backend with a kernel bridge, its size from the vendor's row; "mode" says what the sweep does to the
+# cache lines: "read" leaves them clean, "store" leaves them dirty
+FLUSH = {v.backend: {"bytes": v.flush_bytes, "kernel": "sweep", "mode": "read", "empty": "empty", "threads": 256,
+                     "source": FLUSH_SOURCES[v.kernel_dialect]} for v in vendors.VENDORS.values() if v.bridge}
 
 WARM_RULE = ("the activation vector is read back in after the sweep: inside the model the kernel before wrote it and it is "
              "still in the cache, the weights are not")
@@ -104,13 +109,11 @@ def less_floor_us(us:float, floor_us:float | None, *, at_dram_us:float | None = 
 def bridge_for(backend:str, **kw:Any):
   """The GPU bridge for a target backend; the same surface on both: library, pipeline, buffer, read, dispatch,
   release, close, name, working_set_bytes."""
-  if backend == "Metal":
-    from boltbeam.runtime.metal_device import Metal
-    return Metal(**kw)
-  if backend == "CUDA":
-    from boltbeam.runtime.cuda_device import Cuda
-    return Cuda(**kw)
-  raise RuntimeError(f"BoltBeam has no kernel bridge for {backend}; Metal and CUDA have one")
+  row = vendors.BY_BACKEND.get(backend)
+  if row is None or row.bridge is None:
+    have = " and ".join(v.backend for v in vendors.VENDORS.values() if v.bridge)
+    raise RuntimeError(f"BoltBeam has no kernel bridge for {backend}; {have} have one")
+  return vendors.resolve(row.bridge)(**kw)
 
 
 def samples(launch:Callable[[], float], *, warmups:int = WARMUPS, count:int = SAMPLES,

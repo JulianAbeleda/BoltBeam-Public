@@ -77,7 +77,8 @@ DEFAULT_MODEL_BYTES: dict[str, int] = {
   "14B": 9_001_752_960,
   "32B": 19_762_149_024,
 }
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS  # single source: target registry (LN-130)
+from boltbeam.target.targets import target_peak_gbs  # single source: target registry (LN-130)
+BASELINE_TARGET = "amd_gfx1100"  # the machine LLAMA_REFS were measured on (the fork is AMD-only, BACKENDS)
 
 # BACKENDS is a v1-wire-format artifact: the v2 candidate path carries backend inside the target
 # facts and bypasses validate_backend entirely (LN-120 decision record).
@@ -670,7 +671,7 @@ def baseline(model:str) -> dict[str, Any]:
   """Return the canonical baseline numbers for a model."""
   size = model_size_key(validate_model(model))
   return {"size": size, "llama_tok_s": LLAMA_REFS[size], "model_bytes": DEFAULT_MODEL_BYTES[size],
-          "hbm_peak_gbs": DEFAULT_PEAK_MEM_GBS}
+          "hbm_peak_gbs": target_peak_gbs(BASELINE_TARGET)}
 
 
 def from_generated_policy(policy:dict[str, Any], *, model:str, baseline_tok_s:float, accepted_tok_s:float,

@@ -10,9 +10,11 @@ import os
 import pathlib
 from typing import Callable, Mapping
 
-TOOLKITS = {"cuda": (("CUDA_HOME", "CUDA_PATH"), "/usr/local/cuda"),
-            "rocm": (("ROCM_PATH", "HIP_PATH"), "/opt/rocm")}
-TOOLKIT_OF = {"nvcc": "cuda", "amd-smi": "rocm", "rocminfo": "rocm", "rocprofv3": "rocm", "hipcc": "rocm"}
+from boltbeam.target.vendors import VENDORS
+
+# each vendor's toolkit (target/vendors.py): its root's variables and default, and the tools under its bin/
+TOOLKITS = {v.toolkit.name: (v.toolkit.env, v.toolkit.default) for v in VENDORS.values() if v.toolkit}
+TOOLKIT_OF = {t: v.toolkit.name for v in VENDORS.values() if v.toolkit for t in v.toolkit.tools}
 
 
 def roots(toolkit:str, env:Mapping[str, str] | None = None) -> list[pathlib.Path]:

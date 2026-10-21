@@ -174,11 +174,17 @@ def llama_checkouts(home:pathlib.Path) -> list[pathlib.Path]:
 
 
 def backend_tag(env:Mapping[str, str] | None = None) -> str | None:
-  """The ggml backend this machine runs: cuda where nvidia-smi is, metal on a Mac, else unknown."""
+  """The ggml backend this machine's GPU runs, from its vendor's row (chips._vendors() ggml_backend: cuda, hip, metal),
+  the scan finding the tools on env's PATH; None when the scan found no GPU, or GPUs of more than one vendor."""
+  from boltbeam.workflow.autoscan import _hardware_profile
+  from boltbeam.workflow.chips import NoVendorRow, vendor_row
+  from boltbeam.workflow.common import first_gpu
   env = os.environ if env is None else env
-  if shutil.which("nvidia-smi", path=env.get("PATH")):
-    return "cuda"
-  return "metal" if sys.platform == "darwin" else None
+  try:
+    device = first_gpu(_hardware_profile(tool_resolver=lambda name: shutil.which(name, path=env.get("PATH"))))
+    return vendor_row(device["vendor"], "ggml_backend") if device else None
+  except (NoVendorRow, RuntimeError):
+    return None
 
 
 def build_bins(checkout:pathlib.Path, tag:str | None) -> list[pathlib.Path]:

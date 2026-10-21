@@ -265,6 +265,13 @@ by model-specific assumptions (audit A0–A10). The load-bearing rules:
   routes blocked. Classify the architecture before authorizing routes.
 - The decision path (search emission, families, seed policy, evaluator) must not
   hardcode model/quant/target names; the dev-only `policy/guards.py` source-scans it.
+- Vendors are rows, not branches. Outside a single-vendor adapter module, no
+  code in `boltbeam/` chains on vendor/backend/device literals, branches on
+  whether a vendor's tool is installed or on the platform in a vendor chain,
+  or keys a table by vendor outside `target/vendors.py`. `policy/guards.py`
+  scans for each; the sites that predate the rule are listed in
+  `KNOWN_VENDOR_DISPATCH`, and a listed site that is gone fails until its
+  allowance is removed.
 
 ## Commit Discipline
 

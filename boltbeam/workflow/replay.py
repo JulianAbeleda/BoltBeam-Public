@@ -35,7 +35,7 @@ COLUMNS = ("turn", "prefix", "cache", "new", "recomputed", "TTFT ms", "prompt ms
            "ceiling ms", "chip best ms", "% of roofline", "clock", "flags")
 UNSAID = 1 << 30  # the chunk of a server that does not say it: the whole turn in one call
 MIN_SAMPLES = 5  # a turn's own clock needs this many telemetry samples; fewer: the run's mean, said
-LOST = (("prefill_above", "prefill above its ceiling"), ("recompute", "recompute after a cache miss"),
+LOST = (("prefill_above", "prefill above its ceiling"), ("recompute", "cache work delta (recompute after a cache miss; negative means reuse or batching savings)"),
         ("decode_above", "decode above its ceiling"), ("overhead", "overhead (HTTP, template, sampling, streaming)"))
 DIFF_SCHEMA = "boltbeam.replay_diff.v1"
 
@@ -87,11 +87,12 @@ def decode_ms_per_token(s:dict[str, Any], prefix:float) -> float:
   return (s["limit_bytes"] + s["kv_per_token"] * prefix + 2 * s["state_bytes"]) / (s["bandwidth_gbs"] * 1e9) * 1e3
 
 
-def turn_ceilings(s:dict[str, Any], r:dict[str, Any], run_mhz:float | None) -> dict[str, Any]:
-  """One turn's ceilings at its clock: prefill done, prefill needed, decode, and the turn's roofline."""
+def turn_ceilings(s:dict[str, Any], r:dict[str, Any], run_mhz:float | None, *, clocked:bool = True) -> dict[str, Any]:
+  """One turn's ceilings at its clock: prefill done, prefill needed, decode, and the turn's roofline. clocked: the
+  telemetry is the server's own GPU (collectors.replay.server_gpus); otherwise no sampled clock scales the peaks."""
   from boltbeam.roofline.prefill_work import peaks_at, turn_ceiling
   tele = r.get("telemetry") or {}
-  own = (tele.get("sm_mhz") or {}).get("mean") if (tele.get("samples") or 0) >= MIN_SAMPLES else None
+  own = (tele.get("sm_mhz") or {}).get("mean") if clocked and (tele.get("samples") or 0) >= MIN_SAMPLES else None
   mhz = own or run_mhz
   peaks, words = peaks_at(s["peaks"], s["peaks_source"], mhz)
   def pre(n:int, depth:int) -> dict[str, Any]:
@@ -130,13 +131,14 @@ def table(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   if (run/'replay_session_capture.json').exists():
     raise ValueError('legacy step-window replay capture is superseded; use replay-review for complete interval reconciliation')
   s = standard(run, trace)
-  run_mhz = ((trace.get("telemetry") or {}).get("sm_mhz") or {}).get("mean")
+  clocked = (trace.get("server_gpus") or {}).get("telemetry_covers", True)  # a trace from before it was recorded: as then
+  run_mhz = ((trace.get("telemetry") or {}).get("sm_mhz") or {}).get("mean") if clocked else None
   captured = {t["i"] for t in (_read(run / "replay_capture.json").get("turns") or [])
               if not t.get("failed") and t.get("file") and
               ((_read(run / t["file"]).get("lengths") or {}).get(str(t.get("prompt_n"))) or {}).get("rows")}
   out_rows, unmodelled = [], set()
   for r in turns:
-    c = turn_ceilings(s, r, run_mhz) if s else None
+    c = turn_ceilings(s, r, run_mhz, clocked=clocked) if s else None
     unmodelled.update((c or {}).get("unmodelled") or [])
     flags = [f for f, on in (("cold", r["cold"]), ("bench capture", r["i"] in captured), ("THROTTLED", r.get("throttled")),
                              ("compaction", r["compaction"])) if on]

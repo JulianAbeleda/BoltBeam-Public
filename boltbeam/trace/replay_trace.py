@@ -53,6 +53,9 @@ def check(trace:dict[str, Any]) -> dict[str, Any]:
   src = trace.get("source") or {}
   if src.get("kind") not in KINDS:
     raise TraceRefused(f"source.kind is {src.get('kind')!r}; a trace comes from one of {', '.join(KINDS)}")
+  digest = src.get("sha256")
+  if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+    raise TraceRefused("source.sha256 must be a 64-character lowercase SHA-256 digest of the source")
   if not isinstance(trace.get("system_tokens"), int) or trace["system_tokens"] < 0:
     raise TraceRefused("system_tokens is not a count")
   turns = trace.get("turns")

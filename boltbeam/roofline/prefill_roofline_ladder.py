@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
+from boltbeam.target.targets import need_peak_gbs
 from boltbeam.roofline.prefill_roofline import (
   _context, _eff_gbs, _f, _floor_us, _is_packed_prefill, _kernel_rows, _scale_candidate,
   _trusted_baseline_rate, _whole,
@@ -80,7 +80,7 @@ def prefill_roofline_ladder_report(
   candidate:dict[str, Any],
   *,
   context:int | None = None,
-  peak_gbs:float = DEFAULT_PEAK_MEM_GBS,
+  peak_gbs:float | None = None,
   wall_trace:dict[str, Any] | None = None,
   scalar_tflops:float | None = None,
   dequant_gops:float | None = None,
@@ -93,6 +93,7 @@ def prefill_roofline_ladder_report(
   optional scalar-FMA/dequant floors when calibrated rates are supplied. The llama rows are
   not the roofline; they are a measured reference implementation below that ceiling.
   """
+  peak_gbs = need_peak_gbs(peak_gbs, "prefill_roofline_ladder_report")
   ctx = _context(candidate, context)
   cand = _scale_candidate(candidate, wall_trace, ctx)
   bwhole, cwhole = _whole(baseline, ctx), _whole(cand, ctx)

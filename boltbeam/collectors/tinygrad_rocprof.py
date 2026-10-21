@@ -14,7 +14,7 @@ from boltbeam.vocab import SCHEMA_TIMING_TRACE
 from boltbeam.target.tinygrad_root import resolve_tinygrad_root
 from boltbeam.workflow.common import load_manifest, run_dir
 from boltbeam.core.canonical import pretty_json
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
+from boltbeam.target.targets import need_target_id
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class TinygradRocprofCapture:
   prefill_start_positions:str | None = None
   prefill_whole_lengths:str | None = None
   provider_id:str = "tinygrad/rocprofv3"
-  peak_gbs:float = DEFAULT_PEAK_MEM_GBS
+  peak_gbs:float | None = None  # the target's, from the registry, unless given
 
 
 def tinygrad_authority_command(cfg:TinygradRocprofCapture) -> list[str]:
@@ -108,10 +108,11 @@ def _resolve(args:argparse.Namespace) -> TinygradRocprofCapture:
     "PROFILE": "0",
   })
   env.update(_parse_env_overrides(args.env))
+  target_id = need_target_id(args.target_id or run_manifest.get("target_id"), "tinygrad-rocprof")
   return TinygradRocprofCapture(
     model=str(model),
     model_id=model_id,
-    target_id=args.target_id or run_manifest.get("target_id") or "amd_gfx1100",
+    target_id=target_id,
     workload=args.workload or run_manifest.get("workload") or "prefill",
     context=args.context,
     max_context=args.max_context,
@@ -209,7 +210,7 @@ def main(argv:list[str] | None = None) -> int:
   ap.add_argument("--prefill-start-positions", dest="prefill_start_positions", default=None)
   ap.add_argument("--prefill-whole-lengths", dest="prefill_whole_lengths", default=None)
   ap.add_argument("--provider-id", default="tinygrad/rocprofv3")
-  ap.add_argument("--peak-gbs", type=float, default=DEFAULT_PEAK_MEM_GBS)
+  ap.add_argument("--peak-gbs", type=float, default=None, help="defaults to the target's registry bandwidth")
   ap.add_argument("--env", action="append", default=[], help="extra tinygrad env override KEY=VALUE")
   args = ap.parse_args(argv)
   try:

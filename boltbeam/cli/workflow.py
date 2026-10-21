@@ -35,7 +35,7 @@ def _register_inspect(sub) -> None:
 
 
 def cmd_inspect(args) -> int:
-  profile, _target = _profile(args)
+  profile, _target = _profile(args, need_target=False)
   _write(profile.to_json(), args.out)
   if ledger := profile.metadata.get("weights"):  # what the limit counts and what it leaves out, said every time
     from boltbeam.profile import weight_ledger
@@ -152,7 +152,7 @@ def _register_synth(sub) -> None:
 
 
 def cmd_synth(args) -> int:
-  profile, _target = _profile(args)
+  profile, _target = _profile(args, need_target=False)
   _write(emit_fixture_manifest(profile), args.out)
   return 0
 
@@ -197,7 +197,7 @@ def _register_analyze(sub) -> None:
   p = sub.add_parser("analyze", help="emit a Claude-ready profile/search/measurement bundle")
   p.add_argument("model", nargs="?", help="GGUF model path (legacy mode; omit when using --run)")
   p.add_argument("--run", default=None, help="provider-neutral run directory created by `boltbeam load`")
-  p.add_argument("--target", default="amd_gfx1100")
+  p.add_argument("--target", default=None, help="registry target id; required unless --run supplies one")
   p.add_argument("--id", default=None, help="profile/model id override")
   p.add_argument("--out-dir", default=None, help="directory for legacy bundle artifacts")
   p.add_argument("--tinygrad-root", default=None,
@@ -219,6 +219,8 @@ def cmd_analyze(args) -> int:
     return _fail("analyze: MODEL is required unless --run is supplied")
   if not args.out_dir:
     return _fail("analyze: --out-dir is required unless --run is supplied")
+  if not args.target:
+    return _fail("analyze: --target is required unless --run is supplied (no chip is assumed)")
   profile, target = _profile(args)
   manifest = emit_analysis_bundle(
     profile=profile,
@@ -308,7 +310,7 @@ def _register_matched_control(sub) -> None:
   p.add_argument("--llama-bench", required=True, help="pinned llama-bench timing executable")
   p.add_argument("--llama-server", required=True, help="pinned llama-server correctness-canary executable")
   p.add_argument("--output-root", required=True, help="new output directory; must not already exist")
-  p.add_argument("--target-id", default="apple_m4_10c")
+  p.add_argument("--target-id", required=True)
   p.add_argument("--depth", type=int, default=128)
   p.add_argument("--warmups", type=int, default=2)
   p.add_argument("--samples", type=int, default=5)
@@ -344,7 +346,7 @@ def _register_replay_ab(sub) -> None:
   p.add_argument("--model", required=True, help="Qwen3-8B GGUF model path")
   p.add_argument("--tinygrad-root", required=True, help="clean tinygrad EXP checkout")
   p.add_argument("--output-root", required=True, help="new output directory; must not already exist")
-  p.add_argument("--target-id", default="apple_m4_10c")
+  p.add_argument("--target-id", required=True)
   p.add_argument("--depth", type=int, default=128)
   p.add_argument("--warmups", type=int, default=2)
   p.add_argument("--samples", type=int, default=5)

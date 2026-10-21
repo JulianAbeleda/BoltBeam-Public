@@ -596,7 +596,7 @@ def capture_limit_notes(attr:dict[str, Any]) -> list[str]:
     limit = row.get('ceiling_ms')
     if row.get('what') == 'overlap' or limit is None or limit <= row['ms']:
       continue
-    recorded = ', '.join(f'{path} {100 * peaks[path]:g}%' for path in sorted(row.get('compute_paths') or {}) if path in peaks)
+    recorded = ', '.join(f'{path} {100 * peaks[path]:g}%' for path in sorted(row.get('compute_paths') or {}) if peaks.get(path) is not None)
     notes.append(f"{row['name']}: nominal limit exceeds measured row time by {limit-row['ms']:.6g} ms; "
                  "the signed loss is retained in the totals even when rounded to negative zero. "
                  + (f"Recorded compute peak uncertainty: {recorded}." if recorded else "No compute peak uncertainty recorded for this row."))

@@ -19,6 +19,7 @@ import json, os, pathlib, re, subprocess
 from typing import Any
 
 from boltbeam.artifacts.tinygrad_profile_events import decode_profile_events, load_profile_events
+from boltbeam.target import vendors
 
 DRIVER = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "tinygrad_decode_profile.py"
 TRACE = "tinygrad_timing_trace.json"
@@ -34,12 +35,13 @@ OWN_TIMING = "tinygrad-profile-events"
 # backends whose vendor capture sees tinygrad's kernels: on Metal each command buffer is labelled with its kernel
 # when graphs are off (JIT=2, tinygrad/runtime/ops_metal.py), so Metal System Trace splits time per kernel
 CAPTURED_BACKENDS = ("Metal",)
-# why tinygrad's role time is its own timing and not a vendor capture, per backend
-OWN_TIMING_REASON = {
-  "Metal": "no outside capture: Metal per-kernel time needs Xcode's Metal System Trace",
-  "CUDA": "nsys cannot see tinygrad's NV backend: it talks to the driver directly, not through CUDA",
-  "AMD": "rocprofv3 sees 0 kernels from tinygrad's AMD backend: it talks to /dev/kfd directly",
-}
+
+
+def own_timing_reason(backend:str) -> str | None:
+  """Why tinygrad's role time is its own timing and not the backend's vendor capture (target/vendors.py); None for a
+  backend with no vendor row."""
+  row = vendors.BY_BACKEND.get(backend)
+  return row.capture.tinygrad_reason if row else None
 
 
 def available(target, root:pathlib.Path | None = None) -> str | None:
@@ -120,6 +122,7 @@ def role_time_captured(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Pa
   """tinygrad's kernels per role, captured from outside by the vendor tool and attributed by bytes and count,
   the same path llama.cpp takes. Two decodes at one context, `tokens` and 1 token, subtracted per kernel."""
   from boltbeam.collectors import attribution, vendor_capture
+  from boltbeam.workflow.common import run_gpu
   device = device_for(target)
   raw = run / "kernel_compare" / "tinygrad_capture"
   from boltbeam.collectors.capture_settings import observed
@@ -132,7 +135,7 @@ def role_time_captured(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Pa
     (raw / name).mkdir(parents=True, exist_ok=True)
     got[name] = vendor_capture.capture(target.backend, decode_argv(python, model, context, n, raw / name) +
                                        ["--max-context", str(settings["max_context"])],
-                                       raw / name, cwd=root, env=env)
+                                       raw / name, cwd=root, env=env, device=run_gpu(run))
   window, overlap = attribution.shared_window(got["long"], got["short"])
   printed = [json.loads(x) for x in vendor_capture.program_output(raw / "long").splitlines() if x.startswith('{"tokens"')]
   token_ms = 1000.0 / printed[-1]["tok_s"] if printed else None
@@ -191,7 +194,7 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
       row["token_ms"] = summary["wall_s"] * 1000.0 / summary["tokens"]
       row["engine"] = settings
       row["wall_tok_s"] = summary["tok_s"]
-  trace["capture"] = {"method": OWN_TIMING, "reason": OWN_TIMING_REASON.get(target.backend)}
+  trace["capture"] = {"method": OWN_TIMING, "reason": own_timing_reason(target.backend)}
   trace["peak_source"] = peak_source
   (run / TRACE).write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
   return trace

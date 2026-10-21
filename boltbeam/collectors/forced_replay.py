@@ -239,11 +239,12 @@ def collect(run, *, provider='vllm', say=lambda _:None):
   from boltbeam.collectors.providers import gpu_free
   from boltbeam.workflow.common import load_manifest
   from boltbeam.target.targets import get_target
-  run=Path(run).resolve();facts=load_manifest(run)
-  if provider!='vllm' or get_target(facts['target_id']).backend!='CUDA':
-    raise ValueError('forced replay requires vLLM on CUDA; AMD graph-node attribution is unavailable')
-  nsys=shutil.which('nsys')
-  if not nsys:raise ValueError('forced replay needs nsys')
+  from boltbeam.collectors import vendor_capture,rocpd_trace
+  run=Path(run).resolve();facts=load_manifest(run);backend=get_target(facts['target_id']).backend
+  if provider!='vllm' or backend not in ('CUDA','AMD'):
+    raise ValueError('forced replay requires vLLM on CUDA or AMD')
+  nsys=vendor_capture.plan(backend)['tool']  # rocprofv3 on AMD: one rocpd database, cut into nsys's files below
+  if not nsys:raise ValueError('forced replay needs '+vendor_capture.plan(backend)['reason'])
   root=run/'forced_replay';root.mkdir(exist_ok=False)
   repo=Path(__file__).resolve().parents[2]
   env={**os.environ,'PYTHONPATH':os.pathsep.join([str(repo),str(repo/'boltbeam/runtime'),os.environ.get('PYTHONPATH','')])}
@@ -254,19 +255,24 @@ def collect(run, *, provider='vllm', say=lambda _:None):
     result=bounded(argv,log=root/(name+'.log'),env=env,timeout=14400)
     if result['exit_code']!=0:raise RuntimeError(f'forced replay {name} failed; inspect its local log')
   for mode,repeats in [('record',5),('cost',30),('reference',5),('paired',5)]:
-    free=gpu_free('CUDA')
+    free=gpu_free(backend)
     if not free['free']:raise RuntimeError(free['reason'])
     say('forced replay: '+mode)
     argv=[sys.executable,'-m','boltbeam.runtime.vllm_replay_drive',str(run),mode,str(repeats)]
     if mode=='paired':
       count=len(read(root/'token-script.json'))
-      argv=[nsys,'profile','--trace=cuda,nvtx','--cuda-graph-trace=node','--sample=none','--cpuctxsw=none',
-            '--capture-range=cudaProfilerApi',f'--capture-range-end=repeat:{count+2}:async',
-            '--output',str(root/'capture'),*argv]
+      argv=([nsys,'profile','--trace=cuda,nvtx','--cuda-graph-trace=node','--sample=none','--cpuctxsw=none',
+             '--capture-range=cudaProfilerApi',f'--capture-range-end=repeat:{count+2}:async',
+             '--output',str(root/'capture'),*argv] if backend=='CUDA' else
+            vendor_capture.VENDORS['AMD'][2](nsys,argv,root,env,None,True))
     job(argv,mode)
-  for i in range(1,count+3):
-    job([nsys,'export','--type=sqlite','--output',str(root/f'capture.{i}.sqlite'),
-         str(root/f'capture.{i}.nsys-rep')],f'export-{i}')
+  dbs=sorted(root.rglob('*_results.db'))
+  if backend=='AMD' and len(cuts:=rocpd_trace.windows(dbs))!=count+2:
+    raise ValueError(f'rocprofv3 recorded {len(cuts)} capture windows; the replay opens {count+2}')
+  for i in range(1,count+3):  # the first window built the graphs: it alone carries their nodes' origins
+    if backend=='AMD':rocpd_trace.export(dbs,root/f'capture.{i}.sqlite',window=cuts[i-1],nodes=i==1)
+    else:job([nsys,'export','--type=sqlite','--output',str(root/f'capture.{i}.sqlite'),
+              str(root/f'capture.{i}.nsys-rep')],f'export-{i}')
   manifest={'paired':str(root/'paired'),'reference':str(root/'reference'),'script':str(root/'token-script.json'),
             'cost':str(root/'cost/cost.json'),'graph':str(root/'capture.1.sqlite'),
             'segments':[{'timing':str(root/'capture.2.sqlite'),'label':str(root/f'capture.{i+3}.sqlite')} for i in range(count)]}

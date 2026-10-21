@@ -147,6 +147,21 @@ The third run reads `Per-role repeat check: 5 of 5 roles checked against the mea
 Bands belong to one exact setup: the same chip, engine build, model, workload, contexts and settings. They are never
 borrowed from another.
 
+The workload picker offers four different measurements:
+
+| Workload | What the run measures |
+| --- | --- |
+| Decode | Generated-token throughput at the requested cache depths. |
+| Prefill | Prompt throughput at the requested prompt lengths. |
+| Session | A fresh turn appended at each cache depth, decode, cache reuse and compaction. |
+| Replay | A sequence of turns on a server, including client latency, server timing and cache reuse. |
+
+A valid report means its accounting checks passed. Timing confirmation and token agreement have their own
+verdicts. Session runs retain cold and cached token/probability samples by depth in `session_reference.json`;
+`FAIL` in the next-token column means that comparison failed even if timings are available. Replay benchmark
+captures describe a separate invocation until both their engine timer and GPU span match the server within the
+setup's repeat band. Read those limits in Run and Emit before using a capture to explain server latency.
+
 ## Next steps
 
 | you want to | read |

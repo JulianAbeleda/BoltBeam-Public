@@ -119,12 +119,13 @@ def captured_role_time(run:pathlib.Path, *, provider:str, trace:str, argv_for:Ca
   times over N - 1. warm runs the 1-token driver once uncaptured first: an engine's start-up can fill on-disk caches
   (vLLM's Triton autotune, a JIT) in whichever capture runs first, and the subtraction needs both to start up alike."""
   from boltbeam.collectors import attribution, vendor_capture
+  from boltbeam.workflow.common import run_gpu
   raw = run / "kernel_compare" / f"{provider.replace('.', '_').replace('-', '_')}_capture"
   if warm:
     run_driver(argv_for(1), env=env, log=raw / "warm.log", cwd=cwd)
   got, secs, matrices, engine = {}, {}, None, {}
   for name, n in (("long", tokens), ("short", 1)):
-    got[name] = vendor_capture.capture(target.backend, argv_for(n), raw / name, cwd=cwd, env=env, flush_ms=flush_ms, **({"profiler_range": True} if profiler_range else {}))
+    got[name] = vendor_capture.capture(target.backend, argv_for(n), raw / name, cwd=cwd, env=env, flush_ms=flush_ms, device=run_gpu(run), **({"profiler_range": True} if profiler_range else {}))
     printed = [r for r in json_lines(vendor_capture.program_output(raw / name)) if "seconds" in r]
     secs[name] = printed[-1]["seconds"] if printed else None
     matrices = matrices or (printed[-1].get("matrices") if printed else None)  # the engine's packed GEMMs, if it says

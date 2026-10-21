@@ -26,7 +26,7 @@ import shutil
 import subprocess
 from typing import Any, Callable
 
-from boltbeam.target import toolkits
+from boltbeam.target import toolkits, vendors
 
 
 TELEMETRY = "telemetry.json"  # the GPU's clocks, power and temperature through one capture, beside it
@@ -108,7 +108,7 @@ def _rocprof_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str]
   # its markers, HIP calls and kernels go to a rocpd database, read as Nsight's tables (rocpd_trace.py)
   if profiler_range:
     return [tool, "--kernel-trace", "--marker-trace", "--hip-runtime-trace", "--selected-regions", "--output-format",
-            "rocpd", "-d", str(out), "-o", "capture", "--", *argv]
+            "rocpd", "-d", str(out), "-o", "capture_%pid%", "--", *argv]  # one database per traced process
   return [tool, "--kernel-trace", "--output-format", "csv", "-d", str(out), "-o", "capture", "--", *argv]
 
 
@@ -199,23 +199,24 @@ def _find_xctrace() -> str | None:
   return proc.stdout.strip() if proc.returncode == 0 and proc.stdout.strip() else None
 
 
-# backend -> (method, find the tool, wrap argv, read launches, what to install)
-VENDORS: dict[str, tuple[str, Callable[[], str | None], Callable[..., list[str]], Callable[..., list[dict[str, Any]]], str]] = {
-  "CUDA": ("nsys", lambda: shutil.which("nsys"), _nsys_argv, _nsys_read,
-           "install Nsight Systems (it comes with the CUDA toolkit) so nsys is on PATH"),
+# each capture's code, by its method (target/vendors.py names a vendor's method and what to install): find the tool,
+# wrap argv, read launches
+_TOOLS: dict[str, tuple[Callable[[], str | None], Callable[..., list[str]], Callable[..., list[dict[str, Any]]]]] = {
+  "nsys": (lambda: shutil.which("nsys"), _nsys_argv, _nsys_read),
   # ROCm installs rocprofv3 in its own bin/, which is often not on PATH: target/toolkits.py knows where it is
-  "AMD": ("rocprofv3", lambda: toolkits.tool("rocprofv3", shutil.which), _rocprof_argv, _rocprof_read,
-          "install ROCm's rocprofiler-sdk"),
-  "Metal": ("metal-system-trace",
-            _find_xctrace,
-            lambda tool, argv, out, env: [tool, "record", "--template", "Metal System Trace", "--output",
-                                          str(out / "capture.trace"), "--no-prompt", "--target-stdout",
-                                          str(out / "target.stdout.txt"),
-                                          # xctrace starts the program with its own environment: pass ours
-                                          *[a for k, v in sorted(env.items()) for a in ("--env", f"{k}={v}")],
-                                          "--launch", "--", *argv],
-            _xctrace_read, "install Xcode (xctrace comes with it)"),
+  "rocprofv3": (lambda: toolkits.tool("rocprofv3", shutil.which), _rocprof_argv, _rocprof_read),
+  "metal-system-trace": (_find_xctrace,
+                         lambda tool, argv, out, env: [tool, "record", "--template", "Metal System Trace", "--output",
+                                                       str(out / "capture.trace"), "--no-prompt", "--target-stdout",
+                                                       str(out / "target.stdout.txt"),
+                                                       # xctrace starts the program with its own environment: pass ours
+                                                       *[a for k, v in sorted(env.items()) for a in ("--env", f"{k}={v}")],
+                                                       "--launch", "--", *argv],
+                         _xctrace_read),
 }
+# backend -> (method, find the tool, wrap argv, read launches, what to install): the registry's rows with their code
+VENDORS: dict[str, tuple[str, Callable[[], str | None], Callable[..., list[str]], Callable[..., list[dict[str, Any]]], str]] = {
+  v.backend: (v.capture.method, *_TOOLS[v.capture.method], v.capture.install) for v in vendors.VENDORS.values()}
 
 
 def plan(backend:str, find:Callable[[str], str | None] | None = None) -> dict[str, Any]:
@@ -232,13 +233,13 @@ def plan(backend:str, find:Callable[[str], str | None] | None = None) -> dict[st
 
 def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 1800.0, cwd:pathlib.Path | None = None,
             env:dict[str, str] | None = None, flush_ms:int | None = None,
-            profiler_range:bool = False) -> list[dict[str, Any]]:
+            profiler_range:bool = False, device:dict[str, Any] | None = None) -> list[dict[str, Any]]:
   """Run argv under the vendor tool and return its kernel launches. NoCapture when there is no tool here.
   flush_ms asks the tool to flush its buffers on a timer, where it can (nsys); profiler_range captures only the
   window the program marks with the CUDA profiler API (nsys) or roctx (rocprofv3). The program runs in `cwd`, by default the capture
   folder `out`: whatever it drops into its working directory (an old llama.cpp build writes a 421 KB
   llama_decode.dot graph dump on every decode) lands beside its capture, not in the caller's folder. Callers pass
-  absolute paths in argv."""
+  absolute paths in argv. device: the run's GPU (common.run_gpu), whose clocks are logged beside the capture."""
   p = plan(backend)
   if p["tool"] is None:
     raise NoCapture(p["reason"])
@@ -251,9 +252,9 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   log = out / "capture.log"
   import contextlib
   from boltbeam.collectors import gpu_telemetry
-  # the clocks the captured kernels ran at (NVIDIA's management library): a repeat's row moves with them, so a
-  # capture without them cannot say whether a difference between repeats was the clock
-  tele = gpu_telemetry.Telemetry(0) if backend == "CUDA" else None
+  # the clocks the captured kernels ran at (the run's GPU, by its vendor's source): a repeat's row moves with them, so
+  # a capture without them cannot say whether a difference between repeats was the clock
+  tele = gpu_telemetry.opened(gpu_telemetry.source_for(device), 0) if device or backend == "CUDA" else None
   with open(log, "w") as fh, (tele or contextlib.nullcontext()):
     wrapped = (wrap(p["tool"], argv, out, env or {}, flush_ms, *((True,) if profiler_range else ())) if backend in ("CUDA", "AMD")
                else wrap(p["tool"], argv, out, env or {}))
@@ -270,6 +271,12 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   return launches
 
 
+# rocprofv3's own log lines (glog: severity, date, time, thread, file:line]) share the program's stream and can land
+# inside its output, even mid-line (one split llama-bench's JSON array); no engine prints this prefix
+_TOOL_LOG = re.compile(r"[IWEF]\d{4} \d\d:\d\d:\d\d\.\d+ +\d+ \S+:\d+\] .*$")  # to the line's end
+
+
 def program_output(out:pathlib.Path) -> str:
   """What the captured program printed: xctrace keeps it in target.stdout.txt, nsys and rocprofv3 in the log."""
-  return "\n".join(f.read_text(errors="replace") for f in (out / "target.stdout.txt", out / "capture.log") if f.is_file())
+  text = "\n".join(f.read_text(errors="replace") for f in (out / "target.stdout.txt", out / "capture.log") if f.is_file())
+  return "\n".join(kept for line in text.splitlines() if (kept := _TOOL_LOG.sub("", line)) or not line)

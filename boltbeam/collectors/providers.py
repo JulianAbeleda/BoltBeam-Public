@@ -30,6 +30,7 @@ from typing import Any, Callable
 
 from boltbeam.collectors import (llama_bench_decode, ollama_decode, tinygrad_role_time, trtllm_decode, vendor_capture,
                                  vllm_decode)
+from boltbeam.target import vendors
 
 # name -> adapter module; the order is the order Setup lists them
 ENGINES = {m.PROVIDER: m for m in (llama_bench_decode, tinygrad_role_time, vllm_decode, ollama_decode, trtllm_decode)}
@@ -113,10 +114,9 @@ def reads(provider:str, model:str | pathlib.Path) -> str | None:
 MEASUREMENTS = ("in_model", "generic")
 MEASUREMENT_LABEL = {"in_model": "in-model", "generic": "generic (kernel timer)"}
 MEASUREMENT_ABOUT = {
-  "in_model": "the real token, split by role when the engine labels its kernels (tinygrad, nsys); llama.cpp on a Mac: whole step only",
+  # {capture}: the backend's outside capture (target/vendors.py)
+  "in_model": "the real token, split by role when the engine labels its kernels (tinygrad, {capture}); llama.cpp on a Mac: whole step only",
   "generic": "each kernel alone, cold, any engine, any chip; compares kernels, the token split is an estimate"}
-IN_MODEL_NEEDS = {"Metal": "in-model needs Xcode's Metal System Trace on this Mac", "CUDA": "in-model needs nsys",
-                  "AMD": "in-model needs rocprofv3"}
 GENERIC_NEEDS = "generic needs the engine's kernel source"
 
 
@@ -125,16 +125,19 @@ def measurement_options(provider:str, backend:str) -> dict[str, Any]:
   the default: in-model when it can run, else generic. fallback says why in-model was not the default."""
   from boltbeam.collectors import engine_kernels
   p = vendor_capture.plan(backend)
+  row = vendors.BY_BACKEND.get(backend)
+  about = {**MEASUREMENT_ABOUT, "in_model": MEASUREMENT_ABOUT["in_model"].format(
+    capture=row.capture.tool_word if row else "a vendor capture")}
   if provider == tinygrad_role_time.PROVIDER:  # tinygrad's own events are in-model; it ships no kernel source
     in_model, generic = None, f"{GENERIC_NEEDS}: tinygrad generates its kernels at run time"
   else:
-    in_model = None if p["tool"] else IN_MODEL_NEEDS.get(backend, f"in-model needs a capture tool: {p['reason']}")
+    in_model = None if p["tool"] else (row.capture.in_model_needs if row else f"in-model needs a capture tool: {p['reason']}")
     why = engine_kernels.available(provider, backend, llama_bench_decode.find(llama_bench_decode.DEFAULT))
     generic = None if why is None else f"{GENERIC_NEEDS}: {why}"
   reasons = {"in_model": in_model, "generic": generic}
   default = "in_model" if in_model is None else "generic" if generic is None else None
   return {"default": default, "fallback": in_model if default != "in_model" else None,
-          "options": [{"id": m, "label": MEASUREMENT_LABEL[m], "about": MEASUREMENT_ABOUT[m], "available": reasons[m] is None,
+          "options": [{"id": m, "label": MEASUREMENT_LABEL[m], "about": about[m], "available": reasons[m] is None,
                        "reason": reasons[m]} for m in MEASUREMENTS]}
 
 
@@ -166,7 +169,7 @@ def capture_method(provider:str, backend:str, measurement:str = "auto") -> dict[
   if provider == tinygrad_role_time.PROVIDER:
     if backend in tinygrad_role_time.CAPTURED_BACKENDS and p["tool"]:
       return {"method": p["method"], "reason": None, "cross_check": None}
-    return {"method": tinygrad_role_time.OWN_TIMING, "reason": tinygrad_role_time.OWN_TIMING_REASON.get(backend), "cross_check": None}
+    return {"method": tinygrad_role_time.OWN_TIMING, "reason": tinygrad_role_time.own_timing_reason(backend), "cross_check": None}
   isolated = engine_kernels.available(provider, backend, llama_bench_decode.find(llama_bench_decode.DEFAULT))
   if p["tool"] is None:
     if isolated is None:
@@ -398,6 +401,7 @@ def measure_engine(run:pathlib.Path, provider:str, *, batches:list[int] | tuple[
   if provider == "vllm":
     from boltbeam.collectors.capture_settings import vllm_flags
     options["settings"] = vllm_flags(run, contexts[0])
+    options["graphs"] = vendors.for_backend(target.backend).term("graphs")
   points = m.whole_step(model, contexts, sorted({1, *batches}), tokens=tokens,
                         log=run / "kernel_compare" / f"{provider}_whole_step.log", **options)
   profile = read_json(run / "model_profile.json") if (run / "model_profile.json").exists() else {}

@@ -10,6 +10,7 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   from boltbeam.collectors.prefill import library_paths, gpu_arch, last_level_cache, vllm_formats
   from boltbeam.target.targets import fact_uncertainty
   from boltbeam.workflow.screen import run_bandwidth
+  from boltbeam.workflow.common import run_gpu
   if batch!=1:
     raise ValueError('semantic graph decode currently requires a single stream')
   if target.backend not in ('CUDA','AMD'):
@@ -22,7 +23,7 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
     raise RuntimeError("vLLM's per-role decode of a tensor-parallel split is not measured yet: its kernels run in one "
                        "worker per GPU, while the capture marks each decode step in the engine's process")
   env={**ec.venv_env(vd.python()),**vd.CAPTURE_ENV}
-  vendor_capture.capture(target.backend,[*command,'--capture-pass','paired'],raw,env=env,profiler_range=True)
+  vendor_capture.capture(target.backend,[*command,'--capture-pass','paired'],raw,env=env,profiler_range=True,device=run_gpu(run))
   pair=vllm_two_pass.join(raw/'capture.sqlite',ec.json_lines(vendor_capture.program_output(raw)))
   attach=vllm_semantic_work.prepare(Path(model),profile)
   steps=[{'identity':{**pair['engine'],'decode_step':s['step'],'context':context+s['step']-1},
@@ -38,12 +39,8 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
                                                  'steps':[s['identity'] for s in steps]},indent=1))
   bins=sorted(Path(vd.python()).parent.parent.glob('lib/python*/site-packages/nvidia/*/bin'))
   tools=bins[0] if bins else None
-  if target.backend=='AMD':  # the code objects rocprofv3 saw loaded (collectors/rocm_isa.py)
-    from boltbeam.collectors import rocm_isa
-    paths=rocm_isa.table(raw/'capture_results.db',jit_caches=[engine['triton_cache_dir']])
-  else:
-    paths=library_paths([Path(p) for p in engine['libraries']],launches,tools=tools,
-                        jit_caches=[engine['triton_cache_dir']])
+  paths=library_paths([Path(p) for p in engine['libraries']],launches,tools=tools,
+                      jit_caches=[engine['triton_cache_dir']],capture=raw,device=run_gpu(run))
   closed={ip.template(l['key']) for l in launches if l.get('semantic_work') or
           l.get('semantic_kind')=='attention'}-set(paths['kernels'])
   if closed and target.backend=='AMD':

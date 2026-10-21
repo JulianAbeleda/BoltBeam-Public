@@ -250,9 +250,9 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--path", action="append", choices=[x.name for x in PATHS], help="only this path (repeatable)")
   a = p.parse_args(argv)
   paths = tuple(x for x in PATHS if not a.path or x.name in a.path)
-  from boltbeam.collectors.cuda_bandwidth import repeated
+  from boltbeam.collectors.cuda_bandwidth import repeated_paths
   runs = [measure_paths(a.device, reps=a.reps, seconds=a.seconds, paths=paths) for _ in range(a.runs)]
-  got = {**runs[0], "runs": a.runs, "paths": [repeated([r["paths"][i] for r in runs], "tops", "tops") for i in range(len(paths))]}
+  got = repeated_paths(runs)
   sys.stdout.write(json.dumps(got, indent=1, sort_keys=True) + "\n")
   return 0
 

@@ -7,6 +7,7 @@ from boltbeam.core.canonical import sha256_hex
 from typing import Any
 
 from boltbeam.runtime.execution_bridge import parse_operand_execution_request, parse_operand_execution_result
+from boltbeam.target import vendors
 from boltbeam.target.targets import TARGETS
 from boltbeam.target.tinygrad_root import resolve_tinygrad_root
 from boltbeam.profiler.trace_profile import resolve_trace_execution_profile
@@ -204,7 +205,7 @@ def _tinygrad_target_runtime(target_id:str | None) -> dict[str, Any]:
   caps = target.capabilities or {}
   device = caps.get("tinygrad_device")
   if not device:
-    device = {"AMD": "AMD", "CUDA": "NV", "NV": "NV", "METAL": "METAL"}.get(target.backend.upper())
+    device = row.tinygrad_device if (row := vendors.BY_BACKEND.get(target.backend)) else None
   env = {"DEV": str(device)} if device else {}
   if caps.get("compiler_arch"):
     env["ARCH"] = str(caps["compiler_arch"])

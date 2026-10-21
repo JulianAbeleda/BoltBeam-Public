@@ -108,13 +108,26 @@ def used_gpus(layout:str, devs:list[dict[str, Any]], n:int | None = None) -> lis
   return devs[:1] if layout == "one" else devs[:n or None]
 
 
+# GPU 0 in each runtime's order, the order the scan lists them in (chips._vendors() "order"): CUDA numbers GPUs
+# fastest first unless told to follow PCI addresses, as nvidia-smi does, so the pinned card is the profiled card
+PIN = {"CUDA_VISIBLE_DEVICES": "0", "CUDA_DEVICE_ORDER": "PCI_BUS_ID", "HIP_VISIBLE_DEVICES": "0"}
+
+
 def engine_args(layout:str, provider:str) -> tuple[list[str], dict[str, str]]:
   """Extra command arguments and environment that make the engine use this layout."""
   if provider == "llama.cpp":
     if layout == "one":
-      return ["-sm", "none", "-mg", "0"], {"CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "0"}
+      return ["-sm", "none", "-mg", "0"], dict(PIN)
     return ["-sm", layout], {}
-  return [], {"CUDA_VISIBLE_DEVICES": "0", "HIP_VISIBLE_DEVICES": "0"}  # tinygrad: one GPU only
+  return [], dict(PIN)  # tinygrad: one GPU only
+
+
+def one_gpu(run:pathlib.Path, provider:str) -> tuple[list[str], dict[str, str]]:
+  """A one-GPU engine run's arguments and environment: pinned to GPU 0, the run's GPU (common.run_gpu), when the
+  run's machine has more than one; nothing on one GPU, as the decode collector does (llama_bench_decode)."""
+  hw = pathlib.Path(run) / "hardware_profile.json"
+  devs = devices(json.loads(hw.read_text()).get("gpu") or {}) if hw.is_file() else []
+  return engine_args("one", provider) if len(devs) > 1 else ([], {})
 
 
 # --- measuring the machine -----------------------------------------------------------------------------------------

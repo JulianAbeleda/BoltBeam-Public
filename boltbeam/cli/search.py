@@ -48,8 +48,8 @@ def _register_build_full_kernel_candidate_set(sub) -> None:
   p = sub.add_parser("build-full-kernel-candidate-set",
     help="persist exact qwen3-8B Tinygrad candidates from a proven gate/up schedule")
   p.add_argument("candidate", help="proven gate/up candidate JSON or BoltBeam candidate manifest")
-  p.add_argument("--target-id", default="amd_gfx1100",
-    help="registry target to stamp into workload/applicability (default amd_gfx1100)")
+  p.add_argument("--target-id", required=True,
+    help="registry target to stamp into workload/applicability")
   p.add_argument("--schedule-template", default=None,
     help="tinygrad-derived typed schedule JSON carrying schedule + static_constraints; "
          "the builder stops cloning the seed's schedule when given")

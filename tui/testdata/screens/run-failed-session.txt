@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                            ⠋ (•̀ᴗ•́)⚡
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Run · qwen3-8b-apple_m3_10c-002                                              │
+│ Qwen3-8B on apple_m3_10c with llama.cpp                                      │
+│                                                                              │
+│ ✗ Capture and attribute kernels failed                                       │
+│ repeated turn boundary is ambiguous                                          │
+│ Report incomplete. Measurements and capture logs are kept.                   │
+│                                                                              │
+│ Show details: l                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ ▸ [ Back to setup ]                                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · enter pick · l details · esc setup · q quit

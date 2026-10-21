@@ -41,6 +41,8 @@ PRUNED_NAME = ", last layer at output tokens"  # a pruned last layer's row (pair
 UNPAIRED = "no ceiling: a matrix kernel no role could be paired with, so its work is not known"
 
 
+RECURRENT_MODULES = ("ChunkGatedDeltaRule",)  # vLLM modules whose launches are the recurrent block's own work
+
 def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True,
                     measured_ms:float | None = None) -> tuple[list[dict[str, Any]], str]:
   """The measured prefill. With warmup (the engine ran a warm-up prefill inside the capture): the second half of the
@@ -54,20 +56,24 @@ def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True,
     return timed, f"one prefill of {len(timed)} launches (the capture holds the measured prefill only)"
   count = lambda ls: sorted(collections.Counter(template(l["key"]) for l in ls).items())  # noqa: E731
   if warmup == REPEAT:
-    keys = [template(l["key"]) for l in timed]
+    keys = [l["key"] for l in timed]  # geometry is part of a repeated launch, not just its template
     end = max(l['start_us'] + l['wall_us'] for l in timed)
-    candidates = range(1, len(timed) // 2 + 1)
-    if measured_ms:
-      # Try the nearest engine-sized window first; internal n_batch repetitions are shorter.
+    candidates = [n for n in range(1, len(timed) // 2 + 1)
+                  if keys[-1] == keys[-n-1] and keys[-n:] == keys[-2*n:-n]]
+    if not candidates:
+      raise ValueError(f"the capture's {len(timed)} launches do not end in two identical turns (names and geometry)")
+    if measured_ms and len(candidates) > 1:
+      # Elapsed time disambiguates repeated internal batches. It does not qualify capture overhead.
       candidates = sorted((n for n in candidates
                            if abs((end-timed[-n]['start_us'])/1000-measured_ms) <= .1*measured_ms),
                           key=lambda n: abs((end-timed[-n]['start_us'])/1000-measured_ms))
-    for n in candidates:
-      if keys[-n:] == keys[-2*n:-n]:
-        return timed[-n:], (f"the last of two identical turns at the end of the capture ({n} launches each); the "
-                            f"{len(timed)-n} launches before it fill the cache and repeat the turn" +
-                            (f"; window checked against the engine's {measured_ms:.3f} ms repetition" if measured_ms else ""))
-    raise ValueError(f"the capture's {len(timed)} launches do not end in two identical turns")
+    if not candidates:
+      raise ValueError(f"repeated turn boundary is ambiguous: no kernel window matches the engine's {measured_ms:.3f} ms elapsed repetition")
+    n = candidates[0]
+    return timed[-n:], (f"the last of two identical turns at the end of the capture ({n} launches each); the "
+                       f"{len(timed)-n} launches before it fill the cache and repeat the turn" +
+                       (f"; kernel window {(end-timed[-n]['start_us'])/1000:.3f} ms, engine elapsed {measured_ms:.3f} ms "
+                        "(includes time outside the kernel window; not timing qualification)" if measured_ms else ""))
   half = len(timed) // 2
   if len(timed) % 2 == 0 and half and count(timed[:half]) == count(timed[half:]):
     gap = timed[half]["start_us"] - (timed[half - 1]["start_us"] + timed[half - 1]["wall_us"])
@@ -145,7 +151,10 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     t["path"] = kernel_path(t["name"], kernel_paths, observed)
     t["attention"] = (kind_of({"kernel": t["name"]}) == "attention" or
                       any(l.get('semantic_kind') == 'attention' for l in t['launches']))
-    t["recurrent"] = kind_of({"kernel": t["name"]}) == "recurrent"  # so is a recurrent block's scan and convolution
+    # so is a recurrent block's scan and convolution, by name or by the vLLM module that launched it (ROCm runs the
+    # gated delta rule as Triton's chunked kernels, named for their step, inside ChunkGatedDeltaRule)
+    t["recurrent"] = (kind_of({"kernel": t["name"]}) == "recurrent" or
+                      all((l.get('semantic') or {}).get('class') in RECURRENT_MODULES for l in t['launches']))
   rows: list[dict[str, Any]] = []
   paired: set[int] = set()  # launch ids a row holds
   semantic = any(l.get('semantic_work') for l in shared)
@@ -213,7 +222,9 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   others: dict[str, dict[str, Any]] = {}
   att = work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths, formats.get("kv") or "F16",
                        formats.get("attention_activations") or acts, depth=depth) if profile else None
-  rec = work.recurrent(profile or {}, length or int(sum(chunk_widths)), chunk_widths) if profile and not semantic else None
+  # semantic evidence brings its own recurrent stages only for Mamba2; another recurrent block keeps its row here
+  mamba = (((profile or {}).get('metadata') or {}).get('recurrent') or {}).get('kind') == 'mamba2'
+  rec = work.recurrent(profile or {}, length or int(sum(chunk_widths)), chunk_widths) if profile and not (semantic and mamba) else None
   for t in templates:
     for l in t["launches"]:
       if id(l) in paired:

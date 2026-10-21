@@ -22,8 +22,11 @@ def _write(obj:dict, out:str | None) -> None:
     sys.stdout.write(text)
 
 
-def _profile(args) -> tuple:
-  return profile_from_model(args.model, args.id), get_target(args.target)
+def _profile(args, *, need_target:bool = True) -> tuple:
+  """The model's profile and the named target; a command that reads the target refuses without one."""
+  if need_target and not args.target:
+    raise SystemExit("--target is required: name the registry target (no chip is assumed)")
+  return profile_from_model(args.model, args.id), get_target(args.target) if args.target else None
 
 
 CAP = 0  # a context of 0 ("cap" in --ctxs): a session derives its depths up to the binding cap (collectors/session.py)
@@ -89,6 +92,6 @@ def _ensure_ledger_file(path:str) -> None:
 
 def _add_common(p:argparse.ArgumentParser) -> None:
   p.add_argument("model", help="GGUF model path")
-  p.add_argument("--target", default="amd_gfx1100")
+  p.add_argument("--target", default=None, help="registry target id; required by the commands that read it")
   p.add_argument("--id", default=None, help="profile/model id override")
   p.add_argument("--out", default=None, help="write JSON to this path instead of stdout")

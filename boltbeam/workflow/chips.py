@@ -20,7 +20,10 @@ from typing import Any, Callable
 
 from boltbeam.collectors import cuda_compute
 from boltbeam.target import targets as reg
+from boltbeam.target import vendors
+from boltbeam.target.vendors import NoVendorRow  # noqa: F401  (re-exported: chips.NoVendorRow)
 from boltbeam.workflow.autoscan import _hardware_profile, chip_profile_id
+from boltbeam.workflow.common import first_gpu
 
 Measure = Callable[[], dict[str, Any]]
 _SMI_FACTS = "driver_version,clocks.max.sm,clocks.max.memory,power.limit"
@@ -81,27 +84,22 @@ def _probes(vendor:str, device:dict[str, Any] | None = None) -> tuple[Measure, M
   raise RuntimeError(f"no BoltBeam probe for {vendor or 'this'} GPUs yet")
 
 
-# What a measured profile records for each discrete-GPU vendor: the backend, the device facts the driver API gave
-# (and the key of each that sizes a row), where compute units come from, the primitives, and the probe module whose
-# matrix_tflops and fact_source read its result. A vendor is a row here, not a branch in profile_row.
+# What BoltBeam knows per GPU vendor is one row each in target/vendors.py; _vendors() is that registry in the scan's
+# shape: the driver tool (scan_tool), the OS it answers on (platform, None for any), the probe, (tool path,
+# run_command) -> (devices, error) in the vendor runtime's device order, the facts a chip profile matches on
+# (match_keys), the primary GPU's note and, for a discrete GPU, the measured profile's facts. A vendor is a row there,
+# not a branch in the scan or in profile_row.
 def _vendors() -> dict[str, dict[str, Any]]:
-  from boltbeam.collectors import cuda_compute, hip_compute
-  return {
-    "nvidia": {"backend": "CUDA", "tinygrad_device": "NV",
-               "scan_method": "nvidia-smi and cudaDeviceGetAttribute (BoltBeam's CUDA matrix probe prints them)",
-               "scan_keys": ("sm_count", "shared_mem_per_sm_bytes", "l2_cache_bytes", "clock_khz", "memory_clock_khz",
-                             "memory_bus_bits", "total_global_mem_bytes"),
-               "lds_key": "shared_mem_per_sm_bytes", "compute_units": lambda device, matrix: matrix.get("sm_count"),
-               "dot_primitives": ["mma_m16n8k16", "dp4a"], "dot_status": "hardware_family", "compute": cuda_compute},
-    "amd": {"backend": "AMD", "tinygrad_device": "AMD",
-            "scan_method": "amd-smi static and hipDeviceGetAttribute (BoltBeam's HIP matrix probe prints them)",
-            "scan_keys": ("multiprocessor_count", "shared_mem_per_block_bytes", "l2_cache_bytes", "clock_khz",
-                          "memory_clock_khz", "memory_bus_bits", "total_global_mem_bytes", "pci_bus_id", "hip_runtime_version"),
-            # amd-smi's compute units; HIP's multiprocessor count is work-group processors on RDNA
-            "lds_key": "shared_mem_per_block_bytes", "compute_units": lambda device, matrix: device.get("compute_units"),
-            # no probe derives AMD's dot instructions yet: none is claimed, so nothing is served on an assumption
-            "dot_primitives": [], "dot_status": "unknown", "compute": hip_compute},
-  }
+  from boltbeam.workflow import autoscan as scan
+  return {name: v.scan_facts(KFD_NODES=scan.KFD_NODES) for name, v in vendors.VENDORS.items()}
+
+
+def vendor_row(vendor:str | None, key:str | None = None) -> Any:
+  """One vendor's row, or one fact of it; NoVendorRow, with the vendor and the fact, when there is none."""
+  row = _vendors().get(str(vendor))
+  if row is None or (key is not None and key not in row):
+    raise NoVendorRow(f"no {key + ' ' if key else ''}row for {vendor!r} GPUs in workflow.chips._vendors() (target/vendors.py)")
+  return row if key is None else row[key]
 
 
 def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any], driver:dict[str, Any],
@@ -112,7 +110,7 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
     raise RuntimeError(f"the scan of {device.get('name')!r} lacks the name, memory or core count a profile id needs")
   apple = device.get("vendor") == "apple"
   v = {} if apple else _vendors().get(device.get("vendor"))
-  if v is None:
+  if v is None or not (apple or "backend" in v):
     raise RuntimeError(f"no profile shape for {device.get('vendor')!r} GPUs")
   version = driver.get("driver_version") or device.get("driver_version") or (
     f"HIP runtime {matrix['hip_runtime_version']}" if matrix.get("hip_runtime_version") else None)
@@ -126,7 +124,7 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
   caps = {
     "target_kind": "exact",
     "profile_source": "generated",
-    "tinygrad_device": "METAL" if apple else v["tinygrad_device"],
+    "tinygrad_device": vendors.vendor(device.get("vendor")).tinygrad_device,
     **({} if apple else {"compiler_arch": device.get("architecture")}),
     "match": match,
     "fact_status": {"memory_bandwidth_gbs": "measurement", "matrix_tflops": "measurement_lower_bound",
@@ -151,7 +149,7 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
   if matrix.get("paths"):
     caps["fact_status"]["matrix_tflops"] = "measurement"
   return {
-    "target_id": pid, "backend": "Metal" if apple else v["backend"],
+    "target_id": pid, "backend": vendors.vendor(device.get("vendor")).backend,
     "wave_size": matrix.get("warp_size") or 32, "subgroup_size": matrix.get("warp_size") or 32,
     "lds_bytes_per_cu": None if apple else matrix.get(v["lds_key"]),
     "vram_bytes": None if apple else device.get("memory_bytes"), "vector_load_bits": 128,
@@ -161,12 +159,6 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
     "dot_primitives": ["simdgroup_matrix"] if apple else v["dot_primitives"], "dequant_primitives": [],
     "backend_status": "descriptor_only", "capabilities": caps,
   }
-
-
-def _first_gpu(hardware:dict[str, Any]) -> dict[str, Any] | None:
-  gpu = hardware.get("gpu") or {}
-  devs = gpu.get("devices") or []
-  return devs[0] if devs else None
 
 
 def _view(device:dict[str, Any], tid:str | None, status:str, action:str, path:str | None = None) -> dict[str, Any]:
@@ -180,7 +172,7 @@ def autoscan(*, remeasure:bool = False, hardware:dict[str, Any] | None = None,
              driver:Callable[[], dict[str, Any]] = _nvidia_smi_facts) -> dict[str, Any]:
   """Match this machine's first GPU to a profile, or measure one. remeasure refreshes a profile made here (a
   registry row is reviewed data and is never rewritten from one machine)."""
-  device = _first_gpu(hardware or _hardware_profile())
+  device = first_gpu(hardware or _hardware_profile())
   if device is None:
     return {"kind": "chip_autoscan", "status": "no_gpu", "action": "none", "name": None, "target_id": None,
             "source": None, "match": None, "path": None}
@@ -191,10 +183,12 @@ def autoscan(*, remeasure:bool = False, hardware:dict[str, Any] | None = None,
   today = _today()
   try:
     read_probe, matrix_probe = probes(device.get("vendor") or "", device)
-    from boltbeam.collectors.cuda_bandwidth import repeated
+    from boltbeam.collectors.cuda_bandwidth import repeated, repeated_paths
     read = repeated([read_probe() for _ in range(READ_RUNS)], "read_gbs", "gbs")
-    row = profile_row(device, read, matrix_probe(), driver() if device.get("vendor") == "nvidia" else {},
-                      today=today)
+    # the matrix paths are run as often as the read, so each path's peak has an uncertainty a compute check can use
+    matrix = matrix_probe()
+    matrix = repeated_paths([matrix, *(matrix_probe() for _ in range(READ_RUNS - 1))]) if matrix.get("paths") else matrix
+    row = profile_row(device, read, matrix, driver() if device.get("vendor") == "nvidia" else {}, today=today)
   except (RuntimeError, OSError, subprocess.SubprocessError, KeyError) as exc:  # the probe's own words, not a guess
     return {**_view(device, profile.get("id") if profile.get("status") == "known" else None, profile.get("status") or "new",
                     "failed"), "reason": str(exc)[-300:]}
@@ -237,7 +231,7 @@ def chip_list(detected:dict[str, Any] | None = None, facts_roots:list | None = N
   facts_roots are the run folders the ceiling reads this machine's measured read from: the chip's words use the
   same number, so the picker and the speed limit never disagree."""
   from boltbeam.workflow.screen import target_facts
-  device = detected if detected is not None else (_first_gpu(_hardware_profile()) or {})
+  device = detected if detected is not None else (first_gpu(_hardware_profile()) or {})
   profile = device.get("profile") or {}
   here = profile.get("id") if profile.get("status") == "known" else None
   this = {"name": device.get("name"), "target_id": here, "status": profile.get("status") or "no_gpu",

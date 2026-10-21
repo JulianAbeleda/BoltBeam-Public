@@ -311,6 +311,8 @@ func emitAction(f Facts) action {
 	switch {
 	case f.Emitting:
 		return action{stMuted.Render("[ Emit ] writing the gameplan…"), "", ""}
+	case f.failedStage() != "":
+		return action{stMuted.Render("[ Emit ] run failed; see Run for details"), "", ""}
 	case f.canEmit():
 		label := "[ Emit ]"
 		if f.Run.Results.Loss.Replay != nil && f.Run.Results.Loss.Replay.Forced {
@@ -331,7 +333,7 @@ func emitAction(f Facts) action {
 
 // canEmit requires a completed run with kernel-specific evidence, a measured breakdown, or a forced replay report.
 func (f Facts) canEmit() bool {
-	return f.Run != nil && f.outputDone() && !f.alive() && (len(f.Run.Results.Loss.Roles) > 0 || f.hasOptimizationTables() || (f.Run.Results.Loss.Replay != nil && f.Run.Results.Loss.Replay.Forced))
+	return f.Run != nil && f.outputDone() && !f.alive() && f.failedStage() == "" && (len(f.Run.Results.Loss.Roles) > 0 || f.hasOptimizationTables() || (f.Run.Results.Loss.Replay != nil && f.Run.Results.Loss.Replay.Forced))
 }
 
 func (f Facts) hasOptimizationTables() bool {
@@ -1167,7 +1169,7 @@ func resultLine(f Facts) (string, string) {
 	res := f.Run.Results
 	if s := res.Loss.Session; res.Measured && s != nil && s.Focus != nil && len(res.Loss.Runtimes) > 0 && res.Ceiling.TokS != nil {
 		r := res.Loss.Runtimes[0]
-		return "pass", fmt.Sprintf("%.1f tokens per second at depth %s · %.0f%% of the limit", r.TokS, count(s.Focus), r.TokS / *res.Ceiling.TokS * 100)
+		return "pass", fmt.Sprintf("%.1f prompt tokens per second at depth %s · %.0f%% of the limit", r.TokS, count(s.Focus), r.TokS / *res.Ceiling.TokS * 100)
 	}
 	if res.Measured && res.Timing.TokS != nil {
 		if res.Ceiling.TokS != nil && *res.Ceiling.TokS > 0 {

@@ -215,11 +215,35 @@ func TestSessionHeadlineIsTheFocusDepth(t *testing.T) {
 	f := Facts{Run: &seam.Run{Results: res}}
 	f.Run.Stages = []seam.Stage{{Key: "output", Done: true}}
 	got := plain(resultBody(f, 160))
-	if !strings.Contains(got, "3579.7 tokens per second measured for a turn at depth 16384. The limit at that depth is 13830.6.") ||
+	if !strings.Contains(got, "3579.7 prompt tokens per second measured for a turn at depth 16384. The limit at that depth is 13830.6.") ||
 		!strings.Contains(got, "26% of the limit") || strings.Contains(got, "4094.1 tokens per second measured") {
 		t.Fatalf("session headline:\n%s", got)
 	}
-	if _, line := resultLine(f); line != "3579.7 tokens per second at depth 16384 · 26% of the limit" {
+	if _, line := resultLine(f); line != "3579.7 prompt tokens per second at depth 16384 · 26% of the limit" {
 		t.Fatalf("what next: %q", line)
+	}
+}
+
+func TestSavedValidationFailureOverridesStaleSuccess(t *testing.T) {
+	var s seam.Saved
+	if err := json.Unmarshal([]byte(`{"runs":[{"id":"bad","validation_failed":true,"measured":true,"pct_of_limit":55}]}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	got := plain(savedActions(Facts{Saved: &s})[0].label)
+	if !strings.Contains(got, "FAILED validation") || strings.Contains(got, "55%") {
+		t.Fatal(got)
+	}
+}
+
+// An AMD run's toolchain prints the keys its vendor recorded, in their recorded order, and torch's HIP.
+func TestRunEngineBodyPrintsTheVendorsOwnToolchainKeys(t *testing.T) {
+	var tc seam.ToolchainFacts
+	raw := `{"recorded_at":"2026-10-20T10:00:00+00:00","versions":{"rocm":"10.1.0","amdgpu":"unknown","hip":"7.16.26385","torch":"2.9.0","rocprofv3":"1.4.1"},"runtime":{"hip":"7.0.51831"}}`
+	if err := json.Unmarshal([]byte(raw), &tc); err != nil {
+		t.Fatal(err)
+	}
+	got := plain(runEngineBody(&seam.RunEngine{Provider: "llama.cpp", Toolchain: &tc}))
+	if want := "Toolchain (2026-10-20 10:00 UTC): rocm 10.1.0, hip 7.16.26385, torch 2.9.0, rocprofv3 1.4.1, torch's HIP 7.0.51831; versions not recorded: amdgpu."; !strings.Contains(got, want) {
+		t.Errorf("want %q in %q", want, got)
 	}
 }

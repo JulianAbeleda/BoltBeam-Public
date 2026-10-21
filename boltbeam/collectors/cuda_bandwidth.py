@@ -127,6 +127,14 @@ def repeated(runs:list[dict[str, Any]], value:str, shape_value:str) -> dict[str,
           **({"uncertainty": spread(xs)} if len(xs) > 1 else {})}
 
 
+def repeated_paths(runs:list[dict[str, Any]]) -> dict[str, Any]:
+  """Whole matrix-probe runs as one result: each path's best run, its uncertainty the runs' spread (repeated)."""
+  if not runs[0].get("paths"):
+    return runs[0]
+  return {**runs[0], "runs": len(runs), "paths": [repeated([r["paths"][i] for r in runs], "tops", "tops")
+                                                  for i in range(len(runs[0]["paths"]))]}
+
+
 def parallel_units(facts:dict[str, Any]) -> int:
   """How many units a grid is spread over, as the bridge's driver counts them: CUDA's SMs, HIP's multiprocessors
   (work-group processors on RDNA). It sizes launch grids only; it is not a compute-unit count."""

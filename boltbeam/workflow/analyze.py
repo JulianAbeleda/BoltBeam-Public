@@ -229,7 +229,9 @@ def analyze_run(run:str | pathlib.Path) -> dict[str, Any]:
   out = run_dir(run)
   manifest = load_manifest(out)
   profile = load_profile(out)
-  target = get_target(manifest.get("target_id", "amd_gfx1100"))
+  if not manifest.get("target_id"):
+    raise ValueError(f"{out} names no target_id: a run is analyzed for the chip it names, never a default one")
+  target = get_target(manifest["target_id"])
   workload_profile = read_json(out / "workload_profile.json")
   search = emit_search_space(profile, target)
   policy = emit_seed_policy(profile, target)

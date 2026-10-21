@@ -66,11 +66,13 @@ def argv(model:str, contexts:list[int], batches:list[int], *, tokens:int = TOKEN
 
 
 def whole_step(model:str, contexts:list[int], batches:list[int], *, log:pathlib.Path | None = None,
-               tokens:int = TOKENS, settings:list[str] | None = None) -> list[dict[str, Any]]:
+               tokens:int = TOKENS, settings:list[str] | None = None, graphs:str) -> list[dict[str, Any]]:
+  """vLLM's decode at each context and batch; `graphs` names the backend's graph replay vLLM runs the step with
+  (target/vendors.py terms)."""
   rows = ec.run_driver([*argv(model, contexts, batches, tokens=tokens), *(settings or [])], log=log, env={**ec.venv_env(python()), **RUN_ENV})
   return [ec.point(r["context"], r["batch"], r["step_ms"], tokens=r["tokens"], engine=r.get("engine", {}),
                    step_samples_ms=r.get('step_samples_ms'),repeat_band_ms=r.get('repeat_band_ms'),source="vLLM offline LLM API, "
-                   "N tokens minus 1 token, CUDA graphs on, vLLM's own sampler") for r in rows]
+                   f"N tokens minus 1 token, {graphs} on, vLLM's own sampler") for r in rows]
 
 
 def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int, batch:int = 1,

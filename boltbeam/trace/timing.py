@@ -9,7 +9,6 @@ from boltbeam.quantization.quant import route_families_for
 from boltbeam.roofline.roofline_trace import ingest_roofline
 from boltbeam.trace.schedule_trace import ingest_schedule_trace
 from boltbeam.vocab import SCHEMA_HW_TRACE, SCHEMA_TIMING_PROFILE, SCHEMA_TIMING_TRACE, SCHEMA_TRACE_REQUEST
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
 
 _REQUESTED_METRICS = {
   "whole_step": ["wall_us", "tok_s", "total_bytes", "launch_count", "host_sync_pct"],
@@ -178,7 +177,12 @@ def _context_summary(trace:dict[str, Any], rows:list[dict[str, Any]], ctx:int | 
 
   roofline = {}
   schedule = {}
-  if kernels:
+  from boltbeam.target.targets import target_peak_gbs
+  # the trace's own peak, else its target's; with neither the limits are not computed (no chip's figure is assumed)
+  peak = trace.get("peak_gbs") or target_peak_gbs(trace.get("target_id"))
+  if kernels and peak is None:
+    roofline = schedule = {"status": "not_computed", "reason": "the trace records no peak bandwidth (peak_gbs)"}
+  elif kernels:
     roofline = ingest_roofline({
       "label": f"{trace.get('model_id')}:{trace.get('workload')}:{ctx if ctx is not None else 'all'}",
       "timing_source": trace.get("timing_source", "unknown"),
@@ -193,7 +197,7 @@ def _context_summary(trace:dict[str, Any], rows:list[dict[str, Any]], ctx:int | 
         }
         for r in kernels
       ],
-    }, peak_gbs=float(trace.get("peak_gbs", DEFAULT_PEAK_MEM_GBS)))
+    }, peak_gbs=float(peak))
     schedule = ingest_schedule_trace({
       "label": f"{trace.get('model_id')}:{ctx if ctx is not None else 'all'}",
       "total_us": total_us,
@@ -206,7 +210,7 @@ def _context_summary(trace:dict[str, Any], rows:list[dict[str, Any]], ctx:int | 
         }
         for r in kernels
       ],
-    }, peak_gbs=float(trace.get("peak_gbs", DEFAULT_PEAK_MEM_GBS)))
+    }, peak_gbs=float(peak))
 
   return {
     "context": ctx,

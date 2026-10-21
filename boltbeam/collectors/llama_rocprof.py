@@ -12,7 +12,7 @@ from boltbeam.artifacts.llama_rocprof import timing_trace_from_rocprof_csv
 from boltbeam.vocab import SCHEMA_TIMING_TRACE
 from boltbeam.workflow.common import load_manifest, run_dir
 from boltbeam.core.canonical import pretty_json
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
+from boltbeam.target.targets import need_target_id
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class LlamaRocprofCapture:
   rocprofv3:str
   weight_inventory:pathlib.Path | None
   provider_id:str = "llama.cpp/rocprofv3"
-  peak_gbs:float = DEFAULT_PEAK_MEM_GBS
+  peak_gbs:float | None = None  # the target's, from the registry, unless given
 
 
 def _resolve(args:argparse.Namespace) -> LlamaRocprofCapture:
@@ -51,10 +51,11 @@ def _resolve(args:argparse.Namespace) -> LlamaRocprofCapture:
   model_id = args.model_id or run_manifest.get("model_id") or pathlib.Path(model).stem
   trace_dir = pathlib.Path(args.trace_dir).expanduser() if args.trace_dir else out.with_suffix(".rocprof.d")
   workload = args.workload or run_manifest.get("workload") or "prefill"
+  target_id = need_target_id(args.target_id or run_manifest.get("target_id"), "llama-rocprof")
   return LlamaRocprofCapture(
     model=str(model),
     model_id=model_id,
-    target_id=args.target_id or run_manifest.get("target_id") or "amd_gfx1100",
+    target_id=target_id,
     workload=workload,
     context=args.context,
     out=out,
@@ -136,7 +137,7 @@ def main(argv:list[str] | None = None) -> int:
   ap.add_argument("--rocprofv3", default="rocprofv3")
   ap.add_argument("--weight-inventory", default=None)
   ap.add_argument("--provider-id", default="llama.cpp/rocprofv3")
-  ap.add_argument("--peak-gbs", type=float, default=DEFAULT_PEAK_MEM_GBS)
+  ap.add_argument("--peak-gbs", type=float, default=None, help="defaults to the target's registry bandwidth")
   args = ap.parse_args(argv)
   try:
     cfg = _resolve(args)

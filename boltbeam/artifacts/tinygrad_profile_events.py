@@ -13,7 +13,7 @@ from boltbeam.artifacts.tinygrad_rocprof import (
   _apply_role_bytes, _apply_weight_bytes, _shape_index, _short_name, classify_tinygrad_kernel,
 )
 from boltbeam.vocab import SCHEMA_TIMING_TRACE
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
+from boltbeam.target.targets import need_peak_gbs, target_peak_gbs
 
 
 _WHOLE_PREFILL_RE = re.compile(r"^\s*WHOLE-PREFILL@(?P<context>\d+):\s*(?P<tok_s>[0-9]+(?:\.[0-9]+)?)\s+tok/s\s*$", re.MULTILINE)
@@ -263,11 +263,11 @@ def matrix_work_coverage(rows:list[dict], profile:dict, tokens:int, *, batch:int
                     f"Matrix work incomplete: captured {sum(actual.values()):,.0f} versus expected {sum(expected.values()):,.0f} FLOP/token.")}
 
 
-def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "amd_gfx1100",
+def decode_profile_events(events:list[Any], *, model_id:str, target_id:str,
                           workload:str = "prefill", context:int | None = None,
                           decode_tokens:int | None = None,
                           program_census:dict[str, Any] | None = None, model_profile:dict[str, Any] | None = None,
-                          provider_id:str = "tinygrad/profile-events", peak_gbs:float = DEFAULT_PEAK_MEM_GBS,
+                          provider_id:str = "tinygrad/profile-events", peak_gbs:float | None = None,
                           weight_inventory:str | pathlib.Path | None = None,
                           source_path:str | pathlib.Path | None = None) -> dict[str, Any]:
   """Normalize device events; the caller must bound a decode capture to its measured window.
@@ -279,6 +279,8 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
   omit ambiguous enrichment. AMD descriptor allocation bits are retained raw;
   exact register counts require separately joined compiler metadata.
   """
+  # the run target's bandwidth unless given; a target with none refuses (no chip's figure is assumed)
+  peak_gbs = peak_gbs if peak_gbs is not None else need_peak_gbs(target_peak_gbs(target_id), f"decode_profile_events for {target_id}")
   if not model_id:
     raise ValueError("model_id is required; pass --model-id or --run")
   if decode_tokens is not None and (workload != "decode" or isinstance(decode_tokens, bool)
@@ -480,12 +482,12 @@ def decode_profile_events(events:list[Any], *, model_id:str, target_id:str = "am
 
 
 def timing_trace_from_tinygrad_profile_events(path:str | pathlib.Path, *, model_id:str,
-                                              target_id:str = "amd_gfx1100", workload:str = "prefill",
+                                              target_id:str, workload:str = "prefill",
                                               context:int | None = None,
                                               decode_tokens:int | None = None,
                                               program_census:dict[str, Any] | None = None, model_profile:dict[str, Any] | None = None,
                                               provider_id:str = "tinygrad/profile-events",
-                                              peak_gbs:float = DEFAULT_PEAK_MEM_GBS,
+                                              peak_gbs:float | None = None,
                                               tinygrad_root:str | pathlib.Path | None = None,
                                               weight_inventory:str | pathlib.Path | None = None) -> dict[str, Any]:
   src = pathlib.Path(path).expanduser()

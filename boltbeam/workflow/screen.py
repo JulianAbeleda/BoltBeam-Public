@@ -85,6 +85,7 @@ from boltbeam.report.html import STAGES, next_step, roofline_kernels, stage_stat
 from boltbeam.search import role_compare
 from boltbeam.collectors import providers, tinygrad_role_time
 from boltbeam.target import targets as reg
+from boltbeam.target import vendors
 from boltbeam.target.targets import get_target
 from boltbeam.workflow import analyze_run, autoscan_run, ingest_probe_run, ingest_timing_run, load_run, output_run
 from boltbeam.workflow.autoscan import _hardware_profile
@@ -580,13 +581,15 @@ def not_measured(run:pathlib.Path) -> str:
 
 from boltbeam.collectors import engine_kernels  # noqa: E402  (its words belong in this table)
 
-CAPTURE_WORDS = {tinygrad_role_time.OWN_TIMING: "tinygrad's own timing", "nsys": "captured with nsys",
-                 "rocprofv3": "captured with rocprofv3", "metal-system-trace": "captured with Metal System Trace",
+# how per-role time was taken, in the screen's words: tinygrad's own events, each vendor's capture
+# (target/vendors.py), and the engine's kernels timed alone
+CAPTURE_WORDS = {tinygrad_role_time.OWN_TIMING: "tinygrad's own timing",
+                 **{v.capture.method: v.capture.words for v in vendors.VENDORS.values()},
                  engine_kernels.METHOD: engine_kernels.WORDS}
 
 
-IN_MODEL_TOOL = {tinygrad_role_time.OWN_TIMING: "tinygrad events", "nsys": "nsys", "rocprofv3": "rocprofv3",
-                 "metal-system-trace": "xctrace"}
+IN_MODEL_TOOL = {tinygrad_role_time.OWN_TIMING: "tinygrad events",
+                 **{v.capture.method: v.capture.tool_word for v in vendors.VENDORS.values()}}
 
 
 def _kernel_names(trace:dict[str, Any]) -> list[str]:
@@ -898,8 +901,9 @@ def prefill_ceiling(ceil:dict[str, Any], loss:dict[str, Any], token:dict[str, An
   """A prefill run's ceiling is its where table's (workflow/prefill.py); the whole-model roofline at one fp16 peak
   is not shown beside it. Absent, with its reason, until the prefill was captured in the model."""
   w = loss.get("where_token_goes")
-  if not w:
-    return {"status": "absent", "reason": loss.get("missing") or "no prefill captured in the model yet"}
+  if not w or not w.get("limit_ms"):
+    return {"status": "absent", "reason": loss.get("missing") or ("no prefill captured in the model yet" if not w else
+                                                                  "no captured row has a limit, so the prefill has none")}
   length = w["length"]
   return {"status": "modeled", "context": length, "floor_ms": w["limit_ms"], "tok_s": length / w["limit_ms"] * 1e3,
           "bytes_moved": None, "peak_bandwidth_gbs": ceil.get("peak_bandwidth_gbs"), "bandwidth_source": ceil.get("bandwidth_source"),
@@ -1072,6 +1076,10 @@ def _measure_steps(args, plan:dict[str, Any], say=lambda _: None) -> list[tuple[
   layout, gpus = plan.get("layout") or "one", plan.get("gpus") or 1
   batches = _parse_batches(getattr(args, "batch", None))
   capture = plan.get("capture")
+  if layout != "one" and getattr(args, "workload", "decode") in ("prefill", "session") and not plan["reason"]:
+    from boltbeam.workflow import layout as lay
+    plan = {**plan, "reason": f"{args.workload} is measured on one GPU (its per-role capture reads one device's "
+                              f"launches); {lay.LAYOUTS.get(layout, layout)} is not built for it", "command": "pick one GPU"}
   if plan["reason"]:
     return [("measure", lambda: _write_measure_status(args.run, "skipped", collector=plan["collector"],
                                                        reason=plan["reason"], command=plan["command"],
@@ -1261,10 +1269,7 @@ def pipeline(args, out=sys.stdout) -> int:
   can_time = plan and (plan.get("capture") or providers.capture_method(plan["provider"], get_target(args.target).backend)).get("method")
   if analyze_all and plan and not plan["reason"]:  # one press: per-role time, same engine, search, report again
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
-    if getattr(args, "workload", "decode") in ("prefill", "session", "replay"):  # captured in the model, attributed
-      from boltbeam.collectors import prefill as pf, replay as rp, session as ss
-      # one prefill per length; one turn at the focus depth; the replay's picked turns and its deepest decode
-      mod = {"prefill": pf, "session": ss, "replay": rp}[args.workload]
+    if mod := workload_role_time(getattr(args, "workload", "decode")):  # captured in the model, attributed
       steps.append(("role_time", lambda: mod.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say)))
     elif can_time:
       steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say,
@@ -1335,8 +1340,15 @@ def _role_time_arg(args) -> str:
   return str(getattr(args, "role_time", None) or "auto").replace("-", "_")
 
 
+def workload_role_time(workload:str | None):
+  """The collector that times a non-decode workload's roles (one prefill per length; one turn at the focus depth;
+  the replay's picked turns and its deepest decode), or None for decode, which providers.role_time times."""
+  from boltbeam.collectors import prefill as pf, replay as rp, session as ss
+  return {"prefill": pf, "session": ss, "replay": rp}.get(workload or "decode")
+
+
 def role_time(args, out=sys.stdout) -> int:
-  """Time every role inside a real decode in tinygrad's runtime, then refresh the report."""
+  """Time every role of the run's workload with the engine it was measured with, then refresh the report."""
   def say(text:str) -> None:
     out.write(text + "\n")
     out.flush()
@@ -1344,8 +1356,12 @@ def role_time(args, out=sys.stdout) -> int:
   try:
     provider = getattr(args, "provider", None) or run_provider(run)
     say(f"role-time: start {provider}")
-    providers.role_time(run, provider, root=pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None,
-                        batch=int(getattr(args, "batch", None) or 1), say=say, measurement=_role_time_arg(args))
+    root = pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None
+    if mod := workload_role_time(_optional(run, "run_manifest.json").get("workload")):
+      mod.role_time(run, provider, root=root, say=say)
+    else:
+      providers.role_time(run, provider, root=root, batch=int(getattr(args, "batch", None) or 1), say=say,
+                          measurement=_role_time_arg(args))
     output_run(run)
   except Exception as exc:  # application boundary: the reason is the fact the reader needs
     say(f"role-time failed: {exc}")
@@ -1391,8 +1407,8 @@ def engines(*, cached:bool = False) -> dict[str, Any]:
           "seconds": got["seconds"], "engines": engine_scan.rows(got)}
 
 
-DEVICE_PREFIX = {"CUDA": "NV", "AMD": "AMD"}  # tinygrad's device name per backend, for the per-GPU probe
-_PROBE_WORDS = {"Metal": "BoltBeam's Metal read probe", "CUDA": "BoltBeam's native CUDA read probe"}
+# tinygrad's device name per backend that tinygrad's per-GPU read probe runs on (target/vendors.py)
+DEVICE_PREFIX = {v.backend: v.tinygrad_device for v in vendors.VENDORS.values() if v.tinygrad_per_gpu}
 
 
 def profile_read(gpu:dict[str, Any]) -> tuple[float, str] | None:
@@ -1405,8 +1421,9 @@ def profile_read(gpu:dict[str, Any]) -> tuple[float, str] | None:
   src = ((t.capabilities or {}).get("fact_sources") or {}).get("memory_bandwidth_gbs") or {}
   if not t.memory_bandwidth_gbs:
     return None
-  return t.memory_bandwidth_gbs, (f"measured on this GPU with {_PROBE_WORDS.get(t.backend, 'BoltBeam')}, "
-                                  f"{src.get('observed_at', 'date unknown')} (chip profile {tid})")  # tinygrad's device name per backend, for the per-GPU probe
+  row = vendors.BY_BACKEND.get(t.backend)
+  return t.memory_bandwidth_gbs, (f"measured on this GPU with {row.term('native_read_probe') if row else 'BoltBeam'}, "
+                                  f"{src.get('observed_at', 'date unknown')} (chip profile {tid})")
 
 
 def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | None = None,

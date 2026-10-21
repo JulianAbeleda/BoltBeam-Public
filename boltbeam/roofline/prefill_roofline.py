@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 from boltbeam.math.roofline import effective_gbs, floor_us
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
+from boltbeam.target.targets import need_peak_gbs
 
 
 def _f(value:Any) -> float | None:
@@ -100,7 +100,8 @@ def _floor_us(bytes_:float, gbs:float) -> float:
 
 
 def prefill_roofline_report(baseline:dict[str, Any], candidate:dict[str, Any], *, context:int | None = None,
-                            peak_gbs:float = DEFAULT_PEAK_MEM_GBS, wall_trace:dict[str, Any] | None = None) -> dict[str, Any]:
+                            peak_gbs:float | None = None, wall_trace:dict[str, Any] | None = None) -> dict[str, Any]:
+  peak_gbs = need_peak_gbs(peak_gbs, "prefill_roofline_report")
   ctx = _context(candidate, context)
   cand = _scale_candidate(candidate, wall_trace, ctx)
   bwhole, cwhole = _whole(baseline, ctx), _whole(cand, ctx)

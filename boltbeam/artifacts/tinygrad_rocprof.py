@@ -11,7 +11,7 @@ from boltbeam.artifacts.llama_rocprof import (
 )
 from boltbeam.artifacts.llama_rocprof import _rocprof_transfer_rows
 from boltbeam.vocab import SCHEMA_TIMING_TRACE
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
+from boltbeam.target.targets import need_peak_gbs, target_peak_gbs
 
 _PREFILL_GEMM_RE = re.compile(r"prefill_(?:graph|gen_sched)_gemm_(\d+)_(\d+)_(\d+)")
 _PREFILL_DIRECT_PACKED_RE = re.compile(r"prefill_(q4k|q6k)_direct_packed(?:_load)?(?:_direct_out)?_gemm_(\d+)_(\d+)_(\d+)_(\d+)")
@@ -173,13 +173,15 @@ def _apply_role_bytes(rows:list[dict[str, Any]], shape_index:dict[tuple[int, int
   return total if matched else None
 
 
-def timing_trace_from_tinygrad_rocprof_csv(path:str | pathlib.Path, *, model_id:str, target_id:str = "amd_gfx1100",
+def timing_trace_from_tinygrad_rocprof_csv(path:str | pathlib.Path, *, model_id:str, target_id:str,
                                            workload:str = "prefill", context:int | None = None,
                                            provider_id:str = "tinygrad/rocprofv3",
-                                           peak_gbs:float = DEFAULT_PEAK_MEM_GBS,
+                                           peak_gbs:float | None = None,
                                            tinygrad_trace_json:str | pathlib.Path | None = None,
                                            weight_inventory:str | pathlib.Path | None = None,
                                            memory_copy_csv:str | pathlib.Path | None = None) -> dict[str, Any]:
+  # the run target's bandwidth unless given; a target with none refuses (no chip's figure is assumed)
+  peak_gbs = peak_gbs if peak_gbs is not None else need_peak_gbs(target_peak_gbs(target_id), f"timing_trace_from_tinygrad_rocprof_csv for {target_id}")
   if not model_id:
     raise ValueError("model_id is required; pass --model-id or --run")
   src = pathlib.Path(path)

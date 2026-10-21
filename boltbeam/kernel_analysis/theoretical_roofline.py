@@ -17,7 +17,7 @@ from boltbeam.math.roofline import amdahl_whole_gain
 from boltbeam.perf.mem_tier import effective_bandwidth_gbs
 from boltbeam.profile.decode_roles import GGML_BITS_PER_WEIGHT
 from boltbeam.vocab import SCHEMA_THEORETICAL_ROOFLINE, is_weight_gemv_role
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
+from boltbeam.target.targets import target_peak_gbs
 
 _ACT_BYTES = 2.0  # fp16 activations
 
@@ -254,7 +254,7 @@ def pct_of_roofline(measured_flops_per_s: float, roofline: RooflinePoint) -> flo
 # targetable regime — the third rung the LDS-vs-L2 discussion was missing.
 
 
-def gfx1100_tiers(dram_gbs: float = DEFAULT_PEAK_MEM_GBS) -> dict[str, float]:
+def gfx1100_tiers(dram_gbs: float | None = None) -> dict[str, float]:
   """RDNA3 / Navi 31 (RX 7900 XTX) cache hierarchy. L2 (6 MB, on GCD), MALL = Infinity Cache
   (96 MB, on the MCDs), DRAM (960 GB/s). The cache *bandwidths* are MODELED placeholders — run a
   working-set sweep (`boltbeam mem-sweep-request` / `ingest-mem-sweep`) to replace them with measured
@@ -262,7 +262,9 @@ def gfx1100_tiers(dram_gbs: float = DEFAULT_PEAK_MEM_GBS) -> dict[str, float]:
   return {
     "l2_bytes": 6 * 1024 * 1024, "l2_gbs": 3400.0,        # modeled
     "mall_bytes": 96 * 1024 * 1024, "mall_gbs": 2400.0,   # modeled — Infinity Cache
-    "dram_gbs": dram_gbs, "lds_gbs": 16000.0,             # modeled
+    "dram_gbs": dram_gbs if dram_gbs is not None else target_peak_gbs("amd_gfx1100"),  # this chip's own row
+    "lds_gbs": 16000.0,                                   # modeled
+    "_last_level_cache_name": "MALL",                     # AMD's name for its Infinity Cache
   }
 
 
@@ -489,7 +491,7 @@ def tiered_model_roofline(profile: Mapping[str, Any], *, peak_flops: float, tier
     "tiers": {"l2_mib": tiers["l2_bytes"] / (1024 * 1024), "l2_gbs": tiers["l2_gbs"],
               "mall_mib": (tiers.get("mall_bytes") or 0) / (1024 * 1024), "mall_gbs": tiers.get("mall_gbs"),
               "dram_gbs": tiers["dram_gbs"],
-              "last_level_cache_name": tiers.get("_last_level_cache_name", "MALL"),
+              "last_level_cache_name": tiers.get("_last_level_cache_name", "last_level_cache"),
               "truth_status": tiers.get("_truth_status", "modeled"),
               "l2_bandwidth_status": tiers.get("_l2_bandwidth_status", "modeled"),
               "mall_bandwidth_status": tiers.get("_mall_bandwidth_status", "modeled"),

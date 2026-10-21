@@ -713,7 +713,19 @@ CURVE_LINES = ("var(--g1)", "var(--g2)", "var(--g3)", "var(--excess)", "var(--ok
 CURVE_ROWS = 6  # the rows that cost the most at any length are drawn; every row is in the table below
 
 
-def _prefill_curve(loss:dict[str, Any]) -> str:
+UNKNOWN_CLOCK_MHZ = "core clock MHz"  # a run whose target has no vendor row: the clock, not a vendor's name for it
+
+
+def _clock_mhz(manifest:dict[str, Any]) -> str:
+  """The run's GPU core clock, as its vendor names it in a column ("SM MHz"; target/vendors.py terms), from the run's
+  target; UNKNOWN_CLOCK_MHZ for a target with no vendor row."""
+  from boltbeam.target import targets, vendors
+  t = targets.TARGETS.get(str(manifest.get("target_id")))
+  row = vendors.BY_BACKEND.get(t.backend) if t else None
+  return row.term("core_clock_mhz") if row else UNKNOWN_CLOCK_MHZ
+
+
+def _prefill_curve(loss:dict[str, Any], clock_mhz:str = UNKNOWN_CLOCK_MHZ) -> str:
   """workflow/prefill.curve as a chart and a table: MFU against prompt length for the prefill and its costliest rows,
   then ms and MFU per row at every length. The numbers are the curve's own."""
   c = loss.get("prefill_curve")
@@ -740,7 +752,7 @@ def _prefill_curve(loss:dict[str, Any]) -> str:
     svg += [f'<circle cx="{a:.1f}" cy="{b:.1f}" r="2.5" fill="{color}"/>' for a, b in xy]
     legend.append(f'<text x="572" y="{20 + 14 * len(legend)}" font-size="10.5" fill="{color}">{_e(name[:22])}</text>')
   svg += legend + ["</svg>"]
-  head = "<th>prompt tokens</th><th>prefill ms</th><th>tok/s</th><th>MFU</th><th>ms at ceiling</th><th>chunk</th><th>throttled</th><th>SM MHz mean</th>"
+  head = "<th>prompt tokens</th><th>prefill ms</th><th>tok/s</th><th>MFU</th><th>ms at ceiling</th><th>chunk</th><th>throttled</th><th>" + _e(clock_mhz) + " mean</th>"
   body = "".join(f'<tr><td>{p["length"]}</td><td>{p["ms"]:.1f}</td><td>{p["tok_s"]:.0f}</td>'
                  f'<td title="{_e(p.get("mfu_how") or "")}">{_f(p.get("mfu_pct"), "{:.1f}%")}{" *" if p.get("mfu_how") else ""}</td>'
                  f'<td>{_f(p.get("ceiling_ms"), "{:.1f}")}</td><td>{_e(p.get("chunk_size") or "")}{"" if p.get("batched") else " (not batched)"}</td>'
@@ -1099,7 +1111,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
   measured = _measured(loss) is not None
   sections = _answer(manifest, results, measure, source_run)
   if measured:
-    sections += _where(loss) + _session(loss) + _replay(loss) + _where_token(loss) + _prefill_curve(loss) + _prefill_audit(loss) + _per_role(loss) + _next(loss, policy)
+    sections += _where(loss) + _session(loss) + _replay(loss) + _where_token(loss) + _prefill_curve(loss, _clock_mhz(manifest)) + _prefill_audit(loss) + _per_role(loss) + _next(loss, policy)
   sections += _probe(results) + _facts(manifest, results, measure, gameplan)
   sections = _number(sections)
   return (

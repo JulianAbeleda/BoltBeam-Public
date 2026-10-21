@@ -4,12 +4,11 @@ import json
 import pathlib
 
 from boltbeam.cli._common import _write, _fail, _load_json, _profile, _add_common
-from boltbeam.target.targets import DEFAULT_PEAK_MEM_GBS
 
 def _register_roofline(sub) -> None:
   p = sub.add_parser("roofline", help="ingest a per-kernel roofline trace -> whole-model %%-of-HBM-peak + attribute the gap (gemv_codegen_capped/elementwise_dilution/latency_bound) with reclaimable us + fix")
   p.add_argument("trace", help="roofline trace JSON from tinygrad extra/qk_roofline_trace.py (per-kernel us + phys_bytes + kind, whole-step total_bytes)")
-  p.add_argument("--peak", type=float, default=DEFAULT_PEAK_MEM_GBS, help="HBM peak GB/s (gfx1100 XTX = 960)")
+  p.add_argument("--peak", type=float, required=True, help="the traced GPU's HBM peak GB/s")
   p.add_argument("--out", default=None); p.set_defaults(fn=cmd_roofline)
 
 
@@ -47,7 +46,7 @@ def _register_prefill_roofline(sub) -> None:
   p.add_argument("--candidate", required=True, help="candidate trace with kernel attribution/resources")
   p.add_argument("--wall-trace", default=None, help="optional clean timing trace used to rescale profile attribution")
   p.add_argument("--context", type=int, default=None, help="context length to compare; defaults to the candidate's first context")
-  p.add_argument("--peak-gbs", type=float, default=DEFAULT_PEAK_MEM_GBS)
+  p.add_argument("--peak-gbs", type=float, required=True, help="the traced GPU's HBM peak GB/s")
   p.add_argument("--out", default=None, help="write roofline report JSON here instead of stdout")
   p.add_argument("--markdown", default=None, help="optional markdown report path")
   p.set_defaults(fn=cmd_prefill_roofline)
@@ -78,7 +77,7 @@ def _register_prefill_roofline_ladder(sub) -> None:
   p.add_argument("--candidate", required=True, help="candidate trace with kernel attribution/resources")
   p.add_argument("--wall-trace", default=None, help="optional clean timing trace used to rescale profile attribution")
   p.add_argument("--context", type=int, default=None, help="context length to compare; defaults to the candidate's first context")
-  p.add_argument("--peak-gbs", type=float, default=DEFAULT_PEAK_MEM_GBS)
+  p.add_argument("--peak-gbs", type=float, required=True, help="the traced GPU's HBM peak GB/s")
   p.add_argument("--scalar-tflops", type=float, default=None,
                  help="optional calibrated scalar/vector FMA throughput; omitted means no scalar-FMA timing floor")
   p.add_argument("--dequant-gops", type=float, default=None,
@@ -121,7 +120,7 @@ def _register_roofline_theoretical(sub) -> None:
   _add_common(p)
   p.add_argument("--context", type=int, default=512, help="prefill token dimension (M)")
   p.add_argument("--dtype", default="fp16", help="matrix-engine dtype key into the target's peak_tflops")
-  p.add_argument("--peak-gbs", type=float, default=DEFAULT_PEAK_MEM_GBS, help="fallback HBM peak GB/s if target lacks one")
+  p.add_argument("--peak-gbs", type=float, default=None, help="HBM peak GB/s for a target that records none")
   p.add_argument("--peak-tflops", type=float, default=None,
                  help="measured compute ceiling in TFLOP/s; required for targets whose registry row "
                       "carries no peak_tflops (descriptor-only targets)")
@@ -202,6 +201,8 @@ def cmd_roofline_theoretical(args) -> int:
     raise ValueError(f"execution profile model_id={execution.get('model_id')!r} does not match {profile.model_id!r}")
   peak_flops = resolve_peak_flops(target, args.dtype, args.peak_tflops)
   bw = target.memory_bandwidth_gbs or args.peak_gbs
+  if bw is None and not (args.throughput or args.tiered):
+    raise ValueError(f"target {target.target_id} records no memory bandwidth: pass --peak-gbs")
   if args.throughput:
     tiers = (calibrated_memory_tiers(target, _load_json(args.memory_profile), dram_gbs=bw)
              if args.memory_profile else registered_memory_tiers(target, dram_gbs=bw))

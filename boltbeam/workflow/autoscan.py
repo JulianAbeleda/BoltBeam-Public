@@ -10,6 +10,8 @@ import platform
 import re
 import shutil
 import subprocess
+import threading
+import time
 from typing import Any
 
 from boltbeam.target import toolkits
@@ -70,15 +72,11 @@ def match_facts(device:dict[str, Any]) -> dict[str, Any]:
   """What a chip profile matches on, read off the scan: the exact name, the architecture, the memory size in GiB,
   and the core count where the driver tool reports one (Apple GPU cores; nvidia-smi has no SM count). A registry
   row may claim a device on fewer keys; a profile made here always uses all of them."""
-  out = {"gpu_name": device.get("name"), "architecture": device.get("architecture"),
-         "memory_gib": _gib(device.get("memory_bytes") or device.get("unified_memory_bytes"))}
-  if device.get("vendor") == "apple":
-    out.update(apple_soc=device.get("apple_soc"), gpu_cores=device.get("gpu_cores"))
-  elif device.get("vendor") == "amd":
-    out["compute_units"] = device.get("compute_units")
-  else:
-    out["compute_capability"] = device.get("compute_capability")
-  return out
+  from boltbeam.workflow.chips import vendor_row
+  keys = vendor_row(device.get("vendor"), "match_keys")
+  return {"gpu_name": device.get("name"), "architecture": device.get("architecture"),
+          "memory_gib": _gib(device.get("memory_bytes") or device.get("unified_memory_bytes")),
+          **{k: device.get(k) for k in keys}}
 
 
 def chip_profile_id(device:dict[str, Any]) -> str | None:
@@ -278,6 +276,93 @@ def _meminfo() -> dict[str, int]:
   return out
 
 
+# The HIP runtime numbers AMD GPUs in the order of the kernel's KFD topology nodes, which differs from amd-smi's
+# (on a two-R9700 machine amd-smi lists 0000:13:00.0 first and HIP's device 0 is 0000:f3:00.0). Each GPU node's
+# properties name its PCI address: domain, and location_id = bus << 8 | device << 3 | function.
+KFD_NODES = "/sys/class/kfd/kfd/topology/nodes"
+
+
+def kfd_order(nodes:str | pathlib.Path | None = None) -> list[str]:
+  """The PCI addresses of the GPU nodes (simd_count > 0) in KFD node order, the HIP runtime's device order."""
+  out = []
+  dirs = [d for d in pathlib.Path(nodes or KFD_NODES).iterdir() if d.name.isdigit()]
+  for d in sorted(dirs, key=lambda d: int(d.name)):
+    props = dict(line.split()[:2] for line in (d / "properties").read_text().splitlines() if len(line.split()) >= 2)
+    if int(props.get("simd_count", 0)) > 0:
+      loc = int(props["location_id"])
+      out.append(f"{int(props.get('domain', 0)):04x}:{loc >> 8:02x}:{(loc >> 3) & 0x1f:02x}.{loc & 7}")
+  return out
+
+
+def _probe_amd_hip_order(amd_smi:str, run_command) -> tuple[list[dict[str, Any]], str | None]:
+  """amd-smi's GPUs in the HIP runtime's order, so the first is the device a HIP engine pinned to 0 runs on. More
+  than one GPU and no readable order fails closed: no device is better than the wrong one."""
+  devices, error = _probe_amd(amd_smi, run_command)
+  if len(devices) < 2:
+    return devices, error
+  try:
+    order = kfd_order()
+  except (OSError, KeyError, ValueError) as exc:
+    return [], f"the HIP device order is not readable from {KFD_NODES} ({exc}), so no AMD GPU can be named"
+  where = {d.get("pci_bus_id"): d for d in devices}
+  if sorted(where, key=str) != sorted(order):
+    return [], f"amd-smi's GPUs {sorted(where, key=str)} are not the KFD topology's {order}: the HIP order is unknown"
+  return [where[a] for a in order], None
+
+
+PROBE_TIMEOUT_S = 30.0  # one probe's whole answer; a probe still running then is timed_out and the others stand
+# which GPU is primary when more than one vendor answered; a one-GPU run still refuses to choose (common.first_gpu)
+PRIMARY_RULE = "the first device of the first vendor with devices, in chips._vendors() row order"
+
+
+def scan_gpus(tool_paths:dict[str, str | None], run_command, system:str,
+              timeout_s:float = PROBE_TIMEOUT_S) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+  """Every vendor's probe at once (chips._vendors(): a vendor is a row there, with its scan_tool, platform and probe,
+  (tool path, run_command) -> (devices, error) in its runtime's device order), each in its own thread with its own
+  deadline: the devices of every probe that answered, in row order, and one record per probe (vendor, tool, status, reason, what it asked). Status is
+  detected, no_devices (its tool answered and listed none), failed, timed_out or absent (no tool, or another OS)."""
+  from boltbeam.workflow.chips import _vendors
+  rows = [{"vendor": v, **row} for v, row in _vendors().items()]
+  started = []
+  records = {}
+  for row in rows:
+    path = tool_paths.get(row["scan_tool"])
+    base = {"vendor": row["vendor"], "tool": row["scan_tool"], "order": row["order"]}
+    if not path or (row["platform"] and row["platform"] != system):
+      why = f"{row['scan_tool']} is not here" if not path else f"{row['scan_tool']} answers on {row['platform']} only, not {system}"
+      records[row["vendor"]] = {**base, "status": "absent", "reason": why, "asked": []}
+      continue
+    box:dict[str, Any] = {"asked": []}
+
+    def work(row=row, path=path, box=box):
+      def ask(argv):
+        got = run_command(argv)
+        box["asked"].append({"argv": list(argv), "exit": got[0]})
+        return got
+      try:
+        box["got"] = row["probe"](path, ask)
+      except Exception as exc:  # noqa: BLE001  a probe that raised is that probe's failure, not the scan's
+        box["got"] = ([], f"{row['scan_tool']} probe raised {type(exc).__name__}: {exc}")
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    started.append((row, base, box, thread))
+  deadline = time.monotonic() + timeout_s
+  devices = {}
+  for row, base, box, thread in started:
+    thread.join(max(0.0, deadline - time.monotonic()))
+    asked = list(box["asked"])
+    if "got" not in box:
+      records[row["vendor"]] = {**base, "status": "timed_out", "asked": asked,
+                                "reason": f"{row['scan_tool']} did not answer within {timeout_s:g} s"}
+      continue
+    found, error = box["got"]
+    answered = all(a["exit"] == 0 for a in asked) and re.search(r"returned no .*rows$", error or "")
+    status = "detected" if found else ("no_devices" if answered else "failed")
+    records[row["vendor"]] = {**base, "status": status, "reason": None if found else error, "asked": asked}
+    devices[row["vendor"]] = found
+  return [d for row in rows for d in devices.get(row["vendor"]) or []], [records[row["vendor"]] for row in rows]
+
+
 def _hardware_profile(*, run_command=_run_command, tool_resolver=None,
                       system_name:str | None = None) -> dict[str, Any]:
   mem = _meminfo()
@@ -286,54 +371,21 @@ def _hardware_profile(*, run_command=_run_command, tool_resolver=None,
                 for name in ("nvidia-smi", "amd-smi", "rocm-smi", "rocminfo", "rocprofv3", "hipcc", "nvcc",
                              "system_profiler")}
   gpu: dict[str, Any] = {
-    "status": "not_probed",
-    "notes": ["No supported GPU probe was available; provider-specific evidence may add hardware facts."],
     "tools_present": {name: path is not None for name, path in tool_paths.items()},
     "tool_paths": tool_paths,
   }
-  host_system = system_name or platform.system()
-  if host_system == "Darwin" and tool_paths["system_profiler"]:
-    devices, error = _probe_apple_metal(tool_paths["system_profiler"], run_command)
-    if devices:
-      primary = devices[0]
-      gpu = {
-        **gpu, "status": "detected", **primary, "devices": devices,
-        "notes": ["Primary GPU is the first Apple device returned by system_profiler.",
-                  "Dynamic Metal limits require the tinygrad provider fact adapter."],
-      }
-    else:
-      gpu.update(status="probe_failed", notes=[error or "system_profiler Metal probe failed"])
-  elif tool_paths["nvidia-smi"]:
-    devices, error = _probe_nvidia(tool_paths["nvidia-smi"], run_command)
-    if devices:
-      primary = devices[0]
-      gpu = {
-        **gpu,
-        "status": "detected",
-        "vendor": primary["vendor"],
-        "name": primary["name"],
-        "uuid": primary["uuid"],
-        "pci_bus_id": primary["pci_bus_id"],
-        "memory_bytes": primary["memory_bytes"],
-        "compute_capability": primary["compute_capability"],
-        "architecture": primary["architecture"],
-        "target_id": primary["target_id"],
-        "target_registered": primary["target_registered"],
-        "driver_version": primary["driver_version"],
-        "match": primary["match"],
-        "profile": primary["profile"],
-        "devices": devices,
-        "notes": ["Primary GPU is the first device returned by nvidia-smi."],
-      }
-    else:
-      gpu.update(status="probe_failed", notes=[error or "nvidia-smi probe failed"])
-  elif tool_paths["amd-smi"]:
-    devices, error = _probe_amd(tool_paths["amd-smi"], run_command)
-    if devices:
-      gpu = {**gpu, "status": "detected", **devices[0], "devices": devices,
-             "notes": ["Primary GPU is the first device returned by amd-smi."]}
-    else:
-      gpu.update(status="probe_failed", notes=[error or "amd-smi probe failed"])
+  devices, probes = scan_gpus(tool_paths, run_command, system_name or platform.system())
+  vendors = [p["vendor"] for p in probes if p["status"] == "detected"]
+  if devices:
+    from boltbeam.workflow.chips import vendor_row
+    gpu = {**gpu, "status": "detected", **devices[0], "devices": devices, "notes": list(vendor_row(vendors[0], "notes"))}
+    if len(vendors) > 1:  # stated, never by which tool answered first; a one-GPU run still refuses (common.first_gpu)
+      gpu.update(primary_rule=PRIMARY_RULE, notes=[f"GPUs from {len(vendors)} vendors ({', '.join(vendors)}): the primary "
+                                                    f"GPU is {PRIMARY_RULE}", *gpu["notes"]])
+  else:
+    tried = sorted(probes, key=lambda p: p["status"] == "absent")
+    gpu = {**gpu, "status": "probe_failed", "notes": [f"{p['tool']}: {p['reason']}" for p in tried]}
+  gpu["probes"] = probes
   return {
     "schema": SCHEMA_HARDWARE_PROFILE,
     "cpu": {

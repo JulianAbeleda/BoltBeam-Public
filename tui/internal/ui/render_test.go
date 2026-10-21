@@ -333,7 +333,7 @@ func TestMeasureStatusWording(t *testing.T) {
 	}
 	running := map[string]string{"measure_probe": "done", "measure_timing": "running"}
 	rows := measureRows(nil, running, true)
-	if len(rows) != 2 || rows[0][0] != "pass" || rows[1][0] != "run" || stageWord(rows[1][1]) != "Time the real decode" {
+	if len(rows) != 2 || rows[0][0] != "pass" || rows[1][0] != "run" || stageWord(rows[1][1]) != "Time the real run" {
 		t.Fatalf("live rows: %v", rows)
 	}
 }
@@ -406,5 +406,29 @@ func TestStartPageIsSetupUnlessARunIsGoing(t *testing.T) {
 	again, _ := page(going, pageSetup).Update(jobMsg{s.job, s.tail})
 	if again.(Model).cursor != pageSetup {
 		t.Fatal("the start page is decided once; later job updates do not move the screen")
+	}
+}
+
+func TestReplayEvidenceIsNotInvented(t *testing.T) {
+	var l seam.Loss
+	if err := json.Unmarshal([]byte(`{"status":"modeled","provider":"vllm","limit_ms":1,"per":"per session","replay":{"title":"Replay","rows":[{"cells":["1"]}],"columns":["turn"],"total":["warm"],"evidence_words":"Replay timings: server metrics and client clocks.","not_captured":"vllm: turns not captured"}}`), &l); err != nil {
+		t.Fatal(err)
+	}
+	got := ansi.Strip(lossBody(l) + replayBody(l.Replay))
+	if strings.Contains(got, "kernels from the capture") || !strings.Contains(got, "server metrics and client clocks") || !strings.Contains(got, "vllm: turns not captured") {
+		t.Fatal(got)
+	}
+}
+
+func TestReplayBenchmarkOnlyRowsStayVisible(t *testing.T) {
+	var r seam.Replay
+	if err := json.Unmarshal([]byte(`{"title":"Replay","rows":[{"cells":["1"]}],"columns":["turn"],"total":["warm"],"wheres":[{"status":"benchmark_only","title":"Turn 2: llama-bench capture","words":"Benchmark only: not validated as the server's prompt path.","columns":["row","ms now"],"rows":[{"name":"matrix","cells":["7.00"]}],"sum_cells":["total","8.00"],"server_line":"Server prompt_ms 100.0 ms; benchmark GPU first-to-last kernel 8.0 ms."}]}`), &r); err != nil {
+		t.Fatal(err)
+	}
+	got := ansi.Strip(replayBody(&r))
+	for _, want := range []string{"Benchmark only", "matrix", "7.00", "Server prompt_ms 100.0"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %s", want, got)
+		}
 	}
 }

@@ -33,6 +33,7 @@ from boltbeam.collectors import llama_bench_decode
 from boltbeam.collectors.llama_bench_decode import CannotMeasure, bench_decode  # one refusal type for every collector
 from boltbeam.core.canonical import pretty_json
 from boltbeam.profile.gguf import read_gguf_layout
+from boltbeam.target import vendors
 from boltbeam.target.targets import get_target
 from boltbeam.vocab import SCHEMA_PROBE_EVIDENCE, SCHEMA_TIMING_TRACE
 from boltbeam.workflow.common import load_manifest, read_json, run_dir
@@ -55,7 +56,7 @@ from boltbeam.collectors import boltbeam_gemv as gemv  # noqa: E402
 from boltbeam.collectors import kernel_timer  # noqa: E402
 MSL, KERNELS, ROWS_PER_GROUP, KERNEL_SOURCE = gemv.MSL, gemv.KERNELS, gemv.ROWS_PER_GROUP, gemv.KERNEL_SOURCE
 SAMPLES, WARMUPS = kernel_timer.SAMPLES, kernel_timer.WARMUPS
-FLUSH_BYTES = kernel_timer.FLUSH["Metal"]["bytes"]
+FLUSH_BYTES = vendors.for_backend("Metal").flush_bytes
 
 
 # --- the CPU reference: pure Python, the GGUF block layouts written out once more ---------------------------
@@ -220,28 +221,12 @@ def _percentile(values:list[float], q:float) -> float:
   return ordered[min(len(ordered) - 1, max(0, round(q * (len(ordered) - 1))))]
 
 
-# What each backend's probe cannot report, by the field the full-probe schema asks for. Said in the row's `absent`
-# so the next-step ladder never asks this GPU for it (report/html.py next_step).
-_ABSENT = {
-  "Metal": {
-    "counters": "Metal reports no per-dispatch hardware counters without Instruments",
-    "isa.instruction_histogram": "Metal does not export the compiled AGX ISA",
-    "isa.vector_load_bits": "the compiled load width is not visible; the source loads are in kernel.source",
-    "resources.registers": "MTLComputePipelineState does not report registers",
-    "resources.scratch_bytes": "MTLComputePipelineState does not report scratch",
-  },
-  "CUDA": {
-    "counters": "the CUDA bridge reads no per-dispatch hardware counters (that is Nsight Compute's)",
-    "isa.instruction_histogram": "the cubin's SASS is not disassembled by BoltBeam",
-    "isa.vector_load_bits": "the compiled load width is not visible; the source loads are in kernel.source",
-    "resources.registers": "the CUDA bridge does not read cuFuncGetAttribute(NUM_REGS)",
-    "resources.scratch_bytes": "the CUDA bridge does not read cuFuncGetAttribute(LOCAL_SIZE_BYTES)",
-  },
-}
-
-
 def _absent(probe_quant:str, backend:str = "Metal") -> dict[str, str]:
-  words = _ABSENT.get(backend) or {k: f"{backend} is not read by BoltBeam's probe" for k in _ABSENT["Metal"]}
+  """What this backend's probe cannot report, by the field the full-probe schema asks for (target/vendors.py
+  probe_absent). Said in the row's `absent` so the next-step ladder never asks this GPU for it (report/html.py
+  next_step)."""
+  row = vendors.BY_BACKEND.get(backend)
+  words = (row and row.probe_absent) or {k: f"{backend} is not read by BoltBeam's probe" for k in vendors.PROBE_FIELDS}
   why = words["counters"]
   return {
     "latency_concurrency.memory_latency_ns": why, "latency_concurrency.active_waves": why,

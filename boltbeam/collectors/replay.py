@@ -150,10 +150,11 @@ def llama_weight_path(quant:str) -> str | None:
   return {"F16": "fp16", "BF16": "bf16"}.get(str(quant).upper()) if q.dequant_family == "float_passthrough" else "int8"
 
 
-def llama_attention_paths(binary:pathlib.Path) -> dict[str, int]:
-  """The attention kernels' instruction sites per matrix path, summed over the engine's libraries (no GPU)."""
+def llama_attention_paths(binary:pathlib.Path, device:dict[str, Any] | None = None) -> dict[str, int]:
+  """The attention kernels' instruction sites per matrix path, summed over the engine's libraries (no GPU);
+  device: the run's GPU, whose vendor and target say which code to read."""
   from boltbeam.workflow.tie_out import kind_of
-  found = pf.library_paths(pf.linked_libraries(binary.resolve()))
+  found = pf.library_paths(pf.linked_libraries(binary.resolve()), device=device)
   out: dict[str, int] = {}
   for name, paths in (found.get("kernels") or {}).items():
     if kind_of({"kernel": name}) == "attention":
@@ -247,13 +248,13 @@ def vllm_settings(argv:list[str], log:str) -> dict[str, Any]:
   return out
 
 
-def vllm_attention_paths(binary:pathlib.Path) -> dict[str, int]:
+def vllm_attention_paths(binary:pathlib.Path, device:dict[str, Any] | None = None) -> dict[str, int]:
   """The attention kernels' instruction sites per path in the vLLM package beside this python (no GPU)."""
   from boltbeam.workflow.tie_out import kind_of
   site = sorted(binary.expanduser().absolute().parent.parent.glob("lib/python*/site-packages"))  # the venv, not its symlinked python
   libs = [l for s in site for l in sorted(s.glob("vllm/*.so")) + sorted(s.glob("vllm/vllm_flash_attn/*.so"))]
   out: dict[str, int] = {}
-  for name, paths in (pf.library_paths(libs).get("kernels") or {}).items():
+  for name, paths in (pf.library_paths(libs, device=device).get("kernels") or {}).items():
     if kind_of({"kernel": name}) == "attention":
       for p, n in paths.items():
         out[p] = out.get(p, 0) + n
@@ -270,12 +271,31 @@ def vllm_env(argv:list[str]) -> dict[str, str]:
 REPLAY_ENGINES: dict[str, dict[str, Callable[..., Any]]] = {
   "llama.cpp": {"chat": llama_chat, "tokenize": llama_tokenize, "detokenize": llama_detokenize,
                 "settings": llama_settings, "weight_path": llama_weight_path, "attention_paths": llama_attention_paths,
-                "formats": lambda s, weights: pf.llama_formats(s.get("type_k"), weights), "bench_flags": llama_bench_flags},
+                "formats": lambda s, weights: pf.llama_formats(s.get("type_k"), weights), "bench_flags": llama_bench_flags,
+                # the one GPU a server command keeps to (split mode none: its main GPU); None, it may use them all
+                "gpus": lambda argv: [int(flag_value(argv, ("-mg", "--main-gpu")) or 0)]
+                if flag_value(argv, ("-sm", "--split-mode")) == "none" else None},
   "vllm": {"chat": vllm_chat, "tokenize": vllm_tokenize, "detokenize": vllm_detokenize, "settings": vllm_settings,
            "weight_path": lambda quant: {"NVFP4_G16": "nvfp4", "FP8_E4M3": "fp8", "F32": "fp32_fma"}.get(quant, "bf16"),
            "attention_paths": vllm_attention_paths, "formats": lambda s, weights: pf.vllm_formats(weights, {"kv_cache_dtype": s.get("type_k")}),
-           "env": vllm_env},
+           "env": vllm_env,
+           "gpus": lambda argv: [0] if int(flag_value(argv, ("-tp", "--tensor-parallel-size")) or 1) == 1 else None},
 }
+
+
+def server_gpus(run:pathlib.Path, provider:str, argv:list[str]) -> dict[str, Any]:
+  """Which of the machine's GPUs the user's server may run on, read from its own flags: BoltBeam never pins the
+  user's command. The run's telemetry samples GPU 0 alone, so it stands for the server only when that is the one GPU
+  the server uses; otherwise its clock scales no turn's peaks, and `why` says so."""
+  from boltbeam.workflow.layout import devices
+  hw = run / "hardware_profile.json"
+  n = len(devices(json.loads(hw.read_text()).get("gpu") or {})) if hw.is_file() else 1
+  used = engine(provider)["gpus"](argv)
+  if n <= 1 or used == [0]:
+    return {"machine_gpus": n, "server_gpus": used, "telemetry_covers": True}
+  where = f"may use any of the machine's {n} GPUs" if used is None else f"runs on GPU {used[0]}"
+  return {"machine_gpus": n, "server_gpus": used, "telemetry_covers": False,
+          "why": f"the server {where} and the telemetry samples GPU 0 alone, so its clock scales no turn's peaks"}
 
 
 def engine(provider:str) -> dict[str, Callable[..., Any]]:
@@ -382,11 +402,11 @@ def turn_row(i:int, got:dict[str, Any], prev:dict[str, Any] | None, t:dict[str, 
   """One turn's measures from the server's timings and the client's clock. needed: the tokens the turn added, what
   the prompt holds beyond what the cache could hold from the turn before (its prompt and its reply), and never less
   than the trace's own new tokens (a template that rewrites the history shortens the prompt); the whole prompt on the
-  first turn and after a compaction. recomputed: tokens processed beyond those."""
+  first turn; after compaction the server's retained prefix is still reused. recomputed: tokens processed beyond those."""
   tm, us = got["timings"], got["usage"]
   cache_n, prompt_n = int(tm.get("cache_n") or 0), int(tm.get("prompt_n") or 0)
   prefix = cache_n + prompt_n
-  held = (prev["prefix"] + prev["predicted_n"]) if prev and not t["compaction"] else 0
+  held = cache_n if t["compaction"] else (prev["prefix"] + prev["predicted_n"] if prev else 0)
   growth = min(prefix, max(prefix - held, t["new_tokens"] + t["tool_tokens"])) if held else prefix
   pred_n, pred_ms, prompt_ms = int(tm.get("predicted_n") or 0), float(tm.get("predicted_ms") or 0.0), float(tm.get("prompt_ms") or 0.0)
   ttft = (got["t_first"] - got["t_send"]) * 1e3
@@ -429,12 +449,13 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
             "sha256": _sha256(binary) if binary.is_file() else None, "model": model_of(argv),
             "request": REQUEST_WORDS, "attention_paths": None}
   try:
-    server["attention_paths"] = eng["attention_paths"](binary)
+    from boltbeam.workflow.common import run_gpu
+    server["attention_paths"] = eng["attention_paths"](binary, run_gpu(run))
   except Exception as exc:  # noqa: BLE001  no tool to read the code: attention is then bound by its bytes, said
     server["attention_paths_failed"] = str(exc)[-300:]
   rows: list[dict[str, Any]] = []
   say(f"replay: starting the server ({binary.name}) with the user's flags")
-  with gpu_telemetry.Telemetry(0, INTERVAL_S) as tele:
+  with gpu_telemetry.run_telemetry(run, 0, INTERVAL_S) as tele:
     env = eng["env"](argv) if "env" in eng else None
     with serve_argv(argv, log_path=run / SERVER_LOG, environ=env) as (url, command, load_s):
       server["command"] = command
@@ -482,7 +503,8 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
                           (f"custom worker {worker}, not an untraced reference" if worker else "untraced"),
          "contexts": [max(r["prefix"] for r in turns)], "rows": [*rows, server],
          "replay_trace": {"source": trace["source"], "turns": len(trace["turns"]), "sha256": trace["source"]["sha256"]},
-         "telemetry": tele.summary(), "interval_s": INTERVAL_S, "clock_policy": gpu_telemetry.clock_policy(0),
+         "telemetry": tele.summary(), "interval_s": INTERVAL_S, "clock_policy": gpu_telemetry.run_clock_policy(run),
+         "server_gpus": server_gpus(run, provider, argv),
          "measured": ["turn.prompt_ms, turn.predicted_ms (the server's timings)", "turn.ttft_ms, turn.wall_ms (the client's clock)",
                       "load.seconds"]}
   if token_evidence:
