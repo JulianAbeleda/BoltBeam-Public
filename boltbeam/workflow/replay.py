@@ -247,6 +247,7 @@ def wheres(run:pathlib.Path, trace:dict[str, Any]) -> list[dict[str, Any]]:
   from boltbeam.collectors import replay as rp
   cap = _read(run / rp.CAPTURE)
   turns = {r["i"]: r for r in trace.get("rows") or [] if r.get("scope") == "turn"}
+  paired = rp.pair_turns(trace, _read(run / rp.PROFILED))  # the verdict's instrument: the server itself, native and profiled
   out = []
   for t in cap.get("turns") or []:
     head = f"Turn {t['i']} ({t['name']})"
@@ -259,33 +260,37 @@ def wheres(run:pathlib.Path, trace:dict[str, Any]) -> list[dict[str, Any]]:
       continue
     from boltbeam.workflow.repeat_bands import find
     band = find(run, f"turn {t['i']}")
-    confirmation = tie.end_to_end(attr, t["server_ms"], "benchmark turn", band=band, reference="server prompt_ms")
+    pair = paired.get(t["i"]) or {"refused": "not checked: no profiled server arm covers this turn (timing_trace_profiled.json)"}
+    native = pair.get("native_ms") or t["server_ms"]
+    if "window" in pair:  # the llama-bench rows attribute; only the server's own two arms qualify
+      confirmation = tie.end_to_end({**attr, "measured_ms": pair["profiled_ms"], "timing_window": pair["window"]}, native, "server turn prompt",
+                                    band=band, reference="native server prompt_ms", reference_window=pair["window"])
+      confirmation["pairs"] = pair["pairs"]
+    else:
+      confirmation = {"confirms": None, "status": "not checked", "words": pair["refused"]}
     bench_ms = attr.get("measured_ms") or t.get("bench_ms")
-    bench_confirms = rp.ties_out(bench_ms, t["server_ms"], band)
-    validated = confirmation["confirms"] is True and bench_confirms is True
+    validated = confirmation["confirms"] is True  # the 5% capture-overhead rule (tie_out.MAX_OVERHEAD) with matched windows
     attr = {**attr, "end_to_end": confirmation}
-    w = tie.where_prefill_goes(attr, untraced_ms=t["server_ms"] if validated else None,
+    w = tie.where_prefill_goes(attr, untraced_ms=native if validated else None,
                               length=int(t["prompt_n"]), depth=int(t["cache_n"]), project_speedup=validated)
     if not w:
       out.append({"title": head, "status": "unmeasured", "words": f"{head}: unmeasured: the capture holds no attributed rows."})
       continue
-    above = t["server_ms"] - (attr.get("wall_ms") or 0.0)
+    above = native - (attr.get("wall_ms") or 0.0)
     w["title"] = f"{head}: llama-bench capture, {t['prompt_n']:,} tokens after {t['cache_n']:,}"
     w["status"] = "measured" if validated else "benchmark_only"
     w["server_validated"] = validated
     w["end_to_end"] = confirmation
-    w["bench_confirms"] = bench_confirms
     w["bench_ms"] = bench_ms
-    w["server_ms"] = t["server_ms"]
-    w["server_line"] = (f"Server prompt_ms {t['server_ms']:,.1f} ms; benchmark GPU first-to-last kernel "
+    w["server_ms"] = native
+    w["server_line"] = (f"Native server prompt_ms {native:,.1f} ms"
+                        + (f" and profiled {pair['profiled_ms']:,.1f} ms (means of {len(pair['pairs'])} pairs)" if "window" in pair else "")
+                        + f"; benchmark GPU first-to-last kernel "
                         f"{attr.get('wall_ms') or 0:,.1f} ms; difference {above:+,.1f} ms.")
     if bench_ms is not None:
-      sample = "last sample" if attr.get("measured_ms") is not None else "recorded sample"
-      w["server_line"] += f" Profiled llama-bench engine timer ({sample}) {bench_ms:,.1f} ms."
-    if attr.get("captured_ms") is not None:
-      w["server_line"] += f" Profiled engine timer (mean) {attr['captured_ms']:,.1f} ms."
+      w["server_line"] += f" Separate llama-bench engine timer {bench_ms:,.1f} ms (attribution only)."
     if not validated:
-      w["words"] = ("Benchmark only: not validated as the server's prompt path. "
+      w["words"] = ("Benchmark only: not validated as the server's prompt path (the server's native and profiled arms did not both match on one window within the capture-overhead ceiling). "
                     "The rows describe a separate llama-bench invocation, which does not reproduce server checkpointing "
                     "or scheduling. The cause of this run's server difference is not measured by these rows. "
                     + w["words"])

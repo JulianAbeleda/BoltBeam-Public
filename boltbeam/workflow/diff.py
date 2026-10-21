@@ -180,7 +180,7 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
           "model": _model(a, ma), "target": ma.get("target_id"), "workload": ma.get("workload"), "parts": parts,
           "band": f"the range of n before runs per row ({rb.RULE}), or not checked",
           "justifies_pin": bool(parts) and not any(p["pin_refused"] for p in parts),
-          "end_to_end_band": "measured repeat spread, or not checked"}
+          "end_to_end_band": f"capture overhead against the {tie.CEILING_PCT:g}% ceiling, or not checked"}
 
 
 def _timing_sha(run:pathlib.Path) -> str:

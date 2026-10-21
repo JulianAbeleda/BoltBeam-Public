@@ -17,6 +17,17 @@ class ReportInvalid(ValueError):
   pass
 
 
+def unmatched_window_failures(loss:dict, captures:list) -> list[str]:
+  """A decode capture whose window is not the native one (both from verified work evidence) is not comparable: no
+  overhead comparison, ceiling words or throughput gains."""
+  cap=next((c for c in captures if c.get('context')==loss.get('limit_context')),None) if loss.get('semantic_capture') else None
+  window=((cap or {}).get('reference_band') or {}).get('timing_window');w=loss.get('where_token_goes') or {}
+  if cap is None or (window and cap.get('timing_window')==window):return []
+  return [f'loss: native and captured timing windows differ or are unrecorded, yet the report shows {what}' for what,bad in
+          (('a capture comparison',loss.get('capture_comparison')),('capture-overhead ceiling words','capture-overhead ceiling' in json.dumps([w,loss.get('capture_comparison')])),
+           ('throughput gains',any(r.get('tok_s_gain') is not None for r in w.get('rows') or []))) if bad]
+
+
 def validate(run:Path, res:dict) -> dict:
   failures = []
   checks = 0
@@ -125,23 +136,31 @@ def validate(run:Path, res:dict) -> dict:
   if tie.get('lines') and tie.get('token_ms') is not None and not tie.get('refused'):
     equal('loss.tie_out.token_ms = sum(lines.ms)', tie['token_ms'], sum(r['ms'] for r in tie['lines']))
   where(loss.get('where_token_goes'), 'loss.where_token_goes')
+  from boltbeam.workflow.tie_out import check_end_to_end, overhead_words
+  def verdicts(node, path):
+    nonlocal checks
+    if isinstance(node, dict) and 'confirms' in node and (node['confirms'] is not None or node.get('status') == 'checked'):
+      checks += 1
+      failures.extend(f'{path}: {why}' for why in check_end_to_end(node))
+    for key, child in (node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()):
+      verdicts(child, f'{path}.{key}')
+  verdicts(loss, 'loss')
+  failures.extend(unmatched_window_failures(loss, captures))
   if comparison:=loss.get('capture_comparison'):
     rows=comparison.get('rows') or []
-    refs=[cap for cap in captures if cap.get('reference_band') and cap.get('context')==loss.get('limit_context')]
-    if len(rows)!=2 or len(refs)!=1:
-      failures.append('capture comparison lacks one reference and two accounting rows')
+    refs=[cap for cap in captures if cap.get('reference_band') and cap.get('host_step_ms') and cap.get('context')==loss.get('limit_context')]
+    if len(rows)!=2 or len(refs)!=1:failures.append('capture comparison lacks one reference and two accounting rows')
     else:
-      cap=refs[0];wall=cap['wall_ms']/len(cap['engine']['decode_steps']);median=cap['reference_band']['median_ms']
-      equal('capture comparison reference',rows[0]['now_ms'],median)
-      equal('capture comparison difference',rows[1]['now_ms'],wall-median)
-      equal('capture comparison sum',sum(r['now_ms'] for r in rows),wall)
-      equal('capture comparison captured',comparison['token_ms'],wall)
+      cap=refs[0];wall=cap['host_step_ms'];median=cap['reference_band']['median_ms']
+      for what,got,want in (('reference',rows[0]['now_ms'],median),('difference',rows[1]['now_ms'],wall-median),
+                            ('sum',sum(r['now_ms'] for r in rows),wall),('captured',comparison['token_ms'],wall)):
+        equal('capture comparison '+what,got,want)
+      if overhead_words(100*(wall-median)/median) not in comparison.get('words',''):failures.append('capture comparison words do not disclose the capture overhead derived from its reference')
       for row in rows:cell('capture comparison cell',row['cells'][0],f"{row['now_ms']:.6f}")
       cell('capture comparison total cell',comparison['sum_cells'][1],f'{wall:.6f}')
   if loss.get('semantic_capture'):
     w=loss.get('where_token_goes') or {}
-    if not verified_work:
-      failures.append('decode operation ledger has no verified work evidence')
+    if not verified_work:failures.append('decode operation ledger has no verified work evidence')
     if w.get('limit_ms') is not None:
       equal('decode headline limit = captured operation limits',ceiling.get('floor_ms'),w['limit_ms'])
   for point in (loss.get('prefill_curve') or {}).get('points') or []:
@@ -230,8 +249,8 @@ def require_emit(run:Path, res:dict, plan:dict) -> None:
       raise ReportInvalid('FAILED: emitted replay differs from the checked Run report')
     return
   if plan.get('kind')=='gap_report':
-    from boltbeam.workflow.optimization_plan import build
-    expected=build(run,res,plan.get('footer',{}).get('date',''))
+    from boltbeam.workflow.gameplan import gameplan
+    expected=gameplan(run,res,now=plan.get('footer',{}).get('date',''))
     if plan!=expected:
       raise ReportInvalid('FAILED: gap report differs from the validated Run evidence')
     return

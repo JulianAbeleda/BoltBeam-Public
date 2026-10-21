@@ -65,12 +65,21 @@ def argv(model:str, contexts:list[int], batches:list[int], *, tokens:int = TOKEN
   return out + (["--once", str(once)] if once else [])
 
 
+def decode_window_vllm(context:int, tokens:int, batch:int, engine:dict[str, Any]) -> dict[str, Any]:
+  """The window both arms of a vLLM decode timing record: host seconds, N-token call minus 1-token call (compare
+  llama_bench_decode.decode_window), from the engine fields either arm records. Contexts count the generated
+  tokens' positions as llama_bench_decode does (tokens 2..N); one sample is one long and one short call, and the number of samples is recorded beside it."""
+  return {"method": "long_minus_short", "long_tokens": tokens, "short_tokens": 1, "context_start": context + 2, "context_end": context + tokens,
+          "call_order": engine["call_order"], "warmup": engine["warm"], "batch": batch, "graph_mode": "eager" if engine["enforce_eager"] else "graphs",
+          "vllm_version": engine.get("build") or engine["vllm"], "seed": engine["seed"]}
+
+
 def whole_step(model:str, contexts:list[int], batches:list[int], *, log:pathlib.Path | None = None,
                tokens:int = TOKENS, settings:list[str] | None = None, graphs:str) -> list[dict[str, Any]]:
   """vLLM's decode at each context and batch; `graphs` names the backend's graph replay vLLM runs the step with
   (target/vendors.py terms)."""
   rows = ec.run_driver([*argv(model, contexts, batches, tokens=tokens), *(settings or [])], log=log, env={**ec.venv_env(python()), **RUN_ENV})
-  return [ec.point(r["context"], r["batch"], r["step_ms"], tokens=r["tokens"], engine=r.get("engine", {}),
+  return [ec.point(r["context"], r["batch"], r["step_ms"], tokens=r["tokens"], engine={**r["engine"], "timing_window": decode_window_vllm(r["context"], r["tokens"], r["batch"], r["engine"])},
                    step_samples_ms=r.get('step_samples_ms'),repeat_band_ms=r.get('repeat_band_ms'),source="vLLM offline LLM API, "
                    f"N tokens minus 1 token, {graphs} on, vLLM's own sampler") for r in rows]
 

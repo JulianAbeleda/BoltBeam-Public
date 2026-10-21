@@ -52,7 +52,7 @@ def scope(run:pathlib.Path) -> dict:
   whole = next((r for r in capture.get("rows", []) if r.get("scope") == "whole_step"), {})
   methods = {length: {k: attr[k] for k in ("method", "formats", "timing_window") if k in attr}
              for length, attr in capture.get("lengths", {}).items()}
-  return {"target": manifest.get("target_id"), "devices": sorted(machine.get("uuids") or []),
+  result = {"target": manifest.get("target_id"), "devices": sorted(machine.get("uuids") or []),
           "engine": run_provider(run), "build": providers.run_build(run) or (manifest.get("engine") or {}).get("build"),
           "model": {"path": manifest.get("model_path"), "profile": sha256_json(profile) if profile else None},
           "workload": manifest.get("workload"),
@@ -67,6 +67,30 @@ def scope(run:pathlib.Path) -> dict:
                        for r in timing.get("rows", []) if r.get("scope") == "whole_step" or r.get("prefill_ms")],
           "toolchain": {"versions": (manifest.get("toolchain") or {}).get("versions", {}),
                         "runtime": (manifest.get("toolchain") or {}).get("runtime", {})}}
+  from boltbeam.collectors.gpu_telemetry import measurement_clock_scope
+  if (clock := measurement_clock_scope(run)) is not None:
+    result["measurement_clock"] = clock
+  identities = {}
+  required = {key + "_sha256" for key in ("helper_source", "helper_binary", "collector_source",
+              "cupti_library", "nvperf_host", "nvperf_target", "symbol_decoder")}
+  for path in sorted(run.rglob("capture_identity.json")):
+    identity = read_json(path)
+    stable = {k: identity[k] for k in required | {"method", "cupti_version", "compiler_flags"} if k in identity}
+    valid = stable.get("method") == "cupti-hes" and required <= stable.keys() and all(
+        isinstance(stable[k], str) and len(stable[k]) == 64 and all(c in "0123456789abcdef" for c in stable[k])
+        for k in required)
+    valid = valid and type(stable.get("cupti_version")) is int and stable["cupti_version"] > 0
+    valid = valid and isinstance(stable.get("compiler_flags"), list) and bool(stable["compiler_flags"])
+    if not valid or not all(isinstance(flag, str) for flag in stable["compiler_flags"]):
+      raise ValueError("invalid retained capture identity")
+    identities[sha256_json(stable)] = stable
+  if identities:
+    result["capture_identities"] = [identities[k] for k in sorted(identities)]
+  hes = capture.get("capture", {}).get("method") == "cupti-hes" or any(attr.get("method") == "cupti-hes"
+        for attr in capture.get("lengths", {}).values())
+  if hes and not identities:
+    raise ValueError("cupti-hes requires retained capture identity")
+  return result
 
 
 def _date(run:pathlib.Path) -> str:
@@ -105,7 +129,7 @@ def calibrate(runs:list[pathlib.Path], fixed:dict | None = None) -> dict:
   sa = scope(a)
   for b in runs[1:]:
     sb = scope(b)
-    diff.refuse_unless_same([(k, sa[k], sb[k]) for k in sa])
+    diff.refuse_unless_same([(k, sa.get(k), sb.get(k)) for k in sa.keys() | sb.keys()])
   if not sa["model"]["profile"] or not sa["model"]["path"] or not sa["request"].get("contexts"):
     raise ValueError("repeat scope needs model profile, model path and requested contexts")
   if not sa["build"] or sa["build"] == "unknown":
@@ -165,7 +189,10 @@ def find(run:pathlib.Path, part:str, *, record:dict | None = None) -> dict | Non
     return None
   if record.get("schema") != SCHEMA:
     return None
-  setup = scope(run)
+  try:
+    setup = scope(run)
+  except (ValueError, TypeError, KeyError):
+    return None
   candidates = record.get("calibrations", [record])
   record = next((r for r in reversed(candidates) if r.get("scope") == setup), {})
   if not record:

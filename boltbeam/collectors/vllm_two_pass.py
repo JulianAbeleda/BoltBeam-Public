@@ -23,8 +23,16 @@ def reference_band(engine:dict, trace:dict) -> dict:
   if row.get('repeat_band_ms')!=interval or not math.isclose(row['wall_us']/1000,median,
       rel_tol=ACCOUNTING_RTOL,abs_tol=ACCOUNTING_ATOL):
     raise ValueError('untraced repeat band or median does not derive from recorded samples')
-  return {'low_ms':interval[0],'high_ms':interval[1],'median_ms':median,'repeats':len(samples),
+  return {'low_ms':interval[0],'high_ms':interval[1],'median_ms':median,'repeats':len(samples),'timing_window':actual.get('timing_window'),
           'basis':'paired N-token minus one-token calls in the same unprofiled engine'}
+
+
+def host_step(engine:dict) -> dict:
+  """The profiled arm's host-elapsed decode step and its window, from the recorded long and short call seconds
+  (the median of its one sample, as the native arm takes the median of its samples). {} for older records."""
+  from boltbeam.collectors.vllm_decode import decode_window_vllm
+  if engine.get('short_seconds') is None:return {}
+  return {'host_samples':engine['samples'],'host_step_ms':(engine['seconds']-engine['short_seconds'])*1000/(engine['tokens']-1),'timing_window':decode_window_vllm(engine['context'],engine['tokens'],engine['batch'],engine)}
 
 
 def join(path: Path, records: list[dict]) -> dict:

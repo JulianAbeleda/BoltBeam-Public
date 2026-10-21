@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import re
 import pathlib
@@ -30,6 +31,7 @@ from boltbeam.target import toolkits, vendors
 
 
 TELEMETRY = "telemetry.json"  # the GPU's clocks, power and temperature through one capture, beside it
+COMMAND = "command.json"  # the program's argv as run, before any profiler wraps it: what the capture is of
 
 
 class NoCapture(RuntimeError):
@@ -45,7 +47,7 @@ def _nsys_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str], f
   # profiler_range: the program marks its measured window itself (cudaProfilerStart/Stop); only that is captured
   flush = [f"--cuda-flush-interval={flush_ms}"] if flush_ms else []
   window = ["--capture-range=cudaProfilerApi", "--capture-range-end=stop"] if profiler_range else []
-  return [tool, "profile", "-t", "cuda,nvtx", "--cuda-graph-trace=node", *flush, *window, "--force-overwrite", "true",
+  return [tool, "profile", "-t", "cuda,nvtx", "--cuda-graph-trace=node", "--sample=none", "--cpuctxsw=none", *flush, *window, "--force-overwrite", "true",
           "-o", str(out / "capture"), *argv]
 
 
@@ -64,6 +66,9 @@ def busy_window(out:pathlib.Path, launches:list[dict[str, Any]]) -> list[float] 
   the program's load. nsys keeps its session start on the system's monotonic clock (systemClockNs) and the launch
   starts relative to it; None when the export does not hold it (another tool, an older nsys)."""
   import sqlite3
+  if launches and (pathlib.Path(out) / "cupti-clock.json").is_file():
+    from boltbeam.collectors import cupti_hes
+    return cupti_hes.window(pathlib.Path(out), launches)
   db = pathlib.Path(out) / "capture.sqlite"
   if not launches or not db.is_file():
     return None
@@ -78,7 +83,7 @@ def busy_window(out:pathlib.Path, launches:list[dict[str, Any]]) -> list[float] 
   return [zero + min(l["start_us"] for l in launches) / 1e6, zero + max(l["start_us"] + l["wall_us"] for l in launches) / 1e6]
 
 
-def read_nsys_csv(text:str) -> list[dict[str, Any]]:
+def read_nsys_csv(text:str, *, origin_ns:int = 0) -> list[dict[str, Any]]:
   """Kernel launches from `nsys stats --report cuda_gpu_trace` CSV. Memory copies have no grid and are skipped."""
   body = text[text.find("Start"):] if "Start" in text else text
   out = []
@@ -88,7 +93,7 @@ def read_nsys_csv(text:str) -> list[dict[str, Any]]:
       continue
     block = [row.get(k) for k in ("BlkX", "BlkY", "BlkZ")]
     out.append({"key": f"{row['Name']} grid={'x'.join(grid)} block={'x'.join(b or '' for b in block)}",
-                "wall_us": float(row["Duration (ns)"]) / 1000.0, "start_us": float(row["Start (ns)"]) / 1000.0,
+                "wall_us": float(row["Duration (ns)"]) / 1000.0, "start_us": (int(row["Start (ns)"]) - origin_ns) / 1000.0,
                 **({"stream": row["Strm"]} if row.get("Strm") else {})})
   return out
 
@@ -221,6 +226,11 @@ VENDORS: dict[str, tuple[str, Callable[[], str | None], Callable[..., list[str]]
 
 def plan(backend:str, find:Callable[[str], str | None] | None = None) -> dict[str, Any]:
   """The outside capture this machine has for a backend: {"method", "tool", "reason"}. tool None means none."""
+  if backend == "CUDA" and os.environ.get("BOLTBEAM_CUDA_CAPTURE") == "cupti-hes":
+    from boltbeam.collectors import cupti_hes
+    tool = find("cupti-hes") if find else cupti_hes.find()
+    return {"method": "cupti-hes", "tool": tool,
+            "reason": None if tool else "cupti-hes needs g++, CUDA headers, and BOLTBEAM_CUPTI_ROOT pointing to a CUDA 13 CUPTI SDK"}
   row = VENDORS.get(backend)
   if row is None:
     return {"method": None, "tool": None, "reason": f"BoltBeam knows no vendor capture for {backend}"}
@@ -244,9 +254,14 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   if p["tool"] is None:
     raise NoCapture(p["reason"])
   _, _, wrap, read, _ = VENDORS[backend]
+  if p["method"] == "cupti-hes":
+    from boltbeam.collectors import cupti_hes
+    wrap, read = cupti_hes.argv, cupti_hes.read
+  capture_env = dict(env or {})
   out = pathlib.Path(out).absolute()  # the tool's own output paths must survive the cwd below
   out.mkdir(parents=True, exist_ok=True)
   cwd = cwd or out
+  (out / COMMAND).write_text(json.dumps(argv))
   for stale in out.rglob("*_results.db"):  # rocprofv3's databases are read whole: a capture again starts clean
     stale.unlink()
   log = out / "capture.log"
@@ -256,15 +271,16 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   # a capture without them cannot say whether a difference between repeats was the clock
   tele = gpu_telemetry.opened(gpu_telemetry.source_for(device), 0) if device or backend == "CUDA" else None
   with open(log, "w") as fh, (tele or contextlib.nullcontext()):
-    wrapped = (wrap(p["tool"], argv, out, env or {}, flush_ms, *((True,) if profiler_range else ())) if backend in ("CUDA", "AMD")
-               else wrap(p["tool"], argv, out, env or {}))
+    wrapped = (wrap(p["tool"], argv, out, capture_env, flush_ms, *((True,) if profiler_range else ())) if backend in ("CUDA", "AMD")
+               else wrap(p["tool"], argv, out, capture_env))
     proc = subprocess.run(wrapped, stdout=fh, stderr=subprocess.STDOUT, timeout=timeout_s,
-                          cwd=cwd, env={**os.environ, **(env or {})})
-  import json
+                          cwd=cwd, env={**os.environ, **capture_env})
   if tele is not None:
     (out / TELEMETRY).write_text(json.dumps({"summary": tele.summary(), "samples": gpu_telemetry.compact(tele.samples)}) + "\n")
   if proc.returncode != 0:
     raise RuntimeError(f"{p['method']} exited {proc.returncode}: {log.read_text()[-300:]}")
+  if p["method"] == "cupti-hes":
+    cupti_hes.complete(out)
   launches = read(p["tool"], out)
   if not launches:
     raise RuntimeError(f"{p['method']} captured 0 kernels; the provider's GPU work was not visible to it")

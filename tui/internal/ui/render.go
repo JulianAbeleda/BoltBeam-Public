@@ -802,27 +802,20 @@ func sessionHeadline(res seam.Results) string {
 		*res.Ceiling.TokS, bar(ratio, 20), ratio*100)
 }
 
-// whereEndToEnd is the capture against its untraced time as one status line; the where words say it in full.
+// whereEndToEnd is the capture's qualification as one status line: the words Python wrote (workflow/tie_out.end_to_end),
+// which disclose the signed overhead against the capture-overhead ceiling and the repeat-noise comparison.
 func whereEndToEnd(e *seam.EndToEnd) string {
-	if e == nil || e.CapturedMs == nil || e.UntracedMs == nil {
+	if e == nil || e.Words == "" || e.CapturedMs == nil || e.UntracedMs == nil {
 		return ""
 	}
-	diff := ""
-	if e.DiffPct != nil {
-		diff = fmt.Sprintf(" (%+.1f%%)", *e.DiffPct)
-	}
-	reference := e.Reference
-	if reference == "" || reference == "untraced median" {
-		reference = "untraced"
-	}
-	head := fmt.Sprintf("End to end: captured %.1f ms, %s %.1f ms%s: ", *e.CapturedMs, reference, *e.UntracedMs, diff)
+	line := "End to end: " + e.Words + "."
 	switch {
 	case e.Confirms == nil:
-		return stMuted.Render(head+notChecked) + "\n"
+		return stMuted.Render(line) + "\n"
 	case *e.Confirms:
-		return stOK.Render(head+fmt.Sprintf("confirmed within the repeat band of ±%.3f ms.", deref0(e.BandMs))) + "\n"
+		return stOK.Render(line) + "\n"
 	}
-	return stWarn.Render(glyphWarn+" "+head+fmt.Sprintf("not confirmed: outside the repeat band of ±%.3f ms. The rows stand.", deref0(e.BandMs))) + "\n"
+	return stWarn.Render(glyphWarn+" "+line) + "\n"
 }
 
 // notChecked is a check with no repeat band for its setup; notCheckedHow, said once per page, is how to get one, so
@@ -833,13 +826,6 @@ const (
 		"a row then reads moved by chance 2/(n+1) of the time): run the same setup n times, then " +
 		"`python -m boltbeam.workflow.screen repeat-bands --runs A B ... --out bands.json`, and give later runs `--bands bands.json`."
 )
-
-func deref0(p *float64) float64 {
-	if p == nil {
-		return 0
-	}
-	return *p
-}
 
 // tokenEndToEnd is a decode capture's token against the untraced reference, with the repeat check and, when the two
 // were taken at different contexts, that fact: they are then not one setup.
@@ -1731,13 +1717,6 @@ func wrapText(text string, width int) string {
 		} else {
 			lines[i] = ansi.Wordwrap(l, width, " ")
 		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func clip(lines []string, width int) string {
-	for i, l := range lines {
-		lines[i] = truncate(l, width)
 	}
 	return strings.Join(lines, "\n")
 }

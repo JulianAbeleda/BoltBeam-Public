@@ -57,17 +57,18 @@ func TestDecodeHostQualificationOverridesKernelRepeatBand(t *testing.T) {
 	raw := `{"context":2065,"untraced_context":2065,"token_ms":10.5,"untraced_ms":10,
 	 "token_source":"the captured long-minus-short elapsed estimate per token",
 	 "band":"repeat band ±1 ms","timing_match":{"matches":true},
-	 "end_to_end":{"reference":"untraced reference","captured_ms":10.5,"untraced_ms":10,
-	 "diff_pct":5,"band_ms":0.2,"confirms":false}}`
+	 "end_to_end":{"reference":"untraced reference","captured_ms":10.7,"untraced_ms":10,
+	 "diff_pct":7,"band_ms":0.2,"confirms":false,"status":"checked",
+	 "words":"capture +7.0% over native, above the 5% capture-overhead ceiling (within repeat noise: no, band ±0.200000 ms). The rows stand, but this capture does not qualify the token end to end"}}`
 	if err := json.Unmarshal([]byte(raw), &tie); err != nil {
 		t.Fatal(err)
 	}
 	got := plain(tokenEndToEnd(tie))
-	if !strings.Contains(got, "captured 10.5 ms, untraced reference 10.0 ms (+5.0%)") ||
-		!strings.Contains(got, "not confirmed: outside the repeat band of ±0.200 ms") || strings.Contains(got, "±1 ms") {
+	if !strings.Contains(got, "capture +7.0% over native, above the 5% capture-overhead ceiling") ||
+		!strings.Contains(got, "within repeat noise: no, band ±0.200000 ms") || strings.Contains(got, "±1 ms") {
 		t.Fatalf("host timing must override kernel reconciliation: %s", got)
 	}
-	if body := plain(tieOutBody(&tie)); !strings.Contains(body, "not confirmed: outside the repeat band") {
+	if body := plain(tieOutBody(&tie)); !strings.Contains(body, "above the 5% capture-overhead ceiling") {
 		t.Fatalf("differential capture must display its host verdict: %s", body)
 	}
 	tie.TimingMatch.Matches, tie.TimingMatch.Words = false, "windows differ"
@@ -102,21 +103,29 @@ func TestDecodeTimingPreservesFractionalContextsAndWindowRefusal(t *testing.T) {
 	}
 }
 
-// Prefill and replay: the end-to-end check is one status line under the where table, in its three states.
+// Prefill and replay: the capture's qualification is one status line under the where table. It always says the signed
+// overhead against the ceiling (a faster capture shows its sign), never the repeat band as a gate.
 func TestWhereEndToEndStates(t *testing.T) {
-	e := seam.EndToEnd{CapturedMs: fp(112.2), UntracedMs: fp(116.1), DiffPct: fp(-3.4), BandMs: fp(0.195)}
+	e := seam.EndToEnd{CapturedMs: fp(101.6), UntracedMs: fp(100), DiffPct: fp(1.6)}
 	cases := []struct {
 		confirms *bool
+		words    string
 		want     string
-	}{{nil, "not checked: no repeat band"}, {bp(true), "confirmed within the repeat band of ±0.195 ms"},
-		{bp(false), "not confirmed: outside the repeat band of ±0.195 ms. The rows stand."}}
+	}{{bp(true), "capture +1.6% over native, within the 5% capture-overhead ceiling (within repeat noise: no, band ±0.195000 ms)",
+		"capture +1.6% over native, within the 5% capture-overhead ceiling"},
+		{bp(true), "capture -0.1% under native, within the 5% capture-overhead ceiling", "capture -0.1% under native, within the 5%"},
+		{bp(false), "capture +7.0% over native, above the 5% capture-overhead ceiling", "capture +7.0% over native, above the 5%"},
+		{nil, "not checked: native and captured timing windows differ or are unrecorded", "not checked: native and captured timing windows differ"}}
 	for _, c := range cases {
-		e.Confirms = c.confirms
-		if got := plain(whereEndToEnd(&e)); !strings.Contains(got, "captured 112.2 ms, untraced 116.1 ms (-3.4%)") || !strings.Contains(got, c.want) {
+		e.Confirms, e.Words = c.confirms, c.words
+		if got := plain(whereEndToEnd(&e)); !strings.Contains(got, "End to end: ") || !strings.Contains(got, c.want) {
 			t.Errorf("want %q in %q", c.want, got)
 		}
 	}
-	if whereEndToEnd(nil) != "" {
+	if strings.Contains(plain(whereEndToEnd(&e)), "confirmed") {
+		t.Error("the repeat band no longer confirms anything")
+	}
+	if whereEndToEnd(nil) != "" || whereEndToEnd(&seam.EndToEnd{}) != "" {
 		t.Error("no check, no line")
 	}
 }

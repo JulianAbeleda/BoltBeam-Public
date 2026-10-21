@@ -248,3 +248,32 @@ func TestOptimizationPlanUsesSharedBorderedTables(t *testing.T) {
 		}
 	}
 }
+
+func TestControlledTimingScopeVisibleOnRunAndEmitAtBothWidths(t *testing.T) {
+	run := measuredRun(t)
+	for _, scope := range []string{
+		"Timing scope: SM clock requested externally at 2100 MHz; observed peaks native 2092 MHz, captured 2077 MHz. Timing bands apply to this clock setup.",
+		"Timing scope: unqualified; clock observations are incomplete or differ from the requested setup.",
+	} {
+		run.Results.Loss.TimingScope = &scope
+		for _, gap := range []bool{false, true} {
+			emitted := &seam.Emitted{Plan: seam.Gameplan{TimingScope: &scope}, Markdown: scope + "\n\n# Advice\n"}
+			if gap {
+				emitted.Plan.Kind = "gap_report"
+				emitted.Plan.Tables = []seam.Where{{Title: "Measured work"}}
+				emitted.Plan.Presentation.Summary = "# Advice"
+			}
+			for _, width := range []int{80, 110} {
+				for name, body := range map[string]string{"Run": resultsBody(Facts{Run: run}, width), "Emit": emitBody(Facts{Plan: emitted}, width)} {
+					flat := strings.Join(strings.Fields(ansi.Strip(body)), " ")
+					if !strings.Contains(flat, scope) {
+						t.Fatalf("%s width %d missing clock disclosure: %s", name, width, body)
+					}
+					if strings.Count(flat, "Timing scope:") != 1 {
+						t.Fatalf("duplicated clock disclosure: %s", body)
+					}
+				}
+			}
+		}
+	}
+}

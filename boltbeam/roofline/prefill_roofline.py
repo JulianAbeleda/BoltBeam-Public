@@ -4,6 +4,7 @@ import copy
 from typing import Any
 from boltbeam.math.roofline import effective_gbs, floor_us
 from boltbeam.target.targets import need_peak_gbs
+from boltbeam.trace.substrate_compare import _context, _whole
 
 
 def _f(value:Any) -> float | None:
@@ -11,27 +12,6 @@ def _f(value:Any) -> float | None:
     return None if value is None else float(value)
   except (TypeError, ValueError):
     return None
-
-
-def _context(trace:dict[str, Any], requested:int | None) -> int | None:
-  if requested is not None:
-    return requested
-  for c in trace.get("contexts", []):
-    if c is not None:
-      return int(c)
-  for row in trace.get("rows", []):
-    if row.get("context") is not None:
-      return int(row["context"])
-  return None
-
-
-def _whole(trace:dict[str, Any], context:int | None) -> dict[str, Any]:
-  for row in trace.get("rows", []):
-    if row.get("scope") != "whole_step":
-      continue
-    if context is None or row.get("context") == context:
-      return row
-  return {}
 
 
 def _kernel_rows(trace:dict[str, Any], context:int | None) -> list[dict[str, Any]]:

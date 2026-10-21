@@ -449,6 +449,13 @@ def _role_block(files:_Files, r:dict[str, Any], i:int, est:dict[str, Any] | None
 
 
 def gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None) -> dict[str, Any]:
+  plan = _gameplan(run, res, now=now)
+  if words := (res.get("loss") or {}).get("timing_scope"):
+    plan["timing_scope"] = words
+  return plan
+
+
+def _gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None) -> dict[str, Any]:
   """The plan for one run from the seam's results (workflow/screen.py results) and the run's files. Refused when the
   run holds neither a per-role table nor a measured work breakdown."""
   loss = res.get("loss") or {}
@@ -527,6 +534,11 @@ def _num(v:Any, fmt:str) -> str:
 
 
 def to_markdown(plan:dict[str, Any]) -> str:
+  prefix = plan.get("timing_scope")
+  return (prefix + "\n\n" if prefix else "") + _to_markdown(plan)
+
+
+def _to_markdown(plan:dict[str, Any]) -> str:
   from boltbeam.workflow.screen import where_lines
   if plan.get('kind')=='replay_report':
     from boltbeam.workflow.replay import lines

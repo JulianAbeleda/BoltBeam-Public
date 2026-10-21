@@ -109,16 +109,17 @@ def make_tokens(run:pathlib.Path, model:str, count:int) -> dict[str, Any]:
 def reference(run:pathlib.Path, model:str, ids:list[int], depth:int, warm:bool) -> dict[str, Any]:
   """The reference at one depth, from a server sized for it with its prompt cache off per request: the C + TURN
   tokens cold and their next tokens; the same through the append path (C cached, then the turn appended: the
-  self-check, a second run on the same tokens); with warm, the same again with the cache on."""
+  self-check, a second run on the same tokens); with warm, the same again with the cache on.
+  Automatic server checkpoints are disabled: their tail splits change the benchmark's batching."""
   from boltbeam.adapters.llama_server_control import serve
   with serve(executable=_server(run), model=model, context_size=depth + TURN + CHECK + 64,
-             log_path=run / SERVER_LOG, extra=["--parallel", "1"]) as (url, command):
+             log_path=run / SERVER_LOG, extra=["--parallel", "1", "--ctx-checkpoints", "0"]) as (url, command):
     began = time.monotonic()
     cold = completion(url, ids[:depth + TURN], CHECK + 1, cache=False)
     fill_s = time.monotonic() - began
-    completion(url, ids[:depth], 1, cache=True)
+    prefix = completion(url, ids[:depth], 1, cache=False)
     appended = completion(url, ids[:depth + TURN], CHECK + 1, cache=True)
-    row = {"cold": cold, "appended": appended, "self": agree(cold, appended), "command": command, "cold_s": round(fill_s, 1)}
+    row = {"cold": cold, "prefix": prefix, "appended": appended, "self": agree(cold, appended), "command": command, "cold_s": round(fill_s, 1)}
     if warm:
       row["warm"] = completion(url, ids[:depth + TURN], 1, cache=True)
   path = run / REFERENCE
@@ -162,6 +163,7 @@ def llama_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) 
   cmd = pf.llama_argv(bench, model, TURN, pf.REPS, depth=depth, gen=DECODE, extra=pin)
   with gpu_telemetry.run_telemetry(run, 0) as tele:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200, cwd=run, env={**os.environ, **env})
+  pf.retain_native(run, f"{TURN}-at-{depth}", cmd, proc.stdout)
   if proc.returncode != 0:
     raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
   row, gen = pf.llama_row(proc.stdout), pf.llama_row(proc.stdout, "n_gen")
@@ -367,7 +369,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
       continue
     check = (agree(r["cold"], got["check"]) if got.get("check") else
              {**r["self"], "kind": "llama.cpp against itself: the append path (depth cached, turn appended) against the "
-                                   "same tokens cold, two runs"} if provider == "llama.cpp" else None)
+                                   "same tokens cold, with automatic checkpoints off to match benchmark batching"} if provider == "llama.cpp" else None)
     if check and "kind" not in check:
       check["kind"] = "against llama.cpp, an independent engine, on the same tokens"
     tele = got["telemetry"]
@@ -385,7 +387,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
         rows.append({"scope": "warm", "workload": "session", "context": c, "turn_tokens": TURN, "ms": w["s"] * 1e3,
                      "computed": sum(x for x in w["widths"] if isinstance(x, int)),
                      "source": ("the same tokens sent again with the engine's prefix cache on: "
-                                + ("llama.cpp server, its own prompt timing" if provider == "llama.cpp" else
+                                + ("llama.cpp server, its own prompt timing, automatic checkpoints off" if provider == "llama.cpp" else
                                    "the fork's generate() over what its cache held, first forward call to first token"))})
   say(f"compaction: a {SUMMARY}-token summary on an empty cache: {provider}")
   try:

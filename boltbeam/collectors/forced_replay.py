@@ -211,6 +211,10 @@ def review(manifest, *, say=lambda _:None):
   if resources is not None:
     from boltbeam.collectors.replay_resource_roofline import estimate
     work=resources.result(activities.provenance());calibration=None
+    if source:=manifest.get("resource_clock_scope"):
+      from boltbeam.collectors.replay_resource_roofline import clock_scope_from_capture
+      work["clock_scope"]=clock_scope_from_capture(source,activities)
+      work["clock_scope_source_sha256"]=source["sha256"]
     if source:=manifest.get('resource_calibration'):
       raw=Path(source['file']).read_bytes()
       if hashlib.sha256(raw).hexdigest()!=source['sha256']:raise ValueError('resource calibration digest differs')
@@ -243,6 +247,8 @@ def collect(run, *, provider='vllm', say=lambda _:None):
   run=Path(run).resolve();facts=load_manifest(run);backend=get_target(facts['target_id']).backend
   if provider!='vllm' or backend not in ('CUDA','AMD'):
     raise ValueError('forced replay requires vLLM on CUDA or AMD')
+  if vendor_capture.plan(backend)['method']=='cupti-hes':
+    raise ValueError('forced replay needs semantic/API tracing; cupti-hes captures kernel timing only')
   nsys=vendor_capture.plan(backend)['tool']  # rocprofv3 on AMD: one rocpd database, cut into nsys's files below
   if not nsys:raise ValueError('forced replay needs '+vendor_capture.plan(backend)['reason'])
   root=run/'forced_replay';root.mkdir(exist_ok=False)

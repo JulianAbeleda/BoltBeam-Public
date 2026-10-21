@@ -33,6 +33,7 @@ from boltbeam.workflow.common import run_gpu
 
 TRACE = "prefill_trace.json"
 RAW = "kernel_compare/prefill_capture"
+NATIVE_RAW = "kernel_compare/prefill_native"  # the untraced llama-bench commands and stdout, by prompt name
 REPS = 3
 NOT_BATCHED = "not batched prefill: the engine reads the prompt one token at a time"
 DRIVER = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "tinygrad_prefill_profile.py"
@@ -103,6 +104,14 @@ def llama_row(text:str, field:str = "n_prompt") -> dict[str, Any]:
   raise RuntimeError(f"llama-bench printed no row with {field}")
 
 
+def retain_native(run:pathlib.Path, name:str, cmd:list[str], stdout:str) -> None:
+  """Keep the untraced llama-bench command and its own output, so the samples can be recomputed from them."""
+  folder = run / NATIVE_RAW
+  folder.mkdir(parents=True, exist_ok=True)
+  (folder / f"{name}.command.json").write_text(json.dumps(cmd))
+  (folder / f"{name}.stdout").write_text(stdout)
+
+
 def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> dict[str, Any]:
   bench = _bench(run)
   from boltbeam.collectors.capture_settings import llama_flags
@@ -111,6 +120,7 @@ def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> d
   cmd = llama_argv(bench, model, length, REPS, extra=[*pin, *llama_flags(run, length)])
   with gpu_telemetry.run_telemetry(run, device) as tele:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, cwd=run, env={**os.environ, **env})
+  retain_native(run, str(length), cmd, proc.stdout)
   if proc.returncode != 0:
     raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
   row = llama_row(proc.stdout)

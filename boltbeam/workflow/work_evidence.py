@@ -121,9 +121,10 @@ def verify(run: Path, capture: dict, *, require_limits: bool = False) -> None:
     same_capture(facts['engine'],capture.get('engine') or {})
     if set(l.get('capture_step') for l in launches)!=set(facts['engine']['decode_steps']):
       raise ValueError('decode horizon launches do not cover every recorded step')
-    from boltbeam.collectors.vllm_two_pass import reference_band
+    from boltbeam.collectors.vllm_two_pass import reference_band,host_step
     if capture.get('reference_band')!=reference_band(facts['engine'],sources.get('timing_trace.json') or {}):
       raise ValueError('decode reference band differs from hashed untraced evidence')
+    if {k:capture[k] for k in ('host_samples','host_step_ms','timing_window') if k in capture}!=host_step(facts['engine']):raise ValueError('decode host step or window differs from engine seconds')
   if facts['engine'].get('replay') is not None:
     from boltbeam.collectors.replay_semantics import capture_identity
     from boltbeam.collectors.cuda_memory import same_capture

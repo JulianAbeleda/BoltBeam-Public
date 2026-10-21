@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping
 
-from boltbeam.search.epochs.epoch_model import BLOCKED, PASS, UNKNOWN, EpochAnswer, EpochEvent, EpochReport, mmq_epoch_ids
+from boltbeam.search.epochs.epoch_model import BLOCKED, PASS, UNKNOWN, EpochAnswer, EpochEvent, EpochReport, _as_tuple, mmq_epoch_ids
 from boltbeam.search.mmq.mmq_epoch_oracle import llama_mmq_epoch_sequence
 
 
@@ -241,16 +241,6 @@ def _mapping_or_none(value: Any) -> Mapping[str, Any] | None:
 
 def _normalize_workload(workload: Mapping[str, Any]) -> dict[str, Any]:
   return dict(workload)
-
-
-def _as_tuple(value: Any) -> tuple[Any, ...]:
-  if value in (None, ""):
-    return ()
-  if isinstance(value, tuple):
-    return value
-  if isinstance(value, list):
-    return tuple(value)
-  return (value,)
 
 
 __all__ = ["amd_isa_manifest_epoch_report"]

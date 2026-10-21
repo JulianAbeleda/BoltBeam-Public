@@ -60,9 +60,10 @@ def attribute(run:Path, raw:Path, *, peaks:dict, bandwidth_gbs:float,
   digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
   sources=[raw/name for name in ('semantic_work.json','instruction_paths.json')]
   if engine.get('decode_steps'):
-    from boltbeam.collectors.vllm_two_pass import reference_band
+    from boltbeam.collectors.vllm_two_pass import reference_band,host_step
     sources.append(run/'timing_trace.json')
     attr['reference_band']=reference_band(engine,json.loads(sources[-1].read_text()))
+    attr.update(host_step(engine))
   if any((l.get('semantic_work') or {}).get('requires_memory_evidence') for l in facts['launches']):
     sources.append(raw/'memory.json')
   if replay is not None:sources.append(raw/'replay_evidence.json')

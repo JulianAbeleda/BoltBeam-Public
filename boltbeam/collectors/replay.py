@@ -36,11 +36,15 @@ from typing import Any, Callable
 
 from boltbeam.collectors import gpu_telemetry
 from boltbeam.collectors import prefill as pf
+from boltbeam.collectors.replay_overhead import ORDER, PAIRS
 from boltbeam.trace import replay_trace as rt
 
 SERVER = "replay_server.json"  # the user's server command as given, and what the run read back from it
 SERVER_LOG = "replay_server.log"
 CAPTURE = "replay_capture.json"
+PROFILED = "timing_trace_profiled.json"  # the same server under the profiler: the arms qualification pairs against the native ones
+ESTIMATOR_VERSION = 1  # of server_window and the pairing below
+PROFILE_FLUSH_MS = 1000  # a server its parent stops with a signal flushes the profiler's buffers on a timer (vendor_capture.capture)
 INTERVAL_S = 0.01  # a 150 ms turn at the default 50 ms would hold three samples
 HEADROOM = 64  # tokens left free under the server's context: the replay stops before a turn would need them
 DECODE_TOKENS = 64  # decode tokens in the deep turn's decode capture
@@ -153,8 +157,11 @@ def llama_weight_path(quant:str) -> str | None:
 def llama_attention_paths(binary:pathlib.Path, device:dict[str, Any] | None = None) -> dict[str, int]:
   """The attention kernels' instruction sites per matrix path, summed over the engine's libraries (no GPU);
   device: the run's GPU, whose vendor and target say which code to read."""
+  return _attention(pf.library_paths(pf.linked_libraries(binary.resolve()), device=device))
+
+
+def _attention(found:dict[str, Any]) -> dict[str, int]:
   from boltbeam.workflow.tie_out import kind_of
-  found = pf.library_paths(pf.linked_libraries(binary.resolve()), device=device)
   out: dict[str, int] = {}
   for name, paths in (found.get("kernels") or {}).items():
     if kind_of({"kernel": name}) == "attention":
@@ -250,15 +257,9 @@ def vllm_settings(argv:list[str], log:str) -> dict[str, Any]:
 
 def vllm_attention_paths(binary:pathlib.Path, device:dict[str, Any] | None = None) -> dict[str, int]:
   """The attention kernels' instruction sites per path in the vLLM package beside this python (no GPU)."""
-  from boltbeam.workflow.tie_out import kind_of
   site = sorted(binary.expanduser().absolute().parent.parent.glob("lib/python*/site-packages"))  # the venv, not its symlinked python
   libs = [l for s in site for l in sorted(s.glob("vllm/*.so")) + sorted(s.glob("vllm/vllm_flash_attn/*.so"))]
-  out: dict[str, int] = {}
-  for name, paths in (pf.library_paths(libs, device=device).get("kernels") or {}).items():
-    if kind_of({"kernel": name}) == "attention":
-      for p, n in paths.items():
-        out[p] = out.get(p, 0) + n
-  return out
+  return _attention(pf.library_paths(libs, device=device))
 
 
 def vllm_env(argv:list[str]) -> dict[str, str]:
@@ -314,7 +315,7 @@ def server_argv(text:str) -> list[str]:
   return argv
 
 
-def stage(run:pathlib.Path, trace:str | None, argv_text:str | None) -> int:
+def stage(run:pathlib.Path, trace:str | None, argv_text:str | None, pairs:int | None = None) -> int:
   """The run's replay inputs: the trace as read (a trace file, or a shape's name; none: the default shape), counts
   only, and the server command; returns the prefix the trace reaches, the run's context."""
   path = pathlib.Path(trace).expanduser() if trace else None
@@ -322,7 +323,7 @@ def stage(run:pathlib.Path, trace:str | None, argv_text:str | None) -> int:
   if not argv_text:
     raise ValueError("a replay needs the server command it replays on (--server-argv)")
   rt.write(trace, run / rt.FILE)
-  (run / SERVER).write_text(json.dumps({"argv": server_argv(argv_text)}, indent=1) + "\n")
+  (run / SERVER).write_text(json.dumps({"argv": server_argv(argv_text), **({"pairs": pairs} if pairs else {})}, indent=1) + "\n")
   return rt.prefix_tokens(trace)
 
 
@@ -426,13 +427,85 @@ def turn_row(i:int, got:dict[str, Any], prev:dict[str, Any] | None, t:dict[str, 
           **({"speculative": tm["speculative"]} if tm.get("speculative") else {})}
 
 
+def server_window(i:int, prompt_n:int, cache_n:int, server:dict[str, Any]) -> dict[str, Any]:
+  """What one turn's server prompt_ms measured: the same turn, the same tokens processed after the same cache, on the
+  same build and command. Two arms are comparable on a turn only when these are equal."""
+  return {"method": "server_turn_prompt_ms", "turn": i, "prompt_n": prompt_n, "cache_n": cache_n,
+          "server_build": server.get("version"), "argv_sha256": hashlib.sha256(json.dumps(server["argv"]).encode()).hexdigest(),
+          "estimator_version": ESTIMATOR_VERSION}
+
+
+def _arm(run:pathlib.Path, provider:str, server:dict[str, Any], trace:dict[str, Any], tele, say:Callable[[str], None], *,
+         profiled:pathlib.Path | None = None, evidence:list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], str]:
+  """One server start and the whole trace through it: the load row and the turn rows, each turn with its window, and
+  the document set's source. profiled: the folder to run the same command under the target's vendor profiler in."""
+  from boltbeam.adapters.llama_server_control import serve_argv
+  from boltbeam.collectors import vendor_capture
+  from boltbeam.target.targets import get_target
+  from boltbeam.workflow.common import load_manifest
+  eng, argv, rows = engine(provider), server["argv"], []
+  env = eng["env"](argv) if "env" in eng else None
+  if profiled:  # the profiler the llama.cpp captures use (vendor_capture), around the server, nothing else changed
+    backend, profiled = get_target(load_manifest(run).get("target_id")).backend, profiled.absolute()
+    profiled.mkdir(parents=True, exist_ok=True)
+    plan = vendor_capture.plan(backend)
+    if plan["tool"] is None:
+      raise vendor_capture.NoCapture(plan["reason"])
+    argv = vendor_capture.VENDORS[backend][2](plan["tool"], argv, profiled, dict(env or {}), PROFILE_FLUSH_MS)
+  say(f"replay: starting the server ({pathlib.Path(argv[0]).name}) with the user's flags" + (" under the profiler" if profiled else ""))
+  log = run / (SERVER_LOG if not profiled else "replay_server_profiled.log")
+  with serve_argv(argv, log_path=log, environ=env, stop_timeout_s=300.0 if profiled else 5.0) as (url, command, load_s):
+    text = log.read_text(errors="replace")
+    settings = eng["settings"](command, text)
+    if profiled:
+      server["profiled_command"] = command
+    else:
+      server["command"], server["settings"] = command, settings
+      server.update(build_metadata(provider, server.get("version"), text))
+    rows.append({"scope": "load", "workload": "replay", "seconds": round(load_s, 2),
+                 "source": "from the server's start to /health answering 200"})
+    words = Words(eng, url)
+    n_ctx = int(settings.get("n_ctx") or 0)
+    system = {"role": "system", "content": words.take(trace["system_tokens"])}
+    messages = [system]
+    prev, t0 = None, time.monotonic()
+    for t in trace["turns"]:
+      if t["compaction"]:
+        messages = [system]
+      need = (prev["prefix"] + prev["predicted_n"] if prev and not t["compaction"] else 0) + t["new_tokens"] + \
+             t["tool_tokens"] + t["reply_tokens"] + HEADROOM
+      if n_ctx and need > n_ctx:
+        rows.append({"scope": "stopped", "workload": "replay", "i": t["i"],
+                     "reason": f"turn {t['i']} needs about {need:,} tokens; the server's context is {n_ctx:,}"})
+        break
+      messages.append({"role": "user", "content": words.take(t["new_tokens"]) + words.take(t["tool_tokens"])})
+      say(f"replay: turn {t['i']} of {len(trace['turns'])}")
+      try:
+        got = eng["chat"](url, messages, t["reply_tokens"], **({"token_evidence":True} if evidence is not None else {}))
+      except Exception as exc:  # noqa: BLE001  a turn the server refused ends the replay with its reason
+        if evidence is not None:raise  # incomplete identity must not look like a valid shortened capture
+        rows.append({"scope": "stopped", "workload": "replay", "i": t["i"], "reason": f"the server failed: {str(exc)[-300:]}"})
+        break
+      messages.append({"role": "assistant", "content": got["text"]})
+      prev = turn_row(t["i"], got, prev, t, tele, t0)
+      prev["server_window"] = server_window(t["i"], prev["prompt_n"], prev["cache_n"], server)
+      rows.append(prev)
+      if evidence is not None:
+        evidence.append({"turn":t["i"],**got["response"]})
+  if profiled:  # the server is stopped: the profiler has written its report; the timing stands without the kernels, said
+    try: server["profiled_kernels"] = len(vendor_capture.VENDORS[backend][3](plan["tool"], profiled))
+    except Exception as exc: server["profiled_kernels_failed"] = str(exc)[-300:]  # noqa: BLE001
+  return rows, words.source
+
+
 def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None,
             token_evidence:bool = False) -> pathlib.Path:
-  """The trace played on the user's server: timing_trace.json with a load row, a server row and a row per turn."""
+  """The trace played on the user's server: timing_trace.json with a load row, a server row and a row per turn.
+  llama.cpp: PAIRS pairs of (native, profiled) arms, in ORDER (NP, NP, PN, PN), every arm a fresh server on the same
+  command; the profiled arms are timing_trace_profiled.json. Each arm's turns hold their windows (server_window)."""
   if (run/'forced_replay_request.json').exists():
     from boltbeam.collectors.forced_replay import collect
     return collect(run,provider=provider,say=say)
-  from boltbeam.adapters.llama_server_control import serve_argv
   from boltbeam.core.canonical import pretty_json
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
   from boltbeam.workflow.common import load_manifest
@@ -443,7 +516,9 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   response_path=run / "replay_responses.json"
   response_path.unlink(missing_ok=True)
   trace = rt.read(run / rt.FILE)
-  argv = json.loads((run / SERVER).read_text())["argv"]
+  staged = json.loads((run / SERVER).read_text())
+  argv = staged["argv"]
+  pairs = int(staged.get("pairs") or PAIRS) if provider == "llama.cpp" else 1
   binary = pathlib.Path(argv[0]).expanduser()
   server = {"scope": "server", "workload": "replay", "argv": argv, "binary": str(binary), "version": _version(binary),
             "sha256": _sha256(binary) if binary.is_file() else None, "model": model_of(argv),
@@ -453,55 +528,29 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
     server["attention_paths"] = eng["attention_paths"](binary, run_gpu(run))
   except Exception as exc:  # noqa: BLE001  no tool to read the code: attention is then bound by its bytes, said
     server["attention_paths_failed"] = str(exc)[-300:]
+  arms: dict[str, list[dict[str, Any]]] = {"native": [], "profiled": []}
   rows: list[dict[str, Any]] = []
-  say(f"replay: starting the server ({binary.name}) with the user's flags")
+  order = [ORDER[k % len(ORDER)] for k in range(pairs)] if provider == "llama.cpp" else ["N"]
   with gpu_telemetry.run_telemetry(run, 0, INTERVAL_S) as tele:
-    env = eng["env"](argv) if "env" in eng else None
-    with serve_argv(argv, log_path=run / SERVER_LOG, environ=env) as (url, command, load_s):
-      server["command"] = command
-      log = (run / SERVER_LOG).read_text(errors="replace")
-      server["settings"] = eng["settings"](command, log)
-      server.update(build_metadata(provider, server.get("version"), log))
-      rows.append({"scope": "load", "workload": "replay", "seconds": round(load_s, 2),
-                   "source": "from the server's start to /health answering 200"})
-      words = Words(eng, url)
-      n_ctx = int(server["settings"].get("n_ctx") or 0)
-      system = {"role": "system", "content": words.take(trace["system_tokens"])}
-      messages = [system]
-      prev, t0 = None, time.monotonic()
-      for t in trace["turns"]:
-        if t["compaction"]:
-          messages = [system]
-        need = (prev["prefix"] + prev["predicted_n"] if prev and not t["compaction"] else 0) + t["new_tokens"] + \
-               t["tool_tokens"] + t["reply_tokens"] + HEADROOM
-        if n_ctx and need > n_ctx:
-          rows.append({"scope": "stopped", "workload": "replay", "i": t["i"],
-                       "reason": f"turn {t['i']} needs about {need:,} tokens; the server's context is {n_ctx:,}"})
-          break
-        messages.append({"role": "user", "content": words.take(t["new_tokens"]) + words.take(t["tool_tokens"])})
-        say(f"replay: turn {t['i']} of {len(trace['turns'])}")
-        try:
-          got = eng["chat"](url, messages, t["reply_tokens"], **({"token_evidence":True} if token_evidence else {}))
-        except Exception as exc:  # noqa: BLE001  a turn the server refused ends the replay with its reason
-          if token_evidence:raise  # incomplete identity must not look like a valid shortened capture
-          rows.append({"scope": "stopped", "workload": "replay", "i": t["i"], "reason": f"the server failed: {str(exc)[-300:]}"})
-          break
-        messages.append({"role": "assistant", "content": got["text"]})
-        prev = turn_row(t["i"], got, prev, t, tele, t0)
-        rows.append(prev)
-        if token_evidence:
-          responses.append({"turn":t["i"],**got["response"]})
-          response_path.write_text(pretty_json(responses))
+    if provider == "llama.cpp": _arm(run, provider, server, trace, tele, say)  # unmeasured warm-up server: disk, clocks and first use are paid here, by neither arm
+    for k, pair in enumerate(order, 1):
+      for arm in pair:
+        name = "native" if arm == "N" else "profiled"
+        got, source = _arm(run, provider, server, trace, tele, say, profiled=None if arm == "N" else run / pf.RAW / f"replay-server-pair-{k}",
+                           evidence=responses if token_evidence and arm == "N" and not arms["native"] else None)
+        arms[name].append({"pair": k, "position": pair.index(arm) + 1, "order": pair, "rows": got})
+        server["words_source"] = source
+        rows = rows or (got if arm == "N" else [])
+    if token_evidence:response_path.write_text(pretty_json(responses))
   turns = [r for r in rows if r["scope"] == "turn"]
   if not turns:
     raise RuntimeError("no turn was replayed: " + "; ".join(r.get("reason", "") for r in rows if r["scope"] == "stopped"))
-  server["words_source"] = words.source
   worker=flag_value(argv,("--worker-cls",)) if provider=="vllm" else None
   out = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
          "workload": "replay", "provider": provider, "provider_id": provider, "collector_id": "replay",
          "timing_source": "the server's own timings per turn and the client's clock; " +
                           (f"custom worker {worker}, not an untraced reference" if worker else "untraced"),
-         "contexts": [max(r["prefix"] for r in turns)], "rows": [*rows, server],
+         "contexts": [max(r["prefix"] for r in turns)], "rows": [*rows, server], "arms": arms["native"], "warmup_arm": provider == "llama.cpp", "pairs": pairs, "order": order,
          "replay_trace": {"source": trace["source"], "turns": len(trace["turns"]), "sha256": trace["source"]["sha256"]},
          "telemetry": tele.summary(), "interval_s": INTERVAL_S, "clock_policy": gpu_telemetry.run_clock_policy(run),
          "server_gpus": server_gpus(run, provider, argv),
@@ -511,6 +560,10 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
     out["response_evidence"]={"file":response_path.name,"sha256":_sha256(response_path),"turns":len(responses)}
   path = run / "timing_trace.json"
   path.write_text(pretty_json(out))
+  if arms["profiled"]:
+    (run / PROFILED).write_text(pretty_json({**{k: v for k, v in out.items() if k != "arms"}, "arms": arms["profiled"], "rows": arms["profiled"][0]["rows"],
+        "timing_source": "the same server under the vendor profiler: the server's own timings per turn",
+        **{k: v for k, v in server.items() if k.startswith("profiled_")}}))
   return path
 
 
@@ -537,12 +590,30 @@ def picks(turns:list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
   return unique
 
 
-def ties_out(bench_ms:float | None, server_ms:float, band:dict | None = None) -> bool | None:
-  from boltbeam.workflow.repeat_bands import end_to_end_width
-  width = end_to_end_width(band)
-  if width is None or not bench_ms or server_ms <= 0:
-    return None
-  return abs(bench_ms - server_ms) <= width
+def pair_turns(native:dict[str, Any], profiled:dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+  """Each turn's native and profiled server prompt_ms, over the pairs. A turn is comparable only when it was played in
+  every pair of both traces and its window (server_window: tokens processed after the cache, build, command) is the
+  same in all of them: {"window", "native_ms", "profiled_ms", "pairs": [{pair, native_ms, profiled_ms}]} are the means
+  over those identical windows and each pair's values; otherwise {"refused": words}, never forced."""
+  arms = {"native": native.get("arms") or [], "profiled": (profiled or {}).get("arms") or []}
+  if not arms["native"] or not arms["profiled"]:
+    return {}
+  have = {name: {a["pair"]: {r["i"]: r for r in a["rows"] if r["scope"] == "turn"} for a in rows} for name, rows in arms.items()}
+  ks = sorted(set(have["native"]) | set(have["profiled"]))
+  out: dict[int, dict[str, Any]] = {}
+  for i in sorted({i for name in have for p in have[name].values() for i in p}):
+    seen = [(f"{name} pair {k}", have[name].get(k, {}).get(i)) for name in have for k in ks]
+    base = seen[0][1] and seen[0][1]["server_window"]
+    why = [f"turn {i} was not played in {lab}" for lab, r in seen if r is None] or \
+          [f"turn {i} {f} {base[f]} ({seen[0][0]}) against {r['server_window'].get(f)} ({lab})"
+           for lab, r in seen for f in base if r["server_window"].get(f) != base[f]][:1]
+    if why:
+      out[i] = {"refused": "not checked: native and profiled server windows differ: " + why[0]}
+      continue
+    pairs = [{"pair": k, "native_ms": have["native"][k][i]["prompt_ms"], "profiled_ms": have["profiled"][k][i]["prompt_ms"]} for k in ks]
+    out[i] = {"window": base, "native_ms": sum(x["native_ms"] for x in pairs) / len(pairs),
+              "profiled_ms": sum(x["profiled_ms"] for x in pairs) / len(pairs), "pairs": pairs}
+  return out
 
 
 def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None) -> dict[str, Any]:
@@ -566,7 +637,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     return out
   flags = engine(provider)["bench_flags"](server.get("settings") or {})
   model = str(manifest["model_path"])
-  out: dict[str, Any] = {"schema": "boltbeam.replay_capture.v1", "flags": flags, "tie_out": "measured repeat spread or not checked", "turns": [],
+  out: dict[str, Any] = {"schema": "boltbeam.replay_capture.v1", "flags": flags, "tie_out": "repeat-band agreement is disclosed, not a gate; qualification is the 5% capture-overhead rule", "turns": [],
                          "decode": None}
   turns = [r for r in timing["rows"] if r["scope"] == "turn"]
   for name, r in picks(turns):
@@ -582,11 +653,8 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
       out["turns"].append({"name": name, "i": r["i"], "failed": str(exc)[-400:]})
       continue
     attr = (got.get("lengths") or {}).get(str(n)) or {}
-    from boltbeam.workflow.repeat_bands import find as find_band
-    bench = attr.get("measured_ms") or attr.get("captured_ms")
-    out["turns"].append({"name": name, "i": r["i"], "prompt_n": n, "cache_n": c, "file": file, "bench_ms": bench,
-                         "server_ms": r["prompt_ms"], "ties_out": ties_out(bench, r["prompt_ms"],
-                            find_band(run, f"turn {r['i']}"))})
+    out["turns"].append({"name": name, "i": r["i"], "prompt_n": n, "cache_n": c, "file": file,
+                         "bench_ms": attr.get("measured_ms") or attr.get("captured_ms"), "server_ms": r["prompt_ms"]})
   deep = max(turns, key=lambda r: r["prefix"])
   say(f"replay: capturing decode at the deepest turn ({deep['prefix']} tokens)")
   try:

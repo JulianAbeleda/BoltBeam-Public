@@ -805,6 +805,9 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
   kernels, context = roofline_kernels(timing, context) if timing else ([], context)
   chosen = next((s for s in timing.get("context_summaries", []) if s.get("context") == context), {}) if timing else {}
   loss = loss_block(run, manifest, ceil, token, beside=beside, repeat_evidence=repeat_evidence)
+  from boltbeam.collectors.gpu_telemetry import measurement_clock_words
+  if clock_words := measurement_clock_words(run):
+    loss["timing_scope"] = clock_words
   if manifest.get("workload") in ("prefill", "session"):  # one ceiling: the sum of the kernels' own, as the where table has it
     ceil = prefill_ceiling(ceil, loss, token)
   elif manifest.get("workload") == "replay":  # one ceiling: the sum of the turns' rooflines (workflow/replay.py)
@@ -1213,7 +1216,7 @@ def _load(args) -> dict[str, Any]:
     from boltbeam.collectors import replay as rp
     run = pathlib.Path(args.run)
     run.mkdir(parents=True, exist_ok=True)
-    contexts = (rp.stage(run, getattr(args, "replay_trace", None), getattr(args, "server_argv", None)),)
+    contexts = (rp.stage(run, getattr(args, "replay_trace", None), getattr(args, "server_argv", None), getattr(args, "replay_pairs", None)),)
   if getattr(args,'forced_replay',False) or (args.workload=='replay' and args.provider=='vllm'
       and getattr(args,'analyze',False) and get_target(args.target).backend=='CUDA'):
     if args.workload!='replay' or args.provider!='vllm':raise ValueError('--forced-replay requires vLLM replay')
@@ -1306,7 +1309,9 @@ def pipeline(args, out=sys.stdout) -> int:
     progress.listen(lambda done, total, key=key: say(f"stage {key}: progress {done}/{total}"))
     began = time.monotonic()
     try:
-      step()
+      from boltbeam.collectors import gpu_telemetry
+      with gpu_telemetry.measurement_clock(run_path, key, backend=get_target(args.target).backend):
+        step()
     except Exception as exc:  # application boundary: the stage's own message is the fact the reader needs
       for line in failure_lines(key, exc):
         say(line)
@@ -1838,6 +1843,7 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--replay-trace", default=None, help="a replay: a boltbeam.replay_trace.v1 file or a shape's name "
                                                       "(default: the default shape in data/replay_shapes.json)")
   p.add_argument("--server-argv", default=None, help="a replay: the user's llama-server command, as one string")
+  p.add_argument("--replay-pairs", type=int, default=None, help="a llama.cpp replay: native/profiled server pairs, in the order NP,NP,PN,PN (default 4)")
   p = sub.add_parser("repeat-plan", help="fix n before collecting repeats (an engine pin needs n >= 4 fixed so)")
   p.add_argument("--n", type=int, default=4)
   p.add_argument("--out", required=True)

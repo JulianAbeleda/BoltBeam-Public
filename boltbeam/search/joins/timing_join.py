@@ -11,13 +11,13 @@ from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from boltbeam.search.epochs.epoch_model import EpochReport
+from boltbeam.search.joins.r4_evidence_join import SHAPE_FIELDS, _validate_shape
 
 
 SCHEMA = "tinygrad.mmq_timing_result.v1"
 TIMING_FIELDS = ("shape", "comparator_id", "timing_status", "timings_ms", "speedup_vs_comparator")
 REQUIRED_TIMING_FIELDS = ("shape", "comparator_id", "timing_status")
 TIMING_STATUSES = frozenset(("measured", "blocked", "not_run", "oracle_only"))
-SHAPE_FIELDS = frozenset(("M", "N", "K"))
 
 
 @dataclass(frozen=True)
@@ -160,25 +160,6 @@ def _validate_timing(timing: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[
       )
 
   return missing, tuple(invalid)
-
-
-def _validate_shape(shape: Any) -> tuple[dict[str, Any], ...]:
-  invalid: list[dict[str, Any]] = []
-  if not isinstance(shape, Mapping):
-    return ({"field": "shape", "value": shape, "reason": "expected mapping"},)
-  unknown = set(shape) - SHAPE_FIELDS
-  if unknown:
-    invalid.append({"field": "shape", "value": sorted(unknown), "reason": "unknown fields"})
-  missing = SHAPE_FIELDS - set(shape)
-  if missing:
-    invalid.append({"field": "shape", "value": sorted(missing), "reason": "missing required fields"})
-  for field in SHAPE_FIELDS:
-    if field not in shape:
-      continue
-    value = shape[field]
-    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-      invalid.append({"field": f"shape.{field}", "value": value, "reason": "expected positive int"})
-  return tuple(invalid)
 
 
 def _augment_report(report: EpochReport, result: TimingJoinResult) -> EpochReport:

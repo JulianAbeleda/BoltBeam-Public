@@ -642,6 +642,7 @@ type Run struct {
 // loses time. Roles come from that provider's capture, attributed to roles by bytes and count, or from
 // tinygrad's own timing.
 type Loss struct {
+	TimingScope     *string    `json:"timing_scope"`
 	SemanticCapture bool       `json:"semantic_capture"`
 	LimitContext    *float64   `json:"limit_context"`
 	Status          string     `json:"status"`
@@ -810,8 +811,9 @@ type Where struct {
 	EndToEnd *EndToEnd `json:"end_to_end"`
 }
 
-// EndToEnd is one capture checked against its untraced time. Confirms is nil when no repeat band matches the
-// setup ("not checked"), true within the band, false outside it.
+// EndToEnd is one capture checked against its untraced time. Confirms is nil when the native and captured timing
+// windows differ or are unrecorded ("not checked"), true when the measured capture overhead (DiffPct, signed) is
+// within the capture-overhead ceiling, false above it. BandMs is the repeat band, informational only. Words says it all.
 type EndToEnd struct {
 	Reference  string   `json:"reference"`
 	Confirms   *bool    `json:"confirms"`
@@ -820,6 +822,7 @@ type EndToEnd struct {
 	DiffPct    *float64 `json:"diff_pct"`
 	BandMs     *float64 `json:"band_ms"`
 	Status     string   `json:"status"`
+	Words      string   `json:"words"`
 }
 
 // WhereRow is one part of the token. LimitMs is nil where the limit has no bytes for it ("no limit"); Share and
@@ -1038,6 +1041,7 @@ type Emitted struct {
 
 // Gameplan is gameplan.json: the header, one block per role (worst first) with the four lineage layers, the footer.
 type Gameplan struct {
+	TimingScope  *string `json:"timing_scope"`
 	Tables       []Where `json:"tables"`
 	Presentation struct {
 		Summary string `json:"summary"`

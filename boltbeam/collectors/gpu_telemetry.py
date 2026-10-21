@@ -15,7 +15,10 @@ reason that only says the GPU was idle or that an application set the clock is n
 """
 from __future__ import annotations
 
+import contextlib
 import ctypes
+import math
+import os
 import pathlib
 import shutil
 import statistics
@@ -321,6 +324,12 @@ def clock_policy(device:int = 0, *, run=subprocess.run) -> dict[str, Any]:
   """Which policy a measurement here can hold, decided by asking the driver tool for each without changing anything:
   a clock reset (-rgc) is allowed only to a user who may set clocks. Fixed clock when it is; else fixed power (the
   board's own limit, which no run changes); the record says which and why."""
+  if requested := os.environ.get("BOLTBEAM_TIMING_SM_MHZ"):
+    mhz = int(requested)
+    if mhz <= 0:
+      raise ValueError("BOLTBEAM_TIMING_SM_MHZ needs a positive SM clock")
+    return {"policy": "external_request", "requested_sm_mhz": mhz, "clock_settable": None,
+            "words": f"externally requested SM clock {mhz} MHz; observations recorded separately"}
   smi = shutil.which("nvidia-smi")
   if not smi:
     return {"policy": None, "words": "no nvidia-smi: the clock policy is unknown", "clock_settable": None}
@@ -352,3 +361,89 @@ class hold:
     if self.policy.get("policy") == "fixed_clock":
       self.run([shutil.which("nvidia-smi") or "nvidia-smi", "-i", str(self.device), "-rgc"], capture_output=True,
                text=True, timeout=30, check=False)
+
+
+@contextlib.contextmanager
+def measurement_clock(run:pathlib.Path, phase:str, *, backend:str):
+  """Witness an externally controlled clock in both pipeline arms; never change device settings."""
+  if phase not in ("measure_timing", "role_time"):
+    yield
+    return
+  from boltbeam.workflow.common import read_json, write_json
+  path = run / "measurement_clock.json"
+  requested = os.environ.get("BOLTBEAM_TIMING_SM_MHZ")
+  if not requested:
+    if path.exists():
+      if phase == "measure_timing":
+        path.unlink()  # a new native arm starts a fresh uncontrolled measurement
+      else:
+        write_json(path, {"schema": "boltbeam.measurement_clock.v1", "phases": {}})
+    yield
+    return
+  mhz = int(requested)
+  if backend != "CUDA" or mhz <= 0:
+    raise ValueError("BOLTBEAM_TIMING_SM_MHZ needs a positive CUDA SM clock")
+  record = read_json(path) if path.exists() else {}
+  if record.get("requested_sm_mhz") != mhz or phase == "measure_timing":
+    record = {"schema": "boltbeam.measurement_clock.v1", "requested_sm_mhz": mhz, "phases": {}}
+  key = {"measure_timing": "native", "role_time": "captured"}[phase]
+  record["phases"][key] = {"complete": False}
+  write_json(path, record)
+  complete = False
+  telemetry = run_telemetry(run)
+  try:
+    with telemetry:
+      yield
+    complete = True
+  finally:
+    record["phases"][key] = {"complete": complete, "summary": telemetry.summary(),
+                             "samples": compact(telemetry.samples)}
+    write_json(path, record)
+
+
+def measurement_clock_scope(run:pathlib.Path) -> dict | None:
+  """A frequency regime after both observed peaks agree within 2%; not proof of a driver lock."""
+  from boltbeam.workflow.common import read_json
+  path = run / "measurement_clock.json"
+  if not path.exists():
+    return None
+  try:
+    record = read_json(path)
+    requested = record["requested_sm_mhz"]
+    if record["schema"] != "boltbeam.measurement_clock.v1":
+      raise ValueError("unknown clock witness schema")
+    if not isinstance(requested, (int, float)) or isinstance(requested, bool) or not math.isfinite(requested) or requested <= 0:
+      raise ValueError("invalid requested clock")
+    peaks = []
+    for key in ("native", "captured"):
+      phase = record["phases"][key]
+      if phase["complete"] is not True:
+        raise ValueError("incomplete clock phase")
+      clocks = [s[1] for s in phase["samples"] if isinstance(s[1], (int, float)) and not isinstance(s[1], bool)
+                and math.isfinite(s[1]) and s[1] > 0]
+      if not clocks:
+        raise ValueError("missing clock samples")
+      peaks.append(max(clocks))
+    if not all(abs(p / requested - 1) <= .02 for p in peaks) or abs(peaks[0] / peaks[1] - 1) > .02:
+      raise ValueError("observed clocks differ from the declared regime")
+  except (KeyError, TypeError, ValueError, IndexError) as exc:
+    raise ValueError("invalid or incomplete measurement clock witness") from exc
+  return {"requested_sm_mhz": requested, "observed_peak_tolerance_pct": 2}
+
+
+def measurement_clock_words(run:pathlib.Path) -> str | None:
+  """Disclose requested and observed frequency separately wherever timing qualification is presented."""
+  if not (run / "measurement_clock.json").exists():
+    return None
+  from boltbeam.workflow.common import read_json
+  try:
+    scope = measurement_clock_scope(run)
+  except (ValueError, TypeError, KeyError):
+    return "Timing scope: unqualified; clock observations are incomplete or differ from the requested setup."
+  record = read_json(run / "measurement_clock.json")
+  peaks = {key: max(s[1] for s in record["phases"][key]["samples"] if isinstance(s[1], (int, float))
+                   and not isinstance(s[1], bool) and math.isfinite(s[1]) and s[1] > 0)
+           for key in ("native", "captured")}
+  return (f"Timing scope: SM clock requested externally at {scope['requested_sm_mhz']:g} MHz; "
+          f"observed peaks native {peaks['native']:g} MHz, captured {peaks['captured']:g} MHz. "
+          "Timing bands apply to this clock setup.")

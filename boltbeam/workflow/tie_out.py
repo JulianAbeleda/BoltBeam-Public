@@ -21,8 +21,12 @@ The per-role reason follows one rule, with its numbers here and nowhere else (RO
 from __future__ import annotations
 
 import json
+import math
 import pathlib
 from typing import Any
+
+from boltbeam.collectors.replay_overhead import MAX_OVERHEAD
+from boltbeam.math.numerics import ACCOUNTING_ATOL, ACCOUNTING_RTOL
 
 TINYGRAD_WARM = 3  # warm tokens before the measured window (runtime/tinygrad_decode_profile.py --warm)
 SHOW_BOTH_SHARE = 0.01  # show the limit at context 1 beside context N when the KV read changes it by 1% or more
@@ -130,10 +134,14 @@ def window_context(row:dict[str, Any]) -> float | None:
   if window.get("method") != "long_minus_short":
     return None
   from boltbeam.collectors.llama_bench_decode import decode_window
-  expected = decode_window(row.get("context"), window.get("long_tokens"))
-  if window != expected or any(type(window.get(k)) is not int for k in ("long_tokens", "short_tokens", "context_start", "context_end", "repetitions")) \
-      or window.get("warmup") is not False or type(row.get("decode_tokens")) is not int or row["decode_tokens"] != window["long_tokens"] - 1:
+  from boltbeam.collectors.vllm_decode import decode_window_vllm
+  vllm = "vllm_version" in window  # vLLM's window is only checked against its own row's recorded fields (the rest of the rule is the same)
+  expected = decode_window_vllm(row.get("context"), row.get("decode_tokens"), row.get("batch"), row["engine"]) if vllm else \
+    decode_window(row.get("context"), window.get("long_tokens"))
+  if window != expected or any(type(window.get(k)) is not int for k in ("long_tokens", "short_tokens", "context_start", "context_end", *(() if vllm else ("repetitions",)))) \
+      or not vllm and (window.get("warmup") is not False or type(row.get("decode_tokens")) is not int or row["decode_tokens"] != window["long_tokens"] - 1):
     raise ValueError("decode timing window is inconsistent with the recorded work")
+  if vllm:return None  # a vLLM capture is keyed by the requested context, which stays the headline
   mean = (window["context_start"] + window["context_end"]) / 2
   return int(mean) if mean.is_integer() else mean
 
@@ -525,6 +533,8 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
     words.append(f"Difference: {token-base:+.1f} ms; its cause is unassigned.")
   if not project:
     words.append("Native throughput allocation unavailable: capture timing is unqualified.")
+  if (e2e := tie.get("end_to_end") or {}).get("status") == "checked":  # a checked verdict is always disclosed, over the ceiling too
+    words.append(e2e["words"].split(" (", 1)[0] + ".")
   if est:
     words.append("Estimate from isolated weight timings; the remaining time is inferred.")
     words.append("% of peak uses isolated time minus the measured dispatch floor.")
@@ -581,15 +591,47 @@ NO_CEILING = "no model"  # a kernel with no operations or bytes the model knows 
 
 
 
+CEILING_PCT = 100 * MAX_OVERHEAD  # the user's 5% ceiling, from the one authority (collectors/replay_overhead.py)
+
+
+within_ceiling = lambda pct: abs(pct) <= CEILING_PCT + 1e-9  # noqa: E731  # a capture far faster than native is not comparable
+
+
+def overhead_words(pct:float, reference:str = "native") -> str:
+  """THE disclosure of a measured capture overhead: signed, against its reference, against the ceiling. A capture
+  faster than its reference qualifies within the same ceiling; beyond it the arms differ in more than the capture
+  (first-use costs, environment) and are not comparable. Nothing is subtracted from any number."""
+  shown = f"{pct:+.4f}" if not within_ceiling(pct) and f"{abs(pct):.2f}" == f"{CEILING_PCT:.2f}" else f"{pct:+.2f}"  # never round an excess into the ceiling
+  return (f"capture {shown}% {'over' if pct >= 0 else 'under'} {reference}, {'within' if within_ceiling(pct) else 'above' if pct >= 0 else 'beyond'} "
+          f"the {CEILING_PCT:g}% capture-overhead ceiling" + ("" if pct >= 0 or within_ceiling(pct) else " below it: the arms are not comparable"))
+
+
+def check_end_to_end(e:dict[str, Any]) -> list[str]:
+  """Why an end_to_end verdict is forged or incoherent: diff_pct and diff_ms are recomputed from captured_ms and
+  untraced_ms, and `confirms` must be exactly the ceiling rule (None only when the status is not checked)."""
+  c, u = e.get("captured_ms"), e.get("untraced_ms")
+  if not all(isinstance(v, (int, float)) and math.isfinite(v) and v > 0 for v in (c, u)): return [f"captured_ms {c!r} and untraced_ms {u!r} must be present, finite and positive"]
+  pct, ok = 100 * (c - u) / u, e.get("confirms")
+  bad = [f"{k}: reported {e[k]!r}, derived {d!r}" for k, d in (("diff_ms", c - u), ("diff_pct", pct))
+         if k in e and not math.isclose(e[k], d, rel_tol=ACCOUNTING_RTOL, abs_tol=ACCOUNTING_ATOL)]
+  if (ok is None) == (e.get("status") == "checked") or ok is not None and ok != within_ceiling(pct):
+    bad.append(f"confirms {ok!r} with status {e.get('status')!r} is not the {CEILING_PCT:g}% capture-overhead rule at {pct:+.3f}%")
+  if e.get("status") == "checked" and overhead_words(pct, "native" if (ref := e.get("reference", "native")).startswith("untraced") else ref) not in str(e.get("words")): bad.append("words do not disclose the capture overhead derived from captured_ms and untraced_ms")
+  return bad
+
+
 def end_to_end(attr:dict[str, Any], untraced_ms:float | None, what:str = "prefill", *, band:dict | None = None,
                reference:str = "untraced median", reference_window:dict | None = None) -> dict[str, Any]:
-  """Compare full engine elapsed timers only with identical recorded measurement windows and host-timer repeat bands.
-  The GPU kernel span and its gaps reconcile separately; neither substitutes for the complete host interval.
-  Without matching evidence the result is not checked. gap_growth_ms is its own figure: the capture's idle beyond what the untraced prefill leaves room
-  for (the gaps less the untraced time over the kernels' busy time; zero when the gaps fit in it). An engine's own timing
-  sums to the untraced prefill already, so there is nothing to check."""
+  """Qualify a capture by its measured overhead against the untraced run, from full engine elapsed timers with
+  identical recorded measurement windows. diff_pct = 100 * (captured - untraced) / untraced; `confirms` is True when
+  it is at most the 5% ceiling (negative qualifies), False above it, None ("not checked") when the windows differ or
+  are unrecorded. The repeat band no longer gates: it is only said, as "within repeat noise". The GPU kernel span and
+  its gaps reconcile separately; neither substitutes for the complete host interval. gap_growth_ms is its own figure:
+  the capture's idle beyond what the untraced prefill leaves room for (the gaps less the untraced time over the
+  kernels' busy time; zero when the gaps fit in it). An engine's own timing sums to the untraced prefill already, so
+  there is nothing to check."""
   captured, gaps, busy = attr.get("measured_ms"), float(attr.get("gaps_ms") or 0.0), float(attr.get("busy_ms") or 0.0)
-  if untraced_ms is None or not captured:
+  if untraced_ms is None or not captured or not (math.isfinite(captured) and math.isfinite(untraced_ms) and captured > 0 and untraced_ms > 0):
     return {"confirms": None, "words": "no matching captured engine elapsed timer and untraced time: the GPU kernel span alone cannot confirm end-to-end timing"}
   if abs(float(attr["wall_ms"]) - float(untraced_ms)) < 1e-9 and abs(float(attr["wall_ms"]) - captured) > 1e-9:
     return {"confirms": None, "words": "the rows sum to the untraced prefill (the engine's own timing): no capture to check"}
@@ -599,18 +641,18 @@ def end_to_end(attr:dict[str, Any], untraced_ms:float | None, what:str = "prefil
   from boltbeam.workflow.repeat_bands import end_to_end_width
   matched = bool(reference_window) and attr.get("timing_window") == reference_window
   width = end_to_end_width(band, captured_key="engine_elapsed_ms") if matched else None
-  ok = abs(diff) <= width if width is not None else None
-  band_words = (f"repeat band ±{width:.6f} ms" if width is not None else
-                "not checked: native and captured timing windows differ or are unrecorded" if not matched else
-                "not checked: no engine-elapsed repeat band for this setup")
+  ok = within_ceiling(100 * share) if matched else None
+  noise = "no engine-elapsed repeat band" if width is None else f"{'yes' if abs(diff) <= width else 'no'}, band ±{width:.6f} ms"
+  verdict = (overhead_words(100 * share, "native" if reference.startswith("untraced") else reference) if matched else
+             "not checked: native and captured timing windows differ or are unrecorded")
   return {"confirms": ok, "captured_ms": captured, "kernel_span_ms": attr.get("profiled_wall_ms"), "untraced_ms": float(untraced_ms), "diff_ms": diff, "diff_pct": 100 * share,
           "reference": reference,
           "band_pct": 100 * width / float(untraced_ms) if width is not None else None, "band_ms": width,
           "status": "checked" if ok is not None else "not checked", "gaps_ms": gaps, "gap_growth_ms": growth,
-          "words": (f"the captured engine timer for {what} took {captured:.1f} ms against the {float(untraced_ms):.1f} ms {reference} "
-                    f"({100 * share:+.1f}%, {band_words}); its gaps are {gaps:.1f} ms, "
+          "words": (f"{verdict} (the captured engine timer for {what} took {captured:.1f} ms against the {float(untraced_ms):.1f} ms {reference}, {100 * share:+.1f}%; "
+                    f"within repeat noise: {noise}); its gaps are {gaps:.1f} ms, "
                     f"{growth:.1f} ms more than the untraced {what} leaves room for"
-                    + ("" if ok is not False else f". The rows stand, but this capture does not confirm the {what} end to end"))}
+                    + ("" if ok is not False else f". The rows stand, but this capture does not qualify the {what} end to end"))}
 
 
 def capture_rows(attr:dict[str, Any]) -> list[dict[str, Any]]:
@@ -651,7 +693,7 @@ def where_decode_capture_goes(attr:dict[str, Any], *, untraced_ms:float | None,
   rows=capture_rows(attr)
   wall=float(attr['wall_ms'])
   base=float(untraced_ms) if untraced_ms is not None else wall
-  comparable=abs(base-wall)<1e-9 or (attr.get('end_to_end') or {}).get('confirms') is True
+  comparable=(attr.get('end_to_end') or {}).get('confirms') is True or (untraced_ms is not None and abs(base-wall)<1e-9)
   overlap=any(r['what']=='overlap' for r in rows)
   for row in rows:
     row['pct_peak']=(100*row['limit_ms']/row['now_ms']
@@ -663,6 +705,8 @@ def where_decode_capture_goes(attr:dict[str, Any], *, untraced_ms:float | None,
     words+=f"Untraced {base:.3f} ms. "
   if not comparable:
     words+="Capture timing is unqualified. "
+  if (attr.get('end_to_end') or {}).get('status')=='checked':  # a checked verdict is always disclosed, over the ceiling too
+    words+=attr['end_to_end']['words'].split(' (',1)[0]+'. '
   if overlap:
     words+="Overlap subtracts concurrent time. "
   words+="No model = measured time, unknown savings. Roofline is an upper bound. "
@@ -672,7 +716,7 @@ def where_decode_capture_goes(attr:dict[str, Any], *, untraced_ms:float | None,
                if_fixed=('tok_s_if_fixed','≤{:.1f}' if overlap else '{:.1f}'),peak=('pct_peak','{:.1f}%'),sum_name='= token',
                estimate=False,token_ms=wall,base_ms=base,limit_ms=limit,words=words,
                workload='decode',context=context)
-  return decode_progress(result)
+  return decode_progress(result, allocate=comparable)
 
 
 def decode_progress(result:dict[str, Any], *, allocate:bool = True) -> dict[str, Any]:
@@ -726,7 +770,7 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   wall = float(attr["wall_ms"])
   base = float(untraced_ms) if untraced_ms else wall
   e2e = attr.get("end_to_end") or {}
-  comparable = abs(base-wall) < 1e-9 or e2e.get('confirms') is True
+  comparable = e2e.get('confirms') is True or (bool(untraced_ms) and abs(base-wall) < 1e-9)
   can_project = project_speedup and comparable
   total = rank(rows, lambda r: base - r["lost_ms"] if can_project and r["what"] != "limit" else None, "ms_if_fixed")
   limit = sum(r["limit_ms"] or 0.0 for r in rows)
@@ -747,8 +791,10 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
     words.append(f"Untraced prefill: {base:.1f} ms.")
   if e2e.get("confirms") is None and e2e:
     words.append(e2e["words"][:1].upper() + e2e["words"][1:] + ".")
+  if e2e.get("confirms") is True:
+    words.append(e2e["words"].split(" (", 1)[0] + ".")
   if e2e.get("confirms") is False:
-    words.append(f"Not confirmed end to end: {e2e['words']}.")
+    words.append(f"Not qualified end to end: {e2e['words']}.")
   mixed = [r["name"] for r in rows if " + " in str(r.get("path") or "") and r.get("limit_ms") is not None]
   if mixed:
     words.append(f"{', '.join(mixed)}: instructions on more than one path; its operations are split over them by its instruction sites, each part at its own path's peak.")

@@ -169,19 +169,16 @@ def main() -> int:
           with module_ranges(llm) if capture_pass=='label' else nullcontext():
             with dispatch_mode(llm) if capture_pass=='label' else nullcontext():
               seconds=timed(contexts[0], batches[0], a.once)
-      line={"tokens":a.once,"output_token_ids":token_ids,"warm_output_token_ids":warm_outputs,"seconds":seconds,"matrices":_matrices(llm),"engine":_resolved_formats(llm)}
+      out_ids=[list(ids) for ids in token_ids];short_seconds=timed(contexts[0], batches[0], 1) if capture_pass=='timing' else None  # the native arm's order: long, then short; unobserved
+      line={"tokens":a.once,"short_seconds":short_seconds,"warm":a.warm,"samples":1,"call_order":"long_then_short","output_token_ids":out_ids,"warm_output_token_ids":warm_outputs,"seconds":seconds,"matrices":_matrices(llm),"engine":_resolved_formats(llm)}
       if capture_pass:
-        config=llm.llm_engine.vllm_config
-        line.update(capture_pass=capture_pass,steps=steps,
-                    runtime_graph_mode='NONE' if capture_pass=='label' else 'production',
-                    compilation_config=compilation_facts(config.compilation_config),
-                    enforce_eager=config.model_config.enforce_eager)
-      if capture_pass:
-        import vllm
-        line.update(**line['engine'], execution_mode=('production CUDA graph timing' if capture_pass=='timing' else 'compiled graphless labeling'),
+        import vllm;config=llm.llm_engine.vllm_config
+        line.update(line['engine'], capture_pass=capture_pass, runtime_graph_mode='NONE' if capture_pass=='label' else 'production',
+                    compilation_config=compilation_facts(config.compilation_config), enforce_eager=config.model_config.enforce_eager,
+                    execution_mode=('production CUDA graph timing' if capture_pass=='timing' else 'compiled graphless labeling'),
                     steps=steps, profile_step=a.profile_step,decode_step=a.profile_step,
-                    context=contexts[0],batch=batches[0],length=1,seed=0,vllm=vllm.__version__,
-                    max_model_len=max_len,max_num_batched_tokens=llm.llm_engine.vllm_config.scheduler_config.max_num_batched_tokens,
+                    context=contexts[0],batch=batches[0],length=1,seed=config.model_config.seed,vllm=vllm.__version__,
+                    max_model_len=max_len,max_num_batched_tokens=config.scheduler_config.max_num_batched_tokens,
                     triton_cache_dir=os.environ.get('TRITON_CACHE_DIR',str(Path.home()/'.triton/cache')),
                     libraries=_libraries())
       if a.profile_end is not None:
@@ -211,7 +208,7 @@ def main() -> int:
                         "step_samples_ms":samples,"repeat_band_ms":[min(samples),max(samples)],
                         "engine": {**_resolved_formats(llm), "build": __import__("vllm").__version__, "max_model_len": max_len,
                                    "compilation_config":compilation_facts(llm.llm_engine.vllm_config.compilation_config),
-                                   "enforce_eager":llm.llm_engine.vllm_config.model_config.enforce_eager,
+                                   "enforce_eager":llm.llm_engine.vllm_config.model_config.enforce_eager,"warm":a.warm,"seed":llm.llm_engine.vllm_config.model_config.seed,"call_order":"long_then_short",
                                    "speculative_config": a.speculative_config,
                                    "max_num_batched_tokens": int(llm.llm_engine.vllm_config.scheduler_config.max_num_batched_tokens),
                                    "chunked_prefill": bool(llm.llm_engine.vllm_config.scheduler_config.enable_chunked_prefill),

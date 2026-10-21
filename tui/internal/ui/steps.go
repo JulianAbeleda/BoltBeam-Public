@@ -369,6 +369,13 @@ func emitLine(f Facts) (string, string) {
 	return "pass", fmt.Sprintf("%d roles, worst first · gameplan.md and gameplan.json written to the run", len(f.Plan.Plan.Roles))
 }
 
+func timingScopeLine(scope *string, width int) string {
+	if scope == nil || *scope == "" {
+		return ""
+	}
+	return stMuted.Render(ansi.Wordwrap(*scope, width, " ")) + "\n\n"
+}
+
 // emitBody is the gameplan as Python wrote it: the same markdown, drawn in the screen's styles (renderMarkdown).
 func emitBody(f Facts, width int) string {
 	if f.Plan == nil {
@@ -381,9 +388,13 @@ func emitBody(f Facts, width int) string {
 			b.WriteString(whereBody(&table))
 		}
 		b.WriteString(renderMarkdown(strings.TrimRight(f.Plan.Plan.Presentation.Details, "\n")))
-		return b.String()
+		return timingScopeLine(f.Plan.Plan.TimingScope, width) + b.String()
 	}
-	return renderMarkdown(strings.TrimRight(f.Plan.Markdown, "\n"))
+	md := strings.TrimRight(f.Plan.Markdown, "\n")
+	if scope := f.Plan.Plan.TimingScope; scope != nil {
+		md = strings.TrimPrefix(md, *scope+"\n\n")
+	}
+	return timingScopeLine(f.Plan.Plan.TimingScope, width) + renderMarkdown(md)
 }
 
 func emitActions(f Facts) []action {
@@ -544,6 +555,7 @@ func resultsBody(f Facts, width int) string {
 		return failedBody(f, width)
 	}
 	var b strings.Builder
+	b.WriteString(timingScopeLine(f.Run.Results.Loss.TimingScope, width))
 	if f.Run.Measure != nil && f.Run.Measure.Status != "measured" {
 		b.WriteString(measureBody(f, width) + "\n\n")
 	}
@@ -839,16 +851,6 @@ func (f Facts) failedStage() string {
 	return seam.ReadProgress(f.Tail).Failed
 }
 
-func aboutModel(f Facts) string {
-	if f.Profile != nil {
-		return f.Profile.ModelID
-	}
-	if f.Path == "" {
-		return ""
-	}
-	return filepath.Base(f.Path)
-}
-
 func aboutChip(f Facts) string {
 	if t := f.target(); t != nil {
 		return t.ID
@@ -884,17 +886,6 @@ func modelLine(f Facts) (string, string) {
 		return "open", base + " · not read yet"
 	}
 	return "pass", fmt.Sprintf("%s · %s layers · %s", base, count(f.Profile.LayerCount), strings.Join(f.Profile.Metadata.QuantTypes, ", "))
-}
-
-func modelActions(f Facts) []action {
-	out := []action{{"Type a path", "edit", ""}}
-	if f.Editing {
-		out[0].label = f.Input + stCursor.Render("▏")
-	}
-	for _, path := range f.Files {
-		out = append(out, action{"Read " + modelLabel(path), "file", path})
-	}
-	return out
 }
 
 // --- 2 Chip ------------------------------------------------------------------------------------------------
@@ -1067,22 +1058,6 @@ func layoutActions(f Facts) []action {
 }
 
 // --- 3 Speed limit -----------------------------------------------------------------------------------------
-
-func limitLine(f Facts) (string, string) {
-	switch {
-	case f.Profile == nil:
-		return "open", "needs step 1"
-	case !f.chipKnown():
-		return "open", "needs step 2"
-	case f.CeilBusy:
-		return "run", "working it out…"
-	case f.Ceiling != nil && f.Ceiling.Decode.TokS != nil:
-		return "pass", fmt.Sprintf("up to %.1f tokens per second", *f.Ceiling.Decode.TokS)
-	case f.CeilErr != "":
-		return "crossed", "no speed limit: " + f.CeilErr
-	}
-	return "open", "needs step 2"
-}
 
 // --- 4 Measure ---------------------------------------------------------------------------------------------
 

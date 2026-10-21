@@ -26,7 +26,7 @@ It answers, per role and per kernel:
 - **Where does the time go?** Every millisecond of a decode token, a prefill, a turn at session depth, or a replayed
   chat session, in ranked rows: ms now, ms at the limit, ms lost, and tokens per second if that row alone were fixed.
 - **Does it add up?** The rows plus the idle gaps equal the captured time, and the captured time is checked against
-  the untraced time inside a measured repeat band.
+  the untraced time over the same measured window: a capture qualifies when its overhead is within 5%, and a capture more than 5% faster is refused as not comparable.
 - **Does a second engine agree?** The same model in another engine must show the same work and the same ceilings.
 - **Did an engine upgrade change anything?** The engine-upgrade audit compares two builds row by row and names what
   moved beyond run-to-run noise ([docs/engine-upgrade-audit.md](docs/engine-upgrade-audit.md)).
@@ -132,7 +132,7 @@ Per-role repeat check: not checked: no repeat band matches this setup.
 - The engine build is checked against BoltBeam's pinned version. A different build is measured and said, not refused.
 
 **4. Run it twice.** A first run always says **not checked**. That is expected, not a fault. A verdict ("moved",
-"confirmed end to end") needs to know how much the same setup moves between two runs. Run the identical setup
+"within repeat noise") needs to know how much the same setup moves between two runs. Run the identical setup
 again, derive the repeat bands, and give them to later runs:
 
 ```bash
@@ -168,7 +168,18 @@ measurement and excludes host work. Prefill and session compare the final repeti
 repetition count; their throughput headlines retain the native median. Decode compares fresh long/short process
 pairs to estimate the same generated-token window on both sides, retaining subtraction noise and both the
 requested depth and mean attended context. Older kernel-span bands cannot qualify these host intervals.
-Matching the interval establishes comparability; profiler overhead can still prevent timing confirmation.
+Matching the interval establishes comparability. A capture then qualifies when its measured overhead,
+`100 * (captured - native) / native`, is at most the 5% capture-overhead ceiling. A capture more than 5% faster than native is refused as not
+comparable: the two arms then differ in more than the capture.
+Run and Emit show that signed overhead beside every checked verdict, for example `capture +1.65% over native, within
+the 5% capture-overhead ceiling`. Nothing is subtracted from any number. A qualified capture shows its projected
+gains; one above the ceiling, or with unmatched windows, withholds them. For these captures the repeat band is
+reported as repeat noise and no longer gates the end-to-end verdict. Replay turns qualify the same way: the server
+itself is profiled in native and profiled pairs after an unmeasured warm-up server, and each turn's overhead is
+checked against the ceiling.
+Session correctness references disable automatic server checkpoints so cached and cold paths use the benchmark's
+batching. Warm-cache rows retain the actual number of tokens recomputed; a repeated prompt can require a full
+re-evaluation on recurrent models without rollback checkpoints.
 
 ## Next steps
 

@@ -144,8 +144,9 @@ def table(run):
   if data.get('overhead_experiment'):
     q=data['timing_qualification']
     lines.append(f"Prospective session overhead: {100*q['observed_mean_overhead']:.3f}%; four fixed pairs; one-sided 95% upper excess over the 5% limit {q['one_sided_95_upper_excess_seconds']:.6f} s.")
-    lines.append('Qualification protocol: '+q['protocol_sha256'])
-    words.extend([q['scope'],q['assumptions'],'Reference turn bands are diagnostics; session-level qualification does not certify individual turns.'])
+    lines.append('Qualification protocol: '+q['protocol_sha256']);h=q['thermal_disclosure'];o=h['overhead_vs_temperature']
+    lines.append(f"Thermal disclosure (not a gate): instrumented minus native temperature {h['temperature_C']['min']:+.2f} to {h['temperature_C']['max']:+.2f} C (mean {h['temperature_C']['mean']:+.2f}, SD {h['temperature_C']['sd']:.2f}), power {h['power_W']['mean']:+.1f} W; SM-clock difference at most {100*h['max_sm_clock_speed_bound']:.3f}%; 2 C reference exceeded: {'yes' if h['reference_temperature_exceeded'] else 'no'}.")
+    words.extend([f"Thermal influence: timing is affected through clock speed, bounded per pair by the relative SM-clock difference; overhead vs temperature difference correlation {o['correlation'] or 0:+.2f}, slope {100*(o['slope_overhead_per_C'] or 0):+.3f} %/C ({o['status']}).",q['scope'],q['assumptions'],'Reference turn bands are diagnostics; session-level qualification does not certify individual turns.'])
   if limits['status']=='unavailable':words.append('Limit evidence: '+limits['reason'])
   else:
     modeled=sum(r['ceiling_ms'] for r in limits['rows'] if r['name'] not in limits['unmodeled_rows'])
@@ -164,7 +165,16 @@ def table(run):
       missing=covered['missing'][0]
       lines.append(f"Largest coverage gap: {missing['name']}, {missing['ms']:.3f} ms. "+'; '.join(missing['reasons']))
   else:words.append('Roofline coverage unavailable: '+covered['reason'])
+  clock_words=None
   if work:=data.get('resource_work'):
+    if scope:=work.get('clock_scope'):
+      from boltbeam.collectors.replay_resource_roofline import _clock_scope
+      _clock_scope(work)
+      observations=scope['observations'];samples=sum(row['samples'] for row in observations)
+      mean=sum(row['sm_mhz']['mean']*row['samples'] for row in observations)/samples
+      peak=max(row['sm_mhz']['max'] for row in observations)
+      clock_words=(f"Timing scope: SM clock requested externally at {scope['requested_sm_mhz']:g} MHz; "
+                   f"observed capture mean {mean:g} MHz, peak {peak:g} MHz. Timing qualification is reported separately.")
     lines[3]='Per-operation session limit: unavailable; per-operation % of floor and largest loss: unavailable.'
     words=[s.replace('Roofline coverage unavailable:', 'Per-operation roofline coverage unavailable:') for s in words]
     counts=work['totals']
@@ -210,7 +220,7 @@ def table(run):
     'session only' if data.get('overhead_experiment') else 'UNAVAILABLE' if qualified=='unavailable' else 'pass' if r['client_inside_band'] and r['decode_inside_band'] else 'FAILED']
   totals=['all','','',*[f'{v:.3f}' for v in [head['split']['prefill'],head['split']['decode'],head['split']['overhead'],
           total['launch_ms'],total['overlap_ms'],total['gaps_ms'],total['captured_ms']]],*([f'{sum(floors.values()):.3f}',f"{100*sum(floors.values())/total['captured_ms']:.2f}"] if limits['status']!='unavailable' else ['unavailable','unavailable']),qualified.upper()]
-  return {'title':'Forced replay: exact production work','columns':columns,'rows':[{'i':r['turn'],'cells':cells(r)} for r in rows],
+  return {**({'timing_scope':clock_words} if clock_words else {}),'title':'Forced replay: exact production work','columns':columns,'rows':[{'i':r['turn'],'cells':cells(r)} for r in rows],
           'total':totals,'turns':turns,'headline':head,'headline_lines':lines,'words':' '.join(words),
           'evidence_words':'Exact production kernel pairing; native reference bands; limits never inferred from model names.',
           'next_step':'Review the reconciled replay report and its disclosed timing and resource ranges.',
@@ -238,7 +248,7 @@ def role_table(data):
 
 def loss_block(run,base):
   t=table(run);h=t['headline']
-  return {**base,'workload':'replay','per':'per session','status':'measured','limit_ms':None,'limit_tok_s':None,
+  return {**base,**({'timing_scope':t['timing_scope']} if t.get('timing_scope') else {}),'workload':'replay','per':'per session','status':'measured','limit_ms':None,'limit_tok_s':None,
           'roles':[],'replay':t,'resource_roofline':t.get('resource_roofline'),
           'reason':'per-operation replay limits unavailable; full-replay resources reported separately' if t.get('resource_roofline') else 'full captured replay limits unavailable',
           'runtimes':[{'provider':'vllm','ms':h['time_ms'],'tok_s':None,'lost_ms':None,'per_role':False,

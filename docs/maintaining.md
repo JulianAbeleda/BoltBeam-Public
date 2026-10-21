@@ -131,7 +131,8 @@ python3 sz.py              # the table, the total and the cap, then the authorit
 SZ_FILES=1 python3 sz.py   # every file
 ```
 
-The budget counts lines that hold code in `boltbeam/` and `tui/`. Blank lines, comments and docstrings do not
+The budget counts Python, Go and C/C++ lines that hold code in `boltbeam/` and `tui/`. Native collector helpers
+use the same comment stripping as Go and count against the same cap. Blank lines, comments and docstrings do not
 count. Tests do not count. `tools/` is reported but not budgeted. The cap is written in the header of
 `sz.py`, with the reason for the number.
 
