@@ -281,6 +281,8 @@ NAME_PATHS: tuple[tuple[str, str | None, str], ...] = (
    "FlashInfer 0.7.0.post1 delta_rule_cp_sm120.py line 2463: the SIMT fixup, no MMA atom"),
   (r"(?:tensorop|xmma|gemm)\w*?(?:e4m3|e5m2)", "fp8", "CUTLASS and cuBLASLt names carry an fp8 element type (e4m3, e5m2)"),
   (r"_bf16_s\d{4,6}gemm", "bf16", "CUTLASS and cuBLAS names: bf16 elements, s16816 = fp32 accumulate on m16n8k16"),
+  (r"tensorop_s1688gemm", "tf32", "CUTLASS names: fp32 elements on the tf32 m16n8k8 tensor op; ncu (2026-10-22, RTX 5090, "
+   "llama.cpp b11571's F32 MoE router through cuBLAS) saw cutlass_80_tensorop_s1688gemm_64x64_16x6 execute tf32 only"),
   (r"_(?:fp16_|f16_)?h\d{4,6}gemm", "fp16_f16acc", "CUTLASS and cuBLAS names: fp16 elements, h = fp16 accumulate"),
   (r"_(?:fp16_|f16_)?s\d{4,6}gemm", "fp16", "CUTLASS and cuBLAS names: fp16 elements, s = fp32 accumulate"),
   (r"_(?:int8_|s8_)?i\d{4,6}gemm", "int8", "CUTLASS and cuBLAS names: int8 elements, i = int32 accumulate"),
@@ -288,6 +290,8 @@ NAME_PATHS: tuple[tuple[str, str | None, str], ...] = (
   (r"gemm_f16f16_f16f16", "fp16_f16acc", "cuBLASLt xmma names: A and B fp16, fp16 accumulate"),
   (r"gemm_f16f16_\w*?f32", "fp16", "cuBLASLt xmma names: A and B fp16, fp32 accumulate"),
   (r"gemm_(?:s8|i8)(?:s8|i8)_", "int8", "cuBLASLt xmma names: A and B int8"),
+  (r"nvjet_sm\d+_sss_tf32_", "tf32", "cuBLASLt nvjet names: sss = fp32 A, B and C, tf32 compute; ncu (2026-10-22, "
+   "RTX 5090, llama.cpp b11571 KQ with flash attention off) saw HMMA.1688.F32.TF32 only in nvjet_sm120_sss_tf32_mma_256x128x32"),
 )
 
 
@@ -312,7 +316,7 @@ def kernel_path(name:str, table:dict[str, dict[str, int]], observed:dict[str, di
   paths = table.get(key)
   if paths is None and observed and key in observed:
     got = kernel_path(name, {key: observed[key]})
-    return {**got, "words": f"{got['words']} ({FROM_NCU})", "from_ncu": True}
+    return {**got, "words": f"{got['words']} ({FROM_NCU})", "from_ncu": True, "observed_by": FROM_NCU}
   if paths is None:
     return name_path(name) or {"path": None, "paths": {}, "status": "not_found", "words": f"{NOT_FOUND} for {key[:80]}"}
   known = {p: n for p, n in paths.items() if not p.startswith("unknown:")}
@@ -378,10 +382,39 @@ def counters_open(params:str = "/proc/driver/nvidia/params") -> bool:
     return False
 
 
+def observe_closed(program:dict[str, Any], closed:set[str], ran:list[str]) -> dict[str, Any]:
+  """NVIDIA's closed-kernel observer (target/vendors.py): ncu's executed SASS for the closed templates, when asked for
+  (NCU_ENV) with the counters open to this user, profiled until each has run once (`ran`: their launches in the
+  capture's order; the program runs as captured). {} when not asked; observed_how alone when it cannot run."""
+  import os
+  from boltbeam.collectors.prefill import gpu_arch
+  if os.environ.get(NCU_ENV) != "1" or not counters_open():
+    return {}
+  arch, tool = gpu_arch(), cuda_tool("nvdisasm", program.get("tools"))
+  if not arch or not tool:
+    return {"observed_how": "ncu not run: " + ("no GPU architecture from nvidia-smi" if not arch else
+                                               "nvdisasm not found on PATH, beside nvcc, under CUDA_HOME or in an nvidia wheel")}
+  got = ncu_observe(program["argv"], program["env"], pathlib.Path(program["raw"]) / "ncu", closed, sass_signatures(arch, nvdisasm=tool),
+                    from_start=not program.get("profiler_range", True), launches=max(ran.index(t) for t in closed) + 1)
+  return {"observed": got["kernels"], "observed_how": got["how"]}
+
+
+def cuda_tool(name:str, hint:str | pathlib.Path | None = None) -> str | None:
+  """A CUDA toolkit program: in hint, on PATH, beside nvcc, under CUDA_HOME or CUDA_PATH, or in an nvidia wheel of
+  this interpreter (a toolkit may ship without nvdisasm while a pip wheel has it)."""
+  import os, sys
+  dirs = [hint, *(pathlib.Path(n).parent for n in [shutil.which("nvcc")] if n)]
+  dirs += [pathlib.Path(os.environ[v]) / "bin" for v in ("CUDA_HOME", "CUDA_PATH") if os.environ.get(v)]
+  dirs += sorted(pathlib.Path(sys.prefix).glob("lib/python*/site-packages/nvidia/*/bin"))
+  here = next((str(pathlib.Path(d) / name) for d in dirs[:1] if d and (pathlib.Path(d) / name).is_file()), None)
+  return here or shutil.which(name) or next((str(pathlib.Path(d) / name) for d in dirs if d and (pathlib.Path(d) / name).is_file()), None)
+
+
 def ncu_observe(argv:list[str], env:dict[str, str] | None, out:pathlib.Path, templates:set[str],
-                signatures:dict[str, str], *, ncu:str | None = None, launches:int = 200) -> dict[str, Any]:
-  """The program run once under ncu (its profiler range only), the launches of the named templates profiled for
-  their executed SASS (SourceCounters), at most `launches` of them: {"kernels": ncu_table, "how"}."""
+                signatures:dict[str, str], *, ncu:str | None = None, launches:int = 200, from_start:bool = False) -> dict[str, Any]:
+  """The program run once under ncu (its profiler range only; from its start for a program that opens none, such as
+  llama-bench), the launches of the named templates profiled for their executed SASS (SourceCounters), at most
+  `launches` of them: {"kernels": ncu_table, "how"}."""
   import os
   tool = ncu or shutil.which("ncu")
   if not tool or not templates:
@@ -391,7 +424,8 @@ def ncu_observe(argv:list[str], env:dict[str, str] | None, out:pathlib.Path, tem
   rep = out / "ncu"
   from boltbeam.profiler.ncu_counters import ncu_command
   proc = subprocess.run(ncu_command(argv, out=str(rep), ncu=tool, sections=("SourceCounters",), kernel_name=f"regex:{names}",
-                                    launch_count=launches),
+                                    launch_count=launches, profile_from_start="on" if from_start else "off",
+                                    replay_mode="application"),  # kernel replay saves the engine's whole GPU pool to host
                         capture_output=True, text=True, timeout=7200, env={**os.environ, **(env or {})})
   (out / "ncu.log").write_text(proc.stdout + proc.stderr)
   if proc.returncode != 0 or not rep.with_suffix(".ncu-rep").exists():

@@ -90,6 +90,8 @@ class RoleClass(str, Enum):
   ATTENTION_O = "attention_o"
   ATTENTION_QKV = "attention_qkv"    # one fused q, k and v projection (`attn_qkv`): one tensor, one GEMV
   ATTENTION_GATE = "attention_gate"  # the output gate projection beside it (`attn_gate`, gated attention / delta net)
+  ATTENTION_KV_A = "attention_kv_a"  # latent attention's (MLA) compressed K and V and shared rope key (`attn_kv_a_mqa`)
+  ATTENTION_KV_B = "attention_kv_b"  # its up-projection of the latent to every head's K and V (`attn_kv_b`)
   FFN_GATE = "ffn_gate"
   FFN_UP = "ffn_up"
   FFN_DOWN = "ffn_down"
@@ -149,6 +151,8 @@ ROLE_GROUP_OF: dict[str, str] = {
   RoleClass.ATTENTION_O.value: RoleGroup.ATTN_QO.value,
   RoleClass.ATTENTION_K.value: RoleGroup.ATTN_KV.value,
   RoleClass.ATTENTION_V.value: RoleGroup.ATTN_KV.value,
+  RoleClass.ATTENTION_KV_A.value: RoleGroup.ATTN_KV.value,
+  RoleClass.ATTENTION_KV_B.value: RoleGroup.ATTN_KV.value,
   RoleClass.ATTENTION_QKV.value: RoleGroup.ATTN_QKV.value,
   RoleClass.ATTENTION_GATE.value: RoleGroup.ATTN_GATE.value,
   RoleClass.FFN_GATE.value: RoleGroup.FFN_GATE_UP.value,
@@ -210,6 +214,7 @@ def is_weight_gemv_role(role:str) -> bool:
 # different stages (attn_qo: q reads the input, o writes the output) holds one launch per class per layer.
 STAGE: dict[str, str] = {
   "attention_q": "in", "attention_k": "in", "attention_v": "in", "attention_qkv": "in",
+  "attention_kv_a": "in", "attention_kv_b": "in",
   "ssm_in": "in", "ssm_alpha": "in", "ssm_beta": "in", "ssm_projection": "in",
   "attention_gate": "gate",
   "attention_o": "out", "ssm_out": "out",
@@ -221,6 +226,8 @@ STAGE: dict[str, str] = {
 STAGE_SIDE: dict[str, str | None] = {"in": "input", "gate": None, "out": "output", "ffn_in": "output", "ffn_out": "output",
                                      "head": "tail"}  # None: either side of the block
 OUTPUT_ORDER: tuple[str, ...] = ("gate", "out", "ffn_in", "ffn_out")  # the output side's data flow
+# a shared expert is an FFN beside the routed one (either may run first): the FFN stages keep their order within each
+FFN_BRANCH: dict[str, str] = {c: "shared_expert" for c in ("moe_shared_expert_gate", "moe_shared_expert_up", "moe_shared_expert_down")}
 
 
 def role_group_of(role_class:str) -> str:

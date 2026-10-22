@@ -200,11 +200,12 @@ def _run_facts(run:pathlib.Path, **kw:Any) -> dict[str, Any]:
 # --- probe evidence ----------------------------------------------------------------------------------------
 
 def tensor_for(quant:str, rows:int, cols:int, tensors:list[tuple[str, tuple[int, ...], int, int]],
-               tensor_name:str | None = None) -> tuple[str, int]:
-  """The model tensor of this quant and shape (the named one when it is among them): its name and data offset.
-  Shared by every collector that binds real weight bytes (the probes here, collectors/engine_kernels.py)."""
+               tensor_name:str | None = None, n_expert:int | None = None) -> tuple[str, int]:
+  """The model tensor of this quant and shape (the named one when it is among them; an MoE role's experts stacked, at
+  its first expert): its name and data offset. Shared by every collector that binds real weight bytes (the probes
+  here, collectors/engine_kernels.py)."""
   want = GGML_TYPES.get(quant)
-  matches = [(name, off) for name, dims, typ, off in tensors if typ == want and tuple(dims) == (cols, rows)]
+  matches = [(name, off) for name, dims, typ, off in tensors if typ == want and tuple(dims) == (cols, rows, *([int(n_expert)] if n_expert else []))]
   if not matches:
     raise ValueError(f"no {quant} tensor of shape {rows}x{cols} in the model")
   named = [m for m in matches if m[0] == tensor_name]
@@ -213,7 +214,7 @@ def tensor_for(quant:str, rows:int, cols:int, tensors:list[tuple[str, tuple[int,
 
 def _tensor_for(probe:dict[str, Any], tensors:list[tuple[str, tuple[int, ...], int, int]]) -> tuple[str, int]:
   rows, cols = (int(v) for v in probe["shape"])
-  return tensor_for(probe["quant"], rows, cols, tensors, probe.get("tensor_name"))
+  return tensor_for(probe["quant"], rows, cols, tensors, probe.get("tensor_name"), probe.get("n_expert"))
 
 
 def _percentile(values:list[float], q:float) -> float:

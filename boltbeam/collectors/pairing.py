@@ -31,6 +31,7 @@ output width, in the units that had output tokens; those small launches are that
 from __future__ import annotations
 
 import collections
+import functools
 import itertools
 import re
 import statistics
@@ -38,7 +39,8 @@ from typing import Any, Callable
 
 from boltbeam.collectors.instruction_path import template
 from boltbeam.core.policy import value
-from boltbeam.vocab import OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE
+from boltbeam.profile.gguf import GGML_TYPE_NAMES
+from boltbeam.vocab import FFN_BRANCH, OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE
 from boltbeam.workflow.tie_out import UNATTRIBUTED, kind_of
 
 MAX_FUSED = 3  # calls one launch may serve (gate and up fused: 2)
@@ -120,7 +122,7 @@ def structure(launches:list[dict[str, Any]], *, kinds:dict[str, int], units:int,
   if any(l.get("start_us") is None for l in launches):
     raise NoStructure("launches without a start time")
   seq = sorted(launches, key=lambda l: l["start_us"])
-  kind = [kind_of({"kernel": l["key"]}) for l in seq]
+  kind = [l["semantic_kind"] if l.get("semantic_kind") in BLOCKS else kind_of({"kernel": l["key"]}) for l in seq]
   kind = [k if k in BLOCKS else ("C" if candidate(template(seq[i]["key"])) else "O") for i, k in enumerate(kind)]
   runs: list[dict[str, Any]] = []  # block launches of one kind with no weight launch between them
   for i, k in enumerate(kind):
@@ -167,15 +169,18 @@ def structure(launches:list[dict[str, Any]], *, kinds:dict[str, int], units:int,
       recurs.add((t, k))
   # a weight format some layers use and others do not (a mixed quant per layer) takes the same slot in each. When the
   # recurring templates leave the gaps between layers uneven and every candidate makes them even (a unit's last gap
-  # aside), the templates in those gaps are slots: dropping them is what would shift the slots
+  # aside), the templates in those gaps are slots: dropping them is what would shift the slots. Even is one size per
+  # place in the unit (every unit runs its layers alike) and fewer sizes than the recurring templates leave: a model
+  # whose first layers run a dense FFN and the rest experts has a gap size for each
   between, every, kept = set(), collections.defaultdict(set), collections.defaultdict(set)
   for i, l in enumerate(layers[:-1]):
     if (i + 1) % per_unit:
-      pair, gap = (l["kind"], layers[i + 1]["kind"]), cands(l["last"] + 1, layers[i + 1]["first"])
+      pair, gap = (l["kind"], layers[i + 1]["kind"], i % per_unit), cands(l["last"] + 1, layers[i + 1]["first"])
       between |= {template(seq[j]["key"]) for j in gap}
       every[pair].add(len(gap))
-      kept[pair].add(sum(1 for j in gap if {(template(seq[j]["key"]), k) for k in pair} & recurs))
-  if every and all(len(v) == 1 for v in every.values()) and any(len(v) > 1 for v in kept.values()):
+      kept[pair].add(sum(1 for j in gap if {(template(seq[j]["key"]), k) for k in pair[:2]} & recurs))
+  sizes = lambda d, p: {n for q, v in d.items() if q[:2] == p for n in v}  # noqa: E731
+  if every and all(len(v) == 1 for v in every.values()) and any(len(sizes(every, p[:2])) < len(sizes(kept, p[:2])) for p in every):
     recurs |= {(t, k) for t, k, _ in seen if t in between}
   for i, l in enumerate(layers):
     lo = layers[i - 1]["last"] + 1 if i else 0
@@ -221,12 +226,12 @@ def _groups(st:dict[str, Any], widths:list[int]) -> list[dict[str, Any]]:
     for q, idx in enumerate(l["input"]):
       t = template(seq[idx]["key"])
       pos = q - len(l["input"])
-      g = out.setdefault((l["kind"], "input", pos, t), {"kind": l["kind"], "side": "input", "slot": pos, "template": t, "launches": [],
+      g = out.setdefault((l["kind"], "input", pos, t, _shape(seq[idx])), {"kind": l["kind"], "side": "input", "slot": pos, "template": t, "launches": [],
                                                      "inside": q >= len(l["input"]) - l["inside"]})
       g["launches"].append((seq[idx], widths[l["unit"]], st["layers"][n - 1]["gap"] if n and q < len(l["input"]) - l["inside"] else None, q))
     for p, idx in enumerate(l["output"]):
       t = template(seq[idx]["key"])
-      g = out.setdefault((l["kind"], "output", p, t), {"kind": l["kind"], "side": "output", "slot": p, "template": t, "launches": [],
+      g = out.setdefault((l["kind"], "output", p, t, _shape(seq[idx])), {"kind": l["kind"], "side": "output", "slot": p, "template": t, "launches": [],
                                                       "layers": set()})
       g["launches"].append((seq[idx], widths[l["unit"]], l["gap"], p))
       g["layers"].add(n)
@@ -236,6 +241,12 @@ def _groups(st:dict[str, Any], widths:list[int]) -> list[dict[str, Any]]:
       g = out.setdefault(("tail", "tail", key, None), {"kind": "tail", "side": "tail", "slot": key, "template": template(key), "launches": []})
       g["launches"].append((seq[idx], 1, None, None))
   return [_finish(g) for g in out.values()]
+
+
+def _shape(l:dict[str, Any]) -> str | None:
+  """A launch whose grid is checked (matrix_grid_constraint) groups by its grid too: a slot shared by a gap's two layers
+  holds one launch shape per group, so a grid one row fits is not refused for another's launches beside it."""
+  return l["key"].split(" grid=", 1)[-1] if l.get("matrix_grid_constraint") else None
 
 
 def _finish(g:dict[str, Any]) -> dict[str, Any]:
@@ -363,7 +374,7 @@ def _carriers(rows:list[dict[str, Any]], prune:dict[str, Any] | None) -> list[di
   per layer: each format runs in some layers only, and the last layer is one of them); every way, for the walk to try."""
   formats: dict[str, list[str]] = collections.defaultdict(list)
   for r in rows if prune else []:
-    if "head" not in stages(r) and stages(r) & set(prune["stages"]):
+    if "head" not in stages(r) and stages(r) & set(prune["stages"]) and r.get("last_layer") is None:
       formats[r["role"]].append(r["quant"])
   roles = sorted(x for x, q in formats.items() if len(q) > 1)
   return [dict(zip(roles, combo)) for combo in itertools.product(*(formats[x] for x in roles))]
@@ -390,14 +401,16 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
           continue
         stg = stages(r, need / (kinds[k] * units))
         sides = {STAGE_SIDE.get(s) for s in stg} or {None}
-        per_layer = need / (kinds[k] * units)
+        per_layer = own = need / (kinds[k] * units)
         if (carry or {}).get(r["role"]) == r["quant"]:  # the role's formats share the layers: the last is this one's
           per_layer = per_role[(r["role"], k)]
-        if prune and k == prune["kind"] and stg and stg <= set(prune["stages"]) and per_layer == int(per_layer):
-          need -= int(per_layer) * units  # the unit's last layer runs this row at output width: its own item
-          items.append({"row": r, "parts": [r], "need": int(per_layer) * prune["units"], "kind": PRUNED, "stages": stg,
+        # the row's calls in the last layer: the profile's when it read them (a row of some layers only), else per layer
+        cut = r["last_layer"] if r.get("last_layer") is not None else int(per_layer) if per_layer == int(per_layer) else 0
+        if prune and k == prune["kind"] and stg and stg <= set(prune["stages"]) and cut:
+          need -= cut * units  # the unit's last layer runs this row at output width: its own item
+          items.append({"row": r, "parts": [r], "need": cut * prune["units"], "kind": PRUNED, "stages": stg,
                         **_facts(r), "slack": 0, "sides": {PRUNED}})
-        items.append({"row": r, "parts": [r], "need": need, "kind": k, "stages": stg, **_facts(r), "per_layer": per_layer,
+        items.append({"row": r, "parts": [r], "need": need, "kind": k, "stages": stg, **_facts(r), "per_layer": per_layer, "own": own,
                       "slack": min(int(per_layer) * units, need - 1) if kinds[k] > 1 else 0,
                       "sides": {s for s in ("input", "output") if None in sides or s in sides}})
   out: list[dict[str, Any]] = []
@@ -408,7 +421,7 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
         and kinds_allowed(last["row"], kinds) == kinds_allowed(it["row"], kinds)):
       total = last["need"] + it["need"]
       last.update(role=" + ".join(sorted(set(last["role"].split(" + ")) | {it["role"]})), need=total, parts=last["parts"] + [it["row"]],
-                  slack=last.get("slack", 0) + it.get("slack", 0), per_layer=last.get("per_layer", 1) + it.get("per_layer", 1),
+                  slack=last.get("slack", 0) + it.get("slack", 0), per_layer=last.get("per_layer", 1) + it.get("per_layer", 1), own=last.get("own", 1) + it.get("own", 1),
                   weight_bytes=(last["weight_bytes"] * last["need"] + it["weight_bytes"] * it["need"]) / total,
                   nk=(last["nk"] * last["need"] + it["nk"] * it["need"]) / total, count=last["count"] + it["count"])
       continue
@@ -427,13 +440,17 @@ def _facts(r:dict[str, Any]) -> dict[str, Any]:
 
 # A weight format a kernel's name states: tinygrad's q4k_g3_lanemap_gemv, llama.cpp's kernel_mul_mv_q6_K_f32. Only the
 # GGUF block formats are read (an f16/f32 in a name is the activation's type, not the weights'); a name stating two
-# formats (a weight and an activation quant, mul_mat_q4_K_q8_1) or none states nothing.
+# formats (a weight and an activation quant, mul_mat_q4_K_q8_1) or none states nothing. llama.cpp's CUDA templates
+# state the weight's type as a number (mul_mat_vec_q<(ggml_type)14, ...>: Q6_K).
 _FORMAT_WORD = re.compile(r"(?<![a-z0-9])(q[2-8])_?(k|0|1)(?![a-z0-9])")
+_GGML_TYPE = re.compile(r"\(ggml_type\)(\d+)")
 
 
+@functools.lru_cache(maxsize=None)
 def stated_format(name:str) -> str | None:
   """The GGUF weight format a kernel name states (Q4_K, Q6_K, Q8_0), or None."""
-  got = {f"{q.upper()}_{'K' if b == 'k' else b}" for q, b in _FORMAT_WORD.findall(name.lower())}
+  words = name.lower() + "".join(f" {GGML_TYPE_NAMES.get(int(n), '')} " for n in _GGML_TYPE.findall(name)).lower()
+  got = {f"{q.upper()}_{'K' if b == 'k' else b}" for q, b in _FORMAT_WORD.findall(words)}
   return got.pop() if len(got) == 1 else None
 
 
@@ -518,7 +535,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
   bound, ratios = _bind(items, groups)
   taken: set[int] = set()  # launch ids
   fmt: dict[tuple[str, str], str] = dict(bound)  # (kind, template) -> the weight format it serves
-  used: dict[tuple[str, str], list] = collections.defaultdict(list)  # (kind, stage) -> output slot groups taken
+  used: dict[tuple[str, str, str | None], list] = collections.defaultdict(list)  # (kind, stage, FFN branch) -> output slot groups taken
   out_max: dict[int, int] = {}  # gap -> highest position an output row took
   in_min: dict[int, int] = {}  # gap -> lowest position an input row took
   placed: list[dict[str, Any]] = []
@@ -527,6 +544,9 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
   # rows', its last launches the later layer's input rows' (less the launches inside the block)
   # A row whose format runs in only some layers (a mixed quant per layer) is no launch in every layer: such rows
   # count together per role and side, once when their layers cover every layer.
+  # K and V hold two slots when the counts bind their format's templates to one launch per call (gate+up may fuse);
+  # a mixed-quant row counts its own launches: the carried role's per_layer spans its other formats' layers too
+  unfused = lambda it: bool(krs := [kr for key, kr in ratios.items() if key[0] == it["kind"] and bound.get(key) == it["quant"]]) and all(k == 1 for k, _ in krs)  # noqa: E731
   min_out: dict[str, int] = collections.Counter()
   min_in: dict[str, int] = collections.Counter()
   partial: dict[tuple[str, str, str], float] = collections.Counter()
@@ -538,7 +558,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       if it["sides"] == {side} or both:
         share = it.get("per_layer", 1) / (2 if both else 1)
         if share >= 1:
-          mins[it["kind"]] += 1
+          mins[it["kind"]] += max(1, int(it.get("own", 1) / (2 if both else 1))) if unfused(it) else 1  # its own launches, not a carried role's
         else:
           partial[(it["kind"], side, it["role"])] += share
   for (kind, side, _), share in partial.items():
@@ -581,11 +601,17 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
 
   def ordered(item, g):
     stage = _output_stage(item)
+    if g["side"] == "input" and item.get("nk"):  # on one template more operations per launch is more time per launch
+      return all(not _apart(item["nk"], p["item"]["nk"], _walls(g["launches"]), _walls(p["group"]["launches"])) or
+                 (item["nk"] - p["item"]["nk"]) * (g["median_us"] - p["group"]["median_us"]) >= 0 for p in placed
+                 if p["group"]["side"] == "input" and p["group"]["template"] == g["template"] and p["item"].get("nk"))
     if g["side"] != "output" or not stage:
       return True
-    i = OUTPUT_ORDER.index(stage)  # order holds within a layer: only groups that share layers are compared
-    return (all(u["slot"] < g["slot"] for e in OUTPUT_ORDER[:i] for u in used[(g["kind"], e)] if u["layers"] & g["layers"])
-            and all(u["slot"] > g["slot"] for e in OUTPUT_ORDER[i + 1:] for u in used[(g["kind"], e)] if u["layers"] & g["layers"]))
+    # order holds within a layer (only groups that share layers are compared), an FFN's stages within its branch
+    i, b = OUTPUT_ORDER.index(stage), FFN_BRANCH.get(item["row"].get("role_class"))
+    seen = lambda e: [u for (k, st, ub), us in used.items() if k == g["kind"] and st == e and  # noqa: E731
+                      (ub == b or "ffn" not in st or "ffn" not in stage) for u in us if u["layers"] & g["layers"]]
+    return all(u["slot"] < g["slot"] for e in OUTPUT_ORDER[:i] for u in seen(e)) and all(u["slot"] > g["slot"] for e in OUTPUT_ORDER[i + 1:] for u in seen(e))
 
   def choices(item):
     """(k, r, templates, [(group, launches)]) in preference order: slot groups the row may take, of templates serving
@@ -594,7 +620,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
     key = lambda g: (g["kind"] if g["kind"] != "tail" else None, g["template"])  # noqa: E731
     cand = []
     for g in groups:
-      if fmt.get(key(g), item["quant"]) != item["quant"] or not (g.get("weight", True) or item["stages"] == {"head"}):
+      if fmt.get(key(g), stated_format(g["template"]) or item["quant"]) != item["quant"] or not (g.get("weight", True) or item["stages"] == {"head"}):
         continue
       if not (g["side"] in item["sides"] and (item["kind"] is None or g["kind"] == item["kind"])):
         continue
@@ -646,6 +672,11 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
         identity = lambda it: sorted((r["role"], r["quant"], r.get("n"), r.get("k"), r["count"]) for r in it["parts"])
         if identity(ia) == identity(ib):
           continue  # exchanging identical logical rows changes no attribution
+        us = lambda ps: sum(p["group"]["median_us"] * len(p["launches"]) for p in ps)  # noqa: E731
+        if (ia["sides"] == {"input"} and ia.get("nk") and ib.get("nk") and {p["group"]["template"] for p in a} == {p["group"]["template"] for p in b}
+            and _apart(ia["nk"], ib["nk"], _walls(x for p in a for x in p["launches"]), _walls(x for p in b for x in p["launches"]))
+            and (ia["nk"] - ib["nk"]) * (us(a) - us(b)) > 0):
+          continue  # on one template the exchange would give the row of more operations per launch the less time
         if (all(fits(ia, p["group"], p["fused"], p["split"]) for p in b)
             and all(fits(ib, p["group"], p["fused"], p["split"]) for p in a)):
           found.append(f"{ia['role']} {ia['quant']} and {ib['role']} {ib['quant']} could exchange their launches")
@@ -693,7 +724,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
               in_min[gap[0]] = min(in_min.get(gap[0], 1 << 30), pos)
         placed.append({"item": item, "group": g, "launches": ls, "fused": k, "split": r})
         if g["side"] == "output" and stage:
-          used[(g["kind"], stage)].append(g)
+          used[(g["kind"], stage, FFN_BRANCH.get(item["row"].get("role_class")))].append(g)
       new = [t for t in ts if t not in fmt]
       for t in ts:
         fmt.setdefault(t, item["quant"])
@@ -705,7 +736,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
           taken.discard(id(l))
         placed.pop()
         if g["side"] == "output" and stage:
-          used[(g["kind"], stage)].pop()
+          used[(g["kind"], stage, FFN_BRANCH.get(item["row"].get("role_class")))].pop()
       out_max.clear(); out_max.update(saved_out)
       in_min.clear(); in_min.update(saved_in)
       if done:
@@ -720,6 +751,18 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
     best["ambiguous"] = {"reason": str(exc)}
   best["nodes"] = state["nodes"]
   return best
+
+
+def _walls(launches) -> list[float]:
+  return [x[0]["wall_us"] for x in launches]
+
+
+def _apart(nk_a:float, nk_b:float, us_a:list[float], us_b:list[float]) -> bool:
+  """Two rows' work differs by the policy operations_order_ratio and their launches' measured times do not overlap
+  (every launch of one faster than every launch of the other): an order neither a near-equal shape nor the times'
+  own spread can flip."""
+  return (min(nk_a, nk_b) > 0 and bool(us_a) and bool(us_b) and max(nk_a, nk_b) >= value("operations_order_ratio") * min(nk_a, nk_b)
+          and (max(us_a) < min(us_b) or max(us_b) < min(us_a)))
 
 
 def _why(item:dict[str, Any], bandwidth_gbs:float | None) -> str:

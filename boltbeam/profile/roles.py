@@ -93,6 +93,8 @@ _PATTERNS: tuple[tuple[str, RoleClass], ...] = (
   ("attn_q.weight", RoleClass.ATTENTION_Q),
   ("attn_k.weight", RoleClass.ATTENTION_K),
   ("attn_v.weight", RoleClass.ATTENTION_V),
+  ("attn_kv_a_mqa.weight", RoleClass.ATTENTION_KV_A),
+  ("attn_kv_b.weight", RoleClass.ATTENTION_KV_B),
   ("attn_output", RoleClass.ATTENTION_O),
   ("q_proj.", RoleClass.ATTENTION_Q),
   ("k_proj.", RoleClass.ATTENTION_K),

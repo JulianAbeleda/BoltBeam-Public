@@ -552,7 +552,7 @@ def available(provider:str, backend:str, bench:str | None = None) -> str | None:
 def role_rows(profile:dict[str, Any]) -> list[dict[str, Any]]:
   """The weight roles to time, from the model profile: one per (role, quant, shape) with its calls per token."""
   return [{"role": r["role"], "quant": r["quant"], "rows": int(r["rows"]), "cols": int(r["cols"]), "count": int(r.get("count") or 0),
-           "tensor_name": r.get("tensor_name")} for r in profile.get("roles", []) if r.get("count") and r.get("rows") and r.get("cols")]
+           "tensor_name": r.get("tensor_name"), "n_expert": r.get("n_expert")} for r in profile.get("roles", []) if r.get("count") and r.get("rows") and r.get("cols")]
 
 
 def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambda _: None,
@@ -616,7 +616,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
         row.update(status="not_measured", reason=f"{size / 2**30:.1f} GiB of weights does not fit the GPU's working set", wall_us=0.0)
         rows_out.append(row)
         continue
-      tensor, offset = native.tensor_for(quant, rows, cols, tensors, r.get("tensor_name"))
+      tensor, offset = native.tensor_for(quant, rows, cols, tensors, r.get("tensor_name"), r.get("n_expert"))
       with open(model, "rb") as f:
         f.seek(data_start + offset)
         weights = f.read(size)

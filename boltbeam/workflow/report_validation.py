@@ -11,6 +11,7 @@ import json
 import math
 from pathlib import Path
 from boltbeam.math.numerics import ACCOUNTING_RTOL, ACCOUNTING_ATOL
+from boltbeam.collectors.prefill_attribution import ROUTED_REFUSED
 
 
 class ReportInvalid(ValueError):
@@ -177,7 +178,7 @@ def validate(run:Path, res:dict) -> dict:
       if cap.get('ambiguous'):
         failures.append(f'{filename} {collection}.{length}: unresolved matrix attribution: {cap["ambiguous"]}')
       for row in cap['rows']:
-        if row.get('refused') and (row.get('what') in ('role', 'weight', 'matrix', 'attention', 'recurrent') or 'matrix kernel no role' in row['refused']):
+        if row.get('refused') and row['refused'] != ROUTED_REFUSED and (row.get('what') in ('role', 'weight', 'matrix', 'attention', 'recurrent') or 'matrix kernel no role' in row['refused']):
           failures.append(f'{filename} {collection}.{length} {row.get("name")}: {row["refused"]}')
       p = f'{filename} {collection}.{length}'
       equal(p+'.busy_ms = sum(rows.ms)', cap['busy_ms'], sum(r['ms'] for r in cap['rows']))

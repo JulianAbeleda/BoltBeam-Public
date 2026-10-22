@@ -155,13 +155,14 @@ def llama_formats(type_k:str | None, weights:set[str] | None = None) -> dict[str
   """What llama.cpp's prefill kernels read and write: for block-quantized weights mul_mat_q reads activations
   quantized to q8_1 and writes fp32; for float weights (all of one float type) cuBLAS reads activations converted to
   the weight's type and writes fp32 (ggml_cuda_mul_mat_cublas, f32 output on NVIDIA). Flash attention reads fp32 Q
-  and the cache in its type_k and writes fp32, stream-k partials are fp32."""
+  and the cache in its type_k and writes fp32, stream-k partials are fp32. Without flash attention (a head size its
+  kernels lack) attention is KQ, soft_max and KQV (unfused_attention: soft_max names it)."""
   from boltbeam.quantization.quant import load_quant_registry
   reg = load_quant_registry()
   floats = {w for w in weights or () if w in reg and reg[w].dequant_family == "float_passthrough"}
   act = next(iter(floats)) if len(floats) == 1 and floats == set(weights or ()) else None
   return {"activations": {"in": act or "Q8_1", "out": "F32"}, "attention_activations": {"in": "F32", "out": "F32"},
-          "kv": str(type_k or "f16").upper(), "partials": "F32", "stream_k": llama_stream_k,
+          "kv": str(type_k or "f16").upper(), "partials": "F32", "stream_k": llama_stream_k, "unfused_attention": "soft_max",
           "words": (f"cuBLAS: {act.lower()} in, fp32 out" if act else "mul_mat_q: q8_1 in, fp32 out")
                    + "; flash attention: fp32 Q and output, the cache in type_k; fp32 partials"}
 
@@ -187,9 +188,8 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   settings = llama_flags(run, length, capture=True) if not depth else []
   from boltbeam.workflow.layout import one_gpu
   pin, env = one_gpu(run, "llama.cpp")
-  launches = vendor_capture.capture(target.backend, llama_argv(bench, model, length, REPS, depth=depth,
-                                                               extra=[*pin, *settings, *(extra or [])]), raw, env=env,
-                                    device=run_gpu(run))
+  argv = llama_argv(bench, model, length, REPS, depth=depth, extra=[*pin, *settings, *(extra or [])])
+  launches = vendor_capture.capture(target.backend, argv, raw, env=env, device=run_gpu(run))
   row = llama_row(vendor_capture.program_output(raw))
   qualified = qualification_sample(row, length, depth)
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
@@ -207,6 +207,7 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
           "warmup": REPEAT, "copies": REPS if depth else COPIES, "formats": formats, "timing_window": timing_window(length, depth) if qualified is not None else None,
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches, device=run_gpu(run)),
+          "program": {"argv": argv, "env": env, "raw": raw, "profiler_range": False},
           "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches),
           "measured_ms": qualified,  # never substitute an average for the final repetition
           "prune": llama_prunes(launches, split_chunks(length, ub), -(-length // b) if b else 1, copies=REPS if depth else COPIES)}
@@ -539,23 +540,25 @@ def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, A
   return {"launches": launches, "chunk": chunk["widths"], "outputs": chunk["outputs"], "warmup": False,
           "formats": vllm_formats(weight_quants(run), line), "method": vendor_capture.plan(target.backend)["method"],
           "matrices": line.get("matrices"), "captured_ms": line["wall_s"] * 1e3, "window": line.get("window_monotonic"),
-          "work_evidence":proof,
-          "paths": observe_closed(argv, {**env, **vd.CAPTURE_ENV}, raw, launches, paths, tools=bins[0] if bins else None)}
+          "work_evidence":proof, "paths": paths,
+          "program": {"argv": argv, "env": {**env, **vd.CAPTURE_ENV}, "raw": raw, "profiler_range": True,
+                      "tools": bins[0] if bins else None}}
 
 
-def observe_closed(argv:list[str], env:dict[str, str], raw:pathlib.Path, launches:list[dict[str, Any]],
-                   paths:dict[str, Any], tools:pathlib.Path | None = None) -> dict[str, Any]:
-  """paths with "observed": what ncu saw the kernels whose code was not read execute, when asked for
-  (instruction_path.NCU_ENV) and the counters are open to this user; paths unchanged otherwise."""
-  import os
-  from boltbeam.collectors import instruction_path as ip
-  closed = {ip.template(l["key"]) for l in launches} - set(paths["kernels"])
-  if os.environ.get(ip.NCU_ENV) != "1" or not closed or not ip.counters_open() or not gpu_arch():
+def observe_closed(cap:dict[str, Any], backend:str) -> dict[str, Any]:
+  """The capture's paths with what the vendor's observer (target/vendors.py closed_observer) saw the kernels whose code
+  was not read execute (a closed library such as cuBLAS), for any engine whose capture names the program it ran
+  (program: argv, env, raw; profiler_range: whether it opens one; tools: a folder of the vendor's tools): "observed"
+  and "observed_how", or "observed_how" alone saying why nothing was observed; paths unchanged with no observer."""
+  from boltbeam.collectors.instruction_path import template
+  from boltbeam.target import vendors
+  row, prog, paths = vendors.BY_BACKEND.get(backend), cap.get("program"), cap["paths"]
+  observer = vendors.resolve(row.capture.closed_observer) if row else None
+  ran = [template(l["key"]) for l in sorted(cap["launches"], key=lambda l: l["start_us"])]
+  closed = set(ran) - set(paths["kernels"])
+  if observer is None or not prog or not closed:
     return paths
-  tool = str(tools / "nvdisasm") if tools and (tools / "nvdisasm").is_file() else shutil.which("nvdisasm")
-  sigs = ip.sass_signatures(gpu_arch(), nvdisasm=tool)
-  got = ip.ncu_observe(argv, env, raw / "ncu", closed, sigs)
-  return {**paths, "observed": got["kernels"], "observed_how": got["how"]}
+  return {**paths, **observer(prog, closed, [t for t in ran if t in closed])}
 
 
 def engine_roles(roles:list[dict[str, Any]], matrices:Any) -> tuple[list[dict[str, Any]], str]:
@@ -671,15 +674,20 @@ def last_level_cache(target) -> dict[str, Any] | None:
 
 def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> list[dict[str, Any]]:
   """The profile's weight roles with their shape, launches per chunk, weight bytes per launch (the limit's own
-  bytes over the role's count, so a role's bytes are the decode table's) and fine class (its place in the layer)."""
+  bytes over the role's count, so a role's bytes are the decode table's) and fine class (its place in the layer).
+  An expert stack (n_expert) runs every token through experts_read experts (routed: products per token); its bytes
+  stay the decode's experts_read experts: exact for one token; a chunk's ceiling is refused (prefill_attribution.ROUTED_REFUSED).
+  last_layer: the row's calls in the model's last layer, when the profile read it (the layer an engine may prune)."""
   from boltbeam.role_key import role_key
   by = {role_key(r): r for r in ceil_roles}
   out = []
   for r in profile.get("roles") or []:
     c = by.get(role_key(r))
     if c and r.get("count") and r.get("rows") and r.get("cols"):
+      moe = {"n_expert": int(r["n_expert"]), **({"routed": int(r["experts_read"])} if r.get("experts_read") else {})} if r.get("n_expert") else {}
       out.append({"role": r["role"], "quant": r["quant"], "n": int(r["rows"]), "k": int(r["cols"]), "count": int(r["count"]),
-                  "weight_bytes": float(c["bytes_moved"]) / int(r["count"]), "role_class": r.get("role_class")})
+                  "weight_bytes": float(c["bytes_moved"]) / int(r["count"]), "role_class": r.get("role_class"), **moe,
+                  **({"last_layer": int(r["last_layer"])} if r.get("last_layer") is not None else {})})
   return out
 
 
@@ -742,6 +750,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     say(f"prefill of {length} tokens in the model{f' after {depth} in the cache' if depth else ''}: {provider}")
     with gpu_telemetry.run_telemetry(run, 0) as tele:
       cap = (capture or _engine(provider)["capture"])(run, str(manifest["model_path"]), int(length), target, root)
+    cap["paths"] = observe_closed(cap, target.backend)  # every engine's closed kernels, outside the timed window
     w = cap.get("window")
     seen = tele.summary(w[0] - tele.interval_s, w[1] + tele.interval_s) if w else tele.summary()
     peaks, peaks_clock = capture_peaks(dict(target.matrix_tflops or {}), out["peaks_source"], seen, w)

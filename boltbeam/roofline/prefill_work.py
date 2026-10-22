@@ -3,7 +3,8 @@
 A prefill of L prompt tokens runs every weight matrix over a chunk of tokens at a time (llama.cpp's ubatch, the
 fork's prefill chunk): one launch of an N x K weight over M tokens is a GEMM of 2 x M x N x K operations that reads
 the weight once and M x (K + N) activations. Attention is causal: the token at position p attends p + 1 keys, so a
-prompt is L x (L + 1) / 2 query-key pairs per head, each 2 x head_dim operations for QK and 2 x head_dim for PV.
+prompt is L x (L + 1) / 2 query-key pairs per head, each 2 x head_dim operations for QK and 2 x head_dim for PV (the
+V head's dim when it is narrower, as a latent attention's is).
 
 Only work the engine did is counted: the launches the capture saw, at the tokens each ran over. A role the engine
 prunes (the last layer's FFN runs for the last token only) is fewer launches, not a smaller per-call figure, and the
@@ -61,21 +62,22 @@ def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None
   attends depth + i + 1 keys."""
   att = (profile.get("metadata") or {}).get("attention") or {}
   heads, dim = att.get("head_count"), att.get("head_dim")
+  vdim = att.get("value_dim") or dim  # PV and the output at the V head's size (MLA: 128 beside a 192 K)
   attention_layers = attention_layer_count(profile)  # a hybrid model attends in some layers only
   per_token = kv_bytes_per_token(profile, kv_format)
   if not (attention_layers and heads and per_token):
     return None
   pairs = length * depth + length * (length + 1) / 2.0
-  flops = 4.0 * dim * heads * pairs * attention_layers
+  flops = 2.0 * (dim + vdim) * heads * pairs * attention_layers
   a = activations or DEFAULT_ACTIVATIONS
   done, read = depth, 0.0
   for w in chunks or [length]:
     done += w
-    read += done * per_token / attention_layers + w * heads * dim * (elem_bytes(a["in"]) + elem_bytes(a["out"]))
+    read += done * per_token / attention_layers + w * heads * (dim * elem_bytes(a["in"]) + vdim * elem_bytes(a["out"]))
   at = f" after {depth} tokens in the cache" if depth else ""
   return {"flops": flops, "bytes": read * attention_layers, "pairs_per_head": pairs, "layers": attention_layers,
           "words": (f"causal{at}: {length} x {depth} + {length} x {length + 1} / 2" if depth else
-                    f"causal: {length} x {length + 1} / 2") + f" query-key pairs per head, 4 x {dim} operations each, "
+                    f"causal: {length} x {length + 1} / 2") + " query-key pairs per head, " + (f"4 x {dim}" if vdim == dim else f"2 x ({dim} + {vdim})") + " operations each, "
                    f"{heads} heads, {attention_layers} layers"}
 
 
@@ -220,7 +222,8 @@ def kv_bytes_per_token(profile:dict[str, Any], kv_format:str = "F16", element_by
   layers = attention_layer_count(profile)
   if not (layers and att.get("head_count_kv") and att.get("head_dim")):
     return None
-  return 2.0 * att["head_count_kv"] * att["head_dim"] * layers * (element_bytes or elem_bytes(kv_format))
+  k, v = att["head_dim"], att.get("value_dim") or att["head_dim"]  # a latent attention's V head is narrower than its K
+  return float(att["head_count_kv"] * (k + v) * layers * (element_bytes or elem_bytes(kv_format)))
 
 
 def sweep(profile:dict[str, Any], *, memory_bytes:float | None, weight_bytes:float | None,

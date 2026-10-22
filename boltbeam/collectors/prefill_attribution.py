@@ -22,8 +22,9 @@ ceiling refused. A weight kernel no role took keeps its time and says so.
 """
 from __future__ import annotations
 
+import bisect
 import collections
-from typing import Any
+from typing import Any, Callable
 
 from boltbeam.collectors import pairing
 from boltbeam.target.targets import upper
@@ -39,6 +40,9 @@ STEM_CHARS = 40  # a row named by its template is cut to this many characters; t
 REPEAT = "repeat"  # measured_window: the capture ends in two identical turns (a session's turn, captured twice)
 PRUNED_NAME = ", last layer at output tokens"  # a pruned last layer's row (pairing.PRUNED), after its role's name
 UNPAIRED = "no ceiling: a matrix kernel no role could be paired with, so its work is not known"
+# an expert stack's launch over a chunk reads the experts its tokens reach, between one token's experts_read and all of
+# them; the capture does not say which, so its bytes and ceiling are not known (one output token's are exact)
+ROUTED_REFUSED = "no ceiling: the experts a chunk's tokens reach are not captured, so its weight bytes are not known"
 
 
 RECURRENT_MODULES = ("ChunkGatedDeltaRule",)  # vLLM modules whose launches are the recurrent block's own work
@@ -80,6 +84,27 @@ def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True,
     return timed[half:], (f"the second of two identical prefills ({half} launches each, {gap / 1000:.1f} ms apart); the "
                           "first is the engine's warm-up")
   raise ValueError(f"the capture's {len(timed)} launches are not a warm-up prefill and a measured one of the same kernels")
+
+
+def unfused_attention(window:list[dict[str, Any]], softmax:str | None, matrix:Callable[[str], bool]) -> list[dict[str, Any]]:
+  """An engine's attention run as its products and a softmax (llama.cpp without flash attention: KQ, soft_max, KQV):
+  the softmax launches the adapter names (a word of their template) and the matrix launch nearest each side of each,
+  tagged semantic_kind attention, when those products' templates run nowhere else (a weight GEMM's template runs at
+  other places too; a router's softmax has no product of its own after it). Else the window unchanged."""
+  seq = sorted(window, key=lambda l: l["start_us"])
+  names = [template(l["key"]) for l in seq]
+  soft = [i for i, t in enumerate(names) if softmax and softmax in t]
+  if not soft:
+    return window
+  is_matrix = {t: matrix(t) for t in set(names)}
+  mat = [i for i, t in enumerate(names) if is_matrix[t] and softmax not in t]
+  at = [bisect.bisect_left(mat, i) for i in soft]
+  products = {mat[a - 1] if a else None for a in at} | {mat[a] if a < len(mat) else None for a in at}
+  own = {names[j] for j in products if j is not None}
+  if None in products or any(names[j] in own for j in set(mat) - products):
+    return window
+  tag = {id(seq[j]) for j in products | set(soft)}
+  return [{**l, "semantic_kind": "attention"} if id(l) in tag else l for l in window]
 
 
 def _u(t:dict[str, Any], unc:dict[str, Any]) -> float | None:
@@ -130,6 +155,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   if proof := formats.get("matrix_grid_constraint"):
     launches = [{**l, "matrix_grid_constraint": proof} for l in launches]
   window, window_words = measured_window(launches, warmup, measured_ms)
+  window = unfused_attention(window, formats.get("unfused_attention"), lambda t: kernel_path(t, kernel_paths, observed)["status"] != "none")
   shared, overlap = share_overlap(window)
   if explicit_overlap:
     # Keep physical kernel durations for per-kernel efficiency. A separate
@@ -182,7 +208,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     t = {"template": " + ".join(x["template"] for x in ts), "path": _merge_paths([x["path"] for x in ts])}
     rows.append(_row(f"{role} {quant}", "role", t, slot["calls"], slot["us"], slot["flops"], slot["bytes"], peaks,
                      bandwidth_gbs, quant, roles=[(role, quant)], role_source="the engine's own program metadata (role, M, N, K)", unc=unc))
-  roles = [{**r, "nk": r["n"] * r["k"]} for r in roles if (r["role"], str(r["quant"])) not in named]
+  roles = [{**r, "nk": r["n"] * r["k"] * r.get("routed", 1)} for r in roles if (r["role"], str(r["quant"])) not in named]
   kinds = pairing.layer_kinds(profile or {}) or ({"attention": layers} if layers else {})
   weight = {t["template"] for t in templates if t["path"]["status"] in ("one", "mixed", "not_found")
             and not t.get("attention") and not t.get("recurrent") and not any(id(l) in paired for l in t["launches"])}
@@ -206,7 +232,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       shapes[id(l)] = [(r, r["count"] / item["count"]) for r in parts]
     calls = len(it["launches"])
     flops = sum(2.0 * m * item["nk"] * k for _, m, k, _ in it["launches"])
-    nbytes = sum(sum(gemm(m, r["n"], r["k"], r["weight_bytes"]) * r["count"] for r in parts) / item["count"] * k for _, m, k, _ in it["launches"])
+    nbytes = sum(sum(gemm(m * r.get("routed", 1), r["n"], r["k"], r["weight_bytes"]) * r["count"] for r in parts) / item["count"] * k for _, m, k, _ in it["launches"])
     us = sum(l["wall_us"] for l, _, _, _ in it["launches"])
     t = {"template": " + ".join(sorted(it["templates"])), "path": _merge_paths([by_t[x]["path"] for x in sorted(it["templates"])])}
     _, _, k0, r0 = it["launches"][0]
@@ -215,7 +241,10 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                      roles=[(r["role"], r["quant"]) for r in parts], skipped=max(it["need"] * r0 // k0 - calls, 0),
                      tokens_per_call=sorted(m for _, m, _, _ in it["launches"])[calls // 2],
                      **({"fused": k0} if k0 > 1 else {}), **({"split": r0} if r0 > 1 else {}),
-                     **({"pruned_layer": prune.get("words")} if pruned and prune else {}), unc=unc))
+                     **({"pruned_layer": prune.get("words")} if pruned and prune else {}),
+                     unc=unc))
+    if any(r.get("routed") for r in parts) and max(m for _, m, _, _ in it["launches"]) > 1:
+      rows[-1].update(ceiling_ms=None, compute_ms=None, memory_ms=None, bound=None, best_ms=None, best_path=None, refused=ROUTED_REFUSED)
   unpaired = [f"{u['item']['role']} {u['item']['quant']}: {u['reason']}" for u in got["unplaced"]]
   reasons = unpaired + ([got["ambiguous"]["reason"]] if got.get("ambiguous") else [])
   ambiguous = {"reason": "; ".join(reasons)} if reasons else None
@@ -371,7 +400,8 @@ def _merge_paths(paths:list[dict[str, Any]]) -> dict[str, Any]:
     return {**missing, "paths": known}
   named = [p for p in paths if p.get("from_name") and p.get("paths")]
   tag = {"from_name": True, "name_source": named[0]["name_source"]} if named else {}
-  label = f" ({FROM_NAME})" if named else ""
+  seen = next((p["observed_by"] for p in paths if p.get("observed_by") and p.get("paths")), None)  # the vendor observer's label
+  label = f" ({FROM_NAME})" if named else f" ({seen})" if seen else ""
   if len(known) == 1:
     k = next(iter(known))
     return {"status": "one", "paths": known, "path": k, "words": k + label, **tag}

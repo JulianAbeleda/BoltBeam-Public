@@ -19,6 +19,7 @@ class TensorRole:
   n_expert: int = 0               # MoE expert-stack depth (audit A5); 0 = dense (2D) weight
   experts_read: int = 0           # experts of the stack the decode reads per token (expert_used_count); 0 = dense
   weight_bytes: float | None = None  # per matrix, including stored quantization scales when the header names them
+  last_layer: int | None = None   # this row's tensors in the model's last block (the layer an engine may prune); None = not read
 
   @property
   def shape(self) -> tuple[int, int]:
@@ -26,8 +27,9 @@ class TensorRole:
 
   def to_json(self) -> dict[str, Any]:
     data = asdict(self)
-    if self.weight_bytes is None:
-      data.pop("weight_bytes")
+    for k in ("weight_bytes", "last_layer"):
+      if data[k] is None:
+        data.pop(k)
     return data
 
 

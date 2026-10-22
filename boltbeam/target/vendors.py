@@ -45,6 +45,7 @@ class Capture:
   tinygrad_reason: str   # why tinygrad's role time is its own events on this vendor, not this capture
   trace_file: str | None = None    # the kernel trace a capture folder keeps (tools/record_vendor_fixture.py)
   trace_header: str | None = None  # that trace's header's first word
+  closed_observer: str | None = None  # "module:function" reading the instructions a closed library's kernels executed
 
 
 @dataclass(frozen=True)
@@ -154,7 +155,8 @@ _ROWS = (
     capture=Capture(method="nsys", install="install Nsight Systems (it comes with the CUDA toolkit) so nsys is on PATH",
                     words="captured with nsys", tool_word="nsys", in_model_needs="in-model needs nsys",
                     tinygrad_reason="nsys cannot see tinygrad's NV backend: it talks to the driver directly, not through CUDA",
-                    trace_file="cuda_gpu_trace.csv", trace_header="Start"),
+                    trace_file="cuda_gpu_trace.csv", trace_header="Start",
+                    closed_observer="boltbeam.collectors.instruction_path:observe_closed"),
     toolchain=(("driver", ("nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"), None),
                ("cuda", ("nvcc", "--version"), r"release\s+(\d+\.\d+)"),
                ("torch", None, None),

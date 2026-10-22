@@ -126,6 +126,7 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
   head_dim = kv.get(f"{arch}.attention.key_length") if arch else None
   if head_dim is None and hidden and head_count:
     head_dim = hidden // head_count
+  value_dim = kv.get(f"{arch}.attention.value_length") if arch else None  # a latent attention's V head is narrower than its K
   vocab = len(kv["tokenizer.ggml.tokens"]) if "tokenizer.ggml.tokens" in kv else None
 
   recurrent = len({n.split(".")[1] for n, *_ in tensors if n.startswith("blk.") and ".ssm_conv1d." in n})
@@ -153,7 +154,8 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
   roles = tuple(TensorRole(role=role, tensor_name=names[0], rows=rows, cols=cols,
                            ggml_type=typ, quant=GGML_TYPE_NAMES.get(typ, f"GGML_{typ}"), count=len(names),
                            role_class=classify_tensor_role(names[0], shapes[names[0]]).value, n_expert=n_expert,
-                           experts_read=weight_ledger.experts_read(kv, arch, n_expert) if n_expert else 0)
+                           experts_read=weight_ledger.experts_read(kv, arch, n_expert) if n_expert else 0,
+                           last_layer=sum(n.startswith(f"blk.{layers - 1}.") for n in names) if layers else None)
                 for (role, rows, cols, typ, n_expert), names in sorted(grouped.items()))
   # every tensor counted in the limit or excluded with a reason; refused here when the two do not add up
   ledger = weight_ledger.build(kv, tensors, arch=arch, data_bytes=p.stat().st_size - data_start,
@@ -170,6 +172,7 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
       "head_count": head_count,
       "head_count_kv": head_count_kv,
       "head_dim": head_dim,
+      "value_dim": value_dim if value_dim != head_dim else None,
       "layer_count": attention_layers(tensors, layers),
     }.items() if v is not None},
     "context": declared_context(kv, arch),

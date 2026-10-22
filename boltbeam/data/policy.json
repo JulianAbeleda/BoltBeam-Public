@@ -8,6 +8,7 @@
     "protected_regression_max_pct": {"value": 1.0, "reason": "a protected context that slows by more than this many percent fails the guardrail"},
     "cache_tier_plateau_share": {"value": 0.08, "reason": "sweep points within this share of their run's median are one cache tier; a step to the next tier is larger"},
     "dram_full_read_share": {"value": 0.02, "reason": "a role whose DRAM bytes are within this share of its weight bytes counts as reading its weights from DRAM"},
+    "operations_order_ratio": {"value": 1.5, "reason": "two rows on one input template whose work per launch differs by at least this ratio are told apart by time: the larger takes the slower launches when their measured times do not overlap"},
     "same_row_work_ratio": {"value": 1.3, "reason": "input-side rows of one format whose work per launch is within this ratio are reported as one row"},
     "noisy_spread_pct": {"value": 10.0, "reason": "a timed row whose samples spread more than this many percent (half of P90 - P10 over the median) is labelled noisy"},
     "noisy_floor_multiple": {"value": 3.0, "reason": "a kernel whose median is under this multiple of the dispatch floor is mostly floor: sampled more and labelled noisy"},

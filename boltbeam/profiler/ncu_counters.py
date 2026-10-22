@@ -41,7 +41,7 @@ CLOCK_CONTROL = "none"
 def ncu_command(target_cmd:Sequence[str], *, out:str, ncu:str="ncu", sections:Iterable[str]=NCU_SECTIONS,
                 metrics:Iterable[str]=(), cache_control:str="all", profile_from_start:str="off", nvtx:bool=False,
                 kernel_name:str | None=None, launch_count:int | None=None, sudo_mem_max:str | None=None,
-                env:Mapping[str, str] | None=None) -> list[str]:
+                env:Mapping[str, str] | None=None, replay_mode:str | None=None) -> list[str]:
   """The one ncu argv BoltBeam builds, for one target command, always at the free clock (CLOCK_CONTROL); with
   ``sudo_mem_max`` wrapped in a memory-capped root scope."""
   cmd = [ncu, "--profile-from-start", profile_from_start, "--target-processes", "all"]
@@ -50,6 +50,7 @@ def ncu_command(target_cmd:Sequence[str], *, out:str, ncu:str="ncu", sections:It
   if nvtx: cmd.append("--nvtx")
   if kernel_name: cmd += ["--kernel-name", kernel_name]
   if launch_count is not None: cmd += ["--launch-count", str(launch_count)]
+  if replay_mode: cmd += ["--replay-mode", replay_mode]
   cmd += ["--cache-control", cache_control, "--clock-control", CLOCK_CONTROL, "-f", "-o", str(out), *target_cmd]
   env_args = [f"{k}={v}" for k, v in (env or {}).items()]
   if sudo_mem_max: return ["sudo", "systemd-run", "--scope", "-q", "-p", f"MemoryMax={sudo_mem_max}", "env", *env_args, *cmd]
