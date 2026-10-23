@@ -172,7 +172,7 @@ def llama_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) 
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   qualified = pf.qualification_sample(row, TURN, depth)
   return {"ms": statistics.median(samples), "qualification_ms": qualified, "samples_ms": samples, "computed": [TURN] * len(samples),
-          "chunk": pf.chunk_record(pf.split_chunks(TURN, ub) if ub else [], f"llama-bench n_ubatch {ub}, n_batch {b}",
+          "chunk": pf.chunk_record(pf.llama_chunks(TURN, b, ub) if ub else [], f"llama-bench n_ubatch {ub}, n_batch {b}",
                                    outputs=-(-TURN // b) if b else None),
           "decode": {"tok_s": statistics.median(rates), "tokens": DECODE, "from": depth, "samples_tok_s": rates},
           "telemetry": tele.summary(), "telemetry_samples": gpu_telemetry.compact(tele.samples),

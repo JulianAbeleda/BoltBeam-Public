@@ -71,9 +71,12 @@ GEMV_WORDS = ("mul_mat_vec", "kernel_mul_mv", "gemv")  # the GEMV names the adap
 # words come before the elementwise ones: "mul_mat_vec" holds "mul", and a 2 ms GEMV is not elementwise work
 KIND_WORDS = (("delta_net", "recurrent"), ("delta_rule", "recurrent"), ("causal_conv1d", "recurrent"), ("ssm_", "recurrent"), ("flash", "attention"), ("attention", "attention"), ("softmax", "attention"), ("rms_norm", "norm"),
               ("norm", "norm"), ("quantize", "quantize"), ("rope", "rope"), ("set_rows", "KV cache write"),
-              ("copy", "copy"), ("cpy", "copy"), ("COPY", "copy"), *((w, UNATTRIBUTED) for w in GEMV_WORDS),
+              ("copy", "copy"), ("cpy", "copy"), ("COPY", "copy"), ("get_rows", "copy"), ("concat", "copy"),
+              ("bin_bcast", "elementwise"), ("topk", "reduce"), ("reduction", "reduce"),
+              # a fast Walsh-Hadamard transform (fwht) rotates activations and reads no weights
+              ("fwht", "transform"), *((w, UNATTRIBUTED) for w in GEMV_WORDS),
               ("silu", "elementwise"), ("glu", "elementwise"), ("add", "elementwise"), ("mul", "elementwise"))
-KINDS = ("attention", "recurrent", "norm", "quantize", "rope", "KV cache write", "copy", "elementwise", "reduce", UNATTRIBUTED)
+KINDS = ("attention", "recurrent", "norm", "quantize", "rope", "KV cache write", "copy", "elementwise", "reduce", "transform", UNATTRIBUTED)
 KIND_PREFIX = (("r_", "reduce"), ("E_", "elementwise"))  # tinygrad's generated kernel names
 
 

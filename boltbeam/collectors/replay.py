@@ -451,7 +451,8 @@ def _arm(run:pathlib.Path, provider:str, server:dict[str, Any], trace:dict[str, 
     plan = vendor_capture.plan(backend)
     if plan["tool"] is None:
       raise vendor_capture.NoCapture(plan["reason"])
-    argv = vendor_capture.VENDORS[backend][2](plan["tool"], argv, profiled, dict(env or {}), PROFILE_FLUSH_MS)
+    wrap, read = vendor_capture.tools(backend, plan)  # the capture plan() chose, not always the vendor's own
+    argv = wrap(plan["tool"], argv, profiled, dict(env or {}), PROFILE_FLUSH_MS)
   say(f"replay: starting the server ({pathlib.Path(argv[0]).name}) with the user's flags" + (" under the profiler" if profiled else ""))
   log = run / (SERVER_LOG if not profiled else "replay_server_profiled.log")
   with serve_argv(argv, log_path=log, environ=env, stop_timeout_s=300.0 if profiled else 5.0) as (url, command, load_s):
@@ -493,7 +494,7 @@ def _arm(run:pathlib.Path, provider:str, server:dict[str, Any], trace:dict[str, 
       if evidence is not None:
         evidence.append({"turn":t["i"],**got["response"]})
   if profiled:  # the server is stopped: the profiler has written its report; the timing stands without the kernels, said
-    try: server["profiled_kernels"] = len(vendor_capture.VENDORS[backend][3](plan["tool"], profiled))
+    try: server["profiled_kernels"] = len(read(plan["tool"], profiled))
     except Exception as exc: server["profiled_kernels_failed"] = str(exc)[-300:]  # noqa: BLE001
   return rows, words.source
 

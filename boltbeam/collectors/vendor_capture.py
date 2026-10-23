@@ -224,6 +224,14 @@ VENDORS: dict[str, tuple[str, Callable[[], str | None], Callable[..., list[str]]
   v.backend: (v.capture.method, *_TOOLS[v.capture.method], v.capture.install) for v in vendors.VENDORS.values()}
 
 
+def tools(backend:str, p:dict[str, Any]) -> tuple[Callable[..., list[str]], Callable[..., list[dict[str, Any]]]]:
+  """The wrapper and reader of the capture plan() chose for a backend: the vendor's own, or cupti-hes when selected."""
+  if p["method"] == "cupti-hes":
+    from boltbeam.collectors import cupti_hes
+    return cupti_hes.argv, cupti_hes.read
+  return VENDORS[backend][2], VENDORS[backend][3]
+
+
 def plan(backend:str, find:Callable[[str], str | None] | None = None) -> dict[str, Any]:
   """The outside capture this machine has for a backend: {"method", "tool", "reason"}. tool None means none."""
   if backend == "CUDA" and os.environ.get("BOLTBEAM_CUDA_CAPTURE") == "cupti-hes":
@@ -253,10 +261,7 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   p = plan(backend)
   if p["tool"] is None:
     raise NoCapture(p["reason"])
-  _, _, wrap, read, _ = VENDORS[backend]
-  if p["method"] == "cupti-hes":
-    from boltbeam.collectors import cupti_hes
-    wrap, read = cupti_hes.argv, cupti_hes.read
+  wrap, read = tools(backend, p)
   capture_env = dict(env or {})
   out = pathlib.Path(out).absolute()  # the tool's own output paths must survive the cwd below
   out.mkdir(parents=True, exist_ok=True)
@@ -280,6 +285,7 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   if proc.returncode != 0:
     raise RuntimeError(f"{p['method']} exited {proc.returncode}: {log.read_text()[-300:]}")
   if p["method"] == "cupti-hes":
+    from boltbeam.collectors import cupti_hes
     cupti_hes.complete(out)
   launches = read(p["tool"], out)
   if not launches:

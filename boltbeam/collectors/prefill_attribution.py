@@ -248,7 +248,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       rows[-1].update(ceiling_ms=None, compute_ms=None, memory_ms=None, bound=None, best_ms=None, best_path=None, refused=ROUTED_REFUSED)
   unpaired = [f"{u['item']['role']} {u['item']['quant']}: {u['reason']}" for u in got["unplaced"]]
   reasons = unpaired + ([got["ambiguous"]["reason"]] if got.get("ambiguous") else [])
-  ambiguous = {"reason": "; ".join(reasons)} if reasons else None
+  kinds = [k for k in pairing.KINDS if k in pairing.ambiguity_kinds(got.get("ambiguous")) + ([pairing.NO_FIT] if unpaired else [])]
+  ambiguous = {"reason": "; ".join(reasons), "kind": kinds[0], "kinds": kinds} if reasons else None
   others: dict[str, dict[str, Any]] = {}
   att = work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths, formats.get("kv") or "F16",
                        formats.get("attention_activations") or acts, depth=depth) if profile else None

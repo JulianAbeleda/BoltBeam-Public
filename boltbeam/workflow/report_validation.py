@@ -29,6 +29,38 @@ def unmatched_window_failures(loss:dict, captures:list) -> list[str]:
            ('throughput gains',any(r.get('tok_s_gain') is not None for r in w.get('rows') or []))) if bad]
 
 
+def unresolved_attribution(run:Path, res:dict) -> tuple[list[dict], list[str]]:
+  """Every saved trace whose matrix attribution the pairing search left unresolved, with its kind (pairing.TIE,
+  SEARCH_LIMIT, NO_FIT), and the failures among them: unresolved attribution the report claims without showing it. A decode
+  report shows its engine trace's (loss.ambiguous); prefill, session and replay reports have no place to show it."""
+  from boltbeam.collectors.pairing import ambiguity_kinds
+  from boltbeam.collectors.providers import TRACES
+  loss = res.get('loss') or {}
+  found, failures = [], []
+  def note(name, where, trace, shown, claimed=True):
+    a = trace['ambiguous'] if isinstance(trace['ambiguous'], dict) else {'reason': str(trace['ambiguous'])}
+    kinds = ambiguity_kinds(a)
+    found.append({'file': name, 'where': where, 'kind': next(iter(kinds), None), 'kinds': kinds, 'reason': a.get('reason'),
+                  'unpaired_roles': len(trace.get('unpaired_roles') or []),
+                  'shown': isinstance(shown, dict) and shown.get('reason') == a.get('reason')})
+    if claimed and not found[-1]['shown']:
+      failures.append(f'{name}{" "+where if where else ""}: unresolved matrix attribution ({"+".join(kinds) or "unknown"}) the report does not show: {a.get("reason")}')
+  shown_trace = TRACES.get(loss.get('roles_provider') or loss.get('provider'))  # the table the report shows (screen.py)
+  for name in sorted(set(TRACES.values())):
+    path = run/name
+    trace = json.loads(path.read_text()) if path.is_file() else {}
+    if trace.get('ambiguous'):
+      # another engine's trace in the run is not the report's table: recorded, claimed by nothing
+      note(name, '', trace, loss.get('ambiguous') if name == shown_trace else None, claimed=name == shown_trace)
+  for path in [run/'prefill_trace.json', run/'decode_capture.json', run/'session_trace.json', *sorted(run.glob('replay_capture*.json'))]:
+    trace = json.loads(path.read_text()) if path.is_file() else {}
+    collection = 'contexts' if path.name == 'decode_capture.json' else 'lengths'
+    for length, cap in (trace.get(collection) or {}).items():
+      if cap.get('rows') and cap.get('ambiguous'):
+        note(path.name, f'{collection}.{length}', cap, None)
+  return found, failures
+
+
 def validate(run:Path, res:dict) -> dict:
   failures = []
   checks = 0
@@ -167,6 +199,8 @@ def validate(run:Path, res:dict) -> dict:
   for point in (loss.get('prefill_curve') or {}).get('points') or []:
     if point.get('ms') is not None and point.get('tok_s') is not None:
       equal(f'prefill[{point["length"]}].tok_s', point['tok_s'], point['length']*1000/point['ms'])
+  unresolved, undisclosed = unresolved_attribution(run, res)
+  failures.extend(undisclosed)
   for filename, collection in [('prefill_trace.json','lengths'),('decode_capture.json','contexts')]:
     path=run/filename
     if not path.exists():
@@ -175,8 +209,6 @@ def validate(run:Path, res:dict) -> dict:
     for length, cap in (trace.get(collection) or {}).items():
       if not cap.get('rows'):
         continue
-      if cap.get('ambiguous'):
-        failures.append(f'{filename} {collection}.{length}: unresolved matrix attribution: {cap["ambiguous"]}')
       for row in cap['rows']:
         if row.get('refused') and row['refused'] != ROUTED_REFUSED and (row.get('what') in ('role', 'weight', 'matrix', 'attention', 'recurrent') or 'matrix kernel no role' in row['refused']):
           failures.append(f'{filename} {collection}.{length} {row.get("name")}: {row["refused"]}')
@@ -226,7 +258,7 @@ def validate(run:Path, res:dict) -> dict:
     if replay.get('total') and 'overhead ms' in columns:
       cell('replay.total.display.overhead',replay['total'][columns.index('overhead ms')],
            f'{sum(t["overhead_ms"] for t in warm):,.0f}')
-  return {'status': 'failed' if failures else 'passed', 'checks': checks, 'failures': failures}
+  return {'status': 'failed' if failures else 'passed', 'checks': checks, 'failures': failures, 'unresolved': unresolved}
 
 
 def require(run:Path, res:dict) -> dict:

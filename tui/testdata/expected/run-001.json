@@ -285,7 +285,8 @@
     "validation": {
       "checks": 1,
       "failures": [],
-      "status": "passed"
+      "status": "passed",
+      "unresolved": []
     },
     "workload": "decode"
   },

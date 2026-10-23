@@ -921,7 +921,12 @@ func roleChecks(roles []seam.RoleLoss) string {
 func pairingBody(l seam.Loss) string {
 	var b strings.Builder
 	if a := l.Ambiguous; a != nil {
-		b.WriteString(stWarn.Render(glyphWarn+" Pairing is not certain: "+a.Reason+". Read the per-role rows as unsure.") + "\n")
+		what := map[string]string{"tie": "Pairing is not certain, several pairings fit equally: ",
+			"search_limit": "Pairing search stopped before it finished: ", "no_fit": "Pairing found no fit: "}[a.Kind]
+		if what == "" {
+			what = "Pairing is not certain: "
+		}
+		b.WriteString(stWarn.Render(glyphWarn+" "+what+a.Reason+". Read the per-role rows as unsure.") + "\n")
 	}
 	for _, u := range l.UnpairedRoles {
 		why := ""

@@ -50,6 +50,9 @@ MAX_SPLIT = 4  # launches one call may take (a library that cuts a product along
 MAX_NODES = 50_000
 MAX_LAUNCH_VISITS = 50_000_000  # bound search work as well as nodes on long captures
 MAX_SUM_STEPS = 20_000  # subsets one row's choice may visit
+# why a pairing is unresolved: several pairings fit equally, the search stopped at its budget, or no slot fits a row
+TIE, SEARCH_LIMIT, NO_FIT = "tie", "search_limit", "no_fit"
+KINDS = (SEARCH_LIMIT, TIE, NO_FIT)
 RECUR = 0.9  # a slot's kernel runs in at least this share of a kind's layers in a unit, or of the units' last layers
 BLOCKS = ("attention", "recurrent")  # kernels tie_out.kind_of names so are the block, never a weight role
 RULE = ("the block kernels (attention, recurrent) mark the layers; the launches before a layer's block are its input "
@@ -123,8 +126,9 @@ def signatures(st:dict[str, Any], rows:list[dict[str, Any]], kinds:dict[str, int
   layer by its kind and its tensors' formats: llama.cpp fuses gate and up into one launch only where both share a
   format, so with a mixed quant per layer the gaps after one kind's layers differ in size and the j-th launch is no
   longer one role in every layer of the kind. Layers holding the same rows' tensors (the profile's per_layer, block by
-  block) launch alike, so each such set is a kind of its own (recurrent/0, recurrent/1, ...) and the slots are counted
-  within it. Returns (each layer's kind in a unit, layers per kind, the rows with layer_kinds per kind); None when the
+  block) and launching as many kernels on each side launch alike, so each such set is a kind of its own (recurrent/0,
+  recurrent/1, ...) and the slots are counted within it; the sizes count too because an engine may leave one layer's
+  pair unfused whatever its formats (llama.cpp's first MoE layer of DeepSeek-V2: gate and up as two launches). Returns (each layer's kind in a unit, layers per kind, the rows with layer_kinds per kind); None when the
   gaps are even, a weight row has no per_layer, or the layers hold one set of tensors per kind."""
   per_unit, layers = sum(kinds.values()), st["layers"]
   sizes: dict[tuple[str, str], set] = collections.defaultdict(set)
@@ -138,7 +142,9 @@ def signatures(st:dict[str, Any], rows:list[dict[str, Any]], kinds:dict[str, int
   label: dict[tuple, str] = {}
   order = []
   for p, l in enumerate(layers[:per_unit]):
-    sig = (l["kind"], tuple((i, tuple(sorted(h[p].items()))) for i, h in enumerate(held) if p in h))
+    # a unit's last layer's output side ends at the unit's edge (a skipped last FFN, the head): sized like `sizes`, only within
+    sig = (l["kind"], tuple((i, tuple(sorted(h[p].items()))) for i, h in enumerate(held) if p in h), len(l["input"]),
+           len(l["output"]) if p + 1 < per_unit else None)
     order.append(label.setdefault(sig, f"{l['kind']}/{sum(1 for s in label if s[0] == l['kind'])}"))
   if len(label) == len(kinds):
     return None
@@ -280,7 +286,16 @@ def _groups(st:dict[str, Any], widths:list[int]) -> list[dict[str, Any]]:
   are by key at M = 1. Each launch carries its gap, for the one order rule a gap has."""
   seq = st["seq"]
   out: dict[tuple, dict[str, Any]] = {}
+  per_unit = len(st["layers"]) // max(st["units"], 1)
+  inner = collections.defaultdict(set)  # each kind's output sizes within a unit
   for n, l in enumerate(st["layers"]):
+    if (n + 1) % per_unit:
+      inner[l["kind"]].add(len(l["output"]))
+  for n, l in enumerate(st["layers"]):
+    # a unit's last layer that skipped its output rows (llama.cpp runs no FFN where a chunk has no output token) leaves a
+    # shorter gap, whose later launches are the next unit's inputs: its output launches are groups of their own, so a
+    # slot's group is one role's launches and a row's count is not met by the next unit's
+    short = not (n + 1) % per_unit and bool(inner[l["kind"]]) and len(l["output"]) < min(inner[l["kind"]])
     for q, idx in enumerate(l["input"]):
       t = template(seq[idx]["key"])
       pos = q - len(l["input"])
@@ -289,8 +304,8 @@ def _groups(st:dict[str, Any], widths:list[int]) -> list[dict[str, Any]]:
       g["launches"].append((seq[idx], widths[l["unit"]], st["layers"][n - 1]["gap"] if n and q < len(l["input"]) - l["inside"] else None, q))
     for p, idx in enumerate(l["output"]):
       t = template(seq[idx]["key"])
-      g = out.setdefault((l["kind"], "output", p, t, _shape(seq[idx])), {"kind": l["kind"], "side": "output", "slot": p, "template": t, "launches": [],
-                                                      "layers": set()})
+      g = out.setdefault((l["kind"], "output", p, t, _shape(seq[idx]), short), {"kind": l["kind"], "side": "output", "slot": p, "template": t, "launches": [],
+                                                             "layers": set(), **({"short": True} if short else {})})
       g["launches"].append((seq[idx], widths[l["unit"]], l["gap"], p))
       g["layers"].add(n)
   for idxs in st["tail"]:
@@ -647,7 +662,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       tie, out = swaps()  # rows that could exchange their launches are withdrawn: no pairing is shown that the walk cannot stand behind
       gone = [{"item": it, "reason": why} for it, why in out.values()]
       best.update(score=score, placed=[p for p in placed if id(p["item"]) not in out], unplaced=list(unplaced) + gone,
-                  ambiguous={"reason": "; ".join(tie)} if tie else None)
+                  ambiguous={"reason": "; ".join(tie), "kind": TIE} if tie else None)
 
   def _avail(g, side):
     """The group's launches not yet taken that the gap's order allows this side to take."""
@@ -720,11 +735,17 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
              and fits(item, g, k, r) and ordered(item, g)]
       opts = [{"n": len(ls), "pick": (g, ls)} for g, ls in fit]
       want, slack = item["need"] * r // k, item.get("slack", 0) * r // k
+      # a short last layer's group (_groups) is a slot the row holds in the unit's other layers too: its later launches
+      # are the next unit's inputs, which no output row takes
+      keeps = lambda subset: all(not x["pick"][0].get("short") or (x["pick"][0]["side"], x["pick"][0]["slot"]) in  # noqa: E731
+                                 held | {(y["pick"][0]["side"], y["pick"][0]["slot"]) for y in subset if not y["pick"][0].get("short")} for x in subset)
       if split_in is None:
-        subsets = _sums(opts, want, slack)
-      else:  # each side its share; a last layer's skip is on the output side
-        ins = _sums([o for o in opts if o["pick"][0]["side"] == "input"], split_in * r // k)
-        outs = _sums([o for o in opts if o["pick"][0]["side"] == "output"], want - split_in * r // k, slack)
+        subsets = [x for x in _sums(opts, want, slack) if keeps(x)]
+      else:  # each side its share; a last layer's skip is on the output side. One launch per class per layer is one slot
+        # per class on its side, whatever kernel variant each chunk width ran there
+        one = lambda subset, side: len({x["pick"][0]["slot"] for x in subset}) <= sides.count(side)  # noqa: E731
+        ins = [x for x in _sums([o for o in opts if o["pick"][0]["side"] == "input"], split_in * r // k) if one(x, "input")]
+        outs = [x for x in _sums([o for o in opts if o["pick"][0]["side"] == "output"], want - split_in * r // k, slack) if keeps(x) and one(x, "output")]
         subsets = [x + y for x in ins for y in outs][:8]
       for subset in subsets:
         at = held | {(x["pick"][0]["side"], x["pick"][0]["slot"]) for x in subset if steady(x["pick"][0])}
@@ -828,7 +849,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       walk(0, [], False)
   except _TooMany as exc:
     best["budget_exhausted"] = True
-    best["ambiguous"] = {"reason": str(exc)}
+    best["ambiguous"] = {"reason": str(exc), "kind": SEARCH_LIMIT}
   best["nodes"] = state["nodes"]
   return best
 
@@ -887,6 +908,29 @@ def _sums(gs:list[dict[str, Any]], want:int, slack:int = 0) -> list[list[dict[st
 
 class _TooMany(Exception):
   pass
+
+
+def ambiguity_kinds(ambiguous:dict[str, Any] | None) -> list[str]:
+  """Why the pairing is unresolved, in KINDS order: a reason may join several (rows no slot fits beside a tie). A trace
+  written before the kinds were recorded has them read from the reasons the search wrote."""
+  if not isinstance(ambiguous, dict):
+    return []
+  if ambiguous.get("kinds") or ambiguous.get("kind"):
+    return [k for k in KINDS if k in (ambiguous.get("kinds") or [ambiguous.get("kind")])]
+  found = set()
+  for part in str(ambiguous.get("reason") or "").split("; "):
+    if "launch visits" in part or re.search(r"more than \d+ ways to walk", part):
+      found.add(SEARCH_LIMIT)
+    elif "no slot on" in part or "are no whole number per" in part:
+      found.add(NO_FIT)
+    elif part and part != "attribution unresolved":
+      found.add(TIE)
+  return [k for k in KINDS if k in found]
+
+
+def ambiguity_kind(ambiguous:dict[str, Any] | None) -> str | None:
+  """The first of ambiguity_kinds: the one the report names."""
+  return next(iter(ambiguity_kinds(ambiguous)), None)
 
 
 def pair(launches:list[dict[str, Any]], rows:list[dict[str, Any]], *, kinds:dict[str, int], widths:list[int],

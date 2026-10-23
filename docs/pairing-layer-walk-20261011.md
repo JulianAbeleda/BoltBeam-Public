@@ -183,3 +183,34 @@ program metadata, the peak and bandwidth checks, the fused-launch allowance (now
 
 Principle: centralization of authority. One module owns how a launch becomes a role; prefill and decode are its two
 callers, and the data-flow table lives in `vocab`.
+
+## Unresolved pairings and the report (2026-10-23)
+
+An unresolved pairing carries one of three kinds (`pairing.TIE`, `SEARCH_LIMIT`, `NO_FIT`), because each one needs a
+different fix:
+
+- **tie**: several pairings fit equally, and the rows that could swap launches are withdrawn. The fix is a feature
+  that tells the rows apart, such as their tensors' formats.
+- **search_limit**: the walk stopped at its node or launch-visit budget before it finished. The fix is pruning or the
+  budget, not features.
+- **no_fit**: no slot fits a row's launches. The fix is the slot model or the checks.
+
+A prefill capture's reason can join several kinds, such as rows no slot fits beside a tie, so it records `kinds` as
+well as `kind`, which is the first of them in the order search_limit, tie, no_fit. A trace written before the kinds
+were recorded gets them from the reasons the search wrote, one part at a time (`pairing.ambiguity_kinds`).
+
+Report validation (`report_validation.unresolved_attribution`) lists every unresolved pairing in a run under
+`unresolved`, with its file, kind and reason, and whether the report shows it. It fails only when the report claims the
+attribution without showing it:
+
+- A decode report shows its engine's trace as `loss.ambiguous`, and the TUI names the kind. An engine trace whose
+  pairing is unresolved therefore passes when the report shows it.
+- Another engine's trace in the same run is not the report's table, so it is recorded and not failed.
+- Prefill, session and replay reports have no place to show an unresolved per-length capture, so one fails the
+  report. Before this change, session and replay captures were not checked at all.
+
+A release's render gate compares `unresolved` against the expectations it saved, and fails on a new entry or on a
+higher unpaired-role count.
+
+Principle: disclose, not gate. Unresolved attribution is a stated property of the run, like capture overhead. Hiding it
+is a failure.

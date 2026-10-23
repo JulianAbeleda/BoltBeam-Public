@@ -665,9 +665,12 @@ type Loss struct {
 	Others          []OtherLoss `json:"others"`
 	// UnpairedRoles are roles the capture could not split out by calls and bytes; their time is in not attributed.
 	UnpairedRoles []UnpairedRole `json:"unpaired_roles"`
-	// Ambiguous is set when the pairing search could not settle on one answer (collectors/pairing.py): its reason.
+	// Ambiguous is set when the pairing search could not settle on one answer (collectors/pairing.py): its reason,
+	// and its kind: "tie" (several pairings fit equally), "search_limit" (the search stopped at its budget), "no_fit"
+	// (no slot fits a row); empty in a trace written before the kind was recorded.
 	Ambiguous *struct {
 		Reason string `json:"reason"`
+		Kind   string `json:"kind"`
 	} `json:"ambiguous"`
 	// NotTimed are limit roles the kernel timer had no adapter for, each with its reason.
 	NotTimed []NotTimedRole `json:"not_timed"`

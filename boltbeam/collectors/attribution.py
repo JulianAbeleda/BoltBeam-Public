@@ -57,8 +57,9 @@ def groups(launches:Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], counts:dict[tuple, int],
               tokens:int, peak_gbs:float | None, *, kinds:dict[str, int] | None = None,
-              read:dict[tuple, dict[str, Any]] | None = None) -> dict[str, Any]:
-  """Pair kernel groups with roles by the layer walk. roles: the ceiling's decode roles (role, quant, bytes_moved,
+              read:dict[tuple, dict[str, Any]] | None = None, unfused_attention:str | None = None) -> dict[str, Any]:
+  """Pair kernel groups with roles by the layer walk. unfused_attention: the word naming the engine's softmax when it
+  runs attention as KQ, softmax and KQV (prefill_attribution.unfused_attention), so its products mark the layers. roles: the ceiling's decode roles (role, quant, bytes_moved,
   floor_ms, and fine or part_roles for an engine's packed matrix). counts: calls per token per role_key (or role, quant);
   kinds: layers per block kind (pairing.layer_kinds); read: the profile row of each role, keyed alike (its fine class,
   a hybrid's layer_kinds). peak_gbs: the bandwidth at the top of its measured uncertainty (targets.upper), None not checked. Returns {"pairs": [...], "groups":
@@ -73,6 +74,9 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
   timed = all(g.get("launches") and len(g["launches"]) == g["calls"] and None not in (g.get("starts") or [None]) for g in kernel_groups)
   launches = [{"key": g["key"], "raw_wall_us": d, "wall_us": sh, "start_us": g["starts"][i], "stream": (g.get("streams") or [None] * g["calls"])[i]}
               for g in kernel_groups for i, (d, sh) in enumerate(g["launches"])] if timed and kernel_groups else []
+  if launches and unfused_attention:
+    from boltbeam.collectors.prefill_attribution import unfused_attention as tag
+    launches = tag(launches, unfused_attention, lambda t: pairing.projection_candidate(t))
   got = pairing.pair(launches, rows, kinds=kinds or {}, widths=[1] * tokens, bandwidth_gbs=peak_gbs,
                      flat=None if timed and kernel_groups else kernel_groups)
   by_key: dict[str, dict[str, Any]] = {g["key"]: g for g in kernel_groups}
@@ -304,7 +308,7 @@ def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_m
 def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str, model_id:str, target,
                    context:int, tokens:int, out:str, token_ms:float | None = None,
                    long_kernels:int = 0, overlap:dict[str, Any] | None = None, batch:int = 1,
-                   matrices:Any = None, engine:dict[str, Any] | None = None) -> dict[str, Any]:
+                   matrices:Any = None, engine:dict[str, Any] | None = None, unfused_attention:str | None = None) -> dict[str, Any]:
   """A boltbeam.timing_trace.v1 of one provider's captured decode window, attributed, written to run/out.
   token_ms is the captured run's own time per token, as the runtime printed it. With batch B, a token is one decode
   step of B streams: the weights are read once per step, so a role's calls per step are its count at any batch. Refused (CaptureRefused, no file
@@ -338,7 +342,8 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
       counts = {(m["role"], m["quant"]): m["count"] for m in got}
       packed = {(m["role"], m["quant"]): m["part_roles"] for m in got}
   from boltbeam.target.targets import upper
-  result = attribute(window, roles, counts, tokens, upper(ceil.get("peak_bandwidth_gbs"), ceil.get("uncertainty")), kinds=pairing.layer_kinds(profile), read=read)
+  result = attribute(window, roles, counts, tokens, upper(ceil.get("peak_bandwidth_gbs"), ceil.get("uncertainty")), kinds=pairing.layer_kinds(profile), read=read,
+                       unfused_attention=unfused_attention)
   if packed:  # one measured duration belongs to the packed launch, not separate byte-weighted part timings
     from collections import Counter
     for g in result["groups"]:

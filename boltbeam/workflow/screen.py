@@ -476,7 +476,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
              unpaired_roles=table.get("unpaired_roles") or [], not_timed=table.get("not_timed") or [],
              ceiling_refused=table.get("ceiling_refused") or [], attribution=table.get("attribution"), unpaired_launches=table.get("unpaired_launches") or [],
              joint_role_groups=table.get("joint_role_groups") or [],
-             ambiguous=(_optional(run, providers.TRACES[shown]) or {}).get("ambiguous"),
+             ambiguous=_ambiguous((_optional(run, providers.TRACES[shown]) or {}).get("ambiguous")),
              source=_source(shown, capture, target))
   out["tie_out"] = tie.tie_out(run, provider=shown, table=table, trace=_optional(run, providers.TRACES[shown]),
                                limit_ms=limit_ms, profile=profile, bandwidth_gbs=bw,
@@ -1690,6 +1690,12 @@ def save(run:pathlib.Path, to_root:pathlib.Path) -> dict[str, Any]:
   (dest / SAVE_RECORD).write_text(json.dumps(record, indent=2) + "\n")
   return {"schema": SCHEMA, "kind": "saved_run", "id": run.name, "dir": str(dest),
           "files": ["report.html", "results.json", "summary.txt"], **record}
+
+
+def _ambiguous(a:dict[str, Any] | None) -> dict[str, Any] | None:
+  """The trace's unresolved pairing with its kind; a trace from before the kind was recorded has it read from its reason."""
+  from boltbeam.collectors.pairing import ambiguity_kind
+  return {**a, "kind": ambiguity_kind(a)} if a else None
 
 
 def saved(root:pathlib.Path) -> dict[str, Any]:

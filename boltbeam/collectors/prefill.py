@@ -17,6 +17,7 @@ ENGINES holds what differs per engine: how to time one prefill, how to capture o
 """
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import os
@@ -53,6 +54,20 @@ def chunk_record(widths:list[Any], how:str, outputs:int | None = None) -> dict[s
 
 def split_chunks(length:int, size:int) -> list[int]:
   return [min(size, length - i) for i in range(0, length, size)]
+
+
+def llama_chunks(length:int, batch:int, ubatch:int) -> list[int]:
+  """llama.cpp's chunks of a prompt: llama-bench decodes it in calls of n_batch tokens, and each call splits into
+  n_ubatch chunks of its own (2,198 tokens at 2,048 and 384: 384 x 5, 128, then 150)."""
+  if batch <= 0 or ubatch <= 0:
+    return split_chunks(length, ubatch) if ubatch > 0 else []
+  return [c for call in split_chunks(length, batch) for c in split_chunks(call, ubatch)]
+
+
+def call_ends(length:int, batch:int, ubatch:int) -> list[int]:
+  """1 for the chunk (llama_chunks) that ends each n_batch call, where llama-bench reads its output token; else 0."""
+  return [1 if i + 1 == len(chunks) else 0 for call in split_chunks(length, batch)
+          for chunks in [split_chunks(call, ubatch)] for i in range(len(chunks))]
 
 
 # --- llama.cpp -------------------------------------------------------------------------------------------------
@@ -127,7 +142,7 @@ def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> d
   samples = [float(x) / 1e6 for x in row.get("samples_ns") or [row["avg_ns"]]]
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   qualified = qualification_sample(row, length)
-  chunk = chunk_record(split_chunks(length, ub) if ub else [], f"llama-bench n_ubatch {ub}, n_batch {b}",
+  chunk = chunk_record(llama_chunks(length, b, ub) if ub else [], f"llama-bench n_ubatch {ub}, n_batch {b}",
                        outputs=-(-length // b) if b else None)
   return {"ms": statistics.median(samples), "qualification_ms": qualified, "samples_ms": samples, "chunk": chunk, "telemetry": tele.summary(),
           "telemetry_samples": gpu_telemetry.compact(tele.samples),
@@ -157,12 +172,13 @@ def llama_formats(type_k:str | None, weights:set[str] | None = None) -> dict[str
   the weight's type and writes fp32 (ggml_cuda_mul_mat_cublas, f32 output on NVIDIA). Flash attention reads fp32 Q
   and the cache in its type_k and writes fp32, stream-k partials are fp32. Without flash attention (a head size its
   kernels lack) attention is KQ, soft_max and KQV (unfused_attention: soft_max names it)."""
+  from boltbeam.collectors.llama_bench_decode import UNFUSED_ATTENTION
   from boltbeam.quantization.quant import load_quant_registry
   reg = load_quant_registry()
   floats = {w for w in weights or () if w in reg and reg[w].dequant_family == "float_passthrough"}
   act = next(iter(floats)) if len(floats) == 1 and floats == set(weights or ()) else None
   return {"activations": {"in": act or "Q8_1", "out": "F32"}, "attention_activations": {"in": "F32", "out": "F32"},
-          "kv": str(type_k or "f16").upper(), "partials": "F32", "stream_k": llama_stream_k, "unfused_attention": "soft_max",
+          "kv": str(type_k or "f16").upper(), "partials": "F32", "stream_k": llama_stream_k, "unfused_attention": UNFUSED_ATTENTION,
           "words": (f"cuBLAS: {act.lower()} in, fp32 out" if act else "mul_mat_q: q8_1 in, fp32 out")
                    + "; flash attention: fp32 Q and output, the cache in type_k; fp32 partials"}
 
@@ -203,32 +219,41 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
         formats["matrix_grid_constraint"] = llama_mmq.constraints(pathlib.Path(source["dir"]), target.compute_units, commit)
     except engine_kernels.NoEngineSource:
       pass
-  return {"launches": launches, "chunk": split_chunks(length, ub), "outputs": -(-length // b) if b else 1,
+  return {"launches": launches, "chunk": llama_chunks(length, b, ub), "outputs": -(-length // b) if b else 1,
           "warmup": REPEAT, "copies": REPS if depth else COPIES, "formats": formats, "timing_window": timing_window(length, depth) if qualified is not None else None,
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches, device=run_gpu(run)),
           "program": {"argv": argv, "env": env, "raw": raw, "profiler_range": False, "arch": (run_gpu(run) or {}).get("architecture")},
           "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches),
           "measured_ms": qualified,  # never substitute an average for the final repetition
-          "prune": llama_prunes(launches, split_chunks(length, ub), -(-length // b) if b else 1, copies=REPS if depth else COPIES)}
+          "prune": llama_prunes(launches, llama_chunks(length, b, ub), -(-length // b) if b else 1, copies=REPS if depth else COPIES,
+                               ends=call_ends(length, b, ub) if b else None)}
 
 
 LLAMA_PRUNED_STAGES = ("ffn_in", "ffn_out")  # llama.cpp keeps only the output rows (inp_out_ids) before the last FFN
 
 
-def llama_prunes(launches:list[dict[str, Any]], chunk:list[int], outputs:int, copies:int = 2) -> dict[str, Any] | None:
+def llama_prunes(launches:list[dict[str, Any]], chunk:list[int], outputs:int, copies:int = 2,
+                 ends:list[int] | None = None) -> dict[str, Any] | None:
   """Whether this llama.cpp build ran its last layer's FFN on the output tokens only, from the capture: a prefill whose
   GEMV launches (one per output call is the head) outnumber its output calls ran the pruned layer as GEMVs. llama-bench
   asks for one output token per call, at the end of the call's last chunk. copies: the prefills the capture holds.
-  None when the build does not prune."""
+  ends: 1 for each chunk that ends a call (call_ends: each n_batch call splits into chunks of its own, so 2,198 tokens
+  at 2,048 per call and 512 per chunk end calls after chunks 4 and 5, not 3 and 5); without it the calls share the
+  chunks evenly. None when the build does not prune."""
   from boltbeam.collectors.instruction_path import template
   from boltbeam.workflow.tie_out import GEMV_WORDS
   found = [template(l["key"]) for l in launches if any(w in str(l["key"]) for w in GEMV_WORDS)]
   gemv = len(found) // copies
   if gemv <= outputs:
     return None
-  per_call = -(-len(chunk) // max(outputs, 1))
-  out = [1 if (u + 1) % per_call == 0 or u + 1 == len(chunk) else 0 for u in range(len(chunk))]
+  if ends is not None:
+    out = list(ends)
+    if len(out) != len(chunk) or sum(out) != outputs:
+      raise ValueError(f"call ends {out} do not mark {outputs} calls over the {len(chunk)} chunks {chunk}")
+  else:
+    per_call = -(-len(chunk) // max(outputs, 1))
+    out = [1 if (u + 1) % per_call == 0 or u + 1 == len(chunk) else 0 for u in range(len(chunk))]
   return {"stages": list(LLAMA_PRUNED_STAGES), "outputs": out, "kernels": sorted(set(found)),
           "words": (f"{gemv} GEMV launches per prefill against {outputs} output call(s): the last layer's FFN runs on "
                     "the output tokens only (llama.cpp's inp_out_ids), in the chunk that ends each call")}

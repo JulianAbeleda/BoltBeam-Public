@@ -35,6 +35,7 @@ from boltbeam.workflow.common import load_manifest, read_json
 COLLECTOR_ID = "llama-bench-decode"
 PROVIDER_ID = "llama.cpp/llama-bench-decode"
 PROVIDER = "llama.cpp"  # the provider adapter's name (collectors/providers.py)
+UNFUSED_ATTENTION = "soft_max"  # without flash attention (a head size its kernels lack) attention is KQ, soft_max, KQV
 TRACE = "llama_timing_trace.json"  # per-role time of llama.cpp's own kernels, from a vendor capture
 RAW = "kernel_compare/llama_capture"
 ROLE_TOKENS = 64  # decode tokens in the captured window
@@ -186,7 +187,8 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
     engine = {**pair["engine"], "timing_window": decode_window(context, tokens)}
   return attribution.provider_trace(run, window, provider=PROVIDER, method=method, model_id=model_id,
                                     target=target, context=context, tokens=tokens - 1, out=out,
-                                    token_ms=token_ms, long_kernels=len(long), overlap=overlap, batch=batch, engine=engine)
+                                    token_ms=token_ms, long_kernels=len(long), overlap=overlap, batch=batch, engine=engine,
+                                    unfused_attention=UNFUSED_ATTENTION)
 
 
 def bench_row(text:str) -> dict[str, Any]:

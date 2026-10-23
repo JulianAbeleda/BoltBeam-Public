@@ -199,6 +199,20 @@ func TestPairingBodyShowsAmbiguousAndReasons(t *testing.T) {
 	}
 }
 
+// The kind says why the pairing is unsure: a search that stopped at its budget is not two pairings that fit equally.
+func TestPairingBodyNamesTheAmbiguityKind(t *testing.T) {
+	for kind, want := range map[string]string{"tie": "several pairings fit equally: r.", "search_limit": "stopped before it finished: r.",
+		"no_fit": "Pairing found no fit: r.", "": "Pairing is not certain: r."} {
+		var l seam.Loss
+		if err := json.Unmarshal([]byte(`{"ambiguous":{"reason":"r","kind":"`+kind+`"}}`), &l); err != nil {
+			t.Fatal(err)
+		}
+		if got := plain(pairingBody(l)); !strings.Contains(got, want) {
+			t.Errorf("%q: missing %q in %q", kind, want, got)
+		}
+	}
+}
+
 // A replay table wider than the page lost its flags at the edge ("THROTT…"); the flags now leave the table.
 func TestReplayFlagsLeaveATableWiderThanThePage(t *testing.T) {
 	defer func(w int) { tableWidth = w }(tableWidth)
