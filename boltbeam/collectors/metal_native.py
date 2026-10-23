@@ -23,8 +23,10 @@ memory latency, in-flight groups, the compiled ISA. Those probes classify as inc
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import pathlib
+import re
 import struct
 import sys
 from typing import Any, Callable
@@ -43,11 +45,15 @@ PROVIDER_ID = "boltbeam/metal-native"
 from boltbeam.profile.gguf import GGML_TYPE_IDS
 from boltbeam.profile.decode_roles import GGML_BLOCK_LAYOUTS
 # Formats supported by this reference; the identities and layouts come from their owners.
-GGML_TYPES = {q: GGML_TYPE_IDS[q] for q in ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K")}
+GGML_TYPES = {q: GGML_TYPE_IDS[q] for q in ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K", "Q3_K", "IQ4_NL", "IQ4_XS", "IQ3_S")}
 BLOCK_BYTES = {q: GGML_BLOCK_LAYOUTS[t][1] for q, t in GGML_TYPES.items()}
 BLOCK_ELEMS = {q: GGML_BLOCK_LAYOUTS[t][0] for q, t in GGML_TYPES.items()}
-METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18, "Q8_0": 2, "Q5_0": 6, "Q4_0": 2, "Q5_K": 48}  # Q4_K: d, dmin, 12 scale bytes. Q6_K: 16 int8 scales, d.
-# Q8_0, Q4_0: d. Q5_0: d and the 4 bytes of fifth bits. Q5_K: d, dmin, 12 scale bytes, 32 bytes of fifth bits. The rest of a block is its codes (code_bytes).
+METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18, "Q8_0": 2, "Q5_0": 6, "Q4_0": 2, "Q5_K": 48,  # Q4_K: d, dmin, 12 scale bytes. Q6_K: 16 int8 scales, d.
+                  "Q3_K": 46, "IQ4_NL": 2, "IQ4_XS": 8, "IQ3_S": 46}
+# Q8_0, Q4_0: d. Q5_0: d and the 4 bytes of fifth bits. Q5_K: d, dmin, 12 scale bytes, 32 bytes of fifth bits. Q3_K: 32 bytes
+# of high bits, 12 scale bytes, d. IQ4_NL: d. IQ4_XS: d, 2 + 4 scale bytes. IQ3_S: d, 8 bytes of ninth bits, 32 of signs, 4
+# of scales. The rest of a block is its codes (code_bytes).
+KVALUES_IQ4NL = (-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113)  # ggml-common.h kvalues_iq4nl
 WORKING_SET_SHARE = 0.8  # never ask for more than this share of Metal's recommended working set
 CHECK_ROWS = 9
 from boltbeam.math.numerics import TOLERANCE
@@ -134,13 +140,71 @@ def dequant_q5_k_block(blk:bytes) -> list[float]:
   return out
 
 
+def dequant_q3_k_block(blk:bytes) -> list[float]:
+  hm, q, d = blk[0:32], blk[32:96], _half(blk, 108)  # block_q3_K: hmask[32], qs[64], scales[12], d
+  a0, a1, tmp = struct.unpack_from("<3I", blk, 96)  # the 16 6-bit scales, unpacked as dequantize_row_q3_K does
+  k1, k2 = 0x03030303, 0x0f0f0f0f
+  scales = struct.unpack("<16b", struct.pack("<4I", (a0 & k2) | ((tmp & k1) << 4), (a1 & k2) | (((tmp >> 2) & k1) << 4),
+                                             ((a0 >> 4) & k2) | (((tmp >> 4) & k1) << 4), ((a1 >> 4) & k2) | (((tmp >> 6) & k1) << 4)))
+  out, s, m = [], 0, 1
+  for n in range(2):  # two halves of 128; the high-bit mask m runs on across both
+    for shift in (0, 2, 4, 6):
+      for off in (0, 16):
+        dl, s = d * (scales[s] - 32), s + 1
+        out += [dl * (((q[32 * n + off + l] >> shift) & 3) - (0 if hm[off + l] & m else 4)) for l in range(16)]
+      m <<= 1
+  return out
+
+
+def dequant_iq4_nl_block(blk:bytes) -> list[float]:
+  d, qs = _half(blk, 0), blk[2:18]  # block_iq4_nl: d, 16 qs bytes, low nibbles first, through kvalues_iq4nl
+  return [d * KVALUES_IQ4NL[b & 0xF] for b in qs] + [d * KVALUES_IQ4NL[b >> 4] for b in qs]
+
+
+def dequant_iq4_xs_block(blk:bytes) -> list[float]:
+  d, sh, sl = _half(blk, 0), struct.unpack_from("<H", blk, 2)[0], blk[4:8]  # block_iq4_xs: d, scales_h, scales_l[4], qs[128]
+  out = []
+  for ib in range(8):
+    dl = d * ((((sl[ib // 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4)) - 32)
+    qs = blk[8 + 16 * ib:24 + 16 * ib]
+    out += [dl * KVALUES_IQ4NL[b & 0xF] for b in qs] + [dl * KVALUES_IQ4NL[b >> 4] for b in qs]
+  return out
+
+
+@functools.lru_cache(maxsize=None)
+def iq3s_grid() -> tuple[int, ...]:
+  """IQ3_S's 512-entry codebook, read from ggml-common.h beside the engine source the kernel is built from
+  (engine_kernels.mmvq_source_dir): the format's own definition, not a table BoltBeam copies."""
+  from boltbeam.collectors.engine_kernels import NoEngineSource, mmvq_source_dir
+  text = (pathlib.Path(mmvq_source_dir()["dir"]).parent / "ggml-common.h").read_text()
+  m = re.search(r"GGML_TABLE_BEGIN\(uint32_t,\s*iq3s_grid,\s*512\)(.*?)GGML_TABLE_END", text, re.S)
+  grid = tuple(int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", m.group(1))) if m else ()
+  if len(grid) != 512:
+    raise NoEngineSource("ggml-common.h has no 512-entry iq3s_grid")
+  return grid
+
+
+def dequant_iq3_s_block(blk:bytes) -> list[float]:
+  d, qs, qh, signs, sc = _half(blk, 0), blk[2:66], blk[66:74], blk[74:106], blk[106:110]  # block_iq3_s
+  grid, out = iq3s_grid(), []
+  for k in range(8):  # 32 weights each: scale nibble k % 2 of byte k // 2, qh[k]'s bits as each pair's ninth index bit
+    db = d * (1 + 2 * ((sc[k // 2] >> 4 * (k % 2)) & 0xF))
+    for l in range(4):
+      g1, g2 = grid[qs[8 * k + 2 * l] | ((qh[k] << (8 - 2 * l)) & 256)], grid[qs[8 * k + 2 * l + 1] | ((qh[k] << (7 - 2 * l)) & 256)]
+      s = signs[4 * k + l]
+      out += [db * ((g >> 8 * j) & 0xFF) * (-1 if s & (1 << (j + 4 * h)) else 1) for h, g in ((0, g1), (1, g2)) for j in range(4)]
+  return out
+
+
 def code_bytes(quant:str) -> int:
   """The bytes of a block that hold its codes, after its scales and extra bits."""
   return BLOCK_BYTES[quant] - METADATA_BYTES[quant]
 
 
 DEQUANT: dict[str, Callable[[bytes], list[float]]] = {"Q4_K": dequant_q4_k_block, "Q6_K": dequant_q6_k_block, "Q8_0": dequant_q8_0_block,
-                                                      "Q5_0": dequant_q5_0_block, "Q4_0": dequant_q4_0_block, "Q5_K": dequant_q5_k_block}
+                                                      "Q5_0": dequant_q5_0_block, "Q4_0": dequant_q4_0_block, "Q5_K": dequant_q5_k_block,
+                                                      "Q3_K": dequant_q3_k_block, "IQ4_NL": dequant_iq4_nl_block,
+                                                      "IQ4_XS": dequant_iq4_xs_block, "IQ3_S": dequant_iq3_s_block}
 
 
 def reference_row(weights:bytes, quant:str, row:int, cols:int, x:list[float]) -> float:

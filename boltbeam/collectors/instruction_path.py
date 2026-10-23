@@ -267,6 +267,11 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
           "kernels": {t: index["paths"][t] for t in wanted if t in index["paths"]}}
 
 
+def mixed(paths:dict[str, int]) -> list[str]:
+  """The measured matrix paths a kernel's code holds: several means what ran is the observer's to say."""
+  return [p for p in paths if not p.startswith("unknown:")]
+
+
 FROM_NAME = "from the kernel name"
 # A closed kernel's matrix path from its name: (pattern, path or None for no matrix instruction, the source that
 # documents it). First match wins. Only for kernels whose code was not read; code always wins over a name.
@@ -307,16 +312,17 @@ def name_path(name:str) -> dict[str, Any] | None:
   return None
 
 
-def kernel_path(name:str, table:dict[str, dict[str, int]], observed:dict[str, dict[str, int]] | None = None) -> dict[str, Any]:
+def kernel_path(name:str, table:dict[str, dict[str, int]], observed:dict[str, dict[str, int]] | None = None,
+                observed_by:str | None = None) -> dict[str, Any]:
   """The path of one captured kernel: {"path", "paths", "status", "words"}. status: one (one matrix path), mixed
   (several: each path's share of the operations at its own peak, prefill_work.compute_ms), none (no matrix instruction: bytes only), not_found (refused).
-  Code read from the kernel decides; a kernel whose code was not read takes the path ncu saw it execute (observed,
-  ncu_observe), else a path from its name (name_path)."""
+  Code read from the kernel decides; a kernel whose code was not read, or whose code holds several matrix paths, takes
+  what the vendor's observer saw it execute (observed; observed_by, the observer's label), else a path from its name."""
   key = template(name)
   paths = table.get(key)
-  if paths is None and observed and key in observed:
-    got = kernel_path(name, {key: observed[key]})
-    return {**got, "words": f"{got['words']} ({FROM_NCU})", "from_ncu": True, "observed_by": FROM_NCU}
+  if observed and key in observed and (paths is None or len(mixed(paths)) > 1):
+    got, label = kernel_path(name, {key: observed[key]}), observed_by or FROM_NCU  # a capture before observers named themselves was ncu's
+    return {**got, "words": f"{got['words']} ({label})", "observed_by": label}
   if paths is None:
     return name_path(name) or {"path": None, "paths": {}, "status": "not_found", "words": f"{NOT_FOUND} for {key[:80]}"}
   known = {p: n for p, n in paths.items() if not p.startswith("unknown:")}
@@ -396,7 +402,7 @@ def observe_closed(program:dict[str, Any], closed:set[str], ran:list[str]) -> di
                                                "nvdisasm not found on PATH, beside nvcc, under CUDA_HOME or in an nvidia wheel")}
   got = ncu_observe(program["argv"], program["env"], pathlib.Path(program["raw"]) / "ncu", closed, sass_signatures(arch, nvdisasm=tool),
                     from_start=not program.get("profiler_range", True), launches=max(ran.index(t) for t in closed) + 1)
-  return {"observed": got["kernels"], "observed_how": got["how"]}
+  return {"observed": got["kernels"], "observed_how": got["how"], "observed_by": FROM_NCU}
 
 
 def cuda_tool(name:str, hint:str | pathlib.Path | None = None) -> str | None:

@@ -18,11 +18,25 @@ cd "$repo_root"
 trunk="${TRUNK_BRANCH:-main}"
 dry_run=0
 [[ "${1:-}" == "--dry-run" ]] && dry_run=1
+# sz.py and the suite run under $BOLTBEAM_PYTHON, the interpreter the TUI and its Go seam test
+# also use; it needs the dev extras (pip install -e '.[dev]').
+py="${BOLTBEAM_PYTHON:-python3}"
 
 [[ -z "$(git status --porcelain)" ]] || { echo "working tree is dirty; commit or stash first" >&2; exit 1; }
 start_branch="$(git rev-parse --abbrev-ref HEAD)"
-restore() { git checkout -q "$start_branch"; }
+restore() { cd "$repo_root"; git checkout -q "$start_branch"; }
 trap restore EXIT
+
+# git refuses to check out a branch a second worktree already holds, so a branch that has
+# its own worktree is worked on there; any other branch is checked out here, as before.
+worktree_of() {
+  git worktree list --porcelain | awk -v ref="refs/heads/$1" '/^worktree /{w=substr($0,10)} $0=="branch " ref {print w}'
+}
+enter() {
+  local dir; dir="$(worktree_of "$1")"
+  if [[ -n "$dir" ]]; then cd "$dir"; else cd "$repo_root"; git checkout -q "$1"; fi
+  [[ -z "$(git status --porcelain)" ]] || { echo "$1 in $PWD is dirty; commit or stash first" >&2; exit 1; }
+}
 
 # Files the source branch deletes that the target currently has. These are the
 # ones a merge would silently remove from a branch whose job is to keep them.
@@ -42,7 +56,7 @@ sync_one() {
     echo "  as apparatus:  git checkout <pre-prune-sha> -- <paths>"
   fi
   if (( dry_run )); then echo "  (dry run, not merging)"; return; fi
-  git checkout -q "$into"
+  enter "$into"
   git merge -q --no-edit "$from" || { echo "  MERGE CONFLICT in $into — resolve, then rerun" >&2; exit 2; }
   # The suite gate is per-branch, because the branches admit different content.
   #   main: Go vet and tests pass before either outward merge (below).
@@ -50,12 +64,12 @@ sync_one() {
   #   exp:  report only. exp admits broken intermediate states by design; blocking on a
   #         red suite there would gate experimentation on a rule exp does not accept.
   # the size budget and the duplicate-authority check (sz.py): hard on dev, report-only on exp, like the suite
-  if ! python3 sz.py >/dev/null 2>&1; then
+  if ! "$py" sz.py >/dev/null 2>&1; then
     if [[ "$into" == exp ]]; then echo "  sz.py FAILS on exp — reported only (run python3 sz.py there)"
     else echo "  sz.py FAILS on $into after the merge: run python3 sz.py there." >&2; exit 4; fi
   fi
   local rc=0
-  python3 -m pytest -q >/dev/null 2>&1 || rc=$?
+  "$py" -m pytest -q >/dev/null 2>&1 || rc=$?
   case "$rc" in
     0) echo "  merged, suite green" ;;
     5) echo "  merged, but NO TESTS COLLECTED on $into."
@@ -75,7 +89,11 @@ sync_one() {
 # Go tests and their fixtures ship with main; gate that tree before promoting it.
 # A dry run remains read-only. Python tests belong only to the outer branches.
 if (( ! dry_run )); then
-  git checkout -q "$trunk"
+  "$py" -c 'import pytest' 2>/dev/null || {
+    echo "$py has no pytest; set BOLTBEAM_PYTHON to an interpreter with the dev extras" >&2
+    exit 6
+  }
+  enter "$trunk"
   echo "=== $trunk: Go vet + Go tests ==="
   (cd tui && go vet ./... && go test -count=1 ./...) || {
     echo "Go gate FAILS on $trunk; no outward merge attempted." >&2

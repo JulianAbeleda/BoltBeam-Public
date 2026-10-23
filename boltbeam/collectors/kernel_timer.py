@@ -2,7 +2,7 @@
 cache flush, the median. Every isolated kernel time BoltBeam reports comes from here.
 
     spec = KernelSpec(...)                 what to run: source, kernel, arguments, grid, block, what the output must match
-    bridge = bridge_for(backend)           Metal (runtime/metal_device.py) or CUDA (runtime/cuda_device.py), the same surface
+    bridge = bridge_for(backend)           Metal, CUDA or HIP (runtime/metal_device.py, cuda_device.py, hip_device.py), one surface
     result = time_spec(bridge, spec)       correctness, samples, median µs, GB/s
 
 Adapters only produce KernelSpecs, one per role: BoltBeam's own GEMVs (collectors/boltbeam_gemv.py), the engine's
@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import statistics
 import struct
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -79,6 +80,7 @@ extern "C" __global__ void sweep(const float* b, float* o, unsigned n) {
 extern "C" __global__ void empty(float* b) { if (blockIdx.x * blockDim.x + threadIdx.x == 0xFFFFFFFFu) b[0] = 0.0f; }
 """,
 }
+FLUSH_SOURCES["hip"] = FLUSH_SOURCES["cuda"]  # hipcc compiles CUDA's kernel syntax as is
 # the flush per backend with a kernel bridge, its size from the vendor's row; "mode" says what the sweep does to the
 # cache lines: "read" leaves them clean, "store" leaves them dirty
 FLUSH = {v.backend: {"bytes": v.flush_bytes, "kernel": "sweep", "mode": "read", "empty": "empty", "threads": 256,
@@ -283,6 +285,7 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
       got = samples(launch, warmups=warmups, count=count, before=before)
       extra, why = more_samples(got, floor_us)
       return (got + samples(launch, warmups=0, count=extra, before=before), why) if extra else (got, why)
+    start = time.monotonic()  # the timed launches' window (time.monotonic, as telemetry samples are stamped)
     result["samples"], why_more = timed()
     passes, read_gbs = [], lambda: spec.bytes_read / (statistics.median(result["samples"]) * 1e3)  # noqa: E731
     while flush is not None and dram_gbs and read_gbs() > dram_gbs * (1 + CACHE_MARGIN):
@@ -290,6 +293,7 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
       if not flush.grow(min(MAX_SWEEP_BYTES, bridge.working_set_bytes // 2 - spec.bytes_read)):
         break
       result["samples"], why_more = timed()
+    result["window"] = [start, time.monotonic()]
   finally:
     for buf in owned:
       bridge.release(buf)

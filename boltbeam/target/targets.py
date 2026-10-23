@@ -95,6 +95,12 @@ def save_local_profile(row:dict, *, measured_at:str) -> pathlib.Path:
 
 TARGETS = _load_all()
 
+
+def stored_path_scan(arch:str | None) -> dict | None:
+  """The matrix-path scan a chip profile keeps for one compiler target (profile_row's matrix_path_scan), or None."""
+  return next((rec for t in TARGETS.values() if arch and (rec := (t.capabilities or {}).get("matrix_path_scan"))
+               and rec.get("arch") == arch and any(p.get("kind") == "mma" for p in rec.get("paths") or ())), None)
+
 # Vendor prefixes are read off the registry rather than listed, so a new vendor row needs no edit here.
 _VENDORS = frozenset(t.split("_", 1)[0] for t in TARGETS if "_" in t)
 

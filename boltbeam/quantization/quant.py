@@ -27,7 +27,7 @@ class QuantCapability:
   ggml_type: int
   block_elems: int                       # elements per (super)block
   block_bytes: int                       # bytes per (super)block — the load-bearing byte-cost fact
-  dequant_family: str                    # k_quant / legacy_scale / float_passthrough
+  dequant_family: str                    # k_quant / legacy_scale / codebook (IQ: through a value table) / float_passthrough
   route_families: tuple[str, ...] = ()    # route families the emitter may offer for this quant
   refuted_routes: tuple[str, ...] = ()    # route axes known-refuted for this quant (ledger consistency)
   pending_routes: tuple[str, ...] = ()    # desired routes not yet expressible (search-space-incomplete)

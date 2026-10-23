@@ -33,6 +33,9 @@ from boltbeam.target import toolkits
 
 CLOCK = "HIP events (hipEventElapsedTime) around one launch"
 HIPCC_ENV = "BOLTBEAM_HIPCC"
+# device code only, as a bare ELF: a clang offload bundle (hipcc's default) loads too, but its symbols cannot be read
+GENCO = ("--genco", "--no-gpu-bundle-output")
+GGML_CC_OFFSET_AMD = 0x1000000  # ggml-cuda common.cuh GGML_CUDA_CC_OFFSET_AMD
 # The installed headers that define the enums read below: device attributes, then function attributes.
 HEADERS = ("include/hip/hip_runtime_api.h", "include/hip/driver_types.h")
 _HIP_STREAM_NON_BLOCKING = 1
@@ -48,6 +51,21 @@ ATTRIBUTES = {"multiprocessor_count": "hipDeviceAttributeMultiprocessorCount",
               "compute_capability_minor": "hipDeviceAttributeComputeCapabilityMinor"}
 _FUNC_MAX_THREADS = "HIP_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK"
 _FUNC_SHARED = "HIP_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES"
+
+
+def ggml_compute_capability(facts:dict[str, Any]) -> int | None:
+  """The device's compute capability as ggml-cuda numbers an AMD GPU (ggml_cuda_parse_id on gcnArchName): the
+  offset, then the arch after "gfx" with its last two hex digits as the minor, so gfx1201 is 0x1001201 and
+  gfx1100 0x1001100; a "-generic" target takes major-minor. None when the driver reported no architecture."""
+  arch = str(facts.get("architecture") or "").split(":")[0]
+  name = arch[3:] if arch.startswith("gfx") else ""
+  try:
+    if name.endswith("-generic"):
+      major, _, minor = name[:-len("-generic")].partition("-")
+      return GGML_CC_OFFSET_AMD + int(major, 16) * 0x100 + (0x10 * int(minor, 16) if minor else 0)
+    return GGML_CC_OFFSET_AMD + int(name[:-2], 16) * 0x100 + int(name[-2:], 16) if len(name) >= 3 else None
+  except ValueError:
+    return None
 
 
 class HipUnavailable(RuntimeError):
@@ -102,13 +120,13 @@ def build_code_object(hipcc:str, source:str, macros:dict[str, str] | None = None
   cache = cache or default_cache()
   cache.mkdir(parents=True, exist_ok=True)
   macros = macros or {}
-  key = hashlib.sha256((source + repr(sorted(macros.items())) + repr(includes or []) + hipcc + arch).encode()).hexdigest()[:16]
+  key = hashlib.sha256((source + repr(sorted(macros.items())) + repr(includes or []) + hipcc + arch + repr(GENCO)).encode()).hexdigest()[:16]
   out = cache / f"k-{key}.hsaco"
   if not out.exists():
     src = cache / f"k-{key}.hip"
     # nvcc includes its runtime header itself; hipcc compiling device code only does not
     src.write_text("#include <hip/hip_runtime.h>\n" + source)
-    argv = [hipcc, "--genco", "-O3", f"--offload-arch={arch}", "-std=c++17", *[f"-D{k}={v}" for k, v in macros.items()],
+    argv = [hipcc, *GENCO, "-O3", "-fno-crash-diagnostics", f"--offload-arch={arch}", "-std=c++17", *[f"-D{k}={v}" for k, v in macros.items()],
             *[f"-I{i}" for i in includes or []], "-o", str(out), str(src)]
     proc = subprocess.run(argv, capture_output=True, text=True, timeout=1200)
     if proc.returncode != 0:
@@ -272,6 +290,7 @@ class Hip:
 
   API = "HIP"
   CLOCK = CLOCK
+  GGML_MACROS = {"GGML_USE_HIP": "1"}  # llama.cpp's HIP build compiles ggml-cuda/*.cu with it (-x hip)
 
   def __init__(self, device:int = 0, *, hipcc:str | None = None, cache:pathlib.Path | None = None, driver=None,
                compile=None, includes:list[str] | None = None, codes:dict[str, int] | None = None):
@@ -300,6 +319,10 @@ class Hip:
   def _attribute(self, enumerator:str) -> int | None:
     code = self.codes.get(enumerator)
     return None if code is None else self.driver.attribute(code, self.dev)
+
+  def ggml_cc(self) -> int | None:
+    """This device's compute capability as ggml-cuda numbers it (ggml_compute_capability)."""
+    return ggml_compute_capability(self.facts())
 
   def facts(self) -> dict[str, Any]:
     """The driver's device facts (hipDeviceGetAttribute), as the chip profile records them; a fact this ROCm's

@@ -10,7 +10,9 @@ output projection, the FFN. The block's kernels are the ones tie_out.kind_of nam
            the launches before the first block are the first layer's input side, and every gap of one kind pair has
            one size, so the split is solved from the sizes
   slots    the j-th weight launch on one side of every layer of one kind is the same role (an engine launches a
-           layer's projections in one order); a slot group is (slot, template), with the layers it occurs in
+           layer's projections in one order); a slot group is (slot, template), with the layers it occurs in; a role
+           held in several formats (a mixed quant per layer) keeps its slots whatever the format, each format's row
+           taking its own template's launches there, in as many layers of each kind as the profile read (layer_kinds)
   rows     a profile row's fine class sets its stage (vocab.STAGE): input stages take input-side slots, output stages
            output-side slots in the data flow's order (vocab.OUTPUT_ORDER), the gate projection either side, the
            head the tail of the unit; a template serves one weight format; within one template on the input side
@@ -81,13 +83,16 @@ def layer_kinds(profile:dict[str, Any]) -> dict[str, int]:
   return {**({"recurrent": rec} if rec else {}), **({"attention": att} if att else {})}
 
 
-def stages(row:dict[str, Any], per_layer:float | None = None) -> set[str]:
+def stages(row:dict[str, Any], per_layer:float | None = None, kind:str | None = None) -> set[str]:
   """The stages a row's launches may be at. A packed matrix (fine classes) runs one launch at its earliest class's
-  stage. A row of one class, or one launch per layer, is at its class's stage. A row of a group with several classes
-  and several launches per layer (attn_qo: q and o) holds one launch per class."""
+  stage. A row whose classes in this kind the profile read (layer_kinds) is at theirs. A row of one class, or one
+  launch per layer, is at its class's stage. A row of a group with several classes and several launches per layer
+  (attn_qo: q and o) holds one launch per class."""
   if row.get("fine"):
     got = {STAGE[c] for c in row["fine"] if c in STAGE}
     return {min(got, key=_RANK.__getitem__)} if got else set()
+  if classes := (row.get("layer_kinds") or {}).get(kind):
+    return {STAGE[c] for c in classes if c in STAGE}
   cls = row.get("role_class")
   group = ROLE_GROUP_OF.get(cls, row["role"]) if cls else row["role"]
   members = [c for c, g in ROLE_GROUP_OF.items() if g == group]
@@ -100,11 +105,55 @@ def kinds_allowed(row:dict[str, Any], kinds:dict[str, int]) -> list[str]:
   """The layer kinds a row may run in: a recurrent class (ssm_*) in recurrent layers, q/k/v/o in attending ones, every
   other class (the loaders name a delta net's in_proj by attention classes) in any."""
   cls = row.get("role_class") or ""
-  if cls.startswith("ssm_") and "recurrent" in kinds:
-    return ["recurrent"]
-  if cls in ("attention_q", "attention_k", "attention_v", "attention_o") and "attention" in kinds:
-    return ["attention"]
+  of = lambda b: [k for k in kinds if base(k) == b]  # noqa: E731
+  if cls.startswith("ssm_") and of("recurrent"):
+    return of("recurrent")
+  if cls in ("attention_q", "attention_k", "attention_v", "attention_o") and of("attention"):
+    return of("attention")
   return list(kinds)
+
+
+def base(kind:str) -> str:
+  """The block kind of a layer kind: a kind signatures split (recurrent/2) is its block's (recurrent)."""
+  return kind.split("/", 1)[0]
+
+
+def signatures(st:dict[str, Any], rows:list[dict[str, Any]], kinds:dict[str, int]) -> tuple[list[str], dict[str, int], list[dict[str, Any]]] | None:
+  """Layers of one kind told apart by their tensors, when the capture shows they launch differently. An engine runs a
+  layer by its kind and its tensors' formats: llama.cpp fuses gate and up into one launch only where both share a
+  format, so with a mixed quant per layer the gaps after one kind's layers differ in size and the j-th launch is no
+  longer one role in every layer of the kind. Layers holding the same rows' tensors (the profile's per_layer, block by
+  block) launch alike, so each such set is a kind of its own (recurrent/0, recurrent/1, ...) and the slots are counted
+  within it. Returns (each layer's kind in a unit, layers per kind, the rows with layer_kinds per kind); None when the
+  gaps are even, a weight row has no per_layer, or the layers hold one set of tensors per kind."""
+  per_unit, layers = sum(kinds.values()), st["layers"]
+  sizes: dict[tuple[str, str], set] = collections.defaultdict(set)
+  for i, l in enumerate(layers[:-1]):
+    if (i + 1) % per_unit:
+      sizes[(l["kind"], layers[i + 1]["kind"])].add(len(l["output"]))
+  weights = [i for i, r in enumerate(rows) if "head" not in stages(r)]
+  if all(len(v) == 1 for v in sizes.values()) or not weights or not all(rows[i].get("per_layer") for i in weights):
+    return None
+  held = [{int(b): c for b, c in rows[i]["per_layer"].items()} for i in weights]
+  label: dict[tuple, str] = {}
+  order = []
+  for p, l in enumerate(layers[:per_unit]):
+    sig = (l["kind"], tuple((i, tuple(sorted(h[p].items()))) for i, h in enumerate(held) if p in h))
+    order.append(label.setdefault(sig, f"{l['kind']}/{sum(1 for s in label if s[0] == l['kind'])}"))
+  if len(label) == len(kinds):
+    return None
+  out = list(rows)
+  for i, h in zip(weights, held):
+    lk: dict[str, dict[str, int]] = {}
+    for p, classes in h.items():
+      if p >= per_unit:
+        return None
+      for c, n in classes.items():
+        lk.setdefault(order[p], collections.Counter())[c] += n
+    if sum(n for c in lk.values() for n in c.values()) != rows[i]["count"]:
+      return None  # the row's count is not its tensors (an engine's packed matrix): no split
+    out[i] = {**rows[i], "layer_kinds": {k: dict(c) for k, c in lk.items()}}
+  return order, dict(collections.Counter(order)), out
 
 
 # --- the structure: layers, sides, slots -------------------------------------------------------------------------------
@@ -115,10 +164,11 @@ class NoStructure(ValueError):
 
 
 def structure(launches:list[dict[str, Any]], *, kinds:dict[str, int], units:int,
-              candidate:Callable[[str], bool]) -> dict[str, Any]:
+              candidate:Callable[[str], bool], order:list[str] | None = None) -> dict[str, Any]:
   """The layer walk of a window: launches in stream order, their block runs grouped into layers, the sides solved.
-  Returns {"seq", "layers": [{kind, unit, input: [idx], output: [idx]}], "tail": [[idx] per unit], "sides": {kind:
-  {input, inside, output}}}; NoStructure when the window does not read as layers."""
+  order: each layer's kind in a unit (signatures), kinds then keyed by those. Returns {"seq", "layers": [{kind,
+  unit, input: [idx], output: [idx]}], "tail": [[idx] per unit], "sides": {kind: {input, inside, output}}};
+  NoStructure when the window does not read as layers."""
   if any(l.get("start_us") is None for l in launches):
     raise NoStructure("launches without a start time")
   seq = sorted(launches, key=lambda l: l["start_us"])
@@ -136,7 +186,10 @@ def structure(launches:list[dict[str, Any]], *, kinds:dict[str, int], units:int,
   if not runs or not per_unit:
     raise NoStructure("no attention or recurrent kernel is named, so the layers cannot be told apart")
   count = collections.Counter(r["kind"] for r in runs)
-  rpl = {k: count[k] / (units * n) for k, n in kinds.items() if n}
+  blocks = collections.Counter()
+  for k, n in kinds.items():
+    blocks[base(k)] += n
+  rpl = {k: count[k] / (units * n) for k, n in blocks.items() if n}
   if any(k not in rpl for k in count) or any(v < 1 or v != int(v) for v in rpl.values()):
     raise NoStructure(f"{dict(count)} block runs do not group into {units} x {kinds} layers")
   layers: list[dict[str, Any]] = []
@@ -146,6 +199,10 @@ def structure(launches:list[dict[str, Any]], *, kinds:dict[str, int], units:int,
     if any(r["kind"] != k for r in runs[i:i + n]):
       raise NoStructure("block runs of two kinds in one layer")
     layers.append({"kind": k, "first": runs[i]["first"], "last": runs[i + n - 1]["last"], "unit": len(layers) // per_unit})
+    if order:
+      if base(order[(len(layers) - 1) % per_unit]) != k:
+        raise NoStructure("the layers' block kernels do not run in the profile's layer order")
+      layers[-1]["kind"] = order[(len(layers) - 1) % per_unit]
     i += n
   cands = lambda a, b: [j for j in range(a, b) if kind[j] == "C"]  # noqa: E731
   # a layer's launches recur: a kernel that is a slot of kind K runs in (nearly) every kind-K layer of a unit, or in
@@ -206,8 +263,9 @@ def structure(launches:list[dict[str, Any]], *, kinds:dict[str, int], units:int,
                 (i + 1) % per_unit == 0)  # the gap after this layer; a unit's last layer may skip its output rows
     if (i + 1) % per_unit == 0:  # the unit's tail: every non-block launch after its last layer's block
       tail[l["unit"]] = [j for j in range(l["last"] + 1, hi) if kind[j] not in BLOCKS]
-  inside = {k: sorted({l["inside"] for l in layers if l["kind"] == k}) for k in kinds if count.get(k)}
-  gaps = {k: sorted({len(l["output"]) for l in layers if l["kind"] == k}) for k in kinds if count.get(k)}
+  ran = {l["kind"] for l in layers}
+  inside = {k: sorted({l["inside"] for l in layers if l["kind"] == k}) for k in kinds if k in ran}
+  gaps = {k: sorted({len(l["output"]) for l in layers if l["kind"] == k}) for k in kinds if k in ran}
   return {"seq": seq, "layers": layers, "tail": tail, "units": units,
           "sides": {k: {"inside": inside[k], "gaps_after": gaps[k]} for k in inside}}
 
@@ -341,14 +399,18 @@ def assign(groups:list[dict[str, Any]], rows:list[dict[str, Any]], *, units:int,
 def _kind_splits(rows:list[dict[str, Any]], kinds:dict[str, int], units:int) -> list[dict[tuple, int]]:
   """Ways to spread each row's calls per unit over the layer kinds it may run in: whole calls per layer when the
   model has several kinds (a hybrid), else the row's count. Keyed (role, quant, kind) -> launches in the window; the
-  evenest spread first."""
+  evenest spread first. A row whose calls per kind the profile read (layer_kinds) takes those (a mixed quant per
+  layer runs a format in some layers of a kind, a whole number per layer only over the role's formats)."""
   options: list[list[dict[tuple, int]]] = []
-  for r in rows:
+  for at, r in enumerate(rows):
     if "head" in stages(r):
       continue
     ks = kinds_allowed(r, kinds)
     if len(kinds) == 1:
-      options.append([{(r["role"], r["quant"], ks[0]): r["count"] * units}])
+      options.append([{(r["role"], r["quant"], ks[0], at): r["count"] * units}])
+      continue
+    if (read := r.get("layer_kinds")) and set(read) <= set(kinds):
+      options.append([{(r["role"], r["quant"], k, at): sum(c.values()) * units for k, c in read.items()}])
       continue
     ways: list[dict[tuple, int]] = []
 
@@ -358,7 +420,7 @@ def _kind_splits(rows:list[dict[str, Any]], kinds:dict[str, int], units:int) -> 
           ways.append(dict(acc))
         return
       for c in range(left // kinds[ks[i]], -1, -1):
-        spread(i + 1, left - c * kinds[ks[i]], {**acc, (r["role"], r["quant"], ks[i]): c * kinds[ks[i]] * units})
+        spread(i + 1, left - c * kinds[ks[i]], {**acc, (r["role"], r["quant"], ks[i], at): c * kinds[ks[i]] * units})
     spread(0, r["count"], {})
     mean = r["count"] / sum(kinds[k] for k in ks)
     ways.sort(key=lambda w: sum(abs(v / units / kinds[k[2]] - mean) for k, v in w.items()))
@@ -386,20 +448,22 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
   whose row runs the pruned layer when the role's formats each run in some layers only."""
   items: list[dict[str, Any]] = []
   per_role: dict[tuple[str, str], float] = collections.Counter()  # (role, kind) -> launches per layer over its formats
-  for (role, _, k), n in split.items():
+  for (role, _, k, _), n in split.items():
     per_role[(role, k)] += n / (kinds[k] * units)
-  for r in rows:
+  for i, r in enumerate(rows):
     if "head" in stages(r):
       items.append({"row": r, "parts": [r], "need": r["count"] * outputs, "sides": {"flat"} if flat else {"tail"},
                     "stages": {"head"}, "kind": None, **_facts(r)})
     elif flat:
       items.append({"row": r, "parts": [r], "need": r["count"] * units, "sides": {"flat"}, "stages": stages(r), "kind": None, **_facts(r)})
+    elif not any(split.get((r["role"], r["quant"], k, i)) for k in kinds_allowed(r, kinds)):  # said, never dropped
+      items.append({"row": r, "parts": [r], "need": r["count"] * units, "sides": set(), "stages": stages(r), "kind": None, "unsplit": sorted(kinds_allowed(r, kinds)), **_facts(r)})
     else:
       for k in kinds_allowed(r, kinds):
-        need = split.get((r["role"], r["quant"], k), 0)
+        need = split.get((r["role"], r["quant"], k, i), 0)
         if not need:
           continue
-        stg = stages(r, need / (kinds[k] * units))
+        stg = stages(r, need / (kinds[k] * units), k)
         sides = {STAGE_SIDE.get(s) for s in stg} or {None}
         per_layer = own = need / (kinds[k] * units)
         if (carry or {}).get(r["role"]) == r["quant"]:  # the role's formats share the layers: the last is this one's
@@ -410,9 +474,11 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
           need -= cut * units  # the unit's last layer runs this row at output width: its own item
           items.append({"row": r, "parts": [r], "need": cut * prune["units"], "kind": PRUNED, "stages": stg,
                         **_facts(r), "slack": 0, "sides": {PRUNED}})
-        items.append({"row": r, "parts": [r], "need": need, "kind": k, "stages": stg, **_facts(r), "per_layer": per_layer, "own": own,
-                      "slack": min(int(per_layer) * units, need - 1) if kinds[k] > 1 else 0,
-                      "sides": {s for s in ("input", "output") if None in sides or s in sides}})
+        if need:  # a format only the pruned layer holds has nothing left
+          items.append({"row": r, "parts": [r], "need": need, "kind": k, "stages": stg, **_facts(r), "per_layer": per_layer, "own": own,
+                        "role_per_layer": per_role[(r["role"], k)],
+                        "slack": min(int(per_layer) * units, need - 1) if kinds[k] > 1 else 0,
+                        "sides": {s for s in ("input", "output") if None in sides or s in sides}})
   out: list[dict[str, Any]] = []
   for it in sorted(items, key=lambda i: (str(i["kind"]), str(i["quant"]), -(i.get("nk") or 0))):
     last = out[-1] if out else None
@@ -428,8 +494,11 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
     out.append(it)
   def order(i):  # output-side rows in the data flow's order, then the rest most bytes first (they bind their templates'
     stage = _output_stage(i)  # formats for the lighter rows after them); the head last
-    rank = 2 if "head" in i["stages"] else 1.5 if i["kind"] == PRUNED else 0 if stage else 1
-    return (rank, OUTPUT_ORDER.index(stage) if stage else 0, -(i["weight_bytes"] * i["need"]), i["role"])
+    rank = -1 if i.get("unsplit") else 2 if "head" in i["stages"] else 1.5 if i["kind"] == PRUNED else 0 if stage else 1
+    # kinds a signature split (one per set of tensors, in the unit's layer order) are walked layer by layer: a gap's
+    # two sides are placed together, so a wrong split of the gap is found at once, not hundreds of rows later
+    at = list(kinds).index(i["kind"]) if i["kind"] in kinds and any("/" in k for k in kinds) and rank in (0, 1) else -1
+    return (rank if at < 0 else 0, at, rank, OUTPUT_ORDER.index(stage) if stage else 0, -(i["weight_bytes"] * i["need"]), i["role"])
   out.sort(key=order)
   return out
 
@@ -441,16 +510,16 @@ def _facts(r:dict[str, Any]) -> dict[str, Any]:
 # A weight format a kernel's name states: tinygrad's q4k_g3_lanemap_gemv, llama.cpp's kernel_mul_mv_q6_K_f32. Only the
 # GGUF block formats are read (an f16/f32 in a name is the activation's type, not the weights'); a name stating two
 # formats (a weight and an activation quant, mul_mat_q4_K_q8_1) or none states nothing. llama.cpp's CUDA templates
-# state the weight's type as a number (mul_mat_vec_q<(ggml_type)14, ...>: Q6_K).
-_FORMAT_WORD = re.compile(r"(?<![a-z0-9])(q[2-8])_?(k|0|1)(?![a-z0-9])")
+# state the weight's type as a number (mul_mat_vec_q<(ggml_type)14, ...>: Q6_K), the importance formats too (23: IQ4_XS).
+_FORMAT_WORD = re.compile(r"(?<![a-z0-9])(q[2-8]|iq[1-4])_?(k|0|1|xxs|xs|s|m|nl)(?![a-z0-9])")
 _GGML_TYPE = re.compile(r"\(ggml_type\)(\d+)")
 
 
 @functools.lru_cache(maxsize=None)
 def stated_format(name:str) -> str | None:
-  """The GGUF weight format a kernel name states (Q4_K, Q6_K, Q8_0), or None."""
+  """The GGUF weight format a kernel name states (Q4_K, Q6_K, Q8_0, IQ4_XS), or None."""
   words = name.lower() + "".join(f" {GGML_TYPE_NAMES.get(int(n), '')} " for n in _GGML_TYPE.findall(name)).lower()
-  got = {f"{q.upper()}_{'K' if b == 'k' else b}" for q, b in _FORMAT_WORD.findall(words)}
+  got = {f"{q.upper()}_{b.upper()}" for q, b in _FORMAT_WORD.findall(words) if q.startswith("i") != (b in ("k", "0", "1"))}
   return got.pop() if len(got) == 1 else None
 
 
@@ -627,8 +696,16 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       got = _avail(g, g["side"])
       if got:
         cand.append((g, got))
-    cand.sort(key=lambda c: (fmt.get(key(c[0])) != item["quant"], c[0]["kind"] == "tail",
+    cand.sort(key=lambda c: ((fmt.get(key(c[0])) or stated_format(c[0]["template"])) != item["quant"], c[0]["kind"] == "tail",
                              c[0]["slot"] if c[0]["side"] == "output" else -c[0]["slot"] if c[0]["side"] == "input" else 0, -c[0]["median_us"]))
+    # a role held in several formats (a mixed quant per layer): its formats share the role's slots, as many per layer
+    # as its launches per layer, and a slot of the role launches its format's template for this row in every layer (a
+    # unit's last layer, which may launch otherwise, aside)
+    fam = (item["kind"], item["role"]) if item.get("role_per_layer", 0) > item.get("own", 0) else None
+    steady = lambda g: any(not (x[2] and x[2][4]) for x in g["launches"])  # noqa: E731
+    held = {(p["group"]["side"], p["group"]["slot"]) for p in placed if fam and (p["item"]["kind"], p["item"]["role"]) == fam and steady(p["group"])}
+    every = [g for g, _ in cand if (fmt.get(key(g)) or stated_format(g["template"])) == item["quant"] and steady(g)]
+    if fam and len(held) >= (room := round(item["role_per_layer"])): cand = [c for c in cand if (c[0]["side"], c[0]["slot"]) in held or not steady(c[0])]
     classes = {ratios[key(g)] for g, _ in cand if key(g) in ratios} or {(1, 1)}
     if any(key(g) not in ratios for g, _ in cand):
       classes |= {(k, 1) for k in range(1, MAX_FUSED + 1)}
@@ -650,6 +727,8 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
         outs = _sums([o for o in opts if o["pick"][0]["side"] == "output"], want - split_in * r // k, slack)
         subsets = [x + y for x in ins for y in outs][:8]
       for subset in subsets:
+        at = held | {(x["pick"][0]["side"], x["pick"][0]["slot"]) for x in subset if steady(x["pick"][0])}
+        if fam and (len(at) > round(item["role_per_layer"]) or any((g["side"], g["slot"]) in at and all(g is not x["pick"][0] for x in subset) for g in every)): continue
         out.append((k, r, {key(x["pick"][0]) for x in subset}, [x["pick"] for x in subset]))
     return out
 
@@ -667,8 +746,9 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
         ia, ib = a[0]["item"], b[0]["item"]
         if (ia["kind"], ia["sides"], ia["need"]) != (ib["kind"], ib["sides"], ib["need"]) or (ia["stages"] != ib["stages"] and ia["sides"] != {"flat"}):
           continue
-        if any(bound.get((p["group"]["kind"], p["group"]["template"]), q) != q for q, ps in ((ia["quant"], b), (ib["quant"], a)) for p in ps):
-          continue  # a template the counts bound to one format cannot serve the other
+        if any(bound.get((p["group"]["kind"], p["group"]["template"]), stated_format(p["group"]["template"]) or q) != q
+               for q, ps in ((ia["quant"], b), (ib["quant"], a)) for p in ps):
+          continue  # a template the counts bound, or whose name states, one format cannot serve the other
         identity = lambda it: sorted((r["role"], r["quant"], r.get("n"), r.get("k"), r["count"]) for r in it["parts"])
         if identity(ia) == identity(ib):
           continue  # exchanging identical logical rows changes no attribution
@@ -686,12 +766,12 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
     key = lambda g: (g["kind"] if g["kind"] != "tail" else None, g["template"])  # noqa: E731
     for p in placed:
       g, q = p["group"], p["item"]["quant"]
-      # the walk prefers a template already serving the row's format (bound by the counts, or by another row): a
-      # free group is a twin only when the walk had no such reason to prefer the one taken, and the row fits it
-      serves = key(g) in bound or any(o is not p and key(o["group"]) == key(g) for o in placed)
+      # the walk prefers a template already serving the row's format (bound by the counts, by another row, or named for
+      # it): a free group is a twin only when the walk had the same reason, or none, to take it, and the row fits it
+      serves = key(g) in bound or stated_format(g["template"]) == q or any(o is not p and key(o["group"]) == key(g) for o in placed)
       twin = next((f for f in free if f["kind"] == g["kind"] and f["side"] == g["side"] and f["n"] == len(p["launches"])
-                   and ordered(p["item"], f)
-                   and (f["template"] == g["template"] or (fmt.get(key(f)) == q) == serves)
+                   and ordered(p["item"], f) and stated_format(f["template"]) in (None, q)
+                   and (f["template"] == g["template"] or (fmt.get(key(f)) == q or stated_format(f["template"]) == q) == serves)
                    and _fits(p["item"], f, p["fused"], p["split"], bandwidth_gbs, peak_of(f["template"]))), None)
       if twin is not None:
         found.append(f"{p['item']['role']} {p['item']['quant']} took {_place(g)}, but {_place(twin)} fits it equally; "
@@ -766,6 +846,8 @@ def _apart(nk_a:float, nk_b:float, us_a:list[float], us_b:list[float]) -> bool:
 
 
 def _why(item:dict[str, Any], bandwidth_gbs:float | None) -> str:
+  if item.get("unsplit"):
+    return f"{item['count']} calls per unit of {item['role']} {item['quant']} are no whole number per {' or '.join(item['unsplit'])} layer, and no layer_kinds were read"
   where = (f"the {'/'.join(sorted(item['sides']))} side of {item['kind']} layers" if item["kind"]
            else "the unit's tail" if "tail" in item["sides"] else "the window")
   us = item["weight_bytes"] / (bandwidth_gbs * 1e9) * 1e6 if bandwidth_gbs else None
@@ -819,10 +901,14 @@ def pair(launches:list[dict[str, Any]], rows:list[dict[str, Any]], *, kinds:dict
     if flat is not None:
       raise NoStructure("kernel groups without launches")
     st = structure(launches, kinds=kinds, units=units, candidate=candidate)
+    if split := signatures(st, rows, kinds):  # layers of one kind that launch differently: a kind per set of tensors
+      order, kinds, rows = split
+      st = structure(launches, kinds=kinds, units=units, candidate=candidate, order=order)
     cut, small = _pruned(st, prune) if prune else (None, [])
     groups, words = _groups(st, widths) + small, {k: dict(v) for k, v in st["sides"].items()}
     got = assign(groups, rows, units=units, outputs=outputs, kinds=kinds, bandwidth_gbs=bandwidth_gbs, peak_of=peak_of, prune=cut)
     got["structure"] = {"layers": len(st["layers"]), "units": units, "sides": words, "flat": None,
+                        **({"signatures": split[0]} if split else {}),
                         **({"pruned": {"stages": list(cut["stages"]), "offered": sum(g["n"] for g in small)}} if cut else {})}
   except NoStructure as exc:
     m = sum(widths) / max(units, 1)

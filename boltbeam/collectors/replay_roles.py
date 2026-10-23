@@ -73,7 +73,7 @@ class Roles:
    bind(launches,counters,source='matched replay auxiliary counter pass')
    self.used_memory.add(item['step'])
   attr=attribute_prefill(launches,[],chunk_widths=[engine['length']],outputs=1,layers=self.profile['layer_count'],
-   kernel_paths=self.paths['kernels'],observed=self.paths.get('observed'),peaks=self.calibration['peaks_at'],
+   kernel_paths=self.paths['kernels'],observed=self.paths.get('observed'),observed_by=self.paths.get('observed_by'),peaks=self.calibration['peaks_at'],
    bandwidth_gbs=self.calibration['bandwidth_gbs'],profile=self.profile,length=engine['length'],warmup=False,
    formats=self.formats,cache=self.calibration['cache'],depth=engine['context'],unc=self.calibration['uncertainty'],explicit_overlap=True)
   attr.update(engine=engine,bandwidth_gbs=self.calibration['bandwidth_gbs'],cache=self.calibration['cache'],peaks_at=self.calibration['peaks_at'])

@@ -34,6 +34,7 @@ from typing import Any, Iterable
 
 from boltbeam.collectors import pairing
 from boltbeam.collectors.pairing import BLOCKS  # noqa: F401  (the decode readers import it from here)
+from boltbeam.role_key import role_key
 from boltbeam.target import vendors
 
 ROLE_SOURCE = "attributed_by_bytes_and_count"
@@ -54,19 +55,21 @@ def groups(launches:Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
   return list(out.values())
 
 
-def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], counts:dict[tuple[str, str], int],
+def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], counts:dict[tuple, int],
               tokens:int, peak_gbs:float | None, *, kinds:dict[str, int] | None = None,
-              classes:dict[tuple[str, str], str] | None = None) -> dict[str, Any]:
+              read:dict[tuple, dict[str, Any]] | None = None) -> dict[str, Any]:
   """Pair kernel groups with roles by the layer walk. roles: the ceiling's decode roles (role, quant, bytes_moved,
-  floor_ms, and fine or part_roles for an engine's packed matrix). counts: calls per token per (role, quant). kinds:
-  layers per block kind (pairing.layer_kinds); classes: (role, quant) -> fine class. peak_gbs: the bandwidth at the top
-  of its measured uncertainty (targets.upper), None not checked. Returns {"pairs": [...], "groups":
+  floor_ms, and fine or part_roles for an engine's packed matrix). counts: calls per token per role_key (or role, quant);
+  kinds: layers per block kind (pairing.layer_kinds); read: the profile row of each role, keyed alike (its fine class,
+  a hybrid's layer_kinds). peak_gbs: the bandwidth at the top of its measured uncertainty (targets.upper), None not checked. Returns {"pairs": [...], "groups":
   every group with its role or None (a group several roles share is one row per role), "unpaired", "ambiguous",
   "rule", "structure"}."""
-  rows = [{"role": r["role"], "quant": r["quant"], "count": int(counts[(r["role"], r["quant"])]),
-           "weight_bytes": r["bytes_moved"] / counts[(r["role"], r["quant"])], "nk": None,
-           "role_class": (classes or {}).get((r["role"], r["quant"])), **({"fine": r["fine"]} if r.get("fine") else {})}
-          for r in roles if counts.get((r["role"], r["quant"]))]
+  at = lambda d, r: (d or {}).get(role_key(r), (d or {}).get((r["role"], r["quant"])))  # noqa: E731
+  rows = [{"role": r["role"], "quant": r["quant"], "count": n, "weight_bytes": r["bytes_moved"] / n, "nk": None,
+           "role_class": (p := at(read, r) or {}).get("role_class"), "role_key": role_key(r), **({"fine": r["fine"]} if r.get("fine") else {}),
+           **({"layer_kinds": p["layer_kinds"]} if sum(c for k in (p.get("layer_kinds") or {}).values() for c in k.values()) == n else {}),
+           **({"per_layer": p["per_layer"]} if p.get("per_layer") else {})}
+          for r in roles if (n := int(at(counts, r) or 0))]
   timed = all(g.get("launches") and len(g["launches"]) == g["calls"] and None not in (g.get("starts") or [None]) for g in kernel_groups)
   launches = [{"key": g["key"], "raw_wall_us": d, "wall_us": sh, "start_us": g["starts"][i], "stream": (g.get("streams") or [None] * g["calls"])[i]}
               for g in kernel_groups for i, (d, sh) in enumerate(g["launches"])] if timed and kernel_groups else []
@@ -76,20 +79,22 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
   rows_out: list[dict[str, Any]] = []
   pairs: dict[tuple[str, str, str], dict[str, Any]] = {}
   taken: dict[str, float] = {}
+  short = {x["role_key"] for u in got["unplaced"] for x in u["item"]["parts"]}  # a row placed in some layers only: not timed
   for p in got["placed"]:
     item, g = p["item"], p["group"]
+    if short & {x["role_key"] for x in item["parts"]}: continue  # its launches would stand for all its calls
     key = g.get("key") or p["launches"][0][0]["key"]
     us = sum(l["wall_us"] for l, _, _, _ in p["launches"])
     for part in item["parts"]:
       share = part["weight_bytes"] * part["count"] / sum(x["weight_bytes"] * x["count"] for x in item["parts"])
-      row = pairs.setdefault((key, part["role"], part["quant"]), {
-        "key": key, "calls": 0, "wall_us": 0.0, "role": part["role"], "quant": part["quant"], "fused": p["fused"]})
+      row = pairs.setdefault((key, part["role_key"]), {"key": key, "calls": 0, "wall_us": 0.0, "role": part["role"], "quant": part["quant"],
+                                                  "fused": p["fused"], "count": part["count"], "weight_bytes": part["weight_bytes"]})
       row["calls"] += len(p["launches"])
       row["wall_us"] += us * share
     taken[key] = taken.get(key, 0.0) + us
-  for (key, role, quant), row in pairs.items():
+  for (key, _), row in pairs.items():
     rows_out.append({**row, "calls_per_token": row["calls"] / tokens, "us_per_call": row["wall_us"] / row["calls"],
-                     "gbs": next(r["weight_bytes"] for r in rows if (r["role"], r["quant"]) == (role, quant)) * row["fused"] / (row["wall_us"] / row["calls"] * 1e3),
+                     "gbs": row.pop("weight_bytes") * row["fused"] / (row["wall_us"] / row["calls"] * 1e3),
                      **({"shared_key": True} if sum(1 for k in pairs if k[0] == key) > 1 else {})})
   for key, g in by_key.items():
     left_us = g["wall_us"] - taken.get(key, 0.0)
@@ -97,7 +102,7 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
     if left_calls > 0:
       rows_out.append({"key": key, "calls": left_calls, "wall_us": max(left_us, 0.0), "role": None, "quant": None,
                        "calls_per_token": left_calls / tokens, "us_per_call": max(left_us, 0.0) / left_calls})
-  pair_rows = [{"role": r["role"], "quant": r["quant"], "key": r["key"], "count": int(counts[(r["role"], r["quant"])]), "fused": r["fused"],
+  pair_rows = [{"role": r["role"], "quant": r["quant"], "key": r["key"], "count": r.pop("count"), "fused": r["fused"],
                 "gbs": r["gbs"]} for r in rows_out if r["role"]]
   unpaired = [{"role": u["item"]["role"], "quant": u["item"]["quant"], "count": u["item"]["count"], "reason": u["reason"]} for u in got["unplaced"]]
   return {"pairs": pair_rows, "groups": rows_out, "unpaired": unpaired, "ambiguous": got.get("ambiguous"), "rule": got["words"],
@@ -320,8 +325,8 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   if window and all(unnamed(g.get("key", "")) for g in window):  # nothing to pair: no group is a kernel
     raise UnnamedCapture(f"{method} saw only command buffers {provider} did not name, not its kernels, so it cannot "
                          "split the token by role")
-  counts = {(r["role"], r["quant"]): int(r["count"]) for r in profile.get("roles", []) if r.get("count")}
-  classes = {(r["role"], r["quant"]): r.get("role_class") for r in profile.get("roles", [])}
+  read = {k: r for r in profile.get("roles", []) for k in ((r["role"], r["quant"]), role_key(r))}  # by shape where read
+  counts = {k: int(r["count"]) for k, r in read.items() if r.get("count")}
   roles, pairing_roles, packed = ceil.get("_roles") or [], "the profile's roles", {}
   if matrices:  # an engine that packs checkpoint tensors into one GEMM: pair with its own matrices (prefill's authority)
     from boltbeam.collectors.prefill import engine_roles, prefill_roles
@@ -333,10 +338,9 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
       counts = {(m["role"], m["quant"]): m["count"] for m in got}
       packed = {(m["role"], m["quant"]): m["part_roles"] for m in got}
   from boltbeam.target.targets import upper
-  result = attribute(window, roles, counts, tokens, upper(ceil.get("peak_bandwidth_gbs"), ceil.get("uncertainty")), kinds=pairing.layer_kinds(profile), classes=classes)
+  result = attribute(window, roles, counts, tokens, upper(ceil.get("peak_bandwidth_gbs"), ceil.get("uncertainty")), kinds=pairing.layer_kinds(profile), read=read)
   if packed:  # one measured duration belongs to the packed launch, not separate byte-weighted part timings
     from collections import Counter
-    from boltbeam.role_key import role_key
     for g in result["groups"]:
       parts = packed.get((g["role"], g["quant"]))
       if not parts:

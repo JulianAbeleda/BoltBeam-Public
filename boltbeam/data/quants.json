@@ -67,6 +67,34 @@
       ]
     },
     {
+      "name": "Q3_K",
+      "dequant_family": "k_quant",
+      "route_families": [],
+      "refuted_routes": [],
+      "pending_routes": []
+    },
+    {
+      "name": "IQ4_NL",
+      "dequant_family": "codebook",
+      "route_families": [],
+      "refuted_routes": [],
+      "pending_routes": []
+    },
+    {
+      "name": "IQ4_XS",
+      "dequant_family": "codebook",
+      "route_families": [],
+      "refuted_routes": [],
+      "pending_routes": []
+    },
+    {
+      "name": "IQ3_S",
+      "dequant_family": "codebook",
+      "route_families": [],
+      "refuted_routes": [],
+      "pending_routes": []
+    },
+    {
       "name": "F16",
       "packed_word_bits": 16,
       "dequant_family": "float_passthrough",

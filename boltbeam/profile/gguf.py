@@ -116,11 +116,14 @@ def declared_context(kv:dict[str, Any], arch:str | None) -> dict[str, Any] | Non
 def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> ModelProfile:
   from boltbeam.profile import weight_ledger
   p = pathlib.Path(path).expanduser()
-  kv, tensors, data_start = read_gguf_layout(p)
+  kv, all_tensors, data_start = read_gguf_layout(p)
   arch = kv.get("general.architecture")
+  # a multi-token-prediction head's blocks are no layer the engine runs: out of the layers and roles, excluded in the ledger
+  drafts = weight_ledger.draft_blocks(kv, arch)
+  tensors = [t for t in all_tensors if not t[0].startswith(drafts)]
   hidden = kv.get(f"{arch}.embedding_length") if arch else None
   ffn = kv.get(f"{arch}.feed_forward_length") if arch else None
-  layers = kv.get(f"{arch}.block_count") if arch else None
+  layers = kv.get(f"{arch}.block_count") - len(drafts) if arch and kv.get(f"{arch}.block_count") else None
   head_count = kv.get(f"{arch}.attention.head_count") if arch else None
   head_count_kv = kv.get(f"{arch}.attention.head_count_kv") if arch else None
   head_dim = kv.get(f"{arch}.attention.key_length") if arch else None
@@ -129,7 +132,12 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
   value_dim = kv.get(f"{arch}.attention.value_length") if arch else None  # a latent attention's V head is narrower than its K
   vocab = len(kv["tokenizer.ggml.tokens"]) if "tokenizer.ggml.tokens" in kv else None
 
-  recurrent = len({n.split(".")[1] for n, *_ in tensors if n.startswith("blk.") and ".ssm_conv1d." in n})
+  scans = {n.split(".")[1] for n, *_ in tensors if n.startswith("blk.") and ".ssm_conv1d." in n}
+  recurrent = len(scans)
+  # a hybrid's row: its tensors per layer kind and fine class (a mixed quant per layer runs each format in some layers)
+  kinds_of = lambda names: {k: c for k in ("recurrent", "attention") if (c := dict(collections.Counter(  # noqa: E731
+    classify_tensor_role(n, shapes[n]).value for n in names if n.startswith("blk.") and (n.split(".")[1] in scans) == (k == "recurrent"))))} \
+    or None if 0 < recurrent < (layers or 0) else None
   grouped: dict[tuple[str, int, int, int, int], list[str]] = collections.defaultdict(list)
   shapes = {name: tuple(dims) for name, dims, _typ, _off in tensors}
   for name, dims, typ, _off in tensors:
@@ -151,21 +159,28 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
     grouped[(role, rows, cols, typ, n_expert)].append(name)
     if role == "lm_head": vocab = vocab or rows
 
+  # a role held in several formats runs each in some layers only: each row's tensors per block, so a reader can tell
+  # the layers that hold the same tensors apart from the rest (pairing.signatures)
+  mixed = len({(r, n, c, e) for r, n, c, _, e in grouped}) < len(grouped)
+  per_layer = lambda names: {b: dict(collections.Counter(classify_tensor_role(n, shapes[n]).value for n in names  # noqa: E731
+                                                     if n.startswith(f"blk.{b}.")))
+                             for b in sorted({int(n.split(".")[1]) for n in names if n.startswith("blk.")})} or None
   roles = tuple(TensorRole(role=role, tensor_name=names[0], rows=rows, cols=cols,
                            ggml_type=typ, quant=GGML_TYPE_NAMES.get(typ, f"GGML_{typ}"), count=len(names),
                            role_class=classify_tensor_role(names[0], shapes[names[0]]).value, n_expert=n_expert,
                            experts_read=weight_ledger.experts_read(kv, arch, n_expert) if n_expert else 0,
-                           last_layer=sum(n.startswith(f"blk.{layers - 1}.") for n in names) if layers else None)
+                           last_layer=sum(n.startswith(f"blk.{layers - 1}.") for n in names) if layers else None,
+                           layer_kinds=kinds_of(names), per_layer=per_layer(names) if mixed else None)
                 for (role, rows, cols, typ, n_expert), names in sorted(grouped.items()))
   # every tensor counted in the limit or excluded with a reason; refused here when the two do not add up
-  ledger = weight_ledger.build(kv, tensors, arch=arch, data_bytes=p.stat().st_size - data_start,
+  ledger = weight_ledger.build(kv, all_tensors, arch=arch, data_bytes=p.stat().st_size - data_start,
                                alignment=int(kv.get("general.alignment", 32)))
   weight_ledger.check(ledger, roles)
   architecture_class, arch_signals = classify_architecture(kv, tensors, arch)
   metadata = {
     "gguf_architecture": arch,
-    "tensor_count": len(tensors),
-    "quant_types": sorted({GGML_TYPE_NAMES.get(typ, f"GGML_{typ}") for _, _, typ, _ in tensors}),
+    "tensor_count": len(all_tensors),
+    "quant_types": sorted({GGML_TYPE_NAMES.get(typ, f"GGML_{typ}") for _, _, typ, _ in all_tensors}),
     "architecture_signals": arch_signals,
     "weights": ledger,
     "attention": {k: v for k, v in {

@@ -33,7 +33,11 @@ Everything else follows from counts:
 3. **Slots.** The j-th weight launch on one side of a layer of one kind is slot j. The same slot in every layer of
    that kind is the same role: an engine launches a layer's projections in one order. A slot may have another
    template in some layers (a mixed quant per layer), so a slot group is (slot, template) with the layers it occurs
-   in.
+   in. A role held in several formats keeps its slots in every layer of a kind, whatever the format; each
+   (role, format) row takes those slots' launches of its own template, in the layers whose weights have that format.
+   A hybrid's profile row says how many of its tensors sit in each layer kind (`layer_kinds`, read from the block
+   names), since a format may run in a few recurrent and a few attention layers, not a whole number per layer of
+   either. A GGUF's multi-token-prediction blocks (`nextn_predict_layers`) are no layer: the engine never runs them.
 4. **Rows to slots.** A profile row has a fine class, which sets its stage (`vocab.STAGE`): input, gate, output,
    FFN in, FFN out, head. A row of several classes (attn_qo: q and o) holds one launch per class per layer. Input
    stages take input-side slots, output stages output-side slots; the gate projection may be on either side (the

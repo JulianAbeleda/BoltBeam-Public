@@ -23,6 +23,7 @@ import argparse
 import json
 import statistics
 import struct
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -202,13 +203,23 @@ def measure_path(cuda, p:Path, facts:dict[str, Any], tele:gpu_telemetry.Telemetr
 
 
 def measure_paths(device:int = 0, *, reps:int = 5, seconds:float = SECONDS, nvcc:str | None = None,
-                  bridge=None, paths:tuple[Path, ...] = PATHS) -> dict[str, Any]:
-  """Every path's plateau rate on one GPU, the clock policy, and the driver's device facts."""
+                  bridge=None, paths:tuple[Path, ...] | None = None) -> dict[str, Any]:
+  """Every path's plateau rate on one GPU, the clock policy, and the driver's device facts. With no `paths`, the
+  named paths the installed toolkit's scan finds for this GPU's sm (cuda_path_scan; its unmapped ones are measured
+  only when asked for), else PATHS."""
+  from boltbeam.collectors import cuda_path_scan
   from boltbeam.runtime.cuda_device import Cuda
   policy = gpu_telemetry.clock_policy(device)
   cuda = bridge or Cuda(device, nvcc=nvcc)
   try:
     facts = cuda.facts()
+    sm = f"sm_{facts.get('compute_capability_major')}{facts.get('compute_capability_minor')}"
+    try:  # a scan that cannot run leaves PATHS
+      scanned = (cuda_path_scan.scan(sm, nvcc=cuda.nvcc) if paths is None and getattr(cuda, "nvcc", None)
+                 and facts.get("compute_capability_major") is not None else None)
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+      scanned = None
+    paths = paths or tuple(p for p in cuda_path_scan.paths(scanned) if p.name not in scanned["unmapped"]) or PATHS
     with gpu_telemetry.hold(policy, device) as held, gpu_telemetry.Telemetry(device) as tele:
       rows = [measure_path(cuda, p, facts, tele, reps=reps, seconds=seconds) for p in paths]
     whole = tele.summary()
@@ -220,6 +231,7 @@ def measure_paths(device:int = 0, *, reps:int = 5, seconds:float = SECONDS, nvcc
           **{k: facts.get(k) for k in FACT_KEYS},
           "compute_capability": f"{facts.get('compute_capability_major')}.{facts.get('compute_capability_minor')}",
           "clock_policy": held, "telemetry": whole, "paths": rows,
+          "path_scan": scanned if cuda_path_scan.paths(scanned) else None,
           "method": METHOD.format(ptx="per path", acc=ACC, reps=reps, seconds=seconds)}
 
 
@@ -249,7 +261,7 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--runs", type=int, default=1, help="whole probe runs; each path's uncertainty is their spread at the best shape")
   p.add_argument("--path", action="append", choices=[x.name for x in PATHS], help="only this path (repeatable)")
   a = p.parse_args(argv)
-  paths = tuple(x for x in PATHS if not a.path or x.name in a.path)
+  paths = tuple(x for x in PATHS if x.name in a.path) if a.path else None
   from boltbeam.collectors.cuda_bandwidth import repeated_paths
   runs = [measure_paths(a.device, reps=a.reps, seconds=a.seconds, paths=paths) for _ in range(a.runs)]
   got = repeated_paths(runs)

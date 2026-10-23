@@ -53,7 +53,7 @@ def attribute(run:Path, raw:Path, *, peaks:dict, bandwidth_gbs:float,
     raise ValueError('decode capture has no explicit prompt context')
   chunks=[1]*length if engine.get('decode_steps') else [length]
   attr=attribute_prefill(facts['launches'],[],chunk_widths=chunks,outputs=len(chunks),
-    layers=profile['layer_count'],kernel_paths=paths['kernels'],observed=paths.get('observed'),
+    layers=profile['layer_count'],kernel_paths=paths['kernels'],observed=paths.get('observed'),observed_by=paths.get('observed_by'),
     peaks=peaks,bandwidth_gbs=bandwidth_gbs,profile=profile,length=length,warmup=False,
     formats=formats,cache=cache,
     depth=context,unc=uncertainty,explicit_overlap=True)

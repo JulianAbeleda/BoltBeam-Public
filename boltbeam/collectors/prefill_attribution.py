@@ -132,7 +132,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                       program_roles:dict[str, dict[str, Any]] | None = None, untraced_ms:float | None = None,
                       warmup:bool | str = True, formats:dict[str, Any] | None = None,
                       cache:dict[str, float] | None = None, depth:int = 0,
-                      observed:dict[str, dict[str, int]] | None = None, prune:dict[str, Any] | None = None,
+                      observed:dict[str, dict[str, int]] | None = None, observed_by:str | None = None, prune:dict[str, Any] | None = None,
                       unc:dict[str, Any] | None = None, measured_ms:float | None = None,
                       explicit_overlap:bool = False) -> dict[str, Any]:
   """The measured prefill split by role, attention and other kernels, each with operations, bytes, path and ceiling.
@@ -144,7 +144,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   the gaps are it less the busy time, never the profiled run's idle. formats: the engine adapter's {activations: {in,
   out}, kv, stream_k: template -> layout or None} (prefill.ENGINES); cache: the chip's last-level cache {bytes, gbs}.
   depth: tokens already in the cache (a session's turn), so attention's work counts every key the turn's tokens read.
-  observed: template -> {path: instructions} ncu saw a closed kernel execute (instruction_path.ncu_observe). prune: the
+  observed: template -> {path: instructions} the vendor's observer saw a closed kernel execute (prefill.observe_closed),
+  observed_by its label. prune: the
   engine adapter's {stages, outputs, words} when the engine runs its last layer's rows of those stages at the output
   tokens only (pairing.pair): those launches are their own row, the role at output width."""
   formats, unc = formats or {}, unc or {}  # unc: {"bandwidth": u, "peaks": {path: u}}, each measured or absent
@@ -155,7 +156,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   if proof := formats.get("matrix_grid_constraint"):
     launches = [{**l, "matrix_grid_constraint": proof} for l in launches]
   window, window_words = measured_window(launches, warmup, measured_ms)
-  window = unfused_attention(window, formats.get("unfused_attention"), lambda t: kernel_path(t, kernel_paths, observed)["status"] != "none")
+  window = unfused_attention(window, formats.get("unfused_attention"), lambda t: kernel_path(t, kernel_paths, observed, observed_by)["status"] != "none")
   shared, overlap = share_overlap(window)
   if explicit_overlap:
     # Keep physical kernel durations for per-kernel efficiency. A separate
@@ -174,7 +175,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
     t["wall_us"] += l["wall_us"]
   templates = sorted(by_t.values(), key=lambda t: -t["wall_us"])
   for t in templates:
-    t["path"] = kernel_path(t["name"], kernel_paths, observed)
+    t["path"] = kernel_path(t["name"], kernel_paths, observed, observed_by)
     t["attention"] = (kind_of({"kernel": t["name"]}) == "attention" or
                       any(l.get('semantic_kind') == 'attention' for l in t['launches']))
     # so is a recurrent block's scan and convolution, by name or by the vLLM module that launched it (ROCm runs the

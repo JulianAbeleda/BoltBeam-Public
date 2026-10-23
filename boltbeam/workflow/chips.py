@@ -148,6 +148,8 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
   }
   if matrix.get("paths"):
     caps["fact_status"]["matrix_tflops"] = "measurement"
+  if matrix.get("path_scan"):  # the matrix paths the installed compiler offered this target, kept to be read again
+    caps["matrix_path_scan"] = matrix["path_scan"]
   return {
     "target_id": pid, "backend": vendors.vendor(device.get("vendor")).backend,
     "wave_size": matrix.get("warp_size") or 32, "subgroup_size": matrix.get("warp_size") or 32,

@@ -20,6 +20,8 @@ class TensorRole:
   experts_read: int = 0           # experts of the stack the decode reads per token (expert_used_count); 0 = dense
   weight_bytes: float | None = None  # per matrix, including stored quantization scales when the header names them
   last_layer: int | None = None   # this row's tensors in the model's last block (the layer an engine may prune); None = not read
+  layer_kinds: dict | None = None  # a hybrid's row: {layer kind: {fine class: tensors}}; None = not read
+  per_layer: dict | None = None    # a role in several formats: {block index: {fine class: tensors}}; None = not read
 
   @property
   def shape(self) -> tuple[int, int]:
@@ -27,7 +29,7 @@ class TensorRole:
 
   def to_json(self) -> dict[str, Any]:
     data = asdict(self)
-    for k in ("weight_bytes", "last_layer"):
+    for k in ("weight_bytes", "last_layer", "layer_kinds", "per_layer"):
       if data[k] is None:
         data.pop(k)
     return data

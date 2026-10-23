@@ -29,7 +29,9 @@ git checkout dev && pytest
 - `exp` holds active experimentation.
 
 `tools/sync_branches.sh` first runs `go vet ./...` and `go test -count=1 ./...` in the trunk’s `tui/`
-with `BOLTBEAM_PYTHON=python3.12` set by the caller. A failed Go gate stops before either outward merge.
+with `BOLTBEAM_PYTHON=python3.12` set by the caller; that interpreter also runs `sz.py` and the Python suite,
+so it needs the dev extras. A failed Go gate stops before either outward merge. A branch another worktree
+holds is merged in that worktree; any other branch is checked out in the calling one.
 It then carries the trunk outward. `dev` is hard-gated on the Python suite, so a trunk commit that
 breaks the product cannot reach `exp`. `exp` is report-only, because it admits broken intermediate states by
 design. Do not pipe `sync_branches.sh` into `head`: closing its stdout kills it before it merges.

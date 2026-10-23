@@ -132,16 +132,17 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Deco
   arch = kv.get("general.architecture")
   hidden = kv.get(f"{arch}.embedding_length") if arch else None
   ffn = kv.get(f"{arch}.feed_forward_length") if arch else None
-  layers = kv.get(f"{arch}.block_count") if arch else None
+  from boltbeam.profile.roles import is_expert_role, is_matrix
+  from boltbeam.profile.weight_ledger import draft_blocks, experts_read
+  drafts = draft_blocks(kv, arch)  # a multi-token-prediction head's blocks are no layer the engine runs (as gguf.profile_from_gguf)
+  layers = kv.get(f"{arch}.block_count") - len(drafts) if arch and kv.get(f"{arch}.block_count") else None
   vocab = len(kv["tokenizer.ggml.tokens"]) if "tokenizer.ggml.tokens" in kv else None
 
-  from boltbeam.profile.roles import is_expert_role, is_matrix
-  from boltbeam.profile.weight_ledger import experts_read
   grouped: dict[tuple[str, int, int, int, int], list[str]] = collections.defaultdict(list)
   for name, dims, typ, _off in infos:
     dims = tuple(int(d) for d in dims)
     role = _role_from_tensor_name(name, dims)
-    if role == "embedding": continue
+    if role == "embedding" or name.startswith(drafts): continue
     if is_matrix(dims):  # a matrix, whatever its name ends in
       (rows, cols), n_expert = tuple(reversed(dims)), 0
     elif len(dims) == 3 and is_expert_role(role):  # GGUF ne = [in, out, n_expert]

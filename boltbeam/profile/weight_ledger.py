@@ -19,6 +19,8 @@ The exclusions, each with its reason (EXCLUSIONS):
                      The engine launches the stack once per layer, and that one launch reads the k experts' bytes
                      (llama.cpp mul_mat_id: on CUDA one mul_mat_vec_q with grid.y = k, on Metal one mul_mv_id
                      dispatch over k), so the stack's calls per token are its tensor count, not count x k.
+    draft_layer      a multi-token-prediction block (`<arch>.nextn_predict_layers`, the file's last blocks): a
+                     speculative draft head that a prompt's prefill and a decode without speculation never run.
 
 The invariant (check): bytes counted in the limit + bytes excluded with a reason = total tensor bytes in the file, and
 that total fills the file's data region to within its alignment padding. The counted bytes are read back from the
@@ -43,6 +45,8 @@ EXCLUSIONS = {
   "small_vector": f"vector-like (rank 1, or a side under {VECTOR_SIDE}) and under {SMALL_BYTES >> 20} MiB per tensor: "
                   "a norm, bias, conv tap or scale",
   "inactive_experts": "expert stack: only expert_used_count of the experts are read per token; the rest are not read",
+  "draft_layer": "a multi-token-prediction block (nextn_predict_layers): a speculative draft head the prefill and a "
+                 "decode without speculation never run",
 }
 
 
@@ -53,6 +57,12 @@ class WeightLedgerError(ValueError):
 def name_pattern(name:str) -> str:
   """The tensor name with its block index replaced: blk.12.ssm_in.weight -> blk.*.ssm_in.weight."""
   return re.sub(r"(?<=\.)\d+(?=\.)", "*", name)
+
+
+def draft_blocks(kv:Mapping[str, Any], arch:str | None) -> tuple[str, ...]:
+  """The name prefixes (blk.N.) of a multi-token-prediction head's blocks: the last `<arch>.nextn_predict_layers`."""
+  n, blocks = int(kv.get(f"{arch}.nextn_predict_layers") or 0), int(kv.get(f"{arch}.block_count") or 0)
+  return tuple(f"blk.{i}." for i in range(blocks - n, blocks)) if 0 < n < blocks else ()
 
 
 def is_limit_role_tensor(name:str, dims:tuple[int, ...]) -> bool:
@@ -91,7 +101,7 @@ def build(kv:Mapping[str, Any], tensors:Iterable[tuple[str, tuple[int, ...], int
   """Sort every tensor of the file into the limit's roles, an unclassified counted row, or a stated exclusion."""
   tensors = list(tensors)
   has_head = any(role_from_tensor_name(n, tuple(d)) == "lm_head" for n, d, *_ in tensors)
-  k_used = _expert_used(kv, arch)
+  k_used, drafts = _expert_used(kv, arch), draft_blocks(kv, arch)
   total = limit_bytes = limit_tensors = limit_stacks = 0
   counted: dict[tuple, dict[str, Any]] = {}
   excluded: dict[tuple, dict[str, Any]] = {}
@@ -113,6 +123,9 @@ def build(kv:Mapping[str, Any], tensors:Iterable[tuple[str, tuple[int, ...], int
       continue
     total += nbytes
     role, pattern = role_from_tensor_name(name, dims), name_pattern(name)
+    if name.startswith(drafts):
+      exclude(".".join(name.split(".")[:2]) + ".*", "draft_layer", nbytes)
+      continue
     if is_limit_role_tensor(name, dims):
       limit_tensors += 1
       if len(dims) == 3:  # an expert stack, GGUF ne = [in, out, n_expert]: k of n counted, the rest excluded

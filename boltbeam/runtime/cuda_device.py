@@ -312,6 +312,7 @@ class Cuda:
 
   API = "CUDA"
   CLOCK = CLOCK
+  GGML_MACROS = {}  # nvcc compiles ggml-cuda as is
 
   def __init__(self, device:int = 0, *, nvcc:str | None = None, cache:pathlib.Path | None = None, driver=None,
                compile=None, includes:list[str] | None = None):
@@ -329,6 +330,10 @@ class Cuda:
     self.stream = self.driver.stream()
     self._modules:dict[int, bytes] = {}
     self._buffers:list[int] = []
+
+  def ggml_cc(self) -> int | None:
+    """This device's compute capability as ggml-cuda numbers it (ggml_compute_capability)."""
+    return ggml_compute_capability(self.facts())
 
   def facts(self) -> dict[str, Any]:
     """The driver's device facts (cuDeviceGetAttribute), as the chip profile records them."""

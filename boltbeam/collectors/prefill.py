@@ -197,7 +197,7 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   if target.backend == "CUDA" and target.compute_units:
     from boltbeam.collectors import engine_kernels, llama_mmq
     try:
-      source = engine_kernels.ggml_cuda_source_dir()
+      source = engine_kernels.mmvq_source_dir()
       commit = str(row.get("build_commit") or "")
       if commit:
         formats["matrix_grid_constraint"] = llama_mmq.constraints(pathlib.Path(source["dir"]), target.compute_units, commit)
@@ -207,7 +207,7 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
           "warmup": REPEAT, "copies": REPS if depth else COPIES, "formats": formats, "timing_window": timing_window(length, depth) if qualified is not None else None,
           "method": vendor_capture.plan(target.backend)["method"],
           "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches, device=run_gpu(run)),
-          "program": {"argv": argv, "env": env, "raw": raw, "profiler_range": False},
+          "program": {"argv": argv, "env": env, "raw": raw, "profiler_range": False, "arch": (run_gpu(run) or {}).get("architecture")},
           "captured_ms": float(row["avg_ns"]) / 1e6, "window": vendor_capture.busy_window(raw, launches),
           "measured_ms": qualified,  # never substitute an average for the final repetition
           "prune": llama_prunes(launches, split_chunks(length, ub), -(-length // b) if b else 1, copies=REPS if depth else COPIES)}
@@ -542,20 +542,21 @@ def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, A
           "matrices": line.get("matrices"), "captured_ms": line["wall_s"] * 1e3, "window": line.get("window_monotonic"),
           "work_evidence":proof, "paths": paths,
           "program": {"argv": argv, "env": {**env, **vd.CAPTURE_ENV}, "raw": raw, "profiler_range": True,
-                      "tools": bins[0] if bins else None}}
+                      "tools": bins[0] if bins else None, "arch": (run_gpu(run) or {}).get("architecture")}}
 
 
 def observe_closed(cap:dict[str, Any], backend:str) -> dict[str, Any]:
   """The capture's paths with what the vendor's observer (target/vendors.py closed_observer) saw the kernels whose code
   was not read execute (a closed library such as cuBLAS), for any engine whose capture names the program it ran
-  (program: argv, env, raw; profiler_range: whether it opens one; tools: a folder of the vendor's tools): "observed"
-  and "observed_how", or "observed_how" alone saying why nothing was observed; paths unchanged with no observer."""
-  from boltbeam.collectors.instruction_path import template
+  (program: argv, env, raw; profiler_range: whether it opens one; tools: a folder of the vendor's tools; arch: the
+  run's GPU target): "observed", "observed_how" and "observed_by" (the observer's label), or "observed_how" alone saying why nothing was observed; paths unchanged with no observer."""
+  from boltbeam.collectors.instruction_path import mixed, template
   from boltbeam.target import vendors
   row, prog, paths = vendors.BY_BACKEND.get(backend), cap.get("program"), cap["paths"]
   observer = vendors.resolve(row.capture.closed_observer) if row else None
   ran = [template(l["key"]) for l in sorted(cap["launches"], key=lambda l: l["start_us"])]
-  closed = set(ran) - set(paths["kernels"])
+  # closed: no code read, or code holding several matrix paths (which one ran is the observer's to say)
+  closed = {t for t in ran if t not in paths["kernels"] or len(mixed(paths["kernels"][t])) > 1}
   if observer is None or not prog or not closed:
     return paths
   return {**paths, **observer(prog, closed, [t for t in ran if t in closed])}
@@ -677,7 +678,8 @@ def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> li
   bytes over the role's count, so a role's bytes are the decode table's) and fine class (its place in the layer).
   An expert stack (n_expert) runs every token through experts_read experts (routed: products per token); its bytes
   stay the decode's experts_read experts: exact for one token; a chunk's ceiling is refused (prefill_attribution.ROUTED_REFUSED).
-  last_layer: the row's calls in the model's last layer, when the profile read it (the layer an engine may prune)."""
+  last_layer: the row's calls in the model's last layer, when the profile read it (the layer an engine may prune);
+  layer_kinds: a hybrid's row's calls per layer kind and fine class, when the profile read them."""
   from boltbeam.role_key import role_key
   by = {role_key(r): r for r in ceil_roles}
   out = []
@@ -687,7 +689,9 @@ def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> li
       moe = {"n_expert": int(r["n_expert"]), **({"routed": int(r["experts_read"])} if r.get("experts_read") else {})} if r.get("n_expert") else {}
       out.append({"role": r["role"], "quant": r["quant"], "n": int(r["rows"]), "k": int(r["cols"]), "count": int(r["count"]),
                   "weight_bytes": float(c["bytes_moved"]) / int(r["count"]), "role_class": r.get("role_class"), **moe,
-                  **({"last_layer": int(r["last_layer"])} if r.get("last_layer") is not None else {})})
+                  **({"last_layer": int(r["last_layer"])} if r.get("last_layer") is not None else {}),
+                  **({"layer_kinds": r["layer_kinds"]} if r.get("layer_kinds") else {}),
+                  **({"per_layer": r["per_layer"]} if r.get("per_layer") else {})})
   return out
 
 
@@ -761,7 +765,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              program_roles=cap.get("program_roles"), warmup=cap["warmup"],
                              untraced_ms=(truth_ms.get(int(length)) if cap.get("own_timing") else None),
                              formats=cap.get("formats"), cache=last_level_cache(target), depth=depth,
-                             observed=cap["paths"].get("observed"), prune=cap.get("prune"), unc=out["uncertainty"],
+                             observed=cap["paths"].get("observed"), observed_by=cap["paths"].get("observed_by"), prune=cap.get("prune"), unc=out["uncertainty"],
                              measured_ms=cap.get("measured_ms"))
     from boltbeam.workflow.repeat_bands import find
     attr["measured_ms"] = cap.get("measured_ms")
