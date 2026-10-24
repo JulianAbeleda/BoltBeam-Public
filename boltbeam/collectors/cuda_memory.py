@@ -84,7 +84,8 @@ def same_capture(timed, counter):
       raise ValueError(f'memory evidence has mismatched decode setting: {key}')
   for key in ('compilation_config','enforce_eager','capture_pass','output_token_ids'):
     if key in timed and timed[key]!=counter.get(key):
-      raise ValueError(f'memory evidence has mismatched production program: {key}')
+      from boltbeam.collectors.vllm_two_pass import TokensDiverge as other_tokens
+      raise (other_tokens if key=='output_token_ids' else ValueError)(f'memory evidence has mismatched production program: {key}')
   if timed.get('triton_cache_dir') and timed['triton_cache_dir']!=counter.get('triton_cache_dir'):
     raise ValueError('memory evidence used a different observed Triton cache')
 
@@ -153,8 +154,10 @@ def decode_horizon(identities):
   first=identities[0];count=len(identities)
   if first.get('tokens')!=count+1:raise ValueError('decode horizon omits generated steps')
   for offset,identity in enumerate(identities):
-    if identity.get('decode_step')!=offset+1 or identity.get('length')!=1 or identity.get('batch')!=1:
-      raise ValueError('decode horizon requires contiguous single-token steps')
+    batch=identity.get('batch')
+    if (identity.get('decode_step')!=offset+1 or identity.get('length')!=1 or type(batch) is not int or batch<1 or
+        batch!=first.get('batch')):
+      raise ValueError('decode horizon requires contiguous single-token steps of one batch')
     expected={**first,'decode_step':offset+1,'context':first['context']+offset}
     same_capture(expected,identity)
   return {**first,'length':count,'decode_steps':list(range(1,count+1))}

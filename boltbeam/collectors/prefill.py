@@ -197,7 +197,7 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   can rebuild the graph on repetition two, so choosing another repetition changes the lifecycle. extra: llama_argv's;
   raw: the capture's folder, when a run holds more than one capture of one length at one depth."""
   from boltbeam.collectors import vendor_capture
-  from boltbeam.collectors.prefill_attribution import REPEAT
+  from boltbeam.collectors.prefill_attribution import REPEAT, UnnamedCapture, measured_window
   bench = _bench(run)
   raw = raw or run / RAW / (f"{length}-at-{depth}" if depth else str(length))
   from boltbeam.collectors.capture_settings import llama_flags
@@ -209,6 +209,13 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   row = llama_row(vendor_capture.program_output(raw))
   qualified = qualification_sample(row, length, depth)
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
+  try:
+    measured_window(launches, False)  # refuses a capture that names no kernel, before anything reads its roles
+  except UnnamedCapture as exc:  # the whole prefill still stands: the engine's timer under the capture, GPU busy beside it
+    calls = COPIES + (1 if depth else 0)  # the prompts the capture holds (and the one cached depth fill): no buffer marks their edges
+    raise UnnamedCapture(str(exc), {"method": vendor_capture.plan(target.backend)["method"], "token_ms": qualified, "prefills": calls,
+                                    "busy_ms": sum(l["wall_us"] for l in launches) / 1e3 / calls,
+                                    "timing_window": timing_window(length, depth)} if qualified else None) from exc
   formats = llama_formats(row.get("type_k"), weight_quants(run))
   if target.backend == "CUDA" and target.compute_units:
     from boltbeam.collectors import engine_kernels, llama_mmq
@@ -658,7 +665,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
     require_supported(run)
   for length in contexts(run):
     say(f"prefill of {length} tokens: {provider}")
-    began = time.monotonic()
+    settled, began = gpu_telemetry.settle(run, say), time.monotonic()
     try:
       got = _engine(provider)["truth"](run, str(manifest["model_path"]), int(length), target, root)
     except RuntimeError as exc:  # a length the engine could not read (out of memory at the cap): said, the rest go on
@@ -672,7 +679,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
                  "samples_ms": got["samples_ms"], "qualification_ms": got.get("qualification_ms"), "chunk": got["chunk"], "batched": got["chunk"]["batched"],
                  **({"replay": got["replay"], "replay_failed": got.get("replay_failed")} if "replay" in got else {}),
                  "telemetry": tele, "throttled": tele.get("throttled"), "telemetry_samples": got.get("telemetry_samples"),
-                 "source": got["source"], "engine": got["engine"],
+                 "source": got["source"], "engine": got["engine"], **({"settled_s": settled} if settled else {}),
                  "seconds": round(time.monotonic() - began, 1)})
   if not any(r.get("prefill_ms") for r in rows):
     raise RuntimeError("no prompt length was read: " + "; ".join(f"{r['context']}: {r['failed'][-160:]}" for r in rows))
@@ -735,10 +742,11 @@ def capture_peaks(peaks:dict[str, float], source:dict[str, Any] | None, seen:dic
 
 def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None, depth:int = 0,
               lengths:list[int] | None = None, truth_ms:dict[int, float] | None = None,
-              capture:Callable[..., dict[str, Any]] | None = None, trace:str = TRACE) -> dict[str, Any]:
+              capture:Callable[..., dict[str, Any]] | None = None, trace:str = TRACE, rest:bool = True) -> dict[str, Any]:
   """One captured prefill per prompt length, attributed: prefill_trace.json. A session's turn is the same at a depth:
-  its lengths, its untraced turn times, its own capture and trace file (collectors/session.py)."""
-  from boltbeam.collectors.prefill_attribution import attribute_prefill
+  its lengths, its untraced turn times, its own capture and trace file (collectors/session.py). rest: the GPU idles
+  first (gpu_telemetry.settle), as the untraced arm did; False where that arm did not (a replay's server turns)."""
+  from boltbeam.collectors.prefill_attribution import UnnamedCapture, attribute_prefill
   from boltbeam.target.targets import get_target
   from boltbeam.workflow import tie_out
   from boltbeam.workflow.common import load_manifest, read_json
@@ -777,8 +785,20 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                                                      f"{MAX_CAPTURE_LAUNCHES:,}: the untraced time, MFU and clock stand alone"}
       continue
     say(f"prefill of {length} tokens in the model{f' after {depth} in the cache' if depth else ''}: {provider}")
+    settled = {"settled_s": s} if rest and (s := gpu_telemetry.settle(run, say)) else {}
+    unnamed = None
     with gpu_telemetry.run_telemetry(run, 0) as tele:
-      cap = (capture or _engine(provider)["capture"])(run, str(manifest["model_path"]), int(length), target, root)
+      try:
+        cap = (capture or _engine(provider)["capture"])(run, str(manifest["model_path"]), int(length), target, root)
+      except UnnamedCapture as exc:  # the generic kernel timer (engine_kernels) times a decode token's kernels only
+        unnamed = exc
+    if unnamed is not None:
+      what = "turn" if depth else "prefill"  # a session's turn is a prefill at a depth
+      clock = gpu_telemetry.witness_clock(tele.summary().get("gpu_witness"))  # the captured arm's own clock
+      out["lengths"][str(length)] = {**settled, **({"clock_mhz": [round(x, 1) for x in clock]} if clock else {}),
+                                     "captured": unnamed.token, "not_captured": f"in-model not available here: {str(unnamed).replace('prefill', what)}; "
+                                     f"the generic kernel timer times one decode token's kernels, not a {what}, so the untraced time stands alone"}
+      continue
     cap["paths"] = observe_closed(cap, target.backend)  # every engine's closed kernels, outside the timed window
     w = cap.get("window")
     seen = tele.summary(w[0] - tele.interval_s, w[1] + tele.interval_s) if w else tele.summary()
@@ -799,7 +819,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     per_chunk = len(cap["launches"]) / cap.get("copies", 2 if cap["warmup"] else 1) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
                                    "work_evidence":cap.get('work_evidence'),
-                                   "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen,
+                                   "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen, **settled,
                                    **({"measured_ms": cap["measured_ms"]} if cap.get("measured_ms") else {}),
                                    "peaks_at": peaks, "peaks_clock": peaks_clock, "pairing_roles": pairing_source,
                                    "paths_how": cap["paths"]["how"], "libraries": cap["paths"]["libraries"], **attr}

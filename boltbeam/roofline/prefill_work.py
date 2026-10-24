@@ -81,6 +81,18 @@ def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None
                    f"{heads} heads, {attention_layers} layers"}
 
 
+def streams_of(work:dict[str, Any] | None, streams:int) -> dict[str, Any] | None:
+  """One stream's attention or recurrent work for `streams` independent streams at the same depth: each reads its
+  own cache or state, so operations and bytes are `streams` times one stream's (a batched decode step). One stream is
+  the work unchanged."""
+  if work is None or streams == 1:
+    return work
+  if type(streams) is not int or streams < 1:
+    raise ValueError("streams must be a positive integer")
+  return {**work, "flops": work["flops"] * streams, "bytes": work["bytes"] * streams,
+          "words": f"{streams} streams, each " + work["words"]}
+
+
 def recurrent(profile:dict[str, Any], length:int, chunks:list[int] | None = None,
               element_bytes:int = 4) -> dict[str, Any] | None:
   """A Gated DeltaNet block's prompt work over its layers, plus its short causal

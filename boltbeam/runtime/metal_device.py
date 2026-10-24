@@ -31,6 +31,15 @@ class _Size(ctypes.Structure):
   _fields_ = [("width", ctypes.c_ulong), ("height", ctypes.c_ulong), ("depth", ctypes.c_ulong)]
 
 
+def working_set_bytes() -> int | None:
+  """recommendedMaxWorkingSetSize: the share of the unified memory Metal lets one process keep resident; None
+  where Metal does not open."""
+  try: dev = Metal()
+  except MetalUnavailable: return None
+  try: return dev.working_set_bytes or None
+  finally: dev.close()
+
+
 class Metal:
   """The default Metal device with a command queue. Every object it returns is released by `close`."""
 

@@ -224,6 +224,8 @@ def _probe_apple_metal(system_profiler:str, run_command) -> tuple[list[dict[str,
     # The Mac's memory, which the GPU shares; never reported as GPU memory (memory_bytes).
     device = {"vendor": "apple", "name": name, "apple_soc": soc, "gpu_cores": gpu_cores, "architecture": soc,
               "unified_memory_bytes": _unified_memory_bytes()}
+    from boltbeam.runtime import metal_device  # the GPU's own memory figure: what Metal lets one process keep resident
+    working = metal_device.working_set_bytes()
     # The registry says which row a device is; the scan only reports what the machine said.
     matched = match_target(match_facts(device))
     target_id = matched or family_target("Metal")
@@ -234,6 +236,8 @@ def _probe_apple_metal(system_profiler:str, run_command) -> tuple[list[dict[str,
       "architecture": soc,
       "gpu_cores": gpu_cores,
       "unified_memory_bytes": device["unified_memory_bytes"],
+      **({"working_set_bytes": working, "working_set_from": "Metal's recommendedMaxWorkingSetSize: what Metal lets "
+          "one process keep resident of the unified memory the CPU shares"} if working else {}),
       "match": match_facts(device),
       "profile": _profile(device, matched),
       "metal_support": row.get("spdisplays_metal"),
@@ -245,7 +249,7 @@ def _probe_apple_metal(system_profiler:str, run_command) -> tuple[list[dict[str,
         "apple_soc": "hardware_scan" if soc else "unknown",
         "gpu_cores": "hardware_scan" if gpu_cores is not None else "unknown",
         "metal_family": "unavailable_from_system_profiler",
-        "recommended_max_working_set_size": "requires_provider_probe",
+        "recommended_max_working_set_size": "metal_device" if working else "requires_provider_probe",
         "max_threads_per_threadgroup": "requires_provider_probe",
         "max_threadgroup_memory_length": "requires_provider_probe",
       },

@@ -3,18 +3,33 @@ from pathlib import Path
 from boltbeam.collectors import semantic_capture as sc
 
 
+class TokensDiverge(ValueError):
+  """Both passes recorded every stream's tokens, and they differ: the passes took different steps."""
+
+
 def reference_band(engine:dict, trace:dict) -> dict:
   """Use only repeats of the same production configuration and token horizon."""
   import math,statistics
   from boltbeam.math.numerics import ACCOUNTING_RTOL,ACCOUNTING_ATOL
-  rows=[r for r in trace.get('rows',[]) if r.get('scope')=='whole_step' and r.get('context')==engine['context']]
+  batch=engine.get('batch',1)
+  if batch==1:
+    rows=[r for r in trace.get('rows',[]) if r.get('scope')=='whole_step' and r.get('context')==engine['context']]
+  else:  # B streams: the untraced point of that batch at that context (providers.engine_trace keeps every batch there)
+    points=[p for p in trace.get('batches',[]) if p.get('context')==engine['context'] and p.get('batch')==batch]
+    if len(points)==1 and (points[0].get('step_samples_ms') is None or points[0].get('repeat_band_ms') is None):
+      raise ValueError(f'the untraced point of {batch} streams has no paired repeats (step_samples_ms, repeat_band_ms): '
+                       'time that batch again before capturing it')
+    # the median and token horizon are the point's own step time and tokens; a point cannot state them twice
+    if any(p.get(k) is not None and p[k]!=v for p in points for k,v in (('wall_us',p.get('step_ms',0)*1000),('decode_tokens',p.get('tokens')))):
+      raise ValueError('untraced point states a median or token horizon other than its own step time and tokens')
+    rows=[{**p,'wall_us':p['step_ms']*1000,'decode_tokens':p.get('tokens')} for p in points]
   if len(rows)!=1:raise ValueError('capture needs one matching untraced reference')
   row=rows[0];actual=row.get('engine') or {}
   for field in ('model_config_sha256','activation_dtype','kv_cache_dtype','compilation_config',
                 'enforce_eager','max_model_len','max_num_batched_tokens'):
     if field not in engine or actual.get(field)!=engine[field]:
       raise ValueError(f'untraced reference has different production setting: {field}')
-  if actual.get('build')!=engine['vllm'] or row.get('decode_tokens')!=engine['tokens'] or row.get('batch')!=1:
+  if actual.get('build')!=engine['vllm'] or row.get('decode_tokens')!=engine['tokens'] or row.get('batch')!=batch:
     raise ValueError('untraced reference build, batch or token horizon differs')
   samples=row.get('step_samples_ms') or []
   if len(samples)<2 or any(type(v) not in (int,float) or not math.isfinite(v) or v<=0 for v in samples):
@@ -23,8 +38,11 @@ def reference_band(engine:dict, trace:dict) -> dict:
   if row.get('repeat_band_ms')!=interval or not math.isclose(row['wall_us']/1000,median,
       rel_tol=ACCOUNTING_RTOL,abs_tol=ACCOUNTING_ATOL):
     raise ValueError('untraced repeat band or median does not derive from recorded samples')
+  # the native arm is never forced: a forced capture says so beside it (vllm_semantic_decode's token_forcing)
+  if actual.get('token_forcing'):raise ValueError('untraced reference was forced: it is not the native engine')
   return {'low_ms':interval[0],'high_ms':interval[1],'median_ms':median,'repeats':len(samples),'timing_window':actual.get('timing_window'),
-          'basis':'paired N-token minus one-token calls in the same unprofiled engine'}
+          'basis':'paired N-token minus one-token calls in the same unprofiled engine',
+          **({'token_forcing':{'capture':engine['token_forcing'],'reference':None}} if engine.get('token_forcing') else {})}
 
 
 def host_step(engine:dict) -> dict:
@@ -47,12 +65,18 @@ def join(path: Path, records: list[dict]) -> dict:
   for field in ('model_config_sha256','vllm','engine','compilation_config','enforce_eager','context','batch',
                 'tokens','output_token_ids','steps','seed','max_model_len','max_num_batched_tokens'):
     if field not in timing or timing[field] is None or timing[field]!=labels.get(field):
+      if field=='output_token_ids' and labels.get(field) is not None:  # both recorded, and they differ
+        raise TokensDiverge(f'capture passes have absent or different {field}')
       raise ValueError(f'capture passes have absent or different {field}')
   if (timing['enforce_eager'] or not timing['compilation_config'].get('mode') or
       timing['runtime_graph_mode']!='production' or labels['runtime_graph_mode']!='NONE'):
     raise ValueError('capture requires production compilation and graphless labeling')
-  if timing['batch']!=1 or len(timing['output_token_ids'])!=1 or len(timing['output_token_ids'][0])!=timing['tokens']:
-    raise ValueError('capture requires complete single-request output token evidence')
+  for field in ('token_forcing','token_script_sha256','engine_nondeterministic'):
+    if timing.get(field)!=labels.get(field):raise ValueError(f'capture passes were forced differently: {field}')
+  batch=timing['batch']
+  if (type(batch) is not int or batch<1 or len(timing['output_token_ids'])!=batch or
+      any(len(ids)!=timing['tokens'] for ids in timing['output_token_ids'])):
+    raise ValueError('capture requires complete output token evidence for every stream')
   if timing['steps']!=list(range(len(timing['steps']))):raise ValueError('capture has missing or reordered step identities')
   spans=sc.step_index(path);steps=[];empty=[]
   with sc.Capture(path) as capture:

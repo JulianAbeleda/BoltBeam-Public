@@ -207,7 +207,9 @@ def verify_launches(run:Path, profile:dict, capture:dict, facts:dict, *, require
     formats=vllm_formats({r['quant'] for r in profile.get('roles',[])},engine,require_resolved=True)
     chunks=([1]*length if engine.get('decode_steps') else [length] if engine.get('decode_step') is not None
             else vllm_chunk(length,engine)['widths'])
-    derived=attention(profile,length,chunks,formats['kv'],formats['attention_activations'],depth)
+    from boltbeam.roofline.prefill_work import streams_of
+    streams=engine.get('batch',1) if engine.get('decode_steps') else 1
+    derived=streams_of(attention(profile,length,chunks,formats['kv'],formats['attention_activations'],depth),streams)
     if derived is None:
       raise ValueError('work evidence attention has no model tensor shape')
     sums['attention'].update({field:derived[field] for field in ('flops','bytes')})

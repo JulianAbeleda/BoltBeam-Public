@@ -29,11 +29,13 @@ it) and the shared libraries this process loaded: vLLM's own view of what it ran
 """
 from __future__ import annotations
 
-import argparse, json, os, random, statistics, time
+import argparse, hashlib, json, os, random, statistics, time
 from pathlib import Path
 from vllm_semantics import compilation_facts
 
 import build_jobs
+
+SCRIPT_PROCESSOR = 'boltbeam.runtime.vllm_token_script:TokenScriptProcessor'  # replay's token forcing
 
 # Direct driver invocation gets the same policy; multiprocessing workers start
 # fresh Python interpreters and import sitecustomize through PYTHONPATH.
@@ -66,6 +68,8 @@ def main() -> int:
   ap.add_argument("--semantic-dispatch", action="store_true", help="NVTX operator evidence preserving compiled execution; refuses unobserved graph nodes")
   ap.add_argument("--profile-step", type=int, help="expose one production engine step to GPU counters")
   ap.add_argument("--profile-end", type=int, help="last engine step in the counter window")
+  ap.add_argument("--token-script", help="capture mode: force every pass to the tokens in this file, written by a free "
+                  "production-graph generation when absent (vllm_token_script)")
   ap.add_argument("--seed", type=int, default=0, help="prefill mode: the seed the prompt ids are drawn from")
   ap.add_argument("--max-num-batched-tokens", type=int)
   ap.add_argument("--dtype", default="auto")
@@ -85,6 +89,8 @@ def main() -> int:
     ap.error('--profile-step requires a single capture pass and a nonnegative step')
   if a.profile_end is not None and (a.profile_step is None or a.profile_end<a.profile_step):
     ap.error('--profile-end requires an ordered profiler range')
+  if a.token_script and not a.capture_pass:
+    ap.error('--token-script requires a decode --capture-pass')
   if a.semantic_capture and not (a.capture and a.prefill):
     ap.error('--semantic-capture requires --prefill and --capture')
   if a.semantic_dispatch and (not (a.capture and a.prefill) or a.semantic_capture):
@@ -110,6 +116,7 @@ def main() -> int:
   from contextlib import nullcontext
   llm = LLM(model=a.model, dtype=a.dtype, max_model_len=max_len, enable_prefix_caching=False,
             **({'worker_cls':'boltbeam.runtime.vllm_decode_worker.DecodeCaptureWorker'} if a.capture_pass=='paired' else {}),
+            **({'logits_processors':[SCRIPT_PROCESSOR]} if a.token_script else {}),
             language_model_only=True, speculative_config=a.speculative_config,
             gpu_memory_utilization=a.gpu_memory_utilization, tensor_parallel_size=a.tensor_parallel_size, max_num_seqs=max(max(batches), 1), seed=0,
             **({"attention_backend": a.attention_backend} if a.attention_backend else {}),
@@ -146,8 +153,11 @@ def main() -> int:
     return [TokensPrompt(prompt_token_ids=[(1000 + s * 7 + i) % vocab for i in range(context)]) for s in range(batch)]
 
   token_ids=[]
-  def timed(context:int, batch:int, n:int) -> float:
+  def timed(context:int, batch:int, n:int, scripts:list | None = None) -> float:
     params = SamplingParams(max_tokens=n, min_tokens=n, ignore_eos=True, temperature=0.0)
+    if scripts is not None:  # one script per stream, its first n tokens (vllm_token_script.TokenScriptProcessor)
+      params = [SamplingParams(max_tokens=n, min_tokens=n, ignore_eos=True, temperature=0.0,
+                               extra_args={'boltbeam_token_script':list(t[:n])}) for t in scripts]
     t0 = time.perf_counter()
     out = llm.generate(prompts(context, batch), params, use_tqdm=False)
     dt = time.perf_counter() - t0
@@ -158,6 +168,32 @@ def main() -> int:
     return dt
 
   if a.once:
+    scripts=None
+    if a.token_script:
+      # Graphless labelling and graphed timing round differently, and a near tie in a greedy argmax then takes the
+      # passes onto different tokens. Every pass is forced to one production-graph generation's tokens, so all of them
+      # compute the same steps. The free generation runs twice and must repeat itself; the forcing runs in every pass,
+      # so the joined launch sequences stay identical and its cost is in the measured capture.
+      path=Path(a.token_script)
+      if path.exists():
+        scripts=json.loads(path.read_text())['scripts']
+      else:
+        for _ in range(a.warm):timed(contexts[0], batches[0], 2)
+        free=[]
+        for _ in range(2):
+          timed(contexts[0], batches[0], a.once);free.append([list(t) for t in token_ids])
+        where=[[s,next(i for i,(x,y) in enumerate(zip(u,w)) if x!=y)] for s,(u,w) in enumerate(zip(*free)) if u!=w]
+        if where and batches[0]!=1:
+          raise SystemExit(f'production-graph generation does not repeat itself (stream, first differing token: {where}): '
+                           'no token script to force')
+        # An engine that does not repeat itself (FlashInfer's fused MoE finalize sums with atomics) forces one stream
+        # to the first: its work is the same whichever tokens it takes (dense rows, k of top-k); the split is recorded
+        scripts=free[0]
+        path.write_text(json.dumps({'scripts':scripts,'context':contexts[0],'batch':batches[0],'tokens':a.once,
+                                    'source':'free production-graph generation, '+('the first of two that differ' if where else 'repeated identically'),
+                                    **({'engine_nondeterministic':where} if where else {})}))
+      if len(scripts)!=batches[0] or any(len(t)!=a.once for t in scripts):
+        raise SystemExit('token script does not cover every stream and token')
     for capture_pass in (('timing','label') if a.capture_pass=='paired' else (a.capture_pass,)):
       warm_outputs=[]
       for _ in range(a.warm):
@@ -168,9 +204,10 @@ def main() -> int:
         with without_graph_replay(llm) if capture_pass=='label' else nullcontext():
           with module_ranges(llm) if capture_pass=='label' else nullcontext():
             with dispatch_mode(llm) if capture_pass=='label' else nullcontext():
-              seconds=timed(contexts[0], batches[0], a.once)
-      out_ids=[list(ids) for ids in token_ids];short_seconds=timed(contexts[0], batches[0], 1) if capture_pass=='timing' else None  # the native arm's order: long, then short; unobserved
-      line={"tokens":a.once,"short_seconds":short_seconds,"warm":a.warm,"samples":1,"call_order":"long_then_short","output_token_ids":out_ids,"warm_output_token_ids":warm_outputs,"seconds":seconds,"matrices":_matrices(llm),"engine":_resolved_formats(llm)}
+              seconds=timed(contexts[0], batches[0], a.once, scripts)
+      out_ids=[list(ids) for ids in token_ids];short_seconds=timed(contexts[0], batches[0], 1, scripts) if capture_pass=='timing' else None  # the native arm's order: long, then short; unobserved
+      if scripts is not None and out_ids!=scripts:raise SystemExit('forced pass did not emit its token script')
+      line={"tokens":a.once,"short_seconds":short_seconds,**({"token_forcing":SCRIPT_PROCESSOR,"token_script_sha256":hashlib.sha256(Path(a.token_script).read_bytes()).hexdigest(),**({"engine_nondeterministic":d} if (d:=json.loads(Path(a.token_script).read_text()).get('engine_nondeterministic')) else {})} if scripts is not None else {}),"warm":a.warm,"samples":1,"call_order":"long_then_short","output_token_ids":out_ids,"warm_output_token_ids":warm_outputs,"seconds":seconds,"matrices":_matrices(llm),"engine":_resolved_formats(llm)}
       if capture_pass:
         import vllm;config=llm.llm_engine.vllm_config
         line.update(line['engine'], capture_pass=capture_pass, runtime_graph_mode='NONE' if capture_pass=='label' else 'production',

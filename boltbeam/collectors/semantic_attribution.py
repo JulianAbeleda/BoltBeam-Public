@@ -44,8 +44,8 @@ def attribute(run:Path, raw:Path, *, peaks:dict, bandwidth_gbs:float,
   else:
     if (engine.get('execution_mode')!='production CUDA graph timing' or
         engine.get('capture_pass')!='timing' or engine.get('enforce_eager') is not False or
-        engine.get('batch')!=1 or engine.get('decode_step')!=1):
-      raise ValueError('decode attribution requires recorded production single-stream decode')
+        type(engine.get('batch')) is not int or engine['batch']<1 or engine.get('decode_step')!=1):
+      raise ValueError('decode attribution requires recorded production decode of a whole number of streams')
     workload='decode'
   length=engine['length']
   context=engine['context']
@@ -56,7 +56,7 @@ def attribute(run:Path, raw:Path, *, peaks:dict, bandwidth_gbs:float,
     layers=profile['layer_count'],kernel_paths=paths['kernels'],observed=paths.get('observed'),observed_by=paths.get('observed_by'),
     peaks=peaks,bandwidth_gbs=bandwidth_gbs,profile=profile,length=length,warmup=False,
     formats=formats,cache=cache,
-    depth=context,unc=uncertainty,explicit_overlap=True)
+    depth=context,unc=uncertainty,explicit_overlap=True,streams=1 if replay is not None else engine['batch'])
   digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
   sources=[raw/name for name in ('semantic_work.json','instruction_paths.json')]
   if engine.get('decode_steps'):
@@ -69,6 +69,7 @@ def attribute(run:Path, raw:Path, *, peaks:dict, bandwidth_gbs:float,
   if replay is not None:sources.append(raw/'replay_evidence.json')
   if any(not p.resolve().is_relative_to(run.resolve()) for p in sources):
     raise ValueError('decode evidence must be stored inside its run')
+  if paths.get('observed_scope'):attr['observed_scope']=paths['observed_scope']  # which decode steps ncu observed
   attr.update(workload=workload,context=context,length=length,engine=engine,
     wall_source=f'the captured {workload} step, first kernel to last',
     peaks_at=peaks,bandwidth_gbs=bandwidth_gbs,cache=cache,

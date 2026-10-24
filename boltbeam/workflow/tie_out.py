@@ -43,6 +43,8 @@ LATENCY_ASSUMED = "assumed"
 LATENCY_MEASURED = "the dispatch floor the probe measured on this GPU"
 OWN_TIMING = "tinygrad-profile-events"  # the engine's own profiling, not an outside capture
 from boltbeam.collectors.engine_kernels import METHOD as ISOLATED  # the engine's kernels timed alone by BoltBeam's kernel timer
+# each engine's own decode timing window, recorded alike by its untraced run and its outside capture (another engine's never matches)
+WINDOWS = {"llama.cpp": ("long_minus_short", "differential decode window"), "tinygrad": ("engine_decode_loop", "decode-loop window")}
 REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slow": "slow kernel",
            "compute": "compute bound", "unexplained": "unexplained"}
 # a role timed alone whose reading is not firm gets this suffix after its reason word: the word is the rule's
@@ -312,14 +314,14 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
          "lines": [], "token_ms": None, "token_source": None, "busy_ms": None, "missing": missing, "refused": None,
          "isolated": (trace or {}).get("capture", {}).get("method") == ISOLATED}
   whole = next((r for r in (trace or {}).get("rows", []) if r.get("scope") == "whole_step"), {})
-  if provider == "llama.cpp" and (trace or {}).get("capture", {}).get("method") not in (None, ISOLATED):
+  if (kind := WINDOWS.get(provider, (None,))[0]) and (trace or {}).get("capture", {}).get("method") not in (None, ISOLATED, OWN_TIMING):
     path = run / "timing_trace.json"
     native = measured_step(json.loads(path.read_text()), provider, near=context) if path.exists() else None
     captured_window = (whole.get("engine") or {}).get("timing_window")
-    matches = bool(window_context(whole) is not None and native and native.get("timing_window") == captured_window)
+    matches = bool((window_context(whole) is not None if kind == "long_minus_short" else (captured_window or {}).get("method") == kind) and native and native.get("timing_window") == captured_window)
     out["timing_match"] = {"matches": matches, "native_window": (native or {}).get("timing_window"),
                            "captured_window": captured_window,
-                           "words": "same differential decode window and fresh-process lifecycle" if matches else
+                           "words": f"same {WINDOWS[provider][1]} and fresh-process lifecycle" if matches else
                                     "native and captured decode timing need matching explicit windows and lifecycles"}
   if table is None:  # no kernel view here: the whole step from step 4 is the token
     if untraced is None:
@@ -348,6 +350,14 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
     out["refused"] = f"no measured token for {provider} in this run to tie the kernels out against"
     return out
   if out["isolated"]:
+    if cap := (trace or {}).get("captured_token"):  # a capture held the whole token but named no kernel (attribution.UnnamedCapture):
+      # its host step against the untraced one over identical recorded windows, GPU busy beside it; the roles stay the estimate
+      native = measured_step(json.loads((run / "timing_trace.json").read_text()), provider, near=context) if untraced is not None else None
+      cap_ms, busy_ms = float(cap["token_ms"]), float(cap["busy_ms"])
+      out["end_to_end"] = e2e = end_to_end({"measured_ms": cap_ms, "wall_ms": cap_ms, "busy_ms": busy_ms, "gaps_ms": cap_ms - busy_ms, "timing_window": cap.get("timing_window")},
+                                           untraced, "token", reference="untraced reference", reference_window=(native or {}).get("timing_window"))
+      out["captured_token"] = {**cap, "untraced_ms": untraced, "words": f"Whole token captured by {cap['method']}, not split by role: captured {cap_ms:.2f} ms vs untraced "
+                               + (f"{untraced:.2f} ms" if untraced else "not measured") + f", GPU busy {busy_ms:.2f} ms of it; " + e2e["words"].split(" (", 1)[0] + "."}
     return _isolated(out, table, token, limit, context)
   match = out.get("timing_match") or {}
   out["end_to_end"] = end_to_end({"measured_ms": whole.get("token_ms"), "wall_ms": token,

@@ -307,7 +307,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   from boltbeam.roofline.prefill_work import kv_bytes_per_token, recurrent_state_bytes
   from boltbeam.target.targets import get_target
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
-  from boltbeam.workflow.common import load_manifest, read_json
+  from boltbeam.workflow.common import load_manifest, read_json, run_gpu
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
   model = str(manifest["model_path"])
@@ -322,12 +322,15 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   with gpu_telemetry.run_telemetry(run, 0) as probe:
     pass
   total = ((probe.summary().get("memory_mib") or {}).get("total") or 0.0) * 2**20
+  gpu = run_gpu(run) or {}  # no driver total (unified memory): the scan's working set, said so
+  total_from = None if total else gpu.get("working_set_from")
+  total = total or float(gpu.get("working_set_bytes") or 0.0)
   own = {"engine": per_token} if per_token else {}
 
   def cap_now(rows):
     fixed = fixed_part(rows, per_token) if per_token else None
     how = "measured: what the engine held beside its KV cache" if fixed else "before any depth: the weights and the recurrent state"
-    return caps(profile, total, fixed if fixed else weight_bytes + state, how, {**by_type, **own})
+    return {**caps(profile, total, fixed if fixed else weight_bytes + state, how, {**by_type, **own}), "device_from": total_from}
 
   if not (per_token and total):
     raise RuntimeError("a session needs the KV bytes per token (the profile's attention shape) and the device memory")
@@ -363,6 +366,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
       say(f"reference at depth {c}: llama.cpp server")
       r = reference(run, model, ids, c, warm=(c == focus and provider == "llama.cpp"))
       say(f"turn of {TURN} tokens at depth {c}: {provider}")
+      settled = gpu_telemetry.settle(run, say)
       got = _engine(provider)["turn"](run, model, c, target, root, c == focus)
     except Exception as exc:  # noqa: BLE001  a depth the engine cannot run is a row with its reason
       rows.append({**base, "failed": str(exc)[-600:]})
@@ -378,7 +382,7 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
                  "batched": got["chunk"]["batched"], "decode": got["decode"], "decode_tok_s": got["decode"]["tok_s"],
                  "check": check, "reference_fill_s": r.get("cold_s"), "telemetry": tele, "throttled": tele.get("throttled"),
                  "telemetry_samples": got.get("telemetry_samples"), "source": got["source"], "engine": got["engine"],
-                 **({"turn_depths": got["turn_depths"]} if got.get("turn_depths") else {}),
+                 **({"settled_s": settled} if settled else {}), **({"turn_depths": got["turn_depths"]} if got.get("turn_depths") else {}),
                  "seconds": round(time.monotonic() - began, 1)})
     if c == focus:
       w = got.get("warm") if provider != "llama.cpp" else (r.get("warm") and {"s": (r["warm"]["prompt_ms"] or 0) / 1e3,

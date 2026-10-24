@@ -32,7 +32,10 @@ It answers, per role and per kernel:
   moved beyond run-to-run noise ([docs/engine-upgrade-audit.md](docs/engine-upgrade-audit.md)).
 
 Engines: llama.cpp, vLLM, Ollama, TensorRT-LLM and a tinygrad fork. Chips: Apple Metal and NVIDIA CUDA, measured
-the same way. BoltBeam says where the time goes. Why a kernel is slow is the engine developer's question.
+the same way. BoltBeam says where the time goes. Why a kernel is slow is the engine developer's question. On Metal,
+llama.cpp names no kernels in its capture. Qualified there: its whole decode token, its whole prefill at 512 tokens,
+and its session turn at depth 512. The prefill and turn qualify only with the GPU idled 60 s before each arm,
+because the M4's clock steps down under sustained load. Per-role time is the kernel timer's estimate.
 
 ## Install
 

@@ -62,7 +62,7 @@ def prepare(model: Path, profile: dict, *, auxiliary=False):
 
 
 def _attach(launches, *, cfg, profile, registry, tensors, expected_tensors,
-            ssd_chunk, routing=None, auxiliary=False):
+            ssd_chunk, routing=None, auxiliary=False, streams=1):
   routes={(r['module'],r['operation_id']):r for r in routing or []}
   if routing is not None and len(routes)!=len(routing):
     raise ValueError('duplicate routing operation evidence')
@@ -114,12 +114,14 @@ def _attach(launches, *, cfg, profile, registry, tensors, expected_tensors,
       decode = any(template(l['key']) in DECODE for l in group)
       contract = DECODE if decode else SSD
       if decode:
-        if length != 1:
-          raise ValueError('Mamba2 decode requires one observed token until batched state selection is modeled')
+        # a decode step holds one token per stream, each with its own state rows (mamba2.decode_stages)
+        if length != streams:
+          raise ValueError('Mamba2 decode requires one observed token per stream' if streams > 1 else
+                           'Mamba2 decode requires one observed token until batched state selection is modeled')
         # mamba_mixer2 explicitly casts A to FP32 before selective_state_update.
         params={**s.get('recurrent_parameters',{})}
         if 'A' in params:params['A']={**params['A'],'dtype':'float32'}
-        work=mamba2.decode_stages(profile,{**s,'recurrent_parameters':params},s['inputs'][0]['dtype'])
+        work=mamba2.decode_stages(profile,{**s,'recurrent_parameters':params},s['inputs'][0]['dtype'],streams)
       else:
         work=mamba2.ssd(profile,length,[length],ssd_chunk,s,s['inputs'][0]['dtype'])
       stages={x['stage']:x for x in work}

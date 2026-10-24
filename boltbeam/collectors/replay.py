@@ -649,7 +649,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     try:
       got = pf.role_time(run, provider, root=root, say=say, depth=c, lengths=[n], truth_ms={n: r["prompt_ms"]},
                          capture=lambda run_, model_, length, target_, root_: pf.llama_capture(
-                           run_, model_, length, target_, c, extra=flags, raw=raw), trace=file)
+                           run_, model_, length, target_, c, extra=flags, raw=raw), trace=file, rest=False)  # its untraced arm never rests
     except Exception as exc:  # noqa: BLE001  a capture that fails is that turn's reason; the others go on
       out["turns"].append({"name": name, "i": r["i"], "failed": str(exc)[-400:]})
       continue

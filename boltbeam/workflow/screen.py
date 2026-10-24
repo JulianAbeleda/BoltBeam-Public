@@ -83,7 +83,7 @@ from boltbeam.profile.loaders import profile_from_model
 from boltbeam.profile import weight_ledger
 from boltbeam.report.html import STAGES, next_step, roofline_kernels, stage_state
 from boltbeam.search import role_compare
-from boltbeam.collectors import providers, tinygrad_role_time
+from boltbeam.collectors import gpu_telemetry, providers, tinygrad_role_time
 from boltbeam.target import targets as reg
 from boltbeam.target import vendors
 from boltbeam.target.targets import get_target
@@ -405,7 +405,8 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   runtimes = []
   if token:
     runtimes.append({"provider": provider, "tok_s": token["tok_s"], "ms": token["ms"], "lost_ms": token["ms"] - limit_ms,
-                     "per_role": False, "note": f"whole step, measured untraced, at context {token['context']}"})
+                     "per_role": False, "note": f"whole step, measured untraced, at context {token['context']}"
+                     + (f"; {state}" if (state := gpu_telemetry.run_state_words(run)) else "")})
   out = {"status": "modeled", "limit_tok_s": ceil["tok_s"], "limit_ms": limit_ms, "runtimes": runtimes, "roles": [],
          "not_attributed_ms": None, "source": None, "missing": None, "refused": None,
          "provider": provider, "capture": plan, "roles_provider": None, "provider_missing": None, "others": [], "unpaired_roles": [],
@@ -681,7 +682,7 @@ def step_facts(token:dict[str, Any] | None) -> dict[str, Any] | None:
   return {"context": token["context"], "tok_s": token["tok_s"], "ms": token["ms"], "source": token.get("source"),
           **({"requested_context": token["requested_context"]} if token.get("requested_context") not in (None, token["context"]) else {}),
           "rule": token["rule"], "graph_failed": graph_failed, "graph_error": token.get("graph_error"),
-          "also": token["also"], "evidence": [{"file": "timing_trace.json", "path": f"rows[{token['index']}]"}]}
+          "also": token["also"], "evidence": [{"file": "timing_trace.json", "path": token.get("evidence_path") or f"rows[{token['index']}]"}]}
 
 
 def cross_check(run:pathlib.Path, bandwidth_gbs:float | None) -> dict[str, Any] | None:
@@ -789,7 +790,30 @@ def the_token(run:pathlib.Path) -> dict[str, Any] | None:
   captured=_optional(run,'decode_capture.json')
   if captured.get('contexts'):
     near=float(next(iter(captured['contexts'])))
+    batch=(next(iter(captured['contexts'].values())).get('engine') or {}).get('batch') or 1
+    if batch>1:
+      step=batch_step(_optional(run,"timing_trace.json"),provider,int(near),batch)
+      if step is None:
+        raise Refused(f"the decode capture is of {batch} streams at context {int(near)}, and step 4 timed no step of "
+                      f"{batch} streams there: time that batch (--batch 1,{batch}) before reading the capture")
+      return step
   return tie.measured_step(_optional(run, "timing_trace.json"), provider, near=near)
+
+
+def batch_step(trace:dict[str, Any], provider:str, context:int, batch:int) -> dict[str, Any] | None:
+  """The measured step a batched capture ties out against: step 4's point of `batch` streams at the capture's
+  context (providers.engine_trace keeps every batch under "batches"), its time per step; None when there is none."""
+  if (trace.get("provider") or "llama.cpp") != provider:
+    return None
+  points = [(i, p) for i, p in enumerate(trace.get("batches") or []) if p.get("context") == context and p.get("batch") == batch]
+  if len(points) != 1:
+    return None
+  i, p = points[0]
+  return {"context": context, "requested_context": context, "tok_s": p["tok_s_stream"], "ms": p["step_ms"],
+          "wall_us": p["step_ms"] * 1000.0, "source": p.get("source"), "batch": batch,
+          "timing_window": (p.get("engine") or {}).get("timing_window"), "graph_error": None, "index": None,
+          "evidence_path": f"batches[{i}]", "decode_tokens": p.get("tokens"),
+          "rule": f"the step of {batch} streams at the context the per-role capture attended", "also": []}
 
 
 def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool = False) -> dict[str, Any]:
@@ -880,7 +904,7 @@ def decode_ceiling(ceil:dict[str, Any], loss:dict[str, Any], token:dict[str, Any
   if loss.get('semantic_capture'):
     return {**ceil,'context':token['context'],'floor_ms':loss['limit_ms'],
             'tok_s':loss['limit_tok_s'],'bytes_moved':None,
-            '_operation_limit':True,
+            '_operation_limit':True,**({'_operation_batch':loss['batch']} if loss.get('batch',1)>1 else {}),
             'basis':"sum of captured operation limits, including attention and recurrent state work"}
   from boltbeam.workflow.layout import ENGINE_JOINS
   layout = loss.get("layout") or {}
@@ -943,11 +967,12 @@ def batch_rows(run:pathlib.Path, manifest:dict[str, Any], profile:dict[str, Any]
   out = []
   for p in points:
     if ceil.get('_operation_limit'):
-      if p['context']!=ceil['context'] or p['batch']!=1:
+      captured = ceil.get('_operation_batch', 1)
+      if p['context']!=ceil['context'] or p['batch']!=captured:
         lim={'status':'absent','reason':'no matching captured operation limit','bound':'not captured'}
       else:
-        lim={'batch':1,'context':p['context'],'step_ms':ceil['floor_ms'],
-             'tok_s_stream':ceil['tok_s'],'tok_s_total':ceil['tok_s'],'bound':'per operation'}
+        lim={'batch':captured,'context':p['context'],'step_ms':ceil['floor_ms'],
+             'tok_s_stream':ceil['tok_s'],'tok_s_total':captured*ceil['tok_s'],'bound':'per operation'}
     else:
       lim = tie.batch_limit(weight_ms=ceil.get("_weight_floor_ms", ceil["floor_ms"]), profile=profile, context=float(p["context"]), batch=int(p["batch"]),
                           element_bytes=element, bandwidth_gbs=ceil["peak_bandwidth_gbs"], params=params or None,
@@ -1309,7 +1334,6 @@ def pipeline(args, out=sys.stdout) -> int:
     progress.listen(lambda done, total, key=key: say(f"stage {key}: progress {done}/{total}"))
     began = time.monotonic()
     try:
-      from boltbeam.collectors import gpu_telemetry
       with gpu_telemetry.measurement_clock(run_path, key, backend=get_target(args.target).backend):
         step()
     except Exception as exc:  # application boundary: the stage's own message is the fact the reader needs
@@ -1559,6 +1583,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
     lines.append(f"  estimated split (isolated): weight kernels {'up to ' if est['scaled'] else ''}{est['weight_ms']:.1f} ms, "
                  f"other and gaps {'at least ' if est['scaled'] else ''}{est['other_ms']:.1f} ms ({est['other_how']})")
+    if ct := t.get("captured_token"): lines.append(f"  {ct['words']}")
   elif t.get("lines") and t.get("token_ms") is not None:
     lines.append(f"Tie-out, ms per token at context {t['context']:.0f}:")
     for i, l in enumerate(t["lines"]):

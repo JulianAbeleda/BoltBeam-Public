@@ -749,7 +749,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
            "time_source": METHOD, "context": token["context"] if token else None,
            "tok_s": 1e6 / kernel_us if kernel_us else None,
            "untraced_tok_s": token["tok_s"] if token else None, "token_source": "step 4, the untraced whole step" if token else None,
-           "telemetry": gpu_telemetry.summarize(timed) if (timed := [s for s in tele.samples if any(a <= s["t"] <= b for a, b in windows)])
+           "telemetry": gpu_telemetry.summarize(timed, witness=tele.witness(*((min(a for a, _ in windows), max(b for _, b in windows)) if windows else ()))) if (timed := [s for s in tele.samples if any(a <= s["t"] <= b for a, b in windows)])
                         else tele.summary()}
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest.get("model_id"), "target_id": manifest.get("target_id"),
            "workload": "decode", "provider_id": provider, "capture": {"method": METHOD, "reason": None},

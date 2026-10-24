@@ -662,6 +662,7 @@ def _where(loss:dict[str, Any]) -> str:
     notes.append(f'Estimated split (isolated): weight kernels {up}{est["weight_ms"]:.1f} ms, other and gaps {least}'
                  f'{est["other_ms"]:.1f} ms ({_e(est["other_how"])}). Not measured in the token: each weight kernel was timed alone{_e(floor)}'
                  + (f', and the times are scaled by {est["scale"]:.3f} to fit the token less the KV-read floor.' if est["scaled"] else '.'))
+  if ct := t.get("captured_token"): notes.append(ct["words"])
   if t.get("show_both"):
     notes.append(f'The limit is {t["limit_ms_ctx1"]:.3f} ms at context 1 and {t["limit_ms"]:.3f} ms at context {t["context"]:.0f}.')
   body = (f'<p class="muted" style="margin:0 0 10px">ms per token at context {t["context"]:.0f}</p>'

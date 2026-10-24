@@ -8,6 +8,12 @@ from pathlib import Path
 from boltbeam.workflow import tie_out
 
 TRACE = 'decode_capture.json'
+FORCING_WORDS = (" Every pass was forced to one production-graph generation's tokens (graphed and graphless passes had"
+                 " taken different tokens), so labels and times are of the same steps; the untraced reference was not"
+                 " forced, so the capture comparison includes the forcing.")
+NONDETERMINISM_WORDS = (" The engine's own graphed generation did not repeat itself (stream, first differing token: {where}),"
+                        " so the tokens forced are the first of two production generations that differ; one stream's"
+                        " work does not depend on which tokens it takes.")
 
 
 def _graph_trace(run:Path) -> str | None:
@@ -30,7 +36,14 @@ def loss_block(run:Path, provider:str, token:dict | None) -> dict:
            'rows':[{**row,**({'ceiling_range_ms':[v/count for v in row['ceiling_range_ms']]} if row.get('ceiling_range_ms') else {}),**{key:row[key]/count for key in fields if row.get(key) is not None}}
                    for row in capture['rows']]}
   from boltbeam.workflow.repeat_bands import find
+  batch=(capture.get('engine') or {}).get('batch') or 1
+  if batch!=(token.get('batch') or 1):
+    from boltbeam.workflow.screen import Refused
+    raise Refused(f'the decode capture is of {batch} stream(s) and the untraced step of {token.get("batch") or 1}: '
+                  'no report ties them out')
   band=capture.get('reference_band');host=capture.get('host_step_ms');comparison=None
+  # the repeat-band record is the run's setup's (repeat_bands.scope holds the timed batches), so a B-stream run finds
+  # its own; the band only says whether the difference is within repeat noise, it never qualifies the capture
   capture={**capture,'end_to_end':tie_out.end_to_end({**capture,'measured_ms':host},token['ms'],what='decode step',
     band=find(run,f'decode {context}'),reference_window=(band or {}).get('timing_window'))}
   if capture['end_to_end'].get('status')=='checked':  # only matched windows are compared; otherwise nothing is labelled overhead
@@ -44,10 +57,20 @@ def loss_block(run:Path, provider:str, token:dict | None) -> dict:
   if count>1:table['words']+=f' Mean of {count} decode steps, including gaps.'
   limit=table['limit_ms']
   if limit<=0:raise ValueError('decode capture has no positive operation limit')
-  return {'status':'modeled','provider':provider,'workload':'decode','per':'per token',
+  if batch>1:table['words']+=f' One decode step of {batch} streams, one token each.'
+  forcing=(capture.get('engine') or {}).get('token_forcing')
+  if forcing:table['words']+=FORCING_WORDS
+  if nondeterministic:=(capture.get('engine') or {}).get('engine_nondeterministic'):
+    table['words']+=NONDETERMINISM_WORDS.format(where=nondeterministic)
+  if capture.get('observed_scope') and capture['observed_scope']!='every decode step':
+    table['words']+=f" Closed kernels' executed paths were observed in {capture['observed_scope']}."
+  return {'status':'modeled','provider':provider,'workload':'decode','per':'per token' if batch==1 else f'per step of {batch} streams',
+          **({'batch':batch} if batch>1 else {}),**({'token_forcing':forcing} if forcing else {}),
+          **({'engine_nondeterministic':nondeterministic} if nondeterministic else {}),
+          **({'observed_scope':capture['observed_scope']} if capture.get('observed_scope') else {}),
           'limit_ms':limit,'limit_tok_s':1000/limit,'limit_context':context,
           'source':TRACE,'semantic_capture':True,'where_token_goes':table,
           'capture_comparison':comparison,
           'runtimes':[{'provider':provider,'ms':token['ms'],'tok_s':token['tok_s'],'lost_ms':token['ms']-limit,'per_role':False,
-                       'note':f'Untraced at context {context}; table uses captured time.'}],
+                       'note':f'Untraced at context {context}'+(f', {batch} streams' if batch>1 else '')+'; table uses captured time.'}],
           'roles':[],'others':[],'unpaired_roles':[],'not_timed':[],'tie_out':None,'estimate':None,'missing':None,'refused':None,'findings':[]}

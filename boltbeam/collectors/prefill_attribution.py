@@ -28,7 +28,7 @@ from typing import Any, Callable
 
 from boltbeam.collectors import pairing
 from boltbeam.target.targets import upper
-from boltbeam.collectors.attribution import share_overlap
+from boltbeam.collectors.attribution import UnnamedCapture, share_overlap
 from boltbeam.math.numerics import INTERVAL_ATOL
 from boltbeam.collectors.instruction_path import FROM_NAME, kernel_path, template
 from boltbeam.roofline import prefill_work as work
@@ -56,6 +56,10 @@ def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True,
   launches just before it repeat kernel for kernel, in order (equal counts alone would also match a window that
   straddles the two turns); a once-per-call kernel (the output head) makes that tail one whole call."""
   timed = sorted((l for l in launches if "start_us" in l), key=lambda l: l["start_us"])
+  from boltbeam.collectors.vendor_capture import unnamed
+  if timed and all(unnamed(l["key"]) for l in timed):  # no kernel named (llama.cpp on Metal): no head, no turn, no role
+    raise UnnamedCapture(f"the capture saw only {len(timed)} command buffers the engine did not name, not its kernels, "
+                         "so it cannot split the prefill by role")
   if not warmup:
     return timed, f"one prefill of {len(timed)} launches (the capture holds the measured prefill only)"
   count = lambda ls: sorted(collections.Counter(template(l["key"]) for l in ls).items())  # noqa: E731
@@ -134,7 +138,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                       cache:dict[str, float] | None = None, depth:int = 0,
                       observed:dict[str, dict[str, int]] | None = None, observed_by:str | None = None, prune:dict[str, Any] | None = None,
                       unc:dict[str, Any] | None = None, measured_ms:float | None = None,
-                      explicit_overlap:bool = False) -> dict[str, Any]:
+                      explicit_overlap:bool = False, streams:int = 1) -> dict[str, Any]:
   """The measured prefill split by role, attention and other kernels, each with operations, bytes, path and ceiling.
   roles: {role, quant, n, k, count (per chunk), weight_bytes (per launch), role_class or fine}. kernel_paths: template
   -> {path: sites}. outputs: the engine calls that each ended in an output (its last token's work, the output head, once
@@ -147,7 +151,9 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   observed: template -> {path: instructions} the vendor's observer saw a closed kernel execute (prefill.observe_closed),
   observed_by its label. prune: the
   engine adapter's {stages, outputs, words} when the engine runs its last layer's rows of those stages at the output
-  tokens only (pairing.pair): those launches are their own row, the role at output width."""
+  tokens only (pairing.pair): those launches are their own row, the role at output width. streams: independent
+  streams decoded together (a batched decode step): chunk_widths are one stream's, and attention and the recurrent
+  state, which every stream reads for itself, are that many times one stream's (prefill_work.streams_of)."""
   formats, unc = formats or {}, unc or {}  # unc: {"bandwidth": u, "peaks": {path: u}}, each measured or absent
   acts = formats.get("activations")
   by_quant = formats.get("activations_by_quant") or {}
@@ -251,11 +257,11 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   kinds = [k for k in pairing.KINDS if k in pairing.ambiguity_kinds(got.get("ambiguous")) + ([pairing.NO_FIT] if unpaired else [])]
   ambiguous = {"reason": "; ".join(reasons), "kind": kinds[0], "kinds": kinds} if reasons else None
   others: dict[str, dict[str, Any]] = {}
-  att = work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths, formats.get("kv") or "F16",
-                       formats.get("attention_activations") or acts, depth=depth) if profile else None
+  att = work.streams_of(work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths, formats.get("kv") or "F16",
+                       formats.get("attention_activations") or acts, depth=depth), streams) if profile else None
   # semantic evidence brings its own recurrent stages only for Mamba2; another recurrent block keeps its row here
   mamba = (((profile or {}).get('metadata') or {}).get('recurrent') or {}).get('kind') == 'mamba2'
-  rec = work.recurrent(profile or {}, length or int(sum(chunk_widths)), chunk_widths) if profile and not (semantic and mamba) else None
+  rec = work.streams_of(work.recurrent(profile or {}, length or int(sum(chunk_widths)), chunk_widths), streams) if profile and not (semantic and mamba) else None
   for t in templates:
     for l in t["launches"]:
       if id(l) in paired:
@@ -275,8 +281,10 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       rows.append(_row("attention", "attention", t, o["calls"], o["wall_us"], att["flops"], att["bytes"], peaks, bandwidth_gbs,
                        formats.get("kv") or "F16", note=att["words"], unc=unc))
     elif kind == "recurrent" and rec:
-      rows.append(_recurrent_row(o, rec, peaks, bandwidth_gbs, work.recurrent_executed(
-        profile or {}, length or int(sum(chunk_widths)), formats.get("recurrent_form")), unc=unc))
+      executed = work.recurrent_executed(profile or {}, length or int(sum(chunk_widths)), formats.get("recurrent_form"))
+      if executed and streams > 1:
+        executed = {**executed, "flops": executed["flops"] * streams, "words": f"{streams} streams, each " + executed["words"]}
+      rows.append(_recurrent_row(o, rec, peaks, bandwidth_gbs, executed, unc=unc))
     elif (fix := _fixup_row(kind, o, ordered, shapes, formats, mean_m, bandwidth_gbs, cache)) is not None:
       rows.append(fix)
     else:

@@ -114,10 +114,10 @@ def _decode_side(run:pathlib.Path, record:dict | None = None) -> dict[str, dict[
         key = role_label(role["role"], role["quant"], role.get("shape"))
         rows[key] = {"now_ms": role["actual_ms"], "calls": role.get("calls_per_token"), "limit_ms": role.get("ideal_ms")}
   token, busy, untraced = t.get("token_ms"), t.get("busy_ms"), t.get("untraced_ms")
-  if t.get("isolated"):  # kernels timed alone: no captured token, so no gaps and no end-to-end check; the rows repeat
+  if t.get("isolated"):  # kernels timed alone: the rows repeat; only a capture that held the token (unnamed) is checked end to end
     return {f"decode {t.get('context')}": {"rows": rows, "tie": {
-      "captured_ms": None, "busy_ms": busy, "gaps_ms": None, "residual_ms": None, "untraced_ms": untraced,
-      "end_to_end": {"confirms": None, "words": "the kernels were timed alone: there is no captured token to check end to end"}}}}
+      "captured_ms": (t.get("captured_token") or {}).get("token_ms"), "busy_ms": busy, "gaps_ms": None, "residual_ms": None, "untraced_ms": untraced,
+      "end_to_end": t.get("end_to_end") or {"confirms": None, "words": "the kernels were timed alone: there is no captured token to check end to end"}}}}
   attr = {"measured_ms": token, "wall_ms": token, "busy_ms": busy, "gaps_ms": (token - busy) if token and busy else None}
   match = t.get("timing_match") or {}
   attr["timing_window"] = match.get("captured_window")

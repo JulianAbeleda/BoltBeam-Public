@@ -50,8 +50,12 @@ def decode(profile: dict, evidence: dict, activation_dtype: str) -> dict:
           'basis':'sum of per-layer convolution and rectangular state-update work'}
 
 
-def decode_stages(profile: dict, evidence: dict, activation_dtype: str) -> list[dict]:
-  """One token in one layer, split at the actual convolution/update boundary.
+def decode_stages(profile: dict, evidence: dict, activation_dtype: str, streams: int = 1) -> list[dict]:
+  """One decode step of `streams` tokens (one per stream) in one layer, split at the actual convolution/update
+  boundary. vLLM's decode runs one causal_conv1d_update and one selective_state_update over all streams; each row
+  reads and writes its own conv and SSM state row (conv_state_indices, state_batch_indices), and the parameters
+  (conv weights and bias, A, D, dt_bias) are read once for all of them. So arithmetic, state and activation terms are
+  `streams` times one token's, the parameter bytes once.
 
   Constants use loaded tensor formats. The adapter supplies A in the format
   consumed by the kernel (vLLM explicitly converts it to FP32). Transcendentals
@@ -60,6 +64,8 @@ def decode_stages(profile: dict, evidence: dict, activation_dtype: str) -> list[
   """
   r = shape(profile)
   state_bytes(profile, evidence)
+  if type(streams) is not int or streams < 1:
+    raise ValueError('Mamba2 decode streams must be a positive integer')
   a = DTYPE_BYTES[activation_dtype]
   h,p,n,g = r['head_count'],r['head_dim'],r['state_size'],r['group_count']
   constants = evidence.get('recurrent_parameters') or {}
@@ -76,16 +82,19 @@ def decode_stages(profile: dict, evidence: dict, activation_dtype: str) -> list[
   bias = parameter_bytes('conv_bias',[r['channels']]) if constants['conv_bias'] is not None else 0
   conv_state, scan_state = [math.prod(s)*DTYPE_BYTES[d] for s,d in
                            zip(evidence['state_shapes'],evidence['state_dtypes'])]
+  b = streams
   def row(stage, flops, traffic):
     return {'stage':stage, 'flops':float(flops), 'bytes':float(traffic),
             'path':'fp32_fma', 'layers':r['layer_count'], 'requires_memory_evidence':True,
-            'basis':'per layer, one token; useful arithmetic / compulsory tensor bytes'}
+            'basis':('per layer, one token; useful arithmetic / compulsory tensor bytes' if b == 1 else
+                     f'per layer, one token in each of {b} streams (own state rows, shared parameters); '
+                     'useful arithmetic / compulsory tensor bytes')}
   return [
-    row('convolution', 2*r['conv_kernel']*r['channels'],
-        2*conv_state+2*a*r['channels']+sizes['conv_weights']+bias),
+    row('convolution', b*2*r['conv_kernel']*r['channels'],
+        b*(2*conv_state+2*a*r['channels'])+sizes['conv_weights']+bias),
     # dt+bias, A*dt; dB=B*dt; state*dA+dB*x; sum(state*C)+D*x.
-    row('state_update', 2*h+h*n+5*h*p*n+2*h*p,
-        2*scan_state+a*(2*h*p+2*g*n+h)+sizes['A']+sizes['D']+sizes['dt_bias']),
+    row('state_update', b*(2*h+h*n+5*h*p*n+2*h*p),
+        b*(2*scan_state+a*(2*h*p+2*g*n+h))+sizes['A']+sizes['D']+sizes['dt_bias']),
   ]
 
 

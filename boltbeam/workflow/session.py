@@ -92,7 +92,8 @@ def caps_words(c:dict[str, Any]) -> str:
   text = f"{head}. Max context before compaction, per KV cache type: {'; '.join(parts)}"
   if eng:
     text += f". This engine's own cache: {eng['binding']:,}"
-  return text + (f". Memory cap: the device less {100 * c['reserve']:.0f}% and {c['fixed_bytes'] / 2**30:.1f} GiB fixed "
+  dev = f" ({c['device_from']})" if c.get("device_from") else ""  # which figure stood for the device's memory
+  return text + (f". Memory cap: the device{dev} less {100 * c['reserve']:.0f}% and {c['fixed_bytes'] / 2**30:.1f} GiB fixed "
                  f"({c['fixed_from']}), over the KV bytes per token.")
 
 
@@ -150,9 +151,14 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], base:dict[str, Any]) -
              runtimes=[{"provider": out.get("provider"), "tok_s": head["tok_s"], "ms": head["turn_ms"],
                         "lost_ms": head["turn_ms"] - limit if limit else None, "per_role": False,
                         "note": f"a {n}-token turn at depth {head['context']:,}, measured untraced; {head['chunk']['words']}"
-                                + (f"; {(head.get('telemetry') or {}).get('words')}" if head.get("throttled") else "")}])
+                                + (f"; {(head.get('telemetry') or {}).get('words')}" if head.get("throttled") or (head.get("telemetry") or {}).get("state") else "")}])
   if not w:
-    out["missing"] = "no turn captured in the model: step 5 (role time) has not run for this run"
+    from boltbeam.collectors.session import TRACE  # the capture's own refusal when it said one
+    from boltbeam.workflow.prefill import captured_whole
+    from boltbeam.workflow.repeat_bands import find
+    got = next(iter((_read(run / TRACE).get("lengths") or {}).values()), None) or {}
+    out["captured_token"] = cw = captured_whole(got, head, "turn", head.get("qualification_ms") or head["turn_ms"], find(run, f"prefill {n}"))
+    out["missing"] = ". ".join(filter(None, (got.get("not_captured") or "no turn captured in the model: step 5 (role time) has not run for this run", (cw or {}).get("words")))).rstrip(".")
   return out
 
 

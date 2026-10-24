@@ -35,6 +35,9 @@ OWN_TIMING = "tinygrad-profile-events"
 # backends whose vendor capture sees tinygrad's kernels: on Metal each command buffer is labelled with its kernel
 # when graphs are off (JIT=2, tinygrad/runtime/ops_metal.py), so Metal System Trace splits time per kernel
 CAPTURED_BACKENDS = ("Metal",)
+# the work the driver's printed wall covers (its decode loop after prefill and warm tokens, one fresh process): the
+# untraced decode and the vendor capture record it alike, so the tie-out compares the two only over the same work
+decode_window = lambda out: {"method": "engine_decode_loop", "process": "fresh_per_sample", "repetitions": 1, **{k: out[k] for k in ("tokens", "warm_tokens", "context_start", "context_end", "jit_mode", "max_context")}}
 
 
 def own_timing_reason(backend:str) -> str | None:
@@ -74,7 +77,7 @@ def whole_step(*, root:pathlib.Path, python:pathlib.Path, model:str, target, con
       out = json.loads(lines[-1])
       return {"tok_s": out["tok_s"], "tokens": out["tokens"], "wall_s": out["wall_s"], "device": device,
               "jit": "graphs" if jit == "1" else "no graphs (graph replay failed)", "graph_error": graph_error,
-              "engine": {k: out[k] for k in ("jit_mode", "warm_tokens", "context_start", "context_end", "max_context", "build")}}
+              "engine": {**{k: out[k] for k in ("jit_mode", "warm_tokens", "context_start", "context_end", "max_context", "build")}, "timing_window": decode_window(out)}}
     if "GraphException" not in (proc.stderr or ""):
       break
     # the engine's own words for why the graph did not replay (the last GraphException line), kept with the row
@@ -123,8 +126,7 @@ def role_time_captured(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Pa
   the same path llama.cpp takes. Two decodes at one context, `tokens` and 1 token, subtracted per kernel."""
   from boltbeam.collectors import attribution, vendor_capture
   from boltbeam.workflow.common import run_gpu
-  device = device_for(target)
-  raw = run / "kernel_compare" / "tinygrad_capture"
+  device, raw = device_for(target), run / "kernel_compare" / "tinygrad_capture"
   from boltbeam.collectors.capture_settings import observed
   settings = observed(run, context)
   if settings.get("jit_mode") != 2 or type(settings.get("max_context")) is not int:
@@ -133,15 +135,14 @@ def role_time_captured(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Pa
   got = {}
   for name, n in (("long", tokens), ("short", 1)):
     (raw / name).mkdir(parents=True, exist_ok=True)
-    got[name] = vendor_capture.capture(target.backend, decode_argv(python, model, context, n, raw / name) +
-                                       ["--max-context", str(settings["max_context"])],
+    got[name] = vendor_capture.capture(target.backend, decode_argv(python, model, context, n, raw / name) + ["--max-context", str(settings["max_context"])],
                                        raw / name, cwd=root, env=env, device=run_gpu(run))
   window, overlap = attribution.shared_window(got["long"], got["short"])
   printed = [json.loads(x) for x in vendor_capture.program_output(raw / "long").splitlines() if x.startswith('{"tokens"')]
   token_ms = 1000.0 / printed[-1]["tok_s"] if printed else None
   return attribution.provider_trace(run, window, provider=PROVIDER, method=vendor_capture.plan(target.backend)["method"],
                                     model_id=model_id, target=target, context=context, tokens=tokens - 1, out=TRACE,
-                                    token_ms=token_ms, long_kernels=len(got["long"]), overlap=overlap)
+                                    token_ms=token_ms, long_kernels=len(got["long"]), overlap=overlap, engine={"timing_window": decode_window(printed[-1])} if printed else None)
 
 
 def runtime_name(target) -> str:

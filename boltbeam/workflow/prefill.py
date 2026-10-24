@@ -57,6 +57,29 @@ def tables(run:pathlib.Path) -> dict[int, dict[str, Any]]:
   return out
 
 
+def captured_whole(attr:dict[str, Any] | None, row:dict[str, Any], what:str, untraced:float | None, band:dict | None) -> dict[str, Any] | None:
+  """An unnamed capture's whole prefill or turn (collectors/prefill.llama_capture): the engine's timer under the capture
+  against the untraced one over identical recorded windows (tie_out.end_to_end), GPU busy beside it; None without one."""
+  if not (cap := (attr or {}).get("captured")):
+    return None
+  ms, busy, window = float(cap["token_ms"]), float(cap["busy_ms"]), (row.get("engine") or {}).get("timing_window")
+  e2e = tie.end_to_end({"measured_ms": ms, "wall_ms": ms, "busy_ms": busy, "gaps_ms": ms - busy, "timing_window": cap.get("timing_window")},
+                       untraced, what, band=band, reference="untraced final repetition", reference_window=window)
+  return {**cap, "untraced_ms": untraced, "end_to_end": e2e, "words": f"Whole {what} captured by {cap['method']}, not split by role: captured "
+          f"{ms:.2f} ms vs untraced " + (f"{untraced:.2f} ms" if untraced else "not measured") + f", GPU busy {busy:.2f} ms (the mean of "
+          f"the capture's {cap['prefills']} prefills: no buffer marks their edges); " + e2e["words"].split(" (", 1)[0] + arm_words(attr, row) + "."}
+
+
+def arm_words(attr:dict[str, Any], row:dict[str, Any]) -> str:
+  """How the two arms started (the GPU idled first, collectors gpu_telemetry.settle) and the GPU clock each ran at
+  where a witness saw it: the overhead moves with the clock, so it is said beside the verdict. Disclosure only."""
+  from boltbeam.collectors.gpu_telemetry import witness_clock
+  rest = (f"; each arm started after the GPU idled {attr['settled_s']:g} s" if attr.get("settled_s") and row.get("settled_s") == attr["settled_s"]
+          else "".join(f"; the {k} arm started after the GPU idled {v:g} s" for k, v in (("untraced", row.get("settled_s")), ("captured", attr.get("settled_s"))) if v))
+  arms = [(k, c) for k, c in (("untraced", witness_clock((row.get("telemetry") or {}).get("gpu_witness"))), ("captured", attr.get("clock_mhz"))) if c]
+  return rest + ("; GPU clock " + ", ".join(f"{k} {c[0]:.0f} MHz ({c[1]:.0f}-{c[2]:.0f})" for k, c in arms) if arms else "")
+
+
 def loss_block(run:pathlib.Path, manifest:dict[str, Any], base:dict[str, Any]) -> dict[str, Any]:
   """The results' loss block for a prefill run, on the decode block's keys (base) so every renderer reads it: the
   untraced prefill against the sum of its kernels' ceilings, and the where table at the run's first length."""
@@ -84,9 +107,13 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], base:dict[str, Any]) -
              runtimes=[{"provider": out.get("provider"), "tok_s": head["tok_s"], "ms": head["prefill_ms"],
                         "lost_ms": head["prefill_ms"] - limit if limit else None, "per_role": False,
                         "note": f"whole prefill of {first} tokens, measured untraced; {head['chunk']['words']}"
-                                + (f"; {tie_words(head)}" if head.get("throttled") else "")}])
-  if not w:
-    out["missing"] = "no prefill captured in the model: step 5 (role time) has not run for this run"
+                                + (f"; {tie_words(head)}" if head.get("throttled") or (head.get("telemetry") or {}).get("state") else "")}])
+  if not w:  # the capture's own refusal when it said one (prefill.role_time not_captured)
+    from boltbeam.collectors.prefill import TRACE
+    from boltbeam.workflow.repeat_bands import find
+    got = (_read(run / TRACE).get("lengths") or {}).get(str(first)) or {}
+    out["captured_token"] = cw = captured_whole(got, head, "prefill", head.get("qualification_ms") or head["prefill_ms"], find(run, f"prefill {first}"))
+    out["missing"] = ". ".join(filter(None, (got.get("not_captured") or "no prefill captured in the model: step 5 (role time) has not run for this run", (cw or {}).get("words")))).rstrip(".")
   out["prefill_audit"] = audit_at_longest(run, manifest, where)
   return out
 

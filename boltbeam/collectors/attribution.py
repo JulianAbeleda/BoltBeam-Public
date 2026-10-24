@@ -282,7 +282,8 @@ class CaptureRefused(RuntimeError):
 
 class UnnamedCapture(CaptureRefused):
   """The capture holds the token, but only in command buffers the engine did not name: no kernel to pair. The
-  engine's kernels timed alone (the generic measurement) can still split it (providers.role_time)."""
+  engine's kernels timed alone can still split it (providers.role_time); token keeps the whole token for the tie-out."""
+  def __init__(self, why:str, token:dict[str, Any] | None = None): super().__init__(why); self.token = token
 
 
 def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_ms:float | None,
@@ -328,7 +329,8 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   from boltbeam.collectors.vendor_capture import unnamed
   if window and all(unnamed(g.get("key", "")) for g in window):  # nothing to pair: no group is a kernel
     raise UnnamedCapture(f"{method} saw only command buffers {provider} did not name, not its kernels, so it cannot "
-                         "split the token by role")
+                         "split the token by role", {"method": method, "token_ms": token_ms, "decode_tokens": tokens, "busy_ms": sum(
+                         g["wall_us"] for g in window) / tokens / 1000.0, "timing_window": (engine or {}).get("timing_window")} if token_ms else None)
   read = {k: r for r in profile.get("roles", []) for k in ((r["role"], r["quant"]), role_key(r))}  # by shape where read
   counts = {k: int(r["count"]) for k, r in read.items() if r.get("count")}
   roles, pairing_roles, packed = ceil.get("_roles") or [], "the profile's roles", {}

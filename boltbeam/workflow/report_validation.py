@@ -165,6 +165,10 @@ def validate(run:Path, res:dict) -> dict:
         equal(f'loss.roles[{i}].pct_peak', r['pct_peak'], 100*r['ideal_ms']/r['actual_ms'], .051)
       if r.get('mb_per_call') and r.get('calls_per_token') and r.get('gbs') and r.get('us_per_call'):
         equal(f'loss.roles[{i}].gbs = bytes/call / us/call', r['gbs'],r['mb_per_call']*1000/(r.get('us_per_call_less_floor') or r['us_per_call']), .051)
+  if notes:=[r['note'] for r in loss.get('runtimes') or [] if 'device state over' in str(r.get('note'))]:
+    from boltbeam.collectors.gpu_telemetry import derived_state_words  # the line, clock witness and all, from its samples
+    derived=derived_state_words(run);checks+=1
+    failures.extend('loss.runtimes: the device state line is not what the run\'s samples derive' for n in notes if not any(d in n for d in derived))
   tie = loss.get('tie_out') or {}
   if tie.get('lines') and tie.get('token_ms') is not None and not tie.get('refused'):
     equal('loss.tie_out.token_ms = sum(lines.ms)', tie['token_ms'], sum(r['ms'] for r in tie['lines']))
@@ -178,6 +182,10 @@ def validate(run:Path, res:dict) -> dict:
     for key, child in (node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else ()):
       verdicts(child, f'{path}.{key}')
   verdicts(loss, 'loss')
+  for path,ct,e in (('loss.tie_out.captured_token',tie.get('captured_token'),tie.get('end_to_end')),('loss.captured_token',loss.get('captured_token'),(loss.get('captured_token') or {}).get('end_to_end'))):
+   if ct:  # the whole-token (prefill, turn) line says exactly what its verdict says, with the verdict's numbers
+    e=e or {};checks+=1;nums=f"captured {e['captured_ms']:.2f} ms vs untraced {e['untraced_ms']:.2f} ms" if e.get('captured_ms') and e.get('untraced_ms') else ''
+    if ct.get('token_ms')!=e.get('captured_ms',ct.get('token_ms')) or ct.get('untraced_ms')!=e.get('untraced_ms',ct.get('untraced_ms')) or not all(w in str(ct.get('words')) for w in (nums,str(e.get('words')).split(' (',1)[0])):failures.append(f'{path}: its token, untraced time or words disagree with tie_out.end_to_end')
   failures.extend(unmatched_window_failures(loss, captures))
   if comparison:=loss.get('capture_comparison'):
     rows=comparison.get('rows') or []
@@ -193,6 +201,15 @@ def validate(run:Path, res:dict) -> dict:
       cell('capture comparison total cell',comparison['sum_cells'][1],f'{wall:.6f}')
   if loss.get('semantic_capture'):
     w=loss.get('where_token_goes') or {}
+    from boltbeam.workflow.captured_decode import FORCING_WORDS, NONDETERMINISM_WORDS
+    for cap in captures:  # a capture whose passes were forced says so, as a field and in its words
+      forcing=(cap.get('engine') or {}).get('token_forcing')
+      if forcing and (loss.get('token_forcing')!=forcing or FORCING_WORDS not in (w.get('words') or '')):
+        failures.append('decode capture was forced to one generation\'s tokens, and the report does not disclose it')
+    shown=((trace.get('contexts') or {}).get(str(loss.get('limit_context'))) or {}).get('engine') or {}
+    if (where:=shown.get('engine_nondeterministic')) and (loss.get('engine_nondeterministic')!=where or  # the context shown
+        NONDETERMINISM_WORDS.format(where=where) not in (w.get('words') or '')):
+      failures.append('decode capture forced tokens of an engine that does not repeat itself, and the report does not disclose it')
     if not verified_work:failures.append('decode operation ledger has no verified work evidence')
     if w.get('limit_ms') is not None:
       equal('decode headline limit = captured operation limits',ceiling.get('floor_ms'),w['limit_ms'])

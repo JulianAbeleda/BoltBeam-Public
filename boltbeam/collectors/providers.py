@@ -496,6 +496,9 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
       if engine_kernels.available(provider, target.backend, llama_bench_decode.find(llama_bench_decode.DEFAULT)) is not None:
         raise
       trace = engine_kernels.collect(run, provider, say=say, step=step)
+      if exc.token:  # the capture's whole token still stands: the tie-out qualifies it against the untraced step
+        trace["captured_token"] = exc.token
+        (run / TRACES[provider]).write_text(json.dumps(trace, indent=2, sort_keys=True) + "\n")
       _fell_back(run, str(exc))
       how = {**how, "cross_check": None}
   if how.get("cross_check") == engine_kernels.METHOD:  # the in-model capture stands; the isolated numbers sit beside it

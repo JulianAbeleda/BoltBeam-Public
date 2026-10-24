@@ -99,6 +99,7 @@ class Vendor:
   toolkit: Toolkit | None
   owned_modules: tuple[str, ...]   # modules that serve this vendor alone, under boltbeam/
   terms: Mapping[str, str | None]  # the words a user reads for this vendor's hardware
+  settle_s: float = 0.0            # GPU idle before each measured prefill or turn arm (gpu_telemetry.settle); 0: none
 
   def term(self, key:str) -> str | None:
     """One of the vendor's words; None when it has no such thing. A key no row defines is NoVendorRow."""
@@ -224,8 +225,10 @@ _ROWS = (
     match_keys=("apple_soc", "gpu_cores"), order="system_profiler's",
     notes=("Primary GPU is the first Apple device returned by system_profiler.",
            "Dynamic Metal limits require the tinygrad provider fact adapter."),
-    # BoltBeam reads no telemetry and no clock policy from a Mac yet: unknown, said, never NVIDIA's
-    unrecorded_order=None, ggml_backend="metal", telemetry=None, clock_policy=None,
+    # telemetry: the thermal state, memory pressure and swap a user process may read; the GPU clock and power through
+    # powermetrics only where sudo -n works (gpu_telemetry.Powermetrics)
+    unrecorded_order=None, ggml_backend="metal", telemetry=lambda device: resolve("boltbeam.collectors.gpu_telemetry:AppleState")(device),
+    clock_policy="boltbeam.collectors.gpu_telemetry:apple_clock_policy",
     profile=None,  # Apple's profile shape is still profile_row's own (unified memory, no driver-API facts)
     capture=Capture(method="metal-system-trace", install="install Xcode (xctrace comes with it)",
                     words="captured with Metal System Trace", tool_word="xctrace",
@@ -243,7 +246,11 @@ _ROWS = (
     toolkit=None,
     owned_modules=("runtime/metal_device.py", "collectors/metal_bandwidth.py", "collectors/metal_system_trace.py"),
     terms=_terms("GPU core", "SIMD-group", None, "GPU clock", "GPU MHz", "AIR", "MPS", "Metal command buffer reuse",
-                 None, "Metal System Trace (xctrace)", "system_profiler", None, "BoltBeam's Metal read probe")),
+                 None, "Metal System Trace (xctrace)", "system_profiler", None, "BoltBeam's Metal read probe"),
+    # the M4's GPU clock steps 1578 -> 1474 MHz after sustained load (thermal state still nominal) and recovers at idle:
+    # 30 and 60 s restored it after a minute of load, 15 s did not (metal-qualification-20261023.md); the capture ran
+    # straight after the untraced arm, so its prefill was up to 7% slower
+    settle_s=60.0),
 )
 
 VENDORS: Mapping[str, Vendor] = _FROZEN((v.vendor, v) for v in _ROWS)

@@ -139,6 +139,250 @@ def amd_clock_policy(source:AmdSysfs) -> dict[str, Any]:
                  "amdgpu performance level unreadable; BoltBeam does not write it"}
 
 
+class AppleState:
+  """What macOS lets a user process read about the machine while work runs, with no root and no subprocess: the
+  thermal state (NSProcessInfo.thermalState, through the Objective-C runtime), the memory pressure level and the
+  swap in use (sysctl). macOS gives a user process no GPU clock, power or temperature; where this user has
+  passwordless sudo, start() and stop() run the shared Powermetrics witness for the GPU clock and power, else they stay
+  unknown. No NVIDIA field (sm_mhz, throttle reasons) is filled. pmset -g therm tells the same thermal story only once
+  a warning is recorded, at a process per read."""
+
+  THERMAL = {0: "nominal", 1: "fair", 2: "serious", 3: "critical"}  # NSProcessInfoThermalState; serious: macOS slows the chip
+  PRESSURE = {1: "normal", 2: "warn", 4: "critical"}  # kern.memorystatus_vm_pressure_level
+
+  def __init__(self, device:dict[str, Any] | None = None):
+    self.libc, objc = ctypes.CDLL(None), ctypes.CDLL("/usr/lib/libobjc.A.dylib")  # OSError off macOS: Unsampled
+    ctypes.CDLL("/System/Library/Frameworks/Foundation.framework/Foundation")  # NSProcessInfo's class
+    objc.objc_getClass.restype = objc.sel_registerName.restype = ctypes.c_void_p
+    send = ctypes.cast(objc.objc_msgSend, ctypes.c_void_p).value
+    self._long = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)(send)
+    self._info = ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)(send)(
+      objc.objc_getClass(b"NSProcessInfo"), objc.sel_registerName(b"processInfo"))
+    self._thermal = objc.sel_registerName(b"thermalState")
+
+  def _sysctl(self, name:bytes, buf):
+    size = ctypes.c_size_t(ctypes.sizeof(buf))
+    return buf if self.libc.sysctlbyname(name, ctypes.byref(buf), ctypes.byref(size), None, ctypes.c_size_t(0)) == 0 else None
+
+  def sample(self) -> dict[str, Any]:
+    level = self._sysctl(b"kern.memorystatus_vm_pressure_level", ctypes.c_int())
+    swap = self._sysctl(b"vm.swapusage", (ctypes.c_uint64 * 4)())  # xsw_usage: total, avail, used, page size + flag
+    return {"t": time.monotonic(), "thermal_state": self.THERMAL.get(t := self._long(self._info, self._thermal), str(t)),
+            "memory_pressure": self.PRESSURE.get(level.value, str(level.value)) if level else None,
+            "swap_used_mib": round(swap[2] / 2**20, 1) if swap else None}
+
+  def start(self) -> None:
+    self.__dict__.pop("_rows", None)  # a source opened again starts a new window
+    self._t0, self._used = time.monotonic(), WITNESS.acquire()
+
+  def stop(self) -> None:
+    WITNESS.release()  # the window's samples, kept past the witness's next start
+    self._rows, self._reason = [r for r in list(WITNESS.rows) if self._t0 < r[0] <= time.monotonic()], WITNESS.reason
+
+  def witness(self, t0:float | None = None, t1:float | None = None) -> dict[str, Any] | None:
+    """The witness's samples in the window as [s from start, MHz, active share, W, s covered]; None without sudo."""
+    if not getattr(self, "_used", False):
+      return None
+    got, reason = (self._rows, self._reason) if hasattr(self, "_rows") else (  # a summary while the block still runs
+      [r for r in list(WITNESS.rows) if self._t0 < r[0]], WITNESS.reason)
+    rows = [[round(r[0] - self._t0, 3), *r[1:]] for r in got if t0 is None or t1 is None or t0 <= r[0] <= t1]
+    out = {"source": "powermetrics (sudo -n)", "interval_ms": WITNESS_MS, "samples": rows}
+    return {**out, "reason": reason} if rows and reason else out if rows else {**out, "reason": reason or "powermetrics gave no sample in the window"}
+
+
+WITNESS_MS, WITNESS_CAP, BUSY = 200, 108_000, 0.5  # 6 h of samples: an orphan stops by itself; BUSY: share active
+
+
+_SUDO: dict[Any, bool] = {}
+
+
+def sudo_n(run=None) -> bool:
+  """Whether this user has passwordless sudo, asked once per process in its own session as the witness runs (a tty's
+  cached sudo ticket does not count); never prompts."""
+  if run not in _SUDO:
+    try:
+      _SUDO[run] = (run or subprocess.run)(("sudo", "-n", "true"), capture_output=True, timeout=10, check=False,
+                                           start_new_session=True).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+      _SUDO[run] = False
+  return _SUDO[run]
+
+
+class Powermetrics:
+  """The GPU clock and power macOS gives only root, from powermetrics under sudo -n (never a password prompt; no
+  passwordless sudo, no witness). One process for every open AppleState, so a capture inside a measurement samples
+  once. Its own session (no tty, so sudo makes no pty), it writes into our pipe: if we die, its next write fails and
+  it exits; WITNESS_CAP bounds it besides. A failure is a reason, never raised. A sample: gpu.freq_hz is MHz, the
+  frequency weighted by the time at each DVFS state while active; 1 - idle_ratio the share active; gpu_energy mJ."""
+
+  ARGV = ("sudo", "-n", "powermetrics", "--samplers", "gpu_power", "-i", str(WITNESS_MS), "-f", "plist", "-n", str(WITNESS_CAP))
+
+  def __init__(self, run=None, popen=subprocess.Popen):
+    self.run, self.popen, self.lock, self.users, self.proc, self.rows, self.reason, self.tried = run, popen, threading.Lock(), 0, None, [], None, False
+
+  @staticmethod
+  def sample(raw:bytes, t:float) -> list[float]:
+    import plistlib
+    d = plistlib.loads(raw.strip())
+    gpu, s = d["gpu"], d["elapsed_ns"] / 1e9
+    return [t, round(float(gpu["freq_hz"]), 1), round(1 - float(gpu["idle_ratio"]), 4), round(gpu["gpu_energy"] / 1e3 / s, 3), round(s, 4)]
+
+  def acquire(self) -> bool:
+    """Start the witness for the first user; True when this user has passwordless sudo (it was tried)."""
+    with self.lock:
+      self.users += 1
+      if self.users == 1:
+        self.rows, self.reason, self.tried = [], None, sudo_n(self.run)
+        try:
+          if self.tried:
+            self.proc = self.popen(self.ARGV, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            (thread := threading.Thread(target=self._read, args=(self.proc.stdout, self.rows), daemon=True)).start()
+            self.thread = thread
+        except (OSError, subprocess.SubprocessError) as exc:
+          self.reason = f"powermetrics did not start: {exc}"
+      return self.tried
+
+  def _read(self, out, rows:list) -> None:  # its own process's rows: a stale reader never writes the next one's
+    buf = b""  # a NUL comes before each sample after the first; a sample is whole at its </plist>
+    while chunk := self._chunk(out):
+      parts = (buf + chunk).split(b"\0")
+      buf = b"" if parts[-1].rstrip().endswith(b"</plist>") else parts.pop()
+      for part in filter(bytes.strip, parts):
+        try:
+          rows.append(self.sample(part, time.monotonic()))
+        except Exception as exc:  # plistlib raises several kinds; a bad sample is a reason, not a crash
+          self.reason = f"a powermetrics sample did not parse: {type(exc).__name__}: {exc}"
+
+  @staticmethod
+  def _chunk(out) -> bytes:
+    try:
+      return out.read1(1 << 16)
+    except (OSError, ValueError):  # the pipe closed under a reader still waiting
+      return b""
+
+  def release(self) -> None:
+    with self.lock:
+      self.users = max(self.users - 1, 0)
+      if self.users or self.proc is None:
+        return
+      proc, self.proc = self.proc, None
+    proc.terminate()  # sudo, ours to signal, passes SIGTERM on; powermetrics stops sampling and exits
+    try:
+      proc.wait(5)
+    except subprocess.TimeoutExpired:
+      proc.kill(), proc.wait()  # sudo only: powermetrics dies at its next write into the pipe closed below
+    self.thread.join(2)
+    err = proc.stderr.read().decode(errors="replace").strip()
+    proc.stdout.close(), proc.stderr.close()
+    if proc.returncode not in (0, -15) and not self.reason:
+      self.reason = f"powermetrics exited {proc.returncode}" + (f": {err.splitlines()[-1]}" if err else "")
+
+
+WITNESS = Powermetrics()
+
+
+def apple_clock_policy(source) -> dict[str, Any]:
+  """macOS chooses the GPU clock and gives no process a way to set it, nor a user process a way to read it: the OS's
+  policy, the clock said to be unwitnessed, or read through sudo (Powermetrics); never NVIDIA's words."""
+  read = sudo_n()
+  return {"policy": "os_managed", "clock_settable": False, "words": POLICY_WORDS["os_managed_read" if read else "os_managed"],
+          "why": "macOS exposes no GPU clock control; " + ("BoltBeam reads the clock through powermetrics under sudo -n" if read
+                 else "powermetrics, the only clock reader, needs root")}
+
+
+UNWITNESSED = "GPU clock, power and temperature not witnessed (macOS reads them only through powermetrics, which needs root)"
+
+
+def witness_clock(w:dict[str, Any] | None) -> tuple[float, float, float] | None:
+  """A witness's GPU clock (mean weighted by active time, min, max) over its samples with the GPU at least BUSY
+  active (all of them when none is); None with no samples."""
+  if not (rows := [r for r in (w or {}).get("samples") or [] if r[4] > 0]):
+    return None
+  use = [r for r in rows if r[2] >= BUSY] or rows
+  active = sum(r[2] * r[4] for r in use)
+  mhz = sum(r[1] * r[2] * r[4] for r in use) / active if active else statistics.fmean(r[1] for r in use)
+  return mhz, min(r[1] for r in use), max(r[1] for r in use)
+
+
+def settle(run:pathlib.Path, say=lambda _: None, sleep=time.sleep) -> float:
+  """Idle the run's GPU for its vendor row's settle_s before a measured arm (an untraced prefill or turn, or its
+  capture), so every arm starts from the same rested clock; the seconds idled, for the arm's record (0: none)."""
+  from boltbeam.target.vendors import NoVendorRow, vendor
+  from boltbeam.workflow.common import run_gpu
+  try:
+    s = float(vendor((run_gpu(run) or {}).get("vendor")).settle_s)
+  except NoVendorRow:
+    return 0.0
+  if s > 0:
+    say(f"the GPU idles {s:g} s first, as before every measured arm")
+    sleep(s)
+  return s
+
+
+def witness_words(w:dict[str, Any] | None) -> str:
+  """The GPU clock and power a Powermetrics witness saw, or that none was: disclosure, not a gate."""
+  rows = [r for r in (w or {}).get("samples") or [] if r[4] > 0]
+  if not rows:
+    return UNWITNESSED + (f"; powermetrics under sudo -n gave none: {w['reason']}" if (w or {}).get("reason") else "")
+  of = f" in {w['witnessed']} of {w['of']} captures" if w.get("of", 0) > w.get("witnessed", 0) else ""
+  use = (busy := [r for r in rows if r[2] >= BUSY]) or rows
+  mhz, lo, hi = witness_clock(w)
+  watts = sum(r[3] * r[4] for r in use) / sum(r[4] for r in use)
+  which = (f"the {len(busy)} of {len(rows)} samples with the GPU at least {BUSY:.0%} active" if busy
+           else f"all {len(rows)} samples (none had the GPU {BUSY:.0%} active)")
+  return (f"GPU clock {mhz:.0f} MHz mean ({lo:.0f}-{hi:.0f}), GPU power "
+          f"{watts:.1f} W mean ({max(r[3] for r in use):.1f} W max) over {which}, GPU active "
+          f"{100 * sum(r[2] * r[4] for r in rows) / sum(r[4] for r in rows):.0f}% of the window, from powermetrics under "
+          f"sudo -n every {w.get('interval_ms', WITNESS_MS)} ms{of}" + (f" ({w['reason']})" if w.get("reason") else "") + "; the clock is the frequency weighted by the GPU's "
+          "active time, which macOS chooses, not a fixed clock; GPU temperature not witnessed (powermetrics gives none)")
+
+
+def state_words(samples:list[dict[str, Any]], witness:dict[str, Any] | None = None) -> str:
+  """A state source's samples (AppleState) as words, each state with its share of the samples, and what its witness
+  saw: disclosure, not a gate."""
+  share = lambda key: ", ".join(f"{k} {100 * sum(s.get(key) == k for s in samples) / len(samples):.0f}%"
+                                for k in sorted({s[key] for s in samples if s.get(key)})) or "unread"
+  swap = [s["swap_used_mib"] for s in samples if s.get("swap_used_mib") is not None]
+  return (f"device state over {len(samples)} samples: thermal state {share('thermal_state')}, memory pressure "
+          f"{share('memory_pressure')}" + (f", swap {min(swap):.0f}-{max(swap):.0f} MiB used" if swap else "")
+          + "; " + witness_words(witness))
+
+
+def compact_state_words(rows:list[list[Any]], witness:dict[str, Any] | None) -> str:
+  """state_words from compact rows (the state's columns from the seventh on) and a summary's gpu_witness."""
+  return state_words([dict(zip(("thermal_state", "memory_pressure", "swap_used_mib"), r[6:])) for r in rows], witness)
+
+
+def run_state_words(run:pathlib.Path) -> str | None:
+  """The device state through every capture of a run (the compact samples and the witness in the telemetry.json
+  beside each), as words; None when no capture's source reports a state (a clock source's words stay with each)."""
+  import json
+  def state(p):  # compact rows with a state's columns only; another writer's raw samples or a bad file say nothing
+    try:
+      d = json.loads(p.read_text())
+      return [r for r in d.get("samples") or [] if isinstance(r, list) and len(r) > 6], (d.get("summary") or {}).get("gpu_witness")
+    except (ValueError, AttributeError, OSError): return [], None
+  files = [state(p) for p in sorted(pathlib.Path(run).rglob("telemetry.json"))]
+  seen = [w for f, w in files if f and isinstance(w, dict)]
+  witness = {"samples": [r for w in seen for r in w.get("samples") or []], "interval_ms": WITNESS_MS, "of": sum(bool(f) for f, _ in files),
+             "witnessed": sum(bool(w.get("samples")) for w in seen), "reason": next((w["reason"] for w in seen if w.get("reason")), None)} if seen else None
+  rows = [r for f, _ in files for r in f]
+  return f"during its {sum(bool(f) for f, _ in files)} captures, {compact_state_words(rows, witness)}" if rows else None
+
+
+def derived_state_words(run:pathlib.Path) -> list[str]:
+  """Every device-state line the run's own samples derive (its captures', and each untraced row's in a top-level
+  trace), so a report's line can be checked against them."""
+  import json
+  out = [w] if (w := run_state_words(run)) else []
+  for p in sorted(pathlib.Path(run).glob("*.json")):
+    try: rows = json.loads(p.read_text()).get("rows") or []
+    except (ValueError, AttributeError, OSError): continue
+    out += [compact_state_words([x for x in r.get("telemetry_samples") or [] if isinstance(x, list)], r["telemetry"].get("gpu_witness")) for r in rows
+            if isinstance(r, dict) and isinstance(r.get("telemetry"), dict) and r["telemetry"].get("state")]
+  return out
+
+
 def reason_words(bits:int) -> list[str]:
   return [w for b, w in THROTTLE_REASONS.items() if bits & b]
 
@@ -147,7 +391,7 @@ HELD = 0.98  # a throttle reason with the SM clock at or above this share of the
 
 
 def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None, top_mhz:float | None = None,
-              memory_total:float | None = None) -> dict[str, Any]:
+              memory_total:float | None = None, witness:dict[str, Any] | None = None) -> dict[str, Any]:
   """The samples as one record: SM clock mean, min and max (MHz), power mean and max, temperature max, and the
   throttle reasons seen with the share of samples each was set in. The driver sets a reason (a software power cap)
   while the clock stays where it was, so a sample counts as throttled only when its clock is also below HELD of the
@@ -179,16 +423,22 @@ def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None
   used = [s["mem_mib"] for s in every if s.get("mem_mib") is not None]
   if used:  # what the device held at most while the work ran (a model loading counts: it is held memory)
     out["memory_mib"] = {"used_max": round(max(used), 1), "total": memory_total}
-  out["words"] = words(out)
+  if not clocks and any("thermal_state" in s for s in every):  # AppleState: the machine's state, not a clock
+    out["state"] = True
+    if witness is not None:
+      out["gpu_witness"] = witness
+  out["words"] = state_words(every, witness) if out.get("state") else words(out)
   return out
 
 
 def compact(samples:list[dict[str, Any]]) -> list[list[Any]]:
   """The raw samples kept with a measurement, so its summary can be read again: [seconds from the first, SM MHz,
-  W, C, reason bits, memory MHz]."""
+  W, C, reason bits, memory MHz], then a state source's thermal state, memory pressure and swap MiB."""
   t0 = samples[0]["t"] if samples else 0.0
   return [[round(s["t"] - t0, 3), s.get("sm_mhz"), round(s["power_w"], 1) if s.get("power_w") is not None else None,
-           s.get("temp_c"), s.get("reasons"), s.get("mem_mhz")] for s in samples]
+           s.get("temp_c"), s.get("reasons"), s.get("mem_mhz"),
+           *([s["thermal_state"], s.get("memory_pressure"), s.get("swap_used_mib")] if "thermal_state" in s else [])]
+          for s in samples]
 
 
 def words(s:dict[str, Any]) -> str:
@@ -232,7 +482,7 @@ def source_for(device:dict[str, Any] | None):
   from boltbeam.workflow.chips import NoVendorRow, vendor_row
   try:
     return vendor_row(device.get("vendor"), "telemetry")(device)
-  except (NoVendorRow, OSError, KeyError) as exc:
+  except (NoVendorRow, OSError, KeyError, AttributeError, ctypes.ArgumentError) as exc:
     return Unsampled(f"no clock samples: {exc}")
 
 
@@ -280,10 +530,11 @@ class Telemetry:
     except OSError as exc:
       self._nvml, self.reason = None, f"no clock samples: {LIBRARY} not usable here ({exc})"
       return self
-    self._limit = self._nvml.power_limit_w()
+    self._limit = getattr(self._nvml, "power_limit_w", lambda: None)()
     self._total = getattr(self._nvml, "memory_mib", lambda: (None, None))()[1]
     self._thread = threading.Thread(target=self._loop, daemon=True)
     self._thread.start()
+    getattr(self._nvml, "start", lambda: None)()  # a source's own witness for the block (AppleState's Powermetrics)
     return self
 
   def _loop(self) -> None:
@@ -294,8 +545,11 @@ class Telemetry:
   def __exit__(self, *exc) -> None:
     self._stop.set()
     if self._thread is not None:
-      self._thread.join()
-      self.samples.append(self._nvml.sample())
+      try:
+        self._thread.join()
+        self.samples.append(self._nvml.sample())
+      finally:
+        getattr(self._nvml, "stop", lambda: None)()  # a root witness never outlives its block
     if self._nvml is not None and self._source is None:
       self._nvml.close()
 
@@ -308,7 +562,12 @@ class Telemetry:
       return {"samples": 0, "reason": self.reason, "throttled": None, "sm_mhz": None, "words": self.reason}
     rows = self.window(t0, t1) if t0 is not None and t1 is not None else self.samples
     clocks = [s["sm_mhz"] for s in self.samples if s.get("sm_mhz") and not (s.get("reasons") or 0) & IDLE]
-    return summarize(rows, power_limit_w=self._limit, top_mhz=max(clocks) if clocks else None, memory_total=self._total)
+    return summarize(rows, power_limit_w=self._limit, top_mhz=max(clocks) if clocks else None, memory_total=self._total,
+                     witness=self.witness(t0, t1))
+
+  def witness(self, t0:float | None = None, t1:float | None = None) -> dict[str, Any] | None:
+    """The source's own witness in the window (AppleState's Powermetrics); None for a source with none."""
+    return getattr(self._nvml, "witness", lambda *w: None)(t0, t1)
 
 
 # --- the clock policy ----------------------------------------------------------------------------------------------
@@ -317,6 +576,10 @@ POLICY_WORDS = {
   "fixed_clock": "fixed clock: the SM clock is locked to the chip's maximum for the run (code and architecture comparison)",
   "fixed_power": ("fixed power: the clock cannot be set by this user, so the board runs at its own power limit, "
                   "unchanged, and the clock it chose is logged (realism; a rate is quoted with its clock)"),
+  "os_managed": ("OS-managed clock: the OS chooses the GPU clock and a user process can neither set nor read it, so "
+                 "the clock a rate ran at is not witnessed"),
+  "os_managed_read": ("OS-managed clock: the OS chooses the GPU clock and no process can set it; BoltBeam reads the "
+                      "clock it ran at through powermetrics under sudo -n, so a rate is quoted with it"),
 }
 
 
