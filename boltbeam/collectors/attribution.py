@@ -280,6 +280,11 @@ class CaptureRefused(RuntimeError):
   """The capture cannot be a measurement. The message says why."""
 
 
+class NotSplitByRole(CaptureRefused):
+  """This run's layout or engine is not split by role yet. Nothing about the run is wrong: its measured step and its
+  layout's limit stand, the pipeline goes on to the report, and the report says why there are no roles."""
+
+
 class UnnamedCapture(CaptureRefused):
   """The capture holds the token, but only in command buffers the engine did not name: no kernel to pair. The
   engine's kernels timed alone can still split it (providers.role_time); token keeps the whole token for the tie-out."""

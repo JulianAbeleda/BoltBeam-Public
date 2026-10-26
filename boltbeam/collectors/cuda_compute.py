@@ -174,7 +174,7 @@ def measure_path(cuda, p:Path, facts:dict[str, Any], tele:gpu_telemetry.Telemetr
   try:
     pso = cuda.pipeline(_library(cuda, p, facts), "mma_loop")["pso"]
   except RuntimeError as exc:
-    return {"path": p.name, "ptx": p.ptx, "words": p.words, "available": False,
+    return {"path": p.name, "instruction": p.ptx, "words": p.words, "available": False,
             "reason": f"does not compile for this GPU: {str(exc).strip().splitlines()[-1][:300]}"}
   sms = facts["sm_count"] or 1
   out = cuda.buffer(length=512 * 8 * sms * 4)
@@ -196,7 +196,7 @@ def measure_path(cuda, p:Path, facts:dict[str, Any], tele:gpu_telemetry.Telemetr
   clock = tele.summary(half[0][0], time.monotonic())
   mhz = (clock.get("sm_mhz") or {}).get("mean")
   cuda.release(out)
-  return {"path": p.name, "ptx": p.ptx, "words": p.words, "available": True, "tops": round(rate, 1),
+  return {"path": p.name, "instruction": p.ptx, "words": p.words, "available": True, "tops": round(rate, 1),
           "burst_tops": round(top["tops"], 1), "shape": {"threads": top["threads"], "blocks": top["blocks"]},
           "shapes": shapes, "plateau_launches": len(half), "clock": clock, "sm_mhz": mhz,
           "ops_per_sm_per_clock": round(rate * 1e12 / (sms * mhz * 1e6), 1) if mhz else None}
@@ -226,31 +226,13 @@ def measure_paths(device:int = 0, *, reps:int = 5, seconds:float = SECONDS, nvcc
   finally:
     if bridge is None:
       cuda.close()
-  from boltbeam.collectors.cuda_bandwidth import FACT_KEYS
+  from boltbeam.collectors.read_bandwidth import FACT_KEYS
   return {"schema": "boltbeam.cuda_matrix_paths.v1", "device": device, "name": facts.get("name"),
           **{k: facts.get(k) for k in FACT_KEYS},
           "compute_capability": f"{facts.get('compute_capability_major')}.{facts.get('compute_capability_minor')}",
           "clock_policy": held, "telemetry": whole, "paths": rows,
           "path_scan": scanned if cuda_path_scan.paths(scanned) else None,
           "method": METHOD.format(ptx="per path", acc=ACC, reps=reps, seconds=seconds)}
-
-
-def matrix_tflops(result:dict[str, Any]) -> dict[str, float]:
-  """The chip profile's matrix_tflops from a probe result: the plateau rate of every available path."""
-  return {r["path"]: r["tops"] for r in result["paths"] if r.get("available")}
-
-
-def fact_source(result:dict[str, Any], *, scope:str, today:str) -> dict[str, Any]:
-  """The chip profile's fact source for matrix_tflops: per path its rate, the clock it was measured at, its
-  instruction and the rate per SM per clock; the policy and whether anything throttled."""
-  return {"kind": "measurement", "bound": "achievable", "scope": scope, "observed_at": today, "method": result["method"],
-          "clock_policy": result["clock_policy"].get("policy"), "throttled": result["telemetry"].get("throttled"),
-          "paths": {r["path"]: ({"tops": r["tops"], "sm_mhz": r["sm_mhz"], "ops_per_sm_per_clock": r["ops_per_sm_per_clock"],
-                                 "instruction": r["ptx"], "words": r["words"], "throttled": r["clock"].get("throttled"),
-                                 **{k: r[k] for k in ("uncertainty", "shape_spread") if k in r},
-                                 "power_w_mean": (r["clock"].get("power_w") or {}).get("mean")}
-                                if r.get("available") else {"available": False, "reason": r["reason"], "instruction": r["ptx"]})
-                    for r in result["paths"]}}
 
 
 def main(argv:list[str] | None = None) -> int:
@@ -262,7 +244,7 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--path", action="append", choices=[x.name for x in PATHS], help="only this path (repeatable)")
   a = p.parse_args(argv)
   paths = tuple(x for x in PATHS if x.name in a.path) if a.path else None
-  from boltbeam.collectors.cuda_bandwidth import repeated_paths
+  from boltbeam.collectors.read_bandwidth import repeated_paths
   runs = [measure_paths(a.device, reps=a.reps, seconds=a.seconds, paths=paths) for _ in range(a.runs)]
   got = repeated_paths(runs)
   sys.stdout.write(json.dumps(got, indent=1, sort_keys=True) + "\n")

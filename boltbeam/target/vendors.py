@@ -46,6 +46,8 @@ class Capture:
   trace_file: str | None = None    # the kernel trace a capture folder keeps (tools/record_vendor_fixture.py)
   trace_header: str | None = None  # that trace's header's first word
   closed_observer: str | None = None  # "module:function" reading the instructions a closed library's kernels executed
+  alternatives: tuple[str, ...] = ()  # other captures BOLTBEAM_<BACKEND>_CAPTURE may choose (collectors/vendor_capture)
+  marked_window: bool = False  # it can record only the window the program marks (nsys's profiler range, roctx regions)
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,10 @@ class Vendor:
   owned_modules: tuple[str, ...]   # modules that serve this vendor alone, under boltbeam/
   terms: Mapping[str, str | None]  # the words a user reads for this vendor's hardware
   settle_s: float = 0.0            # GPU idle before each measured prefill or turn arm (gpu_telemetry.settle); 0: none
+  visible: tuple[str, ...] = ()    # the runtime's variables that hide GPUs, outermost first: the scan lists only the shown
+  # why llama.cpp's split by rows (-sm row, ggml's split buffers) does not load on this ggml backend, in the engine's
+  # own words with the build and run it was seen on (workflow/layout.VENDOR_REFUSALS); None: no refusal recorded
+  ggml_row_split: str | None = None
 
   def term(self, key:str) -> str | None:
     """One of the vendor's words; None when it has no such thing. A key no row defines is NoVendorRow."""
@@ -112,7 +118,7 @@ class Vendor:
     resolved; `where` fills the placeholders in `order`."""
     row = {"scan_tool": self.scan_tools[0], "platform": self.platform, "probe": resolve(self.probe),
            "match_keys": self.match_keys, "order": self.order.format(**where), "notes": self.notes,
-           "unrecorded_order": self.unrecorded_order, "ggml_backend": self.ggml_backend}
+           "unrecorded_order": self.unrecorded_order, "ggml_backend": self.ggml_backend, "visible": self.visible}
     if self.telemetry is not None:
       row["telemetry"] = self.telemetry
     if self.clock_policy is not None:
@@ -127,7 +133,7 @@ class Vendor:
 
 TERM_KEYS = ("compute_unit", "subgroup", "matrix_unit", "core_clock", "core_clock_mhz", "isa", "blas", "graphs",
              "graph_trace", "profiler", "management_tool", "telemetry_source", "native_read_probe")
-# the fields of a full probe row its bridge may not report (collectors/metal_native._absent)
+# the fields of a full probe row its bridge may not report (collectors/boltbeam_gemv._absent)
 PROBE_FIELDS = ("counters", "isa.instruction_histogram", "isa.vector_load_bits", "resources.registers",
                 "resources.scratch_bytes")
 _FROZEN = lambda d: MappingProxyType(dict(d))  # noqa: E731
@@ -144,9 +150,10 @@ _ROWS = (
     scan_tools=("nvidia-smi",), other_tools=("cuobjdump", "nvdisasm", "ncu"), probe="boltbeam.workflow.autoscan:_probe_nvidia", match_keys=("compute_capability",),
     order="nvidia-smi's, by PCI address (CUDA's own order is the same under CUDA_DEVICE_ORDER=PCI_BUS_ID)",
     notes=("Primary GPU is the first device returned by nvidia-smi.",), unrecorded_order=None,
-    # telemetry: NVML, which gpu_telemetry.Telemetry opens by device index; the clock policy nvidia-smi allows
-    ggml_backend="cuda", telemetry=lambda device: None,
-    clock_policy=lambda source: resolve("boltbeam.collectors.gpu_telemetry:clock_policy")(0),
+    # telemetry: NVML, opened by the card's PCI address; the clock policy nvidia-smi allows on that card
+    ggml_backend="cuda", telemetry=lambda device: resolve("boltbeam.collectors.gpu_telemetry:_Nvml")(device["pci_bus_id"]),
+    clock_policy=lambda source: resolve("boltbeam.collectors.gpu_telemetry:clock_policy")(getattr(source, "device", 0)),
+    visible=("CUDA_VISIBLE_DEVICES",),
     profile=ProfileShape(
       scan_method="nvidia-smi and cudaDeviceGetAttribute (BoltBeam's CUDA matrix probe prints them)",
       scan_keys=("sm_count", "shared_mem_per_sm_bytes", "l2_cache_bytes", "clock_khz", "memory_clock_khz",
@@ -157,7 +164,7 @@ _ROWS = (
                     words="captured with nsys", tool_word="nsys", in_model_needs="in-model needs nsys",
                     tinygrad_reason="nsys cannot see tinygrad's NV backend: it talks to the driver directly, not through CUDA",
                     trace_file="cuda_gpu_trace.csv", trace_header="Start",
-                    closed_observer="boltbeam.collectors.instruction_path:observe_closed"),
+                    closed_observer="boltbeam.collectors.instruction_path:observe_closed", alternatives=("cupti-hes",), marked_window=True),
     toolchain=(("driver", ("nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"), None),
                ("cuda", ("nvcc", "--version"), r"release\s+(\d+\.\d+)"),
                ("torch", None, None),
@@ -187,6 +194,8 @@ _ROWS = (
     notes=("Primary GPU is HIP's device 0: amd-smi's devices in the KFD topology's order.",),
     # before 62bf26b the scan listed amd-smi's own order, which is not HIP's: such a list names the wrong card
     unrecorded_order="it lists amd-smi's order, scanned before BoltBeam put AMD GPUs in HIP's order",
+    # ROCr hides GPUs first and HIP numbers what is left: the scan's first device is then the engine's device 0
+    visible=("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"),
     ggml_backend="hip", telemetry=lambda device: resolve("boltbeam.collectors.gpu_telemetry:AmdSysfs")(device["pci_bus_id"]),
     clock_policy="boltbeam.collectors.gpu_telemetry:amd_clock_policy",
     profile=ProfileShape(
@@ -201,7 +210,7 @@ _ROWS = (
                     tool_word="rocprofv3", in_model_needs="in-model needs rocprofv3",
                     tinygrad_reason="rocprofv3 sees 0 kernels from tinygrad's AMD backend: it talks to /dev/kfd directly",
                     trace_file="capture_kernel_trace.csv", trace_header='"Kind"',
-                    closed_observer="boltbeam.collectors.rocm_isa:observe_closed"),
+                    closed_observer="boltbeam.collectors.rocm_isa:observe_closed", marked_window=True),
     toolchain=(("rocm", ("amd-smi", "version"), r"ROCm version:\s*(\d+\.\d+(?:\.\d+)?)"),
                ("amdgpu", ("amd-smi", "version"), r"amdgpu version:\s*(\d+\.\d+(?:\.\d+)?)"),
                ("hip", ("hipcc", "--version"), r"HIP version:\s*(\d+\.\d+(?:\.\d+)?)"),
@@ -210,15 +219,23 @@ _ROWS = (
     # 256 MiB is past the R9700's 8 MiB L2 and 64 MiB Infinity Cache; CACHE_RULE doubles it if weights stay cached
     torch_runtime="hip", kernel_dialect="hip", bridge="boltbeam.runtime.hip_device:Hip", flush_bytes=256 << 20,
     topology=(("amd-smi", "topology"), "boltbeam.collectors.multi_gpu:read_amd_topology"),
-    probe_absent=None,
+    # the HIP bridge (runtime/hip_device.py) reads the wave width, max threads and static LDS of a kernel, not more
+    probe_absent=_FROZEN({
+      "counters": "the HIP bridge reads no per-dispatch hardware counters (that is rocprofv3's)",
+      "isa.instruction_histogram": "the code object's amdgcn is not disassembled by BoltBeam's probe",
+      "isa.vector_load_bits": "the compiled load width is not visible; the source loads are in kernel.source",
+      "resources.registers": "the HIP bridge does not read hipFuncGetAttribute(NUM_REGS)",
+      "resources.scratch_bytes": "the HIP bridge does not read hipFuncGetAttribute(LOCAL_SIZE_BYTES)"}),
     toolkit=Toolkit("rocm", ("ROCM_PATH", "HIP_PATH"), "/opt/rocm", ("amd-smi", "rocminfo", "rocprofv3", "hipcc")),
-    owned_modules=("runtime/hip_device.py", "runtime/amd_runtime_bridge.py", "runtime/kfd_observation_bridge.py",
-                   "runtime/direct_kfd_bridge.py", "collectors/hip_compute.py", "collectors/hip_path_scan.py", "collectors/rocm_isa.py",
+    owned_modules=("runtime/hip_device.py", "collectors/hip_compute.py", "collectors/hip_path_scan.py", "collectors/rocm_isa.py",
                    "collectors/rocpd_trace.py", "collectors/llama_rocprof.py", "collectors/tinygrad_rocprof.py",
                    "collectors/tinygrad_native_pmc.py", "artifacts/llama_rocprof.py", "artifacts/tinygrad_rocprof.py"),
     terms=_terms("CU", "wavefront", "WMMA matrix cores", "GPU core clock (sclk)", "sclk MHz", "amdgcn",
                  "hipBLASLt / rocBLAS", "HIP graphs", "rocprofv3 kernel tracing", "rocprofv3", "amd-smi",
-                 "amdgpu sysfs", "BoltBeam's native HIP read probe")),
+                 "amdgpu sysfs", "BoltBeam's native HIP read probe"),
+    # 2 x R9700, llama.cpp 7182ef7 HIP build, -sm row (amd-multigpu-smoke-20261024/llama-row): refused at model load
+    ggml_row_split="llama.cpp's HIP build refuses it at model load: \"device ROCm0 does not support split buffers\" "
+                   "(llama.cpp 7182ef7, 2 x R9700)"),
   Vendor(
     vendor="apple", backend="Metal", tinygrad_device="METAL", tinygrad_per_gpu=False, platform="Darwin",
     scan_tools=("system_profiler",), other_tools=(), probe="boltbeam.workflow.autoscan:_probe_apple_metal",
@@ -244,7 +261,8 @@ _ROWS = (
       "resources.registers": "MTLComputePipelineState does not report registers",
       "resources.scratch_bytes": "MTLComputePipelineState does not report scratch"}),
     toolkit=None,
-    owned_modules=("runtime/metal_device.py", "collectors/metal_bandwidth.py", "collectors/metal_system_trace.py"),
+    owned_modules=("runtime/metal_device.py", "collectors/metal_bandwidth.py", "collectors/metal_native.py",
+                   "collectors/metal_system_trace.py"),
     terms=_terms("GPU core", "SIMD-group", None, "GPU clock", "GPU MHz", "AIR", "MPS", "Metal command buffer reuse",
                  None, "Metal System Trace (xctrace)", "system_profiler", None, "BoltBeam's Metal read probe"),
     # the M4's GPU clock steps 1578 -> 1474 MHz after sustained load (thermal state still nominal) and recovers at idle:
@@ -255,7 +273,7 @@ _ROWS = (
 
 VENDORS: Mapping[str, Vendor] = _FROZEN((v.vendor, v) for v in _ROWS)
 BY_BACKEND: Mapping[str, Vendor] = _FROZEN((v.backend, v) for v in _ROWS)
-BY_CAPTURE: Mapping[str, Vendor] = _FROZEN((v.capture.method, v) for v in _ROWS)
+BY_CAPTURE: Mapping[str, Vendor] = _FROZEN((m, v) for v in _ROWS for m in (v.capture.method, *v.capture.alternatives))
 
 
 def _lookup(table:Mapping[str, Vendor], key:Any, what:str) -> Vendor:

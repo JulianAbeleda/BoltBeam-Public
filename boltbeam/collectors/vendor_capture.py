@@ -27,6 +27,7 @@ import shutil
 import subprocess
 from typing import Any, Callable
 
+from boltbeam.collectors import cupti_hes
 from boltbeam.target import toolkits, vendors
 
 
@@ -224,22 +225,37 @@ VENDORS: dict[str, tuple[str, Callable[[], str | None], Callable[..., list[str]]
   v.backend: (v.capture.method, *_TOOLS[v.capture.method], v.capture.install) for v in vendors.VENDORS.values()}
 
 
+def windowed(backend:str) -> bool:
+  """Whether the backend's own capture records only the window the program marks (the vendor row's
+  capture.marked_window: nsys's cudaProfilerApi range, rocprofv3's roctx regions). Forced replay needs it."""
+  row = vendors.BY_BACKEND.get(backend)
+  return row is not None and row.capture.marked_window
+
+
+# the captures a vendor row lists as alternatives (Capture.alternatives), resolved when chosen: find, wrap, read
+ALTERNATIVES: dict[str, Callable[[], tuple[Callable[..., Any], ...]]] = {
+  "cupti-hes": lambda: (cupti_hes.find, cupti_hes.argv, cupti_hes.read)}
+# what a chosen alternative needs, when it is missing
+ALTERNATIVE_NEEDS = {"cupti-hes": "cupti-hes needs g++, CUDA headers, and BOLTBEAM_CUPTI_ROOT pointing to a CUDA 13 CUPTI SDK"}
+
+
 def tools(backend:str, p:dict[str, Any]) -> tuple[Callable[..., list[str]], Callable[..., list[dict[str, Any]]]]:
-  """The wrapper and reader of the capture plan() chose for a backend: the vendor's own, or cupti-hes when selected."""
-  if p["method"] == "cupti-hes":
-    from boltbeam.collectors import cupti_hes
-    return cupti_hes.argv, cupti_hes.read
+  """The wrapper and reader of the capture plan() chose for a backend: the vendor's own, or the alternative chosen."""
+  if p["method"] != VENDORS[backend][0] and p["method"] in ALTERNATIVES:  # an alternative the run chose
+    return ALTERNATIVES[p["method"]]()[1:]
   return VENDORS[backend][2], VENDORS[backend][3]
 
 
 def plan(backend:str, find:Callable[[str], str | None] | None = None) -> dict[str, Any]:
   """The outside capture this machine has for a backend: {"method", "tool", "reason"}. tool None means none."""
-  if backend == "CUDA" and os.environ.get("BOLTBEAM_CUDA_CAPTURE") == "cupti-hes":
-    from boltbeam.collectors import cupti_hes
-    tool = find("cupti-hes") if find else cupti_hes.find()
-    return {"method": "cupti-hes", "tool": tool,
-            "reason": None if tool else "cupti-hes needs g++, CUDA headers, and BOLTBEAM_CUPTI_ROOT pointing to a CUDA 13 CUPTI SDK"}
   row = VENDORS.get(backend)
+  chosen = os.environ.get(f"BOLTBEAM_{backend.upper()}_CAPTURE")  # BOLTBEAM_CUDA_CAPTURE=cupti-hes
+  if row is not None and chosen and chosen != row[0]:
+    if chosen not in vendors.for_backend(backend).capture.alternatives:
+      have = ", ".join(vendors.for_backend(backend).capture.alternatives) or "none"
+      return {"method": chosen, "tool": None, "reason": f"{chosen} is not one of {backend}'s captures (its alternatives: {have})"}
+    tool = find(chosen) if find else ALTERNATIVES[chosen]()[0]()
+    return {"method": chosen, "tool": tool, "reason": None if tool else ALTERNATIVE_NEEDS[chosen]}
   if row is None:
     return {"method": None, "tool": None, "reason": f"BoltBeam knows no vendor capture for {backend}"}
   method, finder, _, _, install = row

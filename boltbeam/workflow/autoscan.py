@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import threading
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from boltbeam.target import toolkits
 
@@ -319,6 +319,23 @@ PROBE_TIMEOUT_S = 30.0  # one probe's whole answer; a probe still running then i
 PRIMARY_RULE = "the first device of the first vendor with devices, in chips._vendors() row order"
 
 
+def shown(found:list[dict[str, Any]], names:tuple[str, ...], env:Mapping[str, str]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+  """The devices the runtime shows, in its order: each visibility variable that is set (the vendor row's `visible`,
+  outermost first) keeps the devices it lists, by index or by UUID, of those the one before it left. Also the
+  variables set. An entry that names no device is refused: the engine would run on a card the scan cannot name."""
+  used = {}
+  for name in names:
+    if (value := env.get(name)) is None:
+      continue
+    used[name] = value
+    by_uuid = {str(d.get("uuid")).lower(): d for d in found if d.get("uuid")}
+    picks = [x.strip() for x in value.split(",") if x.strip()]
+    if bad := [x for x in picks if not (x.isdigit() and int(x) < len(found)) and x.lower() not in by_uuid]:
+      raise ValueError(f"{name}={value}: {', '.join(bad)} names none of the {len(found)} GPUs the scan sees")
+    found = [found[int(x)] if x.isdigit() else by_uuid[x.lower()] for x in picks]
+  return found, used
+
+
 def scan_gpus(tool_paths:dict[str, str | None], run_command, system:str,
               timeout_s:float = PROBE_TIMEOUT_S) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
   """Every vendor's probe at once (chips._vendors(): a vendor is a row there, with its scan_tool, platform and probe,
@@ -360,9 +377,11 @@ def scan_gpus(tool_paths:dict[str, str | None], run_command, system:str,
                                 "reason": f"{row['scan_tool']} did not answer within {timeout_s:g} s"}
       continue
     found, error = box["got"]
+    found, shown_by = shown(found, row["visible"], os.environ)
     answered = all(a["exit"] == 0 for a in asked) and re.search(r"returned no .*rows$", error or "")
     status = "detected" if found else ("no_devices" if answered else "failed")
-    records[row["vendor"]] = {**base, "status": status, "reason": None if found else error, "asked": asked}
+    records[row["vendor"]] = {**base, "status": status, "reason": None if found else error, "asked": asked,
+                              **({"visible": shown_by} if shown_by else {})}
     devices[row["vendor"]] = found
   return [d for row in rows for d in devices.get(row["vendor"]) or []], [records[row["vendor"]] for row in rows]
 

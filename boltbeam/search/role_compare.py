@@ -207,7 +207,7 @@ def pick_device(backend:str | None, reply:Mapping[str, Any]) -> tuple[str | None
 
 
 def tolerances() -> dict[str, float]:
-  from boltbeam.collectors.metal_native import TOLERANCE
+  from boltbeam.math.numerics import TOLERANCE
   return {"atol": TOLERANCE, "rtol": TOLERANCE}
 
 
@@ -380,11 +380,11 @@ def plan_id(role:str, quant:str, winner:Mapping[str, Any]) -> str:
 
 def role_bytes(model:str, quant:str, rows:int, cols:int, tensor_name:str | None = None) -> tuple[str, bytes]:
   """The role's own weight bytes from the model file (the tensor of this quant and shape)."""
-  from boltbeam.collectors import metal_native as native
+  from boltbeam.collectors import gemv_reference
   from boltbeam.profile.gguf import read_gguf_layout
   _, tensors, data_start = read_gguf_layout(pathlib.Path(model))
-  name, offset = native.tensor_for(quant, rows, cols, tensors, tensor_name)
-  size = rows * (cols // native.BLOCK_ELEMS[quant]) * native.BLOCK_BYTES[quant]
+  name, offset = gemv_reference.tensor_for(quant, rows, cols, tensors, tensor_name)
+  size = rows * (cols // gemv_reference.BLOCK_ELEMS[quant]) * gemv_reference.BLOCK_BYTES[quant]
   with open(model, "rb") as f:
     f.seek(data_start + offset)
     return name, f.read(size)

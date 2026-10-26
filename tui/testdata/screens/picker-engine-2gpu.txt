@@ -1,0 +1,40 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Engine                                                                       │
+│ The engine is the runtime that decodes the model. Only engines found on this │
+│ Mac can be picked. They are looked for at start; an env var                  │
+│ (BOLTBEAM_LLAMA_BENCH, BOLTBEAM_TINYGRAD_ROOT, …) overrides what was found.  │
+│                                                                              │
+│ 2 GPUs: 2 x AMD Radeon AI PRO R9700 (limited support: one real multi-GPU run │
+│ so far (vLLM split by rows on two R9700s))                                   │
+│ The layout is how the engine uses them; pick it under the engine:            │
+│   one GPU: one GPU reads every weight                                        │
+│   split by layer: holds a bigger model; the GPUs take turns, so no decode    │
+│ speedup                                                                      │
+│   split by rows: the GPUs read their shares at once; joins cost per layer    │
+│                                                                              │
+│ llama.cpp · can measure                                                      │
+│   roles: not possible here (x)                                               │
+│   split by rows not here: llama.cpp's HIP build refuses it at model load:    │
+│ "device ROCm0 does not support split buffers" (llama.cpp 7182ef7, 2 x R9700) │
+│ vllm · can measure                                                           │
+│   roles: not possible here (x)                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Choose                                                                       │
+│ llama.cpp · one GPU · roles not timed here                                   │
+│ ▸ ● llama.cpp                                                                │
+│       ● one GPU                                                              │
+│         split by layer (2 GPUs)                                              │
+│         split by rows: not here                                              │
+│     vllm                                                                     │
+│         one GPU                                                              │
+│         split by rows (2 GPUs)                                               │
+│         split by layer: not here                                             │
+│     tinygrad                                                                 │
+│         one GPU                                                              │
+│         split by layer, split by rows: not here                              │
+│     [ Scan again ] look for engines in the usual folders                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit

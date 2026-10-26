@@ -1794,12 +1794,30 @@ func runHeadline(f Facts) string {
 	}
 	line := model + " on " + chip
 	if engine := jobEngine(f); engine != "" {
-		line += " with " + engine
+		line += " with " + engine + jobLayout(f)
 	}
 	if m := jobMeasurement(f); m != "" {
 		line += " · " + m
 	}
 	return line
+}
+
+// jobLayout is the job's GPU layout after its engine: its --layout when the job has one, else Setup's; nothing for one
+// GPU, so a one-GPU run reads as it always has.
+func jobLayout(f Facts) string {
+	if f.Job != nil {
+		for i, a := range f.Job.Argv {
+			if a == "--layout" && i+1 < len(f.Job.Argv) {
+				if f.Job.Argv[i+1] == "one" {
+					return ""
+				}
+				g := f
+				g.Layout = f.Job.Argv[i+1]
+				return " · " + layoutLabel(g)
+			}
+		}
+	}
+	return layoutSuffix(f)
 }
 
 // jobMeasurement is how the job times roles: its --role-time, else (auto) what Setup resolves to, as the picker words it.

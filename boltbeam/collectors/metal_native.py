@@ -5,10 +5,8 @@
 It answers the two requests `analyze` writes into a run folder:
 
   probe_request.json  -> probe_evidence.json   (boltbeam.probe_evidence.v1)
-    Each probe is one quantized GEMV (role, quant, shape). The weights are the model's real tensor bytes. The
-    kernel is BoltBeam's MSL source, compiled at run time. Before any timing, sampled output rows are checked
-    against a pure-Python dequantize-and-dot reference. Every timed sample runs after a flush kernel that
-    rewrites a buffer larger than the system level cache, so the weights come from DRAM, not cache.
+    The building-block probe, the same on every GPU (collectors/boltbeam_gemv.py collect_probe_evidence), run here
+    once this Mac is shown to be the run's chip.
 
   trace_request.json  -> timing_trace.json     (boltbeam.timing_trace.v1)
     whole_step rows: llama-bench decode at each requested depth (`-p 0 -n N -d CTX`). This is the measured
@@ -23,204 +21,20 @@ memory latency, in-flight groups, the compiled ISA. Those probes classify as inc
 from __future__ import annotations
 
 import argparse
-import functools
 import json
 import pathlib
-import re
-import struct
 import sys
 from typing import Any, Callable
 
-from boltbeam.collectors import llama_bench_decode
+from boltbeam.collectors import boltbeam_gemv, llama_bench_decode
 from boltbeam.collectors.llama_bench_decode import CannotMeasure, bench_decode  # one refusal type for every collector
 from boltbeam.core.canonical import pretty_json
-from boltbeam.profile.gguf import read_gguf_layout
-from boltbeam.target import vendors
 from boltbeam.target.targets import get_target
-from boltbeam.vocab import SCHEMA_PROBE_EVIDENCE, SCHEMA_TIMING_TRACE
+from boltbeam.vocab import SCHEMA_TIMING_TRACE
 from boltbeam.workflow.common import load_manifest, read_json, run_dir
 
 COLLECTOR_ID = "metal-native"
 PROVIDER_ID = "boltbeam/metal-native"
-from boltbeam.profile.gguf import GGML_TYPE_IDS
-from boltbeam.profile.decode_roles import GGML_BLOCK_LAYOUTS
-# Formats supported by this reference; the identities and layouts come from their owners.
-GGML_TYPES = {q: GGML_TYPE_IDS[q] for q in ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K", "Q3_K", "IQ4_NL", "IQ4_XS", "IQ3_S")}
-BLOCK_BYTES = {q: GGML_BLOCK_LAYOUTS[t][1] for q, t in GGML_TYPES.items()}
-BLOCK_ELEMS = {q: GGML_BLOCK_LAYOUTS[t][0] for q, t in GGML_TYPES.items()}
-METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18, "Q8_0": 2, "Q5_0": 6, "Q4_0": 2, "Q5_K": 48,  # Q4_K: d, dmin, 12 scale bytes. Q6_K: 16 int8 scales, d.
-                  "Q3_K": 46, "IQ4_NL": 2, "IQ4_XS": 8, "IQ3_S": 46}
-# Q8_0, Q4_0: d. Q5_0: d and the 4 bytes of fifth bits. Q5_K: d, dmin, 12 scale bytes, 32 bytes of fifth bits. Q3_K: 32 bytes
-# of high bits, 12 scale bytes, d. IQ4_NL: d. IQ4_XS: d, 2 + 4 scale bytes. IQ3_S: d, 8 bytes of ninth bits, 32 of signs, 4
-# of scales. The rest of a block is its codes (code_bytes).
-KVALUES_IQ4NL = (-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113)  # ggml-common.h kvalues_iq4nl
-WORKING_SET_SHARE = 0.8  # never ask for more than this share of Metal's recommended working set
-CHECK_ROWS = 9
-from boltbeam.math.numerics import TOLERANCE
-# the kernels are adapter 0 of the one kernel timer (collectors/boltbeam_gemv.py); the loop is kernel_timer's
-from boltbeam.collectors import boltbeam_gemv as gemv  # noqa: E402
-from boltbeam.collectors import kernel_timer  # noqa: E402
-MSL, KERNELS, ROWS_PER_GROUP, KERNEL_SOURCE = gemv.MSL, gemv.KERNELS, gemv.ROWS_PER_GROUP, gemv.KERNEL_SOURCE
-SAMPLES, WARMUPS = kernel_timer.SAMPLES, kernel_timer.WARMUPS
-FLUSH_BYTES = vendors.for_backend("Metal").flush_bytes
-
-
-# --- the CPU reference: pure Python, the GGUF block layouts written out once more ---------------------------
-
-def _half(raw:bytes, at:int) -> float:
-  return struct.unpack_from("<e", raw, at)[0]
-
-
-def _scale_min_k4(j:int, q:bytes) -> tuple[int, int]:
-  if j < 4:
-    return q[j] & 63, q[j + 4] & 63
-  return (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4), (q[j + 4] >> 4) | ((q[j] >> 6) << 4)
-
-
-def dequant_q4_k_block(blk:bytes) -> list[float]:
-  d, dmin = _half(blk, 0), _half(blk, 2)
-  scales, qs = blk[4:16], blk[16:144]
-  out = [0.0] * 256
-  for j in range(4):
-    s0, m0 = _scale_min_k4(2 * j, scales)
-    s1, m1 = _scale_min_k4(2 * j + 1, scales)
-    for l in range(32):
-      q = qs[32 * j + l]
-      out[64 * j + l] = d * s0 * (q & 0xF) - dmin * m0
-      out[64 * j + 32 + l] = d * s1 * (q >> 4) - dmin * m1
-  return out
-
-
-def dequant_q6_k_block(blk:bytes) -> list[float]:
-  d = _half(blk, 208)
-  out = [0.0] * 256
-  for n in range(2):
-    ql, qh = blk[64 * n:64 * n + 64], blk[128 + 32 * n:160 + 32 * n]
-    sc = struct.unpack_from("<8b", blk, 192 + 8 * n)
-    for l in range(32):
-      i, h = l // 16, qh[l]
-      out[128 * n + l] = d * sc[i] * (((ql[l] & 0xF) | ((h & 3) << 4)) - 32)
-      out[128 * n + l + 32] = d * sc[i + 2] * (((ql[l + 32] & 0xF) | (((h >> 2) & 3) << 4)) - 32)
-      out[128 * n + l + 64] = d * sc[i + 4] * (((ql[l] >> 4) | (((h >> 4) & 3) << 4)) - 32)
-      out[128 * n + l + 96] = d * sc[i + 6] * (((ql[l + 32] >> 4) | (((h >> 6) & 3) << 4)) - 32)
-  return out
-
-
-def dequant_q8_0_block(blk:bytes) -> list[float]:
-  d = _half(blk, 0)  # block_q8_0: half d, 32 int8 (ggml-common.h)
-  return [d * q for q in struct.unpack_from("<32b", blk, 2)]
-
-
-def dequant_q4_0_block(blk:bytes) -> list[float]:
-  d = _half(blk, 0)  # block_q4_0: half d, 16 qs bytes; byte j holds element j (low nibble) and j+16 (high)
-  qs = blk[2:18]
-  return [d * ((qs[j] & 0xF) - 8) for j in range(16)] + [d * ((qs[j] >> 4) - 8) for j in range(16)]
-
-
-def dequant_q5_0_block(blk:bytes) -> list[float]:
-  d = _half(blk, 0)  # block_q5_0: half d, uint32 qh (bit j = fifth bit of element j), 16 qs bytes as Q4_0
-  qh = struct.unpack_from("<I", blk, 2)[0]
-  qs = blk[6:22]
-  lo = [d * (((qs[j] & 0xF) | ((qh >> j) & 1) << 4) - 16) for j in range(16)]
-  hi = [d * (((qs[j] >> 4) | ((qh >> (j + 16)) & 1) << 4) - 16) for j in range(16)]
-  return lo + hi
-
-
-def dequant_q5_k_block(blk:bytes) -> list[float]:
-  d, dmin = _half(blk, 0), _half(blk, 2)  # block_q5_K: d, dmin, scales[12], qh[32], qs[128] (ggml-common.h)
-  sc12, qh, qs = blk[4:16], blk[16:48], blk[48:176]
-  out = [0.0] * 256
-  for i in range(4):          # four 32-byte rows of qs, two groups of 32 each
-    for hi in (0, 1):
-      j = 2 * i + hi
-      sc, m = _scale_min_k4(j, sc12)
-      for l in range(32):
-        q = ((qs[32 * i + l] >> (4 * hi)) & 0xF) | (((qh[l] >> j) & 1) << 4)
-        out[64 * i + 32 * hi + l] = d * sc * q - dmin * m
-  return out
-
-
-def dequant_q3_k_block(blk:bytes) -> list[float]:
-  hm, q, d = blk[0:32], blk[32:96], _half(blk, 108)  # block_q3_K: hmask[32], qs[64], scales[12], d
-  a0, a1, tmp = struct.unpack_from("<3I", blk, 96)  # the 16 6-bit scales, unpacked as dequantize_row_q3_K does
-  k1, k2 = 0x03030303, 0x0f0f0f0f
-  scales = struct.unpack("<16b", struct.pack("<4I", (a0 & k2) | ((tmp & k1) << 4), (a1 & k2) | (((tmp >> 2) & k1) << 4),
-                                             ((a0 >> 4) & k2) | (((tmp >> 4) & k1) << 4), ((a1 >> 4) & k2) | (((tmp >> 6) & k1) << 4)))
-  out, s, m = [], 0, 1
-  for n in range(2):  # two halves of 128; the high-bit mask m runs on across both
-    for shift in (0, 2, 4, 6):
-      for off in (0, 16):
-        dl, s = d * (scales[s] - 32), s + 1
-        out += [dl * (((q[32 * n + off + l] >> shift) & 3) - (0 if hm[off + l] & m else 4)) for l in range(16)]
-      m <<= 1
-  return out
-
-
-def dequant_iq4_nl_block(blk:bytes) -> list[float]:
-  d, qs = _half(blk, 0), blk[2:18]  # block_iq4_nl: d, 16 qs bytes, low nibbles first, through kvalues_iq4nl
-  return [d * KVALUES_IQ4NL[b & 0xF] for b in qs] + [d * KVALUES_IQ4NL[b >> 4] for b in qs]
-
-
-def dequant_iq4_xs_block(blk:bytes) -> list[float]:
-  d, sh, sl = _half(blk, 0), struct.unpack_from("<H", blk, 2)[0], blk[4:8]  # block_iq4_xs: d, scales_h, scales_l[4], qs[128]
-  out = []
-  for ib in range(8):
-    dl = d * ((((sl[ib // 2] >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4)) - 32)
-    qs = blk[8 + 16 * ib:24 + 16 * ib]
-    out += [dl * KVALUES_IQ4NL[b & 0xF] for b in qs] + [dl * KVALUES_IQ4NL[b >> 4] for b in qs]
-  return out
-
-
-@functools.lru_cache(maxsize=None)
-def iq3s_grid() -> tuple[int, ...]:
-  """IQ3_S's 512-entry codebook, read from ggml-common.h beside the engine source the kernel is built from
-  (engine_kernels.mmvq_source_dir): the format's own definition, not a table BoltBeam copies."""
-  from boltbeam.collectors.engine_kernels import NoEngineSource, mmvq_source_dir
-  text = (pathlib.Path(mmvq_source_dir()["dir"]).parent / "ggml-common.h").read_text()
-  m = re.search(r"GGML_TABLE_BEGIN\(uint32_t,\s*iq3s_grid,\s*512\)(.*?)GGML_TABLE_END", text, re.S)
-  grid = tuple(int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", m.group(1))) if m else ()
-  if len(grid) != 512:
-    raise NoEngineSource("ggml-common.h has no 512-entry iq3s_grid")
-  return grid
-
-
-def dequant_iq3_s_block(blk:bytes) -> list[float]:
-  d, qs, qh, signs, sc = _half(blk, 0), blk[2:66], blk[66:74], blk[74:106], blk[106:110]  # block_iq3_s
-  grid, out = iq3s_grid(), []
-  for k in range(8):  # 32 weights each: scale nibble k % 2 of byte k // 2, qh[k]'s bits as each pair's ninth index bit
-    db = d * (1 + 2 * ((sc[k // 2] >> 4 * (k % 2)) & 0xF))
-    for l in range(4):
-      g1, g2 = grid[qs[8 * k + 2 * l] | ((qh[k] << (8 - 2 * l)) & 256)], grid[qs[8 * k + 2 * l + 1] | ((qh[k] << (7 - 2 * l)) & 256)]
-      s = signs[4 * k + l]
-      out += [db * ((g >> 8 * j) & 0xFF) * (-1 if s & (1 << (j + 4 * h)) else 1) for h, g in ((0, g1), (1, g2)) for j in range(4)]
-  return out
-
-
-def code_bytes(quant:str) -> int:
-  """The bytes of a block that hold its codes, after its scales and extra bits."""
-  return BLOCK_BYTES[quant] - METADATA_BYTES[quant]
-
-
-DEQUANT: dict[str, Callable[[bytes], list[float]]] = {"Q4_K": dequant_q4_k_block, "Q6_K": dequant_q6_k_block, "Q8_0": dequant_q8_0_block,
-                                                      "Q5_0": dequant_q5_0_block, "Q4_0": dequant_q4_0_block, "Q5_K": dequant_q5_k_block,
-                                                      "Q3_K": dequant_q3_k_block, "IQ4_NL": dequant_iq4_nl_block,
-                                                      "IQ4_XS": dequant_iq4_xs_block, "IQ3_S": dequant_iq3_s_block}
-
-
-def reference_row(weights:bytes, quant:str, row:int, cols:int, x:list[float]) -> float:
-  size, elems = BLOCK_BYTES[quant], BLOCK_ELEMS[quant]
-  nb = cols // elems
-  base = row * nb * size
-  acc = 0.0
-  for b in range(nb):
-    vals = DEQUANT[quant](weights[base + b * size: base + (b + 1) * size])
-    xb = x[b * elems:(b + 1) * elems]
-    acc += sum(v * xv for v, xv in zip(vals, xb))
-  return acc
-
-
-def check_rows(rows:int) -> list[int]:
-  return sorted({min(rows - 1, (rows - 1) * i // (CHECK_ROWS - 1)) for i in range(CHECK_ROWS)})
 
 
 # --- where measuring is possible ---------------------------------------------------------------------------
@@ -234,8 +48,6 @@ def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path
               llama_bench:str = "llama-bench", here:Callable[[], str | None] = this_machine_target) -> dict[str, Any]:
   """What the measurement will use, or CannotMeasure with the reason and the command to run instead."""
   target = get_target(target_id)
-  if target.backend == "CUDA" and not need_bench:  # the probe alone: adapter 0 runs through the CUDA bridge
-    return {"target": target, "model": llama_bench_decode.model_file(model), "llama_bench": None}
   if target.backend != "Metal":
     raise CannotMeasure(f"{target_id} is a {target.backend} chip; BoltBeam measures by itself on Metal only",
                         f"on a machine with {target_id}: boltbeam collect-hw-trace --provider llama --run {run}")
@@ -259,130 +71,6 @@ def _run_facts(run:pathlib.Path, **kw:Any) -> dict[str, Any]:
   facts = preflight(manifest.get("target_id"), manifest.get("model_path") or "", run=run, **kw)
   facts["manifest"] = manifest
   return facts
-
-
-# --- probe evidence ----------------------------------------------------------------------------------------
-
-def tensor_for(quant:str, rows:int, cols:int, tensors:list[tuple[str, tuple[int, ...], int, int]],
-               tensor_name:str | None = None, n_expert:int | None = None) -> tuple[str, int]:
-  """The model tensor of this quant and shape (the named one when it is among them; an MoE role's experts stacked, at
-  its first expert): its name and data offset. Shared by every collector that binds real weight bytes (the probes
-  here, collectors/engine_kernels.py)."""
-  want = GGML_TYPES.get(quant)
-  matches = [(name, off) for name, dims, typ, off in tensors if typ == want and tuple(dims) == (cols, rows, *([int(n_expert)] if n_expert else []))]
-  if not matches:
-    raise ValueError(f"no {quant} tensor of shape {rows}x{cols} in the model")
-  named = [m for m in matches if m[0] == tensor_name]
-  return (named or matches)[0]
-
-
-def _tensor_for(probe:dict[str, Any], tensors:list[tuple[str, tuple[int, ...], int, int]]) -> tuple[str, int]:
-  rows, cols = (int(v) for v in probe["shape"])
-  return tensor_for(probe["quant"], rows, cols, tensors, probe.get("tensor_name"), probe.get("n_expert"))
-
-
-def _percentile(values:list[float], q:float) -> float:
-  ordered = sorted(values)
-  return ordered[min(len(ordered) - 1, max(0, round(q * (len(ordered) - 1))))]
-
-
-def _absent(probe_quant:str, backend:str = "Metal") -> dict[str, str]:
-  """What this backend's probe cannot report, by the field the full-probe schema asks for (target/vendors.py
-  probe_absent). Said in the row's `absent` so the next-step ladder never asks this GPU for it (report/html.py
-  next_step)."""
-  row = vendors.BY_BACKEND.get(backend)
-  words = (row and row.probe_absent) or {k: f"{backend} is not read by BoltBeam's probe" for k in vendors.PROBE_FIELDS}
-  why = words["counters"]
-  return {
-    "latency_concurrency.memory_latency_ns": why, "latency_concurrency.active_waves": why,
-    "latency_concurrency.in_flight_groups": why, "latency_concurrency.occupancy_pct": why,
-    **{k: v for k, v in words.items() if k != "counters"},
-  }
-
-
-def measure_probe(bridge, flusher, probe:dict[str, Any], model:pathlib.Path, data_start:int, tensors:list,
-                  floor_us:float, target_gbs:float | None, *, backend:str = "Metal",
-                  libraries:dict[str, int] | None = None) -> dict[str, Any]:
-  """One probe row: BoltBeam's GEMV (adapter 0) on the role's real tensor bytes, timed by the one kernel timer."""
-  rows, cols = (int(v) for v in probe["shape"])
-  quant = probe["quant"]
-  row = {"probe_id": probe["probe_id"], "kind": "quant_gemv", "role": probe["role"], "quant": quant,
-         "shape": [rows, cols]}
-  if quant not in KERNELS or cols % BLOCK_ELEMS[quant]:
-    row["status"] = "not_measured"
-    row["reason"] = f"BoltBeam has no {backend} kernel for {quant} with {cols} columns"
-    return row
-  name, offset = _tensor_for(probe, tensors)
-  size = rows * (cols // BLOCK_ELEMS[quant]) * BLOCK_BYTES[quant]
-  if size + FLUSH_BYTES > bridge.working_set_bytes * WORKING_SET_SHARE:
-    row["status"] = "not_measured"
-    row["reason"] = f"{size / 2**30:.1f} GiB of weights does not fit the GPU's working set"
-    return row
-  with open(model, "rb") as f:
-    f.seek(data_start + offset)
-    weights = f.read(size)
-  x = gemv.vector(f"{probe['probe_id']}", cols)
-  spec = gemv.spec(backend, quant, rows, cols, weights, x)
-  got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries, dram_gbs=target_gbs)
-  row["correctness"] = got["correctness"]
-  if not got["samples"]:
-    row["status"] = "correctness_failed"
-    return row
-  med = got["median_us"]
-  metadata = rows * (cols // 256) * METADATA_BYTES[quant]
-  activation = cols * 4 + rows * 4
-  row.update({
-    "status": "measured", "tensor": name,
-    "timing": {"candidate_us": med, "spread_pct": got["spread_pct"], "min_us": got["min_us"], "samples": len(got["samples"]),
-               **got["timing"], "dispatch_floor_us": floor_us},
-    "bytes": {"physical_weight_bytes": size - metadata, "metadata_bytes": metadata, "activation_bytes": activation},
-    "throughput": {"achieved_gbs": got["gbs"], "target_gbs": target_gbs},
-    "latency_concurrency": {},
-    "isa": {},
-    "resources": {"lds_bytes": got["pipeline"]["static_threadgroup_memory_bytes"]},
-    "kernel": gemv.facts(got, spec),
-    "timed_by": spec.label,
-    "absent": _absent(quant, backend),
-  })
-  return row
-
-
-def collect_probe_evidence(run:pathlib.Path, say:Callable[[str], None] = lambda _: None) -> dict[str, Any]:
-  """probe_request.json -> probe_evidence.json on this machine's GPU (Metal or CUDA): BoltBeam's own GEMV per role
-  on the model's real bytes. The peak every row is measured against is the run's one read bandwidth."""
-  from boltbeam.workflow.screen import run_bandwidth
-  facts = _run_facts(run, need_bench=False)
-  request = read_json(run / "probe_request.json")
-  _, tensors, data_start = read_gguf_layout(facts["model"])
-  backend = facts["target"].backend
-  try:
-    bridge = kernel_timer.bridge_for(backend)
-  except RuntimeError as exc:  # MetalUnavailable, CudaUnavailable: this machine has no such GPU or no compiler
-    raise CannotMeasure(str(exc), f"measure on a machine with a {backend} GPU") from exc
-  try:
-    flusher = kernel_timer.Flusher(bridge, backend)
-    floor_us = flusher.floor_us()
-    target_gbs, target_source = run_bandwidth(run, facts["target"])
-    rows = []
-    libraries:dict[str, int] = {}
-    for i, probe in enumerate(request.get("probes", []), start=1):
-      say(f"probe {i} of {len(request['probes'])}: {probe['role']} {probe['quant']} {probe['shape'][0]}x{probe['shape'][1]}")
-      rows.append(measure_probe(bridge, flusher, probe, facts["model"], data_start, tensors, floor_us, target_gbs,
-                                backend=backend, libraries=libraries))
-  finally:
-    bridge.close()
-  manifest = facts["manifest"]
-  return {
-    "schema": SCHEMA_PROBE_EVIDENCE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
-    "workload": manifest["workload"], "provider_id": PROVIDER_ID, "collector_id": COLLECTOR_ID,
-    "device": bridge.name, "dispatch_floor_us": floor_us, "probes": rows, "peak_source": target_source,
-    "measured": ["timing", "throughput.achieved_gbs", "resources.lds_bytes", "correctness"],
-    "derived": ["bytes (from the GGUF block layout)", f"throughput.target_gbs ({target_source})"],
-    "notes": [f"Kernels are BoltBeam's own {backend} GEMVs on the model's real tensor bytes (collectors/boltbeam_gemv.py), "
-              "not the engine's kernels.",
-              "Each timed sample follows a flush of a buffer larger than the last-level cache.",
-              "The timed interval includes dispatch_floor_us of fixed GPU start cost; it is not subtracted."],
-  }
 
 
 # --- timing trace ------------------------------------------------------------------------------------------
@@ -467,7 +155,8 @@ def measure(run:pathlib.Path, *, only:str | None = None, probe_out:pathlib.Path 
   timing_out = timing_out or run / "timing_trace.json"
   written = {}
   if only in (None, "probe"):
-    _write(collect_probe_evidence(run, say), probe_out)
+    _run_facts(run, need_bench=False)  # this Mac, and the run's chip, before the probe runs on it
+    _write(boltbeam_gemv.collect_probe_evidence(run, say), probe_out)
     written["probe"] = probe_out
   if only in (None, "timing"):
     evidence = read_json(probe_out) if probe_out.exists() else {"probes": []}

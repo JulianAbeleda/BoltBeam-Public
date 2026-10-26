@@ -117,9 +117,6 @@ func TestSetupStagesAreNotCounted(t *testing.T) {
 	if v := starting.View(); !strings.Contains(v, "Starting…") || strings.Contains(v, " of 6") {
 		t.Fatalf("setup must read Starting with no count:\n%s", v)
 	}
-	if line, _ := measureLine(Facts{Job: s.job, Tail: setup}); line != "run" {
-		t.Fatal(line)
-	}
 	step1 := append(append([]string{}, setup...), "stage measure_probe: done", "stage measure_timing: start", "stage measure_timing: progress 1/4")
 	p = seam.ReadProgress(step1)
 	if p.Setup || p.Done != 0 || p.Current != "measure_timing" {

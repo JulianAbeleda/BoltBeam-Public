@@ -364,6 +364,8 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
                                   "busy_ms": busy, "gaps_ms": token - busy, "timing_window": match.get("captured_window")},
                                  untraced, "token", band=(table.get("band") or {}).get("calibration"),
                                  reference="untraced reference", reference_window=match.get("native_window"))
+  if outside and out["end_to_end"].get("confirms") is False and (cost := launch_cost(trace, out["end_to_end"]["diff_ms"])):
+    out["launch_cost"] = cost
   spread = (table.get("band") or {}).get("width_ms")
   out["check_status"] = table.get("check_status", "not checked")
   if spread is not None and busy - token > spread:  # idle time cannot be negative beyond noise: the two numbers are not comparable
@@ -543,7 +545,7 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
   words = [f"Context {tie['context']:g} · {token:.2f} ms/token. No model = measured time, unknown savings. Roofline is an upper bound."]
   if abs(base - token) > 1e-9:
     words.append(f"Captured {token:.1f} ms; untraced {base:.1f} ms.")
-    words.append(f"Difference: {token-base:+.1f} ms; its cause is unassigned.")
+    words.append(f"Difference: {token-base:+.1f} ms; " + (tie["launch_cost"]["words"] if tie.get("launch_cost") else "its cause is unassigned."))
   if not project:
     words.append("Native throughput allocation unavailable: capture timing is unqualified.")
   if (e2e := tie.get("end_to_end") or {}).get("status") == "checked":  # a checked verdict is always disclosed, over the ceiling too
@@ -631,6 +633,29 @@ def check_end_to_end(e:dict[str, Any]) -> list[str]:
     bad.append(f"confirms {ok!r} with status {e.get('status')!r} is not the {CEILING_PCT:g}% capture-overhead rule at {pct:+.3f}%")
   if e.get("status") == "checked" and overhead_words(pct, "native" if (ref := e.get("reference", "native")).startswith("untraced") else ref) not in str(e.get("words")): bad.append("words do not disclose the capture overhead derived from captured_ms and untraced_ms")
   return bad
+
+
+SHORT_LAUNCH_US = 10.0  # a launch this short is mostly fixed cost: what a per-launch capture cost weighs on
+
+
+def launch_cost(trace:dict[str, Any] | None, diff_ms:float) -> dict[str, Any] | None:
+  """An over-ceiling capture's extra time per token, per launch of the engine's token, from the capture's own counts:
+  the whole-step row's launches over its tokens, and the kernel rows' calls and time. A capture that intercepts every
+  dispatch (rocprofv3 --kernel-trace) costs about the same per launch on any engine, so how far it lands over the
+  ceiling is the engine's launch count and length: said, as measured, never as the run's fault. None without counts."""
+  rows = (trace or {}).get("rows") or []
+  whole = next((r for r in rows if r.get("scope") == "whole_step" and r.get("launch_count") and r.get("decode_tokens")), None)
+  kernels = [r for r in rows if r.get("scope") == "kernel" and r.get("calls")]
+  if whole is None or not kernels or diff_ms <= 0:
+    return None
+  per_token = whole["launch_count"] / whole["decode_tokens"]
+  calls = sum(r["calls"] for r in kernels)
+  short = sum(r["calls"] for r in kernels if r["wall_us"] / r["calls"] < SHORT_LAUNCH_US)
+  us = 1000.0 * diff_ms / per_token
+  return {"launches_per_token": per_token, "us_per_launch": us, "short_share": short / calls, "short_us": SHORT_LAUNCH_US,
+          "words": (f"the capture adds {diff_ms:.1f} ms a token over the engine's {per_token:,.0f} launches a token, "
+                    f"{us:.1f} us each, and {100 * short / calls:.0f}% of those launches take under {SHORT_LAUNCH_US:g} us: "
+                    "a cost per launch weighs on an engine that splits its token into many short kernels.")}
 
 
 def end_to_end(attr:dict[str, Any], untraced_ms:float | None, what:str = "prefill", *, band:dict | None = None,

@@ -223,6 +223,7 @@ def review(manifest, *, say=lambda _:None):
     resource_data={'resource_work':work,'resource_window':resource_window,'resource_calibration':calibration,
                    'resource_roofline':estimate(work,resource_window,calibration,timing)}
   return {'schema':SCHEMA,'pairing':'passed','divergences':0,'turns':turns,
+          **({'stopped':manifest['stopped']} if manifest.get('stopped') else {}),  # the trace's turns that did not fit
           **({'native_activity':activities.provenance()} if activities is not None else {}),
           **resource_data,**acceptance_data,
           'script_sha256':hashlib.sha256(Path(manifest['script']).read_bytes()).hexdigest(),
@@ -245,8 +246,8 @@ def collect(run, *, provider='vllm', say=lambda _:None):
   from boltbeam.target.targets import get_target
   from boltbeam.collectors import vendor_capture,rocpd_trace
   run=Path(run).resolve();facts=load_manifest(run);backend=get_target(facts['target_id']).backend
-  if provider!='vllm' or backend not in ('CUDA','AMD'):
-    raise ValueError('forced replay requires vLLM on CUDA or AMD')
+  if provider!='vllm' or not vendor_capture.windowed(backend):
+    raise ValueError(f'forced replay requires vLLM and a capture of a program-marked window; {backend} has none')
   if vendor_capture.plan(backend)['method']=='cupti-hes':
     raise ValueError('forced replay needs semantic/API tracing; cupti-hes captures kernel timing only')
   nsys=vendor_capture.plan(backend)['tool']  # rocprofv3 on AMD: one rocpd database, cut into nsys's files below
@@ -279,7 +280,8 @@ def collect(run, *, provider='vllm', say=lambda _:None):
     if backend=='AMD':rocpd_trace.export(dbs,root/f'capture.{i}.sqlite',window=cuts[i-1],nodes=i==1)
     else:job([nsys,'export','--type=sqlite','--output',str(root/f'capture.{i}.sqlite'),
               str(root/f'capture.{i}.nsys-rep')],f'export-{i}')
-  manifest={'paired':str(root/'paired'),'reference':str(root/'reference'),'script':str(root/'token-script.json'),
+  manifest={**({'stopped':json.loads((root/'record-stopped.json').read_text())} if (root/'record-stopped.json').exists() else {}),
+            'paired':str(root/'paired'),'reference':str(root/'reference'),'script':str(root/'token-script.json'),
             'cost':str(root/'cost/cost.json'),'graph':str(root/'capture.1.sqlite'),
             'segments':[{'timing':str(root/'capture.2.sqlite'),'label':str(root/f'capture.{i+3}.sqlite')} for i in range(count)]}
   (root/'inputs.json').write_text(json.dumps(manifest,indent=2))

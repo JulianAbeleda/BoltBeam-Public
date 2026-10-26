@@ -2,10 +2,13 @@ package ui
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
@@ -38,7 +41,7 @@ func TestCompareReadiness(t *testing.T) {
 	f := Facts{Path: "m.gguf", Run: measuredRun(t)}
 	f.Ready = &seam.CompareReady{Applies: true, Missing: sp("fork"), Message: sp("The tinygrad fork is not at /x."),
 		Fix: sp("git clone -b exp https://github.com/JulianAbeleda/tinygrad-arkey /x")}
-	if hasLabel(resultActions(f), "Compare kernels per role") || hasLabel(resultActions(f), "Time each role in tinygrad") {
+	if hasLabel(runActions(f), "Compare kernels per role") || hasLabel(runActions(f), "Time each role in tinygrad") {
 		t.Fatal("a machine without the fork must not offer the actions")
 	}
 	body := plain(resultBody(f, 100))
@@ -49,7 +52,7 @@ func TestCompareReadiness(t *testing.T) {
 		}
 	}
 	f.Ready = &seam.CompareReady{Applies: true, Ready: true}
-	if hasLabel(resultActions(f), "Compare kernels per role") {
+	if hasLabel(runActions(f), "Compare kernels per role") {
 		t.Fatal("the kernel search is part of Run; there is no separate action")
 	}
 }
@@ -81,10 +84,6 @@ func TestCompareProgressAndTable(t *testing.T) {
 			t.Errorf("progress body misses %q:\n%s", want, body)
 		}
 	}
-	if !hasLabel(resultActions(f), "Stop comparing (x)") {
-		t.Fatal("a running comparison must offer stop")
-	}
-
 	f.CJob.Alive = false
 	for i := range run.Results.Routes {
 		run.Results.Routes[i].Status = "blocked"
@@ -139,7 +138,7 @@ func TestEngineActions(t *testing.T) {
 		t.Fatalf("no sentence for an engine that cannot run here:\n%s", body)
 	}
 	f.Run = measuredRun(t)
-	if hasLabel(resultActions(f), "Time each role in llama.cpp") {
+	if hasLabel(runActions(f), "Time each role in llama.cpp") {
 		t.Fatal("llama.cpp with no capture here must not offer per-role time")
 	}
 	body := plain(resultBody(f, 100))
@@ -209,16 +208,12 @@ func TestNoCompareSuggestion(t *testing.T) {
 	}
 }
 
-// NVIDIA measures timing with llama-bench and has no probe: step 4 passes and says the probe is missing.
+// NVIDIA measures timing with llama-bench and has no probe: timing passes and the probe row says it is missing.
 func TestMeasureTimingOnlyPassesAndNamesTheMissingProbe(t *testing.T) {
 	run := measuredRun(t)
 	run.Blocked = []seam.Need{{Need: "probe_evidence", Request: "probe_request.json"}}
 	run.Measure = &seam.MeasureStatus{Status: "measured", Collector: sp("llama-bench-decode"), Probe: sp("absent"),
 		ProbeReason: sp("no building-block probe for this chip")}
-	f := Facts{Path: "m.gguf", Run: run}
-	if mk, text := measureLine(f); mk != "pass" || !strings.Contains(plain(text), "timing ✓ · no probe for this chip") {
-		t.Fatalf("measure line: %s %q", mk, plain(text))
-	}
 	rows := measureRows(run.Measure, nil, false)
 	if len(rows) != 2 || rows[0] != [3]string{"crossed", "measure_probe", "not here: no building-block probe for this chip"} ||
 		rows[1] != [3]string{"pass", "measure_timing", "done"} {
@@ -288,27 +283,81 @@ func TestChipIsDetectedAndChangeableFromTheList(t *testing.T) {
 	}
 }
 
-// More than one GPU: the chip shows them with the limited-support label, and the layouts are part of the choice.
-func TestMultiGpuLayoutsAreAChipChoice(t *testing.T) {
-	targets := &seam.Targets{Targets: []seam.Target{{ID: "nvidia_sm120", HasCeiling: true}}}
-	f := Facts{Targets: targets, Detected: true, ThisMachine: "nvidia_sm120", GpuCount: 4, Engine: "llama.cpp",
-		MultiGpu: "4 x NVIDIA GeForce RTX 5090 (limited support: no real multi-GPU run yet)",
-		Providers: &seam.Providers{Providers: []seam.ProviderRow{{Provider: "llama.cpp", Available: true, Layouts: []seam.LayoutRow{
-			{ID: "one", Label: "one GPU", Available: true}, {ID: "layer", Label: "split by layer", Available: true},
-			{ID: "row", Label: "split by rows", Available: true}}}}}}
+// More than one GPU: the engine picker shows each engine's layouts here (Python's rows: which can run, the GPUs each
+// uses, why the others cannot, what each does to speed), and an engine is picked with its layout.
+func TestMultiGpuLayoutsAreAnEngineChoice(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.Ascii)
+	s := loadSample(t)
+	m := program(s, nil, nil, nil, 80, 40)
+	m, _ = m.Update(detectMsg{id: "apple_m3_10c", count: 2, multi: "2 x AMD Radeon AI PRO R9700 (limited support: one real multi-GPU run so far (vLLM split by rows on two R9700s))"})
+	m, _ = m.Update(ceilingMsg{&s.ceiling, nil}) // detect asks again for the chip it found: the same answer
+	m, _ = m.Update(providersMsg{"apple_m3_10c", twoGpuEngines(t)})
+	picker := page(m, pageEngine)
+	golden(t, "picker-engine-2gpu.txt", picker.View())
 	labels := ""
-	for _, a := range chipActions(f) {
+	for _, a := range engineActions(facts(picker)) {
 		labels += plain(a.label) + "\n"
 	}
-	for _, want := range []string{"4 GPUs: 4 x NVIDIA GeForce RTX 5090 (limited support", "Use one GPU", "Use split by layer", "Use split by rows"} {
+	for _, want := range []string{"split by layer (2 GPUs)", "split by rows: not here", "split by layer, split by rows: not here"} {
 		if !strings.Contains(labels, want) {
 			t.Errorf("missing %q in:\n%s", want, labels)
 		}
 	}
-	f.Layout = "layer"
-	if _, text := chipLine(f); !strings.Contains(text, "split by layer") {
-		t.Fatalf("chip line: %s", text)
+	if body := plain(engineBody(facts(picker), 80)); !strings.Contains(body, "no decode speedup") || !strings.Contains(body, "does not support split buffers") || !strings.Contains(body, "joins cost per layer") {
+		t.Errorf("legend:\n%s", body)
 	}
+	got, _ := picker.(Model).do(action{"", "enginelayout", "vllm|row"})
+	f := got.f
+	if f.Engine != "vllm" || f.layout() != "row" || got.cursor != pageSetup {
+		t.Fatalf("picked %s %s on page %d", f.Engine, f.layout(), got.cursor)
+	}
+	if v := plain(engineValue(f)); v != "vllm · split by rows (2 GPUs)" {
+		t.Fatalf("setup engine value: %q", v)
+	}
+	golden(t, "setup-2gpu.txt", got.View())
+	// the picker opens again on the chosen layout's row, and the run's header names the layout it ran with
+	again, _ := got.do(action{"", "page", fmt.Sprint(pageEngine)})
+	if acts := again.actions(); acts[again.row].do != "enginelayout" || acts[again.row].arg != "vllm|row" {
+		t.Fatalf("picker opened on %q", plain(acts[again.row].label))
+	}
+	f.Job = &jobs.Job{Argv: []string{"screen", "pipeline", "--provider", "vllm", "--layout", "row"}}
+	if l := jobLayout(f); l != " · split by rows (2 GPUs)" {
+		t.Fatalf("run header layout: %q", l)
+	}
+	f.Job.Argv = []string{"screen", "pipeline", "--layout", "one"}
+	if l := jobLayout(f); l != "" {
+		t.Fatalf("a one-GPU job names a layout: %q", l)
+	}
+	// one GPU: the picker has no layout rows and Setup shows the engine only
+	one := facts(page(program(s, nil, nil, nil, 80, 24), pageEngine))
+	one.Providers = twoGpuEngines(t)
+	for _, a := range engineActions(one) {
+		if strings.Contains(plain(a.label), "split") || strings.Contains(plain(a.label), "one GPU") {
+			t.Fatalf("one GPU shows layouts: %s", plain(a.label))
+		}
+	}
+	if engineValue(one) != one.Engine || engineBody(one, 80) != engineBody(Facts{Providers: one.Providers}, 80) {
+		t.Fatalf("one GPU: %q", engineValue(one))
+	}
+}
+
+// twoGpuEngines is `screen providers` on two R9700s (workflow/layout.layouts(2, engine, "AMD")).
+func twoGpuEngines(t *testing.T) *seam.Providers {
+	var p seam.Providers
+	one := `{"id":"one","label":"one GPU","available":true,"reason":null,"gpus":1,"speed":"one GPU reads every weight"}`
+	layer := `{"id":"layer","label":"split by layer","available":%s,"reason":%s,"gpus":2,"speed":"holds a bigger model; the GPUs take turns, so no decode speedup"}`
+	row := `{"id":"row","label":"split by rows","available":%s,"reason":%s,"gpus":2,"speed":"the GPUs read their shares at once; joins cost per layer"}`
+	tiny := `"the tinygrad fork decodes on one device: its LLM decode has no sharded path"`
+	raw := `{"providers":[` +
+		`{"provider":"llama.cpp","available":true,"capture":{"method":null,"reason":"x"},"layouts":[` + one + `,` + fmt.Sprintf(layer, "true", "null") + `,` +
+		fmt.Sprintf(row, "false", `"llama.cpp's HIP build refuses it at model load: \"device ROCm0 does not support split buffers\" (llama.cpp 7182ef7, 2 x R9700)"`) + `]},` +
+		`{"provider":"vllm","available":true,"capture":{"method":null,"reason":"x"},"layouts":[` + one + `,` +
+		fmt.Sprintf(layer, "false", `"BoltBeam runs vLLM split by rows (tensor parallel); its pipeline split is not measured"`) + `,` + fmt.Sprintf(row, "true", "null") + `]},` +
+		`{"provider":"tinygrad","available":true,"capture":{"method":"tinygrad-profile-events"},"layouts":[` + one + `,` + fmt.Sprintf(layer, "false", tiny) + `,` + fmt.Sprintf(row, "false", tiny) + `]}]}`
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		t.Fatal(err)
+	}
+	return &p
 }
 
 // Step 3 lists this model's limit on the other registered chips, read-only.

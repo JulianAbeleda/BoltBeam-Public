@@ -957,6 +957,23 @@ func (m Model) runRow() string {
 }
 
 // skipHeads moves the row off section headings, in direction dir (1 down, -1 up), never past the ends.
+// chosenRow is the engine picker's row for Setup's engine and layout (its layout's row first), else fallback.
+func (m *Model) chosenRow(fallback int) int {
+	acts, engine := m.actions(), -1
+	for i, a := range acts {
+		if a.do == "enginelayout" && a.arg == m.f.Engine+"|"+m.f.layout() {
+			return i
+		}
+		if a.do == "engine" && a.arg == m.f.Engine && engine < 0 {
+			engine = i
+		}
+	}
+	if engine >= 0 {
+		return engine
+	}
+	return fallback
+}
+
 func (m *Model) skipHeads(dir int) {
 	acts := m.actions()
 	for m.row >= 0 && m.row < len(acts) && skipped(acts[m.row].do) {
@@ -1137,6 +1154,9 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		m.row = 0
 		m.focusModel()
 		m.skipHeads(1)
+		if m.cursor == pageEngine { // the engine picker opens on what Setup has: its layout's line, else its engine's
+			m.row = m.chosenRow(m.row)
+		}
 		m.view.GotoTop()
 		if m.cursor == pageSaved {
 			return m, m.loadSaved()
@@ -1173,8 +1193,13 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		m.f.Measurement = a.arg
 		m.backToSetup()
 		return m, nil
-	case "layout":
-		m.f.Layout = a.arg
+	case "enginelayout": // an engine and how it uses this machine's GPUs, picked on one row
+		engine, layout, _ := strings.Cut(a.arg, "|")
+		if engine != m.f.Engine {
+			m.f.Measurement = ""
+		}
+		m.f.Engine, m.f.Layout, m.engineSet = engine, layout, true
+		m.backToSetup()
 		return m, nil
 	case "analyze":
 		return m, m.startRun(m.f.Engine)
@@ -1197,9 +1222,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		}
 		m.f.Target, _ = strconv.Atoi(a.arg)
 		m.chipSet, m.f.Picked = true, true
-		if m.f.GpuCount < 2 { // more GPUs: the layout is chosen on the same picker
-			m.backToSetup()
-		}
+		m.backToSetup()
 		return m, m.chipChanged()
 	case "start":
 		return m, m.startRun(a.arg)

@@ -12,13 +12,13 @@ loop. Adapters hand it a `KernelSpec`. Bridges run the dispatch on the GPU.
 ```text
 KernelSpec  (source, kernel, args, grid, block, bytes_read, check)
    -> bridge.library / pipeline / buffer / dispatch          Metal: runtime/metal_device.py   CUDA: runtime/cuda_device.py
-   -> first launch, output checked against the pure-Python reference (collectors/metal_native.py)
+   -> first launch, output checked against the pure-Python reference (collectors/gemv_reference.py)
    -> WARMUPS launches, then SAMPLES launches with a cache flush before each
    -> median µs, min, spread, GB/s = bytes_read / median
 ```
 
 The loop is `kernel_timer.samples`. Nothing else in the tree warms and times a kernel. The bandwidth probes
-(`metal_bandwidth.py`, `cuda_bandwidth.py`) and the cubin replay (`cubin_launch.py`) call `samples` and keep their
+(`metal_bandwidth.py`, `read_bandwidth.py`) and the cubin replay (`cubin_launch.py`) call `samples` and keep their
 own statistic (best of N for a bandwidth).
 
 ## Adapters
@@ -33,7 +33,7 @@ own statistic (best of N for a bandwidth).
 Adapter 0 is the building-block probe (`probe_evidence.json`). Its rows are "BoltBeam's own kernel (reference)".
 They are not the engine's kernel.
 
-Adapter 1 times the weight formats whose block layout and pure-Python reference `metal_native.py` holds: Q4_K, Q6_K
+Adapter 1 times the weight formats whose block layout and pure-Python reference `gemv_reference.py` holds: Q4_K, Q6_K
 and Q8_0 (`BLOCK_BYTES`, `BLOCK_ELEMS`, `DEQUANT`; the same figures as `data/quants.json`). A limit role in another
 format is a `not_measured` row saying "no <quant> adapter"; the table shows it as "not timed: <reason>", its own row,
 and leaves it out of the floor rule and the sums, so the roles that were timed are still a measured table

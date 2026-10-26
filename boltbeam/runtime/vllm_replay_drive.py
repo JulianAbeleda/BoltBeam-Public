@@ -79,7 +79,7 @@ def drive(run:Path,mode:str,repeats:int=5):
           headers={'Content-Type':'application/json'}),timeout=60) as response:
         if response.status!=200:raise ValueError('prefix cache reset failed')
     with urllib.request.urlopen(url+'/v1/models',timeout=60) as response:
-      model=json.loads(response.read())['data'][0]['id']
+      served=json.loads(response.read())['data'][0];model,limit=served['id'],served.get('max_model_len')
     if mode=='record':
       trace=read(run/'replay_trace.json');words=Words(REPLAY_ENGINES['vllm'],url)
       system={'role':'system','content':words.take(trace['system_tokens'])};messages=[system];script=[]
@@ -88,6 +88,10 @@ def drive(run:Path,mode:str,repeats:int=5):
         messages.append({'role':'user','content':words.take(turn['new_tokens'])+words.take(turn['tool_tokens'])})
         prompt=post('/tokenize',{'model':model,'messages':messages,'add_generation_prompt':True,
                                'chat_template_kwargs':{'enable_thinking':False}})['tokens']
+        if limit and len(prompt)+turn['reply_tokens']>limit:  # stop before the context fills, as the llama.cpp replay does
+          (root/'record-stopped.json').write_text(json.dumps({'turn':turn['i'],'reason':f"turn {turn['i']} needs "
+            f"{len(prompt)+turn['reply_tokens']:,} tokens; the server's context is {limit:,}"}))
+          break
         row=stream(url,request(model,prompt,turn['reply_tokens'],force=False))
         script.append({'turn':turn['i'],'prompt':prompt,'tokens':row['choices'][0]['token_ids']})
         messages.append({'role':'assistant','content':row['text']})

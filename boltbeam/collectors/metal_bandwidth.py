@@ -56,7 +56,7 @@ def measure_read_gbs(nbytes:int = 1 << 30, reps:int = 5, sustain_s:float = SUSTA
       us = metal.run(pso, [src, out], [struct.pack("I", nbytes // 16)], best["groups"], best["threads"])
       series.append(nbytes / (us * 1e-6) / 1e9)
       done += us
-    from boltbeam.collectors.cuda_bandwidth import plausibility
+    from boltbeam.collectors.read_bandwidth import plausibility
     return {"schema": "boltbeam.metal_read_bandwidth.v1", "device": metal.name, "bytes": nbytes, "reps": reps,
             "method": "BoltBeam metal_bandwidth: read-only float4 sum over 1 GiB, best of five per launch shape; "
                       f"then the best shape back to back for {sustain_s:.0f} s (sustained)",
@@ -116,7 +116,7 @@ def measure_matrix_tflops(iters:int = 4096, reps:int = 5) -> dict:
 
 
 def run_cli(args) -> int:
-  from boltbeam.collectors.cuda_bandwidth import repeated
+  from boltbeam.collectors.read_bandwidth import repeated
   runs = max(1, getattr(args, "runs", 1))
   out = {"read": repeated([measure_read_gbs() for _ in range(runs)], "read_gbs", "gbs"),
          "matrix": repeated([measure_matrix_tflops() for _ in range(runs)], "tflops", "tflops")} if runs > 1 else measure_read_gbs()

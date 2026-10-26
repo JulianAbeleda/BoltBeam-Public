@@ -75,12 +75,12 @@ def emitter_families(describe:Mapping[str, Any], quant:str) -> list[dict[str, An
 
 def cta_k_sweep_space(family:Mapping[str, Any], quant:str, *, subgroup_size:int | None, max_threads:int | None) -> dict[str, Any]:
   """BoltBeam's own rows for a one-row-a-CTA, k-sweep family (bubblebeam.cta_row_k_sweep_rows), or why none."""
-  from boltbeam.collectors import metal_native as native
+  from boltbeam.collectors import gemv_reference
   from boltbeam.search.bubblebeam import cta_row_k_sweep_rows
   q = _canon_quant(quant)
   lanes, block = family.get("lanes_per_block_slice"), family.get("block_elems")
-  if q not in native.BLOCK_ELEMS or block != native.BLOCK_ELEMS[q] or not isinstance(lanes, int):
-    return {"why": f"the provider's {q} slice layout (block {block}, {lanes} lanes) disagrees with BoltBeam's {native.BLOCK_ELEMS.get(q)}-element block"}
+  if q not in gemv_reference.BLOCK_ELEMS or block != gemv_reference.BLOCK_ELEMS[q] or not isinstance(lanes, int):
+    return {"why": f"the provider's {q} slice layout (block {block}, {lanes} lanes) disagrees with BoltBeam's {gemv_reference.BLOCK_ELEMS.get(q)}-element block"}
   if not isinstance(subgroup_size, int) or subgroup_size < 1 or subgroup_size % lanes:
     return {"why": "the target's subgroup does not hold whole block slices"}
   return {"why": None, "rows": cta_row_k_sweep_rows(block_elems=block, lanes_per_block_slice=lanes, subgroup_size=subgroup_size,
@@ -88,27 +88,27 @@ def cta_k_sweep_space(family:Mapping[str, Any], quant:str, *, subgroup_size:int 
 
 
 def _canon_quant(quant:str) -> str:
-  from boltbeam.collectors import metal_native as native
-  return next((q for q in native.BLOCK_BYTES if _norm(q) == _norm(quant)), quant)
+  from boltbeam.collectors import gemv_reference
+  return next((q for q in gemv_reference.BLOCK_BYTES if _norm(q) == _norm(quant)), quant)
 
 
 def block_unit_space(family:Mapping[str, Any], kind:Mapping[str, Any], quant:str, *, subgroup_size:int | None,
                      max_threads:int | None, shape:tuple[int, int] | None, sm_count:int | None) -> dict[str, Any]:
   """BoltBeam's own rows for a row-per-subgroup, block-code-unit family, and the row the model's decode installs
   (the provider's declared installed_rule applied to this shape and chip), or why there is no space."""
-  from boltbeam.collectors import metal_native as native
+  from boltbeam.collectors import gemv_reference
   from boltbeam.search.bubblebeam import subgroup_row_block_unit_rows
   q = _canon_quant(quant)
-  if q not in native.BLOCK_BYTES or q not in kind["quants"]:
+  if q not in gemv_reference.BLOCK_BYTES or q not in kind["quants"]:
     return {"why": f"BoltBeam has no block layout for {quant} in {kind['family']}"}
   unit = family.get("code_unit_bytes")
   units = (family.get("code_units_per_block") or {}).get(q)
-  mine = native.code_bytes(q)
+  mine = gemv_reference.code_bytes(q)
   if not isinstance(unit, int) or not isinstance(units, int) or unit * units != mine:
     return {"why": f"the provider's {q} layout ({units} units of {unit} bytes) disagrees with BoltBeam's {mine} code bytes per block"}
   if not isinstance(subgroup_size, int) or subgroup_size < 1:
     return {"why": "the target names no subgroup size, so no row-per-subgroup launch can be proposed"}
-  rows = subgroup_row_block_unit_rows(code_bytes=mine, unit_bytes=unit, block_elems=native.BLOCK_ELEMS[q],
+  rows = subgroup_row_block_unit_rows(code_bytes=mine, unit_bytes=unit, block_elems=gemv_reference.BLOCK_ELEMS[q],
                                       subgroup_size=subgroup_size, max_threads=max_threads)
   # Candidate geometry is not evidence of what the model bound. That metadata must come from the provider.
   return {"why": None, "rows": rows, "installed_row": None}

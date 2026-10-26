@@ -124,7 +124,7 @@ def retime(bridge, flusher, floor_us:float | None, kernels:list[Mapping[str, Any
   """Both launches the provider described, rebuilt and run by BoltBeam: the tile on BoltBeam's q and KV cache, the
   combine on the tile's own output; the combine's output checked against `reference` on sampled heads; each launch
   timed by the kernel timer. The time is the sum of the two, each less the floor."""
-  from boltbeam.collectors import kernel_timer, metal_native as native
+  from boltbeam.collectors import kernel_timer, gemv_reference
   from boltbeam.collectors.kernel_timer import Check, KernelSpec
   from boltbeam.search.provider_check import half_round
   hq, hkv, hd = shape["Hq"], shape["Hkv"], shape["Hd"]
@@ -157,7 +157,7 @@ def retime(bridge, flusher, floor_us:float | None, kernels:list[Mapping[str, Any
         heads = sorted({min(hq - 1, (hq - 1) * i // 3) for i in range(4)})
         refs = {h: reference(q, kv, shape, maxc, context, h) for h in heads}
         check = Check(indices=[h * hd + i for h in heads for i in range(hd)], reference=lambda j: refs[j // hd][j % hd],
-                      rel_tol=native.TOLERANCE * 2, words="BoltBeam computes the attention itself: softmax(q.k / sqrt(Hd)).v",
+                      rel_tol=gemv_reference.TOLERANCE * 2, words="BoltBeam computes the attention itself: softmax(q.k / sqrt(Hd)).v",
                       out_format=out_fmt)
       block = (list(rec.get("local_size") or []) + [1, 1, 1])[:3]
       grid = (list(rec.get("global_size") or []) + [1, 1, 1])[:3]

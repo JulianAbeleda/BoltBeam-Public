@@ -38,7 +38,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from boltbeam.collectors import gpu_telemetry
-from boltbeam.collectors.cuda_bandwidth import parallel_units, repeated_paths
+from boltbeam.collectors.read_bandwidth import parallel_units, repeated_paths
 from boltbeam.collectors.kernel_timer import samples
 
 ACC = 8  # independent accumulators per wave: enough to hide the instruction's latency
@@ -264,25 +264,6 @@ def measure_paths(device:int = 0, *, reps:int = 5, seconds:float = SECONDS, brid
   return {"schema": "boltbeam.hip_matrix_paths.v1", "device": device, "name": facts.get("name"),
           **{k: v for k, v in facts.items() if k != "name"}, "clock_policy": policy, "telemetry": whole, "paths": rows,
           "path_scan": scanned if hip_path_scan.paths(scanned) else None, "method": METHOD.format(acc=ACC, reps=reps, seconds=seconds)}
-
-
-def matrix_tflops(result:dict[str, Any]) -> dict[str, float]:
-  """The chip profile's matrix_tflops from a probe result: the plateau rate of every available path."""
-  return {r["path"]: r["tops"] for r in result["paths"] if r.get("available")}
-
-
-def fact_source(result:dict[str, Any], *, scope:str, today:str) -> dict[str, Any]:
-  """The chip profile's fact source for matrix_tflops, in cuda_compute.fact_source's shape: per path its rate, the
-  clock it ran at, its instruction and the rate per multiprocessor per clock; the policy and throttling (unknown on
-  amdgpu, which reports no throttle reasons)."""
-  return {"kind": "measurement", "bound": "achievable", "scope": scope, "observed_at": today, "method": result["method"],
-          "clock_policy": result["clock_policy"].get("policy"), "throttled": result["telemetry"].get("throttled"),
-          "paths": {r["path"]: ({"tops": r["tops"], "sm_mhz": r["sm_mhz"], "ops_per_sm_per_clock": r["ops_per_sm_per_clock"],
-                                 "instruction": r["instruction"], "words": r["words"], "throttled": r["clock"].get("throttled"),
-                                 **{k: r[k] for k in ("uncertainty", "shape_spread") if k in r},
-                                 "power_w_mean": (r["clock"].get("power_w") or {}).get("mean")}
-                                if r.get("available") else {"available": False, "reason": r["reason"], "instruction": r["instruction"]})
-                    for r in result["paths"]}}
 
 
 def main(argv:list[str] | None = None) -> int:

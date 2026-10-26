@@ -108,6 +108,8 @@ type LayoutRow struct {
 	Available bool    `json:"available"`
 	State     string  `json:"state"` // available, not_here or not_compatible: Python decides, the screen words it
 	Reason    *string `json:"reason"`
+	Gpus      int     `json:"gpus"`  // the GPUs it would use (vLLM's row split may use fewer: the model's heads decide)
+	Speed     string  `json:"speed"` // what it does to decode speed, in a few words (layout.SPEED)
 }
 
 // LayoutLimit is the limit derived for the run's layout, with its formula and every input and its source.
@@ -219,6 +221,7 @@ type Saved struct {
 		Measured         bool     `json:"measured"`
 		RooflinePct      *float64 `json:"roofline_pct"`
 		ValidationFailed bool     `json:"validation_failed"`
+		Layout           *string  `json:"layout"` // "split by layer (2 GPUs)"; nil for one GPU or an older Python
 	} `json:"runs"`
 }
 

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
 	"github.com/charmbracelet/x/ansi"
 	"path/filepath"
@@ -253,19 +254,17 @@ func chipValue(f Facts) string {
 	if f.thisChip() {
 		text = t.ID + " · " + here() + speed
 	}
-	if f.GpuCount > 1 {
-		text += " · " + layoutLabel(f)
-	}
 	return text
 }
 
-// engineValue is the chosen engine as Setup shows it: its name only; while the boot scan looks for engines, that.
+// engineValue is the chosen engine as Setup shows it: its name, and its layout when the machine has more than one
+// GPU; while the boot scan looks for engines, that.
 func engineValue(f Facts) string {
 	if f.EngineScan || (f.Providers == nil && f.target() != nil) { // the scan, then Python's provider list
 		return strings.TrimSpace(f.Spin + " looking for engines…")
 	}
 	if p := f.engineRow(); p != nil && p.Available {
-		return p.Provider
+		return p.Provider + layoutSuffix(f)
 	}
 	return notChosen
 }
@@ -486,7 +485,7 @@ func engineLine(f Facts) (string, string) {
 	if p.Capture.Method != nil {
 		how = "roles " + word(captureWords, *p.Capture.Method)
 	}
-	return "pass", p.Provider + " · " + how
+	return "pass", p.Provider + layoutSuffix(f) + " · " + how
 }
 
 func engineBody(f Facts, width int) string {
@@ -496,6 +495,7 @@ func engineBody(f Facts, width int) string {
 	var b strings.Builder
 	b.WriteString("The engine is the runtime that decodes the model. Only engines found on " + here() + " can be picked. " +
 		"They are looked for at start; an env var (BOLTBEAM_LLAMA_BENCH, BOLTBEAM_TINYGRAD_ROOT, …) overrides what was found.\n\n")
+	b.WriteString(layoutLegend(f))
 	for _, p := range f.Providers.Providers {
 		p = f.modelProvider(p)
 		if !p.Available {
@@ -507,6 +507,7 @@ func engineBody(f Facts, width int) string {
 			how = "roles: " + word(captureWords, *p.Capture.Method)
 		}
 		fmt.Fprintf(&b, "%s · %s\n  %s\n", p.Provider, state, stMuted.Render(how))
+		b.WriteString(layoutsHere(f, p))
 	}
 	return b.String()
 }
@@ -527,6 +528,7 @@ func engineActions(f Facts) []action {
 		}
 		if p.Available {
 			out = append(out, action{chosen + p.Provider, "engine", p.Provider})
+			out = append(out, layoutActions(f, p)...)
 		} else {
 			out = append(out, note(fmt.Sprintf("  %-14s %s", p.Provider, stateWords(p))))
 		}
@@ -717,6 +719,9 @@ func savedActions(f Facts) []action {
 				when = when[:16] // to the minute
 			}
 			engine := r.Provider
+			if r.Layout != nil {
+				engine += " · " + *r.Layout
+			}
 			if r.Workload != nil {
 				engine += " " + *r.Workload
 			}
@@ -957,9 +962,6 @@ func chipLine(f Facts) (string, string) {
 	default:
 		text += " · picked: " + here() + " is not a registered chip"
 	}
-	if f.GpuCount > 1 {
-		text += " · " + layoutLabel(f)
-	}
 	if !t.HasCeiling {
 		return "crossed", text + " · no measured speeds, so no speed limit"
 	}
@@ -1000,7 +1002,7 @@ func chipActions(f Facts) []action {
 	default:
 		out = append(out, note(h.Words))
 	}
-	return append(out, layoutActions(f)...)
+	return out
 }
 
 // chipRow is one chip that can be chosen, marked when it is the chosen one.
@@ -1012,47 +1014,96 @@ func chipRow(f Facts, id string, i, w int, words string) action {
 	return action{fmt.Sprintf("%s%-*s  %s", chosen, w, id, stMuted.Render(words)), "chip", fmt.Sprint(i)}
 }
 
-// layoutLabel names the chosen GPU layout on a machine with more than one GPU.
+// layoutLabel names the chosen GPU layout and the GPUs it uses.
 func layoutLabel(f Facts) string {
-	for _, l := range layoutRows(f) {
-		if l.ID == f.layout() {
-			return l.Label
+	if p := f.engineRow(); p != nil {
+		for _, l := range p.Layouts {
+			if l.ID == f.layout() {
+				return l.Label + gpusWord(l)
+			}
 		}
 	}
 	return "one GPU"
 }
 
-func (f Facts) layout() string {
-	if f.Layout == "" {
-		return "one"
+// layoutSuffix is the chosen layout after the engine's name on a machine with more than one GPU; nothing on one.
+func layoutSuffix(f Facts) string {
+	if f.GpuCount < 2 {
+		return ""
 	}
-	return f.Layout
+	return " · " + layoutLabel(f)
 }
 
-// layoutRows are the chosen engine's layouts on this machine (Python decides which can run).
-func layoutRows(f Facts) []seam.LayoutRow {
-	if p := f.engineRow(); p != nil {
-		return p.Layouts
+func (f Facts) layout() string { return cmp.Or(f.Layout, "one") }
+
+// gpusWord is " (2 GPUs)" for a split; "" for one GPU (its label says so) or an older Python's row.
+func gpusWord(l seam.LayoutRow) string {
+	if l.Gpus < 2 {
+		return ""
 	}
-	return nil
+	return fmt.Sprintf(" (%d GPUs)", l.Gpus)
 }
 
-// layoutActions are part of the chip choice when the machine has more than one GPU.
-func layoutActions(f Facts) []action {
+// layoutLegend is the GPUs and what each layout does to decode speed, once, above the engines (more than one GPU).
+func layoutLegend(f Facts) string {
+	if f.GpuCount < 2 || f.Providers == nil {
+		return ""
+	}
+	b := stWarn.Render(fmt.Sprintf("%d GPUs: %s", f.GpuCount, f.MultiGpu)) + "\nThe layout is how the engine uses them; pick it under the engine:\n"
+	seen := map[string]bool{}
+	for _, p := range f.Providers.Providers {
+		for _, l := range p.Layouts {
+			if !seen[l.ID] && l.Speed != "" {
+				seen[l.ID], b = true, b+"  "+l.Label+": "+stMuted.Render(l.Speed)+"\n"
+			}
+		}
+	}
+	return b + "\n"
+}
+
+// refusals are an engine's layouts that cannot run here, grouped by why: the reasons in order, the labels per reason.
+func refusals(p seam.ProviderRow) (why []string, by map[string][]string) {
+	by = map[string][]string{}
+	for _, l := range p.Layouts {
+		if r := deref(l.Reason); !l.Available {
+			if by[r] == nil {
+				why = append(why, r)
+			}
+			by[r] = append(by[r], l.Label)
+		}
+	}
+	return why, by
+}
+
+// layoutsHere is why an engine cannot run its other layouts here, one line per reason; "" on one GPU.
+func layoutsHere(f Facts, p seam.ProviderRow) (out string) {
+	why, by := refusals(p)
+	for _, r := range why {
+		if f.GpuCount > 1 {
+			out += "  " + stMuted.Render(strings.Join(by[r], " and ")+" not here: "+r) + "\n"
+		}
+	}
+	return out
+}
+
+// layoutActions are an engine's layouts under its row on a machine with more than one GPU: the ones it can run here
+// are picked with the engine; the others say not here in one short line (the sentence why is in the body).
+func layoutActions(f Facts, p seam.ProviderRow) (out []action) {
 	if f.GpuCount < 2 {
 		return nil
 	}
-	out := []action{{stWarn.Render(fmt.Sprintf("%d GPUs: %s", f.GpuCount, f.MultiGpu)), "", ""}}
-	for _, l := range layoutRows(f) {
+	for _, l := range p.Layouts {
 		chosen := "  "
-		if l.ID == f.layout() {
+		if p.Provider == f.Engine && l.ID == f.layout() {
 			chosen = stAccent.Render("● ")
 		}
 		if l.Available {
-			out = append(out, action{chosen + "Use " + l.Label, "layout", l.ID})
-		} else {
-			out = append(out, action{stMuted.Render(chosen + "Use " + l.Label + " · " + deref(l.Reason)), "", ""})
+			out = append(out, action{"    " + chosen + l.Label + stMuted.Render(gpusWord(l)), "enginelayout", p.Provider + "|" + l.ID})
 		}
+	}
+	why, by := refusals(p)
+	for _, r := range why {
+		out = append(out, note("      "+strings.Join(by[r], ", ")+": not here"))
 	}
 	return out
 }
@@ -1060,55 +1111,6 @@ func layoutActions(f Facts) []action {
 // --- 3 Speed limit -----------------------------------------------------------------------------------------
 
 // --- 4 Measure ---------------------------------------------------------------------------------------------
-
-func measureLine(f Facts) (string, string) {
-	if f.alive() {
-		p := seam.ReadProgress(f.Tail)
-		done, total := p.Done, p.Total
-		now := ""
-		for key, state := range seam.StageEvents(f.Tail) {
-			if state == "running" {
-				now = " · " + stageWord(key) + "…"
-			}
-		}
-		if p.Setup {
-			return "run", "starting…"
-		}
-		if total == 0 {
-			return "run", "running" + now
-		}
-		return "run", fmt.Sprintf("%s  %d of %d%s", bar(float64(done)/float64(total), 20), done, total, now)
-	}
-	if key := f.failedStage(); key != "" {
-		return "fail", "stopped: " + stageWord(key) + " failed"
-	}
-	if f.Run != nil && f.Run.Measure != nil && f.Run.Measure.Status == "failed" {
-		return "fail", "measuring failed: " + deref(f.Run.Measure.Reason)
-	}
-	switch {
-	case f.Run == nil && f.Path == "":
-		return "open", "needs step 1"
-	case f.Run == nil:
-		return "open", "not started · enter to plan and measure"
-	case !f.outputDone():
-		last := "nothing"
-		if f.Run.LatestStage != nil {
-			last = word(plainStage, *f.Run.LatestStage)
-		}
-		return "crossed", "stopped after " + last
-	case f.Run.Measure != nil && f.Run.Measure.Status == "measured" && deref(f.Run.Measure.Probe) == "absent":
-		// timing is what the result needs; the open probe request is named, never hidden
-		return "pass", "run " + shortRun(f.Run.ID) + with(f.Run.Measure) + " · timing " + mark("pass") + " · no probe for this chip"
-	case len(f.Run.Blocked) > 0 && f.Run.Measure != nil && f.Run.Measure.Status == "skipped":
-		return "wait", "planned · not measured here: " + deref(f.Run.Measure.Reason) + " · enter for what to run"
-	case len(f.Run.Blocked) == 1:
-		n := f.Run.Blocked[0]
-		return "wait", fmt.Sprintf("planned · needs %s (%s)", word(plainNeed, n.Need), n.Request)
-	case len(f.Run.Blocked) > 1:
-		return "wait", "planned · needs building-block tests and a timing trace"
-	}
-	return "pass", "run " + shortRun(f.Run.ID) + with(f.Run.Measure) + " · " + measuredMarks(f.Run.Measured)
-}
 
 // shortRun is the run's number, the part after the model and chip.
 func shortRun(id string) string {
@@ -1163,23 +1165,6 @@ func resultLine(f Facts) (string, string) {
 
 // compareDoing words what the compare job is doing for the role in flight.
 var compareDoing = map[string]string{"search": "searching kernels", "ab": "timing the whole model", "time": "timing in the model"}
-
-func resultActions(f Facts) []action {
-	out := []action{}
-	switch {
-	case f.comparing():
-		out = append(out, action{"Stop comparing (x)", "stop", ""})
-	case f.outputDone() && !f.alive():
-		name := f.runProvider()
-		if p := f.provider(name); p != nil && p.Available && p.Capture.Method != nil {
-			out = append(out, action{"Time each role in " + name, "roletime", ""})
-		}
-	}
-	if f.Run != nil && f.Run.Report != nil {
-		out = append(out, action{"Open the full report (" + *f.Run.Report + ")", "report", ""})
-	}
-	return out
-}
 
 // --- Workload -------------------------------------------------------------------------------------------------
 

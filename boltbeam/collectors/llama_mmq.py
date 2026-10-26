@@ -9,7 +9,7 @@ import hashlib, math, pathlib, re, subprocess
 from typing import Any
 
 from boltbeam.collectors.instruction_path import template
-from boltbeam.collectors.metal_native import GGML_TYPES
+from boltbeam.collectors.gemv_reference import GGML_TYPES
 
 
 def constraints(root:pathlib.Path, sm_count:int, build_commit:str | None = None) -> dict[str, Any] | None:

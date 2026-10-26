@@ -70,6 +70,7 @@ import argparse
 import json
 import pathlib
 import shutil
+import platform
 import sys
 import time
 from boltbeam.workflow.repeat_bands import for_decode
@@ -83,14 +84,15 @@ from boltbeam.profile.loaders import profile_from_model
 from boltbeam.profile import weight_ledger
 from boltbeam.report.html import STAGES, next_step, roofline_kernels, stage_state
 from boltbeam.search import role_compare
-from boltbeam.collectors import gpu_telemetry, providers, tinygrad_role_time
+from boltbeam.collectors import gpu_telemetry, providers, tinygrad_role_time, vendor_capture
 from boltbeam.target import targets as reg
 from boltbeam.target import vendors
 from boltbeam.target.targets import get_target
 from boltbeam.workflow import analyze_run, autoscan_run, ingest_probe_run, ingest_timing_run, load_run, output_run
 from boltbeam.workflow.autoscan import _hardware_profile
 from boltbeam.workflow import prefill_audit, progress
-from boltbeam.workflow.common import load_manifest, read_json
+from boltbeam.collectors.attribution import NotSplitByRole
+from boltbeam.workflow.common import load_manifest, read_json, write_json
 from boltbeam.vocab import Workload
 
 SCHEMA = "boltbeam.tui.v1"
@@ -718,7 +720,7 @@ def cross_check(run:pathlib.Path, bandwidth_gbs:float | None) -> dict[str, Any] 
 
 
 def probe_rows(run:pathlib.Path, bandwidth_gbs:float | None) -> dict[str, Any]:
-  """BoltBeam's own GEMV per role (the building-block probe, collectors/metal_native.py): GB/s and the share of
+  """BoltBeam's own GEMV per role (the building-block probe, collectors/boltbeam_gemv.py): GB/s and the share of
   peak, as a reference row group. Not the engine's kernel. absent names what Metal cannot report, so nobody asks
   for a probe this GPU cannot give."""
   ev = _optional(run, "probe_evidence.json")
@@ -1051,7 +1053,7 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
          # with the Setup choice of measurement (in-model, generic, or auto), resolved here and recorded with it
          "capture": {**providers.capture_method(provider, target.backend, measurement),
                      "measurement": providers.resolve_measurement(provider, target.backend, measurement)}}
-  offered = {l["id"]: l for l in lay.layouts(len(devs), provider)}
+  offered = {l["id"]: l for l in lay.layouts(len(devs), provider, target.backend)}
   if layout not in offered or not offered[layout]["available"]:
     why = offered[layout]["reason"] if layout in offered else f"{lay.LAYOUTS.get(layout, layout)} needs more than one GPU"
     return out | {"reason": f"{provider} cannot run {lay.LAYOUTS.get(layout, layout)} here: {why}", "command": "pick one GPU"}
@@ -1114,7 +1116,8 @@ def _measure_steps(args, plan:dict[str, Any], say=lambda _: None) -> list[tuple[
                                                        reason=plan["reason"], command=plan["command"],
                                                        provider=provider, layout=layout, gpus=gpus, batches=batches,
                                                        capture=capture))]
-  from boltbeam.collectors import llama_bench_decode, metal_native
+  from boltbeam.collectors import boltbeam_gemv, llama_bench_decode, metal_native
+  from boltbeam.workflow.common import run_dir, write_json
   run = pathlib.Path(args.run)
   args.timing = str(run / "timing_trace.json")
   again = f"pipeline {args.model} --run {args.run} --target {args.target} --measure auto --provider {provider}"
@@ -1138,27 +1141,24 @@ def _measure_steps(args, plan:dict[str, Any], say=lambda _: None) -> list[tuple[
                               capture=capture)
     return (f"measure_{key}", step)
 
-  out_dir = lambda: metal_native.run_dir(args.run)  # noqa: E731
+  out_dir = lambda: run_dir(args.run)  # noqa: E731
   backend = get_target(args.target).backend
   is_metal = backend == "Metal"
-  # the building-block probes are BoltBeam's own kernels (adapter 0, Metal and CUDA): they belong to no provider.
-  # On CUDA a machine without the driver or nvcc records the probe absent with its reason; the timing still runs.
+  # the building-block probes are BoltBeam's own kernels (adapter 0, collectors/boltbeam_gemv.py) on any backend it
+  # has a source for: they belong to no provider. A machine that cannot run them (no driver, no compiler, not the
+  # run's chip) records the probe absent with its reason; the timing still runs.
   probe_state:dict[str, Any] = {}
 
-  def cuda_probe():
+  def gemv_probe():
     try:
-      metal_native.measure(out_dir(), only="probe")
+      (metal_native.measure(out_dir(), only="probe") if is_metal else
+       write_json(run / "probe_evidence.json", boltbeam_gemv.collect_probe_evidence(out_dir())))
     except llama_bench_decode.CannotMeasure as exc:
       probe_state.update(probe="absent", reason=f"no building-block probe: {exc.reason}")
       return
     probe_state.update(probe="measured", reason=None)
 
-  if is_metal:
-    probe = [guarded("probe", lambda: metal_native.measure(out_dir(), only="probe"), probe="measured", last=False)]
-  elif backend == "CUDA":
-    probe = [guarded("probe", cuda_probe, probe="measured", last=False)]
-  else:
-    probe = []
+  probe = [guarded("probe", gemv_probe, probe="measured", last=False)] if backend in boltbeam_gemv.SOURCES else []
   if getattr(args, "workload", "decode") in ("prefill", "session", "replay"):  # collectors/prefill.py, session.py, replay.py
     from boltbeam.collectors import prefill as pf, replay as rp, session as ss
     root = pathlib.Path(args.tinygrad_root).expanduser() if getattr(args, "tinygrad_root", None) else None
@@ -1243,7 +1243,7 @@ def _load(args) -> dict[str, Any]:
     run.mkdir(parents=True, exist_ok=True)
     contexts = (rp.stage(run, getattr(args, "replay_trace", None), getattr(args, "server_argv", None), getattr(args, "replay_pairs", None)),)
   if getattr(args,'forced_replay',False) or (args.workload=='replay' and args.provider=='vllm'
-      and getattr(args,'analyze',False) and get_target(args.target).backend=='CUDA'):
+      and getattr(args,'analyze',False) and vendor_capture.windowed(get_target(args.target).backend)):
     if args.workload!='replay' or args.provider!='vllm':raise ValueError('--forced-replay requires vLLM replay')
     (pathlib.Path(args.run)/'forced_replay_request.json').write_text('{}')
   result = load_run(args.model, args.run, target_id=args.target, model_id=args.id, workload=args.workload,
@@ -1327,15 +1327,32 @@ def pipeline(args, out=sys.stdout) -> int:
     expect, source = progress.expected(where, counted_ids)
     say("pipeline expect: " + ",".join(f"{s:.1f}" for s in expect))
     say(f"pipeline expect source: {source}")
-  times:dict[str, float] = {}
   run_path = pathlib.Path(args.run)
+  if (code := _run_stages(steps, ids, run_path, get_target(args.target).backend, where, plan, say)) != 0:
+    return code
+  say(f"pipeline done: {args.run}")
+  return 0
+
+
+def _run_stages(steps, ids, run_path:pathlib.Path, backend:str, where:str, plan, say) -> int:
+  """Run the pipeline's stages in order: 1 at the first that fails, its sentence said. A stage that refuses to split
+  the run by role (attribution.NotSplitByRole) is skipped, said and recorded; the stages after it still run (search
+  says it has no kernel to compare), so the run's measured step and its report stand."""
+  times:dict[str, float] = {}
+  not_split = None
   for (key, step), sid in zip(steps, ids):
+    if key == "search" and not_split:  # no roles, so no kernel to compare: said, as with no per-role time here
+      step = lambda: role_compare.skip(run_path, "the run is not split by role, so there is no kernel to compare with", say)  # noqa: E731
     say(f"stage {key}: start")
     progress.listen(lambda done, total, key=key: say(f"stage {key}: progress {done}/{total}"))
     began = time.monotonic()
     try:
-      with gpu_telemetry.measurement_clock(run_path, key, backend=get_target(args.target).backend):
+      with gpu_telemetry.measurement_clock(run_path, key, backend=backend):
         step()
+    except NotSplitByRole as exc:  # the run stands whole: recorded, said, and the report still written
+      not_split = str(exc)
+      _not_split(run_path, not_split)
+      say(f"stage {key}: skipped: {exc}")
     except Exception as exc:  # application boundary: the stage's own message is the fact the reader needs
       for line in failure_lines(key, exc):
         say(line)
@@ -1346,8 +1363,15 @@ def pipeline(args, out=sys.stdout) -> int:
     progress.save(run_path, where, times, finished=False)
     say(f"stage {key}: done")
   progress.save(run_path, where, times, finished=plan is not None)
-  say(f"pipeline done: {args.run}")
   return 0
+
+
+def _not_split(run:pathlib.Path, why:str) -> None:
+  """measure_status.json says the run was not split by role, and why: the report shows it beside the whole step."""
+  status = run / MEASURE_STATUS
+  m = json.loads(status.read_text()) if status.exists() else {}
+  m.setdefault("capture", {})["reason"] = f"not split by role: {why}"
+  write_json(status, m)
 
 
 def failure_details(exc:BaseException) -> str | None:
@@ -1423,7 +1447,7 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
   can run on this machine (one GPU unless more are found)."""
   from boltbeam.workflow import layout as lay
   n = gpu_count if gpu_count is not None else len(lay.devices(_hardware_profile()["gpu"]))
-  rows = [{**p, "layouts": lay.layouts(n, p["provider"])} for p in providers.available(target, tinygrad_root=root, cached=True)]
+  rows = [{**p, "layouts": lay.layouts(n, p["provider"], target.backend)} for p in providers.available(target, tinygrad_root=root, cached=True)]
   return {"schema": SCHEMA, "kind": "providers", "target_id": target.target_id, "default": providers.DEFAULT,
           "gpu_count": n, "providers": rows}
 
@@ -1481,17 +1505,13 @@ def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | Non
       probe = lambda args, env: lay.run_probe(str(role_compare.fork_python(fork)), str(fork), args, env)  # noqa: E731
     from boltbeam.collectors import multi_gpu
     topology = multi_gpu.topology(target.backend) if len(devs) > 1 else {}
-    metal_read = None
-    if target.backend == "Metal" and sys.platform == "darwin":
-      from boltbeam.collectors import metal_bandwidth
-      metal_read = metal_bandwidth.measure_read_gbs
-    cuda_read = None
-    if target.backend == "CUDA":
-      from boltbeam.collectors import cuda_bandwidth
-      if cuda_bandwidth.find_nvcc():
-        cuda_read = cuda_bandwidth.measure_read_gbs
+    native_read = None
+    row = vendors.BY_BACKEND.get(target.backend)
+    if row is not None and row.bridge is not None and row.platform in (None, platform.system()):
+      from boltbeam.workflow import chips
+      native_read = lambda d: chips._probes(row.vendor, d)[0]()  # noqa: E731  the vendor's own read probe on that card
     facts = lay.measure_machine(devs, backend=target.backend, device_prefix=DEVICE_PREFIX.get(target.backend),
-                                probe=probe, topology=topology, metal_read=metal_read, cuda_read=cuda_read,
+                                probe=probe, topology=topology, native_read=native_read,
                                 fallback=lambda tid: get_target(tid).memory_bandwidth_gbs if tid else None,
                                 profile_read=profile_read,
                                 join=(lambda used: multi_gpu.join(joins, used)) if joins else None)
@@ -1741,10 +1761,20 @@ def saved(root:pathlib.Path) -> dict[str, Any]:
       rows.append({"id": d.name, "dir": str(d), "model_id": manifest.get("model_id"), "target_id": manifest.get("target_id"),
                    "provider": run_provider(d), "saved_at": rec.get("saved_at"), "tok_s": timing.get("tok_s"),
                    "pct_of_limit": pct, "workload": manifest.get("workload"), "measured": bool(res.get("measured")),
-                   "validation_failed": validation.get("status") == "failed",
+                   "validation_failed": validation.get("status") == "failed", "layout": _layout_words(d),
                    "roofline_pct": ((res.get("loss") or {}).get("replay") or {}).get("headline", {}).get("e_pct")})
   rows.sort(key=lambda r: r["saved_at"] or "", reverse=True)
   return {"schema": SCHEMA, "kind": "saved", "root": str(root), "runs": rows}
+
+
+def _layout_words(run:pathlib.Path) -> str | None:
+  """A run's GPU layout as the engine picker words it ("split by layer (2 GPUs)"), from its measure_status.json;
+  None for one GPU or a run that recorded none, so a one-GPU list reads as it always has."""
+  from boltbeam.workflow.layout import LAYOUTS
+  m = _optional(run, MEASURE_STATUS)
+  if (lay := m.get("layout")) in (None, "one") or lay not in LAYOUTS:
+    return None
+  return LAYOUTS[lay] + (f" ({m['gpus']} GPUs)" if m.get("gpus") else "")
 
 
 def clean_work(work:pathlib.Path, *, before:str, keep:list[str]) -> dict[str, Any]:
@@ -1870,7 +1900,7 @@ def main(argv:list[str] | None = None) -> int:
                       "each kernel alone) or auto (in-model when this machine has it, else generic)")
   p.add_argument("--no-search", action="store_true",
                  help="with --analyze: skip the per-role kernel search (a quick run)")
-  p.add_argument("--forced-replay", action="store_true", help="vLLM CUDA: scripted production capture, exact pairing and forced native repeats")
+  p.add_argument("--forced-replay", action="store_true", help="vLLM replay on a backend whose capture records a marked window (vendor_capture.windowed): scripted production capture, exact pairing and forced native repeats")
   p.add_argument("--replay-trace", default=None, help="a replay: a boltbeam.replay_trace.v1 file or a shape's name "
                                                       "(default: the default shape in data/replay_shapes.json)")
   p.add_argument("--server-argv", default=None, help="a replay: the user's llama-server command, as one string")

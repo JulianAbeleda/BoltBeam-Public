@@ -219,7 +219,7 @@ def _silu(a:float) -> float:
 
 class Reference:
   """The covered nodes computed one after another by BoltBeam alone: a weight node by pure-Python dequantize and dot
-  (metal_native.reference_row) on the model's bytes, an elementwise node by its op. Values from outside are the ones
+  (gemv_reference.reference_row) on the model's bytes, an elementwise node by its op. Values from outside are the ones
   BoltBeam bound, rounded to the dtype the kernel reads them in."""
 
   def __init__(self, nodes:list[str], quant:str, rows:int, cols:int, weights:Mapping[str, bytes], values:Mapping[str, list[float]]):
@@ -240,12 +240,12 @@ class Reference:
     """The value of `node` at output index i."""
     if node in self.values and node not in self.nodes:
       return self.values[node][i]
-    from boltbeam.collectors import metal_native as native
+    from boltbeam.collectors import gemv_reference
     row = graph()["nodes"][node]
     op = row["op"]
     if op == "gemv":
       x = self.full(row["reads"][0])
-      return native.reference_row(self.weights[node], self.quant, i, len(x), x)
+      return gemv_reference.reference_row(self.weights[node], self.quant, i, len(x), x)
     a = [self.at(v, i) for v in row["reads"]]
     if op == "silu_mul":
       return _silu(a[0]) * a[1]

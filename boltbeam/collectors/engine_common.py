@@ -62,8 +62,11 @@ def venv_env(python:str) -> dict[str, str]:
   if nvcc:
     bins.append(str(pathlib.Path(nvcc).parent))
   bins.extend(os.environ.get('PATH', '').split(os.pathsep))
+  # the checkout too: an engine's own subprocesses (vLLM's engine core) import boltbeam's hooks, and an engine's venv
+  # need not have boltbeam installed (a TUI run from a checkout found no module 'boltbeam')
+  checkout = str(RUNTIME.parents[1])
   return {"VIRTUAL_ENV": str(venv), "PATH": os.pathsep.join(dict.fromkeys(bins)),
-          "PYTHONPATH": os.pathsep.join([runtime, *([existing_pythonpath] if existing_pythonpath else [])]),
+          "PYTHONPATH": os.pathsep.join([runtime, checkout, *([existing_pythonpath] if existing_pythonpath else [])]),
           "BOLTBEAM_BUILD_LIMIT": "1"}
 
 

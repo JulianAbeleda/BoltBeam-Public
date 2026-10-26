@@ -4,7 +4,7 @@ no vendor profiler, on Metal (no Xcode), on CUDA and on AMD (HIP).
 An engine ships the shader source its decode runs. An adapter here reads that source from the installed engine
 (never a copy in BoltBeam), picks the kernel the engine would run for a role's weight format, states the engine's
 own dispatch geometry and argument layout, and hands the timer a KernelSpec on the model's real weight bytes. The
-timer compiles, checks the output against the pure-Python reference (metal_native), flushes, warms, times.
+timer compiles, checks the output against the pure-Python reference (gemv_reference), flushes, warms, times.
 
 ADAPTERS, one row per (engine, backend):
     ("llama.cpp", "Metal")   ggml's Metal backend: the .metal text embedded in libggml-metal (Homebrew) or a
@@ -25,7 +25,7 @@ ADAPTERS, one row per (engine, backend):
 tinygrad has no adapter: the fork generates its kernels per shape at run time inside a model graph, so there is no
 shipped source to compile; it keeps its own timing (collectors/tinygrad_role_time.py). Not cheap, so not built.
 
-Weight formats: the block layouts metal_native.BLOCK_ELEMS/BLOCK_BYTES and its reference know (the formats in metal_native.GGML_TYPES). A
+Weight formats: the block layouts gemv_reference.BLOCK_ELEMS/BLOCK_BYTES and its reference know (the formats in gemv_reference.GGML_TYPES). A
 role in another format is a not_measured row saying "no <quant> adapter"; the table shows it as not timed, with the
 reason, and leaves it out of the floor rule and the sums (tinygrad_role_time.loss), so the roles that were timed
 are still measured.
@@ -65,9 +65,9 @@ class NoEngineSource(RuntimeError):
 def _reference(quant:str, rows:int, cols:int, weights:bytes, x:list[float], words:str | None = None) -> Check:
   """The check against the pure-Python dot on `x`: the vector as the kernel reads it (f32 on Metal, the dequantized
   q8_1 vector on CUDA and HIP), said in `words`."""
-  from boltbeam.collectors import metal_native as native
-  return Check(indices=native.check_rows(rows), reference=lambda r: native.reference_row(weights, quant, r, cols, x),
-               rel_tol=native.TOLERANCE, **({"words": words} if words else {}))
+  from boltbeam.collectors import gemv_reference
+  return Check(indices=gemv_reference.check_rows(rows), reference=lambda r: gemv_reference.reference_row(weights, quant, r, cols, x),
+               rel_tol=gemv_reference.TOLERANCE, **({"words": words} if words else {}))
 
 
 # --- llama.cpp on Metal: ggml's Metal backend ------------------------------------------------------------------------
@@ -231,13 +231,13 @@ def ggml_metal_spec(text:str, quant:str, rows:int, cols:int, weights:bytes, x:li
   """ggml's Metal mul_mv kernel for one weight of rows x cols against one vector, dispatched as ggml does: the
   argument struct, the function constants, the grid, the threadgroup and its memory (METAL_SMEM). nsg and nr0 are
   the source's own N_SG_/N_R0_ defines."""
-  from boltbeam.collectors import metal_native as native
+  from boltbeam.collectors import gemv_reference
   name = ggml_kernel(text, quant)
   if name is None:
     raise NoEngineSource(f"ggml's Metal source has no {quant} vector kernel")
   nsg, nr0, fc = _define(text, f"N_SG_{quant}"), _define(text, f"N_R0_{quant}"), _define(text, "FC_MUL_MV")
-  block = native.BLOCK_BYTES[quant]
-  nb01 = (cols // native.BLOCK_ELEMS[quant]) * block
+  block = gemv_reference.BLOCK_BYTES[quant]
+  nb01 = (cols // gemv_reference.BLOCK_ELEMS[quant]) * block
   shared = quant in METAL_ROWS_SHARED
   smem = 32 * 4 * nr0 if shared else 0
   args = struct.pack(_KARGS, cols, rows, 1, block, nb01, nb01 * rows, nb01 * rows,
@@ -257,7 +257,7 @@ def ggml_metal_spec(text:str, quant:str, rows:int, cols:int, weights:bytes, x:li
 # --- llama.cpp's mmvq: ggml-cuda's source, built for CUDA or HIP ----------------------------------------------------
 
 _MMVQ_CANDIDATES = ("~/env/llama.cpp/ggml/src/ggml-cuda", "~/llama.cpp/ggml/src/ggml-cuda", "/usr/local/src/llama.cpp/ggml/src/ggml-cuda")
-from boltbeam.collectors.metal_native import GGML_TYPES as GGML_TYPE  # noqa: E402  the one ggml.h type table (metal_native)
+from boltbeam.collectors.gemv_reference import GGML_TYPES as GGML_TYPE  # noqa: E402  the one ggml.h type table (gemv_reference)
 Q8_1_BLOCK, Q8_1_BYTES = 32, 36  # block_q8_1: half d, half s, 32 int8 (ggml-common.h)
 MATRIX_ROW_PADDING = 512  # ggml-cuda common.cuh: the quantized vector is padded to this many columns
 MMVQ_RULE = ("ggml-cuda mmvq.cu mul_mat_vec_q<type, ncols_dst=1, has_fusion=false, small_k, halve_iters>: grid (ceil(rows / "
@@ -482,10 +482,10 @@ def mmvq_geometry(text:str, vecdotq:str, common:str, quant:str, rows:int, cols:i
   the source's own constants and rules: vdr from vecdotq.cuh, qi = QK_K / (4 x QR) from ggml-common.h, the table
   from get_device_table_id(cc), its calc_nwarps case, should_use_small_k's RDNA rule, should_halve_iters. warp is
   the device's (ggml_cuda_info's warp_size)."""
-  from boltbeam.collectors import metal_native as native
+  from boltbeam.collectors import gemv_reference
   vdr = _define(vecdotq, f"VDR_{quant}_Q8_1_MMVQ")
   qr = _define(common, f"QR{quant.lstrip('I')[1:]}")  # QR4_K for Q4_K, QR4_XS for IQ4_XS
-  elems = native.BLOCK_ELEMS[quant]  # the block's weights: QK_K for the K-quants, QK8_0 for Q8_0 (ggml-common.h)
+  elems = gemv_reference.BLOCK_ELEMS[quant]  # the block's weights: QK_K for the K-quants, QK8_0 for Q8_0 (ggml-common.h)
   qi = elems // (4 * qr)
   table, table_rule = mmvq_table(text, cuda_common, cc)
   nwarps, nwarps_rule = mmvq_nwarps(text, table, quant)
@@ -549,7 +549,7 @@ def mmvq_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:bytes
   ggml_cuda_mul_mat_vec_q passes it (ids null, no fusion, one channel, one sample). cc is the GPU's compute
   capability as ggml numbers it (cuda_device.ggml_compute_capability): the parameter table and halve_iters follow
   the engine's own rules for it."""
-  from boltbeam.collectors import metal_native as native
+  from boltbeam.collectors import gemv_reference
   src_dir = pathlib.Path(src_dir)
   text = mmvq_text(src_dir)
   vecdotq, common = (src_dir / "vecdotq.cuh").read_text(), (src_dir.parent / "ggml-common.h").read_text()
@@ -568,7 +568,7 @@ def mmvq_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:bytes
   source = text + f"\n// BoltBeam: instantiate the kernel the engine runs for {quant}, one vector\n" \
                   f"static const void* const bb_keep_{quant.lower()} = (const void*) {keep};\n"
   y = quantize_q8_1(x)
-  blocks_per_row = cols // native.BLOCK_ELEMS[quant]
+  blocks_per_row = cols // gemv_reference.BLOCK_ELEMS[quant]
   padded_blocks = len(y) // Q8_1_BYTES
   u32 = lambda v: ("value", struct.pack("<I", v))  # noqa: E731
   args = [weights, y, ("value", bytes(8)), ("value", bytes(48)), rows * 4,  # vx, vy (q8_1), ids = null, fusion = {}, dst
@@ -647,7 +647,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
             step:Callable[[int, int], None] | None = None, out:str | None = None, bridge=None) -> dict[str, Any]:
   """Time every weight role's kernel of this engine alone, on the model's real bytes, and write the per-role trace
   (boltbeam.timing_trace.v1) to run/out. The token the kernels tie out against is step 4's measured whole step."""
-  from boltbeam.collectors import llama_bench_decode, metal_native as native, providers
+  from boltbeam.collectors import boltbeam_gemv, llama_bench_decode, gemv_reference, providers
   from boltbeam.profile.gguf import read_gguf_layout
   from boltbeam.workflow import tie_out
   from boltbeam.workflow.common import load_manifest, read_json
@@ -691,7 +691,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
         say(f"role {i} of {len(roles)}: {r['role']} {quant} {rows}x{cols}")
         row:dict[str, Any] = {"scope": "kernel", "role": r["role"], "quant": quant, "shape": [rows, cols], "calls": r["count"],
                               "role_source": ROLE_SOURCE, "tensor": r.get("tensor_name"), "time_source": METHOD}
-        elems = native.BLOCK_ELEMS.get(quant)
+        elems = gemv_reference.BLOCK_ELEMS.get(quant)
         if elems is None:  # the table shows such a row as "not timed: <reason>", outside the floor rule and the sums
           row.update(status="not_measured", wall_us=0.0, reason=f"no {quant} adapter: BoltBeam's kernel timer has no {quant} block layout")
         elif cols % elems:
@@ -701,16 +701,15 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
         if row.get("status"):
           rows_out.append(row)
           continue
-        size = rows * (cols // elems) * native.BLOCK_BYTES[quant]
-        if size + kernel_timer.FLUSH[backend]["bytes"] > bridge.working_set_bytes * native.WORKING_SET_SHARE:
+        size = rows * (cols // elems) * gemv_reference.BLOCK_BYTES[quant]
+        if size + kernel_timer.FLUSH[backend]["bytes"] > bridge.working_set_bytes * boltbeam_gemv.WORKING_SET_SHARE:
           row.update(status="not_measured", reason=f"{size / 2**30:.1f} GiB of weights does not fit the GPU's working set", wall_us=0.0)
           rows_out.append(row)
           continue
-        tensor, offset = native.tensor_for(quant, rows, cols, tensors, r.get("tensor_name"), r.get("n_expert"))
+        tensor, offset = gemv_reference.tensor_for(quant, rows, cols, tensors, r.get("tensor_name"), r.get("n_expert"))
         with open(model, "rb") as f:
           f.seek(data_start + offset)
           weights = f.read(size)
-        from boltbeam.collectors import boltbeam_gemv
         x = boltbeam_gemv.vector(f"{r['role']}:{quant}", cols)
         spec = setup["spec"](setup, quant, rows, cols, weights, x)
         got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries, floor_us=floor_us, dram_gbs=peak_gbs)

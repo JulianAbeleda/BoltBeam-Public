@@ -29,8 +29,9 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   command=[*vd.argv(model,[context],[batch],tokens=tokens,reps=1,once=tokens),
            *vllm_flags(run,context,capture=True)]
   if '--tensor-parallel-size' in command:
-    raise RuntimeError("vLLM's per-role decode of a tensor-parallel split is not measured yet: its kernels run in one "
-                       "worker per GPU, while the capture marks each decode step in the engine's process")
+    from boltbeam.collectors.attribution import NotSplitByRole
+    raise NotSplitByRole("vLLM's per-role decode of a tensor-parallel split is not measured yet: its kernels run in one "
+                         "worker per GPU, while the capture marks each decode step in the engine's process")
   env={**ec.venv_env(vd.python()),**vd.CAPTURE_ENV}
   def paired(extra):
     vendor_capture.capture(target.backend,[*command,*extra,'--capture-pass','paired'],raw,env=env,profiler_range=True,device=run_gpu(run))

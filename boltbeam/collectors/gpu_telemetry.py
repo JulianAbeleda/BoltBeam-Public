@@ -39,13 +39,16 @@ IDLE = 0x1
 class _Nvml:
   """The few NVML calls the sampler makes, one reviewed boundary."""
 
-  def __init__(self, index:int):
+  def __init__(self, device:int | str):
+    """By NVML index, or by PCI address (a hardware-profile GPU's pci_bus_id), as AmdSysfs finds its card."""
     self.lib = ctypes.CDLL(LIBRARY)
     if self.lib.nvmlInit_v2() != 0:
       raise OSError("nvmlInit failed")
-    self.handle = ctypes.c_void_p()
-    if self.lib.nvmlDeviceGetHandleByIndex_v2(ctypes.c_uint(index), ctypes.byref(self.handle)) != 0:
-      raise OSError(f"no NVML device {index}")
+    self.handle, self.device = ctypes.c_void_p(), device
+    got = (self.lib.nvmlDeviceGetHandleByPciBusId_v2(device.encode(), ctypes.byref(self.handle)) if isinstance(device, str)
+           else self.lib.nvmlDeviceGetHandleByIndex_v2(ctypes.c_uint(device), ctypes.byref(self.handle)))
+    if got != 0:
+      raise OSError(f"no NVML device {device}")
 
   def _uint(self, fn:str, *args) -> int | None:
     v = ctypes.c_uint()
@@ -391,7 +394,8 @@ HELD = 0.98  # a throttle reason with the SM clock at or above this share of the
 
 
 def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None, top_mhz:float | None = None,
-              memory_total:float | None = None, witness:dict[str, Any] | None = None) -> dict[str, Any]:
+              memory_total:float | None = None, witness:dict[str, Any] | None = None,
+              clock_term:str | None = None) -> dict[str, Any]:
   """The samples as one record: SM clock mean, min and max (MHz), power mean and max, temperature max, and the
   throttle reasons seen with the share of samples each was set in. The driver sets a reason (a software power cap)
   while the clock stays where it was, so a sample counts as throttled only when its clock is also below HELD of the
@@ -427,6 +431,8 @@ def summarize(samples:list[dict[str, Any]], *, power_limit_w:float | None = None
     out["state"] = True
     if witness is not None:
       out["gpu_witness"] = witness
+  if clock_term:  # the vendor's word for the clock sampled (its row's core_clock term)
+    out["clock_term"] = clock_term
   out["words"] = state_words(every, witness) if out.get("state") else words(out)
   return out
 
@@ -445,7 +451,7 @@ def words(s:dict[str, Any]) -> str:
   if not s.get("sm_mhz"):
     return s.get("reason") or "no clock samples"
   c = s["sm_mhz"]
-  text = f"SM clock {c['mean']:.0f} MHz mean ({c['min']}-{c['max']}) over {s['samples']} busy samples"
+  text = f"{s.get('clock_term') or 'GPU clock'} {c['mean']:.0f} MHz mean ({c['min']}-{c['max']}) over {s['samples']} busy samples"
   if s.get("power_w"):
     text += f", {s['power_w']['mean']:.0f} W mean, {s['power_w']['max']:.0f} W max"
     if s.get("power_limit_w"):
@@ -473,15 +479,17 @@ class Unsampled:
 
 
 def source_for(device:dict[str, Any] | None):
-  """The telemetry source for one hardware-profile GPU, from its vendor's row (chips._vendors() "telemetry"): the
-  amdgpu sysfs for an AMD card, found by its PCI address; None for NVIDIA, whose library Telemetry opens by index
-  (the scan's order is NVML's). A vendor with no source, or a card not found, is Unsampled with the reason. No
+  """The telemetry source for one hardware-profile GPU, from its vendor's row (chips._vendors() "telemetry"), found
+  by its PCI address: NVML for an NVIDIA card, the amdgpu sysfs for an AMD one. A vendor with no source, or a card not found, is Unsampled with the reason. No
   device (a run with no hardware profile) is None, as before the profile named the GPU."""
   if not device:
     return None
+  from boltbeam.target.vendors import vendor
   from boltbeam.workflow.chips import NoVendorRow, vendor_row
   try:
-    return vendor_row(device.get("vendor"), "telemetry")(device)
+    source = vendor_row(device.get("vendor"), "telemetry")(device)
+    source.clock_term = vendor(device.get("vendor")).term("core_clock")
+    return source
   except (NoVendorRow, OSError, KeyError, AttributeError, ctypes.ArgumentError) as exc:
     return Unsampled(f"no clock samples: {exc}")
 
@@ -563,7 +571,7 @@ class Telemetry:
     rows = self.window(t0, t1) if t0 is not None and t1 is not None else self.samples
     clocks = [s["sm_mhz"] for s in self.samples if s.get("sm_mhz") and not (s.get("reasons") or 0) & IDLE]
     return summarize(rows, power_limit_w=self._limit, top_mhz=max(clocks) if clocks else None, memory_total=self._total,
-                     witness=self.witness(t0, t1))
+                     witness=self.witness(t0, t1), clock_term=getattr(self._nvml, "clock_term", None))
 
   def witness(self, t0:float | None = None, t1:float | None = None) -> dict[str, Any] | None:
     """The source's own witness in the window (AppleState's Powermetrics); None for a source with none."""
@@ -583,7 +591,7 @@ POLICY_WORDS = {
 }
 
 
-def clock_policy(device:int = 0, *, run=subprocess.run) -> dict[str, Any]:
+def clock_policy(device:int | str = 0, *, run=subprocess.run) -> dict[str, Any]:
   """Which policy a measurement here can hold, decided by asking the driver tool for each without changing anything:
   a clock reset (-rgc) is allowed only to a user who may set clocks. Fixed clock when it is; else fixed power (the
   board's own limit, which no run changes); the record says which and why."""

@@ -18,7 +18,7 @@ import shutil
 import subprocess
 from typing import Any, Callable
 
-from boltbeam.collectors import cuda_compute
+from boltbeam.collectors import path_rates
 from boltbeam.target import targets as reg
 from boltbeam.target import vendors
 from boltbeam.target.vendors import NoVendorRow  # noqa: F401  (re-exported: chips.NoVendorRow)
@@ -29,7 +29,7 @@ Measure = Callable[[], dict[str, Any]]
 _SMI_FACTS = "driver_version,clocks.max.sm,clocks.max.memory,power.limit"
 # whole runs of the read probe a scan makes: their spread at the best launch shape is the bandwidth's uncertainty,
 # which the per-role checks need (a launch cannot read faster than the bandwidth); one run has none, and every such
-# check would then say not checked (cuda_bandwidth.repeated, metal-bandwidth --runs)
+# check would then say not checked (read_bandwidth.repeated, metal-bandwidth --runs)
 READ_RUNS = 3
 
 
@@ -55,33 +55,33 @@ def _nvidia_smi_facts(index:int = 0) -> dict[str, Any]:
           "power_limit_w": num(cells[3])}
 
 
-def _amd_probes(pci_bus_id:str | None) -> tuple[Measure, Measure]:
-  """The read and matrix probes on the scanned AMD GPU, opened through HIP by its PCI address."""
-  from boltbeam.collectors import cuda_bandwidth, hip_compute
-  from boltbeam.runtime.hip_device import Hip, index_of
+def _bridge_probes(row:vendors.Vendor, pci_bus_id:str | None) -> tuple[Measure, Measure]:
+  """The read and matrix probes on a scanned discrete GPU, for any vendor with a kernel bridge: the bridge opened on
+  the card at its PCI address (the bridge module's index_of: a runtime numbers GPUs in its own order), the shared read
+  probe (read_bandwidth) through it, and the row's own matrix probe (its compute module's measure_paths)."""
+  from boltbeam.collectors import read_bandwidth
   if not pci_bus_id:
-    raise RuntimeError("the scan did not report the GPU's PCI address, which the HIP probes open it by")
+    raise RuntimeError(f"the scan did not report the GPU's PCI address, which the {row.backend} probes open it by")
+  index_of = vendors.resolve(row.bridge.rsplit(":", 1)[0] + ":index_of")
   def read() -> dict[str, Any]:
-    hip = Hip(index_of(pci_bus_id))
+    bridge = vendors.resolve(row.bridge)(index := index_of(pci_bus_id))
     try:
-      return cuda_bandwidth.measure_read_gbs(hip.device_index, bridge=hip)
+      return read_bandwidth.measure_read_gbs(index, bridge=bridge)
     finally:
-      hip.close()
-  return read, lambda: hip_compute.measure_paths(index_of(pci_bus_id))
+      bridge.close()
+  return read, lambda: vendors.resolve(row.profile.compute).measure_paths(index_of(pci_bus_id))
 
 
 def _probes(vendor:str, device:dict[str, Any] | None = None) -> tuple[Measure, Measure]:
-  """The read-bandwidth and matrix-rate probes for this vendor's GPU, all BoltBeam's own."""
+  """The read-bandwidth and matrix-rate probes for this vendor's GPU, all BoltBeam's own: a Mac's Metal probes (one
+  unified-memory GPU, no PCI address), else the vendor row's bridge on the scanned card."""
   if vendor == "apple":
     from boltbeam.collectors import metal_bandwidth as m
     return m.measure_read_gbs, m.measure_matrix_tflops
-  if vendor == "nvidia":
-    from boltbeam.collectors import cuda_bandwidth as c
-    from boltbeam.collectors import cuda_compute
-    return c.measure_read_gbs, cuda_compute.measure_paths
-  if vendor == "amd":
-    return _amd_probes((device or {}).get("pci_bus_id"))
-  raise RuntimeError(f"no BoltBeam probe for {vendor or 'this'} GPUs yet")
+  row = vendors.VENDORS.get(vendor)
+  if row is None or row.bridge is None or row.profile is None:
+    raise RuntimeError(f"no BoltBeam probe for {vendor or 'this'} GPUs yet")
+  return _bridge_probes(row, (device or {}).get("pci_bus_id"))
 
 
 # What BoltBeam knows per GPU vendor is one row each in target/vendors.py; _vendors() is that registry in the scan's
@@ -139,8 +139,8 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
                                # cold burst, sustained series, the regime between them, and the measured uncertainty
                                **{k: read.get(k) for k in ("regime", "cold_gbs", "sustained_gbs", "shape_spread", "drift", "uncertainty")
                                   if read.get(k) is not None}},
-      # a probe of every matrix path (cuda_compute) keeps each path's rate and clock; the fp16-only probe a lower bound
-      "matrix_tflops": (v["compute"] if not apple else cuda_compute).fact_source(matrix, scope=scope, today=today)
+      # a probe of every matrix path (the row's compute module) keeps each path's rate and clock; the fp16-only probe a lower bound
+      "matrix_tflops": path_rates.fact_source(matrix, scope=scope, today=today)
                        if matrix.get("paths") else
                        {"kind": "measurement", "bound": "lower", "scope": scope, "method": matrix["method"],
                         "value_tflops": matrix["tflops"], "dtype": "fp16", "note": matrix["note"], "observed_at": today},
@@ -157,7 +157,7 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
     "vram_bytes": None if apple else device.get("memory_bytes"), "vector_load_bits": 128,
     "compute_units": None if apple else v["compute_units"](device, matrix),
     "memory_bandwidth_gbs": read["read_gbs"], "peak_tflops": {},
-    "matrix_tflops": (v["compute"] if not apple else cuda_compute).matrix_tflops(matrix) if matrix.get("paths") else {"fp16": matrix["tflops"]},
+    "matrix_tflops": path_rates.matrix_tflops(matrix) if matrix.get("paths") else {"fp16": matrix["tflops"]},
     "dot_primitives": ["simdgroup_matrix"] if apple else v["dot_primitives"], "dequant_primitives": [],
     "backend_status": "descriptor_only", "capabilities": caps,
   }
@@ -185,7 +185,7 @@ def autoscan(*, remeasure:bool = False, hardware:dict[str, Any] | None = None,
   today = _today()
   try:
     read_probe, matrix_probe = probes(device.get("vendor") or "", device)
-    from boltbeam.collectors.cuda_bandwidth import repeated, repeated_paths
+    from boltbeam.collectors.read_bandwidth import repeated, repeated_paths
     read = repeated([read_probe() for _ in range(READ_RUNS)], "read_gbs", "gbs")
     # the matrix paths are run as often as the read, so each path's peak has an uncertainty a compute check can use
     matrix = matrix_probe()

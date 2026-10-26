@@ -61,12 +61,12 @@ def target_facts(target_id:str, describe:Mapping[str, Any] | None = None) -> tup
 
 def boltbeam_emitter_facts() -> dict[str, Any]:
   """BoltBeam's own facts for the emitter families it proposes rows for (data/emitter_kinds.json): which families own
-  rows per subgroup, and each of their formats' code bytes per block (collectors/metal_native). Never the provider's."""
-  from boltbeam.collectors import metal_native as native
+  rows per subgroup, and each of their formats' code bytes per block (collectors/gemv_reference). Never the provider's."""
+  from boltbeam.collectors import gemv_reference
   from boltbeam.search.role_space import emitter_kinds
   kinds = [k for k in emitter_kinds().values() if k.get("row_owner") == "subgroup"]
   return {"subgroup_row_families": sorted(k["family"] for k in kinds),
-          "block_code_bytes": {q: native.code_bytes(q) for k in kinds for q in k["quants"]},
+          "block_code_bytes": {q: gemv_reference.code_bytes(q) for k in kinds for q in k["quants"]},
           "cta_row_families": sorted(k["family"] for k in emitter_kinds().values() if k.get("row_owner") == "cta")}
 
 

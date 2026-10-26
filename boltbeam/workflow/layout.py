@@ -6,6 +6,9 @@
     row     split by rows    llama.cpp -sm row, vLLM --tensor-parallel-size: each weight is split across the GPUs
                              and read on all of them at once (collectors/multi_gpu.py picks vLLM's split)
 
+An engine offers the layouts ENGINE_LAYOUTS gives it, less any its GPUs' vendor row refuses (VENDOR_REFUSALS: a
+llama.cpp HIP build loads no split buffers, so no -sm row). Setup's engine picker shows them (screen providers).
+
 Every input comes from this machine, with its source (machine_facts):
   - the GPUs, from the driver tool (nvidia-smi rows; one Apple GPU on a Mac), each mapped to a registered target
     when one matches and listed either way;
@@ -16,8 +19,7 @@ Every input comes from this machine, with its source (machine_facts):
 
 The limits (layer_limit, row_limit) say their formula and list every input with its source. Measurements are
 cached in the run folder (MACHINE) and reused from the newest run of the same machine; re-measuring is an
-explicit request. Multi-GPU carries LIMITED on every line: the only real multi-GPU run so far is vLLM split by rows
-(tensor parallel) on two R9700s.
+explicit request. Multi-GPU carries LIMITED on every line: it is measured on two R9700s, and not timing-qualified.
 """
 from __future__ import annotations
 
@@ -29,12 +31,20 @@ import re
 import subprocess
 from typing import Any, Callable
 
-LIMITED = "limited support: one real multi-GPU run so far (vLLM split by rows on two R9700s)"
+LIMITED = ("limited support: measured on two R9700s (vLLM split by rows, llama.cpp split by layer); not timing-qualified, "
+           "and a vLLM split by rows is not split by role")
 LAYOUTS = {"one": "one GPU", "layer": "split by layer", "row": "split by rows"}
 DEFAULT = "one"
 ENGINE_LAYOUTS = {"llama.cpp": ("one", "layer", "row"), "tinygrad": ("one",), "vllm": ("one", "row")}
 NOT_OFFERED = {"tinygrad": "the tinygrad fork decodes on one device: its LLM decode has no sharded path",
                "vllm": "BoltBeam runs vLLM split by rows (tensor parallel); its pipeline split is not measured"}
+# a layout an engine offers only where its GPUs' vendor row allows it: (engine, layout) -> the field of
+# target/vendors.Vendor that, when set, is why it cannot run there (the engine's own refusal, quoted)
+VENDOR_REFUSALS = {("llama.cpp", "row"): "ggml_row_split"}
+# what each layout does to decode speed, in a few words: limit()'s formula for it
+SPEED = {"one": "one GPU reads every weight",
+         "layer": "holds a bigger model; the GPUs take turns, so no decode speedup",
+         "row": "the GPUs read their shares at once; joins cost per layer"}
 MACHINE = "machine_facts.json"
 ACTIVATION_BYTES = 4  # float32 activations cross the GPU boundary (llama.cpp keeps hidden states in f32)
 ROW_TRANSFERS_PER_LAYER = 2  # row split joins partial results after attention and after the feed-forward
@@ -94,14 +104,23 @@ def link_words(code:str | None) -> str:
 
 # --- layouts the engine can run ----------------------------------------------------------------------------------
 
-def layouts(n_gpus:int, provider:str) -> list[dict[str, Any]]:
-  """The layouts offered for this many GPUs and this engine; ones that cannot run say why."""
+def layouts(n_gpus:int, provider:str, backend:str | None = None) -> list[dict[str, Any]]:
+  """The layouts offered for this many GPUs and this engine on GPUs of this target backend; ones that cannot run say
+  why. Each row has the GPUs it would use (vLLM's row split may use fewer: the model's heads decide, measure_plan)
+  and what it does to decode speed (SPEED)."""
+  row = lambda k, ok, why: {"id": k, "label": LAYOUTS[k], "available": ok, "reason": why,  # noqa: E731
+                            "gpus": 1 if k == "one" else n_gpus, "speed": SPEED[k]}
   if n_gpus < 2:
-    return [{"id": "one", "label": LAYOUTS["one"], "available": True, "reason": None}]
+    return [row("one", True, None)]
   offered = ENGINE_LAYOUTS.get(provider, ("one",))
-  return [{"id": k, "label": v, "available": k in offered,
-           "reason": None if k in offered else NOT_OFFERED.get(provider, f"{provider} runs on one GPU")}
-          for k, v in LAYOUTS.items()]
+  out = []
+  for k in LAYOUTS:
+    why = None if k in offered else NOT_OFFERED.get(provider, f"{provider} runs on one GPU")
+    if why is None and backend and (fact := VENDOR_REFUSALS.get((provider, k))):
+      from boltbeam.target import vendors
+      why = getattr(vendors.for_backend(backend), fact)
+    out.append(row(k, why is None, why))
+  return out
 
 
 def used_gpus(layout:str, devs:list[dict[str, Any]], n:int | None = None) -> list[dict[str, Any]]:
@@ -113,13 +132,21 @@ def used_gpus(layout:str, devs:list[dict[str, Any]], n:int | None = None) -> lis
 PIN = {"CUDA_VISIBLE_DEVICES": "0", "CUDA_DEVICE_ORDER": "PCI_BUS_ID", "HIP_VISIBLE_DEVICES": "0"}
 
 
+def pin() -> dict[str, str]:
+  """PIN, keeping the first GPU of a visibility list the caller already set: the scan lists that GPU first
+  (autoscan.shown), so it is the run's GPU."""
+  from boltbeam.target.vendors import VENDORS
+  shown = {name for v in VENDORS.values() for name in v.visible}
+  return {k: os.environ[k].split(",")[0].strip() if k in shown and os.environ.get(k) else v for k, v in PIN.items()}
+
+
 def engine_args(layout:str, provider:str) -> tuple[list[str], dict[str, str]]:
   """Extra command arguments and environment that make the engine use this layout."""
   if provider == "llama.cpp":
     if layout == "one":
-      return ["-sm", "none", "-mg", "0"], dict(PIN)
+      return ["-sm", "none", "-mg", "0"], pin()
     return ["-sm", layout], {}
-  return [], dict(PIN)  # tinygrad: one GPU only
+  return [], pin()  # tinygrad: one GPU only
 
 
 def one_gpu(run:pathlib.Path, provider:str) -> tuple[list[str], dict[str, str]]:
@@ -155,20 +182,21 @@ def run_probe(python:str, root:str, args:list[str], env:dict[str, str], timeout_
 def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str | None,
                     probe:Callable[[list[str], dict[str, str]], dict[str, Any]] | None,
                     topology:str = "", fallback:Callable[[str | None], float | None] = lambda _: None,
-                    metal_read:Callable[[], dict[str, Any]] | None = None,
-                    cuda_read:Callable[[int], dict[str, Any]] | None = None,
+                    native_read:Callable[[dict[str, Any]], dict[str, Any]] | None = None,
                     profile_read:Callable[[dict[str, Any]], tuple[float, str] | None] = lambda _: None,
                     join:Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None) -> dict[str, Any]:
   """Read bandwidth per GPU, and copy bandwidth and latency per GPU pair, with sources.
 
-  Read bandwidth, in this order: BoltBeam's native probe for the backend (metal_read on a Mac; cuda_read(index) on
-  NVIDIA, collectors/cuda_bandwidth.py); then the registry figure, labelled with why the probe did not run. On
-  NVIDIA tinygrad's sum is no bandwidth measure (382 GB/s on a 5090 that reads about 1,700), so it is used only
-  when nothing else exists, and labelled so. Elsewhere (AMD) it stays a labelled lower bound. probe(args, env) runs
+  Read bandwidth, in this order: BoltBeam's native probe for the backend, native_read(gpu) (the vendor's own read
+  probe on that card, workflow/chips._probes; it raises with the reason when it cannot run); then the registry
+  figure, labelled with why the probe did not run. tinygrad's sum is no bandwidth measure (382 GB/s on a 5090 that
+  reads about 1,700), so where a native probe exists it is used only when nothing else does, and labelled so;
+  where none exists it stays a labelled lower bound. probe(args, env) runs
   the fork's gpu_probe.py, which also measures the copies between GPUs. profile_read(gpu) comes first: a chip
   profile made on this machine already holds the GPU's measured read bandwidth and its date (workflow/chips.py), so
   the limit uses that one number instead of a second measurement. join(devs) times one all-reduce across them under
   an engine's own collective (collectors/multi_gpu.join), the row join of an engine that splits that way."""
+  from boltbeam.target import vendors
   links = topology if isinstance(topology, dict) else read_topology(topology)
   gpus = []
   for d in devs:
@@ -177,16 +205,10 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
     try:
       if (known := profile_read(d)) is not None:
         row.update(read_gbs=known[0], read_source=known[1])
-      elif backend == "Metal" and metal_read is not None:
-        got = metal_read()
-        row.update(read_gbs=got["read_gbs"], read_source=f"measured on this GPU with BoltBeam's Metal read probe, {_today()}",
-                   **_ceiling_facts(got))
-      elif backend == "CUDA" and cuda_read is not None:
-        got = cuda_read(d["index"])
-        row.update(read_gbs=got["read_gbs"], read_source=f"measured on GPU {d['index']} with BoltBeam's native CUDA read "
-                   f"probe, best of {got.get('reps', 10)} per launch shape, {_today()}", **_ceiling_facts(got))
-      elif backend == "CUDA" and cuda_read is None:
-        raise RuntimeError("BoltBeam's CUDA read probe cannot run here: nvcc is not installed")
+      elif native_read is not None:
+        got = native_read(d)
+        row.update(read_gbs=got["read_gbs"], read_source=f"measured on GPU {d['index']} with {vendors.for_backend(backend).term('native_read_probe')}, "
+                   f"best of {got.get('reps', 10)} per launch shape, {_today()}", **_ceiling_facts(got))
       elif probe is not None and device_prefix:
         got = probe(["read", "--device", device_name(device_prefix, d["index"])], {})
         row.update(read_gbs=got["read_gbs"], read_source=f"measured on GPU {d['index']} with a tinygrad read-sum, {_today()} "
@@ -198,7 +220,7 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
       if reg:
         row.update(read_gbs=reg, read_source=f"registry figure for {d.get('target_id')}, not measured on this GPU"
                    + (f" ({row['probe_error']})" if row.get("probe_error") else ""))
-      elif backend == "CUDA" and probe is not None and device_prefix:  # nothing else: the sum, called what it is
+      elif native_read is not None and probe is not None and device_prefix:  # nothing else: the sum, called what it is
         try:
           sum_gbs = probe(["read", "--device", device_name(device_prefix, d["index"])], {})["read_gbs"]
         except (RuntimeError, OSError, subprocess.SubprocessError, KeyError, ValueError):
@@ -331,10 +353,11 @@ def limit(layout:str, *, bytes_per_token:float, facts:dict[str, Any], hidden_siz
 def short_source(source:str | None, measured_at:str | None = None) -> str:
   """The read bandwidth's source in a few words for a screen line: which probe, and when; or that it is the
   registry's figure. The full source stays in the limit's inputs."""
+  from boltbeam.target import vendors
   s = source or ""
   when = f", {measured_at}" if measured_at else ""
-  for needle, words in (("native CUDA read probe", "native CUDA probe"), ("Metal read probe", "Metal read probe"),
-                        ("tinygrad read-sum", "tinygrad read-sum, a lower bound")):
+  probes = [(t, t.removeprefix("BoltBeam's ")) for v in vendors.VENDORS.values() if (t := v.term("native_read_probe"))]
+  for needle, words in (*probes, ("tinygrad read-sum", "tinygrad read-sum, a lower bound")):
     if needle in s:
       return f"measured on this GPU ({words}{when})"
   if s.startswith("registry figure"):

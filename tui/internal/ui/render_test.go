@@ -319,12 +319,13 @@ func TestMeasureStatusWording(t *testing.T) {
 		Blocked: []seam.Need{{Need: "probe_evidence"}, {Need: "timing_trace"}},
 		Measure: &seam.MeasureStatus{Status: "skipped", Reason: &reason, Command: &command}}}
 	f := Facts{Path: "m.gguf", Run: run}
-	if mk, text := measureLine(f); mk != "wait" || !strings.Contains(text, "not measured here: "+reason) {
-		t.Fatalf("skipped: %s %q", mk, text)
+	if rows := measureRows(run.Measure, nil, false); len(rows) != 1 || rows[0][2] != "not here: "+reason ||
+		!strings.Contains(plain(measureBody(f, 100)), command) {
+		t.Fatalf("skipped: %v", rows)
 	}
 	run.Measure.Status = "failed"
-	if mk, text := measureLine(f); mk != "fail" || !strings.Contains(text, reason) {
-		t.Fatalf("failed: %s %q", mk, text)
+	if rows := measureRows(run.Measure, nil, false); len(rows) != 1 || rows[0] != [3]string{"fail", "measure_probe", reason} {
+		t.Fatalf("failed: %v", rows)
 	}
 	run.Measure.Status = "skipped"
 	done := map[string]string{"measure": "done"}
@@ -430,5 +431,20 @@ func TestReplayBenchmarkOnlyRowsStayVisible(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %s", want, got)
 		}
+	}
+}
+
+// A saved run says its GPU layout after its engine; a one-GPU run (no layout from Python) reads as before.
+func TestSavedRunsSayTheirLayout(t *testing.T) {
+	var sv seam.Saved
+	_ = json.Unmarshal([]byte(`{"root":"/r","runs":[
+	{"id":"a","model_id":"Qwen3.8-27B","target_id":"amd_radeon_ai_pro_r9700_32g","provider":"llama.cpp","workload":"decode","saved_at":"2026-10-24T16:26:00","pct_of_limit":64.0,"layout":"split by layer (2 GPUs)"},
+	{"id":"b","model_id":"Qwen3.8-27B","target_id":"amd_radeon_ai_pro_r9700_32g","provider":"llama.cpp","workload":"decode","saved_at":"2026-10-24T16:25:00","pct_of_limit":66.0}]}`), &sv)
+	acts := savedActions(Facts{Saved: &sv})
+	if got := plain(acts[0].label); !strings.Contains(got, "llama.cpp · split by layer (2 GPUs) decode") {
+		t.Fatalf("layout run: %q", got)
+	}
+	if got := plain(acts[1].label); strings.Contains(got, "split") || !strings.Contains(got, "llama.cpp decode") {
+		t.Fatalf("one-GPU run: %q", got)
 	}
 }

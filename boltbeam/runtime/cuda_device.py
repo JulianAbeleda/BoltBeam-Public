@@ -9,7 +9,7 @@ The same surface as runtime/metal_device.py, so collectors/kernel_timer.py runs 
     release, close, name, working_set_bytes, facts()
 
 No Python CUDA package is needed: libcuda ships with the driver, nvcc with the toolkit. This is the only module that
-calls libcuda or nvcc (cuda_bandwidth.py and cubin_launch.py go through it). The ctypes calls sit in _Driver, one
+calls libcuda or nvcc (read_bandwidth.py and cubin_launch.py go through it). The ctypes calls sit in _Driver, one
 reviewed boundary; tests pass a fake driver and a fake compiler.
 
 First run on an RTX 5090 on 2026-10-10 (docs/in-model-vs-generic-rtx5090-20261010.md): the bridge, the events and
@@ -213,6 +213,12 @@ class _Driver:
     self.call("cuCtxSetCurrent", ctx)
     return dev.value, ctx.value
 
+  def by_pci(self, pci_bus_id:str) -> int:
+    self.call("cuInit", 0)
+    dev = ctypes.c_int()
+    self.call("cuDeviceGetByPCIBusId", ctypes.byref(dev), pci_bus_id.encode())
+    return dev.value
+
   def device_name(self, dev:int) -> str:
     buf = ctypes.create_string_buffer(256)
     self.call("cuDeviceGetName", buf, 256, dev)
@@ -304,6 +310,15 @@ class _Driver:
 
   def release_device(self, dev:int) -> None:
     self.cu.cuDevicePrimaryCtxRelease(dev)
+
+
+def index_of(pci_bus_id:str, driver=None) -> int:
+  """The CUDA device index of the GPU at a PCI address (hip_device.index_of's counterpart), so a GPU the scan found
+  is opened by its address, whatever order CUDA numbers devices in."""
+  try:
+    return (driver or _Driver()).by_pci(pci_bus_id)
+  except RuntimeError as exc:
+    raise CudaUnavailable(f"no CUDA device at PCI {pci_bus_id}: {exc}") from exc
 
 
 class Cuda:

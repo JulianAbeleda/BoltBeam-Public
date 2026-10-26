@@ -9,7 +9,7 @@ Adapters only produce KernelSpecs, one per role: BoltBeam's own GEMVs (collector
 shipped kernels (collectors/engine_kernels.py: llama.cpp from ggml's Metal and CUDA sources). The loop knows no
 model and no engine; the spec carries its label ("llama.cpp kernel_mul_mv_q4_K_f32") into every result.
 
-The bandwidth probes (metal_bandwidth.py, cuda_bandwidth.py) and the cubin replay (cubin_launch.py) time their
+The bandwidth probes (metal_bandwidth.py, read_bandwidth.py) and the cubin replay (cubin_launch.py) time their
 launches with `samples` too: there is no second warm-and-time loop in the tree. They keep their own statistic
 (best of N for a bandwidth), stated where they use it.
 

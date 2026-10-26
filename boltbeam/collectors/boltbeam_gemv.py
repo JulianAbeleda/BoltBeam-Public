@@ -1,21 +1,32 @@
 """BoltBeam's own quantized GEMV kernels, the reference kernels of the building-block probe, as KernelSpecs for the
-one kernel timer (collectors/kernel_timer.py). One source per backend, the same algorithm: one simdgroup (warp) per
-output row, ROWS_PER_GROUP rows per threadgroup (block), a Q4_K lane owning one 32-bit load per block, Q6_K bytes.
+one kernel timer (collectors/kernel_timer.py). One source per kernel dialect (MSL; CUDA, which hipcc also takes), the
+same algorithm: one simdgroup (warp) per output row, ROWS_PER_GROUP rows per threadgroup (block), a Q4_K lane owning
+one 32-bit load per block, Q6_K bytes.
 
 These are not the engine's kernels. They say what a plain, correct kernel reads on this GPU for the model's real
 tensor bytes, so a probe row is "BoltBeam's own kernel (reference)". The engine's kernels are timed by the same loop
 through collectors/engine_kernels.py. The GGUF block layouts and the pure-Python reference live in
-collectors/metal_native.py and are read from there, never restated.
+collectors/gemv_reference.py and are read from there, never restated.
+
+The building-block probe (collect_probe_evidence) runs these kernels on any GPU whose backend has a source here,
+through that backend's bridge: probe_request.json -> probe_evidence.json.
 """
 from __future__ import annotations
 
+import pathlib
 import random
 import struct
-from typing import Any
+from typing import Any, Callable
 
+from boltbeam.collectors import gemv_reference as reference
+from boltbeam.collectors import kernel_timer
 from boltbeam.collectors.kernel_timer import Check, KernelSpec
+from boltbeam.target import vendors
 
 ADAPTER = "boltbeam"
+COLLECTOR_ID = "boltbeam-gemv"
+PROVIDER_ID = "boltbeam/gemv"
+WORKING_SET_SHARE = 0.8  # never ask for more than this share of the GPU's working set (the bridge's working_set_bytes)
 ROWS_PER_GROUP = 4  # simdgroups (warps) per threadgroup (block); one simdgroup owns one output row
 KERNELS = {"Q4_K": "gemv_q4_k", "Q6_K": "gemv_q6_k"}
 # the kernel's source-level facts: what BoltBeam wrote, not what the compiler emitted
@@ -95,9 +106,20 @@ kernel void gemv_q6_k(device const uchar* w [[buffer(0)]], device const float* x
 }
 """
 
-# the same two kernels in CUDA: a warp per row, ROWS_PER_GROUP warps per block, the row reduced with shuffles
+# the same two kernels in CUDA: a warp per row, ROWS_PER_GROUP warps per block, the row reduced with shuffles. hipcc
+# compiles this source too (the HIP bridge, kernel_dialect "hip"); the shim at the top is all that differs: HIP has
+# no cuda_fp16.h, and its __shfl_xor_sync static_asserts a 64-bit mask, so the AMD side takes hip_fp16.h and the
+# maskless __shfl_xor. Its width 32 keeps a row's reduction inside the row's 32 lanes on a wave32 GPU (RDNA, hipcc's
+# default there) and a wave64 one (CDNA, or RDNA under -mwavefrontsize64) alike: the "warp" here is 32 lanes, not the
+# hardware's wave, and the row index (threadIdx.x >> 5) is the same on both.
 CUDA = r"""
+#if defined(__HIP_PLATFORM_AMD__)
+#include <hip/hip_fp16.h>
+#define BB_SHFL_XOR(v, o) __shfl_xor(v, o, 32)
+#else
 #include <cuda_fp16.h>
+#define BB_SHFL_XOR(v, o) __shfl_xor_sync(0xffffffffu, v, o)
+#endif
 
 __device__ __forceinline__ void scale_min_k4(unsigned j, const unsigned char* q, float& sc, float& mn) {
   if (j < 4) { sc = (float)(q[j] & 63); mn = (float)(q[j + 4] & 63); }
@@ -105,7 +127,7 @@ __device__ __forceinline__ void scale_min_k4(unsigned j, const unsigned char* q,
 }
 
 __device__ __forceinline__ float warp_sum(float v) {
-  for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+  for (int o = 16; o > 0; o >>= 1) v += BB_SHFL_XOR(v, o);
   return v;
 }
 
@@ -170,7 +192,10 @@ extern "C" __global__ void gemv_q6_k(const unsigned char* __restrict__ w, const 
   if (lane == 0) y[row] = acc;
 }
 """
-SOURCES = {"Metal": MSL, "CUDA": CUDA}
+# the source per dialect (target/vendors.py kernel_dialect), as kernel_timer.FLUSH_SOURCES: hipcc takes the CUDA one
+DIALECT_SOURCES = {"msl": MSL, "cuda": CUDA, "hip": CUDA}
+# the source per backend with a kernel bridge: a vendor row whose dialect has a source here gets the probe
+SOURCES = {v.backend: DIALECT_SOURCES[v.kernel_dialect] for v in vendors.VENDORS.values() if v.kernel_dialect in DIALECT_SOURCES}
 
 
 def vector(seed:str, cols:int) -> list[float]:
@@ -198,15 +223,14 @@ def synthetic(quant:str, rows:int, cols:int, seed:str = "synthetic") -> bytes:
 def spec(backend:str, quant:str, rows:int, cols:int, weights:bytes, x:list[float], *, label:str | None = None) -> KernelSpec:
   """BoltBeam's GEMV for one weight of rows x cols in this quant, on these real bytes, as a KernelSpec. bytes_read
   counts the weights and the activation vector and the output, as the probe always has."""
-  from boltbeam.collectors import metal_native as native
   if backend not in SOURCES:
     raise RuntimeError(f"BoltBeam's GEMV has no {backend} source")
   if quant not in KERNELS:
     raise RuntimeError(f"BoltBeam has no {backend} kernel for {quant}")
   name = KERNELS[quant]
   groups = (rows + ROWS_PER_GROUP - 1) // ROWS_PER_GROUP
-  check = Check(indices=native.check_rows(rows), reference=lambda r: native.reference_row(weights, quant, r, cols, x),
-                rel_tol=native.TOLERANCE)
+  check = Check(indices=reference.check_rows(rows), reference=lambda r: reference.reference_row(weights, quant, r, cols, x),
+                rel_tol=reference.TOLERANCE)
   return KernelSpec(label=label or f"{ADAPTER} {name}", adapter=ADAPTER, source=SOURCES[backend], kernel=name,
                     args=[weights, struct.pack(f"<{cols}f", *x), rows * 4, ("value", struct.pack("<I", rows)), ("value", struct.pack("<I", cols))],
                     grid=(groups, 1, 1), block=(ROWS_PER_GROUP * 32, 1, 1), bytes_read=len(weights) + cols * 4 + rows * 4,
@@ -219,3 +243,112 @@ def facts(result:dict[str, Any], spec_:KernelSpec) -> dict[str, Any]:
   return {"name": spec_.kernel, "threadgroup_threads": spec_.block[0], "threadgroups": spec_.grid[0],
           "thread_execution_width": result["pipeline"]["thread_execution_width"],
           "max_threads_per_threadgroup": result["pipeline"]["max_threads_per_threadgroup"], "source": KERNEL_SOURCE}
+
+
+# --- the building-block probe: these kernels on the model's real bytes ---------------------------------------
+
+def _absent(probe_quant:str, backend:str) -> dict[str, str]:
+  """What this backend's probe cannot report, by the field the full-probe schema asks for (target/vendors.py
+  probe_absent). Said in the row's `absent` so the next-step ladder never asks this GPU for it (report/html.py
+  next_step)."""
+  row = vendors.BY_BACKEND.get(backend)
+  words = (row and row.probe_absent) or {k: f"{backend} is not read by BoltBeam's probe" for k in vendors.PROBE_FIELDS}
+  why = words["counters"]
+  return {
+    "latency_concurrency.memory_latency_ns": why, "latency_concurrency.active_waves": why,
+    "latency_concurrency.in_flight_groups": why, "latency_concurrency.occupancy_pct": why,
+    **{k: v for k, v in words.items() if k != "counters"},
+  }
+
+
+def measure_probe(bridge, flusher, probe:dict[str, Any], model:pathlib.Path, data_start:int, tensors:list,
+                  floor_us:float, target_gbs:float | None, *, backend:str,
+                  libraries:dict[str, int] | None = None) -> dict[str, Any]:
+  """One probe row: BoltBeam's GEMV (adapter 0) on the role's real tensor bytes, timed by the one kernel timer."""
+  rows, cols = (int(v) for v in probe["shape"])
+  quant = probe["quant"]
+  row = {"probe_id": probe["probe_id"], "kind": "quant_gemv", "role": probe["role"], "quant": quant,
+         "shape": [rows, cols]}
+  if quant not in KERNELS or cols % reference.BLOCK_ELEMS[quant]:
+    row["status"] = "not_measured"
+    row["reason"] = f"BoltBeam has no {backend} kernel for {quant} with {cols} columns"
+    return row
+  name, offset = reference.tensor_for(quant, rows, cols, tensors, probe.get("tensor_name"), probe.get("n_expert"))
+  size = rows * (cols // reference.BLOCK_ELEMS[quant]) * reference.BLOCK_BYTES[quant]
+  if size + kernel_timer.FLUSH[backend]["bytes"] > bridge.working_set_bytes * WORKING_SET_SHARE:
+    row["status"] = "not_measured"
+    row["reason"] = f"{size / 2**30:.1f} GiB of weights does not fit the GPU's working set"
+    return row
+  with open(model, "rb") as f:
+    f.seek(data_start + offset)
+    weights = f.read(size)
+  x = vector(f"{probe['probe_id']}", cols)
+  kspec = spec(backend, quant, rows, cols, weights, x)
+  got = kernel_timer.time_spec(bridge, kspec, flusher, libraries=libraries, dram_gbs=target_gbs)
+  row["correctness"] = got["correctness"]
+  if not got["samples"]:
+    row["status"] = "correctness_failed"
+    return row
+  med = got["median_us"]
+  metadata = rows * (cols // 256) * reference.METADATA_BYTES[quant]
+  activation = cols * 4 + rows * 4
+  row.update({
+    "status": "measured", "tensor": name,
+    "timing": {"candidate_us": med, "spread_pct": got["spread_pct"], "min_us": got["min_us"], "samples": len(got["samples"]),
+               **got["timing"], "dispatch_floor_us": floor_us},
+    "bytes": {"physical_weight_bytes": size - metadata, "metadata_bytes": metadata, "activation_bytes": activation},
+    "throughput": {"achieved_gbs": got["gbs"], "target_gbs": target_gbs},
+    "latency_concurrency": {},
+    "isa": {},
+    "resources": {"lds_bytes": got["pipeline"]["static_threadgroup_memory_bytes"]},
+    "kernel": facts(got, kspec),
+    "timed_by": kspec.label,
+    "absent": _absent(quant, backend),
+  })
+  return row
+
+
+def collect_probe_evidence(run:pathlib.Path, say:Callable[[str], None] = lambda _: None) -> dict[str, Any]:
+  """probe_request.json -> probe_evidence.json on this machine's GPU, through its backend's bridge: BoltBeam's own
+  GEMV per role on the model's real bytes. The peak every row is measured against is the run's one read bandwidth.
+  CannotMeasure, with the reason, where this machine has no such GPU or no kernel for the backend."""
+  from boltbeam.collectors.llama_bench_decode import CannotMeasure, model_file
+  from boltbeam.profile.gguf import read_gguf_layout
+  from boltbeam.target.targets import get_target
+  from boltbeam.vocab import SCHEMA_PROBE_EVIDENCE
+  from boltbeam.workflow.common import load_manifest, read_json
+  from boltbeam.workflow.screen import run_bandwidth
+  manifest = load_manifest(run)
+  target = get_target(manifest.get("target_id"))
+  backend, model = target.backend, model_file(manifest.get("model_path") or "")
+  if backend not in SOURCES:
+    raise CannotMeasure(f"BoltBeam has no {backend} GEMV kernel", f"measure on a machine with a {' or '.join(SOURCES)} GPU")
+  request = read_json(run / "probe_request.json")
+  _, tensors, data_start = read_gguf_layout(model)
+  try:
+    bridge = kernel_timer.bridge_for(backend)
+  except RuntimeError as exc:  # MetalUnavailable, CudaUnavailable: this machine has no such GPU or no compiler
+    raise CannotMeasure(str(exc), f"measure on a machine with a {backend} GPU") from exc
+  try:
+    flusher = kernel_timer.Flusher(bridge, backend)
+    floor_us = flusher.floor_us()
+    target_gbs, target_source = run_bandwidth(run, target)
+    rows = []
+    libraries:dict[str, int] = {}
+    for i, probe in enumerate(request.get("probes", []), start=1):
+      say(f"probe {i} of {len(request['probes'])}: {probe['role']} {probe['quant']} {probe['shape'][0]}x{probe['shape'][1]}")
+      rows.append(measure_probe(bridge, flusher, probe, model, data_start, tensors, floor_us, target_gbs,
+                                backend=backend, libraries=libraries))
+  finally:
+    bridge.close()
+  return {
+    "schema": SCHEMA_PROBE_EVIDENCE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
+    "workload": manifest["workload"], "provider_id": PROVIDER_ID, "collector_id": COLLECTOR_ID,
+    "device": bridge.name, "dispatch_floor_us": floor_us, "probes": rows, "peak_source": target_source,
+    "measured": ["timing", "throughput.achieved_gbs", "resources.lds_bytes", "correctness"],
+    "derived": ["bytes (from the GGUF block layout)", f"throughput.target_gbs ({target_source})"],
+    "notes": [f"Kernels are BoltBeam's own {backend} GEMVs on the model's real tensor bytes (collectors/boltbeam_gemv.py), "
+              "not the engine's kernels.",
+              "Each timed sample follows a flush of a buffer larger than the last-level cache.",
+              "The timed interval includes dispatch_floor_us of fixed GPU start cost; it is not subtracted."],
+  }

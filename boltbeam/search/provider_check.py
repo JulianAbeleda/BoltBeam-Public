@@ -7,7 +7,7 @@ Three claims come back from the provider, and each is checked here with BoltBeam
                     and at least one must be shared, or the identity is refused
   correctness       the kernel the provider compiled, compiled again by BoltBeam's bridge from the source the provider
                     returned, run on the model's own weight bytes, its output checked against BoltBeam's reference
-                    (metal_native.reference_row) with the activation as the kernel reads it (fp16, the same rule as the
+                    (gemv_reference.reference_row) with the activation as the kernel reads it (fp16, the same rule as the
                     q8_1 vector of the CUDA engine adapter)
   timing            that kernel timed by BoltBeam's kernel timer (collectors/kernel_timer.py: one loop, a read sweep
                     of the last-level cache before each sample, the dispatch floor beside it)
@@ -77,7 +77,7 @@ def spec_from_record(record:Mapping[str, Any], *, quant:str, rows:int, cols:int,
                      label:str) -> KernelSpec:
   """A KernelSpec for the kernel the provider described, bound to BoltBeam's own bytes. Every buffer the provider
   lists must be one of the operands at the size BoltBeam expects for this role, or the record is refused."""
-  from boltbeam.collectors import metal_native as native
+  from boltbeam.collectors import gemv_reference
   args: list[Any] = []
   out_format = "f"
   x_bytes = struct.pack(f"<{cols}e", *x)
@@ -103,8 +103,8 @@ def spec_from_record(record:Mapping[str, Any], *, quant:str, rows:int, cols:int,
     raise ValueError("the provider's kernel must write exactly one output buffer")
   block = (list(record.get("local_size") or []) + [1, 1, 1])[:3]
   grid = (list(record.get("global_size") or []) + [1, 1, 1])[:3]
-  check = Check(indices=native.check_rows(rows), reference=lambda r: native.reference_row(weights, quant, r, cols, x),
-                rel_tol=native.TOLERANCE, words="pure-Python dequantize and dot, x rounded to fp16 as the kernel reads it",
+  check = Check(indices=gemv_reference.check_rows(rows), reference=lambda r: gemv_reference.reference_row(weights, quant, r, cols, x),
+                rel_tol=gemv_reference.TOLERANCE, words="pure-Python dequantize and dot, x rounded to fp16 as the kernel reads it",
                 out_format=out_format)
   return KernelSpec(label=label, adapter="provider kernel, rebuilt by BoltBeam", source=str(record["source"]),
                     kernel=str(record["function"]), args=args, grid=tuple(int(v) for v in grid), block=tuple(int(v) for v in block),
@@ -160,7 +160,7 @@ def retime_labeled(bridge, flusher, floor_us:float | None, record:Mapping[str, A
   """A kernel whose buffers the provider labelled by operand ("out", "weight:<node>", "value:<name>"): a fused kernel
   or one node's kernel alone. BoltBeam binds its own data to every label (search/fusion_space.bind) and checks the
   output against the nodes computed one after another by BoltBeam (fusion_space.Reference), then times it."""
-  from boltbeam.collectors import metal_native as native
+  from boltbeam.collectors import gemv_reference
   from boltbeam.search import fusion_space
   try:
     sink = fusion_space.adjacency(nodes)["sink"] if len(nodes) > 1 else nodes[0]
@@ -168,7 +168,7 @@ def retime_labeled(bridge, flusher, floor_us:float | None, record:Mapping[str, A
     args, bound, out_format = fusion_space.bind(record, weights={n: weights[n] for n in nodes if n in weights},
                                                 value_len={v: n for v, n in lengths.items() if v not in nodes}, rows=rows, seed=seed)
     ref = fusion_space.Reference(nodes, quant, rows, cols, weights, bound)
-    check = Check(indices=native.check_rows(rows), reference=lambda r: ref.at(sink, r), rel_tol=native.TOLERANCE,
+    check = Check(indices=gemv_reference.check_rows(rows), reference=lambda r: ref.at(sink, r), rel_tol=gemv_reference.TOLERANCE,
                   words=f"BoltBeam computes {' then '.join(nodes)} itself: pure-Python dequantize and dot on the model's bytes",
                   out_format=out_format)
     block = (list(record.get("local_size") or []) + [1, 1, 1])[:3]

@@ -58,7 +58,13 @@ Saved runs (2)                                           ›
 Model searches beside the current model and recursively under `~/models`, or takes a typed path. Checkpoint folders appear once, with the model name and format/quantization label; weight shards are not separate choices. Chip is this
 machine, detected (autoscan: a known profile is used, a new GPU is measured into `~/.boltbeam/chips/<id>.json`,
 `BOLTBEAM_CHIPS_DIR` moves that folder). Engine is one of llama.cpp, tinygrad, vLLM, Ollama and TensorRT-LLM; an
-engine this machine lacks or that cannot read the selected format is unavailable. Switching formats chooses a compatible engine and resets the previous engine’s measurement choice. Chip shows a simple GPU, memory-bandwidth and driver summary. Workload is decode, prefill, session or replay. Measurement is in-model
+engine this machine lacks or that cannot read the selected format is unavailable. On a machine with more than one GPU the
+Engine picker also shows the layout, how the engine uses the GPUs (`screen providers` `layouts`, workflow/layout.py):
+one GPU, split by layer, split by rows, each with the GPUs it would use and what it does to decode speed (split by layer
+holds a bigger model but the GPUs take turns; split by rows reads on every GPU at once and pays a join per layer). The
+layouts an engine can run here sit under it and are picked with it (the run's `--layout`); the others say why not, in
+the engine's own words where it refused (a llama.cpp HIP build loads no split buffers, so no split by rows). Setup
+then reads `Engine  vllm · split by rows (2 GPUs)`. On one GPU nothing about layouts is shown. Switching formats chooses a compatible engine and resets the previous engine’s measurement choice. Chip shows a simple GPU, memory-bandwidth and driver summary. Workload is decode, prefill, session or replay. Measurement is in-model
 (a capture of the real token) or generic (the engine's kernels timed alone). `[ Run ]` is greyed until model, chip
 and engine are set. Setup does not show the speed limit; Run does.
 
@@ -203,9 +209,10 @@ travel with the product on `main`. The Python tests follow the branch rule and l
 
 ### Scripted vLLM replay audits
 
-A CUDA vLLM replay with `--analyze` uses forced replay automatically. `--forced-replay`
-also selects it explicitly on the pipeline command. The server command remains the
-user's production command: compilation and CUDA graphs stay enabled for timing.
+A vLLM replay with `--analyze` uses forced replay automatically where the vendor capture
+records a program-marked window (nsys on CUDA, rocprofv3 on AMD; not Metal System Trace).
+`--forced-replay` also selects it explicitly on the pipeline command. The server command
+remains the user's production command: compilation and graphs stay enabled for timing.
 The labeling pass temporarily disables graph replay while retaining compilation.
 
 BoltBeam records the session once, keeps its output token script locally, measures
