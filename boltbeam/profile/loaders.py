@@ -111,6 +111,8 @@ def _read_safetensors_header(path:pathlib.Path) -> dict[str, Any]:
     if len(raw) != 8:
       raise ValueError(f"{path} is too short to be a safetensors file")
     n = struct.unpack("<Q", raw)[0]
+    if n > path.stat().st_size - 8:  # not a safetensors file (a GGUF's magic reads as a length past the end)
+      raise ValueError(f"{path} is not a safetensors file: header length {n} exceeds the file")
     return json.loads(f.read(n).decode("utf-8"))
 
 

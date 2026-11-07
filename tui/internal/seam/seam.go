@@ -441,10 +441,33 @@ func (c Client) ReplayChoices() (*ReplayChoices, error) {
 	return &r, nil
 }
 
-// Providers lists the runtimes that can measure the target on this machine.
-func (c Client) Providers(target string) (*Providers, error) {
+// Recommend is the recommended setup for the model on this chip and engine, from the newest machine facts in the run
+// folders; check also starts the engine once (a minute or two) and caches its overhead there.
+func (c Client) Recommend(model, target, engine string, check bool) (*Recommend, error) {
+	var r Recommend
+	args := []string{"recommend", model, "--target", target, "--engine", engine}
+	for _, pl := range c.Places() {
+		args = append(args, "--facts-root", pl.Dir)
+	}
+	if check {
+		args = append(args, "--check")
+	}
+	_, _, err := c.decode(&r, nil, "boltbeam.workflow.screen", args...)
+	return &r, err
+}
+
+// Providers lists the runtimes that can measure the target on this machine. With a model, each layout of a multi-GPU
+// machine carries its predicted decode limit, from the newest machine facts in the run folders.
+func (c Client) Providers(target, model string) (*Providers, error) {
 	var p Providers
-	_, _, err := c.decode(&p, nil, "boltbeam.workflow.screen", "providers", "--target", target)
+	args := []string{"providers", "--target", target}
+	if model != "" {
+		args = append(args, model)
+		for _, pl := range c.Places() {
+			args = append(args, "--facts-root", pl.Dir)
+		}
+	}
+	_, _, err := c.decode(&p, nil, "boltbeam.workflow.screen", args...)
 	return &p, err
 }
 

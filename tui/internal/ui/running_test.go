@@ -187,12 +187,12 @@ func TestMeasuredStagesHideHandoff(t *testing.T) {
 func TestBatchPicker(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
-	m := press(press(press(press(press(program(s, nil, nil, nil, 80, 24), "j"), "j"), "j"), "j"), "enter")
+	m := press(press(press(press(press(press(program(s, nil, nil, nil, 80, 24), "j"), "j"), "j"), "j"), "j"), "enter")
 	if m.(Model).cursor != pageBatch {
 		t.Fatalf("enter on Batch opens its picker: %d", m.(Model).cursor)
 	}
 	m = press(press(press(m, "j"), "j"), "enter") // 32
-	if got := m.(Model).f.batch(); got != 32 || m.(Model).cursor != pageSetup || m.(Model).row != 4 {
+	if got := m.(Model).f.batch(); got != 32 || m.(Model).cursor != pageSetup || m.(Model).row != 5 {
 		t.Fatalf("batch %d, page %d, row %d", got, m.(Model).cursor, m.(Model).row)
 	}
 	typed := press(press(press(page(m, pageBatch), "1"), "6"), "enter")

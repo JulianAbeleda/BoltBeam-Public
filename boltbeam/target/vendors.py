@@ -106,6 +106,18 @@ class Vendor:
   # why llama.cpp's split by rows (-sm row, ggml's split buffers) does not load on this ggml backend, in the engine's
   # own words with the build and run it was seen on (workflow/layout.VENDOR_REFUSALS); None: no refusal recorded
   ggml_row_split: str | None = None
+  # the share of GPU memory a process may use when the scan measured no per-process limit (a Mac without Metal's
+  # recommendedMaxWorkingSetSize: 0.75 assumed, 0.740 measured on the 16 GB M4); 1.0: all of it (workflow/recommend.setup)
+  usable_memory: float = 1.0
+  # whether ggml's flash attention on a quantized KV (q8_0) dequantizes one attention layer's K and V to f16 over the
+  # whole context, a per-token buffer besides the KV (workflow/recommend.llama_scratch)
+  ggml_kv_dequant: bool = False
+  # the vLLM attention backend to name (--attention-backend) where vLLM's own pick decodes slower; None: vLLM's pick
+  vllm_attention: str | None = None
+  # environment vLLM runs with on this vendor's GPUs (the copied command line and Check): (name, value) pairs
+  vllm_env: tuple[tuple[str, str], ...] = ()
+  # the context past which vLLM's MTP stops paying here, and why; None: no limit measured
+  vllm_mtp_context: tuple[int, str] | None = None
 
   def term(self, key:str) -> str | None:
     """One of the vendor's words; None when it has no such thing. A key no row defines is NoVendorRow."""
@@ -147,6 +159,8 @@ def _terms(*words:str | None) -> Mapping[str, str | None]:
 _ROWS = (
   Vendor(
     vendor="nvidia", backend="CUDA", tinygrad_device="NV", tinygrad_per_gpu=True, platform=None,
+    # measured: b11571, the 27B Q4_K_M on the 5090, 1,007 MiB more compute buffer at 257,792 q8_0 cells than f16
+    ggml_kv_dequant=True,
     scan_tools=("nvidia-smi",), other_tools=("cuobjdump", "nvdisasm", "ncu"), probe="boltbeam.workflow.autoscan:_probe_nvidia", match_keys=("compute_capability",),
     order="nvidia-smi's, by PCI address (CUDA's own order is the same under CUDA_DEVICE_ORDER=PCI_BUS_ID)",
     notes=("Primary GPU is the first device returned by nvidia-smi.",), unrecorded_order=None,
@@ -189,6 +203,16 @@ _ROWS = (
                  "BoltBeam's native CUDA read probe")),
   Vendor(
     vendor="amd", backend="AMD", tinygrad_device="AMD", tinygrad_per_gpu=True, platform=None,
+    ggml_kv_dequant=True,  # ggml's HIP build compiles the CUDA flash attention; not measured on AMD
+    # vLLM 0.31 picks ROCM_ATTN, whose decode slows with the context (27B AWQ on an R9700: 30 to 17 tok/s over 3,000
+    # tokens, TP=2 50 to 9.4 by 5,000); TRITON_ATTN holds 35 and 56 (2026-10-27)
+    vllm_attention="TRITON_ATTN",
+    # one hardware queue: with HIP's default, an R9700 decode drops for tens of seconds at a time to ~0.66x (TP=2 56 to
+    # 37 tok/s; MTP k=3 60 against 81), unseen by clock and power telemetry (ROCm/TheRock#9228); none with 1 (2026-10-27)
+    vllm_env=(("GPU_MAX_HW_QUEUES", "1"),),
+    vllm_mtp_context=(2500, "vLLM 0.31 runs an MTP verify (k+1 query tokens) on TRITON_ATTN's 2D kernel, one workgroup per KV "
+                      "head: TP=2 k=2 84 to 51 tok/s over 2,900 tokens, below one-token decode's flat 56 past ~2,500; a split-KV "
+                      "verify (the 3D kernel for a query of up to 8 tokens) holds ~90 (R9700, 2026-10-27)"),
     scan_tools=("amd-smi", "rocm-smi"), other_tools=(), probe="boltbeam.workflow.autoscan:_probe_amd_hip_order",
     match_keys=("compute_units",), order="the HIP runtime's: amd-smi's devices in KFD topology node order ({KFD_NODES})",
     notes=("Primary GPU is HIP's device 0: amd-smi's devices in the KFD topology's order.",),
@@ -253,7 +277,7 @@ _ROWS = (
                     tinygrad_reason="no outside capture: Metal per-kernel time needs Xcode's Metal System Trace"),
     toolchain=(("xctrace", ("xcrun", "xctrace", "version"), None), ("torch", None, None)),
     torch_runtime=None, kernel_dialect="msl", bridge="boltbeam.runtime.metal_device:Metal", flush_bytes=256 << 20,
-    topology=None,
+    topology=None, usable_memory=0.75,
     probe_absent=_FROZEN({
       "counters": "Metal reports no per-dispatch hardware counters without Instruments",
       "isa.instruction_histogram": "Metal does not export the compiled AGX ISA",

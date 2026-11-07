@@ -109,7 +109,7 @@ type LayoutRow struct {
 	State     string  `json:"state"` // available, not_here or not_compatible: Python decides, the screen words it
 	Reason    *string `json:"reason"`
 	Gpus      int     `json:"gpus"`  // the GPUs it would use (vLLM's row split may use fewer: the model's heads decide)
-	Speed     string  `json:"speed"` // what it does to decode speed, in a few words (layout.SPEED)
+	Speed     string  `json:"speed"` // its predicted decode limit and whether it is recommended, else what it does to decode speed (layout.SPEED)
 }
 
 // LayoutLimit is the limit derived for the run's layout, with its formula and every input and its source.
@@ -346,6 +346,7 @@ type Providers struct {
 	TargetID  string        `json:"target_id"`
 	Default   string        `json:"default"`
 	Providers []ProviderRow `json:"providers"`
+	Note      *string       `json:"note"` // the default choice when the model fits one GPU (layout.recommend)
 }
 
 // OtherLoss is another provider's per-role table for the same run, shown beside the chosen one, labelled.
@@ -1103,4 +1104,85 @@ type GameplanLayer struct {
 	Recorded bool      `json:"recorded"`
 	Lines    []string  `json:"lines"`
 	Evidence []Pointer `json:"evidence"`
+}
+
+// RecFig is one figure of the recommended setup with its formula, inputs and kind (derived, measured, upper bound).
+type RecFig struct {
+	Value    *float64 `json:"value"`
+	Formula  string   `json:"formula"`
+	Inputs   []string `json:"inputs"`
+	Kind     string   `json:"kind"`
+	Uncapped *float64 `json:"uncapped"`
+}
+
+// RecLayout is one layout's row of the recommended setup (workflow/recommend.py).
+type RecLayout struct {
+	ID             string               `json:"id"`
+	Label          string               `json:"label"`
+	Available      bool                 `json:"available"`
+	Reason         *string              `json:"reason"`
+	Gpus           int                  `json:"gpus"`
+	WeightsPerGpu  RecFig               `json:"weights_per_gpu"`
+	Fits           struct{ Value bool } `json:"fits"`
+	MaxContext     map[string]RecFig    `json:"max_context"`
+	MaxContextWarm map[string]RecFig    `json:"max_context_warm"` // after the first start (a warm compile cache), when measured
+	MaxSeqs        *RecFig              `json:"max_seqs"`
+	TotalSeqs      *RecFig              `json:"total_seqs"`
+	Batch1Limit    *RecFig              `json:"batch1_limit"`
+	Batch1Expected *RecFig              `json:"batch1_expected"`
+	Speed          string               `json:"speed"`
+}
+
+// RecSetting is one engine setting, what it changes and whether it is recommended here.
+type RecSetting struct {
+	Flag        *string `json:"flag"`
+	Recommended bool    `json:"recommended"`
+	Changes     string  `json:"changes"`
+	When        string  `json:"when"`
+}
+
+// RecCompare is the page's predicted context against the engine's own figure.
+type RecCompare struct {
+	Predicted     float64 `json:"predicted"`
+	PredictedKind string  `json:"predicted_kind"`
+	Measured      float64 `json:"measured"`
+	CacheTokens   float64 `json:"cache_tokens"`
+	State         *string `json:"state"` // the start's compile cache, cold or warm, when the engine says
+	Error         float64 `json:"error"`
+	AvailableKV   float64 `json:"available_kv_gib"`
+}
+
+// RecCheck is one real engine start with the recommended flags: predicted against measured, before and after the
+// measured overhead is cached.
+type RecCheck struct {
+	Before   RecCompare `json:"before"`
+	After    RecCompare `json:"after"`
+	Overhead struct {
+		Bytes  float64 `json:"bytes"`
+		Source string  `json:"source"`
+	} `json:"overhead"`
+	CachedIn *string `json:"cached_in"`
+}
+
+// Recommend is `screen recommend`: the engine settings for this model on this machine's GPUs.
+type Recommend struct {
+	Provider            string      `json:"provider"`
+	GpuCount            int         `json:"gpu_count"`
+	ContextIsUpperBound bool        `json:"context_is_upper_bound"`
+	OverheadNote        *string     `json:"overhead_note"`
+	StatedContext       int         `json:"stated_context"`
+	Seqs                int         `json:"seqs"`
+	KVDtype             string      `json:"kv_dtype"`
+	KVFormats           []string    `json:"kv_formats"`
+	EngineNote          string      `json:"engine_note"`
+	Layouts             []RecLayout `json:"layouts"`
+	Recommended         struct {
+		ID  *string `json:"id"`
+		Why string  `json:"why"`
+	} `json:"recommended_layout"`
+	Settings []RecSetting `json:"settings"`
+	Flags    []string     `json:"flags"`
+	Command  *string      `json:"command"`
+	Arkey    []string     `json:"arkey_vllm_args"`
+	Check    *RecCheck    `json:"check"`
 }

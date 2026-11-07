@@ -16,7 +16,7 @@ import (
 func TestWorkloadPicker(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	s := loadSample(t)
-	m := press(press(press(press(program(s, nil, nil, nil, 80, 24), "j"), "j"), "j"), "enter")
+	m := press(press(press(press(press(program(s, nil, nil, nil, 80, 24), "j"), "j"), "j"), "j"), "enter")
 	if m.(Model).cursor != pageWorkload {
 		t.Fatalf("enter on Workload opens its picker: %d", m.(Model).cursor)
 	}

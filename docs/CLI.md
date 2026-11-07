@@ -20,6 +20,7 @@ python -m boltbeam.workflow.screen repeat-bands --runs runs/a runs/b runs/c runs
 python -m boltbeam.workflow.screen diff --before runs/a --after runs/b          # the engine-upgrade audit
 python -m boltbeam.workflow.screen replay-cross --a runs/a --b runs/b           # two engines, one replay trace
 python -m boltbeam.workflow.screen autoscan                       # measure this GPU once when it has no chip profile
+python -m boltbeam.workflow.screen recommend MODEL --target TARGET --engine ENGINE [--check]   # context, speed and flags per GPU layout
 ```
 
 `--provider` is `llama.cpp` (default), `tinygrad`, `vllm`, `ollama` or `tensorrt-llm`. `--role-time` picks

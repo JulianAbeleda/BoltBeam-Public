@@ -188,8 +188,9 @@ func (m Model) scanEngines(cached bool) tea.Cmd {
 
 // loadProviders asks Python which runtimes can measure the chip on this machine.
 func (m Model) loadProviders(target string) tea.Cmd {
+	path := m.f.Path
 	return func() tea.Msg {
-		p, err := m.client.Providers(target)
+		p, err := m.client.Providers(target, path)
 		if err != nil {
 			return providersMsg{target, nil}
 		}
@@ -666,6 +667,9 @@ func (m *Model) chipChanged() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	next.skipHeads(1) // the cursor never rests on a heading
+	if c := next.loadRecommend(); c != nil {
+		cmd = tea.Batch(cmd, c)
+	}
 	return next, cmd
 }
 
@@ -788,6 +792,22 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 				}
 			}
 			m.rememberEngine()
+		}
+	case recommendMsg:
+		if msg.check {
+			m.f.RecChecking = false
+		}
+		switch {
+		case msg.key != m.f.RecKey:
+		case msg.err != nil && msg.check:
+			m.note = "Check failed: " + msg.err.Error()
+		case msg.err != nil:
+			m.f.RecErr = msg.err.Error()
+		default:
+			m.f.Recommend, m.f.RecErr = msg.rec, ""
+			if msg.check {
+				m.note = "Check done."
+			}
 		}
 	case readyMsg:
 		if msg.id == m.runID() {
@@ -1084,6 +1104,11 @@ func (m *Model) backToSetup() {
 	m.row = 0
 	if picker(m.cursor) {
 		m.row = m.cursor - pageModel
+		if m.cursor > pageEngine { // Recommended setup is the Setup row after Engine
+			m.row++
+		}
+	} else if m.cursor == pageRecommend {
+		m.row = pageEngine - pageModel + 1
 	}
 	m.cursor = pageSetup // keep the displayed run's saved origin until a new run replaces it
 	m.skipHeads(1)
@@ -1201,6 +1226,16 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		m.f.Engine, m.f.Layout, m.engineSet = engine, layout, true
 		m.backToSetup()
 		return m, nil
+	case "reccopy":
+		copyText(m.f.copyOf(a.arg))
+		m.note = "Copied " + map[string]string{"command": "the engine command line", "arkey": "the Arkey vllm_args"}[a.arg] + "."
+		return m, nil
+	case "reccheck":
+		if m.f.RecChecking || m.f.recommendKey() == "" {
+			return m, nil
+		}
+		m.f.RecChecking, m.note = true, "Check: starting the engine once with the recommended flags…"
+		return m, m.askRecommend(m.f.RecKey, true)
 	case "analyze":
 		return m, m.startRun(m.f.Engine)
 	case "engines-scan":

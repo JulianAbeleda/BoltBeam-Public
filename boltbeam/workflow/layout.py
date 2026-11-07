@@ -46,6 +46,7 @@ SPEED = {"one": "one GPU reads every weight",
          "layer": "holds a bigger model; the GPUs take turns, so no decode speedup",
          "row": "the GPUs read their shares at once; joins cost per layer"}
 MACHINE = "machine_facts.json"
+FITS = 0.9  # the share of one GPU's memory the weights may take for the model to count as fitting it
 ACTIVATION_BYTES = 4  # float32 activations cross the GPU boundary (llama.cpp keeps hidden states in f32)
 ROW_TRANSFERS_PER_LAYER = 2  # row split joins partial results after attention and after the feed-forward
 # an engine whose row split joins with a measured all-reduce (collectors/multi_gpu.join): the hidden state's bytes in
@@ -61,7 +62,7 @@ def devices(gpu:dict[str, Any]) -> list[dict[str, Any]]:
   """Every GPU the probe found, in the driver's order, with its index. One Apple GPU on a Mac."""
   rows = gpu.get("devices") or ([gpu] if gpu.get("name") else [])
   return [{"index": i, "name": d.get("name"), "target_id": d.get("target_id"), "uuid": d.get("uuid"), "pci_bus_id": d.get("pci_bus_id"),
-           "memory_bytes": d.get("memory_bytes"), "registered": bool(d.get("target_registered", d.get("target_id")))}
+           "memory_bytes": d.get("memory_bytes") or d.get("unified_memory_bytes"), "working_set_bytes": d.get("working_set_bytes"), "registered": bool(d.get("target_registered", d.get("target_id")))}
           for i, d in enumerate(rows)]
 
 
@@ -121,6 +122,36 @@ def layouts(n_gpus:int, provider:str, backend:str | None = None) -> list[dict[st
       why = getattr(vendors.for_backend(backend), fact)
     out.append(row(k, why is None, why))
   return out
+
+
+def predict(rows:list[dict[str, Any]], provider:str, *, bytes_per_token:float, facts:dict[str, Any] | None,
+            hidden_size:int | None, layers:int | None) -> list[dict[str, Any]]:
+  """The rows with the decode limit limit() derives for each layout this engine can run here, as tok_s and in the
+  speed words. A layout whose limit cannot be derived keeps its SPEED words, with why and its weight-read bound."""
+  out = []
+  for r in rows:
+    got = r["available"] and len((facts or {}).get("gpus") or []) >= r["gpus"] and limit(
+      r["id"], bytes_per_token=bytes_per_token, facts=facts, hidden_size=hidden_size, layers=layers,
+      gpus_used=r["gpus"], provider=provider)
+    tok_s = got.get("tok_s") if got else None
+    bound = got.get("weights_ms") if got and not tok_s else None
+    out.append({**r, "tok_s": tok_s, "speed": f"limit {tok_s:.0f} tok/s" if tok_s else r["speed"],
+                "limit_reason": got.get("reason") if got else None, "tok_s_at_most": 1000.0 / bound if bound else None})
+  return out
+
+
+def recommend(rows:list[dict[str, Any]], model_bytes:float, devs:list[dict[str, Any]]) -> str | None:
+  """Marks the layout with the highest predicted limit (over every engine's rows) as recommended; returns the
+  sentence on the default choice when the model's weights fit one GPU, else None."""
+  best = max((r for r in rows if r.get("tok_s")), key=lambda r: r["tok_s"], default=None)
+  for r in rows:
+    r["recommended"] = r is best
+    if r is best:
+      r["speed"] += " (recommended)"
+  if len(devs) < 2 or not model_bytes or model_bytes > min(d.get("memory_bytes") or 0 for d in devs) * FITS:
+    return None
+  return ("The model fits on one GPU: one GPU, or one replica per GPU, is the default unless batch-1 latency "
+          "matters; split by rows wins batch-1 on several GPUs.")
 
 
 def used_gpus(layout:str, devs:list[dict[str, Any]], n:int | None = None) -> list[dict[str, Any]]:
@@ -303,6 +334,8 @@ def limit(layout:str, *, bytes_per_token:float, facts:dict[str, Any], hidden_siz
   if any(not g["read_gbs"] for g in gpus):
     return {"layout": layout, "ms": None, "inputs": inputs, "reason": "a GPU in the layout has no read bandwidth"}
   out = {"layout": layout, "label": LAYOUTS[layout], "gpus": n, "inputs": inputs, "reason": None}
+  # the weight reads (a layer split's in turn, a row split's at once): joins only add, so the limit is at most 1000/this
+  weights = (sum if layout == "layer" else max)(bytes_per_token * s / (g["read_gbs"] * 1e9) * 1e3 for s, g in zip(shares, gpus))
   if layout == "one" or n == 1:
     ms = bytes_per_token / (gpus[0]["read_gbs"] * 1e9) * 1e3
     out.update(ms=ms, formula="weight bytes / the GPU's read bandwidth")
@@ -316,10 +349,9 @@ def limit(layout:str, *, bytes_per_token:float, facts:dict[str, Any], hidden_siz
     measured = facts.get("join") or {}
     one = join_us(measured.get("joins") or [], act)
     if one is None:
-      return {**out, "ms": None, "reason": f"no measured all-reduce of {act} bytes: {measured.get('source', 'not measured')}"}
+      return {**out, "ms": None, "weights_ms": weights, "reason": f"no measured all-reduce of {act} bytes: {measured.get('source', 'not measured')}"}
     joins = (layers or 0) * ROW_TRANSFERS_PER_LAYER + extra
     inputs.append({"what": "one join (all-reduce)", "value": round(one, 2), "unit": "µs", "source": measured["source"]})
-    weights = max(bytes_per_token * s / (g["read_gbs"] * 1e9) * 1e3 for s, g in zip(shares, gpus))
     ms = weights + joins * one / 1e3
     return {**out, "ms": ms, "tok_s": 1000.0 / ms, "weights_ms": weights, "transfer_ms": joins * one / 1e3,
             "support": LIMITED, "formula": f"the slowest GPU's share of weight bytes / its read bandwidth, plus {joins} "
@@ -329,17 +361,15 @@ def limit(layout:str, *, bytes_per_token:float, facts:dict[str, Any], hidden_siz
     a, b = gpus[i]["index"], gpus[(i + 1) % n]["index"]
     p = _pair(facts, a, b)
     if not p or not p.get("copy_gbs"):
-      return {**out, "ms": None, "reason": f"no measured copy between GPU {a} and GPU {b}: {p and p['source']}"}
+      return {**out, "ms": None, "weights_ms": weights, "reason": f"no measured copy between GPU {a} and GPU {b}: {p and p['source']}"}
     hops.append(act / (p["copy_gbs"] * 1e9) * 1e3 + p["latency_us"] / 1e3)
     inputs.append({"what": f"copy GPU {a} to GPU {b} ({link_words(p.get('link'))})",
                    "value": f"{p['copy_gbs']:.1f} GB/s, {p['latency_us']:.1f} µs", "unit": "", "source": p["source"]})
   if layout == "layer":
-    weights = sum(bytes_per_token * s / (g["read_gbs"] * 1e9) * 1e3 for s, g in zip(shares, gpus))
     transfer = sum(hops)
     formula = ("sum over GPUs of (its share of weight bytes / its read bandwidth), plus one activation copy per GPU "
                "boundary (bytes / measured copy bandwidth + measured latency)")
   else:
-    weights = max(bytes_per_token * s / (g["read_gbs"] * 1e9) * 1e3 for s, g in zip(shares, gpus))
     transfer = (layers or 0) * ROW_TRANSFERS_PER_LAYER * max(hops)
     formula = (f"the slowest GPU's share of weight bytes / its read bandwidth, plus {ROW_TRANSFERS_PER_LAYER} joins per "
                "layer, each one activation copy on the slowest measured link (bytes / copy bandwidth + latency)")
@@ -385,9 +415,10 @@ def read_bandwidth(facts:dict[str, Any] | None, layout:str = "one") -> dict[str,
           "short": short_source(g.get("read_source"), facts.get("measured_at"))}
 
 
-def newest_facts(folders:list[pathlib.Path], target_id:str) -> dict[str, Any] | None:
+def newest_facts_file(folders:list[pathlib.Path], target_id:str) -> tuple[pathlib.Path, dict[str, Any]] | None:
   """The newest machine facts, in any run under these folders, whose first GPU is this chip: what Setup shows
-  before a run of this session has measured. Newest by when they were measured, then by file time."""
+  before a run of this session has measured, and the file a measured engine overhead is cached in. Newest by when
+  they were measured, then by file time."""
   found = []
   for folder in folders:
     if folder.is_dir():
@@ -397,5 +428,12 @@ def newest_facts(folders:list[pathlib.Path], target_id:str) -> dict[str, Any] | 
         except (OSError, ValueError):
           continue
         if (facts.get("gpus") or [{}])[0].get("target_id") == target_id:
-          found.append((str(facts.get("measured_at") or ""), p.stat().st_mtime, facts))
-  return max(found, key=lambda f: (f[0], f[1]))[2] if found else None
+          found.append((str(facts.get("measured_at") or ""), p.stat().st_mtime, p, facts))
+  best = max(found, key=lambda f: (f[0], f[1]), default=None)
+  return (best[2], best[3]) if best else None
+
+
+def newest_facts(folders:list[pathlib.Path], target_id:str) -> dict[str, Any] | None:
+  """The facts of newest_facts_file, or None."""
+  got = newest_facts_file(folders, target_id)
+  return got[1] if got else None

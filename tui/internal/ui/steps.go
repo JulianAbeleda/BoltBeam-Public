@@ -54,7 +54,11 @@ type Facts struct {
 	Tail        []string
 	Ready       *seam.CompareReady // can this machine compare kernels for the run (step 5)
 	Providers   *seam.Providers    // the runtimes that can measure the chip here (step 4)
-	CJob        *jobs.Job          // the compare job, id "<run>-compare"
+	Recommend   *seam.Recommend    // the recommended setup for this model, chip and engine (recommendKey)
+	RecKey      string             // what Recommend was asked for
+	RecErr      string
+	RecChecking bool      // Check is running: one real engine start
+	CJob        *jobs.Job // the compare job, id "<run>-compare"
 	CTail       []string
 	Spin        string
 	Confirm     string              // the run id waiting for a second enter before it is deleted
@@ -145,6 +149,7 @@ const (
 	pageBatch
 	pageMeasurement
 	pageCompare
+	pageRecommend
 )
 
 func none(Facts) string { return "" }
@@ -161,6 +166,7 @@ var steps = []step{
 	{"Batch", "", none, batchLine, batchBody, batchActions},
 	{"Measurement", "", none, func(Facts) (string, string) { return "", "" }, measurementBody, measurementActions},
 	{"Compare", "", none, compareLine, compareRunsBody, compareActions},
+	{"Recommended setup", recommendHint, none, func(Facts) (string, string) { return "", "" }, recommendBody, recommendActions},
 }
 
 // picker reports whether a page is one of the three pickers Setup opens.
@@ -274,6 +280,7 @@ func setupActions(f Facts) []action {
 		{summary("Model", modelValue(f)), "page", fmt.Sprint(pageModel)},
 		{summary("Chip", chipValue(f)), "page", fmt.Sprint(pageChip)},
 		{summary("Engine", engineValue(f)), "page", fmt.Sprint(pageEngine)},
+		{summary("Recommended setup", recommendValue(f)), "page", fmt.Sprint(pageRecommend)},
 		{summary("Workload", workloadValue(f)), "page", fmt.Sprint(pageWorkload)},
 		{summary("Batch", fmt.Sprint(f.batch())), "page", fmt.Sprint(pageBatch)},
 		{summary("Measurement", measurementValue(f)), "page", fmt.Sprint(pageMeasurement)},
@@ -1057,6 +1064,9 @@ func layoutLegend(f Facts) string {
 				seen[l.ID], b = true, b+"  "+l.Label+": "+stMuted.Render(l.Speed)+"\n"
 			}
 		}
+	}
+	if n := f.Providers.Note; n != nil {
+		b += stMuted.Render(*n) + "\n"
 	}
 	return b + "\n"
 }

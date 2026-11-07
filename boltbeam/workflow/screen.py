@@ -13,6 +13,7 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     detect                                     the chip this machine is, as autoscan reads it (target_id or null)
     ceiling  MODEL | --profile P  --target T   the roofline: the best tokens/s this chip allows for this model
     ceilings MODEL | --profile P               the decode limit on every registered chip with a ceiling (what-if)
+    recommend MODEL | --profile P --target T [--gpus N] [--engine E]  the engine settings for this model on this machine: context, speed, flags (derived)
     runs     --root DIR [--all]                one summary per run folder under DIR; --all adds DIR/.work and the
                                                saved runs, each row marked where: runs, work or saved
     run      --run DIR | --run ID --root DIR   the stages, what is blocked, the next step, the results; an id is
@@ -1442,14 +1443,52 @@ def compare(args, out=sys.stdout) -> int:
 
 # --- the command line ------------------------------------------------------------------------------------------
 
-def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None = None) -> dict[str, Any]:
+def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None = None, profile:dict[str, Any] | None = None,
+                  facts:dict[str, Any] | None = None) -> dict[str, Any]:
   """The providers that can measure this target here, how step 5 would time their roles, and the GPU layouts each
-  can run on this machine (one GPU unless more are found)."""
+  can run on this machine (one GPU unless more are found). With the model's profile and this machine's facts, each
+  layout carries its predicted decode limit (layout.limit), the highest marked recommended, and a note when the model
+  fits one GPU; a layout whose limit cannot be derived keeps its words."""
   from boltbeam.workflow import layout as lay
-  n = gpu_count if gpu_count is not None else len(lay.devices(_hardware_profile()["gpu"]))
+  devs = lay.devices(_hardware_profile()["gpu"])
+  n = gpu_count if gpu_count is not None else len(devs)
   rows = [{**p, "layouts": lay.layouts(n, p["provider"], target.backend)} for p in providers.available(target, tinygrad_root=root, cached=True)]
+  note = None
+  if n > 1 and profile and facts:
+    try:
+      model_bytes = ceiling(profile, target, read=lay.read_bandwidth(facts))["decode"]["bytes_moved"]
+    except (Refused, SystemExit):
+      model_bytes = None
+    if model_bytes:
+      for r in rows:
+        r["layouts"] = lay.predict(r["layouts"], r["provider"], bytes_per_token=model_bytes, facts=facts,
+                                   hidden_size=profile.get("hidden_size"), layers=profile.get("layer_count"))
+      note = lay.recommend([l for r in rows for l in r["layouts"]], model_bytes, devs)
   return {"schema": SCHEMA, "kind": "providers", "target_id": target.target_id, "default": providers.DEFAULT,
-          "gpu_count": n, "providers": rows}
+          "gpu_count": n, "providers": rows, "note": note}
+
+
+def recommended(profile:dict[str, Any], target, *, engine:str = "vllm", gpus:int | None = None, facts:dict[str, Any] | None = None,
+                seqs:int = 1, context:int | None = None, check_in:list[pathlib.Path] | None = None) -> dict[str, Any]:
+  """The engine settings for this model on this machine's GPUs (workflow/recommend.py): derived, nothing runs.
+  check_in (run folders): also start the engine once with the recommended flags, read its own KV figures, cache its
+  overhead in the newest machine facts there and add predicted against measured as `check`."""
+  from boltbeam.workflow import layout as lay, recommend as rec
+  devs = lay.devices(_hardware_profile()["gpu"])[:gpus or None]
+  args = dict(target=target, seqs=seqs, context=context or rec.CONTEXT)
+  out = {"schema": SCHEMA, "kind": "recommend", "target_id": target.target_id, **rec.setup(profile, facts, engine, devs, **args)}
+  if check_in is None:
+    return out
+  free = gpu_free(target)
+  if not free["free"]:
+    raise Refused("Check needs a free GPU: " + free["reason"])
+  found = lay.newest_facts_file(check_in, target.target_id)
+  try:
+    got = rec.check(out, profile["source"], facts_file=found[0] if found else None, facts=facts)
+  except ValueError as exc:
+    raise Refused(str(exc)) from exc
+  after = rec.setup(profile, rec.facts_with_overhead(facts or {}, engine, got["overhead"], "", path=got["key"]), engine, devs, **args)
+  return {**out, "check": {**got, "after": rec.compare(after, got["overhead"], got["layout"])}}
 
 
 def engines(*, cached:bool = False) -> dict[str, Any]:
@@ -1934,6 +1973,23 @@ def main(argv:list[str] | None = None) -> int:
     p = sub.add_parser(name)
     p.add_argument("--target", required=True)
     p.add_argument("--tinygrad-root", default=None)
+    if name == "providers":
+      p.add_argument("model", nargs="?", help="with this machine's facts, each layout shows its predicted decode limit")
+      p.add_argument("--profile", help="a model_profile.json instead of the model file")
+      p.add_argument("--id", default=None)
+      p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts there")
+  p = sub.add_parser("recommend", help="the engine settings for this model on this machine's GPUs: context, speed and flags (derived; nothing runs)")
+  p.add_argument("model", nargs="?")
+  p.add_argument("--profile", help="a model_profile.json instead of the model file")
+  p.add_argument("--id", default=None)
+  p.add_argument("--target", required=True)
+  p.add_argument("--gpus", type=int, default=None, help="use the first N GPUs (default: every GPU found)")
+  p.add_argument("--engine", default="vllm", choices=list(providers.NAMES))
+  p.add_argument("--seqs", type=int, default=1, help="sequences served together (1: one user)")
+  p.add_argument("--context", type=int, default=None, help="the context the sequence count and the speed are stated at")
+  p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts there")
+  p.add_argument("--check", action="store_true", help="start the engine once with these flags (a free GPU, a minute or two), "
+                 "read its KV cache figures, cache its overhead in the facts and show predicted against measured")
   sub.add_parser("engines", help="look for every engine on this machine now and save what was found").add_argument(
     "--cached", action="store_true", help="reuse saved discovery when settings and paths still match")
   for name in ("compare", "compare-ready", "role-time"):
@@ -1979,7 +2035,17 @@ def main(argv:list[str] | None = None) -> int:
     elif args.command == "detect":
       out = detect()
     elif args.command == "providers":
-      out = provider_list(_target_arg(args.target), pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None)
+      from boltbeam.workflow import layout as lay
+      target = _target_arg(args.target)
+      model = _profile_arg(args) if args.model or args.profile else None
+      out = provider_list(target, pathlib.Path(args.tinygrad_root).expanduser() if args.tinygrad_root else None, profile=model,
+                          facts=lay.newest_facts([pathlib.Path(r).expanduser() for r in args.facts_root], target.target_id))
+    elif args.command == "recommend":
+      from boltbeam.workflow import layout as lay
+      target = _target_arg(args.target)
+      roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
+      out = recommended(_profile_arg(args), target, engine=args.engine, gpus=args.gpus, seqs=args.seqs, context=args.context,
+                        facts=lay.newest_facts(roots, target.target_id), check_in=roots if args.check else None)
     elif args.command == "engines":
       out = engines(cached=args.cached)
     elif args.command == "gpu-free":
