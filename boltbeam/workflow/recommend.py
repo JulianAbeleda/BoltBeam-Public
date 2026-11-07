@@ -612,6 +612,26 @@ def compare(rec:dict[str, Any], got:dict[str, Any], layout:str = "one") -> dict[
 
 # --- Check: one real engine start with the recommended flags -------------------------------------------------------------
 
+def stop_group(proc:subprocess.Popen, grace_s:float = 30.0) -> None:
+  """Stops the server's whole process group. vLLM's per-GPU workers can outlive the server and ignore SIGTERM, holding
+  their memory (2x R9700 TP=2, 2026-11-07), so whatever is left of the group after the grace gets SIGKILL."""
+  for sig in (signal.SIGTERM, signal.SIGKILL):
+    try:
+      os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+      return
+    end = time.monotonic() + grace_s
+    while time.monotonic() < end:
+      try:
+        proc.wait(0.5)
+        os.killpg(proc.pid, 0)  # the server is gone; is anything of its group left?
+      except subprocess.TimeoutExpired:
+        continue
+      except ProcessLookupError:
+        return
+      time.sleep(0.5)
+
+
 def start_engine(cmd:list[str], ready:str, *, env:dict[str, str] | None = None, timeout_s:float = 900.0) -> str:
   """Starts the engine's server with this command and returns its log once it has printed the `ready` text (or it
   exits, or timeout_s passes); the server is then stopped. Nothing is served: the fit lines come before any request."""
@@ -626,15 +646,7 @@ def start_engine(cmd:list[str], ready:str, *, env:dict[str, str] | None = None, 
           break
         time.sleep(2.0)
     finally:
-      for sig in (signal.SIGTERM, signal.SIGKILL):  # the whole group: the engine core is a child
-        try:
-          os.killpg(proc.pid, sig)
-          proc.wait(30)
-          break
-        except subprocess.TimeoutExpired:
-          continue
-        except ProcessLookupError:
-          break
+      stop_group(proc)
     log.seek(0)
     return log.read()
 

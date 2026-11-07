@@ -73,3 +73,18 @@ func TestFirstStartContextAndWarmOneAfterIt(t *testing.T) {
 		}
 	}
 }
+
+func TestLayoutShowsItsBestMtpSpeedAndWhyItIsHeldBack(t *testing.T) {
+	f := Facts{Recommend: sampleRecommend()}
+	l := &f.Recommend.Layouts[0]
+	l.Mtp = map[string]seam.RecFig{"1": {Value: fv(77.9), Kind: "measured"}, "2": {Value: fv(88.9), Kind: "measured"}, "3": {Value: fv(80.8), Kind: "measured"}}
+	body := plain(recommendBody(f, 80))
+	if !strings.Contains(body, "with MTP k=2") || !strings.Contains(body, "88 tok/s") || strings.Contains(body, "k=3") {
+		t.Fatalf("the layout shows the best measured k only:\n%s", body)
+	}
+	note := "not recommended past 2500 tokens of context (stated 4096)"
+	l.MtpNote = &note
+	if body = plain(recommendBody(f, 80)); !strings.Contains(body, note) {
+		t.Fatalf("a held-back MTP says why:\n%s", body)
+	}
+}

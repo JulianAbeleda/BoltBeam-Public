@@ -1130,6 +1130,8 @@ type RecLayout struct {
 	TotalSeqs      *RecFig              `json:"total_seqs"`
 	Batch1Limit    *RecFig              `json:"batch1_limit"`
 	Batch1Expected *RecFig              `json:"batch1_expected"`
+	Mtp            map[string]RecFig    `json:"mtp"`      // batch-1 decode with MTP per draft count k, where measured or derived
+	MtpNote        *string              `json:"mtp_note"` // why MTP is not recommended here despite its speeds
 	Speed          string               `json:"speed"`
 }
 

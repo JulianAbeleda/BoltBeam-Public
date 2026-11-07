@@ -91,6 +91,18 @@ func figLine(label string, fig *seam.RecFig, unit string) string {
 	return fmt.Sprintf("  %-18s %s · %s\n    %s\n", label, v, fig.Kind, stMuted.Render(fig.Formula+": "+strings.Join(fig.Inputs, "; ")))
 }
 
+// bestMtp is the draft count with the highest MTP speed (recommend.setup picks the same k), or nil when none has one.
+func bestMtp(m map[string]seam.RecFig) (string, *seam.RecFig) {
+	var k string
+	var best *seam.RecFig
+	for key, f := range m {
+		if f.Value != nil && (best == nil || *f.Value > *best.Value || (*f.Value == *best.Value && key < k)) {
+			k, best = key, &f
+		}
+	}
+	return k, best
+}
+
 func recommendBody(f Facts, width int) string {
 	r := f.Recommend
 	switch {
@@ -135,6 +147,12 @@ func recommendBody(f Facts, width int) string {
 			}
 		}
 		b.WriteString(figLine("Max sequences", l.MaxSeqs, "") + figLine("All GPUs", l.TotalSeqs, "") + figLine("Batch-1 limit", l.Batch1Limit, " tok/s") + figLine("Batch-1 expected", l.Batch1Expected, " tok/s"))
+		if k, fig := bestMtp(l.Mtp); fig != nil {
+			b.WriteString(figLine("  with MTP k="+k, fig, " tok/s"))
+			if l.MtpNote != nil {
+				b.WriteString("    " + stWarn.Render(*l.MtpNote) + "\n")
+			}
+		}
 		if l.Batch1Limit == nil && l.Speed != "" {
 			b.WriteString("  " + stMuted.Render(l.Speed) + "\n")
 		}
