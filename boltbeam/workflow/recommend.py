@@ -285,7 +285,7 @@ def max_seqs(profile:dict[str, Any], *, weights:float, share:float, usable:float
 # --- the settings ----------------------------------------------------------------------------------------------------
 
 def vllm_settings(profile:dict[str, Any], tb:dict[str, Any], *, kv:str, seqs:int, layout:str, gpus:int, text_only:bool,
-             full_context:int | None, attention:str | None = None, mtp:tuple[int, dict[str, Any]] | None = None, **_) -> list[dict[str, Any]]:
+             full_context:int | None, attention:str | None = None, mtp:tuple[int, dict[str, Any]] | None = None, mtp_held=None, **_) -> list[dict[str, Any]]:
   """Each setting with what it changes and whether to use it here (docs/recommended-setup.md). A flag is None for a
   setting that is advice only."""
   cap = ((profile.get("metadata") or {}).get("context") or {}).get("length")
@@ -300,8 +300,8 @@ def vllm_settings(profile:dict[str, Any], tb:dict[str, Any], *, kv:str, seqs:int
     (f"--max-num-seqs {seqs}", True, "the sequences the engine batches; capacity is in the layout row", "serving several users" if seqs > 1 else "one user"),
     ("--no-enable-prefix-caching", False, "'align' mode costs cache tokens on a hybrid model", "no shared prompts (not known here)"),
     (mtp_flag(mtp[0]) if mtp else "--speculative-config mtp", bool(mtp), f"MTP k={mtp[0]}: {mtp[1]['value']:.0f} tok/s, {mtp[1]['formula']}" if mtp else
-     f"MTP: {MTP_NOTE}", "batch 1, the highest k, beats one-token decode by more than the tie" if mtp else
-     "batch 1 and the checkpoint has an MTP head; accept lengths or the fixed cost are not measured for this model and chip"),
+     mtp_held[0] if mtp_held else f"MTP: {MTP_NOTE}", "batch 1, the highest k, beats one-token decode by more than the tie" if mtp else
+     mtp_held[1] if mtp_held else "batch 1 and the checkpoint has an MTP head; accept lengths or the fixed cost are not measured for this model and chip"),
     (None, False, "4-bit lm_head checkpoint: -1.9 GB read per token and per MTP draft on the 27B; +1.8 GiB for KV. 2 x R9700 TP=2: "
      "56 to 61 tok/s, MTP k=2 92 to 116 (with a split-KV verify), 98.0% top-1 agreement, perplexity 1.228 to 1.242; vLLM 0.31's "
      "Quark loader keeps lm_head bf16 (ParallelLMHead is not a LinearBase), so it needs that loader change",
@@ -409,6 +409,11 @@ def _llama_binary() -> str | None:
 def _vllm_python() -> str | None:
   from boltbeam.collectors import vllm_decode
   return vllm_decode.python()
+
+
+def split_kv_verify(py:str | None) -> bool:  # tools/patches/split-kv-verify.patch in this python's vLLM: no MTP context limit
+  return any("MAX_3D_QUERY_LEN" in f.read_text(errors="ignore") for f in pathlib.Path(py).parent.parent.glob(
+    "lib/python3*/site-packages/vllm/v1/attention/ops/triton_unified_attention.py")) if py else False
 
 
 ENGINES = {
@@ -546,11 +551,13 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   started = next((r for r in rows if r["id"] == layout), {})
   speeds = {k: f for k, f in (started.get("mtp") or {}).items() if f["value"]}
   best = max(speeds, key=lambda k: speeds[k]["value"], default=None)
-  past = row.vllm_mtp_context if provider == "vllm" and row.vllm_mtp_context and context > row.vllm_mtp_context[0] else None
+  past = row.vllm_mtp_context if provider == "vllm" and row.vllm_mtp_context and context > row.vllm_mtp_context[0] and not split_kv_verify(_vllm_python()) else None
   mtp = (best, speeds[best]) if best and seqs == 1 and not past and speeds[best]["value"] > started["batch1_expected"]["value"] * (1 + TIE) else None
   if started.get("mtp") and past:
-    started["mtp_note"] = f"not recommended past {past[0]} tokens of context (stated {context}): {past[1]}"
-  opts = dict(machine_gpus=n, attention=row.vllm_attention, mtp=mtp)
+    started["mtp_note"] = f"not recommended past {past[0]} tokens of context (stated {context}; --context {past[0]} turns it on): {past[1]}"
+  held = None if mtp or not best else (f"MTP k={best}: {speeds[best]['value']:.0f} tok/s at short context, {speeds[best]['formula']}",  # measured, held back
+    started.get("mtp_note") or ("batch > 1 (MTP pays at batch 1)" if seqs != 1 else "no draft count beats one-token decode by more than the tie"))
+  opts = dict(machine_gpus=n, attention=row.vllm_attention, mtp=mtp, mtp_held=held)
   argv = eng.flags(profile, kv=kv, seqs=seqs, layout=layout, gpus=gcount, text_only=text_only, tb=tb, context=fit or context, **opts) if eng.flags else None
   env = dict(row.vllm_env) if provider == "vllm" else {}
   key = (provider, (facts or {}).get("gpus", [{}])[0].get("target_id"), profile.get("hidden_size"), profile.get("layer_count"), profile.get("ffn_size"))
