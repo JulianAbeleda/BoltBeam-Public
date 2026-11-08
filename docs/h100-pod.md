@@ -10,8 +10,12 @@ step by step.
 - RunPod, Secure Cloud, one **H100 SXM 80 GB**. One GPU first: the multi-GPU session comes later (below).
 - The PyTorch template (a `-devel` CUDA image: it carries `nvcc`, which the kernel timer compiles with). The
   script checks in its first step and says what is missing.
-- A **40 GB volume** mounted at `/workspace`. The script keeps everything there (`/workspace/boltbeam`), so a
-  stopped pod keeps its model, its llama.cpp build and its runs; a restart continues where it left off.
+- An **80 GB volume** mounted at `/workspace` (40 GB is enough with `ENGINES=llama.cpp`; vLLM and TensorRT-LLM
+  add about 20 GB between them). The script keeps everything there (`/workspace/boltbeam`), so a stopped pod keeps
+  its model, its engines and its runs; a restart continues where it left off.
+- A host on **CUDA 13** (driver 580 or newer): in the console's GPU filter, pick CUDA version 13.0 or higher.
+  vLLM 0.31.0 and TensorRT-LLM 1.2.1 are built for it. On an older driver step 4 installs vLLM's CUDA 12.9 build
+  and skips TensorRT-LLM, saying why; llama.cpp is unaffected.
 - **SSH on** ("SSH over exposed TCP"): the pod page then shows `ssh root@HOST -p PORT`, and `scp` works for the
   bundle.
 
@@ -34,11 +38,11 @@ The script runs eleven steps in order, each idempotent (a second run finds what 
 | step | what | about |
 |---|---|---|
 | 1 facts | nvidia-smi, nvcc, nsys, CUDA version, free disk, written to `facts.json` | seconds |
-| 2 packages | apt, only what is missing, only as root: cmake, git, build-essential, python3-venv, curl; nsys from the NVIDIA apt repo (`nsight-systems-cli`) when the image has none | 1 to 3 min |
+| 2 packages | apt, only what is missing, only as root: cmake, git, build-essential, python3-venv, curl; libopenmpi-dev for TensorRT-LLM; nsys from the NVIDIA apt repo (`nsight-systems-cli`) when the image has none | 1 to 3 min |
 | 3 boltbeam | the public mirror at `main`, a venv under `/workspace/boltbeam`, `pip install .` plus numpy; the tinygrad fork beside it (branch `exp`) when it is public | 1 to 2 min |
-| 4 llama.cpp | the pinned commit (`LLAMA_REF`, the one the RTX 5090 record used), `cmake -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF`, `CMAKE_CUDA_ARCHITECTURES` from the GPU's compute capability (90 on an H100), `llama-bench` and `llama-batched-bench` built | 5 to 10 min |
+| 4 engines | llama.cpp at the pinned commit (`LLAMA_REF`, the one the RTX 5090 record used), `cmake -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF`, `CMAKE_CUDA_ARCHITECTURES` from the GPU's compute capability (90 on an H100), `llama-bench` and `llama-batched-bench` built. Then vLLM and TensorRT-LLM at their pins in `boltbeam/data/engine_pins.json`, each in its own venv under `/workspace/boltbeam/engines` (they need different torch builds); TensorRT-LLM's wheels come from NVIDIA's index. `ENGINES` picks which (default: all three; Ollama is not installed). A failed optional engine is noted and the run goes on | 5 to 10 min for llama.cpp; about 5 more for each Python engine |
 | 5 model | Qwen3-8B-Q4_K_M.gguf (5.0 GB) from Hugging Face with resume; sha256 computed and compared to the known digest | 2 to 5 min |
-| 6 env | `env.sh`: PATH with the CUDA bin folder and nsys, `BOLTBEAM_LLAMA_BENCH`, `BOLTBEAM_GGML_CUDA_SRC`, `TMPDIR` and `BOLTBEAM_CUDA_CACHE` on the volume | seconds |
+| 6 env | `env.sh`: PATH with the CUDA bin folder and nsys, `BOLTBEAM_LLAMA_BENCH`, `BOLTBEAM_GGML_CUDA_SRC`, `TMPDIR` and `BOLTBEAM_CUDA_CACHE` on the volume, and `BOLTBEAM_VLLM_PYTHON` and `BOLTBEAM_TRTLLM_PYTHON` for the engines step 4 installed, so `boltbeam doctor` finds them | seconds |
 | 7 check | `boltbeam doctor` (when the ref has it), then `boltbeam selfcheck` | under 1 min |
 | 8 autoscan | the H100 is not in the registry, so BoltBeam measures its read bandwidth and matrix rate and keeps the profile under `/workspace/boltbeam/chips`; the profile id is the target of the runs | about 1 min |
 | 9 pipeline | `--role-time in-model` (two nsys captures of llama-bench), then `--role-time generic` (the engine's `mul_mat_vec_q` compiled by nvcc and timed alone); both with `--analyze --no-search` | 1 to 2 min each |
@@ -46,7 +50,11 @@ The script runs eleven steps in order, each idempotent (a second run finds what 
 | 11 bundle | `boltbeam-h100-<date>.tgz`: both runs' JSON, `report.html`, `summary.md`, the facts and the logs; no nsys binaries | seconds |
 
 Settings are environment variables with defaults (`WORK`, `MODEL_URL`, `MODEL_SHA256`, `BOLTBEAM_REF`,
-`LLAMA_REF`, `TINYGRAD_REF`, `CUDA_ARCH`, `RUN_TAG`, `JOBS`); the script's header lists them.
+`LLAMA_REF`, `TINYGRAD_REF`, `ENGINES`, `VLLM_VERSION`, `TRTLLM_VERSION`, `VLLM_CUDA`, `TRTLLM_PYTHON`, `CUDA_ARCH`,
+`RUN_TAG`, `JOBS`); the script's header lists them.
+
+Steps 9 and 10 measure with llama.cpp on the GGUF. vLLM and TensorRT-LLM are installed so a session on the pod can
+use them (they take Hugging Face checkpoints, not the GGUF); the script does not yet run them itself.
 
 ## What comes back
 

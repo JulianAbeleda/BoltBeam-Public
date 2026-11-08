@@ -22,6 +22,10 @@
 #   BOLTBEAM_REPO, BOLTBEAM_REF   the public mirror, main
 #   LLAMA_REPO, LLAMA_REF         ggml-org/llama.cpp at commit 50569eb87
 #   TINYGRAD_REPO, TINYGRAD_REF   the tinygrad fork, branch exp; TINYGRAD_REF= skips it
+#   ENGINES       the CUDA engines step 4 installs: "llama.cpp vllm tensorrt-llm" (Ollama is not installed)
+#   VLLM_VERSION, TRTLLM_VERSION  default: the pins in boltbeam/data/engine_pins.json (vLLM 0.31.0, TensorRT-LLM 1.2.1)
+#   VLLM_CUDA     cu130 or cu129; default: cu130 on a driver of 580 or newer, else cu129
+#   TRTLLM_PYTHON the interpreter for TensorRT-LLM's venv (3.10 or 3.12 have wheels); default: PYTHON
 #   CUDA_ARCH     CMAKE_CUDA_ARCHITECTURES; default: the GPU's compute capability from nvidia-smi (H100: 90)
 #   RUN_TAG       the run ids: <RUN_TAG>-in-model and <RUN_TAG>-generic; default h100
 #   PYTHON        the interpreter for the venv; default python3 (3.10 or newer)
@@ -30,11 +34,14 @@
 # Steps:
 #    1 facts        nvidia-smi, nvcc, nsys, CUDA version, free disk -> $WORK/facts.json
 #    2 packages     apt only what is missing, only as root (cmake, git, build-essential, python3-venv, curl;
-#                   nsys from the NVIDIA apt repo as nsight-systems-cli)
+#                   libopenmpi-dev when ENGINES has tensorrt-llm; nsys from the NVIDIA apt repo as nsight-systems-cli)
 #    3 boltbeam     clone, venv under $WORK, pip install . plus numpy; the tinygrad fork beside it when public
-#    4 llama.cpp    clone at LLAMA_REF, cmake -DGGML_CUDA=ON Release, CUDA arch from the GPU, build llama-bench
+#    4 engines      llama.cpp: clone at LLAMA_REF, cmake -DGGML_CUDA=ON Release, CUDA arch from the GPU, llama-bench;
+#                   vLLM and TensorRT-LLM: each in its own venv under $WORK/engines at its pinned version (they need
+#                   different torch builds); a failed optional engine is noted and the run goes on with llama.cpp
 #    5 model        download fresh, full sha256 verified before installation
-#    6 env          $WORK/env.sh (PATH, BOLTBEAM_LLAMA_BENCH, BOLTBEAM_GGML_CUDA_SRC, TMPDIR, BOLTBEAM_CUDA_CACHE)
+#    6 env          $WORK/env.sh (PATH, BOLTBEAM_LLAMA_BENCH, BOLTBEAM_GGML_CUDA_SRC, TMPDIR, BOLTBEAM_CUDA_CACHE,
+#                   BOLTBEAM_VLLM_PYTHON and BOLTBEAM_TRTLLM_PYTHON for the engines step 4 installed)
 #    7 check        boltbeam doctor when the ref has it, then boltbeam selfcheck
 #    8 autoscan     this GPU's profile; its id is the --target of the runs
 #    9 pipeline     --role-time in-model (nsys), then generic (BoltBeam's kernel timer)
@@ -56,6 +63,11 @@ CUDA_ARCH="${CUDA_ARCH:-}"
 RUN_TAG="${RUN_TAG:-h100}"
 PYTHON="${PYTHON:-python3}"
 JOBS="${JOBS:-}"
+ENGINES="${ENGINES-llama.cpp vllm tensorrt-llm}"
+VLLM_VERSION="${VLLM_VERSION:-}"
+TRTLLM_VERSION="${TRTLLM_VERSION:-}"
+VLLM_CUDA="${VLLM_CUDA:-}"
+TRTLLM_PYTHON="${TRTLLM_PYTHON:-}"
 
 BOLTBEAM_DIR="$WORK/BoltBeam"
 VENV="$WORK/venv"
@@ -66,7 +78,10 @@ MODEL_NAME="$(basename "$MODEL_URL")"
 MODEL="$WORK/models/$MODEL_NAME"
 ENV_FILE="$WORK/env.sh"
 RUNS="$WORK/runs"
-STEPS=(facts packages boltbeam llama.cpp model env check autoscan pipeline results bundle)
+ENGINES_DIR="$WORK/engines"
+VLLM_VENV="$ENGINES_DIR/vllm"
+TRTLLM_VENV="$ENGINES_DIR/tensorrt-llm"
+STEPS=(facts packages boltbeam engines model env check autoscan pipeline results bundle)
 
 DRY=0
 FROM=1
@@ -74,6 +89,7 @@ TO=11
 step_number() {  # a step name or number -> its number
   local v="$1" i
   if ! [[ "$v" =~ ^[0-9]+$ ]]; then
+    [[ "$v" == llama.cpp ]] && v=engines   # step 4's name before it installed every engine
     for i in "${!STEPS[@]}"; do [[ "${STEPS[$i]}" == "$v" ]] && v=$((i + 1)); done
     [[ "$v" =~ ^[0-9]+$ ]] || { echo "unknown step '$v'; one of 1..11 or ${STEPS[*]}" >&2; exit 2; }
   fi
@@ -88,7 +104,7 @@ while (($#)); do
     --to) shift; TO="$(step_number "${1:-}")" ;;
     --to=*) TO="$(step_number "${1#--to=}")" ;;
     --multi) echo "--multi: not yet" >&2; exit 2 ;;
-    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
   shift
@@ -135,6 +151,21 @@ nvcc_bin() {
 gpu_compute_cap() {  # "9.0" -> "90"
   have nvidia-smi || return 1
   nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .'
+}
+
+# wants ENGINE: ENGINES names it
+wants() { [[ " $ENGINES " == *" $1 "* ]]; }
+
+driver_major() {  # "580.95.05" -> "580"; empty with no nvidia-smi
+  have nvidia-smi || return 1
+  nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1 | tr -d ' '
+}
+
+# pin ENGINE: its version from the checkout's engine_pins.json (the one table of engine versions)
+pin() {
+  local f="$BOLTBEAM_DIR/boltbeam/data/engine_pins.json"
+  [[ -f "$f" ]] || return 1
+  "$PYTHON" -c 'import json,sys; e=json.load(open(sys.argv[1]))["engines"].get(sys.argv[2]) or {}; print(e.get("version") or "")' "$f" "$1"
 }
 
 cpus() { nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4; }
@@ -242,10 +273,13 @@ step_packages() {
   { have gcc && have g++ && have make; } || { missing+=(build-essential); pkgs+=(build-essential); }
   have curl || { missing+=(curl); pkgs+=(curl); }
   "$PYTHON" -c 'import venv, ensurepip' >/dev/null 2>&1 || { missing+=(python3-venv); pkgs+=(python3-venv); }
+  if wants tensorrt-llm && ! { have mpicc || [[ -e /usr/include/x86_64-linux-gnu/openmpi ]] || [[ -e /usr/lib/x86_64-linux-gnu/openmpi ]]; }; then
+    missing+=(libopenmpi-dev); pkgs+=(libopenmpi-dev)
+  fi
   local nsys_missing=0
   nsys_bin >/dev/null || nsys_missing=1
   if ((DRY)); then
-    note "on this machine: ${missing[*]:-nothing} missing of cmake git build-essential curl python3-venv; nsys $( ((nsys_missing)) && echo absent || echo present)"
+    note "on this machine: ${missing[*]:-nothing} missing of cmake git build-essential curl python3-venv$(wants tensorrt-llm && echo ' libopenmpi-dev'); nsys $( ((nsys_missing)) && echo absent || echo present)"
     echo "+ [root] apt-get update -q && apt-get install -y -q <the missing ones>"
     echo "+ [root, nsys absent] the NVIDIA apt repo (cuda-keyring for this Ubuntu) && apt-get install -y -q nsight-systems-cli"
     return
@@ -297,6 +331,67 @@ step_boltbeam() {
   git_at "$TINYGRAD_DIR" "$TINYGRAD_REPO" "$TINYGRAD_REF"
   exists -x "$TINYGRAD_DIR/.venv/bin/python" || run "$PYTHON" -m venv "$TINYGRAD_DIR/.venv"
   exists -f "$TINYGRAD_DIR/.venv/.numpy" || { run "$TINYGRAD_DIR/.venv/bin/pip" install -q numpy; run touch "$TINYGRAD_DIR/.venv/.numpy"; }
+}
+
+step_engines() {
+  if wants llama.cpp; then step_llama; else note "llama.cpp skipped: not in ENGINES (steps 9 and 10 measure with it)"; fi
+  if wants vllm; then install_vllm || note "vLLM not installed (see above); the run goes on with llama.cpp; rerun --from 4 after fixing"; fi
+  if wants tensorrt-llm; then install_trtllm || note "TensorRT-LLM not installed (see above); the run goes on with llama.cpp; rerun --from 4 after fixing"; fi
+  return 0
+}
+
+# vLLM at its pin in its own venv: the default wheel is built for CUDA 13 (driver 580 or newer); an older driver
+# takes the cu129 build from vLLM's own index with the matching torch.
+install_vllm() {
+  local ver cuda drv
+  ver="${VLLM_VERSION:-$(pin vllm || true)}"
+  ((DRY)) && ver="${ver:-<the vllm pin>}"
+  [[ -n "$ver" ]] || { note "no vLLM version: set VLLM_VERSION or run step 3 first"; return 1; }
+  drv="$(driver_major || true)"
+  cuda="$VLLM_CUDA"
+  if [[ -z "$cuda" ]]; then
+    if [[ -z "$drv" ]] && ((DRY)); then cuda=cu130; elif [[ -n "$drv" ]] && ((drv >= 580)); then cuda=cu130; else cuda=cu129; fi
+  fi
+  local stamp="$VLLM_VENV/.pod-vllm-$ver-$cuda"
+  if exists -f "$stamp"; then note "vLLM $ver ($cuda) already installed in $VLLM_VENV"; return 0; fi
+  note "vLLM $ver for $cuda (driver ${drv:-unknown})"
+  exists -x "$VLLM_VENV/bin/python" || run "$PYTHON" -m venv "$VLLM_VENV" || return 1
+  run "$VLLM_VENV/bin/pip" install -q --no-cache-dir --upgrade pip || return 1
+  if [[ "$cuda" == cu130 ]]; then
+    run "$VLLM_VENV/bin/pip" install -q --no-cache-dir "vllm==$ver" || return 1
+  else
+    run "$VLLM_VENV/bin/pip" install -q --no-cache-dir "vllm==$ver" \
+      --extra-index-url "https://wheels.vllm.ai/$ver/$cuda" --extra-index-url "https://download.pytorch.org/whl/$cuda" || return 1
+  fi
+  run "$VLLM_VENV/bin/python" -c 'import vllm, torch; print("vllm", vllm.__version__, "torch", torch.__version__, "cuda", torch.version.cuda)' || return 1
+  run touch "$stamp"
+}
+
+# TensorRT-LLM at its pin in its own venv. Its wheels are on NVIDIA's index (PyPI has only the source), for
+# Python 3.10 and 3.12, built for CUDA 13 (driver 580 or newer), with torch 2.9 from the cu130 index (its pin is torch<=2.10.0a0).
+install_trtllm() {
+  local ver py drv pyv
+  ver="${TRTLLM_VERSION:-$(pin tensorrt-llm || true)}"
+  ((DRY)) && ver="${ver:-<the tensorrt-llm pin>}"
+  [[ -n "$ver" ]] || { note "no TensorRT-LLM version: set TRTLLM_VERSION or run step 3 first"; return 1; }
+  py="${TRTLLM_PYTHON:-$PYTHON}"
+  drv="$(driver_major || true)"
+  if ! ((DRY)); then
+    [[ -n "$drv" ]] && ((drv >= 580)) || { note "TensorRT-LLM $ver needs a driver of 580 or newer (CUDA 13); this pod has ${drv:-none}: rent a host filtered to CUDA 13"; return 1; }
+    pyv="$("$py" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+    [[ "$pyv" == 3.10 || "$pyv" == 3.12 ]] || { note "TensorRT-LLM wheels are for Python 3.10 and 3.12; $py is $pyv: set TRTLLM_PYTHON"; return 1; }
+  fi
+  local stamp="$TRTLLM_VENV/.pod-trtllm-$ver"
+  if exists -f "$stamp"; then note "TensorRT-LLM $ver already installed in $TRTLLM_VENV"; return 0; fi
+  note "TensorRT-LLM $ver (driver ${drv:-unknown}, $py)"
+  exists -x "$TRTLLM_VENV/bin/python" || run "$py" -m venv "$TRTLLM_VENV" || return 1
+  run "$TRTLLM_VENV/bin/pip" install -q --no-cache-dir --upgrade pip setuptools wheel || return 1
+  run "$TRTLLM_VENV/bin/pip" install -q --no-cache-dir "torch>=2.9.1,<2.10" torchvision --index-url https://download.pytorch.org/whl/cu130 || return 1
+  run_sh '"$1" -c "import torch; print(\"torch==\" + torch.__version__)" > "$2"' "$TRTLLM_VENV/bin/python" "$TRTLLM_VENV/torch-constraint.txt" || return 1
+  run "$TRTLLM_VENV/bin/pip" install -q --no-cache-dir "tensorrt_llm==$ver" -c "$TRTLLM_VENV/torch-constraint.txt" \
+    --extra-index-url https://pypi.nvidia.com --extra-index-url https://download.pytorch.org/whl/cu130 || return 1
+  run "$TRTLLM_VENV/bin/python" -c 'import tensorrt_llm, torch; print("tensorrt_llm", tensorrt_llm.__version__, "torch", torch.__version__)' || return 1
+  run touch "$stamp"
 }
 
 step_llama() {
@@ -371,6 +466,8 @@ step_env() {
       BOLTBEAM_CHIPS_DIR "$WORK/chips" TMPDIR "$WORK/tmp" BOLTBEAM_CUDA_CACHE "$WORK/tmp/boltbeam-cuda" \
       BOLTBEAM_MODEL "$MODEL"
     [[ -z "$TINYGRAD_REF" ]] || printf 'export BOLTBEAM_TINYGRAD_ROOT=%q\n' "$TINYGRAD_DIR"
+    if wants vllm && { ((DRY)) || compgen -G "$VLLM_VENV/.pod-vllm-*" >/dev/null; }; then printf 'export BOLTBEAM_VLLM_PYTHON=%q\n' "$VLLM_VENV/bin/python"; fi
+    if wants tensorrt-llm && { ((DRY)) || compgen -G "$TRTLLM_VENV/.pod-trtllm-*" >/dev/null; }; then printf 'export BOLTBEAM_TRTLLM_PYTHON=%q\n' "$TRTLLM_VENV/bin/python"; fi
   )"
   echo "+ write $ENV_FILE:"
   sed 's/^/    /' <<<"$text"
@@ -487,6 +584,7 @@ say "pod-setup $( ((DRY)) && echo '(dry run) ' )WORK=$WORK"
 note "MODEL_URL=$MODEL_URL"
 note "MODEL_SHA256=${MODEL_SHA256:-<none>}  BOLTBEAM=$BOLTBEAM_REPO@$BOLTBEAM_REF  LLAMA=$LLAMA_REPO@$LLAMA_REF"
 note "TINYGRAD=$( [[ -n "$TINYGRAD_REF" ]] && echo "$TINYGRAD_REPO@$TINYGRAD_REF" || echo skipped )"
+note "ENGINES=${ENGINES:-<none>}  VLLM_VERSION=${VLLM_VERSION:-<pin>}  TRTLLM_VERSION=${TRTLLM_VERSION:-<pin>}  VLLM_CUDA=${VLLM_CUDA:-<from the driver>}"
 note "CUDA_ARCH=$(cuda_arch)  RUN_TAG=$RUN_TAG  PYTHON=$PYTHON  steps $FROM to $TO"
 
 if ((DRY)); then
@@ -525,7 +623,7 @@ else
   trap 'rc=$?; if ((rc && current > 0)); then echo "FAILED in step $current (${STEPS[$((current - 1))]}); fix it and rerun: $0 --from $current" >&2; fi; exit $rc' EXIT
 fi
 
-fns=(step_facts step_packages step_boltbeam step_llama step_model step_env step_check step_autoscan step_pipeline step_results step_bundle)
+fns=(step_facts step_packages step_boltbeam step_engines step_model step_env step_check step_autoscan step_pipeline step_results step_bundle)
 for i in "${!fns[@]}"; do
   current=$((i + 1))
   ((current < FROM || current > TO)) && continue
