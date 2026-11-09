@@ -210,19 +210,6 @@ python3 -m boltbeam.cli prefill-roofline-ladder --baseline before.json --candida
 python3 -m boltbeam.cli prefill-role-trace --role ffn_gate_up --quant Q4_K --shape 12288x4096
 ```
 
-Against a reference runtime, per workload (ours = tinygrad HCQ graph profile, vLLM = nsys sqlite):
-
-```
-python3 -m boltbeam.cli lifecycle-compare --out lc.json --markdown lc.md        # default Nemotron-H 4B manifest
-python3 -m boltbeam.cli lifecycle-compare --manifest m.json --workloads decode_b64
-```
-
-It splits each workload's wall gap into GEMM-role deltas, non-GEMM category deltas and a lifecycle delta
-(wall minus kernel sum, plus launch counts). A side with no trace is reported as `missing` together with
-the command that would produce it (`boltbeam.lifecycle_comparison.v1`). The default manifest reads its
-roots from the environment: `TINYGRAD_ROOT`, `VLLM_BENCH_ROOT`, `GPU_RUN`, `LIFECYCLE_TRACES_DIR`,
-`KERNEL_AUDIT_DIR`; a root that is not set is written as its `$VARIABLE` (`--print-manifest` shows them).
-
 ## 6. The verdict, and the ledger
 
 ```
@@ -239,19 +226,12 @@ same refuted idea twice.
 
 ## 7. The search space, cut before the GPU runs
 
-Three stages, cheap to expensive:
-
-```
-python3 -m boltbeam.cli propose-semantic-dimensions spec.json --out request.json      # BubbleBeam
-python3 -m boltbeam.cli export-semantic-population request.json --out population.json
-python3 -m boltbeam.cli assess-semantic-population population.json --out evidence.json # FutureSight
-python3 -m boltbeam.cli semantic-campaign request.json --futuresight-evidence evidence.json \
-  --provider-command "python3 extra/llm_research/search_provider.py" --out results.json  # needs a GPU
-```
-
-BubbleBeam works out which values are legal from the chip's declared facts. FutureSight
-rejects what cannot fit or cannot fill the chip and orders the rest. Only what survives costs
-GPU time. The first two run on the main processor and need no hardware.
+The per-role kernel search (the screen's Compare, `python3 -m boltbeam.workflow.screen compare`) proposes the legal
+dimensions from the chip's declared facts (BubbleBeam), rejects what cannot fit or fill the chip and orders the rest
+(FutureSight), and only then spends GPU time on what survives (`boltbeam/search/role_compare.py`). The standalone
+campaign commands that once exposed each stage (`propose-semantic-dimensions`, `export-semantic-population`,
+`assess-semantic-population`, `semantic-campaign`, `search-full-kernel`, the `mr7-*`, `mr8-*`, `mr9-*`, `mr12-*` and
+`mr13-*` commands) are gone; their records stay in [semantic-campaign.md](semantic-campaign.md) and the MR documents.
 
 ## On a screen, or as JSON for an agent
 
@@ -264,20 +244,19 @@ chip, the run stages with live status, and the results with measured speed again
 
 | You have | You can run |
 |---|---|
-| this repo and a model file | `inspect`, `roofline-theoretical`, `emit-search`, `vocab`, `analyze`, `load`, `autoscan`, `boundary-plan`, `propose-semantic-dimensions`, `assess-semantic-population` |
+| this repo and a model file | `inspect`, `roofline-theoretical`, `emit-search`, `vocab`, `analyze`, `load`, `autoscan`, `boundary-plan` |
 | a profiler trace from any vendor | `import-ncu`, `import-hw-trace`, `compare-hw-trace`, `profiler-report`, `roofline`, `evaluate`, `ledger` |
-| the tinygrad fork and a GPU | `semantic-campaign`, `search-full-kernel`, `collect-hw-trace`, `mr7-provider-run` |
+| the tinygrad fork and a GPU | `collect-hw-trace`, the screen's `compare` |
 
 `python3 -m boltbeam.cli --help` lists every command; each one takes `--help` too.
 
 ## What actually needs tinygrad
 
-Almost nothing. All 60 commands load and `--help` with no tinygrad anywhere on the machine, and
-BoltBeam never imports it on any path the command line reaches. Only two things want a real checkout:
+Almost nothing. Every command loads and takes `--help` with no tinygrad anywhere on the machine, and
+BoltBeam never imports it on any path the command line reaches. Only one thing wants a real checkout:
 
 - `collect-hw-trace`, which drives a run and collects the trace. It runs the model, so it needs the
   thing that runs models.
-- `mr12-static-audit`, which audits tinygrad's own source. It needs the source it is auditing.
 
 `analyze` writes commands that mention the checkout but does not read it. Without one it writes
 `$TINYGRAD_ROOT` and reports the three helper scripts as absent, which is true and says so.

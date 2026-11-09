@@ -349,16 +349,19 @@ def cached_machine(run:pathlib.Path, devs:list[dict[str, Any]]) -> dict[str, Any
 
 
 def stale_reason(cached:dict[str, Any], *, driver:str | None,
-                 fresh_read:Callable[[dict[str, Any]], float] | None) -> str | None:
+                 fresh_read:Callable[[dict[str, Any]], float] | None, confirm:int = 3) -> str | None:
   """Why cached machine facts no longer stand for this machine, or None when they still do. Not their age: a figure
   goes stale when what produced it changes, and the test is whether it still reproduces. The driver they were
-  measured under must be the one loaded now; each GPU's probe figure must carry its runs and their spread u, and one
-  fresh native read must be neither above the best by more than u (the cache understates the GPU, and a kernel would
+  measured under must be the one loaded now; each GPU's probe figure must carry its runs and their spread u, and fresh
+  native reads must be neither above the best by more than u (the cache understates the GPU, and a kernel would
   beat its limit) nor below the slowest run by more than u (the GPU is now slower than anything that made the
-  figure). A single read just under a best-of-n is ordinary: a new run falls outside n runs' range with probability
-  2/(n+1), so a two-sided band on the best called a 0.3% dip stale every other time. A month-old 1692 GB/s read on the RTX 5090 was reused while the GPU read
-  1712, and a kernel that streamed 1697 was refused as faster than its limit (2026-11-08). Chip-profile and registry
-  figures are not verified here: the profile is remeasured by autoscan, and a registry figure was never this GPU's."""
+  figure). One read decides only when it lands inside; a read outside is read again, up to confirm reads, and their
+  median decides. A single new run falls outside n runs' range with probability 2/(n+1), and one read 0.4% over a
+  three-run spread flagged the 5090's cache stale and the remeasure landed below it (2026-11-09). A month-old
+  1692 GB/s read on the RTX 5090 was reused while the GPU read 1712, and a kernel that streamed 1697 was refused as
+  faster than its limit (2026-11-08): that holds on every read, so the median still finds it. Chip-profile and
+  registry figures are not verified here: the profile is remeasured by autoscan, and a registry figure was never
+  this GPU's."""
   if driver and cached.get("driver") != driver:
     return f"measured under driver {cached.get('driver') or 'not recorded'}, the loaded driver is {driver}"
   for g in cached.get("gpus") or []:
@@ -372,12 +375,17 @@ def stale_reason(cached:dict[str, Any], *, driver:str | None,
       return f"GPU {g.get('index')}: its read bandwidth has no repeated runs to verify a fresh read against"
     if fresh_read is None:
       return None  # no native read here: nothing could verify a remeasure either
-    now = fresh_read(g)
-    if now > g["read_gbs"] * (1 + u):
-      return (f"GPU {g.get('index')} reads {now:.1f} GB/s now, {now / g['read_gbs'] - 1:+.1%} over the cached best "
+    hi, lo = g["read_gbs"] * (1 + u), min(runs) * (1 - u)
+    reads = [fresh_read(g)]
+    if not lo <= reads[0] <= hi:
+      reads += [fresh_read(g) for _ in range(confirm - 1)]
+    now = sorted(reads)[len(reads) // 2]
+    said = f"reads {now:.1f} GB/s now" + (f" (median of {len(reads)} reads)" if len(reads) > 1 else "")
+    if now > hi:
+      return (f"GPU {g.get('index')} {said}, {now / g['read_gbs'] - 1:+.1%} over the cached best "
               f"{g['read_gbs']:.1f}, more than its runs' spread of {u:.1%}: the cache understates the GPU")
-    if now < min(runs) * (1 - u):
-      return (f"GPU {g.get('index')} reads {now:.1f} GB/s now, {now / min(runs) - 1:+.1%} under the slowest run "
+    if now < lo:
+      return (f"GPU {g.get('index')} {said}, {now / min(runs) - 1:+.1%} under the slowest run "
               f"{min(runs):.1f} that made the cached figure, more than their spread of {u:.1%}")
   return None
 

@@ -1,9 +1,6 @@
-"""Truth, identity, and immutable product contracts."""
-from boltbeam.core.facts import Fact, TruthStatus
-from boltbeam.core.requirements import (EvidenceRequirement, RequirementLevel, RequirementResult,
-                                        RequirementStatus, evaluate_requirements, register_predicate)
-from boltbeam.core.system import SystemSnapshot
+"""Truth, identity, and immutable experiment contracts.
 
-__all__ = ["EvidenceRequirement", "Fact", "RequirementLevel",
-           "RequirementResult", "RequirementStatus", "SystemSnapshot", "TruthStatus", "evaluate_requirements",
-           "register_predicate"]
+Import the submodule you need (core.canonical, core.experiment, core.facts, core.policy, core.requirements, core.system).
+The package itself imports nothing: artifacts.base reads core.canonical, and core.experiment and core.facts read
+artifacts.base back, so an eager re-export here made whichever side was imported first fail with a partial module.
+"""

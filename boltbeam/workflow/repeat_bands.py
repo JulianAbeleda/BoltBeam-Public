@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import math
+import statistics
 import pathlib
 from typing import Any
 
@@ -12,6 +13,7 @@ from boltbeam.workflow.common import load_manifest, read_json, write_json
 SCHEMA = "boltbeam.repeat_bands.v1"
 ARTIFACT = "repeat_bands.json"
 PLAN_SCHEMA = "boltbeam.repeat_plan.v1"
+PLAN = "repeat_plan.json"  # the plan a repeated pipeline (screen pipeline --repeats) fixes in its first run
 PIN_RUNS = 4  # runs a band needs, fixed before collection, before it may justify an engine pin; fewer is a weak verdict
 RULE = ("a row moved when the after value lies outside the range of n independent before runs of its exact setup; "
         "with no change, that happens with probability 2/(n+1) per row (exchangeable runs)")
@@ -222,6 +224,25 @@ def find(run:pathlib.Path, part:str, *, record:dict | None = None) -> dict | Non
       return None
     row.update(measured)  # a pair saved before n was recorded reads as its two runs
   return {**result, **strength(n), "plan": record.get("plan"), "sources": record["sources"]}
+
+
+def summary(run:pathlib.Path) -> dict | None:
+  """This run's repeat band as the screen shows it: n, the chance a row reads moved with no change, why it cannot
+  justify an engine pin (pin_words), and per part the untraced time over the n runs: its median, range and spread
+  ((high - low) / median). None without a band for this exact setup."""
+  record = _read(run, ARTIFACT)
+  names = sorted({p for c in record.get("calibrations", [record] if record.get("scope") else []) for p in c.get("parts", {})})
+  bands = {p: band for p in names if (band := find(run, p, record=record))}
+  if not bands:
+    return None
+  lines = []
+  for part, band in bands.items():
+    if t := band.get("timing", {}).get("untraced_ms"):
+      med = statistics.median(t["runs_ms"])
+      lines.append(f"{part}: median {med:.3f} ms, {t['low_ms']:.3f} to {t['high_ms']:.3f} ms over {band['n']} runs "
+                   f"(spread {100 * (t['high_ms'] - t['low_ms']) / med:.1f}%)")
+  first = next(iter(bands.values()))
+  return {**strength(first["n"]), "pin": pin_words(first), "lines": lines}
 
 
 def pin_words(band:dict | None) -> str | None:

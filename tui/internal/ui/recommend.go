@@ -41,7 +41,7 @@ func (m *Model) loadRecommend() tea.Cmd {
 		return nil
 	}
 	m.f.RecKey, m.f.Recommend, m.f.RecErr = key, nil, ""
-	return m.askRecommend(key, false)
+	return tea.Batch(m.askRecommend(key, false), m.loadMtp())
 }
 
 func (m Model) askRecommend(key string, check bool) tea.Cmd {
@@ -185,23 +185,26 @@ func recommendBody(f Facts, width int) string {
 			commas(c.Before.Predicted), c.Before.PredictedKind, commas(c.Before.Measured), 100*c.Before.Error,
 			c.Overhead.Bytes/(1<<30), commas(c.After.Predicted), 100*c.After.Error)
 	}
-	return b.String()
+	return b.String() + mtpBody(f)
 }
 
 func recommendActions(f Facts) []action {
 	r := f.Recommend
-	if r == nil || r.Command == nil {
+	if r == nil {
 		return []action{note("  nothing to copy yet")}
+	}
+	if r.Command == nil {
+		return append([]action{note("  nothing to copy yet")}, mtpAction(f)...)
 	}
 	check := action{"[ Check ] start the engine once with these flags and compare", "reccheck", ""}
 	if f.RecChecking {
 		check = note("  " + f.Spin + " checking: one engine start, a minute or two…")
 	}
-	return []action{
+	return append([]action{
 		{"[ Copy engine command line ]", "reccopy", "command"},
 		{"[ Copy Arkey vllm_args ]", "reccopy", "arkey"},
 		check,
-	}
+	}, mtpAction(f)...)
 }
 
 // copyText puts text on the clipboard: the system's where there is one, and the terminal's own (OSC 52) always,

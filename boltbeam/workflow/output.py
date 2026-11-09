@@ -102,6 +102,7 @@ def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str
     f"- Measurement: {measured}" if measured else f"- Analysis status: `{report.get('status', 'not_analyzed')}`",
     *([f"- Engine settings: {'; '.join(words)}"] if (words := (res.get("engine") or {}).get("settings_words")) else []),
     *([f"- Speculation measured: {'; '.join(spec)}"] if (spec := (res.get("engine") or {}).get("speculation_words")) else []),
+    *[f"- {line}" for line in (res.get("engine") or {}).get("build_lines") or []],
     "",
     "## Next Step",
     "",

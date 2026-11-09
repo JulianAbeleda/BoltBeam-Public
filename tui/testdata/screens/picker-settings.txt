@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Engine settings                                                              │
+│ Settings are what the run asks the engine for. Each one changes what is      │
+│ measured, so the Run page says it. A setting left unset keeps the engine's   │
+│ own choice.                                                                  │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Choose                                                                       │
+│ ▸   chunk size         512                                                   │
+│       requested engine chunk size                                            │
+│     matrix backends    TRITON                                                │
+│       the compiler's matrix backends                                         │
+│     MTP draft tokens   not set                                               │
+│       draft tokens per step                                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit

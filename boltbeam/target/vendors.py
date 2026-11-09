@@ -122,6 +122,10 @@ class Vendor:
   # the counters' permission read plus how an owner opens them; None: not read for this vendor
   health: str | None = None
   counters: tuple[str, str] | None = None
+  # llama.cpp built from a release for this ggml backend (workflow/engine_update.py): cmake flags, {arch} filled from
+  # ggml_arch's (argv, pattern) output, its groups joined; (): BoltBeam has no build recipe for this vendor
+  ggml_cmake: tuple[str, ...] = ()
+  ggml_arch: tuple[tuple[str, ...], str] | None = None
 
   def term(self, key:str) -> str | None:
     """One of the vendor's words; None when it has no such thing. A key no row defines is NoVendorRow."""
@@ -165,6 +169,9 @@ _ROWS = (
     vendor="nvidia", backend="CUDA", tinygrad_device="NV", tinygrad_per_gpu=True, platform=None,
     # measured: b11571, the 27B Q4_K_M on the 5090, 1,007 MiB more compute buffer at 257,792 q8_0 cells than f16
     ggml_kv_dequant=True,
+    # the GPU's compute capability as CMake spells it (12.0 -> 120), as tools/pod-setup.sh step 4 builds it
+    ggml_cmake=("-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES={arch}"),
+    ggml_arch=(("nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"), r"(\d+)\.(\d+)"),
     scan_tools=("nvidia-smi",), other_tools=("cuobjdump", "nvdisasm", "ncu"), probe="boltbeam.workflow.autoscan:_probe_nvidia", match_keys=("compute_capability",),
     order="nvidia-smi's, by PCI address (CUDA's own order is the same under CUDA_DEVICE_ORDER=PCI_BUS_ID)",
     notes=("Primary GPU is the first device returned by nvidia-smi.",), unrecorded_order=None,
@@ -284,7 +291,7 @@ _ROWS = (
                     tinygrad_reason="no outside capture: Metal per-kernel time needs Xcode's Metal System Trace"),
     toolchain=(("xctrace", ("xcrun", "xctrace", "version"), None), ("torch", None, None)),
     torch_runtime=None, kernel_dialect="msl", bridge="boltbeam.runtime.metal_device:Metal", flush_bytes=256 << 20,
-    topology=None, usable_memory=0.75,
+    topology=None, usable_memory=0.75, ggml_cmake=("-DGGML_METAL=ON",),
     probe_absent=_FROZEN({
       "counters": "Metal reports no per-dispatch hardware counters without Instruments",
       "isa.instruction_histogram": "Metal does not export the compiled AGX ISA",

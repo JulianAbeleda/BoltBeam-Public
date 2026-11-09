@@ -370,6 +370,10 @@ type Pipeline struct {
 	NoSearch bool
 	// ReplayTrace is a replay's trace file or shape name; ServerArgv the user's server command it replays on
 	ReplayTrace, ServerArgv string
+	// Settings are engine settings as flag, value pairs, each flag from the providers payload (EngineSetting.Flag)
+	Settings []string
+	// Repeats runs the same setup this many times, then their repeat band; 0 or 1 is one run
+	Repeats int
 }
 
 func (c Client) PipelineArgv(p Pipeline) []string {
@@ -384,6 +388,23 @@ func (c Client) PipelineArgv(p Pipeline) []string {
 	}
 	if p.Analyze && p.NoSearch {
 		argv = append(argv, "--no-search")
+	}
+	if p.Repeats > 1 {
+		argv = append(argv, "--repeats", strconv.Itoa(p.Repeats))
+	}
+	return append(argv, p.Settings...)
+}
+
+// MtpArgv is Measure MTP: vLLM's decode per draft count k against k=0 (screen mtp), into out; the measurement is
+// kept in the newest machine facts of the run folders, where Recommend reads it back.
+func (c Client) MtpArgv(model, target, out string, ks []int) []string {
+	list := make([]string, len(ks))
+	for i, k := range ks {
+		list[i] = strconv.Itoa(k)
+	}
+	argv := []string{c.Python, "-m", "boltbeam.workflow.screen", "mtp", model, "--target", target, "--out", out, "--ks", strings.Join(list, ",")}
+	for _, pl := range c.Places() {
+		argv = append(argv, "--facts-root", pl.Dir)
 	}
 	return argv
 }
@@ -423,6 +444,17 @@ func (c Client) Engines(cached bool) (*Engines, []byte, error) {
 	}
 	raw, _, err := c.decode(&e, nil, "boltbeam.workflow.screen", args...)
 	return &e, raw, err
+}
+
+// EngineRows is `screen engines` with these flags, one row per engine: --latest is each engine's build against
+// upstream's newest release (a look at most once per engine_latest_max_age_h, nothing installed); --update --engine E
+// --target T is the Engine picker's Upgrade, E's newer release installed beside its current build.
+func (c Client) EngineRows(flags ...string) ([]EngineStanding, error) {
+	var e struct {
+		Engines []EngineStanding `json:"engines"`
+	}
+	_, _, err := c.decode(&e, nil, "boltbeam.workflow.screen", append([]string{"engines"}, flags...)...)
+	return e.Engines, err
 }
 
 // ReplayChoices is what a replay can be set up with: the shipped shapes and the llama-server commands running here.
@@ -575,18 +607,33 @@ type Progress struct {
 	Reason      string    // what it said: one sentence
 	Details     []string  // what stands behind the sentence ("stage X: detail: …" lines): an engine's traceback
 	Lines       []string  // this pipeline's lines
+	// Repeat of Repeats is the run in flight of a repeated pipeline ("repeat i/N: NAME", screen pipeline --repeats);
+	// 0 of 0 for one run. Such a job is Finished only after its last run and "repeat band: done".
+	Repeat, Repeats int
+	stepsDone       bool // this run's "pipeline done"
 }
 
 // ReadProgress reads the pipeline's lines: steps, expected seconds, stage start, progress, done, failed and the
 // detail lines behind a failure.
 func ReadProgress(lines []string) Progress {
-	start := 0
+	start, job := 0, 0
 	for i, line := range lines {
 		if strings.HasPrefix(line, "pipeline steps: ") || strings.HasPrefix(line, "=== ") {
 			start = i
 		}
+		if strings.HasPrefix(line, "=== ") {
+			job = i
+		}
 	}
 	p := Progress{Lines: lines[start:]}
+	for _, line := range lines[job:] {
+		if i, n := 0, 0; strings.HasPrefix(line, "repeat ") {
+			if _, err := fmt.Sscanf(line, "repeat %d/%d:", &i, &n); err == nil {
+				p.Repeat, p.Repeats = i, n
+			}
+		}
+	}
+	band := false
 	stage := 0 // the stage lines started so far, counted or not
 	counts := func() bool { return stage >= len(p.Counted) || p.Counted[stage] }
 	isCounted := true
@@ -617,7 +664,14 @@ func ReadProgress(lines []string) Progress {
 			continue
 		}
 		if strings.HasPrefix(line, "pipeline done") {
-			p.Finished = true
+			p.stepsDone = true
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "repeat band: "); ok {
+			why, failed := strings.CutPrefix(rest, "failed: ")
+			if band = !failed; failed {
+				p.Failed, p.Reason = "repeat band", why
+			}
 			continue
 		}
 		rest, ok := strings.CutPrefix(line, "stage ")
@@ -649,7 +703,8 @@ func ReadProgress(lines []string) Progress {
 			p.Details = append(p.Details, strings.TrimPrefix(event, "detail: "))
 		}
 	}
-	p.Setup = !p.Finished && p.Failed == "" && p.Done == 0 && (p.Current == "" || !isCounted)
+	p.Finished = p.stepsDone && (p.Repeats < 2 || p.Repeat == p.Repeats && band)
+	p.Setup = !p.stepsDone && p.Failed == "" && p.Done == 0 && (p.Current == "" || !isCounted)
 	return p
 }
 
@@ -660,8 +715,20 @@ const SetupShare = 0.02
 // pipeline's default table on a first run, marked Estimate; equal weights only for an old log with no expect line);
 // the current step adds the time spent in it, or its own p of q when larger, never past its weight.
 // It stays under 0.99 until "pipeline done".
+// A repeated pipeline's runs each take an equal share.
 func (p Progress) Fraction(inStage float64) float64 {
 	if p.Finished {
+		return 1
+	}
+	f := p.one(inStage)
+	if p.Repeats > 1 && p.Repeat > 0 {
+		f = (float64(p.Repeat-1) + f) / float64(p.Repeats)
+	}
+	return min(f, 0.99)
+}
+
+func (p Progress) one(inStage float64) float64 {
+	if p.stepsDone {
 		return 1
 	}
 	if p.Setup {

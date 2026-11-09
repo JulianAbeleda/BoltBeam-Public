@@ -13,6 +13,8 @@
   },
   "engine": {
     "build": null,
+    "build_lines": [],
+    "comparison": null,
     "provider": "llama.cpp",
     "settings_words": [],
     "speculation_words": [],

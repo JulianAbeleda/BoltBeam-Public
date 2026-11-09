@@ -564,6 +564,7 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
     who += f'<p class="muted">Limit: {_e(loss["limit_basis"])}.</p>'
   if engine.get("speculation_words"):  # measured acceptance: the limit of a speculative run is at this acceptance
     who += f'<p class="muted">Speculation measured: {_e("; ".join(engine["speculation_words"]))}.</p>'
+  who += "".join(f'<p class="muted">{_e(line)}</p>' for line in engine.get("build_lines") or [])  # engine_builds
   if (loss.get('replay') or {}).get('headline'):
     replay=loss['replay'];head=replay['headline']
     qualification=(replay.get('qualification') or {}).get('status')

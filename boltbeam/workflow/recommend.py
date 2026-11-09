@@ -31,7 +31,7 @@ import tempfile
 import time
 from typing import Any, NamedTuple
 
-from boltbeam.collectors import engine_common as ec
+from boltbeam.collectors import engine_common as ec, vllm_mtp
 from boltbeam.profile import loaders
 from boltbeam.roofline import prefill_work as pw
 from boltbeam.target import vendors
@@ -619,7 +619,9 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
           "settings": eng.settings(profile, tb, kv=kv, seqs=seqs, layout=layout, gpus=gcount, text_only=text_only, full_context=full_ctx, **opts) if eng.settings else [],
           "flags": argv, "env": env, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), eng.command(shlex.quote(profile["source"]), [shlex.quote(a) for a in argv])]) if argv else None,
           "arkey_vllm_args": arkey_args(argv) if argv and provider == "vllm" else None, "usable_bytes": usable, "reserve_bytes": eng.reserve, "scratch_per_token": extra,
-          "measured_only": MEASURED.get(key) or "not measured here (MTP, throughput, prefill share)"}
+          "measured_only": MEASURED.get(key) or "not measured here (MTP, throughput, prefill share)",
+          # Measure MTP: what it runs here (collectors/vllm_mtp.offer), and this checkpoint's measurement kept in the facts
+          "mtp_measure": vllm_mtp.offer(provider, tb["mtp"], facts=bool(facts)), "mtp_measured": mtp_of(facts, provider, profile.get("source"))}
 
 
 def mtp_speed(profile:dict[str, Any], tb:dict[str, Any], provider:str, chip:str | None, r:dict[str, Any], eff:float,

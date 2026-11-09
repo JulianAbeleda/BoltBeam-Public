@@ -823,7 +823,7 @@ func whereEndToEnd(e *seam.EndToEnd) string {
 const (
 	notChecked    = "not checked: no repeat band matches this setup."
 	notCheckedHow = "Not checked is expected on a first run. A verdict needs the range of n identical runs (n = 2 is weak; " +
-		"a row then reads moved by chance 2/(n+1) of the time): run the same setup n times, then " +
+		"a row then reads moved by chance 2/(n+1) of the time): pick Repeats on Setup, or run the same setup n times, then " +
 		"`python -m boltbeam.workflow.screen repeat-bands --runs A B ... --out bands.json`, and give later runs `--bands bands.json`."
 )
 
@@ -867,6 +867,9 @@ func runEngineBody(e *seam.RunEngine) string {
 		b.WriteString(stMuted.Render("Engine build: not recorded.") + "\n")
 	default: // the build that ran beside the pin, both as facts: a build other than the pin is not a fault
 		b.WriteString(stMuted.Render("Engine build: "+e.Build.Words+".") + "\n")
+	}
+	for _, line := range e.BuildLines { // latest at run time, and the comparison with the previous build (its file)
+		b.WriteString(stMuted.Render(line) + "\n")
 	}
 	if e.Toolchain == nil {
 		b.WriteString(stMuted.Render("Toolchain: not recorded.") + "\n")
@@ -1564,7 +1567,7 @@ func resultBody(f Facts, width int) string {
 	if s := measurementSentence(res.Measurement); s != "" && res.Loss.Estimate == nil { // the method line says it otherwise
 		b.WriteString(stMuted.Render(s) + "\n")
 	}
-	b.WriteString(runEngineBody(res.Engine))
+	b.WriteString(runEngineBody(res.Engine) + repeatsResult(res))
 	b.WriteString(lossBodyAt(hereLoss(f, res.Loss), batch))
 	b.WriteString(batchTable(res.Batches))
 	inconclusive := res.Timing.DominantBucket != nil && *res.Timing.DominantBucket == "timing_inconclusive"
@@ -1753,6 +1756,9 @@ func runningBody(f Facts, width int) string {
 	count := ""
 	if p.Total > 0 && !p.Setup { // the setup stages are not steps: never "0 of N"
 		count = fmt.Sprintf("%d of %d", min(p.Done+1, p.Total), p.Total)
+	}
+	if p.Repeats > 1 { // a repeated run: which of its runs this is
+		count = strings.TrimSpace(fmt.Sprintf("run %d of %d  %s", p.Repeat, p.Repeats, count))
 	}
 	pct := fmt.Sprintf("%3.0f%%", f.Frac*100)
 	if p.Estimate { // a first run: the weights are the pipeline's default table, so the percent is an estimate

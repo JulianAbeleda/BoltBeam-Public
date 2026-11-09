@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Repeats                                                                      │
+│ Repeats runs the same setup more than once. Over 4 runs BoltBeam measures    │
+│ how much each number moves on its own, so a later change can be checked      │
+│ against that. Each run takes as long as one Run.                             │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Choose                                                                       │
+│ ▸ ● 1 run                                                                    │
+│     4 runs, then their repeat band                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit

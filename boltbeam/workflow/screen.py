@@ -41,6 +41,12 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     engines                                    look for every engine on this machine now and save what was found
                                                (collectors/engine_scan.py, ~/.boltbeam/engines.json); the screen runs
                                                it at boot, and `providers` reads the saved paths after env and PATH
+    engines --update [--engine E] [--into DIR]  look at each engine's upstream releases; install a newer one beside
+                                               the current build, as pending (workflow/engine_update.py, the only
+                                               installer). pipeline --analyze runs the previous build once, compares
+                                               (RUN/engine_upgrade.json), then makes it current; --upgrade-engines first
+    engines --latest                           each engine's build against upstream's newest release (a look at most
+                                               once per engine_latest_max_age_h); the screen runs it after the scan
     update [--skip V]                          is a newer BoltBeam released: the installed and newest versions, how to
                                                upgrade this install; --skip V keeps V from prompting (cli/self_update.py)
     providers --target T                       the engines that can measure here (collectors/providers.ENGINES),
@@ -78,7 +84,7 @@ import shutil
 import platform
 import sys
 import time
-from boltbeam.workflow.repeat_bands import for_decode
+from boltbeam.workflow.repeat_bands import PIN_RUNS, for_decode, summary as repeat_summary
 from typing import Any
 
 from boltbeam.cli._common import _parse_ctxs
@@ -89,7 +95,7 @@ from boltbeam.profile.loaders import profile_from_model
 from boltbeam.profile import weight_ledger
 from boltbeam.report.html import STAGES, next_step, roofline_kernels, stage_state
 from boltbeam.search import role_compare
-from boltbeam.collectors import gpu_telemetry, providers, tinygrad_role_time, vendor_capture
+from boltbeam.collectors import capture_settings, engine_builds, gpu_telemetry, providers, tinygrad_role_time, vendor_capture, vllm_mtp
 from boltbeam.target import targets as reg
 from boltbeam.target import vendors
 from boltbeam.target.targets import get_target
@@ -904,11 +910,16 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
                # the build the run measured against the pin table, and the toolchain it recorded (providers.record_build,
                # collectors/toolchain.record); None when the run predates them
                "build": engine_build, "toolchain": manifest.get("toolchain"),
+               # the one-time comparison with the previous build, when this run made it (collectors/engine_builds.py)
+               "comparison": (cmp := engine_builds.comparison(run)),
+               "build_lines": engine_builds.build_lines({"build": engine_build, "comparison": cmp}),
                # what the run asked the engine for (trace_request.json); a setting changes what is measured
                "settings_words": _setting_words(run),
                # what speculation did (MTP acceptance, collectors/vllm_speculation): measured, beside what was asked
                "speculation_words": _speculation_words(run)},
     "batches": batch_rows(run, manifest, profile, ceil),
+    # the band of n runs of this exact setup (screen pipeline --repeats), when there is one
+    **({"repeats": band} if (band := repeat_summary(run)) else {}),
   }
 
 
@@ -1246,7 +1257,6 @@ def replay_command(args) -> dict[str, Any]:
 
 
 def _setting_words(run:pathlib.Path) -> list[str]:
-  from boltbeam.collectors import capture_settings
   try:
     return capture_settings.setting_words(capture_settings.requested(run))
   except (OSError, ValueError):
@@ -1264,7 +1274,7 @@ def _speculation_words(run:pathlib.Path) -> list[str]:
 def _engine_settings(args) -> dict | None:
   """The engine settings a run requests, from the command line; None when it requests none. A vLLM run split by rows
   requests its tensor-parallel size: the most of this machine's GPUs the model's heads divide (multi_gpu.split_size)."""
-  settings = {k: getattr(args, k, None) for k in ("chunk_size", "attention_backend", "gemm_backends", "mtp", "mtp_prompt")}
+  settings = {k: getattr(args, k, None) for k in capture_settings.ASKED}
   if getattr(args, "provider", None) == "vllm" and getattr(args, "layout", None) == "row":
     from boltbeam.collectors import multi_gpu
     from boltbeam.workflow import layout as lay
@@ -1319,7 +1329,8 @@ def pipeline(args, out=sys.stdout) -> int:
                         layout=getattr(args, "layout", None) or "one",
                         measurement=_role_time_arg(args))
     if analyze_all and not plan["reason"]:  # the machine's measured facts, reused when this machine has them
-      steps.append(("machine", lambda: machine(pathlib.Path(args.run), root=root, provider=getattr(args, "provider", None))))
+      steps.append(("machine", lambda: machine(pathlib.Path(args.run), root=root, provider=getattr(args, "provider", None),
+                                               hold=getattr(args, "hold_machine", None))))
     steps += _measure_steps(args, plan, say=say)
   if args.probe:  # a CUDA probe with no GPU on this machine wrote no evidence: nothing to ingest
     steps.append(("ingest_probe", lambda: ingest_probe_run(args.run, args.probe)
@@ -1370,6 +1381,107 @@ def pipeline(args, out=sys.stdout) -> int:
   if (code := _run_stages(steps, ids, run_path, get_target(args.target).backend, where, plan, say)) != 0:
     return code
   say(f"pipeline done: {args.run}")
+  return 0
+
+
+class _Prefixed:
+  """A writer that marks every line, so a screen reading the run's own stage lines does not read these."""
+  def __init__(self, out, prefix:str) -> None:
+    self.out, self.prefix = out, prefix
+
+  def write(self, text:str) -> None:
+    self.out.write("".join(self.prefix + line for line in text.splitlines(True)))
+
+  def flush(self) -> None:
+    self.out.flush()
+
+
+def pipeline_current(args, out=sys.stdout) -> int:
+  """The pipeline on this machine's current build of the engine (collectors/engine_builds.py). With --upgrade-engines,
+  `engines --update` for this engine runs first. When a newer build waits (pending) and this is an --analyze run, the
+  previous build runs once into RUN-was-<version>, then the new build into RUN; the two are compared (workflow/diff),
+  the comparison is saved in RUN/engine_upgrade.json, and the new build becomes current. A failed new-build run leaves
+  current as it was."""
+  def say(text:str) -> None:
+    out.write(text + "\n")
+    out.flush()
+  provider = getattr(args, "provider", None) or providers.DEFAULT
+  if provider not in engine_builds.rows():
+    return pipeline(args, out)
+  if getattr(args, "update_engines", False):
+    from boltbeam.workflow import engine_update
+    engine_update.update([provider], backend=get_target(args.target).backend, say=say)
+  e = engine_builds.entry(engine_builds.load(), provider)
+  cur, new = e.get("current"), e.get("pending")
+  if not (new and cur and getattr(args, "analyze", False)):
+    if new:
+      say(f"engines {provider}: {new['version']} waits for its comparison (an --analyze run); this run uses {(cur or {}).get('version')}")
+    with engine_builds.using(cur):
+      return pipeline(args, out)
+  if overridden := engine_builds.env_for(new)[1]:  # the user's own build wins: no comparison of builds not used
+    say(f"engines {provider}: {', '.join(overridden)} set, so {new['version']} is not compared on this run")
+    with engine_builds.using(cur):
+      return pipeline(args, out)
+  before = argparse.Namespace(**vars(args))
+  before.run = str(pathlib.Path(args.run).with_name(f"{pathlib.Path(args.run).name}-was-{cur.get('version') or 'previous'}"))
+  say(f"engines {provider}: {new['version']} is new here; the previous build {cur.get('version')} runs once first, into {before.run}")
+  with engine_builds.using(cur):
+    failed = pipeline(before, _Prefixed(out, "previous build: "))
+  with engine_builds.using(new):
+    if (code := pipeline(args, out)) != 0:
+      return code
+  record = {"before": cur.get("version"), "after": new["version"], "before_run": pathlib.Path(before.run).name}
+  try:
+    if failed:
+      raise ValueError("the previous build's run failed (its lines are marked 'previous build:')")
+    from boltbeam.workflow import replay as rw
+    d = rw.diff(pathlib.Path(before.run), pathlib.Path(args.run), bands=read_json(args.bands) if getattr(args, "bands", None) else None)
+    record.update(diff=d, lines=rw.diff_lines(d))
+  except ValueError as exc:  # DiffRefused is a ValueError: the refusal is the comparison's record
+    record["refused"] = str(exc)
+  write_json(pathlib.Path(args.run) / engine_builds.UPGRADE_FILE, record)
+  state = engine_builds.load()
+  engine_builds.compared(state, provider, {k: record.get(k) for k in ("before_run", "refused")} | {"run": str(args.run)})
+  if not record.get("refused"):  # keep current and previous; nothing is deleted after a comparison that failed
+    from boltbeam.workflow import engine_update
+    for gone in engine_update.prune(state, provider):
+      say(f"engines {provider}: deleted {gone['version']} ({gone['folder']}), older than the previous build")
+  engine_builds.save(state)
+  output_run(args.run)  # the report and summary name the comparison
+  say(f"engines {provider}: {new['version']} is current; " + (engine_builds.comparison(pathlib.Path(args.run)) or {}).get("words", ""))
+  return 0
+
+
+def pipeline_repeated(args, out=sys.stdout) -> int:
+  """--repeats N: the same setup N times, then its repeat band (workflow/repeat_bands.py). n is fixed first, in
+  RUN/repeat_plan.json; RUN is the first run and RUN-repeat-2 ... RUN-repeat-N the others, each its whole pipeline
+  after a `repeat i/N: NAME` line; the band goes to RUN/repeat_bands.json, where RUN's results read it. A run that
+  fails stops the repeats; a band the runs cannot make (repeat_bands.calibrate) is said and not written."""
+  from boltbeam.workflow import repeat_bands as rb
+  from boltbeam.workflow.common import run_dir
+  def say(text:str) -> None:
+    out.write(text + "\n")
+    out.flush()
+  run = pathlib.Path(args.run)
+  try:
+    fixed = rb.plan(args.repeats, run_dir(run) / rb.PLAN)
+  except ValueError as exc:
+    say(f"repeat band: failed: {exc}")
+    return 2
+  runs = [run, *(run.with_name(f"{run.name}-repeat-{i}") for i in range(2, args.repeats + 1))]
+  for i, path in enumerate(runs, 1):
+    say(f"repeat {i}/{len(runs)}: {path.name}")
+    one = argparse.Namespace(**{**vars(args), "run": str(path), "update_engines": i == 1 and getattr(args, "update_engines", False),
+                                "hold_machine": runs[0] if i > 1 else None})
+    if (code := pipeline_current(one, out)) != 0:
+      return code
+  try:
+    got = rb.save(runs, run / rb.ARTIFACT, fixed)
+  except ValueError as exc:
+    say(f"repeat band: failed: {exc}")
+    return 1
+  output_run(args.run)  # the report reads the band too
+  say(f"repeat band: done: n = {got['n']}, a row reads moved by chance {got['false_move_rate']:.0%} of the time")
   return 0
 
 
@@ -1491,7 +1603,8 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
   from boltbeam.workflow import layout as lay
   devs = lay.devices(_hardware_profile()["gpu"])
   n = gpu_count if gpu_count is not None else len(devs)
-  rows = [{**p, "layouts": lay.layouts(n, p["provider"], target.backend)} for p in providers.available(target, tinygrad_root=root, cached=True)]
+  rows = [{**p, "layouts": lay.layouts(n, p["provider"], target.backend), "settings": capture_settings.offered(p["provider"])}
+          for p in providers.available(target, tinygrad_root=root, cached=True)]
   note = None
   if n > 1 and profile and facts:
     try:
@@ -1504,7 +1617,7 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
                                    hidden_size=profile.get("hidden_size"), layers=profile.get("layer_count"))
       note = lay.recommend([l for r in rows for l in r["layouts"]], model_bytes, devs)
   return {"schema": SCHEMA, "kind": "providers", "target_id": target.target_id, "default": providers.DEFAULT,
-          "gpu_count": n, "providers": rows, "note": note}
+          "gpu_count": n, "providers": rows, "note": note, "repeat_runs": PIN_RUNS}  # Setup's Repeats offers this n
 
 
 def recommended(profile:dict[str, Any], target, *, engine:str = "vllm", gpus:int | None = None, facts:dict[str, Any] | None = None,
@@ -1559,12 +1672,17 @@ def profile_read(gpu:dict[str, Any]) -> tuple[float, str] | None:
 
 
 def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | None = None,
-            provider:str | None = None) -> dict[str, Any]:
+            provider:str | None = None, hold:pathlib.Path | None = None) -> dict[str, Any]:
   """This machine's GPUs, their measured read bandwidth and the measured copies between them (workflow/layout.py),
   cached in the run and reused from the newest run of the same GPUs unless remeasure. An engine that splits by rows
   with its own all-reduce has that join measured under its python (collectors/multi_gpu.join)."""
   from boltbeam.workflow import layout as lay
   from boltbeam.workflow.common import write_json
+  if hold is not None:  # a repeat band holds the setup fixed: its runs share the first run's facts, never re-read
+    facts = {**json.loads((hold / lay.MACHINE).read_text()), "reused": True,
+             "reused_because": f"held fixed for the repeat band: the facts of {hold.name}"}
+    write_json(run / lay.MACHINE, {k: v for k, v in facts.items() if k not in ("reused", "reused_because")})
+    return {"schema": SCHEMA, "kind": "machine", **facts}
   devs = lay.devices(_hardware_profile()["gpu"])
   target = get_target(load_manifest(run).get("target_id"))
   row = vendors.BY_BACKEND.get(target.backend)
@@ -1971,15 +2089,10 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--id", default=None)
   p.add_argument("--workload", default="decode", choices=[w.value for w in Workload])
   p.add_argument("--bands", help="repeat calibration artifact; only an exact setup match can supply bands")
-  p.add_argument("--chunk-size", type=int, help="requested engine chunk size; unsupported adapters refuse it")
-  p.add_argument("--attention-backend", help="requested attention backend by the engine's name for it (vLLM: "
-                 "TRITON_ATTN, ROCM_ATTN, ...); recorded with the run, and adapters that cannot honor it refuse it")
-  p.add_argument("--gemm-backends", help="vLLM: the compiler's matrix backends (TRITON: its own Triton GEMMs, not "
-                 "cuBLAS, whose closed kernels need GPU counters to read); recorded with the run, others refuse it")
-  p.add_argument("--mtp", type=int, help="vLLM: multi-token prediction with this many draft tokens per step (speculative "
-                 "decoding); decode runs on natural text (data/mtp_prompts.json) at one context; recorded with the run")
-  p.add_argument("--mtp-prompt", help="vLLM with --mtp: the prompt id (data/mtp_prompts.json) the context is built from "
-                 "(default: the set's first)")
+  for name, (kind, _, about) in capture_settings.ASKED.items():
+    p.add_argument("--" + name.replace("_", "-"), type=kind, help=about)
+  p.add_argument("--repeats", type=int, default=None, help=f"run the same setup N times (N >= 2; {PIN_RUNS} before a band "
+                 "may justify an engine pin), then their repeat band into RUN/repeat_bands.json (workflow/repeat_bands.py)")
   p.add_argument("--ctxs", default=None, help="decode contexts (default 128,512) or prompt lengths (default: the sweep "
                                               "to the model's own cap, prefill_work.sweep; a session: cap for the derived depths)")
   p.add_argument("--probe", default=None, help="boltbeam.probe_evidence.v1 JSON to ingest after analyze")
@@ -1999,13 +2112,16 @@ def main(argv:list[str] | None = None) -> int:
                       "each kernel alone) or auto (in-model when this machine has it, else generic)")
   p.add_argument("--no-search", action="store_true",
                  help="with --analyze: skip the per-role kernel search (a quick run)")
+  p.add_argument("--upgrade-engines", "--update-engines", dest="update_engines", action="store_true", help="Upgrade "
+                 "engines first: `engines --update` for this engine installs a newer release beside the current build; "
+                 "the run itself never installs (--update-engines is the old name)")
   p.add_argument("--forced-replay", action="store_true", help="vLLM replay on a backend whose capture records a marked window (vendor_capture.windowed): scripted production capture, exact pairing and forced native repeats")
   p.add_argument("--replay-trace", default=None, help="a replay: a boltbeam.replay_trace.v1 file or a shape's name "
                                                       "(default: the default shape in data/replay_shapes.json)")
   p.add_argument("--server-argv", default=None, help="a replay: the user's llama-server command, as one string")
   p.add_argument("--replay-pairs", type=int, default=None, help="a llama.cpp replay: native/profiled server pairs, in the order NP,NP,PN,PN (default 4)")
   p = sub.add_parser("repeat-plan", help="fix n before collecting repeats (an engine pin needs n >= 4 fixed so)")
-  p.add_argument("--n", type=int, default=4)
+  p.add_argument("--n", type=int, default=PIN_RUNS)
   p.add_argument("--out", required=True)
   p = sub.add_parser("repeat-bands", help="derive per-row bands from n >= 2 identical repeat runs (no GPU)")
   p.add_argument("--runs", nargs="+", required=True, help="the before runs, all of one exact setup")
@@ -2054,14 +2170,20 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("model")
   p.add_argument("--target", required=True)
   p.add_argument("--out", required=True, help="the folder the measurement, the continuations and the logs go to")
-  p.add_argument("--ks", default="1,2,3", help="draft counts to measure; k=0 always runs as the baseline")
+  p.add_argument("--ks", default=",".join(map(str, vllm_mtp.KS)), help="draft counts to measure; k=0 always runs as the baseline")
   p.add_argument("--tokens", type=int, default=256, help="tokens generated per prompt and depth")
   p.add_argument("--long-tokens", type=int, default=2048, help="the long depth's natural continuation; 0: short only")
   p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the measurement is cached in the newest "
                  "machine facts there, where the recommended setup reads it")
   sub.add_parser("update", help="is a newer BoltBeam released (cli/self_update.py)").add_argument("--skip", help="skip this version")
-  sub.add_parser("engines", help="look for every engine on this machine now and save what was found").add_argument(
-    "--cached", action="store_true", help="reuse saved discovery when settings and paths still match")
+  p = sub.add_parser("engines", help="look for every engine on this machine now and save what was found")
+  p.add_argument("--cached", action="store_true", help="reuse saved discovery when settings and paths still match")
+  p.add_argument("--update", action="store_true", help="look at upstream releases and install newer builds beside "
+                 "these (workflow/engine_update.py); the next --analyze run compares each once, then uses it")
+  p.add_argument("--latest", action="store_true", help="each engine's build against upstream's newest release; installs nothing")
+  p.add_argument("--engine", action="append", choices=list(engine_builds.rows()), help="with --update or --latest: only this engine")
+  p.add_argument("--target", default=None, help="with --update: the chip the builds are for (default: this machine's)")
+  p.add_argument("--into", default=None, help="with --update: the folder builds go in (default ~/.boltbeam/engines; kept)")
   for name in ("compare", "compare-ready", "role-time"):
     p = sub.add_parser(name)
     p.add_argument("--run", required=True)
@@ -2086,7 +2208,7 @@ def main(argv:list[str] | None = None) -> int:
           + (" (weak)" if got["weak"] else ""))
     return 0
   if args.command == "pipeline":
-    return pipeline(args)
+    return pipeline_repeated(args) if args.repeats else pipeline_current(args)
   if args.command == "compare":
     return compare(args)
   if args.command == "role-time":
@@ -2116,6 +2238,17 @@ def main(argv:list[str] | None = None) -> int:
       roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
       out = recommended(_profile_arg(args), target, engine=args.engine, gpus=args.gpus, seqs=args.seqs, context=args.context,
                         facts=lay.newest_facts(roots, target.target_id), check_in=roots if args.check else None)
+    elif args.command == "engines" and args.update:
+      from boltbeam.workflow import engine_update
+      target = _target_arg(args.target or detect().get("target_id") or "")
+      out = {"schema": SCHEMA, "kind": "engines-update", "file": str(engine_builds.state_file()),
+             "engines": engine_update.update(args.engine or list(engine_builds.rows()), backend=target.backend,
+                                             root=pathlib.Path(args.into) if args.into else None,
+                                             say=lambda line: print(line, file=sys.stderr))}
+    elif args.command == "engines" and args.latest:
+      from boltbeam.workflow import engine_update
+      out = {"schema": SCHEMA, "kind": "engines-latest", "file": str(engine_builds.state_file()),
+             "engines": engine_update.latest(args.engine or list(engine_builds.rows()))}
     elif args.command == "update":
       from boltbeam.cli import self_update
       out = {"schema": SCHEMA, **self_update.screen(args.skip)}
@@ -2124,7 +2257,6 @@ def main(argv:list[str] | None = None) -> int:
     elif args.command == "gpu-free":
       out = gpu_free(_target_arg(args.target))
     elif args.command == "mtp":
-      from boltbeam.collectors import vllm_mtp
       try:
         record = vllm_mtp.measure(str(pathlib.Path(args.model).expanduser()), [int(k) for k in args.ks.split(",") if k.strip()],
                                   backend=_target_arg(args.target).backend, out=pathlib.Path(args.out).expanduser(),

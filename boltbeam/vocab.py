@@ -503,6 +503,7 @@ SCHEMA_SAME_RUN_MEASUREMENT = "boltbeam.same_run_measurement.v1"
 SCHEMA_SAME_RUN_PREPARATION = "boltbeam.same_run_preparation.v1"
 SCHEMA_DOCTOR = "boltbeam.doctor.v1"  # cli/doctor.py: the machine report
 SCHEMA_ENGINES = "boltbeam.engines.v1"  # collectors/engine_scan.py: the saved engine scan
+SCHEMA_ENGINE_BUILDS = "boltbeam.engine_builds.v1"  # collectors/engine_builds.py: each engine's current build here
 
 
 def enum_values(enum_cls:type[Enum]) -> list[str]:

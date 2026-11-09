@@ -67,6 +67,10 @@ type Facts struct {
 	Batch       int                 // streams decoded at once; 0 means 1
 	BatchTyped  string              // digits typed on the batch picker
 	Measurement string              // how roles are timed, as picked: in_model or generic; "" is Python's default here
+	Settings    map[string]string   // engine settings asked for, by name (capture_settings.ASKED); cleared with a new engine
+	SettingEdit string              // the setting whose value is being typed (into Input); "" when none
+	Repeats     int                 // times Run measures the setup; only the n Python offers counts (repeats)
+	MJob        *jobs.Job           // Measure MTP's job for the model and chip (mtpID)
 	Workload    string              // what the Run measures: decode or prefill; "" is decode
 	Replay      *seam.ReplayChoices // a replay's shapes and the servers running here, loaded when replay is picked
 	ReplayShape string              // the picked shape; "" is the default
@@ -79,6 +83,12 @@ type Facts struct {
 	stageAt     time.Time           // when this screen saw the current step start
 	stageDone   int                 // the step count stageAt was taken at
 	logRoom     int                 // screen lines the log may take under the bar; 0: up to 20
+
+	// Upgrade engines: each engine's build against upstream's newest release (screen engines --latest), why that look
+	// failed (every standing unknown), and the engine whose newer release the Engine picker's Upgrade is installing.
+	Latest    []seam.EngineStanding
+	LatestErr string
+	Upgrading string
 }
 
 // clock is the time the screen reads; a variable so a test can fix it.
@@ -148,6 +158,8 @@ const (
 	pageWorkload
 	pageBatch
 	pageMeasurement
+	pageSettings
+	pageRepeats
 	pageCompare
 	pageRecommend
 )
@@ -165,12 +177,14 @@ var steps = []step{
 	{"Workload", "", none, func(Facts) (string, string) { return "", "" }, workloadBody, workloadActions},
 	{"Batch", "", none, batchLine, batchBody, batchActions},
 	{"Measurement", "", none, func(Facts) (string, string) { return "", "" }, measurementBody, measurementActions},
+	{"Engine settings", "", none, func(Facts) (string, string) { return "", "" }, settingsBody, settingsActions},
+	{"Repeats", "", none, func(Facts) (string, string) { return "", "" }, repeatsBody, repeatsActions},
 	{"Compare", "", none, compareLine, compareRunsBody, compareActions},
 	{"Recommended setup", recommendHint, none, func(Facts) (string, string) { return "", "" }, recommendBody, recommendActions},
 }
 
 // picker reports whether a page is one of the three pickers Setup opens.
-func picker(page int) bool { return page >= pageModel && page <= pageMeasurement }
+func picker(page int) bool { return page >= pageModel && page <= pageRepeats }
 
 // engineRow is this machine's provider row for the chosen engine, or nil.
 func (f Facts) engineRow() *seam.ProviderRow { return f.provider(f.Engine) }
@@ -280,10 +294,19 @@ func setupActions(f Facts) []action {
 		{summary("Model", modelValue(f)), "page", fmt.Sprint(pageModel)},
 		{summary("Chip", chipValue(f)), "page", fmt.Sprint(pageChip)},
 		{summary("Engine", engineValue(f)), "page", fmt.Sprint(pageEngine)},
-		{summary("Recommended setup", recommendValue(f)), "page", fmt.Sprint(pageRecommend)},
-		{summary("Workload", workloadValue(f)), "page", fmt.Sprint(pageWorkload)},
-		{summary("Batch", fmt.Sprint(f.batch())), "page", fmt.Sprint(pageBatch)},
-		{summary("Measurement", measurementValue(f)), "page", fmt.Sprint(pageMeasurement)},
+	}
+	if s := engineNotice(f); s != "" {
+		out = append(out, note(fmt.Sprintf("%-11s %s", "", s)))
+	}
+	if len(f.settingsOffered()) > 0 { // what the run asks the engine for, when the engine takes anything
+		out = append(out, action{summary("Settings", settingsValue(f)), "page", fmt.Sprint(pageSettings)})
+	}
+	out = append(out, action{summary("Recommended setup", recommendValue(f)), "page", fmt.Sprint(pageRecommend)},
+		action{summary("Workload", workloadValue(f)), "page", fmt.Sprint(pageWorkload)},
+		action{summary("Batch", fmt.Sprint(f.batch())), "page", fmt.Sprint(pageBatch)},
+		action{summary("Measurement", measurementValue(f)), "page", fmt.Sprint(pageMeasurement)})
+	if f.repeatRuns() > 1 {
+		out = append(out, action{summary("Repeats", repeatsValue(f)), "page", fmt.Sprint(pageRepeats)})
 	}
 	out = append(append(out, measurementFallback(f)...), head(""))
 	switch m := f.missing(); {
@@ -309,6 +332,34 @@ func setupActions(f Facts) []action {
 		n = len(f.Saved.Runs)
 	}
 	return append(out, action{fmt.Sprintf("Saved runs (%d)\t›", n), "page", fmt.Sprint(pageSaved)})
+}
+
+// standing is Python's word on an engine's build against upstream's newest release; nil for an engine with no
+// release source, or before the look answered.
+func (f Facts) standing(engine string) *seam.EngineStanding {
+	for i := range f.Latest {
+		if f.Latest[i].Engine == engine {
+			return &f.Latest[i]
+		}
+	}
+	return nil
+}
+
+// engineNotice is Setup's line under Engine when the picked engine is not on upstream's newest release: behind (with
+// where to upgrade), waiting for its comparison, or unknown. On the latest release, or before Python answered, none.
+func engineNotice(f Facts) string {
+	switch p, s := f.engineRow(), f.standing(f.Engine); {
+	case p == nil || !p.Available:
+		return ""
+	case f.LatestErr != "":
+		return p.Provider + ": latest release unknown (" + f.LatestErr + ")"
+	case s == nil || s.State == "up_to_date":
+		return ""
+	case s.State == "behind":
+		return p.Provider + " " + s.Words + ": Upgrade in Engine"
+	default:
+		return p.Provider + ": " + s.Words
+	}
 }
 
 // emitAction is the Setup row under Run. Emit turns the run on screen into a gameplan (what kernel to emit per role,
@@ -536,11 +587,25 @@ func engineActions(f Facts) []action {
 		if p.Available {
 			out = append(out, action{chosen + p.Provider, "engine", p.Provider})
 			out = append(out, layoutActions(f, p)...)
+			out = append(out, upgradeAction(f, p.Provider)...)
 		} else {
 			out = append(out, note(fmt.Sprintf("  %-14s %s", p.Provider, stateWords(p))))
 		}
 	}
 	return append(out, action{"  [ Scan again ] look for engines in the usual folders", "engines-scan", ""})
+}
+
+// upgradeAction is Upgrade engines in the picker: offered only when Python knows a newer release than the build here
+// (standing behind); picking it installs that release beside the current build. Nothing upgrades unless picked.
+func upgradeAction(f Facts, engine string) []action {
+	s := f.standing(engine)
+	switch {
+	case f.Upgrading == engine:
+		return []action{note("    " + f.Spin + " upgrading " + engine + "…")}
+	case s == nil || s.State != "behind" || s.Latest == nil:
+		return nil
+	}
+	return []action{{"    Upgrade " + engine + " to " + *s.Latest, "upgrade", engine}}
 }
 
 // stateWords is an engine that cannot run here in two words; the sentence why stays in --json.

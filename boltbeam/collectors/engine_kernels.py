@@ -79,8 +79,9 @@ _PREFIXES = ("/opt/homebrew", "/usr/local")
 
 
 def ggml_library(bench:str | None = None) -> dict[str, Any]:
-  """Where ggml's Metal shader source is: $BOLTBEAM_GGML_METAL, else the ggml or llama.cpp keg under the Homebrew
-  prefix that holds llama-bench (the library embeds the .metal text; a source build ships the file). The version
+  """Where ggml's Metal shader source is: $BOLTBEAM_GGML_METAL, else the library beside llama-bench (a source build;
+  on 2026-11-09 the Mac timed roles with Homebrew's 0.6.0 shaders after Upgrade engines made 0.9.0 current), else
+  the ggml or llama.cpp keg under the Homebrew prefix that holds llama-bench (the library embeds the .metal text; a source build ships the file). The version
   is the keg's: the folder name under Cellar."""
   tried = []
   if env := os.environ.get(GGML_LIBRARY_ENV):
@@ -88,7 +89,11 @@ def ggml_library(bench:str | None = None) -> dict[str, Any]:
     if pathlib.Path(env).is_file():
       return _file_record(pathlib.Path(env))
   prefixes = list(_PREFIXES)
-  if bench:
+  if bench:  # a source build (Upgrade engines' <root>/llama.cpp/<v>/build/bin) keeps the library beside llama-bench
+    beside = pathlib.Path(bench).resolve().parent / "libggml-metal.dylib"
+    tried.append(str(beside))
+    if beside.is_file():
+      return _file_record(beside)
     real = pathlib.Path(bench).resolve()
     for parent in real.parents:  # .../Cellar/llama.cpp/V/bin/llama-bench: the prefix holds Cellar
       if (parent / "Cellar").is_dir() and str(parent) not in prefixes:

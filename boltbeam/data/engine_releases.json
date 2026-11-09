@@ -1,0 +1,57 @@
+{
+  "schema": "boltbeam.engine_releases.v1",
+  "about": "Where each engine's upstream releases are read and how a release is installed beside the builds already here (collectors/engine_builds.py reads it; workflow/engine_update.py installs). This moves a machine's current build only, never the pin (data/engine_pins.json; docs/engine-upgrade-audit.md). Releases only: rc, dev, alpha, beta, local builds and GitHub prereleases never count. source: github (the latest release; tag picks and reads the version), pypi (the JSON API's releases with a file not yanked), simple (a PEP 503 index page, dist's wheel and sdist names). requires: what a release declares it needs, read from its published metadata before anything installs (unreadable: not installed). paths: the env var each build answers for, relative to its folder; a list is tried in order. version: how a build says its version and commit (argv on the env var's path, patterns; group 1 of the first that matches).",
+  "engines": {
+    "llama.cpp": {
+      "source": "github",
+      "url": "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest",
+      "why": "llama.cpp's v0.x release line; the bNNNNN builds are published several times a day and marked prerelease: nightlies (owner, 2026-11-08)",
+      "tag": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "install": {"kind": "llama", "repo": "https://github.com/ggml-org/llama.cpp", "ref": "v{version}",
+                  "clone": ["--filter=tree:0"],
+                  "why_clone": "the full commit history without trees: llama.cpp's cmake counts commits for the build number a run records (a one-commit clone counted 1)",
+                  "cmake": ["-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF", "-DGGML_NATIVE=ON"],
+                  "targets": ["llama-bench", "llama-batched-bench"]},
+      "paths": {"BOLTBEAM_LLAMA_BENCH": "build/bin/llama-bench", "BOLTBEAM_LLAMA_BATCHED_BENCH": "build/bin/llama-batched-bench",
+                "BOLTBEAM_GGML_CUDA_SRC": "src/ggml/src/ggml-cuda"},
+      "version": {"from": "BOLTBEAM_LLAMA_BENCH", "argv": ["{path}", "--version"], "pattern": ["version: (\\d+\\.\\d+\\.\\d+\\S*)"],
+                  "commit": ["commit ([0-9a-f]{7,40})", "version: \\d+ \\(([0-9a-f]{7,40})\\)"]}
+    },
+    "vllm": {
+      "source": "pypi",
+      "url": "https://pypi.org/pypi/vllm/json",
+      "install": {"kind": "venv", "backends": ["CUDA"],
+                  "steps": [["--upgrade", "pip"], ["vllm=={version}"]],
+                  "older_driver": [580, ["--extra-index-url", "https://wheels.vllm.ai/{version}/cu129", "--extra-index-url", "https://download.pytorch.org/whl/cu129"]],
+                  "check": "import vllm, torch; print('vllm', vllm.__version__, 'torch', torch.__version__)"},
+      "paths": {"BOLTBEAM_VLLM_PYTHON": "venv/bin/python"},
+      "version": {"from": "BOLTBEAM_VLLM_PYTHON", "argv": ["{path}", "-c", "import importlib.metadata as m; print(m.version('vllm'))"], "pattern": ["(\\S+)"]}
+    },
+    "tensorrt-llm": {
+      "source": "simple",
+      "url": "https://pypi.nvidia.com/tensorrt-llm/",
+      "dist": "tensorrt_llm",
+      "install": {"kind": "venv", "backends": ["CUDA"],
+                  "requires": {"metadata": "https://pypi.org/pypi/tensorrt-llm/{version}/json", "torch": "torch", "cuda": "cuda-python",
+                               "cuda_driver": {"12": 525, "13": 580},
+                               "torch_index": {"12": "https://download.pytorch.org/whl/cu128", "13": "https://download.pytorch.org/whl/cu130"},
+                               "why": "requires_python and the torch and cuda-python constraints from the release's metadata; the wheels for this Python and machine from NVIDIA's index; the least driver for that CUDA major (NVIDIA's minor-version compatibility)"},
+                  "why": "torch first at the release's own constraint from the CUDA index, then the release with that torch pinned; pyarrow < 20 because tensorrt_llm pins numpy < 2 (tools/pod-setup.sh step 4)",
+                  "steps": [["--upgrade", "pip", "setuptools", "wheel"],
+                            ["torch{torch_spec}", "torchvision", "--index-url", "{torch_index}"],
+                            ["tensorrt_llm=={version}", "pyarrow<20", "torch=={torch}", "--extra-index-url", "https://pypi.nvidia.com", "--extra-index-url", "{torch_index}"]],
+                  "check": "import tensorrt_llm, torch; print('tensorrt_llm', tensorrt_llm.__version__, 'torch', torch.__version__)"},
+      "paths": {"BOLTBEAM_TRTLLM_PYTHON": "venv/bin/python"},
+      "version": {"from": "BOLTBEAM_TRTLLM_PYTHON", "argv": ["{path}", "-c", "import importlib.metadata as m; print(m.version('tensorrt_llm'))"], "pattern": ["(\\S+)"]}
+    },
+    "ollama": {
+      "source": "github",
+      "url": "https://api.github.com/repos/ollama/ollama/releases/latest",
+      "tag": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "install": {"kind": "archive", "url": "https://github.com/ollama/ollama/releases/download/v{version}/{asset}",
+                  "assets": {"linux-x86_64": "ollama-linux-amd64.tar.zst", "linux-aarch64": "ollama-linux-arm64.tar.zst", "darwin-arm64": "ollama-darwin.tgz"}},
+      "paths": {"BOLTBEAM_OLLAMA": ["bin/ollama", "ollama"]},
+      "version": {"from": "BOLTBEAM_OLLAMA", "argv": ["{path}", "--version"], "pattern": ["(\\d+\\.\\d+\\.\\d+)"]}
+    }
+  }
+}

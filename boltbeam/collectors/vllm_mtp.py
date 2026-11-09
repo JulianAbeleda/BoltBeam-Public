@@ -19,6 +19,15 @@ SCHEMA = "boltbeam.mtp_measurement.v1"
 PROMPTS = pathlib.Path(__file__).resolve().parent.parent / "data" / "mtp_prompts.json"
 DRIVER = ec.RUNTIME / "vllm_mtp_drive.py"
 MEASUREMENT = "mtp_measurement.json"
+KS = (1, 2, 3)  # the draft counts measured unless asked otherwise (screen mtp --ks, the screen's Measure MTP)
+
+
+def offer(provider:str, draft_bytes:int, *, facts:bool) -> dict[str, Any] | None:
+  """What Measure MTP runs for this engine and checkpoint: vLLM and a draft head, else None. The measurement is kept
+  in this machine's facts, where the recommended setup reads it; without them it would be measured and not kept."""
+  if provider != vd.PROVIDER or not draft_bytes:
+    return None
+  return {"ks": list(KS), "blocked": None if facts else "needs this machine's facts: run once on this chip first"}
 
 
 class MtpRefused(RuntimeError):

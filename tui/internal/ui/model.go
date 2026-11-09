@@ -111,6 +111,10 @@ type compareJobMsg struct {
 	tail []string
 }
 type compareStartedMsg string
+type mtpJobMsg struct {
+	job     *jobs.Job
+	started bool // this press started it
+}
 type savedListMsg struct {
 	saved *seam.Saved
 	err   error
@@ -138,6 +142,14 @@ type providersMsg struct {
 type enginesMsg struct {
 	scan *seam.Engines
 	err  error
+}
+
+// latestMsg is `engines --latest`: each engine's build against upstream's newest release, or why the look failed.
+// With upgraded, it is instead what the Engine picker's Upgrade did to that engine (`engines --update`).
+type latestMsg struct {
+	rows     []seam.EngineStanding
+	err      error
+	upgraded string
 }
 type replayMsg struct {
 	choices *seam.ReplayChoices
@@ -189,6 +201,13 @@ func (m Model) Init() tea.Cmd {
 // reuses cached discovery at boot; Scan again forces discovery. Opening Engine never starts a scan.
 func (m Model) scanEngines(cached bool) tea.Cmd {
 	return func() tea.Msg { e, _, err := m.client.Engines(cached); return enginesMsg{e, err} }
+}
+
+// loadLatest asks Python where each engine's build stands against upstream's newest release. It runs after the engine
+// scan (at boot, on Scan again) and after an Upgrade; Python looks upstream at most once per engine_latest_max_age_h.
+// Drawing only reads the answer.
+func (m Model) loadLatest() tea.Cmd {
+	return func() tea.Msg { rows, err := m.client.EngineRows("--latest"); return latestMsg{rows, err, ""} }
 }
 
 // loadProviders asks Python which runtimes can measure the chip on this machine.
@@ -359,7 +378,10 @@ func (m Model) runID() string {
 
 // RunStem is the run folder prefix: the model file's base name, lower case, plus the chip.
 func RunStem(modelPath, target string) string {
-	base := strings.TrimSuffix(filepath.Base(modelPath), filepath.Ext(modelPath))
+	base := filepath.Base(modelPath)
+	if st, err := os.Stat(modelPath); err != nil || !st.IsDir() { // a folder keeps its whole name (profile/ir.model_name)
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+	}
 	var b strings.Builder
 	for _, r := range strings.ToLower(base) {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
@@ -435,6 +457,10 @@ func (m Model) startRun(provider string) tea.Cmd {
 		layout = "" // one GPU: the engine runs as it always has
 	}
 	store, batch, roleTime, workload := m.store, "", m.f.roleTimeArg(), m.f.workload()
+	settings, repeats := m.f.settingsArgv(), m.f.repeats()
+	if provider != m.f.Engine { // the settings are the chosen engine's
+		settings = nil
+	}
 	trace, server := "", ""
 	if workload == "replay" {
 		if s := m.f.replayShape(); s != nil {
@@ -461,11 +487,51 @@ func (m Model) startRun(provider string) tea.Cmd {
 			path = abs
 		}
 		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: workload, Measure: "auto", Provider: provider,
-			Layout: layout, Analyze: true, Batch: batch, RoleTime: roleTime, ReplayTrace: trace, ServerArgv: server})
+			Layout: layout, Analyze: true, Batch: batch, RoleTime: roleTime, ReplayTrace: trace, ServerArgv: server,
+			Settings: settings, Repeats: repeats})
 		if _, err := m.store.Start(id, m.client.Repo, argv); err != nil {
 			return noteMsg("Start failed: " + err.Error())
 		}
 		return startedMsg(id)
+	}
+}
+
+// startMtp starts Measure MTP as a job: one engine start per draft count, on a free GPU.
+func (m Model) startMtp() tea.Cmd {
+	o, path, target, store := m.f.Recommend.MtpMeasure, m.f.Path, m.targetID(), m.store
+	if o == nil || o.Blocked != nil || m.f.measuringMtp() {
+		return nil
+	}
+	id := m.f.mtpID()
+	return func() tea.Msg {
+		if live := store.Alive(); len(live) > 0 { // two measurements on one GPU would both be wrong
+			return noteMsg(live[0].ID + " is still going. Stop it or wait, then measure MTP.")
+		}
+		dir, err := m.client.RunDir(id)
+		if err != nil {
+			return noteMsg(err.Error())
+		}
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		if _, err := store.Start(id, m.client.Repo, m.client.MtpArgv(path, target, dir, o.Ks)); err != nil {
+			return noteMsg("Start failed: " + err.Error())
+		}
+		return mtpJobMsg{&jobs.Job{ID: id, Alive: true}, true}
+	}
+}
+
+// loadMtp reads Measure MTP's job for the model and chip; no job file means it never ran from here.
+func (m Model) loadMtp() tea.Cmd {
+	if m.f.recommendKey() == "" {
+		return nil
+	}
+	id, store := m.f.mtpID(), m.store
+	return func() tea.Msg {
+		if job, err := store.Status(id); err == nil {
+			return mtpJobMsg{&job, false}
+		}
+		return mtpJobMsg{nil, false}
 	}
 }
 
@@ -784,7 +850,22 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			m.note = "The engine scan failed: " + msg.err.Error() + " (env vars still work)"
 		}
 		if t := m.f.target(); t != nil {
-			return m, m.loadProviders(t.ID)
+			return m, tea.Batch(m.loadProviders(t.ID), m.loadLatest())
+		}
+		return m, m.loadLatest()
+	case latestMsg:
+		switch {
+		case msg.upgraded != "" && msg.err == nil && len(msg.rows) == 1:
+			m.f.Upgrading, m.note = "", "Upgrade "+msg.upgraded+": "+msg.rows[0].Words
+		case msg.upgraded != "":
+			m.f.Upgrading, m.note = "", fmt.Sprintf("Upgrade %s failed: %v (%d rows)", msg.upgraded, msg.err, len(msg.rows))
+		case msg.err != nil:
+			m.f.Latest, m.f.LatestErr = nil, msg.err.Error()
+		default:
+			m.f.Latest, m.f.LatestErr = msg.rows, ""
+		}
+		if msg.upgraded != "" {
+			return m, m.loadLatest()
 		}
 	case providersMsg:
 		if t := m.f.target(); t != nil && t.ID == msg.target {
@@ -827,6 +908,24 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			m.ticking = true
 			return m, tick()
 		}
+	case mtpJobMsg:
+		was := m.f.measuringMtp()
+		m.f.MJob = msg.job
+		switch {
+		case msg.started:
+			m.note = "Measuring MTP: k=0, then each draft count, one engine start each."
+		case was && !m.f.measuringMtp(): // it ended: the recommendation reads the measurement it kept
+			m.note = "Measure MTP ended."
+			if msg.job != nil {
+				m.note += " Its log: " + msg.job.LogPath
+			}
+			m.f.RecKey = ""
+			return m, m.loadRecommend()
+		}
+		if m.f.measuringMtp() && !m.ticking {
+			m.ticking = true
+			return m, tick()
+		}
 	case compareStartedMsg:
 		id := string(msg)
 		m.ticking = true
@@ -834,10 +933,16 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.note = "Started the job for " + id + ". It takes a few minutes."
 		return m, tea.Batch(m.loadCompare(id), tick())
 	case jobMsg:
+		was := m.f.alive()
 		m.f.Job, m.f.Tail = msg.job, msg.tail
 		m.f.advance(clock())
 		if msg.job != nil && !msg.job.Alive && strings.HasPrefix(m.note, "Started ") {
 			m.note = "" // the run ended: the Run line says how; "Started …" would be stale
+		}
+		var reread tea.Cmd
+		if was && !m.f.alive() { // the run wrote this machine's facts: the recommendation reads them (Measure MTP needs them)
+			m.f.RecKey = ""
+			reread = m.loadRecommend()
 		}
 		if !m.opened { // on start: Setup, unless the newest run is still going, then its Run screen; decided once
 			m.opened = true
@@ -849,6 +954,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			m.ticking = true
 			return m, tick()
 		}
+		return m, reread
 	case startedMsg:
 		id := string(msg)
 		m.cursor, m.row = pageRun, 0
@@ -936,7 +1042,13 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		if m.f.comparing() {
 			return m, tea.Batch(m.loadCompare(id), m.loadRun(id), tick())
 		}
+		if m.f.measuringMtp() {
+			return m, tea.Batch(m.loadMtp(), tick())
+		}
 		m.ticking = false
+		if id == "" { // nothing on screen to read again (Measure MTP ended with no run for this model and chip)
+			return m, m.loadRuns()
+		}
 		return m, tea.Batch(m.loadRuns(), m.loadRun(id))
 	case tea.KeyMsg:
 		return m.key(msg)
@@ -1057,6 +1169,9 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if !key.Matches(msg, keyDel) && !onClean {
 		m.f.Confirm = "" // any other key cancels a pending delete (enter on the clean row is its second press)
 	}
+	if m.f.SettingEdit != "" {
+		return m.typeSetting(msg)
+	}
 	if m.f.Editing {
 		switch msg.Type {
 		case tea.KeyEnter:
@@ -1118,17 +1233,46 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+// typeSetting is a key while a setting's value is typed: enter keeps it (a whole number where the setting takes one;
+// empty unsets it), esc leaves it as it was.
+func (m Model) typeSetting(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		s := m.f.setting(m.f.SettingEdit)
+		v, ok := "", s != nil
+		if ok {
+			v, ok = settingTyped(*s, m.input.Value())
+		}
+		if !ok {
+			m.note = "Type a whole number above 0, or nothing to unset it."
+			return m, nil
+		}
+		m.f.setSetting(s.Name, v)
+		m.note = ""
+		fallthrough
+	case tea.KeyEsc:
+		m.f.SettingEdit, m.f.Input = "", ""
+		m.input.Blur()
+		m.input.SetValue(m.f.Path)
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	m.f.Input = m.input.Value()
+	return m, cmd
+}
+
 // backToSetup shows Setup again; from a picker the cursor rests on that picker's line.
 func (m *Model) backToSetup() {
 	m.row = 0
-	if picker(m.cursor) {
-		m.row = m.cursor - pageModel
-		if m.cursor > pageEngine { // Recommended setup is the Setup row after Engine
-			m.row++
+	if picker(m.cursor) || m.cursor == pageRecommend { // the cursor rests on the Setup line that opened the page
+		for i, a := range setupActions(m.f) {
+			if a.do == "page" && a.arg == fmt.Sprint(m.cursor) {
+				m.row = i
+			}
 		}
-	} else if m.cursor == pageRecommend {
-		m.row = pageEngine - pageModel + 1
 	}
+	m.f.SettingEdit = ""
 	m.cursor = pageSetup // keep the displayed run's saved origin until a new run replaces it
 	m.skipHeads(1)
 	m.view.GotoTop()
@@ -1208,7 +1352,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, nil
 	case "engine":
 		m.f.Engine, m.f.Layout, m.engineSet = a.arg, "", true
-		m.f.Measurement = ""
+		m.f.Measurement, m.f.Settings = "", nil
 		m.backToSetup()
 		return m, nil
 	case "batch":
@@ -1237,10 +1381,28 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		m.f.Measurement = a.arg
 		m.backToSetup()
 		return m, nil
+	case "setting": // a fixed set steps to its next value; anything else is typed
+		s := m.f.setting(a.arg)
+		if s == nil {
+			return m, nil
+		}
+		if len(s.Choices) == 0 {
+			m.f.SettingEdit, m.f.Input = s.Name, m.f.Settings[s.Name]
+			m.input.SetValue(m.f.Input)
+			return m, m.input.Focus()
+		}
+		m.f.setSetting(s.Name, nextChoice(s.Choices, m.f.Settings[s.Name]))
+		return m, nil
+	case "repeats":
+		m.f.Repeats, _ = strconv.Atoi(a.arg)
+		m.backToSetup()
+		return m, nil
+	case "mtp":
+		return m, m.startMtp()
 	case "enginelayout": // an engine and how it uses this machine's GPUs, picked on one row
 		engine, layout, _ := strings.Cut(a.arg, "|")
 		if engine != m.f.Engine {
-			m.f.Measurement = ""
+			m.f.Measurement, m.f.Settings = "", nil // another engine's settings are not this one's
 		}
 		m.f.Engine, m.f.Layout, m.engineSet = engine, layout, true
 		m.backToSetup()
@@ -1257,6 +1419,13 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, m.askRecommend(m.f.RecKey, true)
 	case "analyze":
 		return m, m.startRun(m.f.Engine)
+	case "upgrade": // Upgrade engines: this engine's newer release beside its current build, as a job
+		if m.f.Upgrading != "" || m.targetID() == "" {
+			return m, nil
+		}
+		engine, argv, client := a.arg, []string{"--update", "--engine", a.arg, "--target", m.targetID()}, m.client
+		m.f.Upgrading, m.note = engine, "Upgrade "+engine+": installing the newer release beside the current build (a build can take minutes)…"
+		return m, func() tea.Msg { rows, err := client.EngineRows(argv...); return latestMsg{rows, err, engine} }
 	case "engines-scan":
 		if m.f.EngineScan {
 			return m, nil

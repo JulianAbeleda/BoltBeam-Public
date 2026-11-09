@@ -285,6 +285,13 @@ func TestKeys(t *testing.T) {
 	if RunStem("/models/Qwen3-8B.gguf", "apple_m3_10c") != "qwen3-8b-apple_m3_10c" {
 		t.Fatalf("stem %q", RunStem("/models/Qwen3-8B.gguf", "apple_m3_10c"))
 	}
+	dir := filepath.Join(t.TempDir(), "Qwen3.8-27B-W4A16-AWQ") // a checkpoint folder: its dots are not an extension
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := RunStem(dir, "nvidia_sm120"); got != "qwen3-8-27b-w4a16-awq-nvidia_sm120" {
+		t.Fatalf("folder stem %q", got)
+	}
 }
 
 // The Run screen offers Save until the run is saved, then says where; a saved run opened to read offers no Save.

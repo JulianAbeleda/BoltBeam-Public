@@ -13,6 +13,31 @@ LLAMA_FLAGS = {"chunk_size": "-ub", "batch_size": "-b", "cache_type_k": "-ctk",
                "cache_type_v": "-ctv", "flash_attention": "-fa"}
 LLAMA_FIELDS = {"n_ubatch": "chunk_size", "n_batch": "batch_size", "type_k": "cache_type_k",
                 "type_v": "cache_type_v", "flash_attn": "flash_attention"}
+GEMM_BACKENDS = ("ATEN", "TRITON", "CUTLASS", "CPP")  # Inductor's matrix backends; a request is a comma list of these
+# The settings a run asks for on the pipeline's command line, each its value type, its name on screen and its help:
+# the one table the parser (screen pipeline), the request (screen._engine_settings) and the screen's Settings page
+# read. Which engine honors which is ACCEPTED; tensor_parallel_size is not asked, the layout sets it.
+ASKED = {
+  "chunk_size": (int, "chunk size", "requested engine chunk size; unsupported adapters refuse it"),
+  "attention_backend": (str, "attention backend", "requested attention backend by the engine's name for it (vLLM: "
+                        "TRITON_ATTN, ROCM_ATTN, ...); recorded with the run, and adapters that cannot honor it refuse it"),
+  "gemm_backends": (str, "matrix backends", "vLLM: the compiler's matrix backends (TRITON: its own Triton GEMMs, not "
+                    "cuBLAS, whose closed kernels need GPU counters to read); recorded with the run, others refuse it"),
+  "mtp": (int, "MTP draft tokens", "vLLM: multi-token prediction with this many draft tokens per step (speculative "
+          "decoding); decode runs on natural text (data/mtp_prompts.json) at one context; recorded with the run"),
+  "mtp_prompt": (str, "MTP prompt", "vLLM with --mtp: the prompt id (data/mtp_prompts.json) the context is built from "
+                 "(default: the set's first)")}
+ACCEPTED = {"vllm": VLLM_SETTINGS, "llama.cpp": tuple(LLAMA_FLAGS)}  # per engine (collectors/providers.ENGINES)
+
+
+def offered(provider:str) -> list[dict[str, Any]]:
+  """The settings a run on this engine may ask for, as the screen offers them: the flag, a whole number or text, the
+  values when they are a fixed set, the help, and whether the checkpoint needs a draft head (the mtp rows)."""
+  from boltbeam.collectors.vllm_mtp import prompt_set
+  choices = {"gemm_backends": lambda: list(GEMM_BACKENDS), "mtp_prompt": lambda: prompt_set()["ids"]}
+  return [{"name": k, "flag": "--" + k.replace("_", "-"), "label": label, "whole": kind is int,
+           "choices": choices[k]() if k in choices else None, "about": about, "draft_head": k.startswith("mtp")}
+          for k, (kind, label, about) in ASKED.items() if k in ACCEPTED.get(provider, ())]
 
 
 def contexts(run:pathlib.Path) -> list[int]:
@@ -138,7 +163,7 @@ def vllm_flags(run:pathlib.Path, context:int, *, capture:bool = False) -> list[s
     raise ValueError("tensor_parallel_size must be a positive integer")
   if size is not None and (type(size) is not int or size <= 0):
     raise ValueError("chunk_size must be a positive integer")
-  if gemm is not None and (type(gemm) is not str or not set(gemm.upper().split(",")) <= {"ATEN", "TRITON", "CUTLASS", "CPP"}):
+  if gemm is not None and (type(gemm) is not str or not set(gemm.upper().split(",")) <= set(GEMM_BACKENDS)):
     raise ValueError("gemm_backends is a comma list of Inductor's matrix backends: ATEN, TRITON, CUTLASS, CPP")
   if backend is not None and (type(backend) is not str or not backend.strip()):
     raise ValueError("attention_backend must name one of vLLM's attention backends")

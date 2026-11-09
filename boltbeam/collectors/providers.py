@@ -619,23 +619,41 @@ def pin_check(provider:str, build:str | None, number:int | None = None, installe
 def record_build(run:pathlib.Path, provider:str) -> dict[str, Any]:
   """The run's engine build and its pin check, written into the run's manifest (engine)."""
   from boltbeam.workflow.common import load_manifest, write_manifest
+  from boltbeam.collectors import engine_builds
   got = {"provider": provider, **pin_check(provider, run_build(run), run_build_number(run), run_build_installed(run))}
+  got["latest"] = engine_builds.currency(provider, engine_builds.run_version(provider, run))  # newest upstream then?
   manifest = load_manifest(run)
   manifest["engine"] = got
   write_manifest(run, manifest)
   return got
 
 
-def latest_llama(build:str | None) -> dict[str, Any]:
+UPSTREAM_TIMEOUT_S = 3.0
+
+
+def upstream(url:str, *, timeout:float = UPSTREAM_TIMEOUT_S) -> Any:
+  """One upstream read: JSON when the answer is JSON, else its text. Raises one of UPSTREAM_ERRORS; a caller says
+  "could not check", never "up to date" (collectors/engine_builds.py, latest_llama)."""
+  import urllib.request
+  with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "boltbeam"}), timeout=timeout) as response:
+    text = response.read().decode("utf-8", "replace")
+  return json.loads(text) if text.lstrip()[:1] in "[{" else text
+
+
+def upstream_errors() -> tuple[type[BaseException], ...]:
+  import http.client
+  return (OSError, ValueError, KeyError, TypeError, http.client.HTTPException)  # a cut-off read is IncompleteRead
+
+
+def latest_llama(build:str | None, read:Callable[[str], Any] = upstream) -> dict[str, Any]:
   """Snapshot upstream at report creation; a mismatch suggests a rerun, never changes the pin."""
-  import datetime, http.client, urllib.request
+  import datetime
   out = {"build": build, "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
          "source": "https://api.github.com/repos/ggml-org/llama.cpp/commits/master"}
   if not build or not re.fullmatch(r"[0-9a-f]{7,40}", build):
     return out | {"words": "llama.cpp latest-version check unavailable: the run has no comparable commit."}
   try:
-    with urllib.request.urlopen(out["source"], timeout=3) as response:
-      sha = json.load(response)["sha"]
+    sha = read(out["source"])["sha"]
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
       raise ValueError("invalid upstream commit")
     matches = sha.startswith(build)
@@ -643,5 +661,5 @@ def latest_llama(build:str | None) -> dict[str, Any]:
              f"llama.cpp reminder: this run used {build}; latest upstream master is {sha[:9]}. "
              "Keep the pinned result for reproducibility; rerun with the latest version before drawing conclusions about bugs or performance")
     return out | {"latest": sha, "matches": matches, "words": f"{words} (checked {out['checked_at']})."}
-  except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as exc:  # a cut-off read is IncompleteRead
+  except upstream_errors() as exc:
     return out | {"words": f"Could not verify the latest llama.cpp version (checked {out['checked_at']}).", "error": str(exc)}

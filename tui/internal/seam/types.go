@@ -82,6 +82,16 @@ type EngineFound struct {
 	Skipped *string `json:"skipped"`
 }
 
+// EngineStanding is one engine's row of `screen engines --latest` (engine_builds.standing: State is behind, waiting,
+// up_to_date or unknown) or of `screen engines --update` (Action: what the update did). Words say it.
+type EngineStanding struct {
+	Engine string  `json:"engine"`
+	Latest *string `json:"latest"`
+	State  string  `json:"state"`
+	Action string  `json:"action"`
+	Words  string  `json:"words"`
+}
+
 // Detected is `screen detect`: autoscan's GPU probe cut to what a screen shows.
 type Detected struct {
 	Status     string  `json:"status"`
@@ -340,6 +350,20 @@ type ProviderRow struct {
 	BatchOverOne *bool `json:"batch_over_one"`
 	// Measurement is how this engine's roles can be timed here; nil from an older Python.
 	Measurement *MeasurementOptions `json:"measurement"`
+	// Settings are what a run on this engine may ask it for (capture_settings.offered); none from an older Python.
+	Settings []EngineSetting `json:"settings"`
+}
+
+// EngineSetting is one setting a run may ask the engine for: its pipeline flag, whole number or text, its values
+// when they are a fixed set, and whether the checkpoint must have a draft head.
+type EngineSetting struct {
+	Name      string   `json:"name"`
+	Flag      string   `json:"flag"`
+	Label     string   `json:"label"`
+	Whole     bool     `json:"whole"`
+	Choices   []string `json:"choices"`
+	About     string   `json:"about"`
+	DraftHead bool     `json:"draft_head"`
 }
 
 type Providers struct {
@@ -347,6 +371,8 @@ type Providers struct {
 	Default   string        `json:"default"`
 	Providers []ProviderRow `json:"providers"`
 	Note      *string       `json:"note"` // the default choice when the model fits one GPU (layout.recommend)
+	// RepeatRuns is the n Setup's Repeats offers (repeat_bands.PIN_RUNS); 0 from an older Python: no Repeats line.
+	RepeatRuns int `json:"repeat_runs"`
 }
 
 // OtherLoss is another provider's per-role table for the same run, shown beside the chosen one, labelled.
@@ -531,6 +557,13 @@ type Results struct {
 	Probe *Probe `json:"probe"`
 	// Engine is the engine the run measured with, its build against the pin table and the toolchain it recorded.
 	Engine *RunEngine `json:"engine"`
+	// Repeats is the band of n runs of this exact setup (repeat_bands.summary); nil without one.
+	Repeats *struct {
+		N             int      `json:"n"`
+		FalseMoveRate float64  `json:"false_move_rate"`
+		Pin           *string  `json:"pin"` // why the band cannot justify an engine pin; nil when it can
+		Lines         []string `json:"lines"`
+	} `json:"repeats"`
 }
 
 // RunEngine is results.engine: the provider, the weight format, the build check (providers.record_build) and the
@@ -545,6 +578,9 @@ type RunEngine struct {
 	// SpeculationWords is what speculative decoding measured (MTP k and acceptance, vllm_speculation.measured_words),
 	// empty for a run without speculation.
 	SpeculationWords []string `json:"speculation_words"`
+	// BuildLines is the build beside upstream's newest at run time and the one-time comparison with the previous
+	// build when this run made one (collectors/engine_builds.build_lines), empty for an older run.
+	BuildLines []string `json:"build_lines"`
 }
 
 // EngineBuild is the run's build against its pin: Matches is nil when the run recorded no build.
@@ -1194,4 +1230,29 @@ type Recommend struct {
 	Command  *string      `json:"command"`
 	Arkey    []string     `json:"arkey_vllm_args"`
 	Check    *RecCheck    `json:"check"`
+	Weights  struct {
+		Mtp float64 `json:"mtp"` // the checkpoint's draft-head bytes: 0 when it has none
+	} `json:"weights"`
+	// MtpMeasure is what Measure MTP runs here (collectors/vllm_mtp.offer): nil when the engine or the checkpoint
+	// cannot; Blocked says why it cannot start yet.
+	MtpMeasure *struct {
+		Ks      []int   `json:"ks"`
+		Blocked *string `json:"blocked"`
+	} `json:"mtp_measure"`
+	// MtpMeasured is this checkpoint's MTP measurement kept in the machine facts (recommend.facts_with_mtp): per
+	// depth, per k (k=0 is the baseline).
+	MtpMeasured *struct {
+		Depths     map[string]map[string]MtpK `json:"depths"`
+		MeasuredAt string                     `json:"measured_at"`
+	} `json:"mtp_measured"`
+}
+
+// MtpK is one draft count's decode on the prompt set (collectors/vllm_mtp.summarize); the acceptance is nil at k=0.
+type MtpK struct {
+	MedianTokS   float64  `json:"median_tok_s"`
+	Context      float64  `json:"context"` // the median context the prompts decoded at
+	Spread       float64  `json:"spread"`
+	Speedup      float64  `json:"speedup"`
+	AcceptLength *float64 `json:"accept_length"`
+	AcceptRate   *float64 `json:"accept_rate"`
 }

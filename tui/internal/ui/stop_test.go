@@ -39,3 +39,33 @@ func TestStoppingANewRunGivesBackTheFinishedOne(t *testing.T) {
 		t.Fatalf("no finished run to go back to: the stopped run stays: %s", got)
 	}
 }
+
+// The AWQ 27B on the 5090 (2026-11-09): a run finished on a chip with no runs before it, and Recommended setup kept
+// "Measure MTP needs this machine's facts: run once on this chip first". A run that ends asks for the recommendation again.
+func TestARunThatEndsAsksForTheRecommendationAgain(t *testing.T) {
+	s := loadSample(t)
+	done := s.measured
+	m := program(s, &done, &jobs.Job{ID: done.ID, Alive: true}, nil, 100, 40)
+	mm := m.(Model)
+	mm.f.RecKey = "the key before the run"
+	m, _ = mm.Update(jobMsg{job: &jobs.Job{ID: done.ID, Alive: false}})
+	if key := facts(m).RecKey; key == "the key before the run" {
+		t.Fatal("the recommendation from before the run is still taken as current")
+	}
+}
+
+// The 5090 (2026-11-09): Measure MTP ended with no run on screen for the model and chip, and the last tick asked to
+// read run "" ("run id must be a folder name under the runs folder"). With no run, only the runs list is read.
+func TestTheLastTickWithNoRunReadsNoRun(t *testing.T) {
+	s := loadSample(t)
+	m := program(s, nil, nil, nil, 100, 40)
+	mm := m.(Model)
+	mm.f.Run, mm.f.Job = nil, nil
+	_, cmd := mm.Update(tickMsg{})
+	if cmd == nil {
+		t.Fatal("the runs list is still read")
+	}
+	if _, ok := cmd().(runsMsg); !ok { // only the list: a batch would also read run ""
+		t.Fatal("a tick with no run must read only the runs list, not run \"\"")
+	}
+}

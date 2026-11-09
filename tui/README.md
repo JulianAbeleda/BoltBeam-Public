@@ -68,6 +68,16 @@ then reads `Engine  vllm · split by rows (2 GPUs)`. On one GPU nothing about la
 (a capture of the real token) or generic (the engine's kernels timed alone). `[ Run ]` is greyed until model, chip
 and engine are set. Setup does not show the speed limit; Run does.
 
+Settings, under Engine, is what the run asks the engine for: the settings that engine takes (`screen providers`
+`settings`, capture_settings.offered: chunk size, attention backend, matrix backends, MTP draft tokens and prompt on
+vLLM; chunk size on llama.cpp), each typed or stepped through its fixed values, passed as the pipeline's own flags.
+The MTP settings appear only when the recommendation says the checkpoint has a draft head. Repeats is 1 run, or the n
+Python offers (`repeat_runs`, repeat_bands.PIN_RUNS): Run then measures the same setup n times (`pipeline --repeats`),
+the bar giving each run an equal share, and keeps their band in the first run, where the Run page shows its median,
+range and spread and every repeat check reads it. The Recommended setup page offers `[ Measure MTP ]` for vLLM and a
+checkpoint with a draft head (`mtp_measure`): `screen mtp` as a job, kept in this machine's facts, then shown per depth
+and k: median tok/s, speedup over k=0, tokens per step and the share of drafts kept.
+
 `[ Emit ]` sits under Run. Completed captured-engine reports offer **Emit gap report**: measured timings,
 modeled differences, unknown ceilings, and timing corrections, with no generic optimization recommendations.
 This works across formats, engines, and supported workload breakdowns. Runs with kernel-search evidence retain

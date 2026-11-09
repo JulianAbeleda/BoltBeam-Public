@@ -17,6 +17,7 @@
     "mostly_zero_share": {"value": 0.9, "reason": "an output with at least this share of zeros is called mostly zero"},
     "low_correlation": {"value": 0.9, "reason": "an output whose correlation with the reference is below this is called low correlation"},
     "gpu_busy_pct": {"value": 40.0, "reason": "an Apple GPU whose lowest utilization read is at least this percent is in use by another program (the desktop alone reads 0 to 15)"},
+    "engine_latest_max_age_h": {"value": 24.0, "reason": "a look at an engine's upstream releases older than this many hours cannot say a run's build was the latest at run time (engine_builds.currency); llama.cpp publishes several builds a day"},
     "update_check_hours": {"value": 24.0, "reason": "the screen asks the public mirror for a newer BoltBeam at most once in this many hours (cli/self_update.py); a failed check is tried again at the next start"},
     "update_check_timeout_s": {"value": 5.0, "reason": "a look at the mirror's tags that takes longer than this many seconds is a failed check, never up to date"}
   }
