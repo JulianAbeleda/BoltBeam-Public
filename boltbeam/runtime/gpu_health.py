@@ -1,7 +1,16 @@
+"""GPU health, two reads. gpu_health_snapshot: processes stuck on the GPU (a hung AMD reset, a dead holder of
+/dev/kfd). check: an NVIDIA machine's memory faults and contexts, no DRAM row remap waiting for a reset, no failed
+remap, no uncorrectable DRAM error since boot, and a CUDA context on every GPU. A RunPod H200 with remaps pending
+passed every other check and then ran slow and crashed (2026-11-08, twice). The doctor reads check; tools/pod-setup.sh
+runs the same checks in shell before BoltBeam is installed, and tests/test_gpu_health.py keeps both on one verdict."""
 from __future__ import annotations
 
+import ctypes
 import os
 import pathlib
+import re
+import shutil
+import subprocess
 from typing import Any
 
 
@@ -93,3 +102,57 @@ def assert_gpu_health(mode:str = "warn", *, stage:str = "preflight") -> dict[str
   if not snap["ok"] and mode == "fail":
     raise RuntimeError(f"GPU health check failed at {stage}: {', '.join(snap['problems'])}")
   return snap
+
+
+# --- NVIDIA memory faults ------------------------------------------------------------------------------------
+
+QUERY = ["nvidia-smi", "-q", "-d", "ROW_REMAPPER,ECC"]
+
+
+def faults(smi:str) -> list[str]:
+  """The memory faults in `nvidia-smi -q -d ROW_REMAPPER,ECC` text, one phrase each; [] when none."""
+  out = []
+  remap = smi[smi.find("Remapped Rows"):] if "Remapped Rows" in smi else ""
+  if re.search(r"Pending\s*:\s*Yes", remap):
+    out.append("row remaps pending a GPU reset")
+  if re.search(r"Remapping Failure Occurred\s*:\s*Yes", smi):
+    out.append("a row remap failed")
+  volatile = 0
+  for block in re.findall(r"Volatile(.*?)(?:Aggregate|\Z)", smi, re.S):
+    volatile += sum(int(n) for n in re.findall(r"DRAM Uncorrectable\s*:\s*(\d+)", block))
+  if volatile:
+    out.append(f"{volatile} uncorrectable DRAM errors since boot")
+  return out
+
+
+def contexts(lib:str = "libcuda.so.1") -> str | None:
+  """Why a CUDA context does not open on some GPU, or None when every GPU opens one."""
+  try:
+    cu = ctypes.CDLL(lib)
+  except OSError as exc:
+    return f"the CUDA driver library does not load: {exc}"
+  n = ctypes.c_int()
+  if r := cu.cuInit(0):
+    return f"cuInit failed: CUresult {r}"
+  cu.cuDeviceGetCount(ctypes.byref(n))
+  for i in range(n.value):
+    d, ctx = ctypes.c_int(), ctypes.c_void_p()
+    cu.cuDeviceGet(ctypes.byref(d), i)
+    if r := cu.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), d):
+      return f"GPU {i}: a CUDA context does not open (CUresult {r})"
+    cu.cuDevicePrimaryCtxRelease(d)
+  return None
+
+
+def check() -> dict[str, Any]:
+  """{"healthy": True/False/None, "problems": [...]}; None when nvidia-smi is absent (not checked, not passed)."""
+  if not shutil.which(QUERY[0]):
+    return {"healthy": None, "problems": ["nvidia-smi is not on PATH"]}
+  try:
+    smi = subprocess.run(QUERY, capture_output=True, text=True, timeout=60).stdout
+  except (OSError, subprocess.SubprocessError) as exc:
+    return {"healthy": None, "problems": [f"nvidia-smi did not answer: {exc}"]}
+  problems = faults(smi)
+  if why := contexts():
+    problems.append(why)
+  return {"healthy": not problems, "problems": problems}

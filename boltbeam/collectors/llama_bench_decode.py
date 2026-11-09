@@ -154,12 +154,14 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
   if batch == 1:
     decode_window(context, tokens)
   if layout == "row":
-    raise attribution.CaptureRefused("split by rows runs every weight kernel on every GPU at once; per-role "
+    # not split by role, as vLLM's split by rows says it (screen._run_stages): the run stands whole and its report is
+    # written; a plain refusal ended a measured 2 x RTX 3090 tensor split "failed" with no report (2026-11-09)
+    raise attribution.NotSplitByRole("split by rows runs every weight kernel on every GPU at once; per-role "
                                      f"attribution across devices is not built, so this run has the whole step only ({lay.LIMITED})")
   bench = find(llama_bench)
   if bench is None:
     raise CannotMeasure(available() or "llama-bench is missing", f"export {ENV}=/path/to/llama-bench")
-  extra, env = lay.engine_args(layout, PROVIDER) if gpus > 1 else ([], {})
+  extra, env = lay.engine_args(layout, PROVIDER, bench) if gpus > 1 else ([], {})
   from boltbeam.collectors.capture_settings import llama_flags
   extra = [*extra, *llama_flags(run, context, capture=True), *(flags or [])]
   raw = raw or run / RAW
@@ -372,7 +374,7 @@ def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_be
   manifest = load_manifest(run)
   facts = preflight(manifest.get("target_id"), manifest.get("model_path") or "", run=run, llama_bench=llama_bench)
   from boltbeam.workflow import layout as lay
-  layout_args, layout_env = lay.engine_args(layout, PROVIDER) if gpus > 1 else ([], {})
+  layout_args, layout_env = lay.engine_args(layout, PROVIDER, find(llama_bench)) if gpus > 1 else ([], {})
   request = read_json(run / "trace_request.json")
   if request.get("workload") != "decode":
     raise CannotMeasure("llama-bench-decode times decode only; this run is prefill", "plan the run with workload decode")

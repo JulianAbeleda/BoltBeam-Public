@@ -16,6 +16,8 @@
     "headroom_pct": {"value": 50.0, "reason": "a kernel from this percent up to at_ceiling_pct is called moderate headroom; below it, large headroom"},
     "mostly_zero_share": {"value": 0.9, "reason": "an output with at least this share of zeros is called mostly zero"},
     "low_correlation": {"value": 0.9, "reason": "an output whose correlation with the reference is below this is called low correlation"},
-    "gpu_busy_pct": {"value": 40.0, "reason": "an Apple GPU whose lowest utilization read is at least this percent is in use by another program (the desktop alone reads 0 to 15)"}
+    "gpu_busy_pct": {"value": 40.0, "reason": "an Apple GPU whose lowest utilization read is at least this percent is in use by another program (the desktop alone reads 0 to 15)"},
+    "update_check_hours": {"value": 24.0, "reason": "the screen asks the public mirror for a newer BoltBeam at most once in this many hours (cli/self_update.py); a failed check is tried again at the next start"},
+    "update_check_timeout_s": {"value": 5.0, "reason": "a look at the mirror's tags that takes longer than this many seconds is a failed check, never up to date"}
   }
 }

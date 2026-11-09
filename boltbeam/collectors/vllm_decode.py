@@ -26,6 +26,7 @@ TRACE = "vllm_timing_trace.json"
 FORMATS = ("safetensors", "awq", "gptq")  # vLLM reads a Hugging Face folder; BoltBeam does not run vLLM on a GGUF
 BACKENDS = ("CUDA", "AMD")  # vLLM's CUDA and ROCm builds; the target's backend says which this machine has
 ENV = "BOLTBEAM_VLLM_PYTHON"
+COMPILES_C = True  # Triton builds a C helper against Python.h when the engine starts
 DRIVER = ec.RUNTIME / "vllm_decode_drive.py"
 TOKENS, REPS = 64, 3
 ROLE_TOKENS = 32

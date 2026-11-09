@@ -348,7 +348,7 @@ def _cc_condition(cond:str, defines:dict[str, int], cc:int, macros:dict[str, str
   offsets = [v for k, v in defines.items() if k.startswith("GGML_CUDA_CC_OFFSET_")]
   nvidia = cc < min(offsets) if offsets else True
   expr = re.sub(r"\s+", " ", cond)
-  family = r"(GGML_CUDA_CC_IS_\w+)\s*\(\s*\(?\s*cc\s*\)?\s*\)"
+  family = r"(GGML_CUDA_CC_IS_\w+)\s*\(\s*(?:cc|\(\s*cc\s*\))\s*\)"  # (cc) or ((cc)): the inner pair together, never the caller's ")"
   for _ in range(8):  # a family test may name others (IS_RDNA3 is IS_RDNA3_0 || IS_RDNA3_5)
     expr = re.sub(family, lambda m: f"({(macros or {})[m.group(1)]})" if m.group(1) in (macros or {}) else m.group(0), expr)
   expr = re.sub(r"GGML_CUDA_CC_IS_NVIDIA\s*\(\s*cc\s*\)", str(nvidia), expr)
@@ -375,7 +375,7 @@ def mmvq_table(text:str, cuda_common:str, cc:int | None) -> tuple[str, str]:
   body, defines, macros = m.group(1), cc_defines(cuda_common), cc_macros(cuda_common)
   for cond, table in re.findall(r"if\s*\((.*?)\)\s*\{\s*return\s+(MMVQ_PARAMETERS_\w+)\s*;", body, re.S):
     if _cc_condition(cond, defines, cc, macros):
-      return table, f"get_device_table_id({cc}): {re.sub(r'\s+', ' ', cond.strip())}"
+      return table, f"get_device_table_id({cc}): {' '.join(cond.split())}"
   last = re.findall(r"return\s+(MMVQ_PARAMETERS_\w+)\s*;", body)
   if not last:
     raise NoEngineSource("mmvq.cu's get_device_table_id returns no table")
@@ -648,7 +648,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
   """Time every weight role's kernel of this engine alone, on the model's real bytes, and write the per-role trace
   (boltbeam.timing_trace.v1) to run/out. The token the kernels tie out against is step 4's measured whole step."""
   from boltbeam.collectors import boltbeam_gemv, llama_bench_decode, gemv_reference, providers
-  from boltbeam.profile.gguf import read_gguf_layout
+  from boltbeam.profile.gguf import read_gguf_split, read_tensor
   from boltbeam.workflow import tie_out
   from boltbeam.workflow.common import load_manifest, read_json
   from boltbeam.workflow.screen import run_bandwidth
@@ -673,7 +673,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
     bridge = bridge or kernel_timer.bridge_for(backend, **setup["bridge"])
   except RuntimeError as exc:
     raise NoEngineSource(str(exc)) from exc
-  _, tensors, data_start = read_gguf_layout(model)
+  _, tensors, _ = read_gguf_split(model)
   rows_out = []
   if (device := setup.get("device")) and hasattr(bridge, "ggml_cc"):  # the engine's table, warps and halve rules key on the GPU
     setup.update(device(bridge))
@@ -707,9 +707,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
           rows_out.append(row)
           continue
         tensor, offset = gemv_reference.tensor_for(quant, rows, cols, tensors, r.get("tensor_name"), r.get("n_expert"))
-        with open(model, "rb") as f:
-          f.seek(data_start + offset)
-          weights = f.read(size)
+        weights = read_tensor(model, tensor, size)
         x = boltbeam_gemv.vector(f"{r['role']}:{quant}", cols)
         spec = setup["spec"](setup, quant, rows, cols, weights, x)
         got = kernel_timer.time_spec(bridge, spec, flusher, libraries=libraries, floor_us=floor_us, dram_gbs=peak_gbs)

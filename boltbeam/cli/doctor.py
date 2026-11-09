@@ -3,8 +3,9 @@
 It is a report, so it exits 0 either way. It probes nothing of its own: the GPU is read the way autoscan reads it
 (workflow/autoscan._hardware_profile, once), the engines are looked for by the engine scan and listed the way
 Setup lists them (collectors/engine_scan, collectors/providers.available), the capture tool by the vendor table
-(collectors/vendor_capture.plan), the tinygrad fork by role_compare.readiness, and the Go toolchain and the screen
-binary by cli/tui. --json prints the same rows as one object for an agent.
+(collectors/vendor_capture.plan), the GPU's health and counters by the vendor table too (target/vendors.py), each
+Triton engine's Python.h (engine_common.missing_headers), the tinygrad fork by role_compare.readiness, and the Go
+toolchain and the screen binary by cli/tui. --json prints the same rows as one object for an agent.
 
     row      found / not found / n/a, a detail, and for a gap the fix: one command or one env var
     gap      a row that says not found; n/a rows (an engine that never runs on this GPU type) are not gaps
@@ -17,7 +18,7 @@ import sys
 from typing import Any
 
 from boltbeam.cli import tui
-from boltbeam.collectors import engine_scan, providers, tinygrad_role_time, vendor_capture
+from boltbeam.collectors import engine_common as ec, engine_scan, providers, tinygrad_role_time, vendor_capture
 from boltbeam.search import role_compare
 from boltbeam.target import targets as reg
 from boltbeam.vocab import SCHEMA_DOCTOR as SCHEMA
@@ -82,9 +83,63 @@ def _engines(target, scanned:dict[str, Any], root) -> list[dict[str, Any]]:
     elif name == tinygrad_role_time.PROVIDER:
       ready = role_compare.readiness(root)
       out.append(row(name, False, ready["message"] or e["reason"], ready["fix"]))
+    elif getattr(providers.ENGINES[name], "python", lambda: None)():
+      out.append(row(name, False, e["reason"], "its python is found but it does not run here: the sentence above says why"))
     else:
       out.append(row(name, False, e["reason"], f"install it, or export {engine_scan.PRIMARY[name]}=<its path>; the next scan finds the usual places"))
   return out
+
+
+def _vendor(target):
+  from boltbeam.target import vendors
+  return vendors.for_backend(target.backend) if target is not None else None
+
+
+def _health(target) -> dict[str, Any]:
+  """A GPU with a memory fault waiting for a reset runs slow, then crashes: its numbers look real (the vendor's read)."""
+  from boltbeam.target.vendors import resolve
+  v = _vendor(target)
+  if v is None or v.health is None:
+    return row("GPU health", None, "no memory-fault read for this GPU's vendor")
+  got = resolve(v.health)()
+  if got["healthy"] is None:
+    return row("GPU health", False, f"not checked: {got['problems'][0]}", f"install {v.scan_tools[0]}")
+  if got["healthy"]:
+    return row("GPU health", True, "no remaps pending or failed, no uncorrectable DRAM errors since boot, every GPU opens a context")
+  return row("GPU health", False, "; ".join(got["problems"]),
+             "reset the GPU (reboot), or on a rented machine delete it and rent another: its numbers would not be its own")
+
+
+def _headers(target) -> list[dict[str, Any]]:
+  """Every found engine python that compiles C at startup (COMPILES_C) needs its Python.h."""
+  out = []
+  for name, mod in providers.ENGINES.items():
+    py = getattr(mod, "COMPILES_C", False) and target is not None and target.backend in getattr(mod, "BACKENDS", ()) and mod.python()
+    if not py:
+      continue
+    if (lack := ec.missing_headers(py)) is None:
+      out.append(row(f"{name} headers", True, f"Python.h for {py}"))
+    else:
+      path, *ver = lack.split()
+      dev = f"python{ver[0]}.{ver[1]}-dev" if len(ver) == 2 else "python3-dev"
+      out.append(row(f"{name} headers", False, f"no {path}: Triton cannot compile its C helper, so {name} fails at startup",
+                     f"install that Python's headers (Debian, Ubuntu: sudo apt install {dev})"))
+  return out
+
+
+def _counters(target) -> dict[str, Any]:
+  """Closed vendor kernels (cuBLAS's nvjet) are split by role from the counters' executed SASS (instruction_path)."""
+  from boltbeam.target.vendors import resolve
+  v = _vendor(target)
+  if v is None or v.counters is None:
+    return row("GPU counters", None, "no counter permission to read for this GPU's vendor")
+  read, how = v.counters
+  if resolve(read)():
+    return row("GPU counters", True, "open to this user: closed kernels (cuBLAS's nvjet) can be split by role")
+  closed, own = how.split("; ", 1)
+  return row("GPU counters", False, f"closed to this user ({closed}): a closed kernel's time stays unsplit by role",
+             f"on your own machine: {own}; on a rented one (it cannot be set): run vLLM with --gemm-backends TRITON "
+             "so its matrix kernels are readable")
 
 
 def _kernel_source(target) -> dict[str, Any]:
@@ -133,8 +188,8 @@ def report(root=None) -> dict[str, Any]:
   scanned = engine_scan.scan_and_save()
   gpu = autoscan._hardware_profile()["gpu"]
   target = reg.TARGETS.get(gpu.get("target_id") or "")
-  rows = [_python(), *_gpu(gpu), *_engines(target, scanned, root), _kernel_source(target), _capture(target),
-          *_screen(tui.facts())]
+  rows = [_python(), *_gpu(gpu), _health(target), *_engines(target, scanned, root), *_headers(target),
+          _kernel_source(target), _capture(target), _counters(target), *_screen(tui.facts())]
   gaps = sum(1 for r in rows if r["found"] is False)
   return {"schema": SCHEMA, "rows": rows, "gaps": gaps, "ready": gaps == 0, "engines_file": scanned["file"],
           "engines": engine_scan.rows(scanned)}

@@ -558,6 +558,12 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
   who = (f'<p class="who"><b>{_e(manifest.get("model_id") or "unknown model")}</b> on {_e(manifest.get("target_id") or "unknown chip")}'
          f' · {_e(engine.get("provider") or loss.get("provider") or "unknown engine")} · batch {_e(tie.get("batch") or 1)}'
          f' · {_e(engine.get("weight_format") or "unknown weights")}</p>')
+  if engine.get("settings_words"):
+    who += f'<p class="muted">Engine settings: {_e("; ".join(engine["settings_words"]))}.</p>'
+  if loss.get("limit_basis"):
+    who += f'<p class="muted">Limit: {_e(loss["limit_basis"])}.</p>'
+  if engine.get("speculation_words"):  # measured acceptance: the limit of a speculative run is at this acceptance
+    who += f'<p class="muted">Speculation measured: {_e("; ".join(engine["speculation_words"]))}.</p>'
   if (loss.get('replay') or {}).get('headline'):
     replay=loss['replay'];head=replay['headline']
     qualification=(replay.get('qualification') or {}).get('status')
@@ -1072,6 +1078,10 @@ def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, An
     rows.append(("Capture", CAPTURE_WORDS.get(cap["method"], cap["method"]) + (f'; {cap["reason"]}' if cap.get("reason") else "")))
   elif (loss.get("replay") or {}).get("forced"):
     rows.append(("Capture", "Observed native activity and exact work identity; timing admission is reported separately."))
+  elif loss.get("semantic_capture"):
+    from boltbeam.workflow.output import semantic_roles
+    rows.append(("Capture", f"the real token, split by role from the engine's own module labels "
+                            f"({len(semantic_roles(loss))} weight roles)"))
   elif loss.get("runtimes"):
     rows.append(("Capture", "whole step only, untraced" + (f'; per role: {loss["missing"]}' if loss.get("missing") else "")))
   if loss.get("role_source_words"):

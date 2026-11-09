@@ -57,6 +57,8 @@ Two commands say where this machine stands and open the screen:
 ```
 boltbeam doctor      # what this machine has (Python, GPU, engines, capture tool, Go) and the one fix per gap; exit 0
 boltbeam tui         # the screen; builds boltbeam-tui into ~/.cache/boltbeam first when needed
+boltbeam update      # is a newer BoltBeam released, and how this install upgrades; --yes runs it (the screen asks at start;
+                     # BOLTBEAM_NO_UPDATE_CHECK=1 turns that off)
 ```
 
 `doctor` looks for the engines in the usual folders and remembers them (`~/.boltbeam/engines.json`); set an env var
@@ -79,6 +81,9 @@ python3 -c "import json;print([t['target_id'] for t in json.load(open('boltbeam/
 | `apple_metal` | any Metal GPU, family row | no speeds; pass your own |
 | `apple_m3_10c` | MacBook Air M3, 10-core GPU | measured: 89.9 GB/s, 3.152 TFLOP/s |
 | `apple_m4_10c` | Mac mini M4, 10-core GPU | vendor sheet: 120 GB/s |
+
+A GPU with no built-in row gets a generated profile from the autoscan, saved in the local registry; the Apple M5's
+`apple_m5_10c_16g` (131.3 GB/s, measured 2026-10-13) is one.
 
 A row records where each number came from, under `capabilities.fact_status` and
 `fact_sources`: `measurement`, `hardware_scan`, `derived`, `vendor_spec`, `estimate`, or

@@ -57,10 +57,25 @@ def measured_line(report:dict[str, Any], res:dict[str, Any], measure:dict[str, A
   label = (cap.get("measurement") or {}).get("label") or cap.get("method") or "whole step"
   method = cap.get("method")  # the vendor tool is named beside "in-model"; the kernel timer's label already says itself
   how = f"{label} ({method})" if method and method != engine_kernels.METHOD and method not in label else label
-  roles = (res.get("loss") or {}).get("roles") or []
+  loss = res.get("loss") or {}
+  roles = loss.get("roles") or []
   total = report.get("role_count") or len(roles)
-  per_role = f": {len(roles)} of {total} weight roles timed" if roles else ": the whole step only, no per-role time"
+  labeled = semantic_roles(loss)
+  per_role = (f": {len(roles)} of {total} weight roles timed" if roles else
+              f": split by role from the engine's own labels, {len(labeled)} weight roles" if labeled else
+              ": the whole step only, no per-role time")
   return f"measured, {how}{per_role}"
+
+
+def semantic_roles(loss:dict[str, Any]) -> list[str]:
+  """The weight roles a labeled capture (vLLM's module labels) timed: its "where the token goes" rows of work
+  "role", a merged matrix ("attn_gate + attn_qkv INT4_G128_ZP") counting each of its roles. Those runs fill no
+  per-role list, and the summary said "no per-role time" over a full table (27B AWQ, RTX 5090, 2026-11-08)."""
+  if not loss.get("semantic_capture"):
+    return []
+  names = [part.split()[0] for r in (loss.get("where_token_goes") or {}).get("rows") or []
+           if r.get("what") == "role" for part in (r.get("name") or "").split(" + ") if part.strip()]
+  return list(dict.fromkeys(names))
 
 
 def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str, Any],
@@ -85,12 +100,14 @@ def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str
     f"- Architecture: `{profile.get('architecture_class', 'unknown')}`",
     # a run that measured says so; the analysis report's status is the route policy's (no kernel compared yet)
     f"- Measurement: {measured}" if measured else f"- Analysis status: `{report.get('status', 'not_analyzed')}`",
+    *([f"- Engine settings: {'; '.join(words)}"] if (words := (res.get("engine") or {}).get("settings_words")) else []),
+    *([f"- Speculation measured: {'; '.join(spec)}"] if (spec := (res.get("engine") or {}).get("speculation_words")) else []),
     "",
     "## Next Step",
     "",
   ]
   lines.append(next_step(report, plan, probe, measure))  # the one ladder (report/html.py), the same words everywhere
-  if roles:  # the measured per-role table, the same text the screen and the TUI print (screen.summary_text)
+  if roles or semantic_roles(res.get("loss") or {}) or measured:  # a measured whole step reports too (a split run)  # the measured per-role table, the same text the screen and the TUI print (screen.summary_text); a labeled vLLM capture's lives in where-the-token-goes
     lines += ["", "## Measured", "", "```", summary_text(res).rstrip(), "```"]
   if timing and not roles:  # the whole-step profile's buckets say something only before a per-role table exists
     lines += ["", "## Timing Profile", ""]

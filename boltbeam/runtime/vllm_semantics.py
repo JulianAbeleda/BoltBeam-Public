@@ -8,6 +8,8 @@ from contextvars import ContextVar
 from contextlib import contextmanager
 
 _operation = ContextVar('boltbeam_operation', default=None)
+_drafting = ContextVar('boltbeam_drafting', default=False)  # inside the speculator's propose (draft_scope)
+DRAFT_ROOT = 'mtp'  # vLLM's own prefix for the draft head's layers (its attention layer is mtp.layers.0.self_attn.attn)
 
 
 def hip_profiler_window():
@@ -57,13 +59,87 @@ class RunnerModel:
     return [fn(self.runner.model)]
 
 
+def model_runner(llm):
+  """The engine's GPU model runner, in-process (VLLM_ENABLE_V1_MULTIPROCESSING=0) or a server worker's."""
+  return (llm.runner if isinstance(llm,RunnerModel) else
+          llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner)
+
+
+def speculator(llm):
+  """The runner's speculative-decoding proposer (vLLM's MTPSpeculator), or None without speculation. An engine
+  configured to speculate must have one: a missing proposer there is an error, not 'no speculation'."""
+  if not isinstance(llm,RunnerModel):
+    config=getattr(getattr(getattr(llm,'llm_engine',None),'vllm_config',None),'speculative_config',None)
+    if config is None:return None
+  spec=getattr(model_runner(llm),'speculator',None)
+  if spec is None and not isinstance(llm,RunnerModel):
+    raise ValueError('the engine is configured to speculate, and its model runner holds no speculator')
+  return spec
+
+
+def draft_name(name):
+  """A draft-head module's name as its checkpoint stores it: vLLM loads mtp.* into the drafter's model.* (Qwen3_5MTP),
+  so model.layers.0.mlp.down_proj is mtp.layers.0.mlp.down_proj, and the drafter's own lm_head is mtp.lm_head."""
+  return DRAFT_ROOT+'.'+name.removeprefix('model.') if name else DRAFT_ROOT
+
+
+@contextmanager
+def draft_scope(llm):
+  """Mark every operation the speculator dispatches (its whole propose) as draft work, so a weight the draft head
+  shares with the target (lm_head, the embedding) is labelled by the phase that read it, not only by its owner."""
+  spec=speculator(llm)
+  if spec is None:
+    yield;return
+  original=spec.propose
+  import torch
+  # one range over the whole propose: a kernel no module or operator range names (the drafter's fused norms, its
+  # input updates) is still the draft head's
+  scope='boltbeam:'+json.dumps({'module':DRAFT_ROOT,'class':type(spec).__name__,'draft':True},separators=(',',':'))
+  def propose(*args,**kwargs):
+    token=_drafting.set(True)
+    torch.cuda.nvtx.range_push(scope)
+    try:return original(*args,**kwargs)
+    finally:
+      torch.cuda.nvtx.range_pop()
+      _drafting.reset(token)
+  spec.propose=propose
+  try:yield
+  finally:del spec.propose  # the instance override; the class's method again
+
+
 @contextmanager
 def without_graph_replay(llm):
-  """Run the already compiled production model without replaying its graphs."""
+  """Run the already compiled production model without replaying its graphs; with speculation, the draft head's
+  graphs too (its prefill over the verified tokens and its fused draft decode), each built with the attention plan the
+  production graph was captured with."""
   from dataclasses import replace
   from vllm.config import CUDAGraphMode
-  runner=(llm.runner if isinstance(llm,RunnerModel) else
-          llm.llm_engine.engine_core.engine_core.model_executor.driver_worker.worker.model_runner)
+  runner=model_runner(llm)
+  spec=getattr(runner,'speculator',None)
+  restore=[]
+  if spec is not None:
+    for manager_name in ('prefill_cudagraph_manager','decode_cudagraph_manager'):
+      draft_manager=getattr(spec,manager_name,None)
+      if draft_manager is None:continue
+      chosen=draft_manager.dispatch
+      def draft_dispatch(*args,_chosen=chosen,_name=manager_name,**kwargs):
+        selected_desc=_chosen(*args,**kwargs)
+        spec._boltbeam_selected=getattr(spec,'_boltbeam_selected',{});spec._boltbeam_selected[_name]=selected_desc
+        return replace(selected_desc,cg_mode=CUDAGraphMode.NONE)
+      draft_manager.dispatch=draft_dispatch
+      restore.append((draft_manager,'dispatch',None))
+    # Draft decode builds its own attention metadata; a FULL production graph was captured planning attention for
+    # max_model_len keys, so the graphless pass plans it the same way (as prepare_labels does for the target)
+    plan=spec._build_attn_metadata
+    def draft_metadata(*args,**kwargs):
+      selected_desc=(getattr(spec,'_boltbeam_selected',{}) or {}).get('decode_cudagraph_manager')
+      if selected_desc is None or selected_desc.cg_mode!=CUDAGraphMode.FULL:
+        return plan(*args,**kwargs)
+      held=spec.draft_max_seq_len;spec.draft_max_seq_len=spec.max_model_len
+      try:return plan(*args,**kwargs)
+      finally:spec.draft_max_seq_len=held
+    spec._build_attn_metadata=draft_metadata
+    restore.append((spec,'_build_attn_metadata',None))
   manager=runner.cudagraph_manager
   original=manager.dispatch
   state=runner.model_state;prepare=state.prepare_attn
@@ -86,8 +162,55 @@ def without_graph_replay(llm):
     finally:metadata_globals['build_attn_metadata']=build
   manager.dispatch=dispatch;state.prepare_attn=prepare_labels
   try:yield
-  finally:manager.dispatch=original;state.prepare_attn=prepare
+  finally:
+    manager.dispatch=original;state.prepare_attn=prepare
+    for owner,attribute,value in restore:
+      if value is None:delattr(owner,attribute)  # an instance override over the class's method
+      else:setattr(owner,attribute,value)
 
+
+
+ENGINE_STEP=[None]  # the engine step observe_steps is inside, read by observe_speculation
+
+
+@contextmanager
+def observe_speculation(llm):
+  """Every scheduler step of speculative decoding, as vLLM's scheduler records it: the engine step it was scheduled
+  in (observe_steps), the tokens it scheduled and the draft tokens among them per request, and, once the engine has
+  run it, the tokens it emitted per request and vLLM's own spec-decode counters for it (SpecDecodingStats: drafts,
+  draft tokens, accepted tokens, accepted per draft position). Host-side bookkeeping only: nothing is read from the
+  GPU, and no step is changed. A step the scheduler ran ahead (async scheduling) that the engine never reported back
+  keeps no emitted tokens, and says so (reported False)."""
+  scheduler=llm.llm_engine.engine_core.engine_core.scheduler
+  schedule,update=scheduler.schedule,scheduler.update_from_output
+  records=[];mark=object()
+  def scheduled(*args,**kwargs):
+    out=schedule(*args,**kwargs)
+    out._boltbeam_schedule=(mark,len(records))
+    records.append({'schedule':len(records),'engine_step':ENGINE_STEP[0],
+                    'scheduled_tokens':int(out.total_num_scheduled_tokens),'reported':False,
+                    'requests':{str(r):{'tokens':int(n),'draft_tokens':len(out.scheduled_spec_decode_tokens.get(r) or ())}
+                                for r,n in out.num_scheduled_tokens.items()}})
+    return out
+  def updated(scheduler_output,runner_output):
+    result=update(scheduler_output,runner_output)
+    owner,index=getattr(scheduler_output,'_boltbeam_schedule',(None,None))
+    if owner is mark:
+      record=records[index];record['reported']=True
+      sampled=runner_output.sampled_token_ids or []
+      for request,row in record['requests'].items():
+        at=runner_output.req_id_to_index.get(request)
+        row['emitted']=len(sampled[at]) if at is not None and at<len(sampled) else 0
+      stats=[o.scheduler_stats for o in result.values() if getattr(o,'scheduler_stats',None) is not None]
+      spec=stats[0].spec_decoding_stats if stats else None
+      record['spec_decoding_stats']=None if spec is None else {
+        'drafts':int(spec.num_drafts),'draft_tokens':int(spec.num_draft_tokens),'accepted_tokens':int(spec.num_accepted_tokens),
+        'accepted_per_position':[int(v) for v in spec.num_accepted_tokens_per_pos]}
+    return result
+  scheduler.schedule,scheduler.update_from_output=scheduled,updated
+  try:yield records
+  finally:
+    del scheduler.schedule,scheduler.update_from_output
 
 
 @contextmanager
@@ -111,9 +234,11 @@ def observe_steps(llm, profile_step=None, *, profile_end=None, capture_pass=None
       torch.cuda.profiler.start()
       active=True
     torch.cuda.nvtx.range_push('boltbeam-step:'+json.dumps({'step':index,**({'capture_pass':capture_pass} if capture_pass else {})}))
+    ENGINE_STEP[0]=index
     try:
       return original(*args, **kwargs)
     finally:
+      ENGINE_STEP[0]=None
       torch.cuda.nvtx.range_pop()
       if active and index==end:
         torch.cuda.synchronize()
@@ -164,12 +289,72 @@ def module_facts(name, mod):
   return facts
 
 
-def model_modules(model):
+def model_modules(model, *, draft=False):
+  """(name, module, facts) for every module. draft: the speculator's draft head, its modules named as its checkpoint
+  names them (draft_name) and marked draft, so its work is never read as the target model's."""
   packed=getattr(model,'packed_modules_mapping',{})
   for name,mod in model.named_modules():
-    parent,_,leaf=name.rpartition('.')
+    shown=draft_name(name) if draft else name
+    parent,_,leaf=shown.rpartition('.')
     parts=[f'{parent}.{part}' if parent else part for part in packed.get(leaf,[leaf])]
-    yield name,mod,{**module_facts(name,mod),'checkpoint_modules':parts}
+    yield shown,mod,{**module_facts(shown,mod),'checkpoint_modules':parts,**({'draft':True} if draft else {})}
+
+
+def _owners(model, by_ptr, by_name, *, draft=False):
+  for name,mod,f in model_modules(model,**({'draft':True} if draft else {})):
+    # Quantized engines keep weights/scales under names such as weight_packed
+    # and qweight. Attribute by actual storage, not one parameter spelling.
+    for _,w in mod.named_parameters(recurse=False):
+      address=w.untyped_storage().data_ptr()
+      # a tensor the draft head shares with the target (lm_head, the embedding) keeps its one owner, the target's
+      # module; which phase read it is the dispatch's draft mark (draft_scope), not a second owner
+      if draft and address in by_ptr and not any(x.get('draft') for x in by_ptr[address]):continue
+      by_ptr.setdefault(address,[]).append(f)
+    by_name[name]=f
+
+
+def parameter_owners(llm):
+  """{parameter storage address: [module facts]} and {module name: facts}, from the loaded model and, with
+  speculation, its draft head."""
+  def facts(model):
+    by_ptr={};by_name={}
+    _owners(model,by_ptr,by_name)
+    return by_ptr,by_name
+  by_ptr,by_name=llm.apply_model(facts)[0]
+  if (spec:=speculator(llm)) is not None:
+    _owners(spec.model,by_ptr,by_name,draft=True)
+  return by_ptr,by_name
+
+
+@contextmanager
+def inductor_ranges(llm):
+  """Label the matrix products Inductor writes as its own Triton templates (triton_tem_*) with the module whose
+  weights they read. Such a product is no dispatched operator, so dispatch_mode cannot see it: under
+  max_autotune_gemm_backends=TRITON, Qwen3.8-27B's in_proj_ba ran as triton_tem_fused_mm_t_1 with no label (RTX 5090,
+  2026-11-08). The owner is found the way dispatch_mode finds one, by the storage its tensor arguments point into;
+  a kernel reading no parameter, or several modules' parameters, stays unlabeled."""
+  import itertools,torch
+  from torch._inductor.runtime.triton_heuristics import CachingAutotuner
+  pointers,_=parameter_owners(llm)
+  original=CachingAutotuner.run;ids=itertools.count(1_000_000)  # apart from dispatch_mode's operation ids
+  def run(self,*args,stream,**kwargs):
+    name=(getattr(self,'inductor_meta',None) or {}).get('kernel_name') or getattr(getattr(self,'fn',None),'__name__','')
+    if not name.startswith('triton_tem_'):
+      return original(self,*args,stream=stream,**kwargs)
+    tensors=[x for x in args if isinstance(x,torch.Tensor)]
+    owners={f['module']:f for x in tensors for f in pointers.get(x.untyped_storage().data_ptr(),[])}
+    if len(owners)!=1:
+      return original(self,*args,stream=stream,**kwargs)
+    f=next(iter(owners.values()))
+    inputs=[{'shape':list(x.shape),'dtype':str(x.dtype).removeprefix('torch.')}
+            for x in tensors if x.untyped_storage().data_ptr() not in pointers]
+    torch.cuda.nvtx.range_push('boltbeam:'+json.dumps({**f,'operation_id':next(ids),'operator':'inductor:'+name,
+                                                       'inputs':inputs},separators=(',',':')))
+    try:return original(self,*args,stream=stream,**kwargs)
+    finally:torch.cuda.nvtx.range_pop()
+  CachingAutotuner.run=run
+  try:yield
+  finally:CachingAutotuner.run=original
 
 
 def dispatch_mode(llm,*,runtime_operators=False):
@@ -183,16 +368,7 @@ def dispatch_mode(llm,*,runtime_operators=False):
   from torch.utils._python_dispatch import TorchDispatchMode
   from torch.utils._pytree import tree_leaves,tree_map
   from vllm.utils.torch_utils import LayerName
-  def facts(model):
-    by_ptr={};by_name={}
-    for name,mod,f in model_modules(model):
-      # Quantized engines keep weights/scales under names such as weight_packed
-      # and qweight. Attribute by actual storage, not one parameter spelling.
-      for _,w in mod.named_parameters(recurse=False):
-        by_ptr.setdefault(w.untyped_storage().data_ptr(),[]).append(f)
-      by_name[name]=f
-    return by_ptr,by_name
-  pointers,names=llm.apply_model(facts)[0]
+  pointers,names=parameter_owners(llm)
   class Trace(TorchDispatchMode):
     operation_id = 0
     def __torch_dispatch__(self,func,types,args=(),kwargs=None):
@@ -211,7 +387,7 @@ def dispatch_mode(llm,*,runtime_operators=False):
            'arguments':tree_map(leaf,args),'keyword_arguments':tree_map(leaf,kwargs)}
       else:return func(*args,**kwargs)
       self.operation_id += 1
-      f={**f,'operation_id':self.operation_id}
+      f={**f,'operation_id':self.operation_id,**({'draft':True} if _drafting.get() else {})}
       inputs=[{'shape':list(x.shape),'dtype':str(x.dtype).removeprefix('torch.')}
               for x in leaves if isinstance(x,torch.Tensor) and x.untyped_storage().data_ptr() not in pointers]
       torch.cuda.nvtx.range_push('boltbeam:'+json.dumps({**f,'operator':str(func),'inputs':inputs},separators=(',',':')))
@@ -277,11 +453,11 @@ def read_routing(llm):
   return llm.apply_model(read)[0]
 
 
-def _module_ranges(model):
+def _module_ranges(model, *, draft=False):
   import torch
   records = []; handles=[]
-  for name, mod, facts in model_modules(model):
-    if not name:
+  for name, mod, facts in model_modules(model, **({'draft':True} if draft else {})):
+    if not name or (draft and name==DRAFT_ROOT):
       continue
     records.append(facts)
     def enter(module, args, kwargs, facts=facts):
@@ -303,6 +479,9 @@ def install(llm):
 def module_ranges(llm):
   """Temporary module labels installed after production compilation and warmup."""
   records,handles=llm.apply_model(_module_ranges)[0]
+  if (spec:=speculator(llm)) is not None:
+    more,draft_handles=_module_ranges(spec.model,draft=True)
+    records,handles=records+more,handles+draft_handles
   try:yield records
   finally:
     for handle in handles:handle.remove()

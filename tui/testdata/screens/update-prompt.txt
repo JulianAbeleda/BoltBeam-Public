@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Update available                                                             │
+│ BoltBeam 0.3.14 is available (you have 0.3.13).                              │
+│                                                                              │
+│ Upgrade now runs: brew update && brew upgrade boltbeam                       │
+│                                                                              │
+│ ▸ Upgrade now                                                                │
+│   Skip                                                                       │
+│   Skip this version                                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+ ↑↓ move · enter pick · q quit

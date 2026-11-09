@@ -39,6 +39,7 @@ import re
 import statistics
 from typing import Any, Callable
 
+from boltbeam.collectors import llama_mmq
 from boltbeam.collectors.instruction_path import template
 from boltbeam.core.policy import value
 from boltbeam.profile.gguf import GGML_TYPE_NAMES
@@ -365,6 +366,8 @@ def _fits(item:dict[str, Any], g:dict[str, Any], k:int, r:int, bandwidth_gbs:flo
       launch.get("logical_parts") for launch, *_ in g.get("launches", [])):
     return False
   for launch, m, _, _ in g.get("launches", []):
+    if not any(llama_mmq.serves(launch["key"], r) for r in item.get("parts", [item])):
+      return False  # an expert stack's launches are its grid.y = k ones (llama_mmq.serves)
     if proof := launch.get("matrix_grid_constraint"):
       from boltbeam.collectors.llama_mmq import fits
       if not fits(proof, launch, item.get("parts", [item]), m, k, r): return False

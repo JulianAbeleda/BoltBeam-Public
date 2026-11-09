@@ -22,7 +22,10 @@ y-block reading the expert ids[y] names; Metal: one mul_mv_id dispatch over k), 
 The profile's count for an expert role is its stacks, the launches per token, and bytes per call is the role's limit
 bytes over that count: k experts' bytes. CUDA also fuses an expert gate and up with their GLU into one launch that
 reads 2k matrices; that is the fused case with k = 2 (the gate_up role's count is 2 per layer). The router and
-the shared experts are plain matrices: one launch per layer each.
+the shared experts are plain matrices: one launch per layer each. The pairing holds the grid (llama_mmq.serves): in a
+capture of one-column launches only a grid.y = k launch serves an expert stack and only grid.y = 1 a plain matrix;
+a stack no launch ties is unpaired with what is missing said (llama_mmq.untied). A launch's experts carry their basis
+(roofline/moe.routing_basis): k distinct experts is exact for one token, a minimum at batch B.
 
 Time in groups no role takes is "not attributed". Nothing is guessed: a role with no matching group stays absent,
 and loss() (tinygrad_role_time.py) then applies the same floor rule as for every provider.
@@ -32,9 +35,10 @@ from __future__ import annotations
 import pathlib
 from typing import Any, Iterable
 
-from boltbeam.collectors import pairing
+from boltbeam.collectors import llama_mmq, pairing
 from boltbeam.collectors.pairing import BLOCKS  # noqa: F401  (the decode readers import it from here)
 from boltbeam.role_key import role_key
+from boltbeam.roofline import moe
 from boltbeam.target import vendors
 
 ROLE_SOURCE = "attributed_by_bytes_and_count"
@@ -65,11 +69,13 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
   a hybrid's layer_kinds). peak_gbs: the bandwidth at the top of its measured uncertainty (targets.upper), None not checked. Returns {"pairs": [...], "groups":
   every group with its role or None (a group several roles share is one row per role), "unpaired", "ambiguous",
   "rule", "structure"}."""
+  grids = tuple(sorted({llama_mmq.channels(g["key"]) for g in kernel_groups} - {None}))  # llama_mmq.serves
   at = lambda d, r: (d or {}).get(role_key(r), (d or {}).get((r["role"], r["quant"])))  # noqa: E731
   rows = [{"role": r["role"], "quant": r["quant"], "count": n, "weight_bytes": r["bytes_moved"] / n, "nk": None,
            "role_class": (p := at(read, r) or {}).get("role_class"), "role_key": role_key(r), **({"fine": r["fine"]} if r.get("fine") else {}),
            **({"layer_kinds": p["layer_kinds"]} if sum(c for k in (p.get("layer_kinds") or {}).values() for c in k.values()) == n else {}),
-           **({"per_layer": p["per_layer"]} if p.get("per_layer") else {})}
+           **({"per_layer": p["per_layer"]} if p.get("per_layer") else {}),
+           **({"n_expert": int(p["n_expert"] or 0), "experts_read": p.get("experts_read"), "expert_grid": grids} if "n_expert" in p else {})}
           for r in roles if (n := int(at(counts, r) or 0))]
   timed = all(g.get("launches") and len(g["launches"]) == g["calls"] and None not in (g.get("starts") or [None]) for g in kernel_groups)
   launches = [{"key": g["key"], "raw_wall_us": d, "wall_us": sh, "start_us": g["starts"][i], "stream": (g.get("streams") or [None] * g["calls"])[i]}
@@ -108,7 +114,8 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
                        "calls_per_token": left_calls / tokens, "us_per_call": max(left_us, 0.0) / left_calls})
   pair_rows = [{"role": r["role"], "quant": r["quant"], "key": r["key"], "count": r.pop("count"), "fused": r["fused"],
                 "gbs": r["gbs"]} for r in rows_out if r["role"]]
-  unpaired = [{"role": u["item"]["role"], "quant": u["item"]["quant"], "count": u["item"]["count"], "reason": u["reason"]} for u in got["unplaced"]]
+  unpaired = [{"role": u["item"]["role"], "quant": u["item"]["quant"], "count": u["item"]["count"],
+               "reason": u["reason"] + llama_mmq.untied(u["item"]["parts"][0])} for u in got["unplaced"]]
   return {"pairs": pair_rows, "groups": rows_out, "unpaired": unpaired, "ambiguous": got.get("ambiguous"), "rule": got["words"],
           "structure": got["structure"]}
 
@@ -119,7 +126,7 @@ def trace_rows(result:dict[str, Any], *, context:int, time_source:str) -> list[d
   return [{"scope": "kernel", "context": context, "kernel": g["key"] + (f" role={g['role']}" if g.get("shared_key") else ""),
            "calls": g["calls"], "wall_us": g["wall_us"], "role": g["role"], "quant": g["quant"],
            "role_source": ROLE_SOURCE if g["role"] else None, "time_source": time_source,
-           **{k: g[k] for k in ("shape", "logical_parts", "logical_flops") if g.get(k) is not None}}
+           **{k: g[k] for k in ("shape", "logical_parts", "logical_flops", "experts") if g.get(k) is not None}}
           for g in result["groups"]]
 
 
@@ -351,6 +358,9 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   from boltbeam.target.targets import upper
   result = attribute(window, roles, counts, tokens, upper(ceil.get("peak_bandwidth_gbs"), ceil.get("uncertainty")), kinds=pairing.layer_kinds(profile), read=read,
                        unfused_attention=unfused_attention)
+  for g in [*result["groups"], *result["pairs"]]:  # an expert launch's bytes are its k experts: exact for one token only
+    if (p := read.get((g.get("role"), g.get("quant")))) and p.get("n_expert"):
+      g["experts"] = {"read": llama_mmq.experts_of(p), "of": int(p["n_expert"]), "routing_basis": moe.routing_basis(batch, False)}
   if packed:  # one measured duration belongs to the packed launch, not separate byte-weighted part timings
     from collections import Counter
     for g in result["groups"]:

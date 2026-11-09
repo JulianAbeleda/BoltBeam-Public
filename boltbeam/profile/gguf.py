@@ -3,10 +3,11 @@ from __future__ import annotations
 import collections
 import math
 import pathlib
+import re
 import struct
 from typing import Any
 
-from boltbeam.profile.ir import ModelProfile, TensorRole
+from boltbeam.profile.ir import ModelProfile, TensorRole, model_name
 from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
 from boltbeam.profile.architecture import classify_architecture
 from boltbeam.vocab import is_ssm_role
@@ -87,6 +88,69 @@ def read_gguf_layout(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tupl
   return kv, tensors, data_start
 
 
+def read_gguf_split(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tuple[str, tuple[int, ...], int, int]], int]:
+  """A model llama.cpp's gguf-split wrote as N files (<stem>-00001-of-0000N.gguf ...): the first shard's metadata,
+  every shard's tensors and the data bytes of all of them. split.count says how many; the first shard alone holds the
+  metadata and few or no tensors (Qwen3.8-Flash-Next UD-Q4_K_XL: 4 shards, 0 roles from the first, 2026-11-08).
+  An unsplit file is itself. Offsets stay per shard: read weight bytes with read_tensor."""
+  p = pathlib.Path(path).expanduser()
+  kv, tensors, start = read_gguf_layout(p)
+  # a shard with no tensors has no data region: its file can end before the aligned header end (-6 B on Flash-Next's first)
+  region = lambda f, ts, at: f.stat().st_size - at if ts else 0
+  data, n = region(p, tensors, start), int(kv.get("split.count") or 1)
+  if n <= 1:
+    return kv, tensors, data
+  tensors = list(tensors)
+  for shard in _shards(p, n)[1:]:
+    if not shard.is_file():
+      raise ValueError(f"split GGUF: {shard.name} is missing beside {p.name}")
+    _, more, shard_start = read_gguf_layout(shard)
+    tensors += more
+    data += region(shard, more, shard_start)
+  if kv.get("split.tensors.count") not in (None, len(tensors)):
+    raise ValueError(f"split GGUF: its {n} files hold {len(tensors)} tensors, the first declares {kv['split.tensors.count']}")
+  return kv, tensors, data
+
+
+def _shards(p:pathlib.Path, n:int) -> list[pathlib.Path]:
+  """The files of a model split in n (n=1: the file itself), from its first."""
+  if n <= 1:
+    return [p]
+  m = re.fullmatch(r"(.+)-(\d+)-of-(\d+)\.gguf", p.name)
+  if not m or int(m.group(2)) != 1 or int(m.group(3)) != n:
+    raise ValueError(f"{p.name}: a model split in {n} files is read from its first, <stem>-00001-of-{n:05d}.gguf")
+  return [p.with_name(f"{m.group(1)}-{i:0{len(m.group(2))}d}-of-{m.group(3)}.gguf") for i in range(1, n + 1)]
+
+
+_LOCATIONS: dict[tuple[str, int, int], dict[str, tuple[pathlib.Path, int]]] = {}
+
+
+def tensor_locations(path:str | pathlib.Path) -> dict[str, tuple[pathlib.Path, int]]:
+  """Each tensor's file and absolute byte position, across every shard of a split model (read once per file state)."""
+  p = pathlib.Path(path).expanduser().resolve()
+  st = p.stat()
+  key = (str(p), st.st_size, st.st_mtime_ns)
+  if key not in _LOCATIONS:
+    kv, _, _ = read_gguf_layout(p)
+    found: dict[str, tuple[pathlib.Path, int]] = {}
+    for shard in _shards(p, int(kv.get("split.count") or 1)):
+      _, tensors, start = read_gguf_layout(shard)
+      found.update({name: (shard, start + off) for name, _, _, off in tensors})
+    _LOCATIONS[key] = found
+  return _LOCATIONS[key]
+
+
+def read_tensor(path:str | pathlib.Path, name:str, size:int) -> bytes:
+  """A tensor's first `size` bytes from whichever file of the model holds it."""
+  shard, at = tensor_locations(path)[name]
+  with open(shard, "rb") as f:
+    f.seek(at)
+    got = f.read(size)
+  if len(got) != size:
+    raise ValueError(f"{shard.name}: {name} has {len(got)} of its {size} bytes")
+  return got
+
+
 RECURRENT_KEYS = ("conv_kernel", "state_size", "group_count", "inner_size")  # GGUF ssm.* keys that size the state
 
 
@@ -116,7 +180,7 @@ def declared_context(kv:dict[str, Any], arch:str | None) -> dict[str, Any] | Non
 def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> ModelProfile:
   from boltbeam.profile import weight_ledger
   p = pathlib.Path(path).expanduser()
-  kv, all_tensors, data_start = read_gguf_layout(p)
+  kv, all_tensors, data_bytes = read_gguf_split(p)
   arch = kv.get("general.architecture")
   # a multi-token-prediction head's blocks are no layer the engine runs: out of the layers and roles, excluded in the ledger
   drafts = weight_ledger.draft_blocks(kv, arch)
@@ -173,7 +237,7 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
                            layer_kinds=kinds_of(names), per_layer=per_layer(names) if mixed else None)
                 for (role, rows, cols, typ, n_expert), names in sorted(grouped.items()))
   # every tensor counted in the limit or excluded with a reason; refused here when the two do not add up
-  ledger = weight_ledger.build(kv, all_tensors, arch=arch, data_bytes=p.stat().st_size - data_start,
+  ledger = weight_ledger.build(kv, all_tensors, arch=arch, data_bytes=data_bytes,
                                alignment=int(kv.get("general.alignment", 32)))
   weight_ledger.check(ledger, roles)
   architecture_class, arch_signals = classify_architecture(kv, tensors, arch)
@@ -195,6 +259,6 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
     **({"recurrent": {"layer_count": recurrent, **{k: kv[f"{arch}.ssm.{k}"] for k in RECURRENT_KEYS if f"{arch}.ssm.{k}" in kv}}}
        if recurrent else {}),
   }
-  return ModelProfile(model_id=model_id or p.stem, source=str(p), architecture=arch, hidden_size=hidden,
+  return ModelProfile(model_id=model_id or model_name(p), source=str(p), architecture=arch, hidden_size=hidden,
                       ffn_size=ffn, vocab_size=vocab, layer_count=layers, roles=roles, metadata=metadata,
                       architecture_class=architecture_class)

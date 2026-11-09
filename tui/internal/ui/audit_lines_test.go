@@ -320,3 +320,30 @@ func TestRunEngineBodyPrintsTheVendorsOwnToolchainKeys(t *testing.T) {
 		t.Errorf("want %q in %q", want, got)
 	}
 }
+
+// A run that asked the engine for a setting says so first: swapping cuBLAS for the compiler's GEMMs changes what was
+// measured, and a reader of the page must not take it for stock vLLM (2026-11-08).
+func TestRunEngineBodyLeadsWithRequestedSettings(t *testing.T) {
+	words := "matrix backends TRITON: the compiler's own GEMM kernels in place of cuBLAS; not stock vLLM"
+	got := plain(runEngineBody(&seam.RunEngine{Provider: "vllm", SettingsWords: []string{words}}))
+	if !strings.HasPrefix(got, "Engine settings: "+words+".") {
+		t.Errorf("settings line: %q", got)
+	}
+	if got := plain(runEngineBody(&seam.RunEngine{Provider: "vllm"})); strings.Contains(got, "Engine settings") {
+		t.Errorf("no request, no line: %q", got)
+	}
+}
+
+// A speculative run states its k and the acceptance it measured right after the request: its limit is per token at
+// that acceptance, so a reader must see both (2026-11-08).
+func TestRunEngineBodySaysMeasuredSpeculation(t *testing.T) {
+	asked := "MTP k=2: speculative decoding, 2 draft tokens per step"
+	measured := "MTP k=2: 27 verify steps emitted 63 tokens, accept length 2.33 tokens per step"
+	got := plain(runEngineBody(&seam.RunEngine{Provider: "vllm", SettingsWords: []string{asked}, SpeculationWords: []string{measured}}))
+	if !strings.HasPrefix(got, "Engine settings: "+asked+".\nSpeculation measured: "+measured+".") {
+		t.Errorf("speculation lines: %q", got)
+	}
+	if got := plain(runEngineBody(&seam.RunEngine{Provider: "vllm"})); strings.Contains(got, "Speculation") {
+		t.Errorf("no speculation, no line: %q", got)
+	}
+}

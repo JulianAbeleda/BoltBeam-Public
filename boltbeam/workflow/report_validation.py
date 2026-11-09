@@ -238,11 +238,13 @@ def validate(run:Path, res:dict) -> dict:
         if r.get('components'):
           for field in ('ceiling_ms','compute_ms','memory_ms'):
             equal(p+f'.rows[{i}].'+field,r[field],sum(c[field] for c in r['components']))
-          from boltbeam.roofline.memory import hierarchy_ms
+          from boltbeam.roofline.memory import hierarchy_ms, reread_ms
           rates=r['memory_rates']
           for j,c in enumerate(r['components']):
-            memory=(hierarchy_ms(c['traffic'],rates['dram_gbs'],rates['l2_gbs'])['memory_ms']
-                    if c.get('traffic') else c['bytes']/(rates['dram_gbs']*1e6))
+            # a re-read of a weight the step already read is bounded with the capture's own last-level cache
+            memory=(hierarchy_ms(c['traffic'],rates['dram_gbs'],rates['l2_gbs'])['memory_ms'] if c.get('traffic') else
+                    reread_ms(c['bytes'],c['weight_bytes'],rates['dram_gbs'],cap.get('cache'))['memory_ms']
+                    if c.get('weight_bytes') is not None else c['bytes']/(rates['dram_gbs']*1e6))
             equal(p+f'.rows[{i}].components[{j}].memory_ms',c['memory_ms'],memory)
             equal(p+f'.rows[{i}].components[{j}].ceiling_ms',c['ceiling_ms'],max(c['compute_ms'],c['memory_ms']))
         elif r.get('ceiling_ms') is not None and r.get('compute_ms') is not None and r.get('memory_ms') is not None:

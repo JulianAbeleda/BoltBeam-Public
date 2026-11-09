@@ -93,6 +93,24 @@ def ptx_entries(lines:Iterable[str]) -> dict[str, dict[str, int]]:
   return out
 
 
+ANONYMOUS_NAMESPACES = ("<unnamed>::", "(anonymous namespace)::")  # nsys's and ncu's spellings of the same thing
+
+
+def function_name(tmpl:str, *, qualified:bool = False) -> str:
+  """A template's function name, for a profiler's kernel-name filter: no template arguments, and no namespace unless
+  qualified. An anonymous namespace is no name: vLLM's `<unnamed>::gdn_decode_post_conv_mtp_kernel<...>` is
+  gdn_decode_post_conv_mtp_kernel; cut at its `<`, it was the empty name, a filter alternative that matches every
+  kernel (an ncu pass over all 22,000 launches of a capture, 2026-11-08). An empty name is refused."""
+  s = tmpl
+  for anonymous in ANONYMOUS_NAMESPACES:
+    s = s.replace(anonymous, "")
+  name = s.split("<", 1)[0].strip()
+  name = name if qualified else name.split("::")[-1]
+  if not name:
+    raise ValueError(f"kernel {tmpl!r} has no function name to filter a profiler by")
+  return name
+
+
 @lru_cache(maxsize=4096)
 def template(name:str) -> str:
   """A kernel name cut to its template, as the matcher compares it: no return type, no argument list, no launch
@@ -106,10 +124,14 @@ def template(name:str) -> str:
       depth += 1
     elif ch == ">":
       depth -= 1
-    elif ch == "(" and depth == 0:
+    elif ch == "(" and depth == 0 and not s.startswith("(anonymous namespace)", i):
       cut = i
       break
-  return normalise_symbol(s[:cut])
+  # one spelling of an anonymous namespace: nsys writes <unnamed>::, ncu (anonymous namespace)::
+  out = normalise_symbol(s[:cut])
+  for spelling in ("(anonymous namespace)::", "(anonymousnamespace)::"):
+    out = out.replace(spelling, "<unnamed>::")
+  return out
 
 
 def library_table(library:str | pathlib.Path, *, cache:pathlib.Path | None = None,
@@ -207,6 +229,24 @@ def _disassemble(cubin:bytes, nvdisasm:str | None, cache:pathlib.Path | None, *,
   return sass_entries(proc.stdout.splitlines(), include_scalar=include_scalar)
 
 
+def runnable_archs(arch:str) -> list[str]:
+  """The machine-code targets a GPU of `arch` runs, best first: its own (and its arch-specific a/f forms), then the
+  same major's older minors (CUDA runs sm_80 code on sm_86). cuBLAS ships ampere_bf16_s16816gemm_* for sm_80 only,
+  so an RTX 3090 (sm_86) runs those cubins (libcublasLt 13, 2026-11-09)."""
+  m = re.fullmatch(r"sm_(\d+?)(\d)([af]?)", arch)
+  if not m:
+    return [arch]
+  major, minor = m.group(1), int(m.group(2))
+  return [f"sm_{major}{minor}{s}" for s in ("a", "f", "")] + [f"sm_{major}{n}" for n in range(minor - 1, -1, -1)]
+
+
+def engine_tools(python:str | None) -> list[pathlib.Path]:
+  """The folders an engine's venv ships CUDA programs in: NVIDIA's wheels, and Triton's backend, which carries its own
+  nvdisasm and cuobjdump when the toolkit has none (a Vast RTX 3090 and the home box, CUDA 13, 2026-11-09)."""
+  root = pathlib.Path(python or "").parent.parent
+  return [*sorted(root.glob("lib/python*/site-packages/nvidia/*/bin")), *sorted(root.glob("lib/python*/site-packages/triton/backends/nvidia/bin"))]
+
+
 def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures:dict[str, str], *,
                cache:pathlib.Path | None = None, cuobjdump:str | None = None, nvdisasm:str | None = None) -> dict[str, Any]:
   """{template: paths} for the wanted kernel templates found in a library's machine code for `arch`: its cubins
@@ -219,7 +259,7 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
   sha = hashlib.sha256(lib.read_bytes()).hexdigest()
   cache = cache or default_cache()
   cache.mkdir(parents=True, exist_ok=True)
-  index_file = cache / f"sass-{sha[:16]}-{arch}.json"
+  index_file = cache / f"sass-{sha[:16]}-{arch}-runnable.json"  # every cubin this GPU runs (runnable_archs)
   try:  # an index cut short (a run stopped while writing it) is rebuilt, never trusted
     index = json.loads(index_file.read_text()) if index_file.exists() else None
   except ValueError:
@@ -243,7 +283,8 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
       if not tool:
         raise RuntimeError("cuobjdump is not installed: a library's machine code cannot be read")
       proc = subprocess.run([tool, "-xelf", "all", str(lib.absolute())], cwd=tmp, capture_output=True, text=True, timeout=3600)
-      cubins = sorted(pathlib.Path(tmp).glob(f"*.{arch}.cubin")) if proc.returncode == 0 else []
+      # best target last, so a kernel built for this GPU's own target wins over the same kernel for an older minor
+      cubins = [c for a in reversed(runnable_archs(arch)) for c in sorted(pathlib.Path(tmp).glob(f"*.{a}.cubin"))] if proc.returncode == 0 else []
       if index is None:
         names = {c.name: elf_symbols(c.read_bytes()) for c in cubins}
         plain = demangle(sorted({s for v in names.values() for s in v}))
@@ -263,7 +304,7 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
               merged[p] = merged.get(p, 0) + n
             index["paths"][key] = merged
       index_file.write_text(json.dumps(index, sort_keys=True))
-  return {"library": str(lib), "sha256": sha, "how": f"machine code for {arch} (cuobjdump -xelf, nvdisasm)",
+  return {"library": str(lib), "sha256": sha, "how": f"machine code this {arch} runs (cuobjdump -xelf, nvdisasm)",
           "kernels": {t: index["paths"][t] for t in wanted if t in index["paths"]}}
 
 
@@ -426,7 +467,7 @@ def ncu_observe(argv:list[str], env:dict[str, str] | None, out:pathlib.Path, tem
   if not tool or not templates:
     return {"kernels": {}, "how": "ncu not run"}
   out.mkdir(parents=True, exist_ok=True)
-  names = "|".join(re.escape(t.split("<", 1)[0].split("::")[-1]) for t in sorted(templates))
+  names = "|".join(re.escape(function_name(t)) for t in sorted(templates))
   rep = out / "ncu"
   from boltbeam.profiler.ncu_counters import ncu_command
   proc = subprocess.run(ncu_command(argv, out=str(rep), ncu=tool, sections=("SourceCounters",), kernel_name=f"regex:{names}",

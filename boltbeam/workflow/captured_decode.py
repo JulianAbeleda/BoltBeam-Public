@@ -31,7 +31,11 @@ def loss_block(run:Path, provider:str, token:dict | None) -> dict:
   context=int(token['context'])
   capture=(trace.get('contexts') or {}).get(str(context))
   if not capture:raise ValueError('decode capture does not cover the headline context')
-  count=len((capture.get('engine') or {}).get('decode_steps') or [1]);fields=('ms','calls','flops','bytes','ceiling_ms','best_ms','compute_ms','memory_ms')
+  spec=capture.get('speculation')
+  # per token: a plain decode step emits one; a speculative one emits its accepted drafts and one more, so the
+  # captured steps are divided by the tokens they emitted (collectors/vllm_speculation), never by the steps
+  steps=len((capture.get('engine') or {}).get('decode_steps') or [1])
+  count=spec['tokens'] if spec else steps;fields=('ms','calls','flops','bytes','ceiling_ms','best_ms','compute_ms','memory_ms')
   capture={**capture,**{key:capture[key]/count for key in ('wall_ms','profiled_wall_ms','busy_ms','gaps_ms') if key in capture},
            'rows':[{**row,**({'ceiling_range_ms':[v/count for v in row['ceiling_range_ms']]} if row.get('ceiling_range_ms') else {}),**{key:row[key]/count for key in fields if row.get(key) is not None}}
                    for row in capture['rows']]}
@@ -54,7 +58,10 @@ def loss_block(run:Path, provider:str, token:dict | None) -> dict:
       'words':capture['end_to_end']['words']+'. '+(f'{w} is enabled in the capture. ' if (w:=_graph_trace(run)) else '')
               +f"Both are host-elapsed decode steps (long then short call): untraced is the median of {band['repeats']} samples, captured is the median of {capture['host_samples']}; the difference is not assigned to a model operation."}
   table=tie_out.where_decode_capture_goes(capture,untraced_ms=token['ms'],context=context)
-  if count>1:table['words']+=f' Mean of {count} decode steps, including gaps.'
+  if spec:
+    table['words']+=(f" {spec['words']}. Per token: the {steps} captured steps' time and limits over the {count} tokens "
+                     f"they emitted, so the limit is this capture's at its measured acceptance; {spec['accounting']}.")
+  elif count>1:table['words']+=f' Mean of {count} decode steps, including gaps.'
   limit=table['limit_ms']
   if limit<=0:raise ValueError('decode capture has no positive operation limit')
   if batch>1:table['words']+=f' One decode step of {batch} streams, one token each.'
@@ -68,6 +75,7 @@ def loss_block(run:Path, provider:str, token:dict | None) -> dict:
           **({'batch':batch} if batch>1 else {}),**({'token_forcing':forcing} if forcing else {}),
           **({'engine_nondeterministic':nondeterministic} if nondeterministic else {}),
           **({'observed_scope':capture['observed_scope']} if capture.get('observed_scope') else {}),
+          **({'speculation':{k:spec[k] for k in ('config','acceptance','tokens','steps','accounting','words','prompt')}} if spec else {}),
           'limit_ms':limit,'limit_tok_s':1000/limit,'limit_context':context,
           'source':TRACE,'semantic_capture':True,'where_token_goes':table,
           'capture_comparison':comparison,

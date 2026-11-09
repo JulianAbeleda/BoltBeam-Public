@@ -1,5 +1,5 @@
 """Check when summing per-operation bounds is valid for concurrent work."""
-from boltbeam.roofline.memory import hierarchy_ms
+from boltbeam.roofline.memory import hierarchy_ms, reread_ms
 
 
 def require_shared_limit(launches,rows,bandwidth_gbs,cache):
@@ -24,6 +24,9 @@ def require_shared_limit(launches,rows,bandwidth_gbs,cache):
         if not work.get('memory_traffic') or not cache or not cache.get('gbs'):
           raise ValueError(f"{work['name']}: captured memory traffic and cache bandwidth are required for its limit")
         memory=hierarchy_ms(work['memory_traffic'],bandwidth_gbs,cache['gbs'])
+        time,tier=memory['memory_ms'],memory['memory_tier']
+      elif work.get('reread'):  # a weight the step already read (memory.reread_ms)
+        memory=reread_ms(work['bytes'],work['weight_bytes'],bandwidth_gbs,cache)
         time,tier=memory['memory_ms'],memory['memory_tier']
       else:
         time,tier=work['bytes']/(bandwidth_gbs*1e6),'DRAM'

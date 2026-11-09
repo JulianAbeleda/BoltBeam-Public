@@ -46,6 +46,7 @@ ROUTED_REFUSED = "no ceiling: the experts a chunk's tokens reach are not capture
 
 
 RECURRENT_MODULES = ("ChunkGatedDeltaRule",)  # vLLM modules whose launches are the recurrent block's own work
+DRAFT_PREFIX = "draft "  # a row of a speculative draft head's work (collectors/vllm_speculation)
 
 def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True,
                     measured_ms:float | None = None) -> tuple[list[dict[str, Any]], str]:
@@ -270,6 +271,8 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
       # that, like every other kernel, is its own row, named by its template's stem
       kind = ("attention" if t.get("attention") and t["path"]["status"] != "none" else
               "recurrent" if t.get("recurrent") and rec else stem(t["template"]))
+      if l.get("draft"):  # a speculative draft head's supporting kernel: its own row, never the target's work
+        kind = DRAFT_PREFIX + stem(t["template"])
       o = others.setdefault(kind, {"calls": 0, "wall_us": 0.0, "templates": {}})
       o["calls"] += 1
       o["wall_us"] += l["wall_us"]
@@ -351,14 +354,22 @@ def _semantic_rows(shared, by_t, peaks, bandwidth_gbs, unc, cache):
     row['limitations'] = sorted({message for component in g['components'] for message in component.get('limitations',[])})
     if not w.get('requires_memory_evidence') and not row.get('refused') and row.get('peak_tflops') and bandwidth_gbs:
       components=[]
+      reread=any(c.get('reread') for c in g['components'])
       for c in g['components']:
         compute=c['flops']/(row['peak_tflops']*1e9)
-        memory=c['bytes']/(bandwidth_gbs*1e6)
+        if c.get('reread'):  # a weight the step already read: up to the cache's size of it may still be there
+          from boltbeam.roofline.memory import reread_ms
+          memory=reread_ms(c['bytes'],c['weight_bytes'],bandwidth_gbs,cache)['memory_ms']
+        else:
+          memory=c['bytes']/(bandwidth_gbs*1e6)
         limit=max(compute,memory)
         best,_=work.best_ms(c['flops'],c['bytes'],quant,peaks,bandwidth_gbs,limit,row['peak_tflops'])
         components.append({'flops':c['flops'],'bytes':c['bytes'],'compute_ms':compute,
+                           **({'weight_bytes':c['weight_bytes']} if c.get('reread') else {}),
                            'memory_ms':memory,'ceiling_ms':limit,'best_ms':best})
-      row.update(components=components,memory_rates={'dram_gbs':bandwidth_gbs},
+      row.update(components=components,memory_rates={'dram_gbs':bandwidth_gbs,**({'l2_gbs':cache['gbs']} if reread else {})},
+                 **({'memory_basis':'re-reads of a weight the step already read: up to the last-level cache size of it '
+                                    'served at the cache rate, the rest from DRAM'} if reread else {}),
                  ceiling_ms=sum(c['ceiling_ms'] for c in components),
                  best_ms=sum(c['best_ms'] for c in components),
                  compute_ms=sum(c['compute_ms'] for c in components),

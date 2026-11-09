@@ -4,6 +4,8 @@ import pathlib
 from typing import Any
 
 from boltbeam.profile.loaders import detect_model_format, profile_from_model
+from boltbeam.profile.decode_roles import GGML_BLOCK_LAYOUTS
+from boltbeam.profile.gguf import GGML_TYPE_IDS
 from boltbeam.quantization.quant import quant_capability
 from boltbeam.vocab import (SCHEMA_WEIGHT_INVENTORY, SCHEMA_WORKLOAD_PROFILE,
                             Workload, SCHEMA_RUN_MANIFEST)
@@ -22,7 +24,13 @@ def _role_inventory(profile) -> list[dict[str, Any]]:
   for role in profile.roles:
     cap = quant_capability(role.quant)
     elems = _role_elements(role)
-    bytes_est = int(elems * cap.bytes_per_elem) if cap else None
+    stored = getattr(role, "weight_bytes", None)  # what the file holds per matrix: words, scales, zeros (AWQ, GPTQ)
+    # a GGUF type the quant registry has no weight row for (Q5_1 experts, F32 routers and SSM tensors) is still sized
+    # by llama.cpp's block layout: Qwen3.8-Flash-Next's inventory said 54 GB of a 104 GB file without it
+    layout = None if cap else GGML_BLOCK_LAYOUTS.get(GGML_TYPE_IDS.get(role.quant, -1))
+    bytes_est = (int(stored * int(role.count) * (role.n_expert or 1)) if stored is not None else
+                 int(elems * cap.bytes_per_elem) if cap else
+                 int(elems * layout[1] / layout[0]) if layout else None)
     rows.append({
       "role": role.role,
       "role_class": role.role_class,
@@ -34,7 +42,7 @@ def _role_inventory(profile) -> list[dict[str, Any]]:
       "quant": role.quant,
       "elements": elems,
       "estimated_weight_bytes": bytes_est,
-      "quant_known": cap is not None,
+      "quant_known": bytes_est is not None,
     })
   return rows
 

@@ -381,13 +381,11 @@ def plan_id(role:str, quant:str, winner:Mapping[str, Any]) -> str:
 def role_bytes(model:str, quant:str, rows:int, cols:int, tensor_name:str | None = None) -> tuple[str, bytes]:
   """The role's own weight bytes from the model file (the tensor of this quant and shape)."""
   from boltbeam.collectors import gemv_reference
-  from boltbeam.profile.gguf import read_gguf_layout
-  _, tensors, data_start = read_gguf_layout(pathlib.Path(model))
-  name, offset = gemv_reference.tensor_for(quant, rows, cols, tensors, tensor_name)
+  from boltbeam.profile.gguf import read_gguf_split, read_tensor
+  _, tensors, _ = read_gguf_split(pathlib.Path(model))
+  name, _ = gemv_reference.tensor_for(quant, rows, cols, tensors, tensor_name)
   size = rows * (cols // gemv_reference.BLOCK_ELEMS[quant]) * gemv_reference.BLOCK_BYTES[quant]
-  with open(model, "rb") as f:
-    f.seek(data_start + offset)
-    return name, f.read(size)
+  return name, read_tensor(model, name, size)
 
 
 class Checker:
@@ -944,8 +942,8 @@ def compare_fusions(run:pathlib.Path, *, facts:Mapping[str, Any], describe_shape
     _write(folder / FUSIONS_FILE, record)
     return record
   if tensors is None:
-    from boltbeam.profile.gguf import read_gguf_layout
-    tensors = read_gguf_layout(pathlib.Path(model))[1]
+    from boltbeam.profile.gguf import read_gguf_split
+    tensors = read_gguf_split(pathlib.Path(model))[1]
   by_layer = fusion_space.layers(tensors)
   first = fusion_space.propose(families, by_layer, set(losses))
   shapes = sorted({tuple(p["instance"]["shape"]) for p in first if p.get("instance")})

@@ -23,6 +23,8 @@
   "engine": {
     "build": null,
     "provider": "llama.cpp",
+    "settings_words": [],
+    "speculation_words": [],
     "toolchain": null,
     "weight_format": "GGUF Q4_K+Q6_K"
   },

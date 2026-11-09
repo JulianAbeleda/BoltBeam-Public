@@ -41,10 +41,14 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     engines                                    look for every engine on this machine now and save what was found
                                                (collectors/engine_scan.py, ~/.boltbeam/engines.json); the screen runs
                                                it at boot, and `providers` reads the saved paths after env and PATH
+    update [--skip V]                          is a newer BoltBeam released: the installed and newest versions, how to
+                                               upgrade this install; --skip V keeps V from prompting (cli/self_update.py)
     providers --target T                       the engines that can measure here (collectors/providers.ENGINES),
                                                each with the reason when it cannot, the weight formats it reads,
                                                and how step 5 times its roles
     gpu-free --target T                        is the GPU free, or which program holds it
+    mtp MODEL --target T --out DIR [--ks 1,2,3] vLLM's multi-token prediction per draft count k on the shipped natural
+                                               prompts, against k=0: tok/s per prompt and their spread, acceptance
     role-time --run DIR [--provider P]         time every role inside a real decode with the run's provider
                                                (collectors/providers.py); feeds `results.loss`
     compare-ready --run DIR [--tinygrad-root R]  can this machine compare kernels for the run: the missing piece
@@ -426,9 +430,19 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   out["layout"], out["machine"] = _layout_limit(run, profile, ceil)
   out["search"] = search_block(run, provider)  # searched, skipped with its reason, or not run: said with or without roles
   state = out["search"].pop("state")
-  if out["layout"] and out["layout"].get("ms") and out["layout"]["gpus"] > 1:
-    limit_ms = out["layout"]["ms"]  # the layout's limit is the one the measurement is compared with
-    out.update(limit_ms=limit_ms, limit_tok_s=1000.0 / limit_ms)
+  if out["layout"] and out["layout"]["gpus"] > 1:
+    if out["layout"].get("ms"):
+      limit_ms = out["layout"]["ms"]  # the layout's limit is the one the measurement is compared with
+      out.update(limit_ms=limit_ms, limit_tok_s=1000.0 / limit_ms)
+    elif w := out["layout"].get("weights_ms"):
+      # never the one-GPU limit for a split: a 2 x RTX 3090 tensor split read 145% of it (2026-11-09). The split's
+      # weight reads alone still bound its time from below (its copies only add), so they are its limit, said so
+      limit_ms = w
+      out.update(limit_ms=w, limit_tok_s=1000.0 / w, limit_basis=(
+        f"{out['layout']['label']}: weights only, {out['layout'].get('reason') or 'its copies not derived'}; "
+        "the copies between GPUs would only add time, so this limit is looser than the layout's"))
+      for rt in runtimes:
+        rt["lost_ms"] = rt["ms"] - w
   tables = {name: _provider_table(run, name, ceil, limit_ms, repeat_evidence=repeat_evidence) for name in providers.NAMES}
   for name in providers.NAMES:
     table, capture = tables[name]
@@ -668,6 +682,8 @@ def _missing(provider:str, target, manifest:dict[str, Any], measure:dict[str, An
   """Why this run has no per-role table for its provider. The run's own record comes first: the capture the
   measuring machine had (measure_status.json capture, written by the pipeline). Never the action just taken: a run
   that recorded "no capture here" is told what is missing, not to Run again."""
+  if (measure or {}).get("not_split_by_role"):  # 2 x RTX 3090, vLLM split by rows read "Run with vllm times each role"
+    return f"not split by role: {measure['not_split_by_role']}"
   if provider == tinygrad_role_time.PROVIDER and not tinygrad_role_time.device_for(target):
     return f"{manifest.get('target_id')} names no tinygrad device, so no per-role time can be taken here"
   cap = (measure or {}).get("capture") or {}
@@ -887,7 +903,11 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
                or (providers.weight_format(profile) if profile else None),
                # the build the run measured against the pin table, and the toolchain it recorded (providers.record_build,
                # collectors/toolchain.record); None when the run predates them
-               "build": engine_build, "toolchain": manifest.get("toolchain")},
+               "build": engine_build, "toolchain": manifest.get("toolchain"),
+               # what the run asked the engine for (trace_request.json); a setting changes what is measured
+               "settings_words": _setting_words(run),
+               # what speculation did (MTP acceptance, collectors/vllm_speculation): measured, beside what was asked
+               "speculation_words": _speculation_words(run)},
     "batches": batch_rows(run, manifest, profile, ceil),
   }
 
@@ -911,8 +931,10 @@ def decode_ceiling(ceil:dict[str, Any], loss:dict[str, Any], token:dict[str, Any
             'basis':"sum of captured operation limits, including attention and recurrent state work"}
   from boltbeam.workflow.layout import ENGINE_JOINS
   layout = loss.get("layout") or {}
-  split = layout["gpus"] if layout.get("ms") and (layout.get("gpus") or 1) > 1 else 1
-  weight = layout["ms"] if split > 1 else ceil["floor_ms"]  # a split's limit is its layout's (weights and joins)
+  # a split's limit is its layout's (weights and joins), else its weights alone (results: limit_basis), never one GPU's
+  layout_ms = layout.get("ms") or layout.get("weights_ms")
+  split = layout["gpus"] if layout_ms and (layout.get("gpus") or 1) > 1 else 1
+  weight = layout_ms if split > 1 else ceil["floor_ms"]
   element, _ = providers.kv_element(provider, run)
   # a tensor-parallel split shards the KV heads: each GPU reads its share of the cache at once
   limit = weight + tie.kv_ms(profile, token["context"], element, ceil["peak_bandwidth_gbs"]) / (split if provider in ENGINE_JOINS else 1)
@@ -1223,10 +1245,26 @@ def replay_command(args) -> dict[str, Any]:
 
 
 
+def _setting_words(run:pathlib.Path) -> list[str]:
+  from boltbeam.collectors import capture_settings
+  try:
+    return capture_settings.setting_words(capture_settings.requested(run))
+  except (OSError, ValueError):
+    return []
+
+
+def _speculation_words(run:pathlib.Path) -> list[str]:
+  from boltbeam.collectors.vllm_speculation import measured_words
+  try:
+    return measured_words(run)
+  except (OSError, ValueError):
+    return []
+
+
 def _engine_settings(args) -> dict | None:
   """The engine settings a run requests, from the command line; None when it requests none. A vLLM run split by rows
   requests its tensor-parallel size: the most of this machine's GPUs the model's heads divide (multi_gpu.split_size)."""
-  settings = {k: getattr(args, k, None) for k in ("chunk_size", "attention_backend")}
+  settings = {k: getattr(args, k, None) for k in ("chunk_size", "attention_backend", "gemm_backends", "mtp", "mtp_prompt")}
   if getattr(args, "provider", None) == "vllm" and getattr(args, "layout", None) == "row":
     from boltbeam.collectors import multi_gpu
     from boltbeam.workflow import layout as lay
@@ -1372,6 +1410,7 @@ def _not_split(run:pathlib.Path, why:str) -> None:
   status = run / MEASURE_STATUS
   m = json.loads(status.read_text()) if status.exists() else {}
   m.setdefault("capture", {})["reason"] = f"not split by role: {why}"
+  m["not_split_by_role"] = why  # its own field: the capture's method is still recorded, so _missing must not need it absent
   write_json(status, m)
 
 
@@ -1527,35 +1566,43 @@ def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | Non
   from boltbeam.workflow import layout as lay
   from boltbeam.workflow.common import write_json
   devs = lay.devices(_hardware_profile()["gpu"])
+  target = get_target(load_manifest(run).get("target_id"))
+  row = vendors.BY_BACKEND.get(target.backend)
+  native_read = None
+  if row is not None and row.bridge is not None and row.platform in (None, platform.system()):
+    from boltbeam.workflow import chips
+    native_read = lambda d: chips._probes(row.vendor, d)[0]()  # noqa: E731  the vendor's own read probe on that card
+  from boltbeam.collectors.toolchain import driver_version
+  driver = driver_version(row.vendor) if row is not None else None
   cached = None if remeasure else lay.cached_machine(run, devs)
+  stale = lay.stale_reason(cached, driver=driver, fresh_read=(lambda g: native_read(g)["read_gbs"]) if native_read else None) \
+    if cached is not None else None
+  if stale:
+    cached = None
   if cached is not None and any((now := profile_read(g)) is not None and now[0] != g.get("read_gbs") for g in cached.get("gpus") or []):
     cached = None  # the chip profile was measured again since: one measurement, the profile's (profile_read)
   joins = provider in lay.ENGINE_JOINS and len(devs) > 1 and providers.ENGINES[provider].python()
   if cached is not None and joins and not (cached.get("join") or {}).get("joins"):
     cached = None  # the engine's join can be measured now and was not
   if cached is not None:
-    facts = {**cached, "reused": True}
+    facts = {**cached, "reused": True, "reused_because": "same driver, and a fresh read lands within the runs that made it"
+             if native_read else "same driver; no native read here to verify it"}
   else:
-    manifest = load_manifest(run)
-    target = get_target(manifest.get("target_id"))
     probe = None
     fork = pathlib.Path(root) if root else role_compare.default_fork_root()
     if role_compare.readiness(fork)["ready"] and target.backend in DEVICE_PREFIX:
       probe = lambda args, env: lay.run_probe(str(role_compare.fork_python(fork)), str(fork), args, env)  # noqa: E731
     from boltbeam.collectors import multi_gpu
     topology = multi_gpu.topology(target.backend) if len(devs) > 1 else {}
-    native_read = None
-    row = vendors.BY_BACKEND.get(target.backend)
-    if row is not None and row.bridge is not None and row.platform in (None, platform.system()):
-      from boltbeam.workflow import chips
-      native_read = lambda d: chips._probes(row.vendor, d)[0]()  # noqa: E731  the vendor's own read probe on that card
+    from boltbeam.workflow.chips import READ_RUNS
     facts = lay.measure_machine(devs, backend=target.backend, device_prefix=DEVICE_PREFIX.get(target.backend),
                                 probe=probe, topology=topology, native_read=native_read,
                                 fallback=lambda tid: get_target(tid).memory_bandwidth_gbs if tid else None,
                                 profile_read=profile_read,
-                                join=(lambda used: multi_gpu.join(joins, used)) if joins else None)
-    facts["reused"] = False
-  write_json(run / lay.MACHINE, {k: v for k, v in facts.items() if k != "reused"})
+                                join=(lambda used: multi_gpu.join(joins, used)) if joins else None,
+                                read_runs=READ_RUNS)
+    facts.update(reused=False, driver=driver, measured_because=stale or ("asked to remeasure" if remeasure else "no cached facts for these GPUs"))
+  write_json(run / lay.MACHINE, {k: v for k, v in facts.items() if k not in ("reused", "reused_because")})
   return {"schema": SCHEMA, "kind": "machine", **facts}
 
 
@@ -1624,6 +1671,13 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   else:
     head += ": not measured"
   lines = [head]
+  if basis := loss.get("limit_basis"):  # a split whose copies were not measured: its limit is its weights alone
+    lines.append(f"Limit: {basis}.")
+  if spec := loss.get("speculation"):  # the limit is this speculation's, at the acceptance the capture measured
+    lines.append(f"Speculative decoding: {spec['words']}. The limit is per token at that acceptance: each verify step "
+                 f"reads the target's weights once and the draft head's once per draft, over the tokens the step emits.")
+  elif words := (res.get("engine") or {}).get("speculation_words"):
+    lines.append("Speculative decoding: " + "; ".join(words) + ".")
   step = loss.get("step") or {}
   for a in step.get("also") or []:
     lines.append(f"Also measured at context {a['context']}: {a['tok_s']:.1f} tok/s (not the headline: {step.get('rule')})")
@@ -1920,6 +1974,12 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--chunk-size", type=int, help="requested engine chunk size; unsupported adapters refuse it")
   p.add_argument("--attention-backend", help="requested attention backend by the engine's name for it (vLLM: "
                  "TRITON_ATTN, ROCM_ATTN, ...); recorded with the run, and adapters that cannot honor it refuse it")
+  p.add_argument("--gemm-backends", help="vLLM: the compiler's matrix backends (TRITON: its own Triton GEMMs, not "
+                 "cuBLAS, whose closed kernels need GPU counters to read); recorded with the run, others refuse it")
+  p.add_argument("--mtp", type=int, help="vLLM: multi-token prediction with this many draft tokens per step (speculative "
+                 "decoding); decode runs on natural text (data/mtp_prompts.json) at one context; recorded with the run")
+  p.add_argument("--mtp-prompt", help="vLLM with --mtp: the prompt id (data/mtp_prompts.json) the context is built from "
+                 "(default: the set's first)")
   p.add_argument("--ctxs", default=None, help="decode contexts (default 128,512) or prompt lengths (default: the sweep "
                                               "to the model's own cap, prefill_work.sweep; a session: cap for the derived depths)")
   p.add_argument("--probe", default=None, help="boltbeam.probe_evidence.v1 JSON to ingest after analyze")
@@ -1990,6 +2050,16 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts there")
   p.add_argument("--check", action="store_true", help="start the engine once with these flags (a free GPU, a minute or two), "
                  "read its KV cache figures, cache its overhead in the facts and show predicted against measured")
+  p = sub.add_parser("mtp", help="vLLM's multi-token prediction per draft count on natural prompts (collectors/vllm_mtp)")
+  p.add_argument("model")
+  p.add_argument("--target", required=True)
+  p.add_argument("--out", required=True, help="the folder the measurement, the continuations and the logs go to")
+  p.add_argument("--ks", default="1,2,3", help="draft counts to measure; k=0 always runs as the baseline")
+  p.add_argument("--tokens", type=int, default=256, help="tokens generated per prompt and depth")
+  p.add_argument("--long-tokens", type=int, default=2048, help="the long depth's natural continuation; 0: short only")
+  p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the measurement is cached in the newest "
+                 "machine facts there, where the recommended setup reads it")
+  sub.add_parser("update", help="is a newer BoltBeam released (cli/self_update.py)").add_argument("--skip", help="skip this version")
   sub.add_parser("engines", help="look for every engine on this machine now and save what was found").add_argument(
     "--cached", action="store_true", help="reuse saved discovery when settings and paths still match")
   for name in ("compare", "compare-ready", "role-time"):
@@ -2046,10 +2116,31 @@ def main(argv:list[str] | None = None) -> int:
       roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
       out = recommended(_profile_arg(args), target, engine=args.engine, gpus=args.gpus, seqs=args.seqs, context=args.context,
                         facts=lay.newest_facts(roots, target.target_id), check_in=roots if args.check else None)
+    elif args.command == "update":
+      from boltbeam.cli import self_update
+      out = {"schema": SCHEMA, **self_update.screen(args.skip)}
     elif args.command == "engines":
       out = engines(cached=args.cached)
     elif args.command == "gpu-free":
       out = gpu_free(_target_arg(args.target))
+    elif args.command == "mtp":
+      from boltbeam.collectors import vllm_mtp
+      try:
+        record = vllm_mtp.measure(str(pathlib.Path(args.model).expanduser()), [int(k) for k in args.ks.split(",") if k.strip()],
+                                  backend=_target_arg(args.target).backend, out=pathlib.Path(args.out).expanduser(),
+                                  tokens=args.tokens, long_tokens=args.long_tokens)
+      except vllm_mtp.MtpRefused as exc:  # refused before or between engines: free the GPU or fix the request, then rerun
+        sys.stdout.write(pretty_json({"schema": SCHEMA, "kind": "refused", "error": str(exc), "retry": "after the cause is fixed"}))
+        return 2
+      except RuntimeError as exc:  # an engine failed; its log is in --out
+        sys.stdout.write(pretty_json({"schema": SCHEMA, "kind": "error", "error": str(exc), "logs": str(args.out)}))
+        return 1
+      out = {k: record[k] for k in ("schema", "model", "prompts", "ks", "depths", "measured_at")}
+      from boltbeam.workflow import layout as lay, recommend as rcm
+      found = lay.newest_facts_file([pathlib.Path(r).expanduser() for r in args.facts_root], _target_arg(args.target).target_id)
+      if found:
+        found[0].write_text(json.dumps(rcm.facts_with_mtp(found[1], "vllm", record["model"], record), indent=2, sort_keys=True))
+      out["cached_in"] = str(found[0]) if found else "not cached: no machine facts for this chip under --facts-root"
     elif args.command == "ceiling":
       target = _target_arg(args.target)
       read = None

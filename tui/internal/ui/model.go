@@ -43,13 +43,14 @@ type Model struct {
 	f         Facts
 	context   int
 	wantChip  string
-	chipSet   bool     // the user picked a chip; detection no longer moves it
-	runSet    bool     // the user picked a run; the checklist no longer follows the newest one
-	session   []string // runs started in this session: never cleaned
-	opened    bool     // the start page is decided (Setup, or Run when a job is still going)
-	engineSet bool     // the engine was picked in this session; until then it is the last run's (rememberEngine)
-	ceilAsked string   // the run and memory speed the limit was last reloaded for (followMeasured)
-	started   string   // when this session began, ISO; Clean removes only unsaved runs from before it
+	chipSet   bool      // the user picked a chip; detection no longer moves it
+	runSet    bool      // the user picked a run; the checklist no longer follows the newest one
+	session   []string  // runs started in this session: never cleaned
+	before    *seam.Run // the finished run on screen when a new one started: back on screen if the new one is stopped
+	opened    bool      // the start page is decided (Setup, or Run when a job is still going)
+	engineSet bool      // the engine was picked in this session; until then it is the last run's (rememberEngine)
+	ceilAsked string    // the run and memory speed the limit was last reloaded for (followMeasured)
+	started   string    // when this session began, ISO; Clean removes only unsaved runs from before it
 	cursor    int
 	moved     bool // the user moved; the cursor no longer follows the first open step
 	open      bool
@@ -61,6 +62,7 @@ type Model struct {
 	note      string
 	view      viewport.Model
 	spin      spinner.Model
+	upd       selfUpdate // a newer BoltBeam: the boot prompt (selfupdate.go)
 }
 
 type targetsMsg struct {
@@ -143,6 +145,9 @@ type replayMsg struct {
 }
 type noteMsg string
 
+// stoppedMsg: SIGTERM went to this run; the screen goes back to the finished run it replaced, if any.
+type stoppedMsg struct{ id, note string }
+
 // emitMsg is the answer of Emit: the gameplan Python wrote, or why it could not.
 type emitMsg struct {
 	plan *seam.Emitted
@@ -173,7 +178,7 @@ func Start(client seam.Client, store jobs.Store, modelPath, target string, conte
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.scanEngines(true), m.loadRuns(), m.findFiles(), m.loadSaved(), m.spin.Tick}
+	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.scanEngines(true), m.loadRuns(), m.findFiles(), m.loadSaved(), m.checkSelfUpdate(), m.spin.Tick}
 	if m.f.Path != "" {
 		cmds = append(cmds, m.inspect())
 	}
@@ -481,7 +486,7 @@ func (m Model) stopRun() tea.Cmd {
 		if _, err := m.store.Stop(id); err != nil {
 			return noteMsg("Stop failed: " + err.Error())
 		}
-		return noteMsg("Sent SIGTERM to " + id + ". The run folder keeps the stages that finished.")
+		return stoppedMsg{id, "Sent SIGTERM to " + id + ". The run folder keeps the stages that finished."}
 	}
 }
 
@@ -665,6 +670,9 @@ func (m *Model) chipChanged() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if next, cmd, ok := m.selfUpdateStep(msg); ok {
+		return next, cmd
+	}
 	next, cmd := m.update(msg)
 	next.skipHeads(1) // the cursor never rests on a heading
 	if c := next.loadRecommend(); c != nil {
@@ -846,6 +854,10 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.cursor, m.row = pageRun, 0
 		m.f.ReadOnly, m.session = false, append(m.session, id)
 		m.runSet, m.ticking = true, true
+		m.before = nil
+		if m.f.Run != nil && m.f.outputDone() && !m.f.ReadOnly {
+			m.before = m.f.Run
+		}
 		m.f.Run = &seam.Run{Summary: seam.Summary{ID: id}}
 		m.f.Job, m.f.Tail = &jobs.Job{ID: id, Alive: true}, nil
 		m.note = "Started " + id + "."
@@ -896,6 +908,13 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.note = "Deleted run " + string(msg) + "."
 		return m, m.loadRuns()
+	case stoppedMsg:
+		m.note = msg.note
+		if b := m.before; b != nil && m.runID() == msg.id { // Emit and Last run read the finished run again
+			m.f.Run, m.f.Job, m.f.Tail, m.before = b, nil, nil, nil
+			m.note += " Back to " + shortRun(b.ID) + ", the last finished run."
+			return m, m.loadJob(b.ID)
+		}
 	case noteMsg:
 		m.note = string(msg)
 	case emitMsg:
@@ -1334,5 +1353,8 @@ func (m Model) View() string {
 	room := m.detailHeight()
 	view := m.view
 	body := DetailView(m.f, m.cursor, m.row, m.width, room, &view)
+	if m.upd.shown {
+		body = selfUpdateView(m.upd, m.width, room)
+	}
 	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.cursor != pageSetup, m.runRow() != "", m.cursor == pageRun && m.f.alive(), m.cursor == pageRun && m.f.failedStage() != "")
 }

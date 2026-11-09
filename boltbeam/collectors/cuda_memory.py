@@ -95,7 +95,8 @@ def _measure(argv, env, out: Path, launches):
   from boltbeam.collectors.instruction_path import template
   # NCU filters its own demangled spelling, not our whitespace-normalized template.
   # Select function families; bind() still requires exact full symbols and geometry.
-  names=sorted({template(l['key']).split('<',1)[0] for l in launches if (l.get('semantic_work') or {}).get('requires_memory_evidence')})
+  from boltbeam.collectors.instruction_path import function_name
+  names=sorted({function_name(template(l['key']),qualified=True) for l in launches if (l.get('semantic_work') or {}).get('requires_memory_evidence')})
   if not names:raise ValueError('counter measurement has no required memory launches')
   query=subprocess.run(['ncu','--query-metrics','--csv'],capture_output=True,text=True,check=True)
   available={next(iter(r.values())) for r in csv.DictReader(io.StringIO(query.stdout))}
@@ -152,6 +153,14 @@ def decode_horizon(identities):
   """A complete N-minus-one decode horizon, with its observed starting context."""
   if not identities:raise ValueError('empty decode horizon')
   first=identities[0];count=len(identities)
+  if first.get('speculation'):
+    # speculative steps hold k + 1 query tokens and emit a variable number (collectors/vllm_speculation): the
+    # capture's steps carry their ledger rows; a counter run's carry the depths its own driver derived the same way
+    from boltbeam.collectors import vllm_speculation
+    if 'speculation_step' in first:return vllm_speculation.horizon(identities)
+    if [i.get('decode_step') for i in identities]!=list(range(1,count+1)):
+      raise ValueError('speculative counter steps are not contiguous from decode step 1')
+    return {**first,'length':count,'decode_steps':list(range(1,count+1))}
   if first.get('tokens')!=count+1:raise ValueError('decode horizon omits generated steps')
   for offset,identity in enumerate(identities):
     batch=identity.get('batch')

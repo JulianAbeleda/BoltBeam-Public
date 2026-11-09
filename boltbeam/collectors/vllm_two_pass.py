@@ -40,6 +40,10 @@ def reference_band(engine:dict, trace:dict) -> dict:
     raise ValueError('untraced repeat band or median does not derive from recorded samples')
   # the native arm is never forced: a forced capture says so beside it (vllm_semantic_decode's token_forcing)
   if actual.get('token_forcing'):raise ValueError('untraced reference was forced: it is not the native engine')
+  if engine.get('speculation') or actual.get('speculation') or actual.get('speculative_config'):
+    from boltbeam.collectors.vllm_speculation import same_as_reference
+    if why:=same_as_reference(engine,actual):
+      raise ValueError('the untraced reference did not run the captured speculation: '+'; '.join(why))
   return {'low_ms':interval[0],'high_ms':interval[1],'median_ms':median,'repeats':len(samples),'timing_window':actual.get('timing_window'),
           'basis':'paired N-token minus one-token calls in the same unprofiled engine',
           **({'token_forcing':{'capture':engine['token_forcing'],'reference':None}} if engine.get('token_forcing') else {})}
@@ -78,15 +82,30 @@ def join(path: Path, records: list[dict]) -> dict:
       any(len(ids)!=timing['tokens'] for ids in timing['output_token_ids'])):
     raise ValueError('capture requires complete output token evidence for every stream')
   if timing['steps']!=list(range(len(timing['steps']))):raise ValueError('capture has missing or reordered step identities')
+  speculative=bool(timing.get('speculation') or labels.get('speculation'))
+  if speculative:
+    from boltbeam.collectors.vllm_speculation import compare
+    ledger=compare(timing,labels)  # both passes took the same steps, with the same acceptance at every step
+    # every engine step's scheduler record is in the ledger, but for empty ones at the end (nothing left to run)
+    if len(ledger)>len(timing['steps']):
+      raise ValueError(f"{len(timing['steps'])} engine steps ran, the scheduler recorded {len(ledger)} with work")
   spans=sc.step_index(path);steps=[];empty=[]
   with sc.Capture(path) as capture:
+    verified={s['step'] for s in ledger} if speculative else None
     for step in timing['steps']:
+      if verified is not None and step not in verified:
+        empty.append(step);continue  # a run-ahead step (vllm_speculation.accounted) or an empty one: never joined
       pair={m:sc.read_step(capture,spans.get((m,step),[]),allow_empty=True) for m in ('label','timing')}
       if not pair['label'] and not pair['timing']:
         empty.append(step);continue
       joined=sc.join_step(*(sc.submission_order(pair[m]) for m in ('label','timing')),step)
       steps.append({'step':step,'launches':joined})
-  if len(steps)!=timing['tokens']:
+  if speculative:
+    # every verify step launched work in both passes
+    if [s['step'] for s in steps]!=[s['step'] for s in ledger]:
+      raise ValueError(f"captured steps {[s['step'] for s in steps]} are not the scheduled steps {[s['step'] for s in ledger]}")
+    for s,record in zip(steps,ledger):s['speculation']=record
+  elif len(steps)!=timing['tokens']:
     raise ValueError('captured steps do not cover one prefill and all generated decode tokens')
   return {'engine':timing,'steps':steps,'empty_steps':empty,
           'basis':'production timing; labels joined by exact recorded kernel submission order and geometry'}

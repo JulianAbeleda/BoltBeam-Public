@@ -118,6 +118,10 @@ class Vendor:
   vllm_env: tuple[tuple[str, str], ...] = ()
   # the context past which vLLM's MTP stops paying here, and why; None: no limit measured
   vllm_mtp_context: tuple[int, str] | None = None
+  # the doctor's machine checks (cli/doctor.py): the memory-fault read ({"healthy": True/False/None, "problems"}), and
+  # the counters' permission read plus how an owner opens them; None: not read for this vendor
+  health: str | None = None
+  counters: tuple[str, str] | None = None
 
   def term(self, key:str) -> str | None:
     """One of the vendor's words; None when it has no such thing. A key no row defines is NoVendorRow."""
@@ -168,6 +172,9 @@ _ROWS = (
     ggml_backend="cuda", telemetry=lambda device: resolve("boltbeam.collectors.gpu_telemetry:_Nvml")(device["pci_bus_id"]),
     clock_policy=lambda source: resolve("boltbeam.collectors.gpu_telemetry:clock_policy")(getattr(source, "device", 0)),
     visible=("CUDA_VISIBLE_DEVICES",),
+    health="boltbeam.runtime.gpu_health:check",
+    counters=("boltbeam.collectors.instruction_path:counters_open",
+              "RmProfilingAdminOnly is not 0; options nvidia NVreg_RestrictProfilingToAdminUsers=0, then reboot"),
     profile=ProfileShape(
       scan_method="nvidia-smi and cudaDeviceGetAttribute (BoltBeam's CUDA matrix probe prints them)",
       scan_keys=("sm_count", "shared_mem_per_sm_bytes", "l2_cache_bytes", "clock_khz", "memory_clock_khz",

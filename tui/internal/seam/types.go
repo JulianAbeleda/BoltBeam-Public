@@ -540,6 +540,11 @@ type RunEngine struct {
 	WeightFormat *string         `json:"weight_format"`
 	Build        *EngineBuild    `json:"build"`
 	Toolchain    *ToolchainFacts `json:"toolchain"`
+	// SettingsWords is what the run asked the engine for (capture_settings.setting_words), empty for none.
+	SettingsWords []string `json:"settings_words"`
+	// SpeculationWords is what speculative decoding measured (MTP k and acceptance, vllm_speculation.measured_words),
+	// empty for a run without speculation.
+	SpeculationWords []string `json:"speculation_words"`
 }
 
 // EngineBuild is the run's build against its pin: Matches is nil when the run recorded no build.
@@ -646,13 +651,15 @@ type Run struct {
 // loses time. Roles come from that provider's capture, attributed to roles by bytes and count, or from
 // tinygrad's own timing.
 type Loss struct {
-	TimingScope     *string    `json:"timing_scope"`
-	SemanticCapture bool       `json:"semantic_capture"`
-	LimitContext    *float64   `json:"limit_context"`
-	Status          string     `json:"status"`
-	Reason          *string    `json:"reason"`
-	LimitTokS       *float64   `json:"limit_tok_s"`
-	LimitMs         *float64   `json:"limit_ms"`
+	TimingScope     *string  `json:"timing_scope"`
+	SemanticCapture bool     `json:"semantic_capture"`
+	LimitContext    *float64 `json:"limit_context"`
+	Status          string   `json:"status"`
+	Reason          *string  `json:"reason"`
+	LimitTokS       *float64 `json:"limit_tok_s"`
+	LimitMs         *float64 `json:"limit_ms"`
+	// LimitBasis says when the limit is a split's weights alone, its copies between GPUs not measured.
+	LimitBasis      *string    `json:"limit_basis"`
 	Runtimes        []Runtime  `json:"runtimes"`
 	Roles           []RoleLoss `json:"roles"`
 	NotAttributedMs *float64   `json:"not_attributed_ms"`

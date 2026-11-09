@@ -71,6 +71,17 @@ def snapshot(provider:str | None = None, vendor:str | None = None) -> dict:
           "runtime": {rt: torch_runtime} if rt else {}}
 
 
+def driver_version(vendor:str | None = None) -> str | None:
+  """The loaded GPU driver's version from the vendor's own toolchain command (its "driver" row in target/vendors.py),
+  without the rest of snapshot(); None when the vendor names no driver command or it cannot be read."""
+  row = vendors.vendor(vendor) if vendor else pinned_vendor()
+  for key, argv, pattern in row.toolchain:
+    if key == "driver" and argv:
+      match = re.search(pattern or r"\d+\.\d+(?:\.\d+)?(?:\+\w+)?", _read([_locate(argv[0]), *argv[1:]]))
+      return (match.group(1) if match.re.groups else match.group()) if match else None
+  return None
+
+
 def record(run, provider:str) -> None:
   from boltbeam.workflow.common import load_manifest, write_manifest
   from boltbeam.workflow.common import run_gpu

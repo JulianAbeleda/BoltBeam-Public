@@ -17,6 +17,7 @@ from typing import Any
 from boltbeam.profile.roles import role_from_tensor_name as _role_from_tensor_name
 
 from boltbeam.profile.gguf import GGML_TYPE_NAMES
+from boltbeam.profile.ir import model_name
 
 # GGML's on-disk blocks.  Bits-per-weight is useful for rough display, but a
 # roofline byte denominator must use these physical block sizes instead: a
@@ -156,7 +157,7 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Deco
                              quant=GGML_TYPE_NAMES.get(typ, f"GGML_{typ}"), count=len(names), n_expert=n_expert,
                              experts_read=experts_read(kv, arch, n_expert) if n_expert else 0)
                   for (role, rows, cols, typ, n_expert), names in sorted(grouped.items()))
-  return DecodeRoleProfile(model_id=model_id or p.stem, model_path=str(p), arch=arch, hidden=hidden, ffn=ffn,
+  return DecodeRoleProfile(model_id=model_id or model_name(p), model_path=str(p), arch=arch, hidden=hidden, ffn=ffn,
                            vocab=vocab, layers=layers, weights=weights)
 
 
@@ -233,7 +234,7 @@ def decode_roofline_inventory_from_gguf(path:str | pathlib.Path, model_id:str | 
     item["weight_byte_pct"] = 100.0 * item["packed_weight_bytes"] / total_bytes
     item["flop_pct"] = 100.0 * item["semantic_flops"] / total_flops if total_flops else 0.0
   return {
-    "schema": "boltbeam.decode_roofline_inventory.v1", "model_id": model_id or p.stem,
+    "schema": "boltbeam.decode_roofline_inventory.v1", "model_id": model_id or model_name(p),
     "model_path": str(p), "packed_weight_bytes_per_token": total_bytes,
     "dense_matrix_flops_per_token": total_flops,
     "arithmetic_intensity_flop_per_byte": total_flops / total_bytes if total_bytes else None,

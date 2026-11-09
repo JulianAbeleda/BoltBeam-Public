@@ -23,6 +23,7 @@ import pathlib
 import re
 import shlex
 import shutil
+import statistics
 import signal
 import struct
 import subprocess
@@ -204,6 +205,49 @@ def facts_with_overhead(facts:dict[str, Any], engine:str, got:dict[str, Any], so
   return {**facts, OVERHEAD: {**(facts.get(OVERHEAD) or {}), engine: cur}}
 
 
+MTP_CACHE = "engine_mtp"  # in the machine facts: {engine: {checkpoint path: a collectors/vllm_mtp summary}}
+
+
+def facts_with_mtp(facts:dict[str, Any], engine:str, path:str, record:dict[str, Any]) -> dict[str, Any]:
+  """The machine facts with an in-repo MTP measurement (collectors/vllm_mtp) cached for this checkpoint, as
+  facts_with_overhead caches a Check: the per-k summary and where it came from, not its rows."""
+  entry = {"depths": record["depths"], "prompts": record["prompts"], "tokens": record["tokens"],
+           "long_tokens": record["long_tokens"], "measured_at": record["measured_at"],
+           "vllm": sorted({e.get("vllm") for e in record.get("engines", []) if e.get("vllm")})}
+  return {**facts, MTP_CACHE: {**(facts.get(MTP_CACHE) or {}), engine: {**((facts.get(MTP_CACHE) or {}).get(engine) or {}),
+                                                                         str(path): entry}}}
+
+
+def mtp_of(facts:dict[str, Any] | None, engine:str, path:str | None) -> dict[str, Any] | None:
+  """This checkpoint's cached MTP measurement, or None: another checkpoint's acceptance is not this one's."""
+  return (((facts or {}).get(MTP_CACHE) or {}).get(engine) or {}).get(str(path)) if path else None
+
+
+def best_k(speeds:dict[int, dict[str, Any]]) -> int | None:
+  """The draft count to recommend, from the smallest up: a larger k replaces the pick only when it beats it by more
+  than TIE. Measured figures carry their prompts (per_prompt), and then the win is the median of the per-prompt
+  ratios: every k ran the same prompts, and their spread is the text's (a story drafts worse than a derivation at
+  every k), not noise, so it cancels in the pair. Spread across prompts as the margin picked k=1 on the 27B AWQ,
+  whose k=2 beat k=1 on all eight prompts (RTX 5090, 2026-11-08)."""
+  ks = sorted(k for k, f in speeds.items() if f.get("value"))
+  if not ks:
+    return None
+  pick = ks[0]
+  for k in ks[1:]:
+    if win(speeds[k], speeds[pick]) > 1 + TIE:
+      pick = k
+  return pick
+
+
+def win(new:dict[str, Any], old:dict[str, Any]) -> float:
+  """How much faster `new` is than `old`: the median per-prompt ratio when both were measured on the same prompts,
+  else the ratio of their values."""
+  a, b = new.get("per_prompt") or {}, old.get("per_prompt") or {}
+  if a and set(a) == set(b):
+    return statistics.median(a[p] / b[p] for p in a)
+  return new["value"] / old["value"]
+
+
 def layout_key(path:str | None, layout:str, gpus:int) -> str:
   """The cache key of a start's overhead: the checkpoint path on one GPU; a split's carries the layout and GPU count,
   since its overhead is per GPU and smaller (activations split too: cold, 3.82 GiB on one R9700, 2.54 per GPU at TP=2)."""
@@ -300,7 +344,7 @@ def vllm_settings(profile:dict[str, Any], tb:dict[str, Any], *, kv:str, seqs:int
     (f"--max-num-seqs {seqs}", True, "the sequences the engine batches; capacity is in the layout row", "serving several users" if seqs > 1 else "one user"),
     ("--no-enable-prefix-caching", False, "'align' mode costs cache tokens on a hybrid model", "no shared prompts (not known here)"),
     (mtp_flag(mtp[0]) if mtp else "--speculative-config mtp", bool(mtp), f"MTP k={mtp[0]}: {mtp[1]['value']:.0f} tok/s, {mtp[1]['formula']}" if mtp else
-     mtp_held[0] if mtp_held else f"MTP: {MTP_NOTE}", "batch 1, the highest k, beats one-token decode by more than the tie" if mtp else
+     mtp_held[0] if mtp_held else f"MTP: {MTP_NOTE}", "batch 1, the largest k that beats the next smaller one by more than the tie, prompt by prompt, and beats one-token decode" if mtp else
      mtp_held[1] if mtp_held else "batch 1 and the checkpoint has an MTP head; accept lengths or the fixed cost are not measured for this model and chip"),
     (None, False, "4-bit lm_head checkpoint: -1.9 GB read per token and per MTP draft on the 27B; +1.8 GiB for KV. 2 x R9700 TP=2: "
      "56 to 61 tok/s, MTP k=2 92 to 116 (with a split-KV verify), 98.0% top-1 agreement, perplexity 1.228 to 1.242; vLLM 0.31's "
@@ -359,7 +403,7 @@ def llama_settings(profile:dict[str, Any], tb:dict[str, Any], *, kv:str, seqs:in
           ("-fa on", True, "flash attention: required for a quantized V cache, less attention memory", "always"),
           ("-ngl 99", True, "every layer on the GPU", "the model fits"), (f"-np {seqs}", True, "parallel sequences (the context is shared)", "serving")]
   if layout in ("row", "layer"):
-    rows.append((f"-sm {layout}", True, "how the GPUs share the weights", "chosen layout"))
+    rows.append((" ".join(lay.engine_args(layout, "llama.cpp", _llama_bench())[0]), True, "how the GPUs share the weights", "chosen layout"))
   elif machine_gpus > 1:
     rows.append((" ".join(lay.engine_args("one", "llama.cpp")[0]), True, "one GPU: llama.cpp splits by layer over every GPU unless told", "chosen layout"))
   return [{"flag": f, "recommended": bool(r), "changes": c, "when": w} for f, r, c, w in rows]
@@ -371,7 +415,13 @@ def llama_flags(profile:dict[str, Any], *, kv:str, seqs:int, layout:str, gpus:in
   out = ["-c", str(context // 256 * 256), "-np", str(seqs), "-ngl", "99", "-fa", "on"]  # it rounds -c up to 256 cells
   if kv == "q8_0":
     out += ["-ctk", "q8_0", "-ctv", "q8_0"]
-  return out + (["-sm", layout] if layout in ("row", "layer") else lay.engine_args("one", "llama.cpp")[0] if machine_gpus > 1 else [])
+  return out + (lay.engine_args(layout, "llama.cpp", _llama_bench())[0] if layout in ("row", "layer") else
+                lay.engine_args("one", "llama.cpp")[0] if machine_gpus > 1 else [])
+
+
+def _llama_bench() -> str | None:
+  from boltbeam.collectors.llama_bench_decode import find
+  return find()
 
 
 def llama_scratch(profile:dict[str, Any], kv:str, target) -> float:
@@ -541,7 +591,8 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
         r["batch1_expected"] = fig(r["tok_s"] * eff[0], f"limit x {eff[0]:.0%} engine efficiency", [eff[1]], "measured") if eff else \
           fig(None, "efficiency not measured here for this engine, chip and layout", [])
         if eff and tb["mtp"]:
-          r["mtp"] = mtp_speed(profile, tb, provider, chip, r, eff[0], (facts or {}).get("gpus", [{}])[0].get("read_gbs"))
+          r["mtp"] = mtp_speed(profile, tb, provider, chip, r, eff[0], (facts or {}).get("gpus", [{}])[0].get("read_gbs"),
+                               measured=mtp_of(facts, provider, profile.get("source")), context=context)
   fits_one = bool(rows and rows[0]["fits"]["value"])
   chosen = pick(rows, seqs=seqs, fits_one=fits_one)
   layout = chosen["id"] if chosen["id"] in ("row", "layer") else "one"
@@ -550,7 +601,7 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   fit = int(one["max_context"][kv]["value"] or 0) if one else 0
   started = next((r for r in rows if r["id"] == layout), {})
   speeds = {k: f for k, f in (started.get("mtp") or {}).items() if f["value"]}
-  best = max(speeds, key=lambda k: speeds[k]["value"], default=None)
+  best = best_k(speeds)
   past = row.vllm_mtp_context if provider == "vllm" and row.vllm_mtp_context and context > row.vllm_mtp_context[0] and not split_kv_verify(_vllm_python()) else None
   mtp = (best, speeds[best]) if best and seqs == 1 and not past and speeds[best]["value"] > started["batch1_expected"]["value"] * (1 + TIE) else None
   if started.get("mtp") and past:
@@ -572,15 +623,18 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
 
 
 def mtp_speed(profile:dict[str, Any], tb:dict[str, Any], provider:str, chip:str | None, r:dict[str, Any], eff:float,
-              read_gbs:float | None) -> dict[int, dict[str, Any]] | None:
+              read_gbs:float | None, measured:dict[str, Any] | None = None,
+              context:int | None = None) -> dict[int, dict[str, Any]] | None:
   """Batch-1 decode with MTP at each measured draft count k: accept length / (one-token step + fixed + k x draft read).
   A draft step reads the MTP layer and the whole lm_head (on the 5090 a 4-bit head gave +30% with MTP against +11%
   without, inferred from step times), split over the GPUs of a row split, at the layout's engine efficiency. The
-  accept lengths and the fixed cost are measured (MTP_ACCEPT, MTP_FIXED); None where either is not."""
+  accept lengths and the fixed cost are measured (MTP_ACCEPT, MTP_FIXED); None where either is not. `measured`, this
+  checkpoint's in-repo measurement on this machine (mtp_of), stands in on one GPU, which is what it ran on."""
   acc = MTP_ACCEPT.get((profile.get("hidden_size"), profile.get("layer_count"), profile.get("ffn_size")))
   fixed = MTP_FIXED.get((provider, chip))
+  own = _measured_mtp(measured, context) if measured and r["id"] == "one" else {}
   if not (acc and fixed and read_gbs and r["batch1_expected"]["value"]):
-    return None
+    return own or None
   g = r["gpus"] if r["id"] == "row" else 1
   seen = MTP_MEASURED.get((provider, chip, profile.get("hidden_size"), profile.get("layer_count"), profile.get("ffn_size"), r["id"],
                            round(tb["head"] / 1e9, 1)))
@@ -592,7 +646,27 @@ def mtp_speed(profile:dict[str, Any], tb:dict[str, Any], provider:str, chip:str 
          for k, a in acc[0].items()}
   for k, v in (seen[0] if seen else {}).items():  # a measured figure stands in for the derived one, which it keeps
     out[k] = {**fig(v, "measured", [seen[1]], "measured"), "derived": out.get(k, {}).get("value")}
+  for k, v in own.items():  # this checkpoint, this machine, in the repo: it stands in over both
+    out[k] = {**v, "derived": out.get(k, {}).get("derived", out.get(k, {}).get("value"))}
   return out
+
+
+def _measured_mtp(m:dict[str, Any], context:int | None = None) -> dict[int, dict[str, Any]]:
+  """An in-repo measurement's figures per k > 0 at the measured depth nearest the stated context (the short depth
+  with none stated): the median over the prompts, each prompt's speed, their spread and the acceptance. Acceptance
+  moves with depth (the 27B AWQ's k=3 tied k=2 at 75 tokens and beat it on 7 of 8 prompts at 2,120), so the depth is
+  chosen, not averaged."""
+  depths = {d: ks for d, ks in m["depths"].items() if ks}
+  if not depths:
+    return {}
+  at = lambda d: next(iter(depths[d].values()))["context"]  # noqa: E731
+  depth = min(depths, key=lambda d: abs(at(d) - context)) if context else ("short" if "short" in depths else next(iter(depths)))
+  where = (f"{len(m['prompts']['ids'])} natural prompts (set v{m['prompts']['version']}, sha256 {m['prompts']['sha256'][:12]}), "
+           f"{m['tokens']} tokens each at a {at(depth):.0f}-token context, vLLM {', '.join(m['vllm']) or 'unknown'}, {m['measured_at'][:10]}")
+  return {int(k): {**fig(v["median_tok_s"], "measured: median over the prompts", [where], "measured"),
+                   "per_prompt": v["per_prompt"], "spread": v["spread"], "range": [v["min_tok_s"], v["max_tok_s"]],
+                   "accept_length": v.get("accept_length"), "speedup": v["speedup"], "depth": depth, "context": at(depth)}
+          for k, v in depths[depth].items() if int(k) > 0}
 
 
 def predicted_context(rec:dict[str, Any], state:str | None = None, layout:str = "one") -> dict[str, Any]:

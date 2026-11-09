@@ -628,8 +628,7 @@ def record_build(run:pathlib.Path, provider:str) -> dict[str, Any]:
 
 def latest_llama(build:str | None) -> dict[str, Any]:
   """Snapshot upstream at report creation; a mismatch suggests a rerun, never changes the pin."""
-  import datetime
-  import urllib.request
+  import datetime, http.client, urllib.request
   out = {"build": build, "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
          "source": "https://api.github.com/repos/ggml-org/llama.cpp/commits/master"}
   if not build or not re.fullmatch(r"[0-9a-f]{7,40}", build):
@@ -644,5 +643,5 @@ def latest_llama(build:str | None) -> dict[str, Any]:
              f"llama.cpp reminder: this run used {build}; latest upstream master is {sha[:9]}. "
              "Keep the pinned result for reproducibility; rerun with the latest version before drawing conclusions about bugs or performance")
     return out | {"latest": sha, "matches": matches, "words": f"{words} (checked {out['checked_at']})."}
-  except (OSError, ValueError, KeyError, TypeError) as exc:
+  except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as exc:  # a cut-off read is IncompleteRead
     return out | {"words": f"Could not verify the latest llama.cpp version (checked {out['checked_at']}).", "error": str(exc)}

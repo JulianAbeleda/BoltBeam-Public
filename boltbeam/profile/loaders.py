@@ -11,7 +11,7 @@ from typing import Any
 
 from boltbeam.profile.architecture import classify_architecture
 from boltbeam.profile.gguf import GGML_TYPE_NAMES, profile_from_gguf
-from boltbeam.profile.ir import ModelProfile, TensorRole
+from boltbeam.profile.ir import ModelProfile, TensorRole, model_name
 from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
 from boltbeam.profile.weight_ledger import experts_read
 from boltbeam.vocab import RoleClass, is_ssm_role
@@ -122,6 +122,7 @@ def _read_safetensors_header(path:pathlib.Path) -> dict[str, Any]:
 #   AMD Quark (real_quantized):        <name>.weight,        int32 [in, out x bits / 32]  (transposed)
 _PACKED = ".weight_packed"
 _PACKED_PARTS = (".weight_scale", ".weight_zero_point", ".weight_shape", ".weight_g_idx", ".weight_global_scale")
+_QWEIGHT_PARTS = (".qzeros", ".scales", ".g_idx")
 _FLOAT_QUANT_PARTS = (".weight_scale_2", ".input_scale", ".input_scale_2", ".output_scale")
 
 
@@ -129,13 +130,16 @@ _FLOAT_QUANT_PARTS = (".weight_scale_2", ".input_scale", ".input_scale_2", ".out
 class PackedFormat:
   """How one checkpoint stores a group-quantized weight: its label (INT4_G128_ZP: 4-bit integers in groups of 128,
   each group with a 16-bit scale and a 4-bit zero point), the bits per integer, the packed tensor's suffix, and
-  whether the packed tensor is [in, out] rather than [out, in]."""
+  whether the packed tensor is [in, out] rather than [out, in]. packed_axis 0: the integers are packed down the first
+  axis (GPTQ's qweight is [in / per-word, out]); 1, the default, along the second."""
   label: str
   bits: int
   suffix: str
   transposed: bool
+  packed_axis: int = 1
 # modules a text prompt's prefill does not run: a draft head for speculative decoding, a vision encoder
-_NOT_IN_TEXT_PREFILL = ("mtp", "visual", "vision_tower", "vision_model")
+DRAFT_HEAD = "mtp"  # a multi-token-prediction draft head's tensors (mtp.*): read only by speculative decoding
+_NOT_IN_TEXT_PREFILL = (DRAFT_HEAD, "visual", "vision_tower", "vision_model")
 
 
 def _group_quant(qcfg:dict[str, Any], names:set[str] | frozenset[str] = frozenset()) -> PackedFormat | None:
@@ -148,6 +152,13 @@ def _group_quant(qcfg:dict[str, Any], names:set[str] | frozenset[str] = frozense
   if qcfg.get("format") == "pack-quantized" and w.get("type") == "int" and w.get("num_bits") and w.get("group_size"):
     return PackedFormat(f"INT{w['num_bits']}_G{w['group_size']}" + ("" if w.get("symmetric") else "_ZP"),
                         int(w["num_bits"]), _PACKED, transposed=False)
+  # AutoAWQ and GPTQ (quant_method awq / gptq): qweight int32 words, qzeros and scales per group, GPTQ's g_idx.
+  # AWQ packs along out ([in, out / per-word]), GPTQ along in ([in / per-word, out]); zero points when qzeros is stored
+  qm, bits = str(qcfg.get("quant_method", "")).lower(), int(qcfg.get("bits") or qcfg.get("w_bit") or 0)
+  if qm in ("awq", "gptq") and bits and (gs := qcfg.get("group_size") or qcfg.get("q_group_size")):
+    zp = any(n.endswith(".qzeros") for n in names)
+    return PackedFormat(f"INT{bits}_G{gs}" + ("_ZP" if zp else ""), bits, ".qweight", transposed=qm == "awq",
+                        packed_axis=0 if qm == "gptq" else 1)
   q = (qcfg.get("global_quant_config") or {}).get("weight") or {}
   export = qcfg.get("export") or {}
   bits = {"int4": 4, "uint4": 4, "int8": 8, "uint8": 8}.get(str(q.get("dtype")))
@@ -159,15 +170,20 @@ def _group_quant(qcfg:dict[str, Any], names:set[str] | frozenset[str] = frozense
 
 
 def _safetensors_specs(path:pathlib.Path, default_quant:str | None = None,
-                       qcfg:dict[str, Any] | None = None) -> list[TensorSpec]:
+                       qcfg:dict[str, Any] | None = None, *, draft:bool = False) -> list[TensorSpec]:
+  """The checkpoint's tensors a text decode reads. draft: instead, only the draft head's (DRAFT_HEAD), which only
+  speculative decoding reads, in the same formats."""
   specs: list[TensorSpec] = []
   header = {name: meta for f in _safetensors_files(path) for name, meta in _read_safetensors_header(f).items()}
   group = _group_quant(qcfg or {}, set(header))
   for name, meta in header.items():
     if name == "__metadata__" or not isinstance(meta, dict):
       continue
-    if set(name.split(".")) & set(_NOT_IN_TEXT_PREFILL) or name.endswith(_PACKED_PARTS + _FLOAT_QUANT_PARTS):
+    parts = set(name.split("."))
+    if ((DRAFT_HEAD not in parts) if draft else (parts & set(_NOT_IN_TEXT_PREFILL))) or name.endswith(_PACKED_PARTS + _FLOAT_QUANT_PARTS):
       continue
+    if group and group.suffix == ".qweight" and name.endswith(_QWEIGHT_PARTS):
+      continue  # counted with their qweight below
     dtype = str(meta.get("dtype", "F16")).upper()
     shape = tuple(int(x) for x in meta.get("shape", ()))
     stored = None
@@ -199,13 +215,23 @@ def _safetensors_specs(path:pathlib.Path, default_quant:str | None = None,
     if group and name.endswith(group.suffix) and len(shape) == 2 and (group.suffix == _PACKED or dtype in ("I32", "U32")):
       # int32 words of `bits`-bit integers along the second axis; the weight is [out, in] either way. Quark's suffix
       # is plain .weight, so there the int32 dtype is what marks a packed tensor
-      words = shape[1] * 32 // group.bits
-      name = name[:-len(group.suffix)] + ".weight"
-      shape, quant = ((words, shape[0]) if group.transposed else (shape[0], words)), group.label
+      module, per = name[:-len(group.suffix)], 32 // group.bits
+      shape = ((shape[1], shape[0] * per) if group.packed_axis == 0 else
+               (shape[1] * per, shape[0]) if group.transposed else (shape[0], shape[1] * per))
+      name, quant = module + ".weight", group.label
+      # the bytes a token reads: the words, the group scales and zeros, g_idx (not compressed-tensors' weight_shape, a
+      # 2-int record the loader reads once)
+      read = {".qweight": _QWEIGHT_PARTS, _PACKED: tuple(k for k in _PACKED_PARTS if k != ".weight_shape")}.get(group.suffix)
+      if read:
+        parts = [meta, *[header[module + k] for k in read if module + k in header]]
+        stored = sum(int(p["data_offsets"][1]) - int(p["data_offsets"][0]) for p in parts)
+        specs.append(TensorSpec(name=name, shape=shape, quant=quant, weight_bytes=stored))
+        continue
     else:
       if dtype == "U8" and name.endswith(".weight") and len(shape) == 2:
         raise ValueError(f"{name}: packed U8 weight has no supported declared quantization scheme")
-      quant = default_quant or _DTYPE_TO_QUANT.get(dtype, dtype)
+      # in an AWQ/GPTQ file only qweight is packed; lm_head and the rest are stored as they are (fp16, not 4-bit)
+      quant = (None if group and group.suffix == ".qweight" else default_quant) or _DTYPE_TO_QUANT.get(dtype, dtype)
     specs.append(TensorSpec(name=name, shape=shape, quant=quant))
   return specs
 
@@ -356,7 +382,7 @@ def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:li
           "quant_types": sorted({s.quant for s in specs}), **_attention_from_config(cfg, specs),
           **_recurrent_from_config(cfg, specs)}
   if extra: meta.update(extra)
-  return ModelProfile(model_id=model_id or path.stem, source=str(path), architecture=str(arch) if arch else None,
+  return ModelProfile(model_id=model_id or model_name(path), source=str(path), architecture=str(arch) if arch else None,
                       hidden_size=cfg.get("hidden_size"), ffn_size=cfg.get("intermediate_size"),
                       vocab_size=cfg.get("vocab_size"), layer_count=cfg.get("num_hidden_layers"),
                       roles=roles, metadata=meta, architecture_class=cls)

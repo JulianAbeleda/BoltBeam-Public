@@ -26,6 +26,7 @@ TRACE = "trtllm_timing_trace.json"
 FORMATS = ("safetensors",)
 BACKENDS = ("CUDA",)
 ENV = "BOLTBEAM_TRTLLM_PYTHON"
+COMPILES_C = True  # Triton builds a C helper against Python.h when the engine starts
 BACKEND_ENV = "BOLTBEAM_TRTLLM_BACKEND"  # pytorch (TensorRT-LLM's default) or tensorrt (a built engine)
 # a TensorRT engine built for the GPU: TensorRT-LLM's PyTorch backend builds FlashInfer kernels at start, which
 # fails where the system CUDA lacks curand (the 5090 box); the engine path needs no run-time build

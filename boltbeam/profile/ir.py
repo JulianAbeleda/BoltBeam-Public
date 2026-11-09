@@ -116,3 +116,11 @@ class ModelProfile:
       "complete": self.is_complete,
       "metadata": self.metadata,
     }
+
+
+def model_name(path) -> str:
+  """A model's id from its path: a checkpoint folder's whole name (Qwen3.8-27B-W4A16-AWQ, whose dot is no extension;
+  Path.stem made it "Qwen3" on a 5090 run, 2026-11-09), a file's name without its extension."""
+  import pathlib
+  p = pathlib.Path(path)
+  return p.name if p.is_dir() else p.stem

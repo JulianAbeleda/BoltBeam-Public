@@ -32,6 +32,10 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
     from boltbeam.collectors.attribution import NotSplitByRole
     raise NotSplitByRole("vLLM's per-role decode of a tensor-parallel split is not measured yet: its kernels run in one "
                          "worker per GPU, while the capture marks each decode step in the engine's process")
+  speculative='--speculative-config' in command
+  if speculative and batch!=1:
+    raise ValueError('speculative decode is captured for one stream: each stream accepts its own drafts, so B streams '
+                     'take different numbers of steps for the same tokens')
   env={**ec.venv_env(vd.python()),**vd.CAPTURE_ENV}
   def paired(extra):
     vendor_capture.capture(target.backend,[*command,*extra,'--capture-pass','paired'],raw,env=env,profiler_range=True,device=run_gpu(run))
@@ -42,11 +46,21 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
       raise ValueError(BATCHED_MOE)
     for s in pair['steps'] if batch>1 else []:
       if s['step']>0:require_streams(s['launches'],batch)
-    attach=vllm_semantic_work.prepare(Path(model),profile)
-    steps=[{'identity':{**pair['engine'],'decode_step':s['step'],'context':context+s['step']-1},
-            'launches':attach(s['launches'],ssd_chunk=pair['engine'].get('mamba_chunk_size'),
-                              **({'streams':batch} if batch>1 else {}))}
-           for s in pair['steps'] if s['step']>0]
+    attach=vllm_semantic_work.prepare(Path(model),profile,**({'speculative':True} if speculative else {}))
+    if speculative:
+      from boltbeam.collectors import vllm_speculation
+      kept,accounting=vllm_speculation.accounted(vllm_speculation.ledger(pair['engine'])[1:])
+      held={r['step'] for r in kept}
+      steps=[{'identity':{**pair['engine'],'decode_step':s['step'],'context':s['speculation']['context'],
+                          'length':s['speculation']['query_tokens'],'speculation_step':s['speculation'],
+                          'speculation_accounting':accounting},
+              'launches':attach(s['launches'],ssd_chunk=pair['engine'].get('mamba_chunk_size'),speculation=s['speculation'])}
+             for s in pair['steps'] if s['step'] in held]
+    else:
+      steps=[{'identity':{**pair['engine'],'decode_step':s['step'],'context':context+s['step']-1},
+              'launches':attach(s['launches'],ssd_chunk=pair['engine'].get('mamba_chunk_size'),
+                                **({'streams':batch} if batch>1 else {}))}
+             for s in pair['steps'] if s['step']>0]
     engine=cuda_memory.decode_horizon([s['identity'] for s in steps])
     counter_command=[*command,*forced,'--capture-pass','timing','--profile-step','1','--profile-end',str(len(steps))]
     counter_env={**env,'TRITON_CACHE_DIR':engine['triton_cache_dir']}
@@ -56,7 +70,11 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   forced=[]
   try:
     steps,engine,counter_command,counter_env,launches=passes([])
-  except vllm_two_pass.TokensDiverge:
+  except vllm_two_pass.TokensDiverge as e:
+    if speculative:
+      from boltbeam.collectors.vllm_speculation import SpeculationDiverge
+      raise SpeculationDiverge(f'{e}: speculative passes cannot be forced to one token script (verification scores '
+                               'k + 1 rows a request), so the capture is refused') from e
     # Two passes took different tokens (a near tie in greedy argmax, or an engine that does not repeat itself): every
     # pass is forced to one production-graph generation's (--token-script), recorded as token_forcing
     script=raw/'token_script.json';script.unlink(missing_ok=True)
@@ -65,8 +83,7 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   command=[*command,*forced]
   (raw/'semantic_work.json').write_text(json.dumps({'engine':engine,'launches':launches,
                                                  'steps':[s['identity'] for s in steps]},indent=1))
-  bins=sorted(Path(vd.python()).parent.parent.glob('lib/python*/site-packages/nvidia/*/bin'))
-  tools=bins[0] if bins else None
+  tools=ip.engine_tools(vd.python())
   paths=library_paths([Path(p) for p in engine['libraries']],launches,tools=tools,
                       jit_caches=[engine['triton_cache_dir']],capture=raw,device=run_gpu(run))
   closed={ip.template(l['key']) for l in launches if l.get('semantic_work') or
@@ -76,9 +93,21 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   if closed:
     arch=gpu_arch()
     if not arch or not ip.counters_open():
-      raise ValueError('closed decode kernels require accessible instruction counters')
+      raise ValueError(f'closed decode kernels require accessible instruction counters: no binary was read for {sorted(closed)}'
+                       +('' if ip.cuda_tool('nvdisasm') or any((d/'nvdisasm').is_file() for d in tools) else '; nvdisasm was not found, so no machine code was read'))
     sigs=ip.sass_signatures(arch,nvdisasm=str(tools/'nvdisasm') if tools else None)
-    if batch==1:
+    if speculative:
+      # under ncu the engine does not repeat the capture's speculative steps (it serializes kernels, and a bf16 near tie
+      # moves an acceptance: the 27B diverged at token 16, 2026-11-08), so no step past the first is the capture's.
+      # Every verify step launches the same programs at the same shapes; the first decode step must hold every closed
+      # template, and its executed paths are theirs
+      first=[l for l in steps[0]['launches'] if ip.template(l['key']) in closed]
+      if {ip.template(l['key']) for l in first}!=closed:
+        raise ValueError('the first speculative decode step does not launch every closed decode kernel')
+      observed=ip.ncu_observe([*command,*forced,'--capture-pass','timing','--profile-step','1','--profile-end','1'],
+                              counter_env,raw/'ncu',closed,sigs,launches=len(first))
+      scope='decode step 1 (every speculative verify step launches the same kernels at the same shapes)'
+    elif batch==1:
       observed=ip.ncu_observe(counter_command,counter_env,raw/'ncu',closed,sigs,launches=len(launches))
       scope='every decode step'
     else:
@@ -92,7 +121,9 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   (raw/'instruction_paths.json').write_text(json.dumps(paths,indent=1))
   bandwidth,source=run_bandwidth(run,target)
   peaks=dict(target.matrix_tflops or {})
-  uncertainty={'bandwidth':fact_uncertainty(target,'memory_bandwidth_gbs'),
+  from boltbeam.workflow.screen import bandwidth_uncertainty, run_read
+  # the uncertainty of the bandwidth the limit uses: this run's read probe when it has one, as the ceiling's is
+  uncertainty={'bandwidth':bandwidth_uncertainty(target,run_read(run,target.target_id)),
                'peaks':{p:fact_uncertainty(target,'matrix_tflops',p) for p in peaks}}
   attr=semantic_attribution.attribute(run,raw,peaks=peaks,bandwidth_gbs=bandwidth,
     cache=last_level_cache(target),uncertainty=uncertainty,

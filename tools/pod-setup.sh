@@ -7,21 +7,27 @@
 #                                      for MODEL_URL, the ref names); exit 0
 #   tools/pod-setup.sh --from 7        resume at step 7 (a number or a step name)
 #   tools/pod-setup.sh --to 6          stop after step 6 (the steps that need no GPU)
-#   tools/pod-setup.sh --multi         refused: "not yet"
 #
-# docs/h100-pod.md says what to rent and what comes back. docs/linux.md is the same setup by hand.
+# docs/pods.md says what to rent and what comes back. docs/linux.md is the same setup by hand.
 # Every step is idempotent: a second run finds what the first left and skips it. Each step's wall time goes to
 # $WORK/logs/timings.tsv and the whole run to $WORK/logs/pod-setup-<time>.log.
 #
 # Settings (environment, each with a default):
-#   WORK          the volume: /workspace/boltbeam
+#   WORK          builds, venvs, runs: /root/boltbeam, the container's own disk. Engines and builds are thousands of
+#                 small files; on RunPod's /workspace (a network filesystem) cloning and installing took minutes per
+#                 step where the local disk took seconds (2026-11-08). The container disk is erased when the pod stops.
+#   KEEP          what outlives the pod, few and large: models and report bundles; default /workspace when it exists,
+#                 else WORK. Models download to KEEP/models; each bundle is copied to KEEP/bundles.
 #   MODEL_URL     a GGUF: https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf
 #                 (a file:// URL links a model that is already on the machine)
 #   MODEL_SHA256  the full expected sha256 of that file; required for a non-default URL
 #                 (the default digest is pinned to the upstream GGUF object)
 #   BOLTBEAM_REPO, BOLTBEAM_REF   the public mirror, main
 #   LLAMA_REPO, LLAMA_REF         ggml-org/llama.cpp at commit 50569eb87
-#   TINYGRAD_REPO, TINYGRAD_REF   the tinygrad fork, branch exp; TINYGRAD_REF= skips it
+#   TINYGRAD_REPO, TINYGRAD_REF   the in-house tinygrad engine: off by default (a rented pod measures the mature
+#                                 engines); TINYGRAD_REF=exp clones the fork
+#   LAYOUT        how step 9 uses the pod's GPUs, the pipeline's --layout: one (default), layer (llama.cpp split by
+#                 layer) or row (split by rows); more than one GPU gives tok/s and the limit, not the per-role split
 #   ENGINES       the CUDA engines step 4 installs: "llama.cpp vllm tensorrt-llm" (Ollama is not installed)
 #   VLLM_VERSION, TRTLLM_VERSION  default: the pins in boltbeam/data/engine_pins.json (vLLM 0.31.0, TensorRT-LLM 1.2.1)
 #   VLLM_CUDA     cu130 or cu129; default: cu130 on a driver of 580 or newer, else cu129
@@ -33,9 +39,9 @@
 #
 # Steps:
 #    1 facts        nvidia-smi, nvcc, nsys, CUDA version, free disk -> $WORK/facts.json
-#    2 packages     apt only what is missing, only as root (cmake, git, build-essential, python3-venv, curl;
+#    2 packages     apt only what is missing, only as root (cmake, git, build-essential, python3-venv, python3-dev, curl;
 #                   libopenmpi-dev when ENGINES has tensorrt-llm; nsys from the NVIDIA apt repo as nsight-systems-cli)
-#    3 boltbeam     clone, venv under $WORK, pip install . plus numpy; the tinygrad fork beside it when public
+#    3 boltbeam     clone, venv under $WORK, pip install -e . (the pipeline runs the checkout) plus numpy; the tinygrad fork beside it when public
 #    4 engines      llama.cpp: clone at LLAMA_REF, cmake -DGGML_CUDA=ON Release, CUDA arch from the GPU, llama-bench;
 #                   vLLM and TensorRT-LLM: each in its own venv under $WORK/engines at its pinned version (they need
 #                   different torch builds); a failed optional engine is noted and the run goes on with llama.cpp
@@ -49,7 +55,8 @@
 #   11 bundle       $WORK/boltbeam-<RUN_TAG>-<date>.tgz: the runs' JSON, report.html, summary.md, no nsys binaries
 set -euo pipefail
 
-WORK="${WORK:-/workspace/boltbeam}"
+WORK="${WORK:-/root/boltbeam}"
+if [[ -z "${KEEP:-}" ]]; then if [[ -d /workspace && -w /workspace ]]; then KEEP=/workspace; else KEEP="$WORK"; fi; fi
 MODEL_URL_DEFAULT="https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf"
 MODEL_URL="${MODEL_URL:-$MODEL_URL_DEFAULT}"
 if [[ "$MODEL_URL" == "$MODEL_URL_DEFAULT" ]]; then MODEL_SHA256="${MODEL_SHA256:-d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785}"; else MODEL_SHA256="${MODEL_SHA256:-}"; fi
@@ -58,12 +65,15 @@ BOLTBEAM_REF="${BOLTBEAM_REF:-main}"
 LLAMA_REPO="${LLAMA_REPO:-https://github.com/ggml-org/llama.cpp}"
 LLAMA_REF="${LLAMA_REF:-50569eb87}"
 TINYGRAD_REPO="${TINYGRAD_REPO:-https://github.com/JulianAbeleda/tinygrad-arkey}"
-TINYGRAD_REF="${TINYGRAD_REF-exp}"
+TINYGRAD_REF="${TINYGRAD_REF-}"
 CUDA_ARCH="${CUDA_ARCH:-}"
 RUN_TAG="${RUN_TAG:-h100}"
 PYTHON="${PYTHON:-python3}"
 JOBS="${JOBS:-}"
 ENGINES="${ENGINES-llama.cpp vllm tensorrt-llm}"
+LAYOUT="${LAYOUT:-one}"
+case "$LAYOUT" in one|layer|row) ;; *) echo "LAYOUT must be one, layer or row: $LAYOUT" >&2; exit 2 ;; esac
+LSUF=""; [[ "$LAYOUT" == one ]] || LSUF="-$LAYOUT"  # a split layout gets its own run folder: runs/<tag>-<mode>-<layout>
 VLLM_VERSION="${VLLM_VERSION:-}"
 TRTLLM_VERSION="${TRTLLM_VERSION:-}"
 VLLM_CUDA="${VLLM_CUDA:-}"
@@ -75,7 +85,7 @@ LLAMA_DIR="$WORK/llama.cpp"
 LLAMA_BUILD="$LLAMA_DIR/build-cuda"
 TINYGRAD_DIR="$WORK/tinygrad-arkey-exp"
 MODEL_NAME="$(basename "$MODEL_URL")"
-MODEL="$WORK/models/$MODEL_NAME"
+MODEL="$KEEP/models/$MODEL_NAME"
 ENV_FILE="$WORK/env.sh"
 RUNS="$WORK/runs"
 ENGINES_DIR="$WORK/engines"
@@ -103,7 +113,6 @@ while (($#)); do
     --from=*) FROM="$(step_number "${1#--from=}")" ;;
     --to) shift; TO="$(step_number "${1:-}")" ;;
     --to=*) TO="$(step_number "${1#--to=}")" ;;
-    --multi) echo "--multi: not yet" >&2; exit 2 ;;
     -h|--help) sed -n '2,/^set -euo pipefail/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
   esac
@@ -232,10 +241,40 @@ end_step() {
 
 # --- steps -------------------------------------------------------------------------------------------------------
 
+# gpu_health: every GPU must open a CUDA context and carry no memory fault awaiting a reset, before anything is installed
+# or downloaded on a machine billed by the hour. A RunPod H200 passed RunPod's own checks with 88 uncorrectable DRAM
+# errors and row remaps pending; every CUDA context failed (CUresult 999) only at step 8, after its setup and model
+# download, and RunPod rented the same card again (2026-11-08). Driver facts only: nvidia-smi and libcuda via ctypes.
+gpu_health() {
+  have nvidia-smi || fail "no nvidia-smi: this is not an NVIDIA GPU machine"
+  local bad="" q
+  q="$(nvidia-smi -q -d ROW_REMAPPER,ECC 2>/dev/null || true)"
+  grep -A3 "Remapped Rows" <<<"$q" | grep -q "Pending *: Yes" && bad+="row remaps pending a GPU reset; "
+  grep -q "Remapping Failure Occurred *: Yes" <<<"$q" && bad+="a row remap failed; "
+  local volatile; volatile="$(awk '/Volatile/{v=1} /Aggregate/{v=0} v && /DRAM Uncorrectable/{s+=$NF} END{print s+0}' <<<"$q")"
+  ((volatile > 0)) && bad+="$volatile uncorrectable DRAM errors since boot; "
+  "$PYTHON" - <<'PY' || bad+="a CUDA context does not open (see above); "
+import ctypes, sys
+cu = ctypes.CDLL("libcuda.so.1"); n = ctypes.c_int(); r = cu.cuInit(0)
+if r: sys.exit(print(f"cuInit failed: CUresult {r}") or 1)
+cu.cuDeviceGetCount(ctypes.byref(n))
+for i in range(n.value):
+    d, ctx = ctypes.c_int(), ctypes.c_void_p()
+    cu.cuDeviceGet(ctypes.byref(d), i)
+    r = cu.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), d)
+    if r: sys.exit(print(f"GPU {i}: cuDevicePrimaryCtxRetain failed: CUresult {r}") or 1)
+    cu.cuDevicePrimaryCtxRelease(d)
+print(f"   {n.value} GPU(s) open a CUDA context")
+PY
+  [[ -z "$bad" ]] || fail "unhealthy GPU: ${bad%; }. Delete this machine and rent another; nothing was installed"
+  note "GPU health: no pending remaps, no uncorrectable DRAM errors since boot, contexts open"
+}
+
 step_facts() {
+  ((DRY)) || gpu_health
   local nvcc nsys
   nvcc="$(nvcc_bin || echo "")"; nsys="$(nsys_bin || echo "")"
-  run mkdir -p "$WORK/logs" "$WORK/models" "$WORK/tmp" "$WORK/chips" "$RUNS"
+  run mkdir -p "$WORK/logs" "$KEEP/models" "$WORK/tmp" "$WORK/chips" "$RUNS"
   echo "+ nvidia-smi --query-gpu=name,compute_cap,memory.total,driver_version --format=csv,noheader"
   echo "+ $PYTHON (write $WORK/facts.json: gpu, nvcc ${nvcc:-<absent>}, nsys ${nsys:-<absent>}, cuda version, free disk under $WORK, nproc, os)"
   ((DRY)) && return
@@ -273,13 +312,17 @@ step_packages() {
   { have gcc && have g++ && have make; } || { missing+=(build-essential); pkgs+=(build-essential); }
   have curl || { missing+=(curl); pkgs+=(curl); }
   "$PYTHON" -c 'import venv, ensurepip' >/dev/null 2>&1 || { missing+=(python3-venv); pkgs+=(python3-venv); }
+  # Triton (vLLM, TensorRT-LLM) compiles a C helper against Python.h at startup: NVIDIA's CUDA images ship no headers,
+  # and vLLM then failed to inspect its model class (a Vast RTX 3090, 2026-11-08)
+  "$PYTHON" -c 'import os, sysconfig; raise SystemExit(not os.path.exists(os.path.join(sysconfig.get_path("include"), "Python.h")))' \
+    || { missing+=(python3-dev); pkgs+=(python3-dev); }
   if wants tensorrt-llm && ! { have mpicc || [[ -e /usr/include/x86_64-linux-gnu/openmpi ]] || [[ -e /usr/lib/x86_64-linux-gnu/openmpi ]]; }; then
     missing+=(libopenmpi-dev); pkgs+=(libopenmpi-dev)
   fi
   local nsys_missing=0
   nsys_bin >/dev/null || nsys_missing=1
   if ((DRY)); then
-    note "on this machine: ${missing[*]:-nothing} missing of cmake git build-essential curl python3-venv$(wants tensorrt-llm && echo ' libopenmpi-dev'); nsys $( ((nsys_missing)) && echo absent || echo present)"
+    note "on this machine: ${missing[*]:-nothing} missing of cmake git build-essential curl python3-venv python3-dev$(wants tensorrt-llm && echo ' libopenmpi-dev'); nsys $( ((nsys_missing)) && echo absent || echo present)"
     echo "+ [root] apt-get update -q && apt-get install -y -q <the missing ones>"
     echo "+ [root, nsys absent] the NVIDIA apt repo (cuda-keyring for this Ubuntu) && apt-get install -y -q nsight-systems-cli"
     return
@@ -296,16 +339,25 @@ step_packages() {
     run apt-get install -y -q "${pkgs[@]}"
   fi
   if ((nsys_missing)); then
-    if ! apt-cache show nsight-systems-cli >/dev/null 2>&1; then
+    # An image that already lists NVIDIA's CUDA repo keeps it: a second entry with another signed-by setting makes
+    # apt refuse every source (seen on runpod/pytorch 2.0.0-cu1300, 2026-11-08). Only a machine without one gets the keyring.
+    if grep -rqs 'developer.download.nvidia.com/compute/cuda/repos' /etc/apt/sources.list /etc/apt/sources.list.d/; then
+      note "NVIDIA's CUDA apt repo is already listed: using it"
+    else
       local distro arch
       distro="$(. /etc/os-release && echo "${ID}${VERSION_ID//./}")"   # ubuntu2204
       arch="$(dpkg --print-architecture)"; [[ "$arch" == amd64 ]] && arch=x86_64; [[ "$arch" == arm64 ]] && arch=sbsa
       run curl -fsSL -o "$WORK/tmp/cuda-keyring.deb" "https://developer.download.nvidia.com/compute/cuda/repos/$distro/$arch/cuda-keyring_1.1-1_all.deb"
       run dpkg -i "$WORK/tmp/cuda-keyring.deb"
-      run apt-get update -q
     fi
-    run apt-get install -y -q nsight-systems-cli
-    nsys_bin >/dev/null || fail "nsight-systems-cli installed but no nsys found; add its bin folder to PATH and rerun --from 2"
+    run apt-get update -q
+    # The repo names the package nsight-systems-cli, or by version (nsight-systems-2026.5.2): take the newest of those.
+    local nsys_pkg=nsight-systems-cli
+    apt-cache show nsight-systems-cli >/dev/null 2>&1 || \
+      nsys_pkg="$(apt-cache search --names-only '^nsight-systems-[0-9]' | cut -d' ' -f1 | sort -V | tail -1)"
+    [[ -n "$nsys_pkg" ]] || fail "NVIDIA's apt repo has no Nsight Systems package; install nsys by hand and rerun --from 2"
+    run apt-get install -y -q "$nsys_pkg"
+    nsys_bin >/dev/null || fail "$nsys_pkg installed but no nsys found; add its bin folder to PATH and rerun --from 2"
   fi
 }
 
@@ -319,10 +371,12 @@ step_boltbeam() {
   ((DRY)) || sha="$(git -C "$BOLTBEAM_DIR" rev-parse --short HEAD)"
   stamp="$VENV/.boltbeam-${sha:-<sha>}"
   if exists -f "$stamp"; then note "BoltBeam $sha already installed in the venv"; else
-    run "$VENV/bin/pip" install -q "$BOLTBEAM_DIR" numpy
+    # editable: a pull or a fix copied into the checkout is what the pipeline runs, not a copy frozen at setup
+    run "$VENV/bin/pip" install -q -e "$BOLTBEAM_DIR" numpy
     run touch "$stamp"
   fi
-  if [[ -z "$TINYGRAD_REF" ]]; then note "tinygrad skipped: TINYGRAD_REF is empty"; return; fi
+  install_go
+  if [[ -z "$TINYGRAD_REF" ]]; then note "tinygrad skipped: in-house, opt in with TINYGRAD_REF=exp"; return; fi
   if ! git ls-remote --exit-code -q "$TINYGRAD_REPO" "$TINYGRAD_REF" >/dev/null 2>&1; then
     note "tinygrad skipped: $TINYGRAD_REPO $TINYGRAD_REF is not reachable (private, or no network)"
     TINYGRAD_REF=""
@@ -333,10 +387,52 @@ step_boltbeam() {
   exists -f "$TINYGRAD_DIR/.venv/.numpy" || { run "$TINYGRAD_DIR/.venv/bin/pip" install -q numpy; run touch "$TINYGRAD_DIR/.venv/.numpy"; }
 }
 
+# The engines share nothing (each its own folder and venv), so they install at the same time; each writes its own
+# log under $WORK/logs. llama.cpp is needed by steps 9 and 10: its failure fails the step. A failed optional engine
+# is noted and the run goes on.
+# The TUI (boltbeam tui) builds from the checkout's tui/ with the Go its go.mod names; Ubuntu's golang-go is older
+# (1.22 on 24.04 against go 1.26.5). The official release goes under /usr/local/go, as root, when go is absent or older.
+install_go() {
+  local want have arch
+  want="$( ( ((DRY)) && echo "<tui/go.mod>" ) || sed -n 's/^go \([0-9.]*\)$/\1/p' "$BOLTBEAM_DIR/tui/go.mod" 2>/dev/null)"
+  [[ -n "$want" ]] || { note "no tui/go.mod in the checkout: the TUI is not set up"; return 0; }
+  have="$( { /usr/local/go/bin/go version || go version; } 2>/dev/null | sed -n 's/.*go\([0-9][0-9.]*\).*/\1/p' | head -1 || true)"  # no Go: empty, not an exit
+  if [[ -n "$have" ]] && ! ((DRY)) && [[ "$(printf '%s\n%s\n' "$want" "$have" | sort -V | head -1)" == "$want" ]]; then
+    note "Go $have is new enough for the TUI (go.mod: $want)"; return 0
+  fi
+  if [[ "$(id -u)" != 0 ]] && ! ((DRY)); then note "the TUI needs Go $want and this is not root: install it, then boltbeam tui"; return 0; fi
+  arch="$(uname -m)"; [[ "$arch" == x86_64 ]] && arch=amd64; [[ "$arch" == aarch64 ]] && arch=arm64
+  run curl -fsSL -o "$WORK/tmp/go.tgz" "https://go.dev/dl/go$want.linux-$arch.tar.gz"
+  run rm -rf /usr/local/go
+  run tar -C /usr/local -xzf "$WORK/tmp/go.tgz"
+}
+
 step_engines() {
-  if wants llama.cpp; then step_llama; else note "llama.cpp skipped: not in ENGINES (steps 9 and 10 measure with it)"; fi
-  if wants vllm; then install_vllm || note "vLLM not installed (see above); the run goes on with llama.cpp; rerun --from 4 after fixing"; fi
-  if wants tensorrt-llm; then install_trtllm || note "TensorRT-LLM not installed (see above); the run goes on with llama.cpp; rerun --from 4 after fixing"; fi
+  wants llama.cpp || note "llama.cpp skipped: not in ENGINES (steps 9 and 10 measure with it)"
+  if ((DRY)); then
+    wants llama.cpp && step_llama
+    wants vllm && install_vllm
+    wants tensorrt-llm && install_trtllm
+    return 0
+  fi
+  local -A pid=() fn=([llama.cpp]=step_llama [vllm]=install_vllm [tensorrt-llm]=install_trtllm)
+  local e rc log
+  for e in llama.cpp vllm tensorrt-llm; do
+    wants "$e" || continue
+    log="$WORK/logs/engine-$e.log"
+    ( "${fn[$e]}" ) > "$log" 2>&1 &
+    pid[$e]=$!
+    note "$e installing in the background: $log"
+  done
+  for e in llama.cpp vllm tensorrt-llm; do
+    [[ -n "${pid[$e]:-}" ]] || continue
+    rc=0; wait "${pid[$e]}" || rc=$?
+    log="$WORK/logs/engine-$e.log"
+    if ((rc == 0)); then note "$e: ready ($(grep -E '^(vllm|tensorrt_llm) [0-9]' "$log" | tail -1 || true))"; continue; fi
+    tail -n 15 "$log" | sed 's/^/   | /'
+    [[ "$e" == llama.cpp ]] && fail "llama.cpp did not build (log above; full log $log)"
+    note "$e not installed (log above; full log $log); the run goes on with llama.cpp; rerun --from 4 after fixing"
+  done
   return 0
 }
 
@@ -388,7 +484,9 @@ install_trtllm() {
   run "$TRTLLM_VENV/bin/pip" install -q --no-cache-dir --upgrade pip setuptools wheel || return 1
   run "$TRTLLM_VENV/bin/pip" install -q --no-cache-dir "torch>=2.9.1,<2.10" torchvision --index-url https://download.pytorch.org/whl/cu130 || return 1
   run_sh '"$1" -c "import torch; print(\"torch==\" + torch.__version__)" > "$2"' "$TRTLLM_VENV/bin/python" "$TRTLLM_VENV/torch-constraint.txt" || return 1
-  run "$TRTLLM_VENV/bin/pip" install -q --no-cache-dir "tensorrt_llm==$ver" -c "$TRTLLM_VENV/torch-constraint.txt" \
+  # pyarrow < 20: tensorrt_llm pins numpy < 2 and the newest pyarrow needs numpy 2, so importing tensorrt_llm (its
+  # datasets import) failed with "pyarrow requires NumPy 2.0 or newer" (1.2.1, 2026-11-08)
+  run "$TRTLLM_VENV/bin/pip" install -q --no-cache-dir "tensorrt_llm==$ver" "pyarrow<20" -c "$TRTLLM_VENV/torch-constraint.txt" \
     --extra-index-url https://pypi.nvidia.com --extra-index-url https://download.pytorch.org/whl/cu130 || return 1
   run "$TRTLLM_VENV/bin/python" -c 'import tensorrt_llm, torch; print("tensorrt_llm", tensorrt_llm.__version__, "torch", torch.__version__)' || return 1
   run touch "$stamp"
@@ -458,13 +556,14 @@ step_env() {
   local text
   text="$(
     printf '# BoltBeam pod environment, written by tools/pod-setup.sh\n'
-    printf 'export PATH=%q:"$PATH"\n' "/usr/local/cuda/bin:${nsys_dir:+$nsys_dir:}$VENV/bin"
+    # the venv first: nsys can live in /usr/local/bin, whose python would shadow the venv python in an interactive shell
+    printf 'export PATH=%q:"$PATH"\n' "$VENV/bin:/usr/local/cuda/bin:/usr/local/go/bin${nsys_dir:+:$nsys_dir}"
     printf 'export %s=%q\n' \
       BOLTBEAM_LLAMA_BENCH "$LLAMA_BUILD/bin/llama-bench" \
       BOLTBEAM_LLAMA_BATCHED_BENCH "$LLAMA_BUILD/bin/llama-batched-bench" \
       BOLTBEAM_GGML_CUDA_SRC "$LLAMA_DIR/ggml/src/ggml-cuda" \
       BOLTBEAM_CHIPS_DIR "$WORK/chips" TMPDIR "$WORK/tmp" BOLTBEAM_CUDA_CACHE "$WORK/tmp/boltbeam-cuda" \
-      BOLTBEAM_MODEL "$MODEL"
+      BOLTBEAM_MODEL "$MODEL" BOLTBEAM_REPO "$BOLTBEAM_DIR"
     [[ -z "$TINYGRAD_REF" ]] || printf 'export BOLTBEAM_TINYGRAD_ROOT=%q\n' "$TINYGRAD_DIR"
     if wants vllm && { ((DRY)) || compgen -G "$VLLM_VENV/.pod-vllm-*" >/dev/null; }; then printf 'export BOLTBEAM_VLLM_PYTHON=%q\n' "$VLLM_VENV/bin/python"; fi
     if wants tensorrt-llm && { ((DRY)) || compgen -G "$TRTLLM_VENV/.pod-trtllm-*" >/dev/null; }; then printf 'export BOLTBEAM_TRTLLM_PYTHON=%q\n' "$TRTLLM_VENV/bin/python"; fi
@@ -522,12 +621,12 @@ step_pipeline() {
   load_env; read_target
   local mode run_dir
   for mode in in-model generic; do
-    run_dir="$RUNS/$RUN_TAG-$mode"
+    run_dir="$RUNS/$RUN_TAG-$mode$LSUF"
     if [[ "$mode" == in-model ]] && ! nsys_bin >/dev/null && ! ((DRY)); then
       note "in-model skipped: no nsys on this machine (step 2 installs it as root)"; continue
     fi
     if exists -f "$run_dir/.pod-done"; then note "$run_dir already measured (remove .pod-done to run it again)"; continue; fi
-    run_sh 'cd "$1" && "$2" -m boltbeam.workflow.screen pipeline "$3" --run "$4" --target "$5" --id "$6" --provider llama.cpp --analyze --measure auto --role-time "$7" --no-search' "$WORK/tmp" "$VENV/bin/python" "$MODEL" "$run_dir" "$TARGET" "$RUN_TAG-$mode" "$mode"
+    run_sh 'cd "$1" && "$2" -m boltbeam.workflow.screen pipeline "$3" --run "$4" --target "$5" --id "$6" --provider llama.cpp --analyze --measure auto --role-time "$7" --layout "$8" --no-search' "$WORK/tmp" "$VENV/bin/python" "$MODEL" "$run_dir" "$TARGET" "$RUN_TAG-$mode$LSUF" "$mode" "$LAYOUT"
     run touch "$run_dir/.pod-done"
   done
 }
@@ -536,7 +635,7 @@ step_results() {
   load_env
   local mode run_dir
   for mode in in-model generic; do
-    run_dir="$RUNS/$RUN_TAG-$mode"
+    run_dir="$RUNS/$RUN_TAG-$mode$LSUF"
     if ! exists -d "$run_dir" && ! ((DRY)); then note "$run_dir: no run (in-model needs nsys)"; continue; fi
     run_sh '"$1" -m boltbeam.workflow.screen results --run "$2" > "$3"' "$VENV/bin/python" "$run_dir" "$run_dir/results.json"
     echo "+ $PYTHON (print the per-role table and the tie-out of $run_dir/results.json)"
@@ -572,6 +671,7 @@ step_bundle() {
   run_sh 'cd "$1" && { find "runs/$2-in-model" "runs/$2-generic" -type f \( -name "*.json" -o -name "*.html" -o -name "*.md" -o -name "*.txt" -o -name "*.log" -o -name "*.csv" \) 2>/dev/null; ls facts.json autoscan.json 2>/dev/null; find logs -type f; } > "$3"' "$WORK" "$RUN_TAG" "$list"
   run tar -czf "$out" -C "$WORK" -T "$list"
   ((DRY)) || note "bundle: $out ($(du -h "$out" | cut -f1))"
+  if [[ "$KEEP" != "$WORK" ]]; then run mkdir -p "$KEEP/bundles"; run cp "$out" "$KEEP/bundles/"; fi
   local host="${RUNPOD_PUBLIC_IP:-HOST}" port="${RUNPOD_TCP_PORT_22:-PORT}"
   note "fetch it:  scp -P $port root@$host:$out ."
   note "or, from the BoltBeam checkout on your machine:  tools/pod-fetch.sh $host $port"
@@ -580,7 +680,7 @@ step_bundle() {
 # --- main --------------------------------------------------------------------------------------------------------
 
 current=0
-say "pod-setup $( ((DRY)) && echo '(dry run) ' )WORK=$WORK"
+say "pod-setup $( ((DRY)) && echo '(dry run) ' )WORK=$WORK  KEEP=$KEEP"
 note "MODEL_URL=$MODEL_URL"
 note "MODEL_SHA256=${MODEL_SHA256:-<none>}  BOLTBEAM=$BOLTBEAM_REPO@$BOLTBEAM_REF  LLAMA=$LLAMA_REPO@$LLAMA_REF"
 note "TINYGRAD=$( [[ -n "$TINYGRAD_REF" ]] && echo "$TINYGRAD_REPO@$TINYGRAD_REF" || echo skipped )"

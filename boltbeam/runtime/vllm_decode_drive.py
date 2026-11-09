@@ -19,6 +19,14 @@ It prints one JSON line per point: {"context", "batch", "tokens", "long_s", "sho
 line {"tokens", "seconds"}. Two such runs, N and 1, differ only in the decode steps, so a capture of each can be
 subtracted kernel by kernel (collectors/attribution.shared_window).
 
+--mtp-prompt ID (with --speculative-config, one stream): speculation's speed follows how predictable the text is, so
+the context is natural text, not token ids: prompt ID of --prompt-set (collectors/vllm_mtp.PROMPTS, through the model's
+chat template) and this engine's own greedy continuation of it, cut to exactly the context. The ids' sha256 is
+recorded, so two processes (the untraced timing and the capture) are shown to decode from the same context. Under
+speculation the engine keeps its statistics (disable_log_stats off, in every arm alike): vLLM's spec-decode counters are
+read around every timed call, and a capture records each scheduler step's drafts and accepted tokens
+(vllm_semantics.observe_speculation).
+
 --prefill L is the prefill mode (collectors/prefill.py): one prompt of L token ids drawn from a fixed seed (each call
 its own ids), max_tokens 1, prefix caching off, after --warm calls. Untimed by BoltBeam: vLLM's own request timing,
 first token less scheduled (what its server reports as time to first token), the median of --reps calls; the wall
@@ -74,10 +82,15 @@ def main() -> int:
   ap.add_argument("--max-num-batched-tokens", type=int)
   ap.add_argument("--dtype", default="auto")
   ap.add_argument("--attention-backend", help="vLLM's attention backend by name (a requested engine setting)")
+  ap.add_argument("--gemm-backends", help="Inductor's matrix backends, e.g. TRITON (a requested engine setting): the "
+                  "compiled graph's matrix products become Triton kernels instead of cuBLAS calls")
   ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
   ap.add_argument("--tensor-parallel-size", type=int, default=1, help="GPUs the model is split across (collectors/multi_gpu.py)")
   ap.add_argument("--speculative-config", default=os.environ.get("BOLTBEAM_VLLM_SPECULATIVE_CONFIG"),
                   help="explicit MTP configuration; recorded in the measurement")
+  ap.add_argument("--mtp-prompt", help="speculative decode: the natural prompt (an id of --prompt-set) the context is built from")
+  ap.add_argument("--prompt-set", help="a boltbeam.mtp_prompts.v1 file (collectors/vllm_mtp.PROMPTS)")
+  ap.add_argument("--mtp-context", help="the run's natural contexts: read when present, else written (natural_context)")
   ap.add_argument("--quality-suite", help="JSON prompts and expected JSON answers for a bounded smoke check")
   ap.add_argument("--quality-thinking", action="store_true", help="enable thinking for quality prompts")
   ap.add_argument("--quality-max-tokens", type=int, help="answer budget including thinking (default: 4096 on, 128 off)")
@@ -102,6 +115,13 @@ def main() -> int:
   if a.quality_only and not a.quality_suite:
     ap.error("--quality-only requires --quality-suite")
   a.speculative_config = json.loads(a.speculative_config) if a.speculative_config else None
+  if a.mtp_prompt and not (a.speculative_config and a.prompt_set):
+    ap.error("--mtp-prompt needs --speculative-config and --prompt-set")
+  if a.speculative_config and a.token_script:
+    ap.error("token scripts force one logits row per request; speculative verification scores k+1 rows per request, so "
+             "a speculative capture cannot be forced (vllm_token_script)")
+  if a.speculative_config and (a.once or a.capture_pass) and not a.mtp_prompt:
+    ap.error("a speculative decode capture needs --mtp-prompt: acceptance on token-id prompts is not the engine's")
   from vllm import LLM, SamplingParams
   from vllm.inputs import TokensPrompt
   contexts = [int(x) for x in a.contexts.split(",") if x]
@@ -114,13 +134,19 @@ def main() -> int:
     max(contexts, default=0) + max(a.tokens, a.once or 0) + 8,
     a.quality_max_tokens + 512 if a.quality_suite and (a.quality_thinking or a.quality_only) else 0)
   from contextlib import nullcontext
+  if a.gemm_backends:  # compile_lm_head reaches the engine's worker process as a function, which vLLM sends by pickle
+    os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
   llm = LLM(model=a.model, dtype=a.dtype, max_model_len=max_len, enable_prefix_caching=False,
             **({'worker_cls':'boltbeam.runtime.vllm_decode_worker.DecodeCaptureWorker'} if a.capture_pass=='paired' else {}),
             **({'logits_processors':[SCRIPT_PROCESSOR]} if a.token_script else {}),
             language_model_only=True, speculative_config=a.speculative_config,
+            **({"disable_log_stats": False} if a.speculative_config else {}),
             gpu_memory_utilization=a.gpu_memory_utilization, tensor_parallel_size=a.tensor_parallel_size, max_num_seqs=max(max(batches), 1), seed=0,
             **({"attention_backend": a.attention_backend} if a.attention_backend else {}),
+            **({"compilation_config": gemm_config(a.gemm_backends)} if a.gemm_backends else {}),
             **({"max_num_batched_tokens": a.max_num_batched_tokens, "enable_chunked_prefill": True} if a.max_num_batched_tokens else {}))
+  if a.gemm_backends:
+    llm.apply_model(compile_lm_head(a.gemm_backends))
   vocab = llm.get_tokenizer().vocab_size
   if a.quality_suite:
     tokenizer = llm.get_tokenizer()
@@ -148,9 +174,24 @@ def main() -> int:
   if a.quality_only:
     return 0
 
+  natural = {}
+  if a.mtp_prompt:
+    if batches != [1]:
+      raise SystemExit("--mtp-prompt measures one stream: every stream would need its own natural text")
+    natural = {c: natural_context(llm, a.prompt_set, a.mtp_prompt, c, a.mtp_context) for c in contexts}
+
   def prompts(context:int, batch:int) -> list:
+    if natural:
+      return [TokensPrompt(prompt_token_ids=natural[context]["ids"])]
     # stream s: ids 1000+s, 1001+s, ... so no two streams share a prefix
     return [TokensPrompt(prompt_token_ids=[(1000 + s * 7 + i) % vocab for i in range(context)]) for s in range(batch)]
+  def speculation_at(context:int) -> dict | None:
+    """The speculation this point ran under and the natural context it decoded from (its ids left out: the sha)."""
+    if not (a.speculative_config and natural):
+      return None
+    return {"config": a.speculative_config, "prompt": {k: v for k, v in natural[context].items() if k != "ids"}}
+  speculation = speculation_at(contexts[0]) if contexts else None
+  counters = []  # vLLM's spec-decode counters over each timed call, in call order
 
   token_ids=[]
   def timed(context:int, batch:int, n:int, scripts:list | None = None) -> float:
@@ -158,9 +199,14 @@ def main() -> int:
     if scripts is not None:  # one script per stream, its first n tokens (vllm_token_script.TokenScriptProcessor)
       params = [SamplingParams(max_tokens=n, min_tokens=n, ignore_eos=True, temperature=0.0,
                                extra_args={'boltbeam_token_script':list(t[:n])}) for t in scripts]
+    if a.speculative_config:
+      from vllm_mtp_drive import spec_counters, delta
+      before = spec_counters(llm)
     t0 = time.perf_counter()
     out = llm.generate(prompts(context, batch), params, use_tqdm=False)
     dt = time.perf_counter() - t0
+    if a.speculative_config:
+      counters.append({"tokens": n, **delta(spec_counters(llm), before)})
     token_ids[:]=[list(o.outputs[0].token_ids) for o in out]
     got = [len(ids) for ids in token_ids]
     if got != [n] * batch:
@@ -199,15 +245,21 @@ def main() -> int:
       for _ in range(a.warm):
         timed(contexts[0], batches[0], 2)
         warm_outputs.append(list(token_ids))
-      from vllm_semantics import observe_steps, dispatch_mode, without_graph_replay, module_ranges
+      from vllm_semantics import (observe_steps, dispatch_mode, without_graph_replay, module_ranges, inductor_ranges,
+                                  observe_speculation, draft_scope)
       with observe_steps(llm,a.profile_step,profile_end=a.profile_end,capture_pass=capture_pass) if capture_pass else nullcontext() as steps:
+       with observe_speculation(llm) if a.speculative_config else nullcontext() as scheduled:
         with without_graph_replay(llm) if capture_pass=='label' else nullcontext():
           with module_ranges(llm) if capture_pass=='label' else nullcontext():
-            with dispatch_mode(llm) if capture_pass=='label' else nullcontext():
-              seconds=timed(contexts[0], batches[0], a.once, scripts)
+            with draft_scope(llm) if capture_pass=='label' else nullcontext():
+             with dispatch_mode(llm) if capture_pass=='label' else nullcontext():
+              with inductor_ranges(llm) if capture_pass=='label' and a.gemm_backends else nullcontext():
+                seconds=timed(contexts[0], batches[0], a.once, scripts)
+      measured_counters=counters[-1] if a.speculative_config else None
       out_ids=[list(ids) for ids in token_ids];short_seconds=timed(contexts[0], batches[0], 1, scripts) if capture_pass=='timing' else None  # the native arm's order: long, then short; unobserved
       if scripts is not None and out_ids!=scripts:raise SystemExit('forced pass did not emit its token script')
-      line={"tokens":a.once,"short_seconds":short_seconds,**({"token_forcing":SCRIPT_PROCESSOR,"token_script_sha256":hashlib.sha256(Path(a.token_script).read_bytes()).hexdigest(),**({"engine_nondeterministic":d} if (d:=json.loads(Path(a.token_script).read_text()).get('engine_nondeterministic')) else {})} if scripts is not None else {}),"warm":a.warm,"samples":1,"call_order":"long_then_short","output_token_ids":out_ids,"warm_output_token_ids":warm_outputs,"seconds":seconds,"matrices":_matrices(llm),"engine":_resolved_formats(llm)}
+      line={"tokens":a.once,"short_seconds":short_seconds,
+            **({"speculation":{**speculation,"steps":list(scheduled),"counters":measured_counters}} if speculation else {}),**({"token_forcing":SCRIPT_PROCESSOR,"token_script_sha256":hashlib.sha256(Path(a.token_script).read_bytes()).hexdigest(),**({"engine_nondeterministic":d} if (d:=json.loads(Path(a.token_script).read_text()).get('engine_nondeterministic')) else {})} if scripts is not None else {}),"warm":a.warm,"samples":1,"call_order":"long_then_short","output_token_ids":out_ids,"warm_output_token_ids":warm_outputs,"seconds":seconds,"matrices":_matrices(llm),"engine":_resolved_formats(llm)}
       if capture_pass:
         import vllm;config=llm.llm_engine.vllm_config
         line.update(line['engine'], capture_pass=capture_pass, runtime_graph_mode='NONE' if capture_pass=='label' else 'production',
@@ -220,7 +272,9 @@ def main() -> int:
                     libraries=_libraries())
       if a.profile_end is not None:
         if a.profile_step<1:raise ValueError('decode counter range must exclude prefill')
-        line['counter_steps']=[{**line,'context':contexts[0]+step-1,'decode_step':step}
+        at=speculative_depths(line['speculation']['steps'],contexts[0]) if speculation else {}
+        line['counter_steps']=[{**line,'context':at[step][0] if at else contexts[0]+step-1,'decode_step':step,
+                                **({'length':at[step][1]} if at else {})}
                                for step in range(a.profile_step,a.profile_end+1)]
       print(json.dumps(line),flush=True)
     if a.capture_pass=='paired':
@@ -231,10 +285,12 @@ def main() -> int:
     for batch in batches:
       for _ in range(a.warm):
         timed(context, batch, 2)
-      pairs=[];output_pairs=[]
+      pairs=[];output_pairs=[];repeat_counters=[]
       for _ in range(a.reps):
         long=timed(context,batch,a.tokens);long_ids=list(token_ids)
+        if a.speculative_config:repeat_counters.append(counters[-1])
         short=timed(context,batch,1)
+        if a.speculative_config:repeat_counters[-1]={"long":repeat_counters[-1],"short":counters[-1]}
         pairs.append((long,short));output_pairs.append([long_ids,list(token_ids)])
       samples=[(long-short)*1000/(a.tokens-1) for long,short in pairs]
       if not samples or min(samples)<=0:raise ValueError('decode repeats have no positive time difference')
@@ -247,20 +303,80 @@ def main() -> int:
                                    "compilation_config":compilation_facts(llm.llm_engine.vllm_config.compilation_config),
                                    "enforce_eager":llm.llm_engine.vllm_config.model_config.enforce_eager,"warm":a.warm,"seed":llm.llm_engine.vllm_config.model_config.seed,"call_order":"long_then_short",
                                    "speculative_config": a.speculative_config,
+                                   **({"speculation":{**speculation_at(context),"repeats":repeat_counters}} if natural else {}),
                                    "max_num_batched_tokens": int(llm.llm_engine.vllm_config.scheduler_config.max_num_batched_tokens),
                                    "chunked_prefill": bool(llm.llm_engine.vllm_config.scheduler_config.enable_chunked_prefill),
                                    "attention_backend": _attention_backend(llm),
+                                   "gemm_backends": a.gemm_backends,
                                    "tensor_parallel_size": int(llm.llm_engine.vllm_config.parallel_config.tensor_parallel_size)},
                         "step_ms": step_ms, "tok_s_stream": 1000.0 / step_ms, "tok_s_total": batch * 1000.0 / step_ms}),
             flush=True)
   return 0
 
 
+def speculative_depths(steps:list, context:int) -> dict:
+  """{engine step: (tokens in the cache when it starts, its query tokens)} from observe_speculation's records; the
+  arithmetic is collectors/vllm_speculation.ledger's (prompt and emitted tokens, less the step's own first query)."""
+  done, out = 0, {}
+  for record in steps:
+    if not record["requests"]:  # an empty scheduler step (nothing left to run) launches nothing
+      continue
+    row = next(iter(record["requests"].values()))
+    if record["schedule"]:
+      out[record["engine_step"]] = (context + done - 1, row["tokens"])
+    done += row.get("emitted", 0)
+  return out
+
+
+def natural_context(llm, prompt_set:str, prompt_id:str, context:int, store:str | None = None) -> dict:
+  """Exactly `context` token ids of natural text: the prompt's chat-template ids, then the engine's own greedy
+  continuation of them, cut to length. With its identity: the prompt set's version and sha256, the prompt id, how many
+  ids are the prompt and how many the continuation, and the ids' sha256.
+
+  store: a JSON file every process of one run reads the ids from (the untraced timing, both capture passes, the
+  counter runs). The first process to need a context writes it. Generated afresh in each process the continuation is
+  not the same text: under speculation the target verifies in windows the acceptance sets, so a near tie in bf16 can
+  turn a greedy choice (an ncu counter run continued the prompt differently from its capture, 2026-11-08)."""
+  from vllm import SamplingParams
+  from vllm.inputs import TokensPrompt
+  raw = Path(prompt_set).read_bytes()
+  data = json.loads(raw)
+  found = [p for p in data.get("prompts") or [] if p.get("id") == prompt_id]
+  if data.get("schema") != "boltbeam.mtp_prompts.v1" or len(found) != 1:
+    raise SystemExit(f"{prompt_set} has no one prompt {prompt_id!r} (boltbeam.mtp_prompts.v1)")
+  identity = {"prompt_set_version": data.get("version"), "prompt_set_sha256": hashlib.sha256(raw).hexdigest(),
+              "prompt_id": prompt_id}
+  saved = json.loads(Path(store).read_text()) if store and Path(store).exists() else {}
+  if (held := saved.get(str(context))) is not None:
+    if any(held.get(k) != v for k, v in identity.items()) or len(held.get("ids") or []) != context:
+      raise SystemExit(f"{store} holds another context for {context} tokens than prompt {prompt_id} of this prompt set")
+    return {**held, "context_sha256": hashlib.sha256(json.dumps(held["ids"]).encode()).hexdigest(),
+            "source": held["source"] + f"; read from {Path(store).name}"}
+  got = llm.get_tokenizer().apply_chat_template([{"role": "user", "content": found[0]["text"]}], tokenize=True,
+                                                add_generation_prompt=True)
+  ids = list(got["input_ids"] if hasattr(got, "keys") else got)
+  if len(ids) > context:
+    raise SystemExit(f"prompt {prompt_id} is {len(ids)} tokens, longer than the context {context}")
+  more = context - len(ids)
+  if more:
+    params = SamplingParams(max_tokens=more, min_tokens=more, ignore_eos=True, temperature=0.0)
+    ids += list(llm.generate([TokensPrompt(prompt_token_ids=ids)], params, use_tqdm=False)[0].outputs[0].token_ids)
+  if len(ids) != context:
+    raise SystemExit(f"natural context is {len(ids)} tokens, not {context}")
+  out = {"ids": ids, **identity, "prompt_tokens": context - more, "continuation_tokens": more,
+         "source": "the prompt through the model's chat template, then the engine's own greedy continuation"}
+  if store:
+    Path(store).write_text(json.dumps({**saved, str(context): out}))
+  return {**out, "context_sha256": hashlib.sha256(json.dumps(ids).encode()).hexdigest()}
+
+
 def prefill(a) -> int:
   from vllm import LLM, SamplingParams
   from vllm.inputs import TokensPrompt
   llm = LLM(model=a.model, dtype=a.dtype, max_model_len=a.model_context_limit or a.prefill + 1, enable_prefix_caching=False,
-            **({'compilation_config': {'cudagraph_mode':'NONE'}} if a.semantic_capture else {}),
+            **({'compilation_config': {**({'cudagraph_mode':'NONE'} if a.semantic_capture else {}),
+                                       **(gemm_config(a.gemm_backends) if a.gemm_backends else {})}}
+               if a.semantic_capture or a.gemm_backends else {}),
             language_model_only=True, speculative_config=a.speculative_config,
             gpu_memory_utilization=a.gpu_memory_utilization, tensor_parallel_size=a.tensor_parallel_size, max_num_seqs=1, seed=0, disable_log_stats=False,
             **({"attention_backend": a.attention_backend} if a.attention_backend else {}),
@@ -321,6 +437,39 @@ def prefill(a) -> int:
     line.update(wall_samples_s=[w for w, _ in got], engine_samples_s=[e for _, e in got])
   print(json.dumps(line), flush=True)
   return 0
+
+
+def gemm_config(backends:str) -> dict:
+  """vLLM's compilation settings that hand Inductor's matrix products to `backends` (max_autotune on: Inductor only
+  generates its own GEMM templates while autotuning). Products outside the compiled graph keep their own kernels."""
+  return {"inductor_compile_config": {"max_autotune": True, "max_autotune_gemm_backends": backends.upper()}}
+
+
+def compile_lm_head(backends:str):
+  """For llm.apply_model: vLLM projects the logits outside its compiled graph, so gemm_config does not reach lm_head,
+  and on an H100 its bf16 product stays a closed cuBLAS nvjet kernel. This sends that product through Inductor with the
+  same matrix backends, so it too becomes a template whose code is read (runtime.vllm_semantics.inductor_ranges labels
+  it by the weight it reads). Returns the module it changed."""
+  def patch(model):
+    import torch, torch.nn.functional as F
+    heads = [(n, m) for n, m in model.named_modules() if n.split(".")[-1] == "lm_head" and hasattr(m, "quant_method")]
+    if len(heads) != 1:
+      raise ValueError(f"--gemm-backends: expected one lm_head module, found {[n for n, _ in heads]}")
+    name, head = heads[0]
+    if type(head.quant_method).__name__ not in ("UnquantizedEmbeddingMethod", "UnquantizedLinearMethod"):
+      raise ValueError(f"--gemm-backends: lm_head is {type(head.quant_method).__name__}, not a plain weight")
+    linear = torch.compile(lambda x, w, b: F.linear(x, w, b), dynamic=True,
+                           options={"max_autotune": True, "max_autotune_gemm_backends": backends.upper()})
+    from torch.utils._python_dispatch import _disable_current_modes
+    def apply(layer, x, bias=None):
+      # The labeling pass runs under a dispatch mode, and compiled code falls back to eager inside one, which ran cuBLAS
+      # there and the template in the timing pass: the two launch sequences diverged at lm_head (2026-11-08). Outside
+      # the mode both passes launch the same template; inductor_ranges labels it at launch, not by dispatch.
+      with _disable_current_modes():
+        return linear(x, layer.weight, bias)
+    head.quant_method.apply = apply
+    return name
+  return patch
 
 
 def _attention_backend(llm) -> str | None:

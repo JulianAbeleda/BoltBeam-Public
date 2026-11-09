@@ -1,0 +1,15 @@
+{
+  "schema": "boltbeam.mtp_prompts.v1",
+  "version": 1,
+  "why": "Speculative decoding's speed follows how predictable the text is, so it is measured on natural requests, not token ids. A repetitive synthetic prompt once ranked k=3 above k=2 on the 27B AWQ (95 against 87 tok/s) where natural prompts ranked it below (81.6 against 88.6), docs/recommended-setup.md. Each prompt is sent as one user turn through the model's own chat template. Change the set only with a new version: measurements name the version and the set's sha256.",
+  "prompts": [
+    {"id": "explain-tcp", "kind": "technical explanation", "text": "Explain how TCP congestion control works, from slow start to fast recovery, and why it matters on a congested network."},
+    {"id": "code-intervals", "kind": "code", "text": "Write a Python function that merges overlapping intervals in a list, with a short explanation and a few unit tests."},
+    {"id": "history-ww1", "kind": "summary", "text": "Summarize the main causes of the First World War and how they interacted in the summer of 1914."},
+    {"id": "story-lighthouse", "kind": "fiction", "text": "Write a short story about a lighthouse keeper who receives a letter that was posted forty years ago."},
+    {"id": "compare-databases", "kind": "comparison", "text": "Compare relational and document databases for a small online store: data model, consistency, scaling and cost."},
+    {"id": "math-quadratic", "kind": "derivation", "text": "Derive the quadratic formula step by step from the general quadratic equation, explaining each step."},
+    {"id": "howto-bread", "kind": "instructions", "text": "Give clear step-by-step instructions for baking a simple loaf of bread at home, including what can go wrong."},
+    {"id": "letter-landlord", "kind": "letter", "text": "Write a polite but firm letter to a landlord asking for a broken heater to be repaired before winter."}
+  ]
+}

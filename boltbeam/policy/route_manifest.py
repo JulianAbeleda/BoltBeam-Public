@@ -69,7 +69,7 @@ def validate_manifest() -> list[str]:
       if p in ("hand_authored_uop_template", "external_handwritten_kernel") and not row.get("replacement_scope"):
         errors.append(f"{rid}: non-pure default provenance={p} requires replacement_scope")
     if row.get("research_only"):
-      if row["status"] != "research": errors.append(f"{rid}: research_only route cannot claim final status {row["status"]!r}")
+      if row["status"] != "research": errors.append(f"{rid}: research_only route cannot claim final status {row['status']!r}")
       if not {"correctness evidence", "resource evidence", "timing evidence"}.issubset({part.strip() for part in str(row.get("authority_gate", "")).split("+")}):
         errors.append(f"{rid}: research_only route must require correctness/resource/timing evidence")
     if "purity_status" in row and row["purity_status"] != derive_purity_status(row["status"], str(p)): errors.append(f"{rid}: purity_status drift")

@@ -70,6 +70,18 @@ def venv_env(python:str) -> dict[str, str]:
           "BOLTBEAM_BUILD_LIMIT": "1"}
 
 
+def missing_headers(python:str) -> str | None:
+  """The Python.h this python lacks (its full path), or None when present. Triton compiles against it at startup;
+  without it vLLM failed to inspect its model class (a Vast RTX 3090, 2026-11-08)."""
+  code = ("import os,sys,sysconfig; h=os.path.join(sysconfig.get_path('include'),'Python.h'); "
+          "print(h, sys.version_info[0], sys.version_info[1]); sys.exit(not os.path.exists(h))")
+  try:
+    proc = subprocess.run([python, "-c", code], capture_output=True, text=True, timeout=60)
+  except (OSError, subprocess.SubprocessError) as exc:
+    return f"{python} did not run: {exc}"
+  return None if proc.returncode == 0 else proc.stdout.strip()
+
+
 def has_module(python:str, module:str) -> bool:
   """True when that python can import the module (found by spec only: importing vLLM takes seconds)."""
   try:

@@ -50,6 +50,13 @@ def scope(run:pathlib.Path) -> dict:
                   "replay": "replay_capture.json"}.get(manifest.get("workload"), providers.TRACES[run_provider(run)])
   capture = _read(run, capture_file)
   whole = next((r for r in capture.get("rows", []) if r.get("scope") == "whole_step"), {})
+  labeled = _read(run, "decode_capture.json") if not capture else {}
+  if labeled.get("schema") == "boltbeam.decode_capture.v1" and labeled.get("contexts"):
+    # a labeled vLLM capture (collectors/vllm_semantic_decode) holds one capture per context, not the engine's trace:
+    # its window is the contexts captured, each with its tokens and batch (a 5090's repeat band, 2026-11-09)
+    caps = [labeled["contexts"][k] for k in sorted(labeled["contexts"], key=int)]
+    whole = {"context": [c.get("context") for c in caps] if len(caps) > 1 else caps[0].get("context"),
+             "decode_tokens": caps[0].get("length"), "batch": (caps[0].get("timing_window") or {}).get("batch")}
   methods = {length: {k: attr[k] for k in ("method", "formats", "timing_window") if k in attr}
              for length, attr in capture.get("lengths", {}).items()}
   result = {"target": manifest.get("target_id"), "devices": sorted(machine.get("uuids") or []),
@@ -136,8 +143,11 @@ def calibrate(runs:list[pathlib.Path], fixed:dict | None = None) -> dict:
     raise ValueError("repeat scope needs a recorded engine build")
   if sa["workload"] == "decode":
     base = sa["capture"]["window"].get("context")
-    if base not in sa["request"]["contexts"]:
-      raise ValueError("capture context differs from the requested setup; this pair cannot calibrate that setup")
+    if base is None:
+      raise ValueError(f"{a.name}: its decode capture names no context, so nothing says which setup it calibrates")
+    if any(c not in sa["request"]["contexts"] for c in (base if isinstance(base, list) else [base])):
+      raise ValueError(f"capture context {base} is not among the requested {sa['request']['contexts']}; this pair "
+                       "cannot calibrate that setup")
   S = [sides(r) for r in runs]
   x = S[0]
   if not x or any(y.keys() != x.keys() for y in S):

@@ -261,10 +261,11 @@ def _absent(probe_quant:str, backend:str) -> dict[str, str]:
   }
 
 
-def measure_probe(bridge, flusher, probe:dict[str, Any], model:pathlib.Path, data_start:int, tensors:list,
+def measure_probe(bridge, flusher, probe:dict[str, Any], read:Callable[[str, int], bytes], tensors:list,
                   floor_us:float, target_gbs:float | None, *, backend:str,
                   libraries:dict[str, int] | None = None) -> dict[str, Any]:
-  """One probe row: BoltBeam's GEMV (adapter 0) on the role's real tensor bytes, timed by the one kernel timer."""
+  """One probe row: BoltBeam's GEMV (adapter 0) on the role's real tensor bytes (read(tensor name, size)), timed by
+  the one kernel timer."""
   rows, cols = (int(v) for v in probe["shape"])
   quant = probe["quant"]
   row = {"probe_id": probe["probe_id"], "kind": "quant_gemv", "role": probe["role"], "quant": quant,
@@ -273,15 +274,13 @@ def measure_probe(bridge, flusher, probe:dict[str, Any], model:pathlib.Path, dat
     row["status"] = "not_measured"
     row["reason"] = f"BoltBeam has no {backend} kernel for {quant} with {cols} columns"
     return row
-  name, offset = reference.tensor_for(quant, rows, cols, tensors, probe.get("tensor_name"), probe.get("n_expert"))
+  name, _ = reference.tensor_for(quant, rows, cols, tensors, probe.get("tensor_name"), probe.get("n_expert"))
   size = rows * (cols // reference.BLOCK_ELEMS[quant]) * reference.BLOCK_BYTES[quant]
   if size + kernel_timer.FLUSH[backend]["bytes"] > bridge.working_set_bytes * WORKING_SET_SHARE:
     row["status"] = "not_measured"
     row["reason"] = f"{size / 2**30:.1f} GiB of weights does not fit the GPU's working set"
     return row
-  with open(model, "rb") as f:
-    f.seek(data_start + offset)
-    weights = f.read(size)
+  weights = read(name, size)
   x = vector(f"{probe['probe_id']}", cols)
   kspec = spec(backend, quant, rows, cols, weights, x)
   got = kernel_timer.time_spec(bridge, kspec, flusher, libraries=libraries, dram_gbs=target_gbs)
@@ -313,7 +312,7 @@ def collect_probe_evidence(run:pathlib.Path, say:Callable[[str], None] = lambda 
   GEMV per role on the model's real bytes. The peak every row is measured against is the run's one read bandwidth.
   CannotMeasure, with the reason, where this machine has no such GPU or no kernel for the backend."""
   from boltbeam.collectors.llama_bench_decode import CannotMeasure, model_file
-  from boltbeam.profile.gguf import read_gguf_layout
+  from boltbeam.profile.gguf import read_gguf_split, read_tensor
   from boltbeam.target.targets import get_target
   from boltbeam.vocab import SCHEMA_PROBE_EVIDENCE
   from boltbeam.workflow.common import load_manifest, read_json
@@ -324,7 +323,7 @@ def collect_probe_evidence(run:pathlib.Path, say:Callable[[str], None] = lambda 
   if backend not in SOURCES:
     raise CannotMeasure(f"BoltBeam has no {backend} GEMV kernel", f"measure on a machine with a {' or '.join(SOURCES)} GPU")
   request = read_json(run / "probe_request.json")
-  _, tensors, data_start = read_gguf_layout(model)
+  _, tensors, _ = read_gguf_split(model)
   try:
     bridge = kernel_timer.bridge_for(backend)
   except RuntimeError as exc:  # MetalUnavailable, CudaUnavailable: this machine has no such GPU or no compiler
@@ -337,7 +336,7 @@ def collect_probe_evidence(run:pathlib.Path, say:Callable[[str], None] = lambda 
     libraries:dict[str, int] = {}
     for i, probe in enumerate(request.get("probes", []), start=1):
       say(f"probe {i} of {len(request['probes'])}: {probe['role']} {probe['quant']} {probe['shape'][0]}x{probe['shape'][1]}")
-      rows.append(measure_probe(bridge, flusher, probe, model, data_start, tensors, floor_us, target_gbs,
+      rows.append(measure_probe(bridge, flusher, probe, lambda name, size: read_tensor(model, name, size), tensors, floor_us, target_gbs,
                                 backend=backend, libraries=libraries))
   finally:
     bridge.close()

@@ -680,7 +680,7 @@ def end_to_end(attr:dict[str, Any], untraced_ms:float | None, what:str = "prefil
   matched = bool(reference_window) and attr.get("timing_window") == reference_window
   width = end_to_end_width(band, captured_key="engine_elapsed_ms") if matched else None
   ok = within_ceiling(100 * share) if matched else None
-  noise = "no engine-elapsed repeat band" if width is None else f"{'yes' if abs(diff) <= width else 'no'}, band ±{width:.6f} ms"
+  noise = "no engine-elapsed repeat band" if width is None else f"{'yes' if abs(diff) <= width else 'no'}, band ±{width:.3f} ms"
   verdict = (overhead_words(100 * share, "native" if reference.startswith("untraced") else reference) if matched else
              "not checked: native and captured timing windows differ or are unrecorded")
   return {"confirms": ok, "captured_ms": captured, "kernel_span_ms": attr.get("profiled_wall_ms"), "untraced_ms": float(untraced_ms), "diff_ms": diff, "diff_pct": 100 * share,

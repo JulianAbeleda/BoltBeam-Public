@@ -88,3 +88,24 @@ func TestLayoutShowsItsBestMtpSpeedAndWhyItIsHeldBack(t *testing.T) {
 		t.Fatalf("a held-back MTP says why:\n%s", body)
 	}
 }
+
+// A 70B on two RTX 3090s (2026-11-09): the Setup line read one GPU's verdict whatever layout Engine had picked.
+func TestRecommendedLineFollowsThePickedLayout(t *testing.T) {
+	r := &seam.Recommend{Provider: "llama.cpp", GpuCount: 2, KVDtype: "f16", Seqs: 1}
+	r.Layouts = []seam.RecLayout{{ID: "one", Label: "one GPU", Available: true},
+		{ID: "layer", Label: "split by layer", Available: true, Gpus: 2, MaxContext: map[string]seam.RecFig{"f16": {Value: fv(22798), Kind: "upper bound"}}}}
+	r.Layouts[1].Fits.Value = true
+	id := "row"
+	r.Recommended.ID, r.Recommended.Why = &id, "the model does not fit one GPU"
+	f := Facts{Recommend: r}
+	if got := plain(recommendValue(f)); got != "does not fit one GPU; use row" {
+		t.Fatalf("no layout picked: one GPU's verdict and the recommendation: %q", got)
+	}
+	f.Layout = "layer"
+	if got := plain(recommendValue(f)); got != "up to context 22,798 · f16 KV · 1 seqs" {
+		t.Fatalf("split by layer picked: its own context: %q", got)
+	}
+	if body := plain(recommendBody(f, 120)); !strings.Contains(body, "does not fit: each GPU's share is more than one GPU holds") {
+		t.Fatalf("the page's no-fit line names the share, not one GPU:\n%s", body)
+	}
+}

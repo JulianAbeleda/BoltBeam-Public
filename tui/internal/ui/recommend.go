@@ -61,7 +61,12 @@ func recommendValue(f Facts) string {
 	case r == nil || len(r.Layouts) == 0:
 		return stMuted.Render(recommendHint)
 	}
-	one := r.Layouts[0]
+	one := r.Layouts[0] // the layout picked under Engine; one GPU until a layout is picked
+	for _, l := range r.Layouts {
+		if l.ID == f.layout() {
+			one = l
+		}
+	}
 	if c, ok := one.MaxContext[r.KVDtype]; ok && c.Value != nil {
 		bound := ""
 		if c.Kind == "upper bound" {
@@ -69,7 +74,10 @@ func recommendValue(f Facts) string {
 		}
 		return fmt.Sprintf("%scontext %s · %s KV · %d seqs", bound, commas(*c.Value), r.KVDtype, r.Seqs)
 	}
-	return "does not fit one GPU"
+	if r.Recommended.ID != nil && *r.Recommended.ID != one.ID {
+		return fmt.Sprintf("does not fit %s; use %s", one.Label, *r.Recommended.ID)
+	}
+	return "does not fit " + one.Label
 }
 
 func commas(v float64) string {
@@ -135,7 +143,7 @@ func recommendBody(f Facts, width int) string {
 		}
 		b.WriteString("\n" + figLine("Weights per GPU", &l.WeightsPerGpu, " bytes"))
 		if !l.Fits.Value {
-			b.WriteString("  does not fit one GPU\n")
+			b.WriteString("  does not fit: each GPU's share is more than one GPU holds\n")
 			continue
 		}
 		for _, k := range r.KVFormats {

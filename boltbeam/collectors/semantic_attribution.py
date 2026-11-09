@@ -51,7 +51,9 @@ def attribute(run:Path, raw:Path, *, peaks:dict, bandwidth_gbs:float,
   context=engine['context']
   if type(context) is not int or context<0:
     raise ValueError('decode capture has no explicit prompt context')
-  chunks=[1]*length if engine.get('decode_steps') else [length]
+  speculative=engine.get('speculative_steps')
+  # a speculative step verifies k + 1 query tokens (collectors/vllm_speculation); a plain decode step, one
+  chunks=([s['query_tokens'] for s in speculative] if speculative else [1]*length if engine.get('decode_steps') else [length])
   attr=attribute_prefill(facts['launches'],[],chunk_widths=chunks,outputs=len(chunks),
     layers=profile['layer_count'],kernel_paths=paths['kernels'],observed=paths.get('observed'),observed_by=paths.get('observed_by'),
     peaks=peaks,bandwidth_gbs=bandwidth_gbs,profile=profile,length=length,warmup=False,
@@ -70,6 +72,14 @@ def attribute(run:Path, raw:Path, *, peaks:dict, bandwidth_gbs:float,
   if any(not p.resolve().is_relative_to(run.resolve()) for p in sources):
     raise ValueError('decode evidence must be stored inside its run')
   if paths.get('observed_scope'):attr['observed_scope']=paths['observed_scope']  # which decode steps ncu observed
+  if speculative:
+    from boltbeam.collectors.vllm_speculation import words
+    spec=engine.get('speculation') or {}
+    attr['speculation']={'config':spec.get('config'),'prompt':spec.get('prompt'),'acceptance':engine['acceptance'],
+      'tokens':sum(s['emitted'] for s in speculative),'steps':len(speculative),
+      'accounting':engine.get('speculation_accounting'),'words':words(engine['acceptance']),
+      'per_token':'each step\'s time and limits over the tokens the captured steps emitted (time per step / tokens '
+                  'per step, at the acceptance measured over these steps)'}
   attr.update(workload=workload,context=context,length=length,engine=engine,
     wall_source=f'the captured {workload} step, first kernel to last',
     peaks_at=peaks,bandwidth_gbs=bandwidth_gbs,cache=cache,

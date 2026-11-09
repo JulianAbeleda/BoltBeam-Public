@@ -856,6 +856,12 @@ func runEngineBody(e *seam.RunEngine) string {
 		return ""
 	}
 	var b strings.Builder
+	if len(e.SettingsWords) > 0 { // a requested setting changes what was measured, so it leads
+		b.WriteString(stMuted.Render("Engine settings: "+strings.Join(e.SettingsWords, "; ")+".") + "\n")
+	}
+	if len(e.SpeculationWords) > 0 { // a speculative run's limit is at the acceptance it measured: said beside the request
+		b.WriteString(stMuted.Render("Speculation measured: "+strings.Join(e.SpeculationWords, "; ")+".") + "\n")
+	}
 	switch {
 	case e.Build == nil:
 		b.WriteString(stMuted.Render("Engine build: not recorded.") + "\n")
@@ -1252,6 +1258,9 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		per, at = *l.Per, ""
 	}
 	fmt.Fprintf(&b, "Modeled roofline: %.1f ms %s%s.\n", *l.LimitMs, per, at)
+	if l.LimitBasis != nil {
+		b.WriteString(stMuted.Render("Limit: "+*l.LimitBasis+".") + "\n")
+	}
 	for _, r := range l.Runtimes {
 		what := fmt.Sprintf("%.1f tok/s · %.1f ms %s", r.TokS, r.Ms, per)
 		if r.Isolated { // a sum of kernels timed alone is not a token: it has no "lost"

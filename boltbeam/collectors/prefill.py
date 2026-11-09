@@ -272,11 +272,11 @@ def weight_quants(run:pathlib.Path) -> set[str]:
 
 
 def library_paths(libraries:list[pathlib.Path], launches:list[dict[str, Any]] | None = None, *,
-                  tools:pathlib.Path | None = None, jit_caches:list[str] | None = None,
+                  tools:pathlib.Path | list[pathlib.Path] | None = None, jit_caches:list[str] | None = None,
                   capture:pathlib.Path | None = None, device:dict[str, Any] | None = None) -> dict[str, Any]:
   """The matrix paths of the kernels in the libraries the engine loads (a library without device code is skipped):
   their embedded PTX, then, for captured kernels no PTX holds (a library that ships machine code only), their machine
-  code for this GPU (instruction_path.sass_table). tools: a folder with the engine's own cuobjdump/nvdisasm.
+  code this GPU runs (instruction_path.sass_table). tools: the folders with the engine's own cuobjdump/nvdisasm.
   jit_caches: folders where the engine's compiler (Triton) wrote each kernel it built as <kernel>.ptx.
   device: the run's GPU (workflow.common.run_gpu), whose vendor picks the reader (INSTRUCTIONS); none named (a run
   with no hardware profile) reads NVIDIA's, as before the profile named the GPU. A vendor with no reader refuses."""
@@ -302,7 +302,8 @@ def _ptx_paths(libraries:list[pathlib.Path], launches, *, tools, jit_caches, dev
   kernels: dict[str, dict[str, int]] = {}
   read, seen = [], set()
   from boltbeam.runtime.cuda_device import find_cuda_tool
-  find = lambda name: find_cuda_tool(name,tools)  # noqa: E731
+  dirs = tools if isinstance(tools, list) else [tools] if tools else []
+  find = lambda name: next((str(d / name) for d in dirs if (d / name).is_file()), None) or find_cuda_tool(name)  # noqa: E731
   for lib in libraries:
     lib = pathlib.Path(lib).resolve()
     if lib in seen or not lib.is_file():
@@ -565,10 +566,10 @@ def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, A
            'sources':[{'file':str(f.relative_to(run)),'sha256':hashlib.sha256(f.read_bytes()).hexdigest()}
                       for f in (facts,memory_file) if f is not None]}
   chunk = vllm_chunk(length, line)
-  tools = pathlib.Path(vd.python() or "").parent.parent
-  bins = sorted(tools.glob("lib/python*/site-packages/nvidia/*/bin"))
+  from boltbeam.collectors.instruction_path import engine_tools
+  bins = engine_tools(vd.python())
   paths = library_paths([pathlib.Path(p) for p in line.get("libraries") or []], launches,
-                        tools=bins[0] if bins else None, jit_caches=line.get("jit_caches"), capture=raw, device=run_gpu(run))
+                        tools=bins, jit_caches=line.get("jit_caches"), capture=raw, device=run_gpu(run))
   return {"launches": launches, "chunk": chunk["widths"], "outputs": chunk["outputs"], "warmup": False,
           "formats": vllm_formats(weight_quants(run), line), "method": vendor_capture.plan(target.backend)["method"],
           "matrices": line.get("matrices"), "captured_ms": line["wall_s"] * 1e3, "window": line.get("window_monotonic"),

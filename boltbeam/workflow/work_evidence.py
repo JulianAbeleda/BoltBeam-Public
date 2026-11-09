@@ -11,9 +11,10 @@ from pathlib import Path
 from boltbeam.math.numerics import ACCOUNTING_RTOL, ACCOUNTING_ATOL, INTERVAL_ATOL
 
 
-def verify_components(row:dict, works:list[dict]) -> None:
-  """Recompute each launch bound before checking the grouped row's totals."""
-  from boltbeam.roofline.memory import hierarchy_ms
+def verify_components(row:dict, works:list[dict], cache:dict | None = None) -> None:
+  """Recompute each launch bound before checking the grouped row's totals. cache: the run's last-level cache, which a
+  re-read of a weight the step already read is bounded by (memory.reread_ms)."""
+  from boltbeam.roofline.memory import hierarchy_ms, reread_ms
   components=row.get('components') or []
   if len(components)!=len(works):
     raise ValueError(f'work evidence {row["name"]} components do not cover launches')
@@ -40,7 +41,8 @@ def verify_components(row:dict, works:list[dict]) -> None:
     else:
       if component['bytes']!=work['bytes'] or component['flops']!=work['flops']:
         raise ValueError(f'work evidence {row["name"]} component work differs from launches')
-      memory_ms=work['bytes']/(dram*1e6)
+      memory_ms=(reread_ms(work['bytes'],work['weight_bytes'],dram,cache)['memory_ms'] if work.get('reread') else
+                 work['bytes']/(dram*1e6))
     for field,value in (('compute_ms',compute),('memory_ms',memory_ms),('ceiling_ms',max(compute,memory_ms))):
       equal('component '+field,component[field],value)
       totals[field]+=value
@@ -197,7 +199,10 @@ def verify_launches(run:Path, profile:dict, capture:dict, facts:dict, *, require
       limit=rows.get(name,{}).get('ceiling_ms')
       if type(limit) not in (int,float) or not math.isfinite(limit) or limit<0:
         raise ValueError(f'work evidence {name} has no finite nonnegative ceiling; report limit refused')
-  if 'attention' in required and 'attention' in rows:
+  # a speculative step's attention launches carry their own work, each at its query tokens and depth
+  # (vllm_semantic_work.speculative_work); the launches' sums are then the row's, not the profile's one-token formula
+  semantic_attention=any((l.get('semantic_work') or {}).get('what')=='attention' for l in launches)
+  if 'attention' in required and 'attention' in rows and not semantic_attention:
     from boltbeam.collectors.prefill import vllm_formats, vllm_chunk
     from boltbeam.roofline.prefill_work import attention
     engine=facts['engine'];length=engine.get('length')
@@ -220,7 +225,12 @@ def verify_launches(run:Path, profile:dict, capture:dict, facts:dict, *, require
     limit=rows[name].get('ceiling_ms')
     peaks=(capture.get('uncertainty') or {}).get('peaks') or {}
     paths=rows[name].get('compute_paths') or {}
-    uncertainty=max(peaks[p] for p in paths) if rows[name].get('bound')=='compute' and paths and all(p in peaks for p in paths) else 0.
+    # the binding rate's own measured uncertainty: a compute row's peaks, a memory row's read bandwidth. Qwen3.8-27B's
+    # lm_head as an Inductor template read 2.54 GB at 1697 GB/s, 0.26% over the run's 1692 GB/s probe, and was refused
+    # with no allowance although the probe's own repeat spread is that size (RTX 5090, 2026-11-08)
+    bandwidth=(capture.get('uncertainty') or {}).get('bandwidth')
+    uncertainty=(max(peaks[p] for p in paths) if rows[name].get('bound')=='compute' and paths and all(p in peaks for p in paths)
+                 else bandwidth if rows[name].get('bound')=='memory' and bandwidth is not None else 0.)
     if type(uncertainty) not in (int,float) or not math.isfinite(uncertainty) or uncertainty<0:
       raise ValueError('work evidence has invalid measured peak uncertainty')
     observed=raw_ms[name]*(1+uncertainty)
@@ -252,7 +262,7 @@ def verify_launches(run:Path, profile:dict, capture:dict, facts:dict, *, require
           row['peak_tflops']!=max(candidates.values())):
         raise ValueError('unconfirmed instruction range does not derive from work and measured rates')
     if expected_components:
-      verify_components(rows[name],expected_components)
+      verify_components(rows[name],expected_components,capture.get('cache'))
     elif require_limits or rows[name].get('memory_ms') is not None:
       row=rows[name]
       bandwidth=(row.get('memory_rates') or {}).get('dram_gbs') or capture.get('bandwidth_gbs')

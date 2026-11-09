@@ -45,7 +45,8 @@ On a Mac with Homebrew:
 brew install JulianAbeleda/tap/boltbeam
 ```
 
-`boltbeam` opens the screen; `brew upgrade boltbeam` takes a new version. Runs are kept in `~/boltbeam-runs`.
+`boltbeam` opens the screen and offers a newer release when there is one (`boltbeam update` checks by hand;
+`brew update && brew upgrade boltbeam` takes it). Runs are kept in `~/boltbeam-runs`.
 
 From source, with Python 3.10 or newer. No dependencies.
 
@@ -61,7 +62,7 @@ A stock macOS names Python 3.9 as `python3`. BoltBeam refuses it and says so. Na
 file, and prints PASS or FAIL per step.
 
 On Linux with an NVIDIA GPU, [docs/linux.md](docs/linux.md) goes from a bare Ubuntu to the first report. On a
-rented H100, `tools/pod-setup.sh` does it in one command ([docs/h100-pod.md](docs/h100-pod.md)).
+rented GPU (RunPod, Vast.ai), `tools/pod-setup.sh` does it in one command ([docs/pods.md](docs/pods.md)).
 
 ## Your first run, in five minutes
 

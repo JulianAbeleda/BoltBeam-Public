@@ -171,11 +171,37 @@ def pin() -> dict[str, str]:
   return {k: os.environ[k].split(",")[0].strip() if k in shown and os.environ.get(k) else v for k, v in PIN.items()}
 
 
-def engine_args(layout:str, provider:str) -> tuple[list[str], dict[str, str]]:
-  """Extra command arguments and environment that make the engine use this layout."""
+# llama.cpp's split by rows, newest first: "tensor" is its tensor-parallel split; "row" needs ggml's split buffers,
+# which a CUDA build at 50569eb87 refused on 2 x RTX 3090 ("device CUDA0 does not support split buffers", 2026-11-09)
+LLAMA_ROW_MODES = ("tensor", "row")
+_SPLIT_MODES:dict[tuple[str, int], tuple[str, ...] | None] = {}
+
+
+def llama_split_modes(bench:str | None) -> tuple[str, ...] | None:
+  """The split modes this llama-bench offers, from its own --help (--split-mode <none|layer|row|tensor>); None when
+  it cannot be read. Cached per binary and its modification time."""
+  if not bench or not os.path.isfile(bench):
+    return None
+  key = (bench, os.stat(bench).st_mtime_ns)
+  if key not in _SPLIT_MODES:
+    try:
+      text = subprocess.run([bench, "--help"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+      text = ""
+    m = re.search(r"--split-mode\s+<([a-z|]+)>", text)
+    _SPLIT_MODES[key] = tuple(m.group(1).split("|")) if m else None
+  return _SPLIT_MODES[key]
+
+
+def engine_args(layout:str, provider:str, bench:str | None = None) -> tuple[list[str], dict[str, str]]:
+  """Extra command arguments and environment that make the engine use this layout. llama.cpp's split by rows takes
+  the newest mode the build at `bench` offers (LLAMA_ROW_MODES); with no build to ask, "row"."""
   if provider == "llama.cpp":
     if layout == "one":
       return ["-sm", "none", "-mg", "0"], pin()
+    if layout == "row":
+      offered = llama_split_modes(bench)
+      return ["-sm", next((m for m in LLAMA_ROW_MODES if offered and m in offered), "row")], {}
     return ["-sm", layout], {}
   return [], pin()  # tinygrad: one GPU only
 
@@ -215,8 +241,12 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
                     topology:str = "", fallback:Callable[[str | None], float | None] = lambda _: None,
                     native_read:Callable[[dict[str, Any]], dict[str, Any]] | None = None,
                     profile_read:Callable[[dict[str, Any]], tuple[float, str] | None] = lambda _: None,
-                    join:Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None) -> dict[str, Any]:
-  """Read bandwidth per GPU, and copy bandwidth and latency per GPU pair, with sources.
+                    join:Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
+                    read_runs:int = 1) -> dict[str, Any]:
+  """Read bandwidth per GPU, and copy bandwidth and latency per GPU pair, with sources. read_runs: whole native read
+  runs per GPU, combined as the chip profile combines them (read_bandwidth.repeated: the best run, its uncertainty the
+  runs' spread), so a cached figure carries the band it can be verified against (stale_reason). read_from says
+  where each figure came from: probe, profile or registry.
 
   Read bandwidth, in this order: BoltBeam's native probe for the backend, native_read(gpu) (the vendor's own read
   probe on that card, workflow/chips._probes; it raises with the reason when it cannot run); then the registry
@@ -235,11 +265,15 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
     sum_gbs = None
     try:
       if (known := profile_read(d)) is not None:
-        row.update(read_gbs=known[0], read_source=known[1])
+        row.update(read_gbs=known[0], read_source=known[1], read_from="profile")
       elif native_read is not None:
-        got = native_read(d)
-        row.update(read_gbs=got["read_gbs"], read_source=f"measured on GPU {d['index']} with {vendors.for_backend(backend).term('native_read_probe')}, "
-                   f"best of {got.get('reps', 10)} per launch shape, {_today()}", **_ceiling_facts(got))
+        from boltbeam.collectors.read_bandwidth import repeated
+        runs = [native_read(d) for _ in range(max(1, read_runs))]
+        got = repeated(runs, "read_gbs", "gbs") if len(runs) > 1 else runs[0]
+        row.update(read_gbs=got["read_gbs"], read_from="probe",
+                   read_source=f"measured on GPU {d['index']} with {vendors.for_backend(backend).term('native_read_probe')}, "
+                   f"best of {got.get('reps', 10)} per launch shape{f', best of {len(runs)} runs' if len(runs) > 1 else ''}, {_today()}",
+                   **_ceiling_facts(got))
       elif probe is not None and device_prefix:
         got = probe(["read", "--device", device_name(device_prefix, d["index"])], {})
         row.update(read_gbs=got["read_gbs"], read_source=f"measured on GPU {d['index']} with a tinygrad read-sum, {_today()} "
@@ -249,7 +283,7 @@ def measure_machine(devs:list[dict[str, Any]], *, backend:str, device_prefix:str
     if row["read_gbs"] is None:
       reg = fallback(d.get("target_id"))
       if reg:
-        row.update(read_gbs=reg, read_source=f"registry figure for {d.get('target_id')}, not measured on this GPU"
+        row.update(read_gbs=reg, read_from="registry", read_source=f"registry figure for {d.get('target_id')}, not measured on this GPU"
                    + (f" ({row['probe_error']})" if row.get("probe_error") else ""))
       elif native_read is not None and probe is not None and device_prefix:  # nothing else: the sum, called what it is
         try:
@@ -314,6 +348,40 @@ def cached_machine(run:pathlib.Path, devs:list[dict[str, Any]]) -> dict[str, Any
   return max(found, key=lambda f: (f[0], f[1]))[2] if found else None
 
 
+def stale_reason(cached:dict[str, Any], *, driver:str | None,
+                 fresh_read:Callable[[dict[str, Any]], float] | None) -> str | None:
+  """Why cached machine facts no longer stand for this machine, or None when they still do. Not their age: a figure
+  goes stale when what produced it changes, and the test is whether it still reproduces. The driver they were
+  measured under must be the one loaded now; each GPU's probe figure must carry its runs and their spread u, and one
+  fresh native read must be neither above the best by more than u (the cache understates the GPU, and a kernel would
+  beat its limit) nor below the slowest run by more than u (the GPU is now slower than anything that made the
+  figure). A single read just under a best-of-n is ordinary: a new run falls outside n runs' range with probability
+  2/(n+1), so a two-sided band on the best called a 0.3% dip stale every other time. A month-old 1692 GB/s read on the RTX 5090 was reused while the GPU read
+  1712, and a kernel that streamed 1697 was refused as faster than its limit (2026-11-08). Chip-profile and registry
+  figures are not verified here: the profile is remeasured by autoscan, and a registry figure was never this GPU's."""
+  if driver and cached.get("driver") != driver:
+    return f"measured under driver {cached.get('driver') or 'not recorded'}, the loaded driver is {driver}"
+  for g in cached.get("gpus") or []:
+    source = g.get("read_from")
+    if source in ("profile", "registry"):
+      continue
+    if source != "probe":
+      return f"GPU {g.get('index')}: the facts do not say where its read bandwidth came from (measured before this was recorded)"
+    u, runs = g.get("uncertainty"), g.get("run_values")
+    if u is None or not runs:
+      return f"GPU {g.get('index')}: its read bandwidth has no repeated runs to verify a fresh read against"
+    if fresh_read is None:
+      return None  # no native read here: nothing could verify a remeasure either
+    now = fresh_read(g)
+    if now > g["read_gbs"] * (1 + u):
+      return (f"GPU {g.get('index')} reads {now:.1f} GB/s now, {now / g['read_gbs'] - 1:+.1%} over the cached best "
+              f"{g['read_gbs']:.1f}, more than its runs' spread of {u:.1%}: the cache understates the GPU")
+    if now < min(runs) * (1 - u):
+      return (f"GPU {g.get('index')} reads {now:.1f} GB/s now, {now / min(runs) - 1:+.1%} under the slowest run "
+              f"{min(runs):.1f} that made the cached figure, more than their spread of {u:.1%}")
+  return None
+
+
 # --- the limits ------------------------------------------------------------------------------------------------------
 
 def _pair(facts:dict[str, Any], a:int, b:int) -> dict[str, Any] | None:
@@ -361,7 +429,7 @@ def limit(layout:str, *, bytes_per_token:float, facts:dict[str, Any], hidden_siz
     a, b = gpus[i]["index"], gpus[(i + 1) % n]["index"]
     p = _pair(facts, a, b)
     if not p or not p.get("copy_gbs"):
-      return {**out, "ms": None, "weights_ms": weights, "reason": f"no measured copy between GPU {a} and GPU {b}: {p and p['source']}"}
+      return {**out, "ms": None, "weights_ms": weights, "reason": f"the copy between GPU {a} and GPU {b}: {(p or {}).get('source') or 'not measured'}"}
     hops.append(act / (p["copy_gbs"] * 1e9) * 1e3 + p["latency_us"] / 1e3)
     inputs.append({"what": f"copy GPU {a} to GPU {b} ({link_words(p.get('link'))})",
                    "value": f"{p['copy_gbs']:.1f} GB/s, {p['latency_us']:.1f} µs", "unit": "", "source": p["source"]})
@@ -397,7 +465,8 @@ def short_source(source:str | None, measured_at:str | None = None) -> str:
 
 def _ceiling_facts(got:dict[str, Any]) -> dict[str, Any]:
   """A probe's cold, sustained, regime and measured uncertainty, as a machine-facts row keeps them."""
-  return {k: got[k] for k in ("regime", "cold_gbs", "sustained_gbs", "shape_spread", "drift", "uncertainty") if got.get(k) is not None}
+  return {k: got[k] for k in ("regime", "cold_gbs", "sustained_gbs", "shape_spread", "drift", "uncertainty", "run_values")
+          if got.get(k) is not None}
 
 
 def read_bandwidth(facts:dict[str, Any] | None, layout:str = "one") -> dict[str, Any] | None:

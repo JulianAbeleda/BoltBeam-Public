@@ -14,7 +14,7 @@ Read these in order.
 - [tui/README.md](../tui/README.md): the screen (Setup, Run, Saved runs, Compare) and its JSON mode for agents.
 - [engine-upgrade-audit.md](engine-upgrade-audit.md): how to audit an engine upgrade: the pin table, two builds on one setup, repeat bands, what it refuses and what it reports
 - [linux.md](linux.md): Linux with an NVIDIA GPU, from a bare Ubuntu to the first report: CUDA on PATH, nsys, llama.cpp with CUDA, the model, the optional engines, `boltbeam doctor`, `boltbeam tui`.
-- [h100-pod.md](h100-pod.md): a rented H100 (RunPod) from the bare image to the first report with one command, `tools/pod-setup.sh`; what to rent, what comes back, the cost, what the multi-GPU session adds.
+- [pods.md](pods.md): a rented GPU (RunPod, Vast.ai) from the bare image to the first report with one command, `tools/pod-setup.sh`; what to rent, what comes back, the cost, `LAYOUT` for a pod with more than one GPU, what a rented pod cannot measure.
 
 ## How a part works
 

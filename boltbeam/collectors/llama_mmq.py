@@ -52,6 +52,40 @@ def constraints(root:pathlib.Path, sm_count:int, build_commit:str | None = None)
           **({'fallback_rows': int(fallback[1])} if fallback else {})} if configs else None
 
 
+# llama.cpp's CUDA matrix-vector kernels at one output column (the template's own ncols_dst argument, 1) launch grid
+# (row blocks, channels, samples). ggml_cuda_mul_mat_vec_{q,f} for mul_mat_id sets channels to the experts used per
+# token, each y-block reading the expert ids[y] names; a 2-D weight has one channel. The H200 capture of
+# Qwen3.8-Flash-Next (llama.cpp 50569eb87, 10 of 512 experts) shows it: every expert stack 640x10x1, every dense matrix y = 1.
+VECTOR_ONE_COLUMN = re.compile(r'mul_mat_vec_(?:q<\(ggml_type\)\d+|f<[^,<>]+,[^,<>]+),1,')
+
+
+def channels(key:str) -> int | None:
+  """grid.y of a one-column llama.cpp matrix-vector launch (VECTOR_ONE_COLUMN), None for any other launch."""
+  grid = re.search(r' grid=\d+x(\d+)x\d+', key)
+  return int(grid[1]) if grid and VECTOR_ONE_COLUMN.match(template(key)) else None
+
+
+def experts_of(row:dict) -> int:
+  """The experts one launch of the row reads for one token: its stack's top-k (experts_read, or prefill's routed), 1 dense."""
+  return int(row.get('experts_read') or row.get('routed') or row['n_expert']) if row.get('n_expert') else 1
+
+
+def serves(key:str, row:dict) -> bool:
+  """The grid rule above for one launch and row. row['expert_grid']: the grid.y values of the capture's one-column
+  launches. In such a capture (llama.cpp on CUDA at one column) only a launch with grid.y = k serves an expert stack:
+  a llama.cpp operation beside the stack never stands for it, and without one the stack stays unpaired (untied). A row
+  that does not say n_expert (0 dense) is unknown, not dense: no grid rules it out."""
+  if 'n_expert' not in row: return True  # unknown experts: no grid is ruled out
+  return not (row['n_expert'] and row.get('expert_grid')) if (y := channels(key)) is None else experts_of(row) == y
+
+
+def untied(row:dict) -> str:
+  """What an unpaired expert row lacks, said ('' for a dense row): never a silent pass."""
+  k = experts_of(row)
+  return '' if not row.get('n_expert') else (f"; its {k} of {row['n_expert']} experts per token are a launch with grid.y = {k}, and "
+          + ("none left fits it" if k in (row.get('expert_grid') or ()) else "the capture has none: nothing ties the stack to a launch"))
+
+
 def fits(proof:dict, launch:dict, rows:list[dict], m:float, fused:int, split:int) -> bool:
   name = re.fullmatch(r'mul_mat_q<\(ggml_type\)(\d+),(\d+),(0|1),\(ggml_prec\)\d+>', template(launch['key']))
   geometry = re.search(r' grid=(\d+)x(\d+)x(\d+) block=(\d+)x(\d+)x(\d+)', launch['key'])

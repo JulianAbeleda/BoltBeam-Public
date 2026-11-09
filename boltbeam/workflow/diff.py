@@ -113,6 +113,15 @@ def _decode_side(run:pathlib.Path, record:dict | None = None) -> dict[str, dict[
       if role.get("actual_ms") is not None:
         key = role_label(role["role"], role["quant"], role.get("shape"))
         rows[key] = {"now_ms": role["actual_ms"], "calls": role.get("calls_per_token"), "limit_ms": role.get("ideal_ms")}
+  if not t and loss.get("semantic_capture"):
+    # a labeled vLLM capture keeps its tie-out in the where table: the captured token (its rows' sum), the untraced
+    # one, the context and the gaps row; without this the part was keyed "decode None" and sorting it crashed
+    # (stock against --gemm-backends TRITON, RTX 5090, 2026-11-08)
+    gaps = next((r["now_ms"] for r in w["rows"] if r.get("what") == "gaps"), None)
+    t = {"context": w.get("context"), "token_ms": w.get("token_ms"), "untraced_ms": w.get("base_ms"),
+         "busy_ms": w["token_ms"] - gaps if w.get("token_ms") is not None and gaps is not None else None}
+  if t.get("context") is None:
+    raise DiffRefused(f"{run.name} records no decode context: its rows cannot be paired with another run's")
   token, busy, untraced = t.get("token_ms"), t.get("busy_ms"), t.get("untraced_ms")
   if t.get("isolated"):  # kernels timed alone: the rows repeat; only a capture that held the token (unnamed) is checked end to end
     return {f"decode {t.get('context')}": {"rows": rows, "tie": {
@@ -175,8 +184,10 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
                   "untraced_ms": (tb["untraced_ms"] - ta["untraced_ms"]) if ta["untraced_ms"] and tb["untraced_ms"] else None,
                   "unchanged": held if checked else None, "status": "checked" if checked else "not checked",
                   **(rb.strength(n) if n else {}), "pin_refused": rb.pin_words(ba)})
+  from boltbeam.workflow.screen import _setting_words
+  settings = [_setting_words(a), _setting_words(b)]
   return {"schema": AUDIT_SCHEMA, "before": a.name, "after": b.name, "builds": builds, "provider": run_provider(a), "pins": pins,
-          "toolchain": changes(ma, mb),
+          "toolchain": changes(ma, mb), "settings": settings,
           "model": _model(a, ma), "target": ma.get("target_id"), "workload": ma.get("workload"), "parts": parts,
           "band": f"the range of n before runs per row ({rb.RULE}), or not checked",
           "justifies_pin": bool(parts) and not any(p["pin_refused"] for p in parts),
@@ -202,6 +213,8 @@ def audit_lines(d:dict[str, Any]) -> list[str]:
          f"  pinned: {providers.pin_label(d['pins'][0]['pin'])}. Before: {d['pins'][0]['words']}. After: {d['pins'][1]['words']}."]
   refused = sorted({p["pin_refused"] for p in d["parts"] if p.get("pin_refused")})
   out.append("  pin change: " + ("this audit can justify it" if d.get("justifies_pin") else "NOT justified: " + "; ".join(refused)))
+  if (s := d.get("settings")) and s[0] != s[1]:  # the engine was asked for different things: that, not the build, may be the change
+    out.append(f"  engine settings CHANGED: before {'; '.join(s[0]) or 'none'}. After: {'; '.join(s[1]) or 'none'}.")
   for t in d.get("toolchain", []):
     out.append(f"  {t['name']}: {t['before']} -> {t['after']} "
                f"({'CHANGED' if t['changed'] else 'unchanged' if t['known'] else 'unknown'}; pin {t['pin']})")
