@@ -4,7 +4,7 @@ from __future__ import annotations
 import pathlib
 from typing import Any
 
-from boltbeam.workflow.common import read_json
+from boltbeam.artifacts.run_io import read_json
 
 # The engine settings the vLLM adapter can honor: the one list every vLLM run and capture checks a request against.
 MTP_CONTEXT = "mtp_context.json"  # a speculative run's natural context ids, the same for every process of the run
@@ -28,6 +28,24 @@ ASKED = {
   "mtp_prompt": (str, "MTP prompt", "vLLM with --mtp: the prompt id (data/mtp_prompts.json) the context is built from "
                  "(default: the set's first)")}
 ACCEPTED = {"vllm": VLLM_SETTINGS, "llama.cpp": tuple(LLAMA_FLAGS)}  # per engine (collectors/providers.ENGINES)
+
+
+def window_context(row:dict[str, Any]) -> float | None:
+  """Only explicit, internally consistent differential windows replace the requested base context."""
+  window = (row.get("engine") or {}).get("timing_window") or {}
+  if window.get("method") != "long_minus_short":
+    return None
+  from boltbeam.collectors.llama_bench_decode import decode_window
+  from boltbeam.collectors.vllm_decode import decode_window_vllm
+  vllm = "vllm_version" in window  # vLLM's window is only checked against its own row's recorded fields (the rest of the rule is the same)
+  expected = decode_window_vllm(row.get("context"), row.get("decode_tokens"), row.get("batch"), row["engine"]) if vllm else \
+    decode_window(row.get("context"), window.get("long_tokens"), window.get("short_tokens"), window.get("independent_pairs"))
+  if window != expected or any(type(window.get(k)) is not int for k in ("long_tokens", "short_tokens", "context_start", "context_end", *(() if vllm else ("repetitions",)))) \
+      or not vllm and (window.get("warmup") is not False or type(row.get("decode_tokens")) is not int or row["decode_tokens"] != window["long_tokens"] - window["short_tokens"]):
+    raise ValueError("decode timing window is inconsistent with the recorded work")
+  if vllm:return None  # a vLLM capture is keyed by the requested context, which stays the headline
+  mean = (window["context_start"] + window["context_end"]) / 2
+  return int(mean) if mean.is_integer() else mean
 
 
 def offered(provider:str) -> list[dict[str, Any]]:
@@ -195,7 +213,6 @@ def decode_tokens(run:pathlib.Path, context:int) -> int:
   tokens = row.get("decode_tokens")
   window = (row.get("engine") or {}).get("timing_window") or {}
   if window.get("method") == "long_minus_short":
-    from boltbeam.workflow.tie_out import window_context
     window_context(row)
     return window["long_tokens"]
   if type(tokens) is not int or tokens < 2:

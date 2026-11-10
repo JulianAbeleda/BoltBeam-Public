@@ -110,6 +110,14 @@ def validate(run:Path, res:dict) -> dict:
     if not w or not w.get('rows'):
       return
     rows = w['rows']
+    if bound := w.get('gaps_bound'):  # any table over the ceiling (tie_out.over_ceiling): its bound is its own rows'
+      from boltbeam.workflow.tie_out import GAPS_BOUND_ROW, qualification_words
+      kernels, gaps = sum(r['now_ms'] for r in rows if r['what'] != 'gaps'), [r for r in rows if r['what'] == 'gaps']
+      equal(f'{path}.gaps_bound.ms = untraced - kernels', bound['ms'], w['base_ms'] - kernels)
+      equal(f'{path} gaps row = the bound', gaps[0]['now_ms'] if len(gaps) == 1 and gaps[0]['name'] == GAPS_BOUND_ROW else None, bound['ms'])
+      equal(f'{path}.token_ms = untraced', w['token_ms'], w['base_ms'])
+      if w.get('qualification') != qualification_words(w):
+        failures.append(f'{path}.qualification: not the words its gaps bound and replication give')
     for field, total in [('now_ms', 'token_ms'), ('limit_ms', 'limit_ms'), ('lost_ms', 'lost_ms'), ('best_ms', 'best_ms')]:
       if w.get(total) is not None:
         equal(f'{path}.{total} = sum(rows.{field})', w[total], sum(r.get(field) or 0 for r in rows))

@@ -32,7 +32,7 @@ from boltbeam.collectors.attribution import UnnamedCapture, share_overlap
 from boltbeam.math.numerics import INTERVAL_ATOL
 from boltbeam.collectors.instruction_path import FROM_NAME, kernel_path, template
 from boltbeam.roofline import prefill_work as work
-from boltbeam.workflow.tie_out import kind_of
+from boltbeam.collectors.kernel_kind import GEMV_WORDS, kind_of
 
 UNCONFIRMED_SHARE = .02  # Policy: unresolved router paths may cover at most 2% of captured wall time.
 
@@ -74,7 +74,6 @@ def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True,
   if repetition_index is not None:
     if warmup != REPEAT or type(repetition_index) is not int or repetition_index not in (2, 3, 4):
       raise ValueError("invalid steady repetition index")
-    from boltbeam.workflow.tie_out import GEMV_WORDS
     keys = [l["key"] for l in timed]
     if not keys or not any(word in keys[-1] for word in GEMV_WORDS):
       raise ValueError("steady repetition boundary needs the terminal output-head kernel")
@@ -249,7 +248,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   weight = {t["template"] for t in templates if t["path"]["status"] in ("one", "mixed", "not_found")
             and not t.get("attention") and not t.get("recurrent") and not any(id(l) in paired for l in t["launches"])}
   got = pairing.pair(shared, roles, kinds=kinds, widths=chunk_widths, outputs=outputs, candidate=weight.__contains__,
-                     bandwidth_gbs=upper(bandwidth_gbs, unc.get("bandwidth")), prune=prune,
+                     bandwidth_gbs=upper(bandwidth_gbs, unc.get("bandwidth")), prune=prune, order=pairing.layer_order(profile or {}),
                      peak_of=lambda t: upper(_peak(by_t[t], peaks), _u(by_t[t], unc)) if t in by_t else None)
   per_item: dict[tuple, dict[str, Any]] = {}  # one row per role set, over every layer kind it ran in
   for p in got["placed"]:
@@ -288,9 +287,10 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   others: dict[str, dict[str, Any]] = {}
   att = work.streams_of(work.attention(profile or {}, length or int(sum(chunk_widths)), chunk_widths, formats.get("kv") or "F16",
                        formats.get("attention_activations") or acts, depth=depth), streams) if profile else None
-  # semantic evidence brings its own recurrent stages only for Mamba2; another recurrent block keeps its row here
+  # a Mamba2 block's work comes from semantic evidence alone (its stages, above); without it its kernels keep their rows
+  # and claim no work, never the gated delta formula; another recurrent block keeps its row here
   mamba = (((profile or {}).get('metadata') or {}).get('recurrent') or {}).get('kind') == 'mamba2'
-  rec = work.streams_of(work.recurrent(profile or {}, length or int(sum(chunk_widths)), chunk_widths), streams) if profile and not (semantic and mamba) else None
+  rec = work.streams_of(work.recurrent(profile or {}, length or int(sum(chunk_widths)), chunk_widths), streams) if profile and not mamba else None
   for t in templates:
     for l in t["launches"]:
       if id(l) in paired:

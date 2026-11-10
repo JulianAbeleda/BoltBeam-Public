@@ -98,7 +98,7 @@ from boltbeam.vocab import Workload
 from boltbeam.workflow import chips, engine_update, fetch, gameplan, layout as lay, limit, output_run, pipeline, recommend as rec
 from boltbeam.workflow import repeat_bands as rb, replay as rw, results as rs, run_folder as rf
 from boltbeam.workflow.autoscan import _hardware_profile
-from boltbeam.workflow.common import load_manifest, read_json
+from boltbeam.artifacts.run_io import load_manifest, read_json
 from boltbeam.workflow.repeat_bands import PIN_RUNS
 from boltbeam.workflow.run_folder import SCHEMA, Refused, optional
 from boltbeam.workflow.text_report import summary_text, why_no_roles
@@ -212,7 +212,7 @@ def save(run:pathlib.Path, to_root:pathlib.Path) -> dict[str, Any]:
   res = rs.results(run)  # validate before replacing a previously saved report
   if dest.exists():
     shutil.rmtree(dest)
-  shutil.copytree(run, dest)
+  shutil.copytree(run, dest, symlinks=True)  # a link stays a link: a run may link a checkpoint's weights (trtllm_decode)
   # Regenerate all presentation artifacts from the same current evidence.
   # Copying an older report/validation file can otherwise contradict results.json.
   output_run(dest)

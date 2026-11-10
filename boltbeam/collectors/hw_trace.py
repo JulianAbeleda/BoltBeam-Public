@@ -9,7 +9,7 @@ from typing import Any
 from boltbeam.runtime.gpu_health import assert_gpu_health
 from boltbeam.trace.hw_trace import timing_trace_to_hw_trace
 from boltbeam.profiler.capabilities import normalize_collector_id, normalize_provider_id, resolve_profiler_capability
-from boltbeam.workflow.common import load_manifest, run_dir
+from boltbeam.artifacts.run_io import load_manifest, run_dir
 from boltbeam.core.canonical import pretty_json
 
 
@@ -161,7 +161,6 @@ def main(argv:list[str] | None = None) -> int:
                   help="check for missing render nodes, D-state GPU tasks, and stale GPU fd holders around collection")
   args = ap.parse_args(argv)
   if args.run and args.out is None:
-    from boltbeam.workflow.common import run_dir
     args.out = str(run_dir(args.run) / "hw_trace.json")
   try:
     timing, hw_trace, out, timing_out = collect_hw_trace(args)

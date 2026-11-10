@@ -71,7 +71,7 @@ def time_roles(run:pathlib.Path, *, root:pathlib.Path | None = None) -> dict[str
   """Time every role inside a real decode in tinygrad's runtime (collectors/tinygrad_role_time.py)."""
   from boltbeam.collectors import tinygrad_role_time
   from boltbeam.target.targets import get_target
-  from boltbeam.workflow.common import load_manifest
+  from boltbeam.artifacts.run_io import load_manifest
   root = pathlib.Path(root) if root else tinygrad_fork.default_fork_root()
   manifest = load_manifest(run)
   model = str(manifest.get("model_path") or "")
@@ -94,9 +94,9 @@ def time_roles(run:pathlib.Path, *, root:pathlib.Path | None = None) -> dict[str
 def role_losses(run:pathlib.Path) -> dict[tuple[Any, ...], dict[str, Any]]:
   """The per-role loss rows of a run, by role_key (role, quant, rows, k); empty before the roles were timed."""
   from boltbeam.collectors import tinygrad_role_time
-  from boltbeam.workflow.common import read_json
+  from boltbeam.artifacts.run_io import read_json
   from boltbeam.workflow import limit, run_folder
-  from boltbeam.workflow.common import load_manifest
+  from boltbeam.artifacts.run_io import load_manifest
   path = run / tinygrad_role_time.TRACE
   if not path.is_file(): return {}
   ceil = limit.measured_vs_ceiling(load_manifest(run), run_folder.optional(run, "model_profile.json"))

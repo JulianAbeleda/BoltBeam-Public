@@ -362,3 +362,19 @@ func TestAMeasuredRunWithNoLimitShowsItsSpeedAndWhy(t *testing.T) {
 		t.Fatalf("a measured run with no limit must show its speed and why: %s", got)
 	}
 }
+
+// A run with no limit still says how its capture paired (Nemotron 3.5 on TensorRT-LLM: a tie, and unpaired MoE roles).
+func TestARunWithNoLimitSaysHowItsCapturePaired(t *testing.T) {
+	var res seam.Results
+	raw := `{"measured":true,"workload":"decode","timing":{"tok_s":268.8},"ceiling":{"status":"absent","reason":"no limit here"},
+	  "loss":{"status":"absent","ambiguous":{"kind":"tie","reason":"attn_qo fits two slots"},
+	  "unpaired_roles":[{"role":"moe_router","quant":"BF16","reason":"no slot fits it"}]}}`
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatal(err)
+	}
+	got := plain(resultBody(Facts{Run: &seam.Run{Results: res}}, 160))
+	if !strings.Contains(got, "268.8 tok/s measured · no limit") || !strings.Contains(got, "several pairings fit equally: attn_qo fits two slots") ||
+		!strings.Contains(got, "BF16: no slot fits it") {
+		t.Fatalf("a run with no limit must say how its capture paired: %s", got)
+	}
+}

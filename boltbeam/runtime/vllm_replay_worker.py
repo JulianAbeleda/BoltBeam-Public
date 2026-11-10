@@ -103,7 +103,7 @@ class ReplayWorker(semantics.GraphProvenance, Worker):
                          for name in ('torch','triton','flashinfer') if name in sys.modules},
       **{key:getattr(config.model_config,key) for key in ('seed','max_model_len','enforce_eager')},
       **{key:getattr(config.scheduler_config,key) for key in ('max_num_batched_tokens','max_num_seqs','async_scheduling')},
-      **{key:getattr(config.cache_config,key) for key in ('gpu_memory_utilization','mamba_cache_mode','mamba_ssm_cache_dtype')},
+      **{key:getattr(config.cache_config,key) for key in ('gpu_memory_utilization','mamba_cache_mode')},
       'chunked_prefill':config.scheduler_config.enable_chunked_prefill,
       'prefix_caching':config.cache_config.enable_prefix_caching,
       'compilation_config':semantics.compilation_facts(config.compilation_config),

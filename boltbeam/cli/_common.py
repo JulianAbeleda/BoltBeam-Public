@@ -9,8 +9,8 @@ from typing import Any
 from boltbeam.profile.loaders import profile_from_model
 from boltbeam.target.targets import get_target
 from boltbeam.vocab import SCHEMA_EVIDENCE_BUNDLE
-from boltbeam.core.canonical import pretty_json  # before artifacts.base: boltbeam.core's __init__ imports artifacts.base back
 from boltbeam.artifacts.base import NormalizedEvidence, read_evidence
+from boltbeam.core.canonical import pretty_json
 
 
 def _write(obj:dict, out:str | None) -> None:
@@ -57,7 +57,7 @@ def _run_manifest_defaults(args, default_out:str) -> tuple[dict[str, Any], str |
   run_manifest: dict[str, Any] = {}
   out = args.out
   if args.run:
-    from boltbeam.workflow.common import load_manifest, run_dir
+    from boltbeam.artifacts.run_io import load_manifest, run_dir
     run_path = run_dir(args.run)
     run_manifest = load_manifest(run_path)
     out = out or str(run_path / default_out)

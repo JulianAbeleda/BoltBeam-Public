@@ -5,7 +5,7 @@ from typing import Any
 
 from boltbeam.report.html import next_step, render_run_html
 from boltbeam.vocab import SCHEMA_OUTPUT_MANIFEST
-from boltbeam.workflow.common import load_manifest, read_json, run_dir, update_manifest, write_json
+from boltbeam.artifacts.run_io import load_manifest, read_json, run_dir, update_manifest, write_json
 
 OUTPUT_ARTIFACTS = ("output_manifest.json", "summary.md", "rollback.md", "provider_plan.json", "report.html")
 

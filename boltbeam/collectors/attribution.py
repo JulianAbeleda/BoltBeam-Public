@@ -2,7 +2,7 @@
 
 A capture from outside the provider (nsys, rocprofv3, metal-system-trace) sees kernels, not roles. Kernel names
 differ per provider and per build, so this module reads them for two things only: the kind words the tie-out already
-uses for the attention and recurrent rows (tie_out.kind_of), whose kernels serve no weight role, and a GGUF weight
+uses for the attention and recurrent rows (kernel_kind.kind_of), whose kernels serve no weight role, and a GGUF weight
 format a name states (pairing.stated_format: q4k_, mul_mv_q6_K), which that kernel alone may serve. Otherwise a name
 is only an opaque key that groups launches of one program (with its launch geometry, when the capture has it).
 
@@ -36,10 +36,12 @@ import pathlib
 from typing import Any, Iterable
 
 from boltbeam.collectors import llama_mmq, pairing
+from boltbeam.collectors.kernel_kind import kind_of
 from boltbeam.collectors.pairing import BLOCKS  # noqa: F401  (the decode readers import it from here)
-from boltbeam.role_key import role_key
+from boltbeam.role_key import role_key, shape_nk
 from boltbeam.roofline import moe
 from boltbeam.target import vendors
+from boltbeam.artifacts.run_io import load_manifest
 
 ROLE_SOURCE = "attributed_by_bytes_and_count"
 
@@ -61,11 +63,13 @@ def groups(launches:Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], counts:dict[tuple, int],
               tokens:int, peak_gbs:float | None, *, kinds:dict[str, int] | None = None,
-              read:dict[tuple, dict[str, Any]] | None = None, unfused_attention:str | None = None) -> dict[str, Any]:
+              read:dict[tuple, dict[str, Any]] | None = None, unfused_attention:str | None = None,
+              order:list[str] | None = None) -> dict[str, Any]:
   """Pair kernel groups with roles by the layer walk. unfused_attention: the word naming the engine's softmax when it
   runs attention as KQ, softmax and KQV (prefill_attribution.unfused_attention), so its products mark the layers. roles: the ceiling's decode roles (role, quant, bytes_moved,
   floor_ms, and fine or part_roles for an engine's packed matrix). counts: calls per token per role_key (or role, quant);
-  kinds: layers per block kind (pairing.layer_kinds); read: the profile row of each role, keyed alike (its fine class,
+  kinds: layers per block kind (pairing.layer_kinds); order: the model's layer sequence (pairing.layer_order) when the
+  profile records one; read: the profile row of each role, keyed alike (its fine class,
   a hybrid's layer_kinds). peak_gbs: the bandwidth at the top of its measured uncertainty (targets.upper), None not checked. Returns {"pairs": [...], "groups":
   every group with its role or None (a group several roles share is one row per role), "unpaired", "ambiguous",
   "rule", "structure"}."""
@@ -73,6 +77,7 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
   at = lambda d, r: (d or {}).get(role_key(r), (d or {}).get((r["role"], r["quant"])))  # noqa: E731
   rows = [{"role": r["role"], "quant": r["quant"], "count": n, "weight_bytes": r["bytes_moved"] / n, "nk": None,
            "role_class": (p := at(read, r) or {}).get("role_class"), "role_key": role_key(r), **({"fine": r["fine"]} if r.get("fine") else {}),
+           **({"n": nk[0], "k": nk[1]} if (nk := shape_nk(r)) else {}),  # its output rows: a launch's grid (llama_mmq.rows_fit)
            **({"layer_kinds": p["layer_kinds"]} if sum(c for k in (p.get("layer_kinds") or {}).values() for c in k.values()) == n else {}),
            **({"per_layer": p["per_layer"]} if p.get("per_layer") else {}),
            **({"n_expert": int(p["n_expert"] or 0), "experts_read": p.get("experts_read"), "expert_grid": grids} if "n_expert" in p else {})}
@@ -84,7 +89,7 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
     from boltbeam.collectors.prefill_attribution import unfused_attention as tag
     launches = tag(launches, unfused_attention, lambda t: pairing.projection_candidate(t))
   got = pairing.pair(launches, rows, kinds=kinds or {}, widths=[1] * tokens, bandwidth_gbs=peak_gbs,
-                     flat=None if timed and kernel_groups else kernel_groups)
+                     flat=None if timed and kernel_groups else kernel_groups, order=order)
   by_key: dict[str, dict[str, Any]] = {g["key"]: g for g in kernel_groups}
   rows_out: list[dict[str, Any]] = []
   pairs: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -97,8 +102,9 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
     us = sum(l["wall_us"] for l, _, _, _ in p["launches"])
     for part in item["parts"]:
       share = part["weight_bytes"] * part["count"] / sum(x["weight_bytes"] * x["count"] for x in item["parts"])
+      fused = p["fused"] * part["count"] / item["count"]  # a launch packing several rows (pairing._packed): each part's calls per launch
       row = pairs.setdefault((key, part["role_key"]), {"key": key, "calls": 0, "wall_us": 0.0, "role": part["role"], "quant": part["quant"],
-                                                  "fused": p["fused"], "count": part["count"], "weight_bytes": part["weight_bytes"]})
+                                                  "fused": int(fused) if fused == int(fused) else fused, "count": part["count"], "weight_bytes": part["weight_bytes"]})
       row["calls"] += len(p["launches"])
       row["wall_us"] += us * share
     taken[key] = taken.get(key, 0.0) + us
@@ -188,7 +194,6 @@ def block_cut(long:list[dict[str, Any]], short:list[dict[str, Any]]) -> tuple[li
   """The decode window's launches, cut by time at the block kernels (BLOCK_CUT_RULE), and the GPU time left out before
   the cut. None when either capture lacks launch times or block kernels, or the long one has no extra block launch:
   the per-kernel difference then decides."""
-  from boltbeam.workflow.tie_out import kind_of
   if any(l.get("start_us") is None for l in [*long, *short]):
     return None
   is_block = lambda l: kind_of({"kernel": str(l["key"])}) in BLOCKS  # noqa: E731
@@ -318,11 +323,18 @@ def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_m
   return f"checked: kernels within the captured token by the measured ±{100 * band:.2f}%"
 
 
+def replica_rows(trace:dict[str, Any]) -> dict[str, float]:
+  """One capture's kernel ms per token by table row: "role quant", or the kind of other kernel."""
+  n, out = next((r.get("decode_tokens") for r in trace.get("rows", []) if r.get("scope") == "whole_step"), None) or 1, {}
+  for r in (r for r in trace.get("rows", []) if r.get("scope") == "kernel"):
+    out[k] = out.get(k := f"{r['role']} {r['quant']}" if r.get("role") else kind_of(r), 0.0) + float(r["wall_us"]) / n / 1000.0
+  return out
+
+
 def fresh_replicas(attributed, folders:list[pathlib.Path], steps:list[float | None]) -> list[dict[str, float]] | None:
   """A run's fresh capture pairs as its kernel rows' repeats (tie_out.over_ceiling), for every engine captured from
   outside: attributed(i, out, token_ms=) writes pair i's trace into its folder, attributed like the run's own. A pair
   that cannot be attributed replicates nothing; the rows stay unqualified unless two others do."""
-  from boltbeam.workflow.tie_out import replica_rows
   out = []
   for i, folder in enumerate(folders):
     try:
@@ -344,7 +356,6 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   (pathlib.Path(run) / out).unlink(missing_ok=True)  # a refused capture leaves no earlier result standing
   import json
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
-  from boltbeam.workflow.common import load_manifest
   from boltbeam.workflow import limit, run_folder
   manifest = load_manifest(run)
   profile = run_folder.optional(run, "model_profile.json")
@@ -372,7 +383,7 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
       packed = {(m["role"], m["quant"]): m["part_roles"] for m in got}
   from boltbeam.target.targets import upper
   result = attribute(window, roles, counts, tokens, upper(ceil.get("peak_bandwidth_gbs"), ceil.get("uncertainty")), kinds=pairing.layer_kinds(profile), read=read,
-                       unfused_attention=unfused_attention)
+                       unfused_attention=unfused_attention, order=pairing.layer_order(profile))
   for g in [*result["groups"], *result["pairs"]]:  # an expert launch's bytes are its k experts: exact for one token only
     if (p := read.get((g.get("role"), g.get("quant")))) and p.get("n_expert"):
       g["experts"] = {"read": llama_mmq.experts_of(p), "of": int(p["n_expert"]), "routing_basis": moe.routing_basis(batch, False)}

@@ -9,13 +9,15 @@ not a validity check.
 """
 import math,statistics
 
+from boltbeam.core.policy import value
+
 CHECKS=('artifact_integrity','exclusive_gpu','requests_tokens_cache','config_libraries',
         'native_observers_absent','complete_activity','complete_pm')
 THERMAL_KEYS=('sm_mhz','mem_mhz','temp_c','power_w','limit_duty')
 REFERENCE_TEMPERATURE_C=2.0  # the former engineering gate; reported, never gating
 PAIRS=4
 ORDER=['NP','NP','PN','PN']
-MAX_OVERHEAD=.05
+MAX_OVERHEAD=value('replay_max_overhead')  # the capture-overhead ceiling, a stated choice (data/policy.json)
 T95_DF3=2.3533634348018264
 
 

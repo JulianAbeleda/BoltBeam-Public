@@ -145,7 +145,7 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
   naming the field, when the model, the target, the workload or the provider differ, or when either run's engine build
   is unknown. Names both pins (data/engine_pins.json) and says plainly when a build is not its pin."""
   from boltbeam.collectors import providers
-  from boltbeam.workflow.common import load_manifest
+  from boltbeam.artifacts.run_io import load_manifest
   from boltbeam.workflow.run_folder import run_provider
   from boltbeam.collectors.toolchain import changes
   ma, mb = load_manifest(a), load_manifest(b)

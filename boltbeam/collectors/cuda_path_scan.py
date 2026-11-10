@@ -58,6 +58,7 @@ NAMES = {("", "f32", "f16", ""): ("fp16", "fp16 in, fp32 accumulate"),
          ("", "s32", "s8", ""): ("int8", "int8 in, int32 accumulate"),
          ("", "f32", "e4m3", ""): ("fp8", "fp8 e4m3 in, fp32 accumulate"),
          ("kind::mxf4.block_scale", "f32", "e2m1", "ue8m0"): ("fp4", "fp4 e2m1 in with ue8m0 block scales, fp32 accumulate"),
+         ("kind::mxf8f6f4.block_scale", "f32", "e4m3", "ue8m0"): ("fp8_mx", "fp8 e4m3 in with ue8m0 block-32 scales, fp32 accumulate"),
          ("kind::mxf4nvf4.block_scale", "f32", "e2m1", "ue4m3"): ("nvfp4", "fp4 e2m1 in with ue4m3 block-16 scales, fp32 accumulate")}
 _PTX = re.compile(r"mma\.sync\.aligned\.m(\d+)n(\d+)k(\d+)\.row\.col\.(?:(kind::\w+(?:\.block_scale)?)\.)?(?:scale_vec::\w+\.)?"
                   r"(\w+)\.(\w+)\.(\w+)\.\w+(?:\.(\w+))?$")

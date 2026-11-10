@@ -27,7 +27,7 @@ from boltbeam.target.targets import fact_uncertainty
 from boltbeam.target.vendors import NoVendorRow  # noqa: F401  (re-exported: chips.NoVendorRow)
 from boltbeam.workflow import layout as lay
 from boltbeam.workflow.autoscan import _hardware_profile, chip_profile_id
-from boltbeam.workflow.common import first_gpu
+from boltbeam.target.gpu import first_gpu
 
 Measure = Callable[[], dict[str, Any]]
 _SMI_FACTS = "driver_version,clocks.max.sm,clocks.max.memory,power.limit"

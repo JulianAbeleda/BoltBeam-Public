@@ -10,7 +10,7 @@ from boltbeam.collectors import providers
 from boltbeam.report.html import sectioned_cells
 from boltbeam.target.targets import get_target
 from boltbeam.workflow import prefill_audit
-from boltbeam.workflow.common import load_manifest
+from boltbeam.artifacts.run_io import load_manifest
 from boltbeam.workflow.replay import lines as replay_lines
 from boltbeam.workflow.results import estimate_how, measurement_words
 from boltbeam.workflow.session import lines as session_lines
@@ -180,6 +180,12 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   if refused := loss.get("ceiling_refused"):
     lines.append(f"Totals exclude {len(refused)} row{'s' if len(refused) > 1 else ''} whose ceiling is refused: "
                  + ", ".join(f"{n['role']} {n['quant']}" for n in refused) + ". The other rows keep their ceilings.")
+  if a := loss.get("ambiguous"):  # the pairing the solver could not settle (collectors/pairing.py), as the TUI says it
+    what = {"tie": "several pairings fit equally", "search_limit": "the search stopped before it finished",
+            "no_fit": "it found no fit"}.get(a.get("kind"), "it is not certain")
+    lines.append(f"Pairing: {what}: {a.get('reason')}. Read the per-role rows as unsure.")
+  for u in loss.get("unpaired_roles") or []:
+    lines.append(f"Unpaired, so in not attributed: {u.get('role')} {u.get('quant')}" + (f": {u['reason']}" if u.get("reason") else "") + ".")
   if not roles and why_no_roles:
     lines.append(f"Per role: {why_no_roles}")
   elif not roles and loss.get("missing"):

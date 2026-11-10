@@ -781,6 +781,7 @@ func resultBody(f Facts, width int) string {
 		if res.Ceiling.Reason != "" {
 			b.WriteString(stMuted.Render("No limit: "+res.Ceiling.Reason) + "\n")
 		}
+		b.WriteString(pairingBody(res.Loss)) // the capture's pairing, said as on a run with a limit
 	case res.Ceiling.TokS != nil:
 		fmt.Fprintf(&b, "%s %.1f tokens per second at best. Nothing measured yet.\n", stAccent.Render(glyphBolt), *res.Ceiling.TokS)
 	case res.Ceiling.Reason != "":

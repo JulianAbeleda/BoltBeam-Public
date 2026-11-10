@@ -31,7 +31,7 @@ from boltbeam.collectors.llama_bench_decode import CannotMeasure, bench_decode  
 from boltbeam.core.canonical import pretty_json
 from boltbeam.target.targets import get_target
 from boltbeam.vocab import SCHEMA_TIMING_TRACE
-from boltbeam.workflow.common import load_manifest, read_json, run_dir
+from boltbeam.artifacts.run_io import load_manifest, read_json, run_dir
 
 COLLECTOR_ID = "metal-native"
 PROVIDER_ID = "boltbeam/metal-native"

@@ -9,7 +9,7 @@ from typing import Any
 
 from boltbeam.profile.ir import ModelProfile, TensorRole, model_name
 from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
-from boltbeam.profile.architecture import classify_architecture
+from boltbeam.profile.architecture import classify_architecture, recurrent_kind
 from boltbeam.vocab import is_ssm_role
 
 GGML_TYPE_NAMES = {
@@ -256,7 +256,8 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
     }.items() if v is not None},
     "context": declared_context(kv, arch),
     # a recurrent block's fixed state (Mamba2, Gated DeltaNet): its shape and the layers that hold it
-    **({"recurrent": {"layer_count": recurrent, **{k: kv[f"{arch}.ssm.{k}"] for k in RECURRENT_KEYS if f"{arch}.ssm.{k}" in kv}}}
+    **({"recurrent": {"layer_count": recurrent, **{k: kv[f"{arch}.ssm.{k}"] for k in RECURRENT_KEYS if f"{arch}.ssm.{k}" in kv},
+                      **({"kind": kind} if (kind := recurrent_kind(n for n, *_ in tensors)) else {})}}
        if recurrent else {}),
   }
   return ModelProfile(model_id=model_id or model_name(p), source=str(p), architecture=arch, hidden_size=hidden,

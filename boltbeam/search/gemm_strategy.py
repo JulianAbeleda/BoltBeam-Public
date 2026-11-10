@@ -35,6 +35,8 @@ from dataclasses import asdict, dataclass, field
 import math, re
 from typing import Any, Iterable, Mapping, NamedTuple
 
+from boltbeam.core.policy import value
+
 SCHEMA_LOWERING = "boltbeam.gemm_lowering_facts.v1"
 SCHEMA_SPACE = "boltbeam.gemm_strategy_space.v1"
 
@@ -320,7 +322,7 @@ def roofline_us(machine:GemmMachine, lowering:GemmLowering, shape:Shape) -> floa
 # fragment-load latency) -- those need facts not yet measured.  Measured winners sit up to 5.3x above the model's best
 # (attn_kv at 16 rows: a 25 us kernel against a 4 us floor) and every reference (cuBLAS) pick the lowering can express
 # within 2x (tests pin both), so the prune removes only configs the model puts beyond that.
-PRUNE_RATIO = 6.0
+PRUNE_RATIO = value("gemm_prune_ratio")  # a stated choice: data/policy.json
 
 
 def prune(machine:GemmMachine, lowering:GemmLowering, shape:Shape, configs:Iterable[Config], ratio:float=PRUNE_RATIO) -> list[Config]:

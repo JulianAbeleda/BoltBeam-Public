@@ -31,6 +31,7 @@ from typing import Any, Callable
 from boltbeam.collectors import (llama_bench_decode, ollama_decode, tinygrad_role_time, trtllm_decode, vendor_capture,
                                  vllm_decode)
 from boltbeam.target import vendors
+from boltbeam.artifacts.run_io import load_manifest, read_json, write_json, write_manifest
 
 # name -> adapter module; the order is the order Setup lists them
 ENGINES = {m.PROVIDER: m for m in (llama_bench_decode, tinygrad_role_time, vllm_decode, ollama_decode, trtllm_decode)}
@@ -332,7 +333,6 @@ def measure_tinygrad(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pa
   from boltbeam.search import tinygrad_fork
   from boltbeam.target.targets import get_target
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
-  from boltbeam.workflow.common import load_manifest, read_json
   root = pathlib.Path(root) if root else tinygrad_fork.default_fork_root()
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
@@ -395,7 +395,6 @@ def measure_engine(run:pathlib.Path, provider:str, *, batches:list[int] | tuple[
   """trace_request.json answered by a driven engine: one point per requested context and batch."""
   from boltbeam.core.canonical import pretty_json
   from boltbeam.target.targets import get_target
-  from boltbeam.workflow.common import load_manifest, read_json
   m = ENGINES[check(provider)]
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
@@ -411,6 +410,8 @@ def measure_engine(run:pathlib.Path, provider:str, *, batches:list[int] | tuple[
     from boltbeam.collectors.capture_settings import vllm_flags
     options["settings"] = vllm_flags(run, contexts[0])
     options["graphs"] = vendors.for_backend(target.backend).term("graphs")
+  if provider == trtllm_decode.PROVIDER:
+    options.update(run=run, target=target)  # an unreadable config is adapted in the run; a refusal names the GPU's memory
   points = m.whole_step(model, contexts, sorted({1, *batches}), tokens=tokens,
                         log=run / "kernel_compare" / f"{provider}_whole_step.log", **options)
   profile = read_json(run / "model_profile.json") if (run / "model_profile.json").exists() else {}
@@ -455,7 +456,6 @@ def _captured(run:pathlib.Path, provider:str, *, target, root, model:str, model_
 def _fell_back(run:pathlib.Path, why:str) -> None:
   """measure_status.json says the roles were timed generically after the in-model capture could not split them."""
   from boltbeam.collectors import engine_kernels
-  from boltbeam.workflow.common import write_json
   from boltbeam.workflow.run_folder import MEASURE_STATUS
   status = run / MEASURE_STATUS
   m = json.loads(status.read_text()) if status.exists() else {}
@@ -474,7 +474,6 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
   progress for the stages that have parts (the isolated kernel timer, one role at a time)."""
   from boltbeam.search import role_numbers
   from boltbeam.target.targets import get_target
-  from boltbeam.workflow.common import load_manifest
   check(provider)
   from boltbeam.collectors.capture_settings import VLLM_SETTINGS, selected_context, require_supported, decode_tokens
   context = selected_context(run, context)
@@ -627,7 +626,6 @@ def pin_check(provider:str, build:str | None, number:int | None = None, installe
 
 def record_build(run:pathlib.Path, provider:str) -> dict[str, Any]:
   """The run's engine build and its pin check, written into the run's manifest (engine)."""
-  from boltbeam.workflow.common import load_manifest, write_manifest
   from boltbeam.collectors import engine_builds
   got = {"provider": provider, **pin_check(provider, run_build(run), run_build_number(run), run_build_installed(run))}
   got["latest"] = engine_builds.currency(provider, engine_builds.run_version(provider, run))  # newest upstream then?

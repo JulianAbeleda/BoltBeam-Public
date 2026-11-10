@@ -188,7 +188,7 @@ def _register_collect_hw_trace(sub) -> None:
 def cmd_collect_hw_trace(args) -> int:
   from boltbeam.collectors.hw_trace import collect_hw_trace
   if args.run and args.out is None:
-    from boltbeam.workflow.common import run_dir
+    from boltbeam.artifacts.run_io import run_dir
     args.out = str(run_dir(args.run) / "hw_trace.json")
   try:
     timing, trace, out, timing_out = collect_hw_trace(args)

@@ -8,7 +8,7 @@ import pathlib
 from typing import Any
 
 from boltbeam.artifacts.base import sha256_json
-from boltbeam.workflow.common import load_manifest, read_json, write_json
+from boltbeam.artifacts.run_io import load_manifest, read_json, write_json
 
 SCHEMA = "boltbeam.repeat_bands.v1"
 ARTIFACT = "repeat_bands.json"

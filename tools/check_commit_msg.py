@@ -21,6 +21,13 @@ ALLOWED_PREFIXES = (
   "bench",
   "path",
   "collectors",
+  "workflow",
+  "report",
+  "roofline",
+  "kernel_analysis",
+  "runtime",
+  "core",
+  "artifacts",
 )
 
 PREFIX_RE = re.compile(rf"^\[({'|'.join(ALLOWED_PREFIXES)})\]( NFC -)? .+")

@@ -18,6 +18,10 @@ FORMULA_REFUSED = ('Mamba2 state traffic and SSD work are not validated against 
                    'formula cannot supply this model\u2019s limit. Raw timings are retained.')
 
 
+class FormulaRefused(ValueError):
+  """A ceiling asked of the model formula for a profile it cannot limit (formula_cannot_limit): FORMULA_REFUSED."""
+
+
 def formula_cannot_limit(profile: dict | None) -> bool:
   """A Mamba2 hybrid (Nemotron-H): its limit comes only from a capture's verified work, never the model formula."""
   metadata = (profile or {}).get('metadata') or {}

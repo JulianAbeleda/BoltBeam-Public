@@ -31,11 +31,11 @@ def bind_cache_rate(run:Path, raw:Path, capture:dict, cache:dict | None) -> None
 
 def step_replicas(launches:list[dict], rows_of) -> dict:
   """A semantic decode capture's repeats for tie_out.over_ceiling: it is one capture of many decode steps, so its
-  steps are dealt into tie_out.REPLICAS groups, every third step to a group (the context grows a token a step, so each
+  steps are dealt into engine_common.REPLICAS groups, every third step to a group (the context grows a token a step, so each
   group spans the same contexts; contiguous thirds do not), and each group is attributed as the whole capture is:
   ms per step by kernel row, the overlap row left out. One process, not fresh captures, and said so. Nothing with
   fewer than two steps a group."""
-  from boltbeam.workflow.tie_out import REPLICAS
+  from boltbeam.collectors.engine_common import REPLICAS
   steps=sorted({l['capture_step'] for l in launches})
   if len(steps)<2*REPLICAS:return {}
   groups=[set(steps[g::REPLICAS]) for g in range(REPLICAS)]

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boltbeam"
-version = "0.3.16"
-description = "Translate model weights into codegen search profiles."
+version = "0.3.17"
+description = "Audit where inference time goes against a measured roofline."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{name = "BoltBeam contributors"}]
@@ -13,6 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "jsonschema>=4"]
+qualification = ["numpy>=1.26"]
 
 [project.scripts]
 boltbeam = "boltbeam.cli:main"
@@ -28,3 +29,8 @@ boltbeam = ["policy/assets/*.json", "policy/assets/*.sha256", "data/*.json", "da
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+markers = [
+  "hardware: live GPU qualification (requires --hardware)",
+  "integration: optional checkout or external evidence (requires --integration)",
+]

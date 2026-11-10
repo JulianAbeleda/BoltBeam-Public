@@ -4,7 +4,7 @@ import pathlib
 from typing import Any
 
 from boltbeam.plan.runner_plan import build_runner_plan
-from boltbeam.workflow.common import run_dir, update_manifest, write_json
+from boltbeam.artifacts.run_io import run_dir, update_manifest, write_json
 
 RUNNER_ARTIFACTS = ("runner_plan.json",)
 

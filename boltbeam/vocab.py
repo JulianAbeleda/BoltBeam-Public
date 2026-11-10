@@ -113,6 +113,10 @@ class RoleClass(str, Enum):
   SSM_CONV = "ssm_conv"
   SSM_STATE = "ssm_state"
   SSM_SCAN = "ssm_scan"
+  HYPER_CONNECTION = "hyper_connection"    # a hyper-connection mixer (`hc_attn_*`, `hc_ffn_*`, `output_hc_*`): it mixes
+                                           # the residual streams before the token mixer and the FFN; no FFN or attention
+  ATTENTION_INDEXER = "attention_indexer"  # a sparse attention's indexer (`indexer.q_proj`, `indexer.k_proj`): it scores
+                                           # which cached blocks attention reads; not attention's own q or k
   OTHER = "other"
 
 
@@ -141,6 +145,8 @@ class RoleGroup(str, Enum):
   SSM_CONV = "ssm_conv"
   SSM_STATE = "ssm_state"
   SSM_SCAN = "ssm_scan"
+  HYPER_CONNECTION = "hyper_connection"
+  ATTN_INDEXER = "attn_indexer"
   OTHER = "other"
 
 
@@ -176,6 +182,8 @@ ROLE_GROUP_OF: dict[str, str] = {
   RoleClass.SSM_CONV.value: RoleGroup.SSM_CONV.value,
   RoleClass.SSM_STATE.value: RoleGroup.SSM_STATE.value,
   RoleClass.SSM_SCAN.value: RoleGroup.SSM_SCAN.value,
+  RoleClass.HYPER_CONNECTION.value: RoleGroup.HYPER_CONNECTION.value,
+  RoleClass.ATTENTION_INDEXER.value: RoleGroup.ATTN_INDEXER.value,
   RoleClass.OTHER.value: RoleGroup.OTHER.value,
 }
 
@@ -228,6 +236,20 @@ STAGE_SIDE: dict[str, str | None] = {"in": "input", "gate": None, "out": "output
 OUTPUT_ORDER: tuple[str, ...] = ("gate", "out", "ffn_in", "ffn_out")  # the output side's data flow
 # a shared expert is an FFN beside the routed one (either may run first): the FFN stages keep their order within each
 FFN_BRANCH: dict[str, str] = {c: "shared_expert" for c in ("moe_shared_expert_gate", "moe_shared_expert_up", "moe_shared_expert_down")}
+
+# A model's layer sequence, when its config names each layer's block (Jamba's and Nemotron 3.5's layers_block_type,
+# Nemotron-H's hybrid_override_pattern letters): the loaders record it in the walk's kinds (metadata.layers.sequence,
+# profile/loaders._layers_from_config). A block kind's layers are marked by their kernels (collectors/pairing.BLOCKS); a
+# layer of the other kinds (a standalone expert layer, a dense FFN layer) has no block and runs between the blocks
+# around it, holding the rows of LAYER_CLASSES. A block type the table lacks records no sequence: the walk then goes
+# by counts, as for a model whose config names none.
+LAYER_KIND_OF_BLOCK: dict[str, str] = {"mamba": "recurrent", "mamba2": "recurrent", "attention": "attention", "moe": "moe", "mlp": "ffn"}
+HYBRID_PATTERN: dict[str, str] = {"M": "mamba", "*": "attention", "-": "mlp", "E": "moe"}
+LAYER_CLASSES: dict[str, tuple[str, ...]] = {
+  "moe": ("moe_router", "moe_expert_gate", "moe_expert_up", "moe_expert_down",
+          "moe_shared_expert_gate", "moe_shared_expert_up", "moe_shared_expert_down"),
+  "ffn": ("ffn_gate", "ffn_up", "ffn_down"),
+}
 
 
 def role_group_of(role_class:str) -> str:

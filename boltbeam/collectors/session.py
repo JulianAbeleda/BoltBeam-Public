@@ -40,6 +40,8 @@ from typing import Any, Callable
 
 from boltbeam.collectors import gpu_telemetry
 from boltbeam.collectors import prefill as pf
+from boltbeam.artifacts.run_io import load_manifest, read_json
+from boltbeam.target.gpu import run_gpu
 
 TURN = 512        # fresh tokens a turn appends
 SUMMARY = 2048    # tokens a compaction's summary is re-prefilled as
@@ -309,7 +311,6 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   from boltbeam.roofline.prefill_work import kv_bytes_per_token, recurrent_state_bytes
   from boltbeam.target.targets import get_target
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
-  from boltbeam.workflow.common import load_manifest, read_json, run_gpu
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
   model = str(manifest["model_path"])
@@ -426,7 +427,6 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
 
 def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], None] = lambda _: None) -> dict[str, Any]:
   """One turn at the focus depth captured in the model and attributed: session_trace.json."""
-  from boltbeam.workflow.common import read_json
   trace = read_json(run / "timing_trace.json")
   focus = int(trace["focus"])
   row = next((r for r in trace["rows"] if r["scope"] == "whole_step" and r["context"] == focus and r.get("turn_ms")), None)

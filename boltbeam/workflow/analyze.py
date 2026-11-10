@@ -11,7 +11,8 @@ from boltbeam.synth.fixtures import emit_fixture_manifest
 from boltbeam.target.targets import get_target
 from boltbeam.trace.timing import build_trace_request
 from boltbeam.vocab import SCHEMA_ANALYSIS_REPORT, SCHEMA_MEASUREMENT_PLAN, role_rank_priority
-from boltbeam.workflow.common import load_manifest, load_profile, read_json, run_dir, update_manifest, write_json
+from boltbeam.profile.loaders import load_profile
+from boltbeam.artifacts.run_io import load_manifest, read_json, run_dir, update_manifest, write_json
 
 ANALYZE_ARTIFACTS = ("search_space.json", "route_policy.json", "fixture_manifest.json",
                      "measurement_plan.json", "analysis_report.json", "probe_request.json", "trace_request.json")

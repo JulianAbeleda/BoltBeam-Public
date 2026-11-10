@@ -46,13 +46,24 @@ than it prevents.
 BoltBeam modules own narrow execution surfaces:
 
 ```text
-profile/  artifact readers and ProfileIR
-search/   candidate-space emission
-policy/   seed and measured route policies
-synth/    shape-only proving fixtures
-eval/     promotion/evaluation contracts
-cli.py    command wiring only
+profile/         artifact readers, ProfileIR, the architecture classifier (from facts)
+target/          target capability data, the vendor rows, the GPU a run uses
+artifacts/       readers for outside evidence, and the run folder's I/O (run_io.py)
+collectors/      capture adapters: one per engine and per capture tool, and the pairing walk
+workflow/        the run tie-out: the stages in order, the layout, the limit, the run folder's status
+roofline/        the limits: memory, compute paths, MoE and prefill work
+report/          the HTML report and the Markdown summary
+runtime/         the drivers and device bridges BoltBeam runs on a GPU
+core/            shared types, canonical JSON, the policy accessor
+search/          candidate-space emission
+policy/          seed and measured route policies, and the source-scan guards
+synth/           shape-only proving fixtures
+eval/            promotion/evaluation contracts
+cli/             command wiring only
 ```
+
+`docs/architecture.md` has one line more on each, and the import direction:
+`workflow -> collectors`, never the reverse (`policy/guards.py` enforces it).
 
 New behavior should extend the owning module instead of adding an unrelated
 one-off script.
@@ -83,7 +94,9 @@ Keep distinct concerns independent:
 - artifact parsing is separate from route search;
 - candidate search is separate from promotion;
 - synthetic fixtures are separate from real model gates;
-- tinygrad measurement commands are emitted, not executed, by BoltBeam;
+- measuring is separate from analysis: the collectors run the engines
+  (tinygrad's profile scripts too, `collectors/tinygrad_role_time.py`) and
+  record how each run was set up; the tie-out reads only what they recorded;
 - target capability data is separate from model profile data.
 
 ## Encode Invariants
@@ -105,12 +118,16 @@ The implementation may do complex GGUF parsing or profile ranking. The caller
 should see predictable commands:
 
 ```bash
-boltbeam inspect ...
-boltbeam emit-search ...
-boltbeam emit-policy ...
-boltbeam synth ...
-boltbeam analyze ...
+boltbeam selfcheck | doctor            # check the install
+boltbeam tui                           # open the screen
+boltbeam inspect | roofline-theoretical  # read a model (no GPU)
+boltbeam load | autoscan | analyze | output   # run the pipeline
+boltbeam fetch | ingest-timing | ingest-probe | collect-hw-trace | import-hw-trace | metal-measure | metal-bandwidth
+boltbeam evaluate | ledger | reopen-check     # record what you learned
 ```
+
+That is `CORE` in `cli/__init__.py`, the grouped list `boltbeam --help` shows;
+the advanced and campaign commands are listed after it.
 
 Do not expose internal route-search machinery as user-facing flags unless the
 flag represents a real, stable choice.
@@ -136,9 +153,20 @@ action.
 
 ## Contain Dangerous Power
 
-BoltBeam should not mutate runtime defaults, launch GPUs, or edit tinygrad as a
-side effect of profile analysis. Those operations belong behind explicit
-downstream commands or evaluators.
+Only these commands may launch work on a GPU: `tui` (Run, and the screen's
+chip scan), `metal-measure`, `metal-bandwidth`, `collect-hw-trace`,
+`ncu-collect`, and the replay commands `matched-control` and `replay-ab` with
+`--execute`. These never do: `selfcheck`, `inspect`, `roofline-theoretical`,
+`load`, `autoscan` (it asks the driver's tools what the machine has), `analyze`,
+`output`, `fetch`, the `ingest-*` and `import-*` commands, `decode-role-profile`,
+`gemm-calibrate` and `gemm-scan` (they read a model or measured rows), and
+`evaluate`, `ledger` and `reopen-check`. A command changes list only with this
+paragraph.
+
+BoltBeam runs engines (tinygrad included) with settings it records per run,
+and never edits an engine's code or the user's runtime defaults. The one place
+it installs an engine build is `workflow/engine_update.py`, only when asked,
+beside the builds already there, never over one.
 
 ## Design For Replacement
 
@@ -150,6 +178,12 @@ unsupported/incomplete result.
 
 Targets are replaceable too: `amd_gfx1100`, CUDA, and Metal should differ
 through `TargetProfile` capability data, not through scattered branches.
+
+Engines are replaceable: an engine is one adapter under `collectors/`, and the
+packages above it (`workflow/`, `report/`) import it, never the reverse. The
+kernel names a capture tool reports are a classification table the pairing
+reads, not branches: an engine that renames a kernel changes the table, and the
+engine-upgrade audit reviews that diff before a pin moves.
 
 ## Test Behavior At The Boundary
 
@@ -265,6 +299,13 @@ by model-specific assumptions (audit A0–A10). The load-bearing rules:
   routes blocked. Classify the architecture before authorizing routes.
 - The decision path (search emission, families, seed policy, evaluator) must not
   hardcode model/quant/target names; the dev-only `policy/guards.py` source-scans it.
+  Outside it, a collector may know an engine's labels (a vLLM module class) but a
+  model's shape and quant facts drive behavior, never its name. In `collectors/`,
+  `roofline/` and `workflow/`, `policy/guards.py` fails a comparison against a
+  model-type name (`profile/architecture.MODEL_TYPES`); the sites left are
+  `KNOWN_MODEL_TYPE_BRANCHES`, each with why it stays.
+- A collector never imports `workflow/`; `policy/guards.py` scans for it, and the
+  sites from before the rule are `KNOWN_COLLECTOR_WORKFLOW_IMPORTS`, ending empty.
 - Vendors are rows, not branches. Outside a single-vendor adapter module, no
   code in `boltbeam/` chains on vendor/backend/device literals, branches on
   whether a vendor's tool is installed or on the platform in a vendor chain,

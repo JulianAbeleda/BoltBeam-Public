@@ -23,7 +23,7 @@ def _graph_trace(run:Path) -> str | None:
   """How the run's vendor capture traced the engine's graphs (target/vendors.py terms), from the run's target."""
   from boltbeam.target import vendors
   from boltbeam.target.targets import get_target
-  from boltbeam.workflow.common import load_manifest
+  from boltbeam.artifacts.run_io import load_manifest
   return vendors.for_backend(get_target(load_manifest(run).get('target_id')).backend).term('graph_trace')
 
 

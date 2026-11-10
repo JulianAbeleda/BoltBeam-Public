@@ -20,7 +20,7 @@ def in_model_attention(run:pathlib.Path) -> dict[str, Any] | None:
   """The attention kernels' time per token in the model (the tie-out's attention row: tinygrad's role-time rows of
   kind attention), the context it was captured at, and the KV read at that context (the limit's part for it)."""
   from boltbeam.collectors import tinygrad_role_time
-  from boltbeam.workflow.common import read_json
+  from boltbeam.artifacts.run_io import read_json
   from boltbeam.workflow.tie_out import kv_ms
   path = run / tinygrad_role_time.TRACE
   if not path.is_file(): return None
@@ -49,7 +49,7 @@ def compare_flash(run:pathlib.Path, *, root:pathlib.Path, device:str, checker:An
   checks and times both launches of each, and the verdict takes two bars: the geometry the model's decode installs,
   timed the same way, and the in-model attention time. Returns one fusions.json row."""
   from boltbeam.search import flash_space
-  from boltbeam.workflow.common import read_json
+  from boltbeam.artifacts.run_io import read_json
   folder = run / compare_record.FOLDER
   profile = profile if profile is not None else (read_json(run / "model_profile.json") if (run / "model_profile.json").is_file() else {})
   shape = flash_space.attention_shape(profile)
@@ -160,7 +160,7 @@ def flash_plan(tile:Mapping[str, Any]) -> str:
 
 
 def load_target_id(run:pathlib.Path) -> str:
-  from boltbeam.workflow.common import load_manifest
+  from boltbeam.artifacts.run_io import load_manifest
   return str(load_manifest(run).get("target_id"))
 
 

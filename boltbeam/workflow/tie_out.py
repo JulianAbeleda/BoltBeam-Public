@@ -25,6 +25,8 @@ import math
 import pathlib
 from typing import Any
 
+from boltbeam.collectors.capture_settings import window_context
+from boltbeam.collectors.kernel_kind import UNATTRIBUTED, kind_of
 from boltbeam.collectors.replay_overhead import MAX_OVERHEAD
 from boltbeam.math.numerics import ACCOUNTING_ATOL, ACCOUNTING_RTOL
 
@@ -65,37 +67,7 @@ OTHER_HOW_FLOOR = "at least: untimed work at the limit; untimed weights, attenti
 OTHER_HOW_DIFF = "difference: the token less the kernels timed alone{floor}; attention, norms, launches and gaps were not timed"
 ROLE_SOURCE_ISOLATED = "isolated"
 
-UNATTRIBUTED = "weight kernel, unattributed"  # a GEMV no role took: weight time outside the limit; the capture has no bytes for it
 UNATTRIBUTED_LABEL = "weight kernels, unattributed"  # its own tie-out line, the kernels named
-GEMV_WORDS = ("mul_mat_vec", "kernel_mul_mv", "gemv")  # the GEMV names the adapters know (collectors/engine_kernels.py)
-# what a kernel that is not a weight role is, by words in its name; for labels only, never for attribution. The GEMV
-# words come before the elementwise ones: "mul_mat_vec" holds "mul", and a 2 ms GEMV is not elementwise work
-KIND_WORDS = (("delta_net", "recurrent"), ("delta_rule", "recurrent"), ("causal_conv1d", "recurrent"), ("ssm_", "recurrent"), ("flash", "attention"), ("attention", "attention"), ("softmax", "attention"), ("rms_norm", "norm"),
-              ("norm", "norm"), ("quantize", "quantize"), ("rope", "rope"), ("set_rows", "KV cache write"),
-              ("copy", "copy"), ("cpy", "copy"), ("COPY", "copy"), ("get_rows", "copy"), ("concat", "copy"),
-              ("bin_bcast", "elementwise"), ("topk", "reduce"), ("reduction", "reduce"),
-              # a fast Walsh-Hadamard transform (fwht) rotates activations and reads no weights
-              ("fwht", "transform"), *((w, UNATTRIBUTED) for w in GEMV_WORDS),
-              ("silu", "elementwise"), ("glu", "elementwise"), ("add", "elementwise"), ("mul", "elementwise"))
-KINDS = ("attention", "recurrent", "norm", "quantize", "rope", "KV cache write", "copy", "elementwise", "reduce", "transform", UNATTRIBUTED)
-KIND_PREFIX = (("r_", "reduce"), ("E_", "elementwise"))  # tinygrad's generated kernel names
-
-
-def kind_of(row:dict[str, Any]) -> str:
-  if row.get("logical_parts"):
-    return "weight kernels"
-  if row.get("kind") in KINDS:
-    return row["kind"]
-  name = str(row.get("kernel") or "")
-  if row.get("role") in KINDS:
-    return row["role"]
-  for word, kind in KIND_WORDS:
-    if word in name:
-      return kind
-  for prefix, kind in KIND_PREFIX:
-    if name.startswith(prefix):
-      return kind
-  return "other"
 
 
 def roles_outside_limit(profile:dict[str, Any] | None, limit_keys:set[tuple[str, str]]) -> dict[int, str]:
@@ -147,22 +119,6 @@ def state_ms(profile:dict[str, Any], provider:str, run:pathlib.Path | None, band
   return 2 * b / (bandwidth_gbs * 1e9) * 1e3, f"recurrent state read and written, {b / 1e6:.1f} MB each way per stream: {how}"
 
 
-def window_context(row:dict[str, Any]) -> float | None:
-  """Only explicit, internally consistent differential windows replace the requested base context."""
-  window = (row.get("engine") or {}).get("timing_window") or {}
-  if window.get("method") != "long_minus_short":
-    return None
-  from boltbeam.collectors.llama_bench_decode import decode_window
-  from boltbeam.collectors.vllm_decode import decode_window_vllm
-  vllm = "vllm_version" in window  # vLLM's window is only checked against its own row's recorded fields (the rest of the rule is the same)
-  expected = decode_window_vllm(row.get("context"), row.get("decode_tokens"), row.get("batch"), row["engine"]) if vllm else \
-    decode_window(row.get("context"), window.get("long_tokens"), window.get("short_tokens"), window.get("independent_pairs"))
-  if window != expected or any(type(window.get(k)) is not int for k in ("long_tokens", "short_tokens", "context_start", "context_end", *(() if vllm else ("repetitions",)))) \
-      or not vllm and (window.get("warmup") is not False or type(row.get("decode_tokens")) is not int or row["decode_tokens"] != window["long_tokens"] - window["short_tokens"]):
-    raise ValueError("decode timing window is inconsistent with the recorded work")
-  if vllm:return None  # a vLLM capture is keyed by the requested context, which stays the headline
-  mean = (window["context_start"] + window["context_end"]) / 2
-  return int(mean) if mean.is_integer() else mean
 
 
 def attended_context(trace:dict[str, Any], provider:str) -> float | None:
@@ -701,19 +657,13 @@ def launch_cost(trace:dict[str, Any] | None, diff_ms:float) -> dict[str, Any] | 
 # nsys times kernels on the GPU, its cost is on the CPU between launches, in the gaps. Qwen3.8-27B on two H100 pods captured
 # at +25.5% and +11.9%: kernels 12.012 vs 12.023 ms, the 11 roles of 3% of kernel time or more within 0.8%, all 30 within
 # 2.4%, gaps 3.411 vs 1.778 ms (docs/pods.md, in-model).
-REPLICA_TOL = (0.03, 1.0, 2.5)  # a row of this share of the kernel time or more within this %, any row within the last
+# a row of this share of the kernel time or more within this %, any row within the last (data/policy.json)
+REPLICA_TOL = (value("replica_large_row_share"), value("replica_large_row_pct"), value("replica_any_row_pct"))
 
 
-def replica_rows(trace:dict[str, Any]) -> dict[str, float]:
-  """One capture's kernel ms per token by table row: "role quant", or the kind of other kernel."""
-  n, out = next((r.get("decode_tokens") for r in trace.get("rows", []) if r.get("scope") == "whole_step"), None) or 1, {}
-  for r in (r for r in trace.get("rows", []) if r.get("scope") == "kernel"):
-    out[k] = out.get(k := f"{r['role']} {r['quant']}" if r.get("role") else kind_of(r), 0.0) + float(r["wall_us"]) / n / 1000.0
-  return out
 
 
 REPLICA_FLOOR = REPLICA_TOL[0] * REPLICA_TOL[1] / 100  # of the kernel time: what the rule allows its smallest large row
-REPLICAS = 3  # the repeats an engine hands in: fresh captures, or groups of one capture's steps
 
 
 def capture_over_ceiling(run:pathlib.Path, context:float | None, provider:str, captured_ms:float | None) -> bool:
@@ -938,13 +888,21 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   base = float(untraced_ms) if untraced_ms else wall
   e2e = attr.get("end_to_end") or {}
   comparable = e2e.get('confirms') is True or (bool(untraced_ms) and abs(base-wall) < 1e-9)
-  can_project = project_speedup and comparable
+  rule = {}
+  if e2e.get("confirms") is False and untraced_ms:  # over the ceiling: the one rule decode tables go through (over_ceiling)
+    gaps = rows[-1]
+    rule = over_ceiling(busy=wall - gaps["now_ms"], gaps=gaps["now_ms"], untraced=base, replicas=attr.get("replicas"), of=attr.get("replicas_of"))
+    if bound := rule.get("gaps_bound"):  # the gaps are the bound and the rows sum to the untraced prefill
+      gaps.update(name=GAPS_BOUND_ROW, now_ms=bound["ms"])
+  token = base if rule.get("gaps_bound") else wall
+  can_project = project_speedup and (comparable or rows_stand(rule))
   total = rank(rows, lambda r: base - r["lost_ms"] if can_project and r["what"] != "limit" else None, "ms_if_fixed")
   limit = sum(r["limit_ms"] or 0.0 for r in rows)
   compute = sum(r.get("compute_ms") or 0.0 for r in rows)
   what = f"{length}-token turn after {depth} tokens in the cache" if depth else f"{length}-token prefill"
   projection=("Projected time fixes one row only. " if can_project else
-              "Projected time unavailable: capture timing is unqualified. " if project_speedup else
+              "Projected time unavailable: capture timing is unqualified" + (f" ({rule['refused']}). " if rule.get("refused") else ". ")
+              if project_speedup else
               "Server gains unavailable: attribution is unvalidated. ")
   words=[f"{what} · captured {wall:.1f} ms. "+projection+
          "Limits use compute and memory; chip best uses the fastest exact path. "
@@ -967,8 +925,8 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
     words.append(f"{', '.join(mixed)}: instructions on more than one path; its operations are split over them by its instruction sites, each part at its own path's peak.")
   title = f"Where the turn goes at depth {depth:,}" if depth else PREFILL_TITLE
   columns = PREFILL_COLUMNS if project_speedup else (*PREFILL_COLUMNS[:6], "server ms if fixed", PREFILL_COLUMNS[7])
-  return table(title, columns, rows, now=wall, limit=limit, lost=total, no_limit=NO_CEILING,
+  return table(title, columns, rows, now=token, limit=limit, lost=total, no_limit=NO_CEILING,
                if_fixed=("ms_if_fixed", "{:.1f}"), peak=("mfu_pct", "{:.1f}%"), sum_name="= prefill", estimate=False,
-               token_ms=wall, base_ms=base, limit_ms=limit, words=" ".join(words), workload="prefill", length=length,
+               token_ms=token, base_ms=base, limit_ms=limit, words=" ".join(words), workload="prefill", length=length,
                mfu_pct=100.0 * compute / base if base else None, **({"depth": depth} if depth else {}),
-               **({"end_to_end": e2e} if e2e else {}))
+               **({"end_to_end": e2e} if e2e else {}), **({"qualification": q, **rule} if (q := qualification_words(rule)) else {}))

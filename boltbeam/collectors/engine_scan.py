@@ -41,6 +41,7 @@ import time
 from typing import Any, Callable, Iterable, Mapping
 
 from boltbeam.vocab import SCHEMA_ENGINES as SCHEMA
+from boltbeam.target.gpu import first_gpu
 
 FILE_ENV = "BOLTBEAM_ENGINES_FILE"
 VENV_CAP = 40  # pythons started in one scan, at most
@@ -178,7 +179,6 @@ def backend_tag(env:Mapping[str, str] | None = None) -> str | None:
   the scan finding the tools on env's PATH; None when the scan found no GPU, or GPUs of more than one vendor."""
   from boltbeam.workflow.autoscan import _hardware_profile
   from boltbeam.workflow.chips import NoVendorRow, vendor_row
-  from boltbeam.workflow.common import first_gpu
   env = os.environ if env is None else env
   try:
     device = first_gpu(_hardware_profile(tool_resolver=lambda name: shutil.which(name, path=env.get("PATH"))))

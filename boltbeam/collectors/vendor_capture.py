@@ -273,7 +273,7 @@ def capture(backend:str, argv:list[str], out:pathlib.Path, *, timeout_s:float = 
   window the program marks with the CUDA profiler API (nsys) or roctx (rocprofv3). The program runs in `cwd`, by default the capture
   folder `out`: whatever it drops into its working directory (an old llama.cpp build writes a 421 KB
   llama_decode.dot graph dump on every decode) lands beside its capture, not in the caller's folder. Callers pass
-  absolute paths in argv. device: the run's GPU (common.run_gpu), whose clocks are logged beside the capture."""
+  absolute paths in argv. device: the run's GPU (gpu.run_gpu), whose clocks are logged beside the capture."""
   p = plan(backend)
   if p["tool"] is None:
     raise NoCapture(p["reason"])

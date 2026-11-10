@@ -21,8 +21,15 @@ Every commit must carry one owning-subsystem prefix.
 | `[bench]` | benchmark harnesses and fixtures |
 | `[path]` | path/asset resolution |
 | `[collectors]` | external-tool collector adapters |
+| `[workflow]` | the run pipeline: scan, capture, pairing, tie-out against the roofline, the run folder |
+| `[report]` | the rendered reports (HTML, Markdown, summary text) |
+| `[roofline]` | the roofline: memory, compute and recurrent-state limits |
+| `[kernel_analysis]` | kernel evidence: ingestion, classification, diagnosis, recommendation |
+| `[runtime]` | engine drivers and device bridges that BoltBeam runs on a GPU |
+| `[core]` | shared types, canonical forms, the policy accessor |
+| `[artifacts]` | artifact readers and run-folder I/O |
 
-Use the subsystem that owns the behavior. Documentation-only changes use
+Use the subsystem that owns the behavior: the prefix of the package the code lands in. Documentation-only changes use
 `[docs]` unless the document is the contract for another subsystem.
 
 ## NFC

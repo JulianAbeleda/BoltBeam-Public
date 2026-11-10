@@ -22,6 +22,7 @@ from boltbeam.collectors import gemv_reference as reference
 from boltbeam.collectors import kernel_timer
 from boltbeam.collectors.kernel_timer import Check, KernelSpec
 from boltbeam.target import vendors
+from boltbeam.artifacts.run_io import load_manifest, read_json
 
 ADAPTER = "boltbeam"
 COLLECTOR_ID = "boltbeam-gemv"
@@ -315,7 +316,6 @@ def collect_probe_evidence(run:pathlib.Path, say:Callable[[str], None] = lambda 
   from boltbeam.profile.gguf import read_gguf_split, read_tensor
   from boltbeam.target.targets import get_target
   from boltbeam.vocab import SCHEMA_PROBE_EVIDENCE
-  from boltbeam.workflow.common import load_manifest, read_json
   from boltbeam.workflow.limit import run_bandwidth
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))

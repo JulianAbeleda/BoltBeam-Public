@@ -20,6 +20,19 @@
     "engine_latest_max_age_h": {"value": 24.0, "reason": "a look at an engine's upstream releases older than this many hours cannot say a run's build was the latest at run time (engine_builds.currency); llama.cpp publishes several builds a day"},
     "update_check_hours": {"value": 24.0, "reason": "the screen asks the public mirror for a newer BoltBeam at most once in this many hours (cli/self_update.py); a failed check is tried again at the next start"},
     "update_check_timeout_s": {"value": 5.0, "reason": "a look at the mirror's tags that takes longer than this many seconds is a failed check, never up to date"},
-    "fetch_ssh_connect_timeout_s": {"value": 10.0, "reason": "boltbeam fetch gives up on a remote that has not answered ssh in this many seconds (BatchMode: it never waits at a prompt)"}
+    "fetch_ssh_connect_timeout_s": {"value": 10.0, "reason": "boltbeam fetch gives up on a remote that has not answered ssh in this many seconds (BatchMode: it never waits at a prompt)"},
+    "pairing_max_fused": {"value": 3, "reason": "calls one launch may serve in the pairing (gate and up fused: 2); the pairing rule names it (collectors/pairing.py MAX_FUSED)"},
+    "pairing_max_split": {"value": 4, "reason": "launches one call may take in the pairing (a library that cuts a product along M); the pairing rule names it (collectors/pairing.py MAX_SPLIT)"},
+    "pairing_max_nodes": {"value": 50000, "reason": "the layer walk stops after this many nodes and says the pairing is unresolved, search_limit (collectors/pairing.py MAX_NODES)"},
+    "pairing_max_launch_visits": {"value": 50000000, "reason": "the layer walk stops after visiting this many launches, search_limit: bounds search work as well as nodes on long captures (collectors/pairing.py MAX_LAUNCH_VISITS)"},
+    "pairing_max_sum_steps": {"value": 20000, "reason": "subsets one row's choice may visit in the pairing (collectors/pairing.py MAX_SUM_STEPS)"},
+    "pairing_inner_spread": {"value": 0.1, "reason": "two slots' launch times are apart when their inner spreads, this share cut from each end of each slot's sorted launch times, do not overlap: the M = 1 bytes order (collectors/pairing.py SPREAD)"},
+    "pairing_recurring_share": {"value": 0.9, "reason": "a slot's kernel runs in at least this share of a kind's layers in a unit, or of the units' last layers (collectors/pairing.py RECUR)"},
+    "prefill_max_capture_launches": {"value": 1000000, "reason": "a prefill capture estimated to hold more launches than this is not taken: its untraced time, MFU and clock stand alone (collectors/prefill.py MAX_CAPTURE_LAUNCHES)"},
+    "replay_max_overhead": {"value": 0.05, "reason": "the capture-overhead ceiling: a profiled token may run at most this share over the native one; the 5% rule the tie-out and the replay qualification share (collectors/replay_overhead.py MAX_OVERHEAD)"},
+    "replica_large_row_share": {"value": 0.03, "reason": "a kernel row of at least this share of the kernel time is a large row for the replication rule (workflow/tie_out.py REPLICA_TOL)"},
+    "replica_large_row_pct": {"value": 1.0, "reason": "a run's repeats agree when every large row is within this many percent (workflow/tie_out.py REPLICA_TOL)"},
+    "replica_any_row_pct": {"value": 2.5, "reason": "and every other row within this many percent (workflow/tie_out.py REPLICA_TOL)"},
+    "gemm_prune_ratio": {"value": 6.0, "reason": "GEMM configs the model puts beyond this ratio of its best are pruned: measured winners sit up to 5.3x above the model's floor, and every cuBLAS pick within 2x (search/gemm_strategy.py PRUNE_RATIO)"}
   }
 }

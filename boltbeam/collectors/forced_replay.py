@@ -9,6 +9,7 @@ from itertools import zip_longest
 from boltbeam.collectors.replay_semantics import SETTINGS,session_identities
 from boltbeam.collectors.vllm_two_pass import replay_steps
 from boltbeam.math.numerics import ACCOUNTING_RTOL,ACCOUNTING_ATOL,INTERVAL_ATOL
+from boltbeam.artifacts.run_io import load_manifest
 
 ARTIFACT='forced_replay.json'
 SCHEMA='boltbeam.forced_replay.v1'
@@ -242,7 +243,6 @@ def collect(run, *, provider='vllm', say=lambda _:None):
   import os,shutil,sys
   from boltbeam.runtime.bounded_job import run as bounded
   from boltbeam.collectors.providers import gpu_free
-  from boltbeam.workflow.common import load_manifest
   from boltbeam.target.targets import get_target
   from boltbeam.collectors import vendor_capture,rocpd_trace
   run=Path(run).resolve();facts=load_manifest(run);backend=get_target(facts['target_id']).backend
@@ -290,7 +290,6 @@ def collect(run, *, provider='vllm', say=lambda _:None):
 
 def publish(run, manifest, *, say=lambda _:None):
   """Reconcile retained or newly captured passes, then atomically publish the result."""
-  from boltbeam.workflow.common import load_manifest
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
   from boltbeam.workflow.output import OUTPUT_ARTIFACTS
   run=Path(run);facts=load_manifest(run)

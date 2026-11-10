@@ -10,7 +10,7 @@ from typing import Any
 from boltbeam.collectors import providers
 from boltbeam.report.html import STAGES, stage_state
 from boltbeam.workflow import fetch
-from boltbeam.workflow.common import load_manifest, read_json
+from boltbeam.artifacts.run_io import load_manifest, read_json
 from boltbeam.workflow.layout import LAYOUTS
 
 SCHEMA = "boltbeam.tui.v1"
@@ -110,7 +110,7 @@ def find_run(root:pathlib.Path, run_id:str, saved:pathlib.Path | None = None) ->
 
 def runs(root:pathlib.Path, saved:pathlib.Path | None = None, *, all_places:bool = False) -> dict[str, Any]:
   """One summary per run under root. A root that does not exist yet holds no runs: that is a fact, not an error.
-  This read never creates it; the first pipeline run does (workflow/common.py run_dir). all_places also lists the
+  This read never creates it; the first pipeline run does (artifacts/run_io.py run_dir). all_places also lists the
   screens' work area and the saved runs (run_places), each row marked where it lives: runs, work or saved."""
   if root.exists() and not root.is_dir():
     raise Refused(f"{root} is not a folder")

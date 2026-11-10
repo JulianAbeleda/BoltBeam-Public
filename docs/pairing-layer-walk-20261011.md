@@ -18,7 +18,7 @@ fixed order that every engine keeps:
 
     input projections -> the block (attention, or the recurrent scan) -> output projection -> FFN in -> FFN out
 
-The block's kernels are the ones `tie_out.kind_of` already names (attention, recurrent). They are the landmarks.
+The block's kernels are the ones `kernel_kind.kind_of` (in `collectors/`) already names (attention, recurrent). They are the landmarks.
 Everything else follows from counts:
 
 1. **Layers.** The block launches, grouped into runs (consecutive block launches with no weight launch between them),
@@ -214,3 +214,143 @@ higher unpaired-role count.
 
 Principle: disclose, not gate. Unresolved attribution is a stated property of the run, like capture overhead. Hiding it
 is a failure.
+
+## The model's own layer sequence (2026-11-09)
+
+The walk above knows each layer kind by its count, and one slot pattern per kind. A Nemotron-H hybrid (Nemotron 3.5
+Lightning 30B-A3B: 52 layers, each one of mamba, moe or attention, in the order its config names) breaks that: a
+standalone expert layer has no block kernel to mark it, and one follows 17 of the 23 mamba layers and all 6 attention
+layers. On the stored TensorRT-LLM H200 decode capture the walk put the expert launches on "the output side of
+recurrent layers", where no slot held a launch in every layer: the five MoE rows and both attention rows were unpaired
+(`no slot ... fits 1449 launches`), with a tie on attn_qo.
+
+- **The profile records the sequence.** A config that names each layer's block (`layers_block_type`: Jamba, Nemotron
+  3.5; Nemotron-H's `hybrid_override_pattern` letters M, *, -, E) is read into `metadata.layers.sequence` in the walk's
+  kinds (`vocab.LAYER_KIND_OF_BLOCK`: mamba is recurrent, mlp is ffn; `profile/loaders._layers_from_config`). A block
+  the table lacks, or a count the config contradicts, records nothing, and the walk goes by counts as before.
+- **The walk follows it** (`pairing.sequence`, through `pair(order=)` from `pairing.layer_order(profile)`; every engine
+  reaches it through `attribution.attribute` and `prefill_attribution`). A layer of a kind with no block kernel runs in
+  the gap after the block layer before it, on that layer's output side after its own rows. A block layer followed by
+  such layers launches differently from one that is not, so it is a kind of its own, as `signatures` already makes of
+  layers that launch differently: `recurrent/moe` (17 layers), `recurrent` (6), `attention/moe` (6). The rows of the
+  unmarked kind's classes (`vocab.LAYER_CLASSES`) take those kinds' layers through `layer_kinds`, as many per layer as
+  their count over the sequence's layers of the kind. The output side's data flow then orders the expert rows after
+  the layer's out projection, router and experts' gate_up before the experts' down. A sequence that begins with an
+  unmarked layer, names a kind the walk has not, or contradicts the profile's counts is `NoStructure`, said in the
+  trace's `structure.flat`. A trace walked this way carries `structure.sequence` and `SEQUENCE_RULE` in its rule.
+- **Nothing changes without a sequence.** The stored llama.cpp decode captures of Qwen3.8-27B UD-Q4_K_M (H100, three
+  pairs with replicas) and Qwen3-14B Q4_K_M (H200) re-attribute to byte-identical traces.
+
+On the stored capture, 10 of 11 rows pair (before: 3): ssm_in, ssm_out, the experts' gate_up (the cutlass MoeFCGemm)
+and down (the grouped GemmUniversal), both shared-expert rows, attn_qo's q (the qkv nvjet) and o, attn_kv, lm_head;
+moe_router is a tie, said. What the walk still gets wrong there is not the sequence: in decode every unnamed kernel
+is a candidate, and a row of 0.7 MB (the router) or 2.8 MB (k and v) fits any launch slower than its bytes need. The
+router's first fitting slot is cuBLAS's `splitKreduce_kernel` of the out projection (a reduction, 1.7 us), with a
+twin in the router's own fp32 reduction (the tie); attn_kv takes that reduction as two fused calls; and the shared
+expert's gate_up (20 MB) takes the router's nvjet (5.7 us) ahead of its own (8.9 us), so shared down takes the gate_up's.
+The fix is a row of data, not a walk rule: name cuBLAS's split-K reduction and torch's elementwise kernels for what
+they are in `tie_out.KIND_WORDS`, which `projection_candidate` already honours. It is not in this change because every
+stored vLLM AWQ capture holds thousands of those launches as slots, so their traces' `structure.sides` would move.
+
+## Helpers are no slots; a packed launch; the order bytes give at M = 1 (2026-11-10)
+
+Three things the H200 TensorRT-LLM capture needed, found by re-attributing it offline (no stored llama.cpp decode trace
+changes its pairs except where the walk was wrong, below; the 37 pairing fixtures re-record one, DeepSeek-V2-Lite).
+
+- **A library's helpers carry no weight** (`tie_out.KIND_WORDS`, data): cuBLASLt's `splitKreduce_kernel` (a split-K
+  GEMM's reduction), torch's `reduce_kernel`, its `elementwise_kernel` family (fills, compares, index puts,
+  scatter/gather, arange), CUB's `DeviceScan`, torch's `indexSelect` gather and sort (`Sort`: `bitonicSortKVInPlace`,
+  an MoE dispatch's `fusedBuildExpertMapsSortFirstToken`), and the dispatch's row gather (`expandInputRows`) and
+  stride table (`computeStrides`). `projection_candidate` reads the matrix words (gemm, gemv, matmul) in a kernel's
+  own name, not in its template arguments: `expandInputRowsKernel<..., GroupedGemmInput>` gathers rows for the
+  grouped GEMM and reads no weight. Every stored capture's kernel names were listed against the new words: no weight
+  kernel is caught.
+- **A layer's input rows that outnumber its launches run as one launch** (`pairing._packed`): TensorRT-LLM (and
+  vLLM's `qkv_proj`) run q, k and v as one GEMM where the profile has two rows. A kind's input slots, less the launch
+  the layer before owes its out projection, hold one launch per attention layer; the rows are then one item of that
+  launch (parts), each part's calls per launch its own (`attribution.attribute` splits the launch's time by bytes and
+  records each part's calls per launch as `fused`). Before, the walk gave the launch to q and said k and v fit no slot,
+  and, with every row owed a launch, the preceding mamba layer's out projection lost its slot too and the search ran
+  out of budget. The RTX 5090 vLLM BF16 fixture (`d8-vllm`) keeps its recorded result: its frozen candidate list still
+  holds the helpers as slots, so its room is not one launch.
+- **At M = 1 a launch's work is its weight bytes.** On one template, among rows of one format on one side of a kind, a
+  row of more bytes per launch takes no faster launches than a placed row of fewer, and one of fewer no slower, where
+  the two slots' inner spreads (`SPREAD`: the launches between the 10th and 90th percentiles; a thousand launches have
+  outliers at both ends) do not overlap and the bytes differ by the policy `operations_order_ratio` — the input side's
+  operations order (prefill, `nk`) carried to bytes and to the output side. Across templates a kernel's floor differs,
+  so the order is a preference the walk applies when two rows could exchange their launches: the pairing that gives
+  the row of more bytes the slower launches is the one shown (the data flow's order and the one-template order
+  re-checked on it), instead of both rows withdrawn as a tie. The router (0.7 MB, a latency-bound split-K GEMM at 5.7
+  us) and the shared expert's gate_up (20 MB at 8.9 us) are that exchange on the H200 capture.
+
+On the stored capture every row pairs (11 of 11; before 10, with the router a tie and three rows on wrong launches):
+ssm_out, the router, the shared expert's gate_up and down, and the experts' gate_up and down on their own launches in
+that order after each mamba or attention block; q, k and v as one packed launch; o; lm_head. Not attributed: 1.350
+ms/token of 3.498 (before 1.440). On the stored llama.cpp runs: Qwen3-14B Q4_K_M on the H200 had attn_kv's k and v on
+40 of the q/o launches (grid 5120, 12.8 us) and attn_qo on 40 of the k/v launches (grid 1024, 4.0 us), inverted; the
+one-template order puts each on its grid. Flash-Next Q4_K_XL on the H200 had the dense FFN's down and the shared
+expert's down as a said exchange in every layer (25 rows unpaired); their bytes tell them apart, 5 rows stay
+unpaired (q/o against k/v, the router's twin) and 0.35 ms/token less is unattributed. The other six llama.cpp runs
+(H100, L40S, RTX 3090, 4090, 5090) re-attribute to the same pairs. The evidence runs' summary.md and results.json
+re-render identically.
+
+What this capture still cannot say: the TensorRT-LLM driver's packed matrices were not read (`trtllm_decode_drive._matrices`:
+`'GenerationExecutorProxy' object has no attribute 'engine'`), so the qkv launch is read from the counts, not from
+the engine's own say; and the Flash-Next shared expert's three 1.7 MB rows (gate, up, down, each 640 x 2560) have
+equal bytes, so the walk cannot tell the down's launches (grid 2560) from the gate's and up's (grid 640) without the
+grid, which decode does not read.
+
+## A matrix-vector launch's grid reads the rows it writes (2026-11-10)
+
+The section above left the Flash-Next capture with 5 roles unpaired and said only the grid could tell the shared
+expert's rows apart. The capture already holds the grid, and it settles all three cases.
+
+- **The contract.** llama.cpp's matrix-vector kernels launch grid.x = ceil(rows / rpb) over the rows they write:
+  `mul_mat_vec_f` one block per row (mmvf.cu), `mul_mat_vec_q` rpb 1 at one column, 2 at 2 to 8 columns, and nwarps
+  (2, 4 or 8 by device table) when its template's small_k is set (`<type, ncols, has_fusion, small_k, halve_iters>`;
+  small_k is chosen when K is too short to keep the warps busy, only where nwarps > 1). Checked against the selected
+  capture of all 12 stored llama.cpp decode runs (14B and 27B on H100, H200, H200 NVL, L40S, RTX 3090, 4090 and 5090,
+  and Flash-Next): every one of their 158,630 mul_mat_vec launches has a profile matrix's rows at that rpb, except
+  Flash-Next's F32 products of grid 4 and 1, which read two small vectors the profile excludes without recording rows
+  (hc_*_inject, ffn_gate_inp_shexp). rpb is 1 throughout but on Flash-Next's small_k launches, where it is 4. A
+  template of another arity with a flag set leaves rpb open.
+- **Where it is not used.** mul_mat_q has its own proof (`llama_mmq.fits`, prefill). cuBLAS and TensorRT-LLM's nvjet
+  GEMMs tile and split K: on the H200 Nemotron capture ssm_out and the shared expert's down, both 2688 rows, launch
+  2x63 and 4x22, and lm_head (131072 rows) 2x66; cutlass's grouped GEMMs are persistent (264x1, 1x132). Their grids
+  state no rows, and the walk reads nothing from them (`llama_mmq.rows_per_block` is None).
+- **The walk.** `_fits` rules out a launch whose grid cannot cover the row's output rows (the profile's rows, passed as
+  n by `attribution.attribute` from the role's shape); among the groups a row fits, one whose grid confirmed it comes
+  before one of a kernel that states no rows, an option all of whose launches confirm it comes first at any launch
+  ratio, and a free group stating no rows is no twin of one whose grid confirmed the row.
+
+What the Flash-Next capture shows (H200, llama.cpp 50569eb87; the model is a gated-delta-net hybrid with a lightning
+indexer, a 512-expert MoE with a shared expert, and mHC hyper-connections):
+
+| role | before (6d1f2fc6) | after |
+|---|---|---|
+| attn_qo BF16 (indexer.q_proj, 512 x 2560) | exchange with attn_kv BF16, unpaired | mmvf grid 512 |
+| attn_kv BF16 (indexer.k_proj, 128 x 2560) | exchange with attn_qo BF16, unpaired | mmvf grid 128 |
+| moe_router F32 (512 x 2560) | took a 4-row F32 product, its own grid-512 launch the twin: unpaired | mmvf grid 512 |
+| moe_shared_expert_gate_up (640 x 2560, two) | its fused grid-640 launch and a 10240-row hc up launch, one call each | the fused grid-640 launch, two calls |
+| moe_shared_expert_down (2560 x 640) | small_k grid 640 | small_k grid 640 (rpb 4: 2560 rows) |
+| ffn_gate_up (hc_ffn_up, 10240 x 320) | grid-320 launches (320 rows) | small_k grid 2560 (rpb 4: 10240 rows) |
+| ffn_down (hc_ffn_down, 320 x 10240) | grid 320, and one launch a token of 2560 rows | grid 320 |
+
+Unpaired 5 -> 0, no tie; not attributed 4.131 -> 4.158 ms/token (the roles left launches that were no role's). The
+other stored captures re-attribute byte-identically; one prefill fixture (Qwen3-0.6B's pruned last layer) re-records
+because ffn_gate_up no longer takes the head's 151936-row GEMV as a second launch. The diagnosis the section above gave
+was half right: the shared expert's down does not launch grid 2560. It is small_k, four rows a block, so it launches
+grid 640 like the fused gate and up; the grid-2560 launch beside them writes 10240 rows (an mHC up projection).
+
+The evidence run's report (docs/evidence/gpu-sweep-20261109/runpod-h200/h200-flash-next-q4kxl-llama, re-rendered with
+the re-attributed trace): 17 of 21 weight roles timed (14), weight kernels above their ideal 3.614 ms (3.703) and
+unattributed 0.949 ms (0.859), the router and the indexer's q and k get rows, the shared expert's gate_up halves to its
+one launch (0.22 ms), and report_validation.json lists no unresolved pairing (the tie). results.json is unchanged.
+
+What the capture still cannot say. The profile classes the mHC tensors by substring (`profile/roles.py`: `ffn_up`,
+`ffn_down` match `hc_ffn_up`, `hc_ffn_down`), so ffn_gate_up and ffn_down here are the FFN sublayer's hyper-connection
+pair, and `hc_attn_down`/`hc_attn_up` are unclassified weights. The launch order is hc down (320 rows) then hc up (10240
+rows), the reverse of an FFN's in-then-out, so the data flow's order puts ffn_down on the next 320-row launch after
+ffn_gate_up: the next sublayer's hc_attn_down, of the same shape, format and kernel, and about as long. No grid
+tells those two apart; the times attributed are the same, the launch is not. The fix is the classifier (an mHC class of
+its own), not the walk.

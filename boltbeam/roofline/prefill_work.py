@@ -25,6 +25,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from boltbeam.quantization.quant import load_quant_registry
+from boltbeam.roofline.mamba2 import FORMULA_REFUSED, FormulaRefused, formula_cannot_limit
 
 DEFAULT_ACTIVATIONS = {"in": "F16", "out": "F16"}  # an engine adapter that names no formats: fp16 in and out, said
 
@@ -165,11 +166,11 @@ RECURRENT_FORMS: dict[str, tuple[str, Any]] = {
 
 def recurrent_executed(profile:dict[str, Any], length:int, form:dict[str, Any] | None) -> dict[str, Any] | None:
   """The recurrent scan's executed operations under the engine's named algorithm (form: {"name", "chunk", optional
-  "span"}), over its layers, with its words; None when no form is named, the name is not in RECURRENT_FORMS, or
-  there is no recurrent block."""
+  "span"}), over its layers, with its words; None when no form is named, the name is not in RECURRENT_FORMS, there
+  is no recurrent block, or the block is Mamba2 (its work is not this gated delta rule: roofline/mamba2.py)."""
   r = (profile.get("metadata") or {}).get("recurrent") or {}
   layers, state, inner = r.get("layer_count"), r.get("state_size"), r.get("inner_size")
-  if not (form and form.get("name") in RECURRENT_FORMS and layers and state and inner and form.get("chunk")):
+  if not (form and form.get("name") in RECURRENT_FORMS and layers and state and inner and form.get("chunk")) or r.get("kind") == "mamba2":
     return None
   words, per = RECURRENT_FORMS[form["name"]]
   chunk, span = int(form["chunk"]), (int(form["span"]) if form.get("span") else None)
@@ -392,7 +393,10 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
   sites; the recurrent block at the fp32 vector rate. Kernels the model counts no work for add nothing. roles:
   prefill.prefill_roles; formats: the engine's (activations, attention_activations, kv); weight_path: a weight quant's
   matrix path in this engine; ubatch, batch: the engine's chunk and the tokens per output call. Each row and the total
-  also carry best_ms, the same work at the chip-best path for the row's data (chip_best)."""
+  also carry best_ms, the same work at the chip-best path for the row's data (chip_best). A Mamba2 hybrid is refused
+  (FormulaRefused): its work comes from a capture's verified stages, never this formula (roofline/mamba2)."""
+  if formula_cannot_limit(profile):
+    raise FormulaRefused(FORMULA_REFUSED)
   if length <= 0:
     return {"ms": 0.0, "best_ms": 0.0, "rows": [], "unmodelled": []}
 

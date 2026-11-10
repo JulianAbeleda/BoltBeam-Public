@@ -5,10 +5,12 @@
 `boltbeam.vocab.role_group_of`. The vocabulary and the fine->coarse map are centralized in vocab.py; only
 the name PATTERNS live here.
 
-Ordering matters: MoE tensor names are supersets of dense names (`ffn_gate_exps`, `ffn_gate_inp`,
-`ffn_gate_shexp` all contain `ffn_gate`), so MoE patterns are matched before the dense fallbacks. Attention
-patterns are anchored on `.weight` so per-head norms (`attn_q_norm.weight`) fall through to `norm`, exactly
-as the shipped dense classifier did.
+A pattern matches whole components of the tensor's dotted name, never a substring of one: `ffn_up` is the
+component `ffn_up` (`blk.0.ffn_up.weight`), not `hc_ffn_up`, and `q_proj` is `self_attn.q_proj.qweight`'s, not
+`qkv_proj`. A per-head norm (`attn_q_norm`) is its own component and falls through to `norm`. Two families are named
+by their own component before any pattern: a hyper-connection mixer's tensors (`hc_*`, `output_hc_*`) and a sparse
+attention indexer's (`indexer.*`, `indexer_*`); their norms stay `norm`. (Flash-Next's `hc_ffn_up`/`hc_ffn_down` were
+the FFN's up and down and its `indexer.q_proj`/`k_proj` attention's q and k while the patterns were substrings.)
 
 Every weight a decode reads once per token is named by what it is, never left as `other`: a fused `attn_qkv`
 projection is one role with that tensor's bytes, the `attn_gate` beside it another. The ssm family is classified by
@@ -21,7 +23,7 @@ the limit.
 """
 from __future__ import annotations
 
-from boltbeam.vocab import RoleClass, role_group_of
+from boltbeam.vocab import RoleClass, RoleClass as R, role_group_of
 
 
 VECTOR_SIDE = 16  # a matrix with a side under this is vector-like (conv taps 4, norm groups 8, a (1, n) scale)
@@ -35,6 +37,24 @@ def is_matrix(dims:tuple[int, ...] | None) -> bool:
   return dims is not None and len(dims) == 2 and min(int(d) for d in dims) >= VECTOR_SIDE
 
 
+def _component_role(parts:list[str], table:dict[str, RoleClass]) -> RoleClass | None:
+  """The role of the first component of the name the table names whole (`mixer.in_proj` as one); an anchored GGUF
+  component counts only before `weight`."""
+  for i, p in enumerate(parts):
+    for key in (".".join(parts[i:i + 2]), p):
+      if key in table and (key not in _ANCHORED or parts[i + 1:i + 2] == ["weight"]):
+        return table[key]
+  return None
+
+
+def _family(parts:list[str]) -> RoleClass | None:
+  """A tensor of a family named by its own component: a hyper-connection mixer or a sparse attention indexer."""
+  own = [p for p in parts if p.startswith(("hc_", "output_hc_", "indexer"))]
+  if not own or any(p.endswith("_norm") for p in parts):  # its norms are norms
+    return None
+  return RoleClass.ATTENTION_INDEXER if own[0].startswith("indexer") else RoleClass.HYPER_CONNECTION
+
+
 def _ssm_role(name:str, dims:tuple[int, ...] | None = None) -> RoleClass | None:
   n = name.lower()
   if not any(tok in n for tok in _SSM_TOKENS) or "norm" in n:
@@ -43,10 +63,7 @@ def _ssm_role(name:str, dims:tuple[int, ...] | None = None) -> RoleClass | None:
     return RoleClass.SSM_CONV
   if dims is not None and not is_matrix(dims):  # a vector or thin tensor: A, D, the dt bias, a scan buffer
     return RoleClass.SSM_SCAN if "scan" in n else RoleClass.SSM_STATE
-  for token, rc in _SSM_MATRIX_PATTERNS:
-    if token in n:
-      return rc
-  return RoleClass.SSM_PROJECTION
+  return _component_role(n.split("."), _SSM_MATRIX_ROLES) or RoleClass.SSM_PROJECTION
 
 
 def ssm_tensor_role(name:str) -> str:
@@ -57,51 +74,28 @@ def ssm_tensor_role(name:str) -> str:
 
 
 # ssm matrices named by tensor (checked in order inside _ssm_role, after conv and the vector-like state tensors)
-_SSM_MATRIX_PATTERNS: tuple[tuple[str, RoleClass], ...] = (
-  ("ssm_in", RoleClass.SSM_IN),
-  ("mixer.in_proj.", RoleClass.SSM_IN),
-  ("ssm_out", RoleClass.SSM_OUT),
-  ("ssm_alpha", RoleClass.SSM_ALPHA),
-  ("ssm_beta", RoleClass.SSM_BETA),
-  ("in_proj_a.", RoleClass.SSM_ALPHA),
-  ("in_proj_b.", RoleClass.SSM_BETA),
-  ("out_proj.", RoleClass.SSM_OUT),
-)
+_SSM_MATRIX_ROLES: dict[str, RoleClass] = {
+  "ssm_in": R.SSM_IN, "mixer.in_proj": R.SSM_IN, "ssm_out": R.SSM_OUT, "ssm_alpha": R.SSM_ALPHA, "ssm_beta": R.SSM_BETA,
+  "in_proj_a": R.SSM_ALPHA, "in_proj_b": R.SSM_BETA, "out_proj": R.SSM_OUT}
 
-# (substring, RoleClass) checked in order; first match wins.
-_PATTERNS: tuple[tuple[str, RoleClass], ...] = (
-  # --- MoE experts (3D stacks) and shared experts must precede the dense ffn_* fallbacks ---
-  ("ffn_gate_exps", RoleClass.MOE_EXPERT_GATE),
-  ("ffn_up_exps", RoleClass.MOE_EXPERT_UP),
-  ("ffn_down_exps", RoleClass.MOE_EXPERT_DOWN),
-  ("ffn_gate_shexp", RoleClass.MOE_SHARED_EXPERT_GATE),
-  ("ffn_up_shexp", RoleClass.MOE_SHARED_EXPERT_UP),
-  ("ffn_down_shexp", RoleClass.MOE_SHARED_EXPERT_DOWN),
-  ("ffn_gate_inp", RoleClass.MOE_ROUTER),          # the top-k router projection
-  # --- dense FFN ---
-  ("ffn_gate", RoleClass.FFN_GATE),
-  ("ffn_up", RoleClass.FFN_UP),
-  ("ffn_down", RoleClass.FFN_DOWN),
-  ("gate_proj", RoleClass.FFN_GATE),
-  ("up_proj", RoleClass.FFN_UP),
-  ("down_proj", RoleClass.FFN_DOWN),
-  # --- attention (anchored so *_norm falls through) ---
-  ("attn_qkv.weight", RoleClass.ATTENTION_QKV),
-  ("in_proj_qkv.", RoleClass.ATTENTION_QKV),       # a gated delta net's q, k and v (GGUF attn_qkv)
-  ("in_proj_z.", RoleClass.ATTENTION_GATE),        # its output gate (GGUF attn_gate)
-  ("attn_gate.weight", RoleClass.ATTENTION_GATE),
-  ("attn_q.weight", RoleClass.ATTENTION_Q),
-  ("attn_k.weight", RoleClass.ATTENTION_K),
-  ("attn_v.weight", RoleClass.ATTENTION_V),
-  ("attn_kv_a_mqa.weight", RoleClass.ATTENTION_KV_A),
-  ("attn_kv_b.weight", RoleClass.ATTENTION_KV_B),
-  ("attn_output", RoleClass.ATTENTION_O),
-  ("q_proj.", RoleClass.ATTENTION_Q),
-  ("k_proj.", RoleClass.ATTENTION_K),
-  ("v_proj.", RoleClass.ATTENTION_V),
-  ("o_proj.", RoleClass.ATTENTION_O),
-  ("out_proj.", RoleClass.ATTENTION_O),
-)
+# a name component -> its RoleClass. A component is matched whole, so `ffn_gate` never takes `ffn_gate_exps` or
+# `hc_ffn_up` `ffn_up`; _ANCHORED components (GGUF attention) only before `weight`: a bias is no projection
+_ROLES: dict[str, RoleClass] = {
+  "ffn_gate_exps": R.MOE_EXPERT_GATE, "ffn_up_exps": R.MOE_EXPERT_UP, "ffn_down_exps": R.MOE_EXPERT_DOWN,
+  "ffn_gate_up_exps": R.MOE_EXPERT_GATE,  # gate and up in one expert stack
+  "ffn_gate_shexp": R.MOE_SHARED_EXPERT_GATE, "ffn_up_shexp": R.MOE_SHARED_EXPERT_UP,
+  "ffn_down_shexp": R.MOE_SHARED_EXPERT_DOWN, "ffn_gate_inp": R.MOE_ROUTER,  # the top-k router projection
+  "ffn_gate": R.FFN_GATE, "ffn_gate_up": R.FFN_GATE, "ffn_up": R.FFN_UP, "ffn_down": R.FFN_DOWN,
+  "gate_proj": R.FFN_GATE, "up_proj": R.FFN_UP, "down_proj": R.FFN_DOWN,
+  "attn_qkv": R.ATTENTION_QKV, "attn_gate": R.ATTENTION_GATE, "attn_q": R.ATTENTION_Q, "attn_k": R.ATTENTION_K,
+  "attn_v": R.ATTENTION_V, "cross_attn_q": R.ATTENTION_Q, "cross_attn_k": R.ATTENTION_K, "cross_attn_v": R.ATTENTION_V,
+  "attn_kv_a_mqa": R.ATTENTION_KV_A, "attn_kv_b": R.ATTENTION_KV_B,
+  "in_proj_qkv": R.ATTENTION_QKV, "in_proj_z": R.ATTENTION_GATE,  # a gated delta net's q, k and v and its output gate
+  "attn_output": R.ATTENTION_O, "attn_output_a": R.ATTENTION_O, "attn_output_b": R.ATTENTION_O,  # a low-rank o's factors
+  "q_proj": R.ATTENTION_Q, "k_proj": R.ATTENTION_K, "v_proj": R.ATTENTION_V, "o_proj": R.ATTENTION_O,
+  "out_proj": R.ATTENTION_O}
+_ANCHORED = frozenset(("attn_qkv", "attn_gate", "attn_q", "attn_k", "attn_v", "cross_attn_q", "cross_attn_k",
+                       "cross_attn_v", "attn_kv_a_mqa", "attn_kv_b"))
 
 
 def classify_tensor_role(name:str, dims:tuple[int, ...] | None = None) -> RoleClass:
@@ -122,9 +116,8 @@ def classify_tensor_role(name:str, dims:tuple[int, ...] | None = None) -> RoleCl
         return common if shared else expert
   if name.endswith(".mixer.gate.weight"):
     return RoleClass.MOE_ROUTER
-  for token, rc in _PATTERNS:
-    if token in name:
-      return rc
+  if found := _family(name.split(".")) or _component_role(name.split("."), _ROLES):
+    return found
   if "token_embd" in name or "embed_tokens" in name:
     return RoleClass.EMBEDDING
   if name.endswith("_norm.weight") or ".norm" in name or "layernorm" in name or "layer_norm" in name:

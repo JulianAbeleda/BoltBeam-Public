@@ -29,8 +29,10 @@ import time
 from typing import Any, Callable
 
 from boltbeam.collectors import gpu_telemetry
+from boltbeam.core.policy import value
 from boltbeam.roofline.prefill_work import peaks_at
-from boltbeam.workflow.common import run_gpu
+from boltbeam.target.gpu import run_gpu
+from boltbeam.artifacts.run_io import load_manifest, read_json
 
 TRACE = "prefill_trace.json"
 RAW = "kernel_compare/prefill_capture"
@@ -203,7 +205,7 @@ PROMPT_WORDS = {"llama.cpp": "llama-bench's own prompt: token ids drawn by std::
                             "sequence; each repetition draws new ids), the KV cache cleared before every repetition, so "
                             "nothing is cached between prompts"}
 COPIES = LLAMA_REPS + 1  # warm-up followed by the same repetition count as the native run
-MAX_CAPTURE_LAUNCHES = 1_000_000  # a capture estimated to hold more launches than this is not taken: its time stands alone
+MAX_CAPTURE_LAUNCHES = int(value("prefill_max_capture_launches"))  # a capture estimated to hold more launches is not taken
 
 
 def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0, extra:list[str] | None = None,
@@ -276,7 +278,7 @@ def llama_prunes(launches:list[dict[str, Any]], chunk:list[int], outputs:int, co
   at 2,048 per call and 512 per chunk end calls after chunks 4 and 5, not 3 and 5); without it the calls share the
   chunks evenly. None when the build does not prune."""
   from boltbeam.collectors.instruction_path import template
-  from boltbeam.workflow.tie_out import GEMV_WORDS
+  from boltbeam.collectors.kernel_kind import GEMV_WORDS
   found = [template(l["key"]) for l in launches if any(w in str(l["key"]) for w in GEMV_WORDS)]
   gemv = len(found) // copies
   if gemv <= outputs:
@@ -305,7 +307,7 @@ def library_paths(libraries:list[pathlib.Path], launches:list[dict[str, Any]] | 
   their embedded PTX, then, for captured kernels no PTX holds (a library that ships machine code only), their machine
   code this GPU runs (instruction_path.sass_table). tools: the folders with the engine's own cuobjdump/nvdisasm.
   jit_caches: folders where the engine's compiler (Triton) wrote each kernel it built as <kernel>.ptx.
-  device: the run's GPU (workflow.common.run_gpu), whose vendor picks the reader (INSTRUCTIONS); none named (a run
+  device: the run's GPU (target.gpu.run_gpu), whose vendor picks the reader (INSTRUCTIONS); none named (a run
   with no hardware profile) reads NVIDIA's, as before the profile named the GPU. A vendor with no reader refuses."""
   from boltbeam.collectors import rocm_isa
   if capture is not None and (dbs := sorted(capture.glob("*_results.db"))):  # AMD: the code objects rocprofv3 saw load
@@ -552,7 +554,7 @@ def vllm_formats(weights:set[str], resolved:dict[str, Any] | None = None, *, req
   fmt = names.get(resolved.get('activation_dtype'), fmt)
   kv = names.get(resolved.get('kv_cache_dtype'), fmt)
   return {"activations": {"in": fmt, "out": fmt}, "attention_activations": {"in": fmt, "out": fmt}, "kv": kv,
-          "recurrent_form": VLLM_RECURRENT_FORM if resolved.get('model_type') in (None, 'qwen3_5', 'qwen3_next') else None,
+          "recurrent_form": VLLM_RECURRENT_FORM,  # how vLLM runs a gated delta net's prefill; the profile says whether the model has one
           "activations_by_quant": {q: {"in": q, "out": fmt} for q in weights if q in {"NVFP4_G16", "FP8_E4M3"}},
           "words": f"{fmt.lower()} activations in and out; KV cache {kv.lower()} " + ("(resolved by engine)" if resolved else "(dtype auto assumed)")}
 
@@ -685,7 +687,6 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
   from boltbeam.core.canonical import pretty_json
   from boltbeam.target.targets import get_target
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
-  from boltbeam.workflow.common import load_manifest, read_json
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
   rows = []
@@ -779,7 +780,6 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   from boltbeam.collectors.prefill_attribution import UnnamedCapture, attribute_prefill
   from boltbeam.target.targets import get_target
   from boltbeam.workflow import tie_out
-  from boltbeam.workflow.common import load_manifest, read_json
   from boltbeam.workflow import limit, run_folder
   from boltbeam.workflow.limit import run_bandwidth
   manifest = load_manifest(run)
@@ -813,7 +813,8 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     if per_chunk and COPIES * per_chunk * chunks > MAX_CAPTURE_LAUNCHES:
       say(f"prefill of {length} tokens: not captured (about {COPIES * per_chunk * chunks:,.0f} launches)")
       out["lengths"][str(length)] = {"not_captured": f"about {COPIES * per_chunk * chunks:,.0f} launches with the warm-up, over "
-                                                     f"{MAX_CAPTURE_LAUNCHES:,}: the untraced time, MFU and clock stand alone"}
+                                                     f"{MAX_CAPTURE_LAUNCHES:,} (MAX_CAPTURE_LAUNCHES, policy prefill_max_capture_launches): "
+                                                     "the untraced time, MFU and clock stand alone"}
       continue
     say(f"prefill of {length} tokens in the model{f' after {depth} in the cache' if depth else ''}: {provider}")
     settled = {"settled_s": s} if rest and (s := gpu_telemetry.settle(run, say)) else {}

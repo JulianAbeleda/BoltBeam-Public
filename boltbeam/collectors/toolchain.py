@@ -11,6 +11,8 @@ import sys
 from boltbeam.collectors import providers
 from boltbeam.runtime.cuda_device import find_nvcc
 from boltbeam.target import toolkits, vendors
+from boltbeam.artifacts.run_io import load_manifest, write_manifest
+from boltbeam.target.gpu import run_gpu
 
 
 def _read(argv:list[str]) -> str:
@@ -83,8 +85,6 @@ def driver_version(vendor:str | None = None) -> str | None:
 
 
 def record(run, provider:str) -> None:
-  from boltbeam.workflow.common import load_manifest, write_manifest
-  from boltbeam.workflow.common import run_gpu
   manifest = load_manifest(run)
   manifest["toolchain"] = snapshot(provider, **vendor_args((run_gpu(run) or {}).get("vendor")))
   write_manifest(run, manifest)

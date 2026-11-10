@@ -20,8 +20,10 @@ import pathlib
 import shutil
 import subprocess
 from typing import Any, Callable
+from boltbeam.target.gpu import run_gpu
 
 RUNTIME = pathlib.Path(__file__).resolve().parents[1] / "runtime"
+REPLICAS = 3  # the repeats an engine hands in: fresh captures, or groups of one capture's steps (tie_out.over_ceiling)
 
 
 def find_program(env_var:str, names:tuple[str, ...], env:dict[str, str] | None = None) -> str | None:
@@ -104,6 +106,14 @@ def json_lines(text:str) -> list[dict[str, Any]]:
   return out
 
 
+class DriverFailed(RuntimeError):
+  """A driver that exited non-zero or printed no point: the one-line message, everything it printed (output, for an
+  engine's own reading of the cause) and what stands behind the message (details, pipeline.failure_details)."""
+  def __init__(self, message:str, *, output:str = "", details:str | None = None):
+    super().__init__(message)
+    self.output, self.details = output, details
+
+
 def run_driver(argv:list[str], *, env:dict[str, str] | None = None, log:pathlib.Path | None = None,
                timeout_s:float = 3600.0, cwd:pathlib.Path | None = None) -> list[dict[str, Any]]:
   """Run a driver and return its JSON lines. A failure raises with the end of what it printed.
@@ -125,8 +135,8 @@ def run_driver(argv:list[str], *, env:dict[str, str] | None = None, log:pathlib.
     log.write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
   rows = json_lines(proc.stdout)
   if proc.returncode != 0 or not rows:
-    raise RuntimeError(f"{pathlib.Path(argv[1] if len(argv) > 1 else argv[0]).name} exited {proc.returncode}: "
-                       f"{(proc.stderr or proc.stdout).strip()[-400:]}")
+    raise DriverFailed(f"{pathlib.Path(argv[1] if len(argv) > 1 else argv[0]).name} exited {proc.returncode}: "
+                       f"{(proc.stderr or proc.stdout).strip()[-400:]}", output=proc.stdout + "\n" + proc.stderr)
   return rows
 
 
@@ -145,11 +155,10 @@ def captured_role_time(run:pathlib.Path, *, provider:str, trace:str, argv_for:Ca
   is N - 1 decode steps. The captured run's own time per step is the difference of the two runs' printed decode
   times over N - 1. warm runs the 1-token driver once uncaptured first: an engine's start-up can fill on-disk caches
   (vLLM's Triton autotune, a JIT) in whichever capture runs first, and the subtraction needs both to start up alike.
-  A batch-1 capture over the capture-overhead ceiling is repeated: tie_out.REPLICAS fresh pairs in all, each attributed
+  A batch-1 capture over the capture-overhead ceiling is repeated: REPLICAS fresh pairs in all, each attributed
   alike, are the repeats its kernel rows stand by (tie_out.over_ceiling). Within the ceiling, one pair."""
   from boltbeam.collectors import attribution, vendor_capture
-  from boltbeam.workflow.common import run_gpu
-  from boltbeam.workflow.tie_out import REPLICAS, capture_over_ceiling
+  from boltbeam.workflow.tie_out import capture_over_ceiling
   raw = run / "kernel_compare" / f"{provider.replace('.', '_').replace('-', '_')}_capture"
   if warm:
     run_driver(argv_for(1), env=env, log=raw / "warm.log", cwd=cwd)

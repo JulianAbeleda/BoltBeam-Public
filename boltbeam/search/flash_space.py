@@ -28,7 +28,7 @@ from boltbeam.search.flash_decode_candidate import FLASH_DECODE_CANDIDATE_SCHEMA
 GENERATOR = "boltbeam.flash_space"
 STAGE_WIDTHS = (1, 2, 4)  # the tile's coalesce widths tried (the emitter admits 1, 2, 4 and 8)
 REDUCES = ("staged", "inline")
-ATTENTION = "attention"  # the tie-out's kind row for attention kernels (workflow/tie_out.py KIND_WORDS)
+ATTENTION = "attention"  # the tie-out's kind row for attention kernels (collectors/kernel_kind.py KIND_WORDS)
 COVERS = ("attention_score", "attention_softmax", "attention_pv")
 LIMIT_NOTE = "the attention shape is the model's; the kernel's own validate admits it (flash_decode_route_for)"
 

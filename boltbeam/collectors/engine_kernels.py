@@ -263,6 +263,7 @@ def ggml_metal_spec(text:str, quant:str, rows:int, cols:int, weights:bytes, x:li
 
 _MMVQ_CANDIDATES = ("~/env/llama.cpp/ggml/src/ggml-cuda", "~/llama.cpp/ggml/src/ggml-cuda", "/usr/local/src/llama.cpp/ggml/src/ggml-cuda")
 from boltbeam.collectors.gemv_reference import GGML_TYPES as GGML_TYPE  # noqa: E402  the one ggml.h type table (gemv_reference)
+from boltbeam.artifacts.run_io import load_manifest, read_json
 Q8_1_BLOCK, Q8_1_BYTES = 32, 36  # block_q8_1: half d, half s, 32 int8 (ggml-common.h)
 MATRIX_ROW_PADDING = 512  # ggml-cuda common.cuh: the quantized vector is padded to this many columns
 MMVQ_RULE = ("ggml-cuda mmvq.cu mul_mat_vec_q<type, ncols_dst=1, has_fusion=false, small_k, halve_iters>: grid (ceil(rows / "
@@ -655,7 +656,6 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
   from boltbeam.collectors import boltbeam_gemv, llama_bench_decode, gemv_reference, providers
   from boltbeam.profile.gguf import read_gguf_split, read_tensor
   from boltbeam.workflow import tie_out
-  from boltbeam.workflow.common import load_manifest, read_json
   from boltbeam.workflow.limit import run_bandwidth
   from boltbeam.target.targets import get_target
   from boltbeam.vocab import SCHEMA_TIMING_TRACE

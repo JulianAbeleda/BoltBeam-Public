@@ -18,7 +18,7 @@ from boltbeam.control.matched_control import (CommandRunner, build_environment_i
   row_identity, run_tinygrad_authority_row, summarize_dispersion, utc_now, validated_token_ids)
 from boltbeam.collectors.metal_system_trace import capture_command_metal_trace
 from boltbeam.vocab import SCHEMA_REPLAY_AB_PROTOCOL, SCHEMA_REPLAY_AB_ROW, SCHEMA_REPLAY_AB_SUMMARY
-from boltbeam.workflow.common import read_json, write_json
+from boltbeam.artifacts.run_io import read_json, write_json
 
 AuthorityExecutor = Callable[..., dict[str, Any]]
 

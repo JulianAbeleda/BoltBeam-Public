@@ -118,6 +118,20 @@ class ModelProfile:
     }
 
 
+def profile_from_json(data:dict[str, Any]) -> ModelProfile:
+  """The inverse of ModelProfile.to_json: a profile from its model_profile.json."""
+  roles = tuple(TensorRole(role=r["role"], tensor_name=r["tensor_name"], rows=int(r["rows"]),
+                           cols=int(r["cols"]), quant=r["quant"], ggml_type=int(r.get("ggml_type", -1)),
+                           count=int(r.get("count", 1)), role_class=r.get("role_class", ""),
+                           n_expert=int(r.get("n_expert", 0)))
+                for r in data.get("roles", ()))
+  return ModelProfile(model_id=data["model_id"], source=data["source"], architecture=data.get("architecture"),
+                      hidden_size=data.get("hidden_size"), ffn_size=data.get("ffn_size"),
+                      vocab_size=data.get("vocab_size"), layer_count=data.get("layer_count"),
+                      roles=roles, metadata=dict(data.get("metadata", {})),
+                      architecture_class=data.get("architecture_class", "unknown_transformer"))
+
+
 def model_name(path) -> str:
   """A model's id from its path: a checkpoint folder's whole name (Qwen3.8-27B-W4A16-AWQ, whose dot is no extension;
   Path.stem made it "Qwen3" on a 5090 run, 2026-11-09), a file's name without its extension."""

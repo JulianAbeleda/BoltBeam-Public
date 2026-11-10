@@ -207,7 +207,7 @@ def engine_args(layout:str, provider:str, bench:str | None = None) -> tuple[list
 
 
 def one_gpu(run:pathlib.Path, provider:str) -> tuple[list[str], dict[str, str]]:
-  """A one-GPU engine run's arguments and environment: pinned to GPU 0, the run's GPU (common.run_gpu), when the
+  """A one-GPU engine run's arguments and environment: pinned to GPU 0, the run's GPU (gpu.run_gpu), when the
   run's machine has more than one; nothing on one GPU, as the decode collector does (llama_bench_decode)."""
   hw = pathlib.Path(run) / "hardware_profile.json"
   devs = devices(json.loads(hw.read_text()).get("gpu") or {}) if hw.is_file() else []

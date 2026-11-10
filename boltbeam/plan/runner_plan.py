@@ -16,7 +16,7 @@ from boltbeam.vocab import (
   SCHEMA_EXECUTION_BRIDGE_REQUEST, SCHEMA_EXECUTION_BRIDGE_RESULT, SCHEMA_HW_TRACE,
   SCHEMA_PROBE_EVIDENCE, SCHEMA_RUNNER_PLAN, SCHEMA_TIMING_TRACE,
 )
-from boltbeam.workflow.common import load_manifest, read_json, write_json
+from boltbeam.artifacts.run_io import load_manifest, read_json, write_json
 
 _REQUIRED_INPUTS = (
   "model_profile.json",

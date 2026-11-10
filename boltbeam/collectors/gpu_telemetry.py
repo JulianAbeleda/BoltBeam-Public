@@ -26,6 +26,8 @@ import subprocess
 import threading
 import time
 from typing import Any
+from boltbeam.artifacts.run_io import read_json, write_json
+from boltbeam.target.gpu import run_gpu
 
 INTERVAL_S = 0.05
 LIBRARY = "libnvidia-ml.so.1"
@@ -311,7 +313,6 @@ def settle(run:pathlib.Path, say=lambda _: None, sleep=time.sleep) -> float:
   """Idle the run's GPU for its vendor row's settle_s before a measured arm (an untraced prefill or turn, or its
   capture), so every arm starts from the same rested clock; the seconds idled, for the arm's record (0: none)."""
   from boltbeam.target.vendors import NoVendorRow, vendor
-  from boltbeam.workflow.common import run_gpu
   try:
     s = float(vendor((run_gpu(run) or {}).get("vendor")).settle_s)
   except NoVendorRow:
@@ -501,8 +502,7 @@ def opened(source, *args, make=None):
 
 
 def run_telemetry(run:pathlib.Path, *args, make=None):
-  """Telemetry(*args) on the run's GPU (common.run_gpu), by its vendor's source (source_for)."""
-  from boltbeam.workflow.common import run_gpu
+  """Telemetry(*args) on the run's GPU (gpu.run_gpu), by its vendor's source (source_for)."""
   return opened(source_for(run_gpu(run)), *args, make=make)
 
 
@@ -510,7 +510,6 @@ def run_clock_policy(run:pathlib.Path) -> dict[str, Any]:
   """The clock policy the run's GPU holds, decided by its vendor's row (chips._vendors() "clock_policy"); unknown,
   with the reason, for a vendor with none. A run with no hardware profile asks nvidia-smi, as before."""
   from boltbeam.workflow.chips import NoVendorRow, vendor_row
-  from boltbeam.workflow.common import run_gpu
   if (device := run_gpu(run)) is None:
     return clock_policy(0)
   try:
@@ -640,7 +639,6 @@ def measurement_clock(run:pathlib.Path, phase:str, *, backend:str):
   if phase not in ("measure_timing", "role_time"):
     yield
     return
-  from boltbeam.workflow.common import read_json, write_json
   path = run / "measurement_clock.json"
   requested = os.environ.get("BOLTBEAM_TIMING_SM_MHZ")
   if not requested:
@@ -674,7 +672,6 @@ def measurement_clock(run:pathlib.Path, phase:str, *, backend:str):
 
 def measurement_clock_scope(run:pathlib.Path) -> dict | None:
   """A frequency regime after both observed peaks agree within 2%; not proof of a driver lock."""
-  from boltbeam.workflow.common import read_json
   path = run / "measurement_clock.json"
   if not path.exists():
     return None
@@ -706,7 +703,6 @@ def measurement_clock_words(run:pathlib.Path) -> str | None:
   """Disclose requested and observed frequency separately wherever timing qualification is presented."""
   if not (run / "measurement_clock.json").exists():
     return None
-  from boltbeam.workflow.common import read_json
   try:
     scope = measurement_clock_scope(run)
   except (ValueError, TypeError, KeyError):

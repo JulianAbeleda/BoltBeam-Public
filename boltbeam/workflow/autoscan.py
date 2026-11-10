@@ -20,8 +20,7 @@ from boltbeam.vocab import (SCHEMA_HARDWARE_PROFILE, SCHEMA_PROVIDER_CAPABILITIE
                             SCHEMA_RUNTIME_PROFILE, SCHEMA_SCAN_EVIDENCE)
 from boltbeam.target.targets import (TARGETS, family_target, is_exact_target, is_local, match_target,
                                      target_kind)
-from boltbeam.workflow.common import (load_manifest, read_json, run_dir, update_manifest, write_json,
-                                      write_manifest)
+from boltbeam.artifacts.run_io import load_manifest, read_json, run_dir, update_manifest, write_json, write_manifest
 
 AUTOSCAN_ARTIFACTS = ("hardware_profile.json", "runtime_profile.json",
                       "provider_capabilities.json", "scan_evidence.json")
@@ -315,7 +314,7 @@ def _probe_amd_hip_order(amd_smi:str, run_command) -> tuple[list[dict[str, Any]]
 
 
 PROBE_TIMEOUT_S = 30.0  # one probe's whole answer; a probe still running then is timed_out and the others stand
-# which GPU is primary when more than one vendor answered; a one-GPU run still refuses to choose (common.first_gpu)
+# which GPU is primary when more than one vendor answered; a one-GPU run still refuses to choose (gpu.first_gpu)
 PRIMARY_RULE = "the first device of the first vendor with devices, in chips._vendors() row order"
 
 
@@ -402,7 +401,7 @@ def _hardware_profile(*, run_command=_run_command, tool_resolver=None,
   if devices:
     from boltbeam.workflow.chips import vendor_row
     gpu = {**gpu, "status": "detected", **devices[0], "devices": devices, "notes": list(vendor_row(vendors[0], "notes"))}
-    if len(vendors) > 1:  # stated, never by which tool answered first; a one-GPU run still refuses (common.first_gpu)
+    if len(vendors) > 1:  # stated, never by which tool answered first; a one-GPU run still refuses (gpu.first_gpu)
       gpu.update(primary_rule=PRIMARY_RULE, notes=[f"GPUs from {len(vendors)} vendors ({', '.join(vendors)}): the primary "
                                                     f"GPU is {PRIMARY_RULE}", *gpu["notes"]])
   else:

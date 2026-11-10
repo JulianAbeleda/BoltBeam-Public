@@ -32,6 +32,53 @@ That audit must say "pin change: this audit can justify it". It says so only whe
 least 4 runs and that n was fixed by a plan written before the runs were collected (see below). With fewer runs,
 or no plan, the audit says "pin change: NOT justified" and names why.
 
+## Current build versus pin
+
+The pin is the audited reference and moves only as above. Each machine also has a **current** build per engine:
+what its runs use by default. It lives in `~/.boltbeam/builds.json` (beside the engine scan; never in the repo),
+read by `collectors/engine_builds.py`. Upstream release sources are one table, `boltbeam/data/engine_releases.json`.
+
+- `python -m boltbeam.workflow.screen engines --update [--engine E] [--into DIR]` looks at each engine's newest
+  release, at most once per `engine_latest_max_age_h` (24 h, `data/policy.json`; three-second timeout; a failed look
+  is "could not check", never "up to date", and is retried next time). Releases only: llama.cpp's `v0.x` line (its
+  daily `bNNNNN` builds are GitHub prereleases, nightlies), vLLM's PyPI releases and TensorRT-LLM's on NVIDIA's
+  index, never rc, dev, alpha, beta or local builds. A newer one is installed beside the current build, never over
+  it: llama.cpp from its tag into its own folder (full commit history so the run records its build number; cmake
+  flags and architecture from the vendor row), vLLM and TensorRT-LLM each into a venv named by the version, Ollama
+  from its release archive. It is recorded as **pending**. The first time, the build already on the machine is
+  recorded as current; it is the user's. This command is the only installer; the pipeline and collectors never
+  install.
+- TensorRT-LLM is checked against the machine before anything downloads, from the release's own metadata: its
+  `requires_python`, a wheel for this Python and CPU on NVIDIA's index, its `torch` constraint (installed as
+  declared) and its `cuda-python` major, which sets the least driver. A release that does not fit, or whose
+  requirement cannot be read, is not installed: the output and `builds.json` say "not compatible here: <reason>",
+  and current stays.
+- Each engine keeps its current and previous build. After a comparison that succeeded, builds older than the
+  previous one are deleted, only when BoltBeam installed them (its folder under the builds root, holding its mark);
+  each deletion is recorded under `deleted`. Nothing is deleted after a refused or failed comparison, and a build
+  found on the machine is never deleted.
+- The next `pipeline --analyze` of that engine runs the previous current build once into `RUN-was-<version>`,
+  then the new build into `RUN`, compares them with this audit, saves `RUN/engine_upgrade.json`, and makes the new
+  build current. Without bands the comparison says "not checked"; it does not justify a pin. A failed new-build
+  run leaves current unchanged. An engine env var the user set (`BOLTBEAM_LLAMA_BENCH`, ...) wins; no comparison
+  is made with it.
+- **Upgrade engines** happens only when asked. In the TUI, the Engine picker offers "Upgrade <engine> to <release>"
+  for an engine whose newer release is known; it runs `engines --update --engine E` as a job and shows what it did
+  (installed as pending, not compatible and why, or not installed and why). `pipeline --upgrade-engines`
+  (`--update-engines` is the old name) runs the update first. A Run never installs by itself.
+- `engines --latest` says where each engine's build stands against upstream's newest release
+  (`engine_builds.standing`): behind, waiting for its comparison, up to date, or unknown (never checked, the check
+  failed, or an "up to date" older than `engine_latest_max_age_h`). It installs nothing; it looks at upstream only
+  when the last look is stale. The TUI runs it after the engine scan at boot and after an upgrade, and Setup says
+  under the Engine line when the picked engine is behind ("0.6.0 · 0.9.0 is out: Upgrade in Engine"), waiting, or
+  unknown; an engine on the latest release adds nothing.
+- Every run records its build against the last check: "build X (latest at run time)" or "build X; latest was Y",
+  or "latest not checked" when the check failed or is older than `engine_latest_max_age_h` (`data/policy.json`).
+  The summary, the report and the TUI's Run page show it, with the comparison's line when the run made one.
+- A llama.cpp run records a commit and build number, not a release: it is named by the release whose commit it
+  matches (a build recorded here, or upstream's latest release). A build that is no release (a `0.6.0-dev` source
+  build) is not the latest release.
+
 ## How to run it
 
 1. Run the old build's audit, unless a saved run of that exact build exists:
@@ -41,6 +88,16 @@ or no plan, the audit says "pin change: NOT justified" and names why.
 3. Compare: `python -m boltbeam.workflow.screen diff --before OLD --after NEW`.
    (`replay-diff` is the same command. Two replays compare turn by turn; two prefill or decode audits compare
    row by row.)
+4. Review the kernel classification before the pin moves. `kind_of` names a captured kernel by words in its name
+   (`boltbeam/data/kernel_kinds.json`, first match wins); a kernel the new build renames drops the pairing walk to the
+   flat pairing with no error. Record a capture on the new version (step 2's) and add its pairing window under
+   `tests/fixtures/pairing` (`tests/test_pairing_replay.py` says how). Move the pin, then record the classification:
+   `BOLTBEAM_RECORD_KERNEL_KINDS=1 python -m pytest tests/test_kernel_kinds.py` writes
+   `tests/fixtures/kernel_kinds/<engine>@<new pin>.json`. Diff it against the old pin's file and review every name that
+   changed kind or is new: an attention or recurrent kernel now `other` is a rename, and its word goes into
+   `kernel_kinds.json` in the commit that moves the pin; the old pin's file goes in the same commit.
+   `tests/test_kernel_kinds.py` fails while the pinned version has no recorded file, and when a capture of a model with
+   attention or recurrent layers classifies none of its kernels as that block.
 
 Repeat calibration is separate from the upgrade run. Fix n first, then collect n independent runs of the old
 build's exact setup, back to back, then derive the band without a GPU:

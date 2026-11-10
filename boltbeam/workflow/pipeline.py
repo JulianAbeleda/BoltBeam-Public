@@ -26,7 +26,7 @@ from boltbeam.vocab import Workload
 from boltbeam.workflow import analyze_run, autoscan_run, ingest_probe_run, ingest_timing_run, load_run, output_run
 from boltbeam.workflow import chips, engine_update, layout as lay, limit, progress, repeat_bands as rb, replay as rw
 from boltbeam.workflow.autoscan import _hardware_profile, this_machine_target
-from boltbeam.workflow.common import load_manifest, read_json, run_dir, update_manifest, write_json
+from boltbeam.artifacts.run_io import load_manifest, read_json, run_dir, update_manifest, write_json
 from boltbeam.workflow.run_folder import MEASURE_STATUS, SCHEMA, SCHEMA_MEASURE_STATUS, optional, run_provider
 
 # --- the pipeline --------------------------------------------------------------------------------------------

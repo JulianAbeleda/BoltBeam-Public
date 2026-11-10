@@ -18,6 +18,7 @@ import pathlib
 from typing import Any
 
 from boltbeam.workflow import tie_out as tie
+from boltbeam.collectors.kernel_kind import kind_of
 from boltbeam.collectors.prefill import timing_reference
 
 PER = "per prefill"
@@ -146,7 +147,7 @@ def scaled_mfu(where:dict[int, dict[str, Any]], length:int, untraced_ms:float, p
   base = max(below)
   att, att_base = attention(profile, length), attention(profile, base)
   pairs = att["flops"] / att_base["flops"] if att and att_base else (length / base) ** 2
-  compute = sum((r.get("compute_ms") or 0.0) * (pairs if tie.kind_of({"kernel": r["name"]}) == "attention" else length / base)
+  compute = sum((r.get("compute_ms") or 0.0) * (pairs if kind_of({"kernel": r["name"]}) == "attention" else length / base)
                 for r in where[base]["rows"])
   return {"mfu_pct": 100.0 * compute / untraced_ms,
           "how": f"scaled from the {base:,}-token capture: matrix work x {length / base:g}, attention x {pairs:.1f} (its causal pairs)"}

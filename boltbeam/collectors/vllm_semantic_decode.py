@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from boltbeam.collectors.attribution import NotSplitByRole
+from boltbeam.target.gpu import run_gpu
 
 
 # B streams read the experts each stream's routing picks; graphed CUDA replay runs no router code to observe, and the
@@ -20,7 +21,6 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   from boltbeam.collectors.prefill import library_paths, gpu_arch, last_level_cache, vllm_formats
   from boltbeam.target.targets import fact_uncertainty
   from boltbeam.workflow.limit import run_bandwidth
-  from boltbeam.workflow.common import run_gpu
   if type(batch) is not int or batch<1:
     raise ValueError('semantic graph decode needs a positive whole number of streams')
   if target.backend not in ('CUDA','AMD'):

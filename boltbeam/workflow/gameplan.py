@@ -32,7 +32,7 @@ from boltbeam.core.canonical import pretty_json
 from boltbeam.report.html import PLAIN_VERDICT
 from boltbeam.search import compare_record, role_numbers, search_stage
 from boltbeam.workflow import evidence as ev
-from boltbeam.workflow.common import load_manifest
+from boltbeam.artifacts.run_io import load_manifest
 
 SCHEMA = "boltbeam.gameplan.v1"
 JSON_FILE, MD_FILE = "gameplan.json", "gameplan.md"

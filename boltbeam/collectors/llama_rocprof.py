@@ -10,7 +10,7 @@ from typing import Any
 
 from boltbeam.artifacts.llama_rocprof import timing_trace_from_rocprof_csv
 from boltbeam.vocab import SCHEMA_TIMING_TRACE
-from boltbeam.workflow.common import load_manifest, run_dir
+from boltbeam.artifacts.run_io import load_manifest, run_dir
 from boltbeam.core.canonical import pretty_json
 from boltbeam.target.targets import need_target_id
 

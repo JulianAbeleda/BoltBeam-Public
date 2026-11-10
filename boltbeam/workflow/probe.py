@@ -4,7 +4,7 @@ import pathlib
 from typing import Any
 
 from boltbeam.quantization.quant_gemv import build_primitive_profile
-from boltbeam.workflow.common import load_manifest, read_json, run_dir, update_manifest, write_json
+from boltbeam.artifacts.run_io import load_manifest, read_json, run_dir, update_manifest, write_json
 
 PROBE_ARTIFACTS = ("primitive_profile.json",)
 

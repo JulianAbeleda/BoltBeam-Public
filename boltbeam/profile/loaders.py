@@ -9,12 +9,13 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from boltbeam.artifacts.run_io import read_json
 from boltbeam.profile.architecture import classify_architecture
 from boltbeam.profile.gguf import GGML_TYPE_NAMES, profile_from_gguf
-from boltbeam.profile.ir import ModelProfile, TensorRole, model_name
+from boltbeam.profile.ir import ModelProfile, TensorRole, model_name, profile_from_json
 from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
 from boltbeam.profile.weight_ledger import experts_read
-from boltbeam.vocab import RoleClass, is_ssm_role
+from boltbeam.vocab import HYBRID_PATTERN, LAYER_KIND_OF_BLOCK, RoleClass, is_ssm_role
 
 _DTYPE_TO_QUANT = {
   "F64": "F64", "F32": "F32", "F16": "F16", "BF16": "BF16",
@@ -70,6 +71,11 @@ def profile_from_model(path:str | pathlib.Path, model_id:str | None = None) -> M
   if fmt == "mlx":
     return _profile_from_mlx(p, model_id)
   raise ValueError(f"unsupported model artifact format {fmt!r}")
+
+
+def load_profile(run:pathlib.Path) -> ModelProfile:
+  """The profile a run folder's model_profile.json records (workflow/load.py wrote it)."""
+  return profile_from_json(read_json(run / "model_profile.json"))
 
 
 def _read_json(path:pathlib.Path) -> dict[str, Any]:
@@ -383,7 +389,7 @@ def _profile_from_specs(path:pathlib.Path, fmt:str, cfg:dict[str, Any], specs:li
   cls, signals = classify_architecture(kv, tensors_for_arch, str(arch) if arch else None)
   meta = {"format_family": fmt, "architecture_signals": signals, "tensor_count": len(specs),
           "quant_types": sorted({s.quant for s in specs}), **_attention_from_config(cfg, specs),
-          **_recurrent_from_config(cfg, specs)}
+          **_recurrent_from_config(cfg, specs), **_layers_from_config(cfg)}
   if extra: meta.update(extra)
   return ModelProfile(model_id=model_id or model_name(path), source=str(path), architecture=str(arch) if arch else None,
                       hidden_size=cfg.get("hidden_size"), ffn_size=cfg.get("intermediate_size"),
@@ -426,6 +432,23 @@ def _recurrent_from_config(cfg:dict[str, Any], specs:list[TensorSpec]) -> dict[s
       shape["chunk_size"] = int(cfg["chunk_size"])
   shape["ssm_dtype"] = cfg.get("mamba_ssm_dtype") or cfg.get("mamba_ssm_cache_dtype")  # an engine may keep the state in it
   return {"recurrent": {"layer_count": layers, **shape}} if layers and all(k in shape for k in _RECURRENT_CONFIG) else {}
+
+
+def _layers_from_config(cfg:dict[str, Any]) -> dict[str, Any]:
+  """The model's layer sequence when config.json names each layer's block (layers_block_type: Jamba, Nemotron 3.5;
+  Nemotron-H's hybrid_override_pattern letters), in the pairing walk's kinds (vocab.LAYER_KIND_OF_BLOCK). A hybrid
+  whose expert or FFN layers stand alone between its block layers is walked by this order, not by its counts. Empty
+  when the config names no layers, names a block the table lacks, or names another number of layers than it declares."""
+  named, source = cfg.get("layers_block_type"), "config.json layers_block_type"
+  if not named and (pattern := cfg.get("hybrid_override_pattern")):
+    named, source = [HYBRID_PATTERN.get(ch, ch) for ch in str(pattern)], "config.json hybrid_override_pattern"
+  if not isinstance(named, list) or not named:
+    return {}
+  seq = [LAYER_KIND_OF_BLOCK.get(str(b).lower()) for b in named]
+  layers = cfg.get("num_hidden_layers")
+  if None in seq or (layers and len(seq) != int(layers)):
+    return {}
+  return {"layers": {"sequence": seq, "source": source}}
 
 
 def _kv_from_config(cfg:dict[str, Any]) -> dict[str, Any]:

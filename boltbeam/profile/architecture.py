@@ -15,12 +15,19 @@ Signals (metadata beats tensors):
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 from boltbeam.vocab import Architecture
 
 # arch strings that are encoder-decoder regardless of tensor layout (metadata-first)
 _ENCODER_DECODER_ARCHS = frozenset({"t5", "t5encoder", "mt5", "bart", "bert"})
+# The model-type names the readers record (GGUF general.architecture, config.json model_type), listed once. The
+# classifier reads facts, never these; policy/guards.py reads them to find a branch on a model's name anywhere else.
+MODEL_TYPES = _ENCODER_DECODER_ARCHS | frozenset({
+  "llama", "llama4", "mistral", "mixtral", "qwen2", "qwen2moe", "qwen2_moe", "qwen3", "qwen3moe", "qwen3_moe", "qwen3next",
+  "qwen3_next", "qwen35", "qwen35moe", "qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen4exp", "qwen4_exp_text", "gemma",
+  "gemma2", "gemma3", "gemma3_text", "gemma3n", "nemotron", "nemotron_h", "mamba", "mamba2", "jamba", "falcon_h1",
+  "granitehybrid", "deepseek2", "deepseek_v2", "deepseek_v3", "phi3", "gpt_oss", "gpt-oss"})
 
 
 def _to_int(v:Any) -> int | None:
@@ -45,6 +52,15 @@ def _name_has_ssm_signal(name:str) -> bool:
 def _name_has_packed_quant_signal(name:str) -> bool:
   n = name.lower()
   return any(tok in n for tok in ("qweight", "qzeros", "matmulnbits", "scales", "g_idx"))
+
+
+def recurrent_kind(names:Iterable[str]) -> str | None:
+  """A recurrent block's kind from its tensors, as config.json's mamba_* keys give it (profile/loaders.py): "mamba2"
+  when its blocks carry Mamba's skip vector D (`blk.N.ssm_d`) and no x projection (`ssm_x`, Mamba1's). None otherwise:
+  a gated delta net has no D (its gates are `ssm_alpha`/`ssm_beta`, or the packed `ssm_ba`), and Mamba1 is not Mamba2.
+  `ssm_dt` tells nothing: both carry it. The names are llama.cpp's (src/models/)."""
+  stems = {n.split(".")[2] for n in names if n.startswith("blk.") and n.count(".") >= 2}
+  return "mamba2" if "ssm_d" in stems and "ssm_x" not in stems else None
 
 
 def classify_architecture(kv:dict[str, Any], tensors:list[tuple[str, tuple[int, ...], int, int]],

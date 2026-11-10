@@ -1,3 +1,14 @@
 #!/bin/sh
-# the size budget and the duplicate-authority check (sz.py, docs/maintaining.md "Size")
-out="$(python3 sz.py 2>&1)" || { printf "%s\n" "$out" >&2; echo "pre-commit: sz.py failed; see docs/maintaining.md, Size" >&2; exit 1; }
+# Main/dev are hard-gated. exp reports size failures, as docs/maintaining.md
+# and tools/sync_branches.sh specify; duplicate authorities still fail here.
+out="$(python3 sz.py 2>&1)" || {
+  printf "%s\n" "$out" >&2
+  branch="$(git branch --show-current)"
+  if [ "$branch" = exp ] && printf '%s\n' "$out" | grep -q '^OVER BUDGET:' &&
+     ! printf '%s\n' "$out" | grep -q '^DUPLICATE AUTHORITY:'; then
+    echo 'pre-commit: exp size failure reported; main/dev remain hard-gated' >&2
+  else
+    echo 'pre-commit: sz.py failed; see docs/maintaining.md, Size' >&2
+    exit 1
+  fi
+}

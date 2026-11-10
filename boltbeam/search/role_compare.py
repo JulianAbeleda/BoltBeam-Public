@@ -72,7 +72,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
   faster than the model's own kernel per call (Run's search stage). step(done, total) is called after each role.
   """
   from boltbeam.target.targets import get_target
-  from boltbeam.workflow.common import load_manifest, read_json, write_json
+  from boltbeam.artifacts.run_io import load_manifest, read_json, write_json
   root = pathlib.Path(root) if root else tinygrad_fork.default_fork_root()
   manifest = load_manifest(run)
   model = str(manifest.get("model_path") or "")

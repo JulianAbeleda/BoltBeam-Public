@@ -9,7 +9,7 @@ from boltbeam.profile.gguf import GGML_TYPE_IDS
 from boltbeam.quantization.quant import quant_capability
 from boltbeam.vocab import (SCHEMA_WEIGHT_INVENTORY, SCHEMA_WORKLOAD_PROFILE,
                             Workload, SCHEMA_RUN_MANIFEST)
-from boltbeam.workflow.common import run_dir, write_json, write_manifest
+from boltbeam.artifacts.run_io import run_dir, write_json, write_manifest
 
 LOAD_ARTIFACTS = ("run_manifest.json", "model_profile.json", "weight_inventory.json", "workload_profile.json")
 

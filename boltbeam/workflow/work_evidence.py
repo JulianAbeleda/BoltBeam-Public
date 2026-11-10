@@ -190,7 +190,7 @@ def verify_launches(run:Path, profile:dict, capture:dict, facts:dict, *, require
       totals['ms'] += launch['wall_us']/1000
   rows = {r['name']:r for r in capture['rows']}
   required=set(sums) | {r['name'] for r in capture['rows'] if r.get('flops') is not None or r.get('bytes') is not None}
-  from boltbeam.workflow.tie_out import kind_of
+  from boltbeam.collectors.kernel_kind import kind_of
   attention_launches=[l for l in launches if not l.get('semantic_work') and (l.get('semantic_kind')=='attention' or
                      kind_of({'kernel':l.get('key','').split(' grid=')[0]})=='attention')]
   if attention_launches:required.add('attention')

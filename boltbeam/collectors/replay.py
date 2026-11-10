@@ -38,6 +38,8 @@ from boltbeam.collectors import gpu_telemetry
 from boltbeam.collectors import prefill as pf
 from boltbeam.collectors.replay_overhead import ORDER, PAIRS
 from boltbeam.trace import replay_trace as rt
+from boltbeam.artifacts.run_io import load_manifest, read_json
+from boltbeam.target.gpu import run_gpu
 
 SERVER = "replay_server.json"  # the user's server command as given, and what the run read back from it
 SERVER_LOG = "replay_server.log"
@@ -161,7 +163,7 @@ def llama_attention_paths(binary:pathlib.Path, device:dict[str, Any] | None = No
 
 
 def _attention(found:dict[str, Any]) -> dict[str, int]:
-  from boltbeam.workflow.tie_out import kind_of
+  from boltbeam.collectors.kernel_kind import kind_of
   out: dict[str, int] = {}
   for name, paths in (found.get("kernels") or {}).items():
     if kind_of({"kernel": name}) == "attention":
@@ -442,7 +444,6 @@ def _arm(run:pathlib.Path, provider:str, server:dict[str, Any], trace:dict[str, 
   from boltbeam.adapters.llama_server_control import serve_argv
   from boltbeam.collectors import vendor_capture
   from boltbeam.target.targets import get_target
-  from boltbeam.workflow.common import load_manifest
   eng, argv, rows = engine(provider), server["argv"], []
   env = eng["env"](argv) if "env" in eng else None
   if profiled:  # the profiler the llama.cpp captures use (vendor_capture), around the server, nothing else changed
@@ -509,7 +510,6 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
     return collect(run,provider=provider,say=say)
   from boltbeam.core.canonical import pretty_json
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
-  from boltbeam.workflow.common import load_manifest
   manifest = load_manifest(run)
   eng = engine(provider)
   if token_evidence and provider!="vllm":raise ValueError("replay token evidence requires the vLLM response adapter")
@@ -525,7 +525,6 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
             "sha256": _sha256(binary) if binary.is_file() else None, "model": model_of(argv),
             "request": REQUEST_WORDS, "attention_paths": None}
   try:
-    from boltbeam.workflow.common import run_gpu
     server["attention_paths"] = eng["attention_paths"](binary, run_gpu(run))
   except Exception as exc:  # noqa: BLE001  no tool to read the code: attention is then bound by its bytes, said
     server["attention_paths_failed"] = str(exc)[-300:]
@@ -626,7 +625,6 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
     return {'method':'nsys','pairing':data['pairing'],'timing_qualification':data['timing_qualification']}
   from boltbeam.collectors import llama_bench_decode as lbd
   from boltbeam.target.targets import get_target
-  from boltbeam.workflow.common import load_manifest, read_json
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
   timing = read_json(run / "timing_trace.json")

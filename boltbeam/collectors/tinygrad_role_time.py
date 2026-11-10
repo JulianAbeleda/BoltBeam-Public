@@ -20,6 +20,7 @@ from typing import Any
 
 from boltbeam.artifacts.tinygrad_profile_events import decode_profile_events, load_profile_events
 from boltbeam.target import vendors
+from boltbeam.target.gpu import run_gpu
 
 DRIVER = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "tinygrad_decode_profile.py"
 TRACE = "tinygrad_timing_trace.json"
@@ -125,7 +126,6 @@ def role_time_captured(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Pa
   """tinygrad's kernels per role, captured from outside by the vendor tool and attributed by bytes and count,
   the same path llama.cpp takes. Two decodes at one context, `tokens` and 1 token, subtracted per kernel."""
   from boltbeam.collectors import attribution, vendor_capture
-  from boltbeam.workflow.common import run_gpu
   device, raw = device_for(target), run / "kernel_compare" / "tinygrad_capture"
   from boltbeam.collectors.capture_settings import observed
   settings = observed(run, context)

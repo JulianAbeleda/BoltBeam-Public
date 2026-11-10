@@ -79,6 +79,32 @@ def serves(key:str, row:dict) -> bool:
   return not (row['n_expert'] and row.get('expert_grid')) if (y := channels(key)) is None else experts_of(row) == y
 
 
+# llama.cpp's matrix-vector kernels launch grid.x = ceil(rows / rpb) over the rows they write (mmvf.cu: rpb 1; mmvq.cu
+# calc_launch_params: 1 at one column, 2 at 2 to 8, nwarps 2, 4 or 8 when <type, ncols, has_fusion, small_k, halve_iters>
+# sets small_k, chosen only where nwarps > 1). Every stored capture holds it: the Flash-Next shared expert's gate and up
+# (640 x 2560) launch grid 640 at rpb 1, its down (2560 x 640, small_k) grid 640 at rpb 4. A set flag of another arity
+# leaves every rpb open. mul_mat_q has its proof (fits); cuBLAS and nvjet tile and split K: no row contract.
+_VECTOR = re.compile(r'mul_mat_vec_q<\(ggml_type\)\d+,(\d+),[01]((?:,[01])*)>|(mul_mat_vec_f)<[^,<>]+,[^,<>]+,\d+,\d+(?:,[01])*>')
+
+
+def rows_per_block(key:str) -> set[int] | None:
+  """The output rows one block of a llama.cpp matrix-vector launch may write (above), None for a kernel whose grid
+  states no rows."""
+  if not (v := _VECTOR.fullmatch(template(key))): return None
+  if v[3]: return {1}
+  flags, wide = v[2].split(",")[1:], {1, 2} if 2 <= int(v[1]) <= 8 else {1}
+  if len(flags) == 2 and flags[0] == "1": return {2, 4, 8} | (wide - {1})  # small_k
+  return wide | ({2, 4, 8} if len(flags) != 2 and "1" in flags else set())
+
+
+def rows_fit(key:str, row:dict) -> bool:
+  """Whether a launch's grid.x could cover the row's output rows (row['n']): two rows of equal bytes and different
+  output size take different launches. A row without n, or a kernel whose grid states no rows, is not ruled out."""
+  grid = re.search(r' grid=(\d+)x', key)
+  if not row.get('n') or not grid or (rpb := rows_per_block(key)) is None: return True
+  return any(math.ceil(int(row['n']) / r) == int(grid[1]) for r in rpb)
+
+
 def untied(row:dict) -> str:
   """What an unpaired expert row lacks, said ('' for a dense row): never a silent pass."""
   k = experts_of(row)

@@ -30,7 +30,8 @@ from typing import Any, Callable
 from boltbeam.core.canonical import pretty_json
 from boltbeam.target.targets import get_target
 from boltbeam.vocab import SCHEMA_TIMING_TRACE
-from boltbeam.workflow.common import load_manifest, read_json
+from boltbeam.artifacts.run_io import load_manifest, read_json
+from boltbeam.target.gpu import run_gpu
 
 COLLECTOR_ID = "llama-bench-decode"
 PROVIDER_ID = "llama.cpp/llama-bench-decode"
@@ -181,7 +182,6 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
     argv_for = lambda n: batched_argv(batched, model, context, n, [batch], extra)  # noqa: E731
   else:
     argv_for = lambda n: decode_argv(bench, model, context, n, extra)  # noqa: E731
-  from boltbeam.workflow.common import run_gpu
   (run / out).unlink(missing_ok=True)
   captured, pairs = [], []
   for index in range(BENCH_REPS if batch == 1 else 1):

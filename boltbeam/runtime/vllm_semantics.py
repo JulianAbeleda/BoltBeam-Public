@@ -498,6 +498,8 @@ def config_facts(config):
           "model_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest() if config_path.is_file() else None,
           "activation_dtype": dtype, "kv_cache_dtype": dtype if cache == 'auto' else cache,
           "model_type": config.model_config.hf_config.model_type,
+          # the recurrent state's dtype as vLLM resolved it ("auto": the model's); the decode limit reads it
+          "mamba_ssm_cache_dtype": str(config.cache_config.mamba_ssm_cache_dtype),
           **({'mamba_chunk_size': config.model_config.get_mamba_chunk_size()}
              if hasattr(config.model_config.hf_config, 'ssm_state_size') else {})}
 

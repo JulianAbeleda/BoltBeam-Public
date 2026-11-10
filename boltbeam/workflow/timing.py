@@ -5,7 +5,7 @@ from typing import Any
 
 from boltbeam.trace.timing import build_timing_profile
 from boltbeam.vocab import SCHEMA_HW_TRACE, SCHEMA_TIMING_TRACE
-from boltbeam.workflow.common import load_manifest, read_json, run_dir, update_manifest, write_json
+from boltbeam.artifacts.run_io import load_manifest, read_json, run_dir, update_manifest, write_json
 
 
 

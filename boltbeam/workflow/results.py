@@ -19,7 +19,7 @@ from boltbeam.target import vendors
 from boltbeam.target.targets import get_target
 from boltbeam.workflow import captured_decode, evidence as ev, layout as lay, limit, tie_out as tie
 from boltbeam.workflow import prefill as pf, replay as rw, session as ss
-from boltbeam.workflow.common import load_manifest
+from boltbeam.artifacts.run_io import load_manifest
 from boltbeam.workflow.repeat_bands import for_decode, summary as repeat_summary
 from boltbeam.workflow.report_validation import require
 from boltbeam.workflow.run_folder import (MEASURE_STATUS, SCHEMA, Refused, blocked, is_run, measurement_of, not_measured,
@@ -58,7 +58,11 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
     return {"prefill": pf, "session": ss, "replay": rw}[manifest["workload"]].loss_block(run, manifest, empty)
   if ceil.get("status") != "modeled" or not ceil.get("floor_ms"):
     # no limit, but a measured speed stands: the headline says both (a Mamba2 hybrid with no capture, mamba2.FORMULA_REFUSED)
-    return {"status": "absent", "reason": ceil.get("reason"), "missing": _missing(provider, target, manifest, optional(run, MEASURE_STATUS)), "roles": [], "provider": provider,
+    trace = optional(run, providers.TRACES[provider]) if provider in providers.TRACES else {}  # its pairing, shown as on any run
+    missing = ("each role was timed, but a per-role table is held against the limit, which this run does not have" if trace.get("rows")
+               else _missing(provider, target, manifest, optional(run, MEASURE_STATUS)))
+    return {"status": "absent", "reason": ceil.get("reason"), "missing": missing, "roles": [], "provider": provider,
+            "ambiguous": _ambiguous(trace.get("ambiguous")), "unpaired_roles": trace.get("unpaired_roles") or [],
             "capture": plan, "others": [], "runtimes": [{"provider": provider, "tok_s": token["tok_s"], "ms": token["ms"], "lost_ms": None,
             "per_role": False, "note": f"whole step, measured untraced, at context {token['context']}; no limit"}] if token else []}
   limit_ms = ceil["floor_ms"]

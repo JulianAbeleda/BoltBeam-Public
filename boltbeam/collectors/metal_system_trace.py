@@ -13,7 +13,7 @@ from typing import Any
 
 from boltbeam.target.tinygrad_root import resolve_tinygrad_root
 from boltbeam.vocab import SCHEMA_TIMING_TRACE
-from boltbeam.workflow.common import load_manifest, run_dir
+from boltbeam.artifacts.run_io import load_manifest, run_dir
 
 
 GPU_INTERVALS = "metal-gpu-intervals"

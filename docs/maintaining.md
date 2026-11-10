@@ -86,6 +86,13 @@ They take the model, target, quant set and context ladder as arguments. A second
 invocation, not a second copy of the script. Their verdicts are records: the raw measurements are in `bench/`, the write-up
 (`task_workflow/output/model-agnostic-same-run-tools-20260731.md`) is on `dev`.
 
+### Vendor conformance fixtures
+
+`tests/test_vendor_conformance.py` checks the generic readers once, against one recorded bundle per vendor under
+`tests/fixtures/vendors/`. `tools/record_vendor_fixture.py` writes those bundles from real runs. Both are test
+apparatus and are not on the trunk. [vendor-fixtures.md](vendor-fixtures.md) is the runbook. It gives the commands to
+record a vendor on its own machine and to update the golden outputs after an intended change.
+
 ## The command list
 
 `boltbeam --help` shows a core group first. The table is `CORE` in `boltbeam/cli/__init__.py`. Every other
@@ -143,7 +150,8 @@ and the commit that raises the cap shows the table in its message.
 
 Line count is not the main metric. Duplicated knowledge is. `sz.py` keeps a short list of authorities, each
 with the one module that owns it: the ggml type table, the block layouts, the role vocabulary, the measured
-chip peaks, the dispatch-floor and noisy constants, and the correctness tolerance. A second definition of one
+chip peaks, the dispatch-floor and noisy constants, the correctness tolerance, the vendor rows, and the kernel
+classification (`data/kernel_kinds.json`, read by `collectors/kernel_kind.py`). A second definition of one
 of them anywhere else in `boltbeam/` or `tools/` fails the check, with its file and line. Only definitions
 count: assignments, dict, tuple, list and set literals, and numeric tolerance arguments. A mention in a
 comment or a doc does not.
@@ -166,6 +174,9 @@ The house rules are in [coding-principles.md](coding-principles.md) and
 ## Further reading
 
 - [branch-flow.md](branch-flow.md): branch layout and sync procedure
+- [vendor-fixtures.md](vendor-fixtures.md): recording a vendor's conformance bundle
+- [task_workflow/](task_workflow/): how delegated work is specified and recorded
+- [exp-metal-mr0-mr13-runbook.md](exp-metal-mr0-mr13-runbook.md): the Apple Metal MR0 to MR13 workflow
 
 ### Development apparatus
 

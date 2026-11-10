@@ -98,23 +98,20 @@ not been rerun.
 
 ### A hybrid on TensorRT-LLM: Nemotron 3.5 Lightning
 
-TensorRT-LLM 1.2.1 runs the NemotronH architecture (Mamba, MoE and attention layers) on its PyTorch backend only, so
-the run is made with `BOLTBEAM_TRTLLM_BACKEND=pytorch`. `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (62 GB)
-needed three things on an H200 pod:
+TensorRT-LLM 1.2.1 runs the NemotronH architecture (Mamba, MoE and attention layers) on its PyTorch backend only; its
+classic engine builder stops at "architecture NemotronHForCausalLM is not supported in TRT-LLM yet". BoltBeam chooses
+the backend per checkpoint: the classic builder when the installed TensorRT-LLM's registry (`MODEL_MAP`) lists the
+checkpoint's architecture (a built engine compiles nothing at run time, which matters where the system CUDA lacks the
+`curand.h` FlashInfer's build needs: the RTX 5090 box), else the PyTorch backend. `BOLTBEAM_TRTLLM_BACKEND=pytorch` or
+`tensorrt` overrides it. The timing trace's engine row records `backend` and `backend_reason`.
+`nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` (62 GB) needed three things on an H200 pod:
 
 1. **The layer plan as a string.** TensorRT-LLM reads `hybrid_override_pattern` (M Mamba, E MoE, `*` attention, `-`
-   MLP); the 3.5 checkpoint writes `layers_block_type`, a list, and the load stops at "'NemotronHConfig' object has no
-   attribute 'hybrid_override_pattern'". A folder of links to the same weight files with a config that holds both:
-
-   ```bash
-   S=/root/boltbeam/models/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16; D=/root/boltbeam/models/Nemotron-3.5-Lightning-30B-trt
-   mkdir -p $D; for f in $S/*; do ln -sf $f $D/; done; rm $D/config.json
-   python3 -c "
-   import json; c = json.load(open('$S/config.json'))
-   c['hybrid_override_pattern'] = ''.join({'mamba': 'M', 'moe': 'E', 'attention': '*', 'mlp': '-'}[t] for t in c['layers_block_type'])
-   json.dump(c, open('$D/config.json', 'w'), indent=1)"
-   ```
-
+   MLP); the 3.5 checkpoint writes `layers_block_type`, a list, and the load stopped at "'NemotronHConfig' object has
+   no attribute 'hybrid_override_pattern'". BoltBeam does this itself: it links every file of the checkpoint into the
+   run's own folder (`<run>/trtllm_checkpoint`), writes a `config.json` there that holds both keys (the letters from
+   `vocab.HYBRID_PATTERN`), and starts TensorRT-LLM on that folder. Your model folder is not written; the timing
+   trace records `checkpoint` and `checkpoint_adapted`, and a saved run keeps the links as links.
 2. **Prefix reuse off.** The hybrid's recurrent-state cache refuses to start with block reuse on ("mamba hybrid cache
    requires block reuse to be disabled in KV cache config"). BoltBeam's driver starts the PyTorch backend with it off
    (d91f8a49); nothing to set.
@@ -124,11 +121,18 @@ needed three things on an H200 pod:
    cache filled in one capture and not the other"); the next run's captures match. Run the pipeline twice, or one
    request first.
 
-Then the recipe above with `$D` as the model and `--provider tensorrt-llm`. Measured on the H200 (batch 1, three
+Then the recipe above with the checkpoint folder as the model and `--provider tensorrt-llm`. Measured on the H200 (batch 1, three
 runs): 264 to 269 tok/s at context 128 and 261 to 269 at 512. The per-role capture completes; the report then stops
 at "Mamba2 state traffic and SSD work are not validated against engine evidence; the Gated DeltaNet formula cannot
 supply this model's limit", so there is a speed and not yet a limit or a table for a Mamba hybrid. Its GGUF
 (Nemotron 3.5 Bolt 74B) does not load in BoltBeam yet either (`ssm_in`/`ssm_out`: unknown block layout).
+
+When TensorRT-LLM cannot start a model, the measure stage says why in one line, with the engine's own line beside it
+and its traceback under the details (`trtllm_decode.REFUSALS`): an architecture a backend does not build, out of GPU
+memory loading the model (with the checkpoint's size on disk, the GPU's memory and the `quant_algo` from config.json),
+a kernel compile at run time that failed (NVRTC/JIT), or a missing `curand.h`. On the RTX 5090 (32 GB) the NVFP4
+export of Nemotron 3.5 Lightning (`MIXED_PRECISION`) ran out of memory loading in 1.2.1, and 1.4.0rc3 failed compiling
+its attention kernel (NVRTC); neither is measured yet (2026-11-09).
 
 ## What comes back
 

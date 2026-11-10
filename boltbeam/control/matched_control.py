@@ -29,7 +29,7 @@ from boltbeam.vocab import (SCHEMA_MATCHED_CONTROL_PROTOCOL, SCHEMA_MATCHED_CONT
                             SCHEMA_MATCHED_CONTROL_SUMMARY, SCHEMA_RUNTIME_OUTPUT_IDENTITY,
                             SCHEMA_TINYGRAD_GRAPH_ADMISSION_CENSUS)
 from boltbeam.workflow.autoscan import _hardware_profile
-from boltbeam.workflow.common import read_json, write_json
+from boltbeam.artifacts.run_io import read_json, write_json
 
 CommandRunner = Callable[[Sequence[str], pathlib.Path | None, Mapping[str, str] | None, float], tuple[int, str, str]]
 CommandExecutor = Callable[..., tuple[int, str, str, Mapping[str, Any] | None]]

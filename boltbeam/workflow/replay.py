@@ -26,6 +26,7 @@ import pathlib
 import statistics
 from typing import Any
 
+from boltbeam.roofline.mamba2 import FormulaRefused
 from boltbeam.workflow import tie_out as tie
 from boltbeam.workflow.diff import DiffRefused, refuse_unless_same, row_changes  # the one authority for comparing runs
 
@@ -56,7 +57,7 @@ def standard(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   from boltbeam.collectors import replay as rp
   from boltbeam.roofline.prefill_work import kv_bytes_per_token, recurrent_state_bytes
   from boltbeam.target.targets import get_target
-  from boltbeam.workflow.common import load_manifest
+  from boltbeam.artifacts.run_io import load_manifest
   from boltbeam.workflow import limit
   from boltbeam.workflow.limit import run_bandwidth
   manifest = load_manifest(run)
@@ -137,9 +138,12 @@ def table(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   captured = {t["i"] for t in (_read(run / "replay_capture.json").get("turns") or [])
               if not t.get("failed") and t.get("file") and
               ((_read(run / t["file"]).get("lengths") or {}).get(str(t.get("prompt_n"))) or {}).get("rows")}
-  out_rows, unmodelled = [], set()
-  for r in turns:
-    c = turn_ceilings(s, r, run_mhz, clocked=clocked) if s else None
+  out_rows, unmodelled, refused = [], set(), None
+  try:
+    ceilings = [turn_ceilings(s, r, run_mhz, clocked=clocked) if s else None for r in turns]
+  except FormulaRefused as exc:  # a Mamba2 hybrid: no formula ceiling, the turns' times stand, the cause is said
+    s, ceilings, refused = None, [None] * len(turns), str(exc)
+  for r, c in zip(turns, ceilings):
     unmodelled.update((c or {}).get("unmodelled") or [])
     flags = [f for f, on in (("cold", r["cold"]), ("bench capture", r["i"] in captured), ("THROTTLED", r.get("throttled")),
                              ("compaction", r["compaction"])) if on]
@@ -171,7 +175,7 @@ def table(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   if stopped:
     words.append(f"Stopped at turn {stopped['i']}: {stopped['reason']}.")
   if not s:
-    words.append("No ceiling: the run has no model profile or no decode ledger.")
+    words.append(f"No ceiling: {refused}" if refused else "No ceiling: the run has no model profile or no decode ledger.")
   return {"title": TITLE, "columns": list(COLUMNS), "rows": [{"cells": x["cells"], "i": x["i"], "flags": x["flags"]} for x in out_rows],
           "total": total, "words": " ".join(words), "headline": head, "headline_lines": headline_lines(head),
           "unmodelled": sorted(unmodelled),
@@ -305,7 +309,7 @@ def decode_where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | Non
   depth beside what no role took."""
   from boltbeam.collectors import replay as rp
   from boltbeam.collectors.tinygrad_role_time import loss
-  from boltbeam.workflow.common import load_manifest
+  from boltbeam.artifacts.run_io import load_manifest
   from boltbeam.workflow import limit
   d = _read(run / rp.CAPTURE).get("decode")
   if not d:
@@ -423,7 +427,7 @@ def cross(a:pathlib.Path, b:pathlib.Path) -> dict[str, Any]:
   """Two engines replaying the same trace on the same target, turn by turn: whether each turn held the same work
   (its prefix within WORK_MATCH, the same reply length), and each engine's time against its own roofline. Refused,
   naming the field, when the trace or the target differ."""
-  from boltbeam.workflow.common import load_manifest
+  from boltbeam.artifacts.run_io import load_manifest
   ta, tb = _read(a / "timing_trace.json"), _read(b / "timing_trace.json")
   refuse_unless_same([("workload", ta.get("workload"), tb.get("workload")),
                       ("replay trace sha256", (ta.get("replay_trace") or {}).get("sha256"), (tb.get("replay_trace") or {}).get("sha256")),
@@ -470,7 +474,7 @@ def diff(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[st
   Refused, naming the field, when the trace's sha256, the model or the target differ. Two prefill or decode audits
   are the engine-upgrade audit (workflow/diff.audit), on the same refusal and row rules."""
   from boltbeam.workflow import diff as engine_diff
-  from boltbeam.workflow.common import load_manifest
+  from boltbeam.artifacts.run_io import load_manifest
   ma, mb = load_manifest(a), load_manifest(b)
   if ma.get("workload") in ("prefill", "decode") or mb.get("workload") in ("prefill", "decode"):
     return engine_diff.audit(a, b, bands=bands)

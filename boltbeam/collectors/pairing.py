@@ -2,7 +2,7 @@
 
 One rule set for prefill and decode. A capture is a sequence of launches in the order they ran. Every engine runs a
 layer in one order: the projections that read the layer's input, the block (attention or the recurrent scan), the
-output projection, the FFN. The block's kernels are the ones tie_out.kind_of names, and they mark the layers:
+output projection, the FFN. The block's kernels are the ones kernel_kind.kind_of names, and they mark the layers:
 
   layers   the block launches, in runs (consecutive block launches with no weight launch between them), grouped by
            how many layers of each kind the profile has (runs per layer per kind is a whole number)
@@ -43,37 +43,48 @@ from boltbeam.collectors import llama_mmq
 from boltbeam.collectors.instruction_path import template
 from boltbeam.core.policy import value
 from boltbeam.profile.gguf import GGML_TYPE_NAMES
-from boltbeam.vocab import FFN_BRANCH, OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE
-from boltbeam.workflow.tie_out import UNATTRIBUTED, kind_of
+from boltbeam.vocab import FFN_BRANCH, LAYER_CLASSES, OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE
+from boltbeam.collectors.kernel_kind import UNATTRIBUTED, kind_of
 
-MAX_FUSED = 3  # calls one launch may serve (gate and up fused: 2)
-MAX_SPLIT = 4  # launches one call may take (a library that cuts a product along M)
-MAX_NODES = 50_000
-MAX_LAUNCH_VISITS = 50_000_000  # bound search work as well as nodes on long captures
-MAX_SUM_STEPS = 20_000  # subsets one row's choice may visit
+# the pairing's limits are stated choices in data/policy.json (core.policy.value), read once here
+MAX_FUSED = int(value("pairing_max_fused"))  # calls one launch may serve
+MAX_SPLIT = int(value("pairing_max_split"))  # launches one call may take
+MAX_NODES = int(value("pairing_max_nodes"))
+MAX_LAUNCH_VISITS = int(value("pairing_max_launch_visits"))
+MAX_SUM_STEPS = int(value("pairing_max_sum_steps"))
 # why a pairing is unresolved: several pairings fit equally, the search stopped at its budget, or no slot fits a row
 TIE, SEARCH_LIMIT, NO_FIT = "tie", "search_limit", "no_fit"
 KINDS = (SEARCH_LIMIT, TIE, NO_FIT)
-RECUR = 0.9  # a slot's kernel runs in at least this share of a kind's layers in a unit, or of the units' last layers
-BLOCKS = ("attention", "recurrent")  # kernels tie_out.kind_of names so are the block, never a weight role
+RECUR = value("pairing_recurring_share")  # a slot's kernel runs in at least this share of a kind's layers in a unit
+BLOCKS = ("attention", "recurrent")  # kernels kernel_kind.kind_of names so are the block, never a weight role
 RULE = ("the block kernels (attention, recurrent) mark the layers; the launches before a layer's block are its input "
         "projections and those after it its output projection and FFN, split by the gap sizes; the j-th weight launch on a "
         "side is one role in every layer of that kind; a row's fine class puts it on a side and, on the output side, in the "
         "data flow's order; a template serves one weight format; on the input side more operations per launch is more "
         "time, and two rows within the gap are one row; no launch reads a role's weights faster than the bandwidth or runs "
         f"past its path's peak, each at the top of its measured uncertainty (not checked without one); a launch may serve up to {MAX_FUSED} calls or a call take up to {MAX_SPLIT} launches, by a "
-        "whole ratio; the head pairs on the unit's tail by bytes; the pairing placing the most weight bytes wins, and rows "
-        "that could exchange their launches are left unpaired and said")
+        "whole ratio; at M = 1 a launch's work is its weight bytes whatever its template, so among rows of one format on one "
+        "side more bytes per launch is more time per launch where the launches' inner spreads do not overlap; a layer's input "
+        "rows that outnumber its input launches run as one launch; the head pairs on the unit's tail by bytes; the pairing "
+        "placing the most weight bytes wins, and rows that could exchange their launches are left unpaired and said")
+# the inner spread of a slot's launch times: the launches between these quantiles. Two slots are apart when their inner
+# spreads do not overlap (a capture of a thousand launches has outliers at both ends; the whole range would always overlap)
+SPREAD = value("pairing_inner_spread")
 FLAT_RULE = ("no layer structure (no launch times, or no attention or recurrent kernel named): a role takes kernel groups "
              "whose launches per unit are its count, or 1/k of them for a fused kernel, within the bandwidth; more bytes per "
              "launch is more time per launch; rows that could exchange their groups are left unpaired and said")
+SEQUENCE_RULE = ("; the layers run in the profile's recorded sequence: a layer without a block kernel (experts, a dense FFN) "
+                 "runs in the gap after the block layer before it, as a kind of that layer's own (recurrent/moe), its rows "
+                 "after that layer's")  # added to RULE when the walk followed a sequence (pair)
 PRUNED = "pruned"  # the side and kind of a pruned last layer's launches (`prune`)
 _RANK = {s: i for i, s in enumerate(("in", "gate", "out", "ffn_in", "ffn_out", "head"))}
 
 
 def projection_candidate(name:str) -> bool:
-  """A known standalone non-matrix operation cannot read a projection's weights. Fused matrix names win."""
-  if any(w in name.lower() for w in ("gemm", "gemv", "matmul", "mul_mat", "mul_mv")):
+  """A known standalone non-matrix operation cannot read a projection's weights. Fused matrix names win: a kernel
+  whose own name says matrix (fused_quantize_matmul), not one whose template arguments name a GEMM's types (an MoE
+  dispatch's expandInputRowsKernel<..., GroupedGemmInput> gathers rows for the grouped GEMM and reads no weight)."""
+  if any(w in name.split("<", 1)[0].lower() for w in ("gemm", "gemv", "matmul", "mul_mat", "mul_mv")):
     return True
   return kind_of({"kernel": name}) in ("other", UNATTRIBUTED)
 
@@ -85,6 +96,13 @@ def layer_kinds(profile:dict[str, Any]) -> dict[str, int]:
   rec = int((md.get("recurrent") or {}).get("layer_count") or 0)
   att = int((md.get("attention") or {}).get("layer_count", max(total - rec, 0)))
   return {**({"recurrent": rec} if rec else {}), **({"attention": att} if att else {})}
+
+
+def layer_order(profile:dict[str, Any]) -> list[str] | None:
+  """The profile's layer sequence, each layer's kind in the model's order (the loaders' metadata.layers.sequence, read
+  from a config that names its layers' blocks), or None: a profile with counts alone walks by kind."""
+  seq = ((profile.get("metadata") or {}).get("layers") or {}).get("sequence")
+  return [str(k) for k in seq] if isinstance(seq, list) and seq else None
 
 
 def stages(row:dict[str, Any], per_layer:float | None = None, kind:str | None = None) -> set[str]:
@@ -161,6 +179,45 @@ def signatures(st:dict[str, Any], rows:list[dict[str, Any]], kinds:dict[str, int
       return None  # the row's count is not its tensors (an engine's packed matrix): no split
     out[i] = {**rows[i], "layer_kinds": {k: dict(c) for k, c in lk.items()}}
   return order, dict(collections.Counter(order)), out
+
+
+def sequence(seq:list[str], rows:list[dict[str, Any]], kinds:dict[str, int]) -> tuple[list[str], dict[str, int], list[dict[str, Any]]]:
+  """The profile's layer sequence (layer_order) as the walk's layer order. A layer of a kind with no block kernel (a
+  standalone expert layer, a dense FFN layer: vocab.LAYER_CLASSES) runs in the gap after the block layer before it, on
+  that layer's output side after its own rows, so a block layer followed by such layers launches differently from one
+  that is not: each is a kind of its own (recurrent/moe), its slots counted apart, as signatures does for layers that
+  launch differently. The rows of an unmarked kind's classes run in the kinds that hold its layers (layer_kinds), as
+  many per layer as their count over the sequence's layers of the kind. Returns (each block layer's kind in a unit,
+  layers per kind, the rows); NoStructure when the sequence names a kind the walk has not, begins with a layer that
+  has no block, or counts a block kind's layers otherwise than kinds."""
+  unknown = sorted({k for k in seq if k not in BLOCKS and k not in LAYER_CLASSES})
+  if unknown:
+    raise NoStructure(f"the profile's layer sequence names {', '.join(unknown)}, no layer kind the walk knows")
+  if seq[0] not in BLOCKS:
+    raise NoStructure("the profile's layer sequence begins with a layer that has no block kernel to mark it")
+  marked: list[tuple[str, list[str]]] = []  # each block layer with the unmarked layers after it
+  for k in seq:
+    if k in BLOCKS:
+      marked.append((k, []))
+    else:
+      marked[-1][1].append(k)
+  blocks = collections.Counter(k for k, _ in marked)
+  if any(blocks[base(k)] != n for k, n in kinds.items()):
+    raise NoStructure(f"the profile's layer sequence holds {dict(blocks)} block layers, its layer counts {kinds}")
+  order = [k + (f"/{'+'.join(t)}" if t else "") for k, t in marked]
+  trailing = {o: t for o, (_, t) in zip(order, marked)}
+  counts = dict(collections.Counter(order))
+  held = collections.Counter(seq)
+  out = []
+  for r in rows:
+    cls, n = r.get("role_class"), r.get("count")
+    u = next((k for k, cs in LAYER_CLASSES.items() if cls in cs), None)
+    if u is None or not held[u] or not n or n != int(n) or int(n) % held[u]:
+      out.append(r)
+      continue
+    per = int(n) // held[u]
+    out.append({**r, "layer_kinds": {o: {cls: per * trailing[o].count(u) * counts[o]} for o in counts if u in trailing[o]}})
+  return order, counts, out
 
 
 # --- the structure: layers, sides, slots -------------------------------------------------------------------------------
@@ -366,8 +423,8 @@ def _fits(item:dict[str, Any], g:dict[str, Any], k:int, r:int, bandwidth_gbs:flo
       launch.get("logical_parts") for launch, *_ in g.get("launches", [])):
     return False
   for launch, m, _, _ in g.get("launches", []):
-    if not any(llama_mmq.serves(launch["key"], r) for r in item.get("parts", [item])):
-      return False  # an expert stack's launches are its grid.y = k ones (llama_mmq.serves)
+    if not any(llama_mmq.serves(launch["key"], r) and llama_mmq.rows_fit(launch["key"], r) for r in item.get("parts", [item])):
+      return False  # an expert stack's launches are its grid.y = k ones (serves); a matrix-vector grid.x its rows (rows_fit)
     if proof := launch.get("matrix_grid_constraint"):
       from boltbeam.collectors.llama_mmq import fits
       if not fits(proof, launch, item.get("parts", [item]), m, k, r): return False
@@ -400,6 +457,8 @@ def assign(groups:list[dict[str, Any]], rows:list[dict[str, Any]], *, units:int,
   best: dict[str, Any] = {"score": (-1, 0.0), "placed": [], "unplaced": [], "nodes": 0, "ambiguous": None}
   for split, carry in itertools.product(splits, _carriers(rows, prune)):  # one node budget over every split
     items = _items(rows, kinds, units, outputs if outputs is not None else units, split, flat, prune, carry)
+    if not flat:
+      items = _packed(items, groups, kinds)
     got = _search(items, groups, bandwidth_gbs, peak_of, best["nodes"])
     best["nodes"] = got["nodes"]
     if got["score"] > best["score"]:
@@ -503,11 +562,7 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
     if (last and it["kind"] and last["kind"] == it["kind"] and last["quant"] == it["quant"] and it["sides"] == last["sides"] == {"input"}
         and it.get("nk") and last.get("nk") and last["nk"] < it["nk"] * value("same_row_work_ratio")
         and kinds_allowed(last["row"], kinds) == kinds_allowed(it["row"], kinds)):
-      total = last["need"] + it["need"]
-      last.update(role=" + ".join(sorted(set(last["role"].split(" + ")) | {it["role"]})), need=total, parts=last["parts"] + [it["row"]],
-                  slack=last.get("slack", 0) + it.get("slack", 0), per_layer=last.get("per_layer", 1) + it.get("per_layer", 1), own=last.get("own", 1) + it.get("own", 1),
-                  weight_bytes=(last["weight_bytes"] * last["need"] + it["weight_bytes"] * it["need"]) / total,
-                  nk=(last["nk"] * last["need"] + it["nk"] * it["need"]) / total, count=last["count"] + it["count"])
+      _join(last, it)
       continue
     out.append(it)
   def order(i):  # output-side rows in the data flow's order, then the rest most bytes first (they bind their templates'
@@ -519,6 +574,85 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
     return (rank if at < 0 else 0, at, rank, OUTPUT_ORDER.index(stage) if stage else 0, -(i["weight_bytes"] * i["need"]), i["role"])
   out.sort(key=order)
   return out
+
+
+def _join(last:dict[str, Any], it:dict[str, Any]) -> None:
+  """Two items as one: one launch serves calls of both rows (parts), each part's calls its own."""
+  total = last["need"] + it["need"]
+  last.update(role=" + ".join(sorted(set(last["role"].split(" + ")) | {it["role"]})), need=total, parts=last["parts"] + [it["row"]],
+              slack=last.get("slack", 0) + it.get("slack", 0), per_layer=last.get("per_layer", 1) + it.get("per_layer", 1), own=last.get("own", 1) + it.get("own", 1),
+              weight_bytes=(last["weight_bytes"] * last["need"] + it["weight_bytes"] * it["need"]) / total,
+              nk=(last["nk"] * last["need"] + it["nk"] * it["need"]) / total if last.get("nk") and it.get("nk") else None,
+              count=last["count"] + it["count"])
+
+
+def _packed(items:list[dict[str, Any]], groups:list[dict[str, Any]], kinds:dict[str, int]) -> list[dict[str, Any]]:
+  """An engine that packs a layer's input projections into one launch (q, k and v as one GEMM: vLLM's qkv_proj,
+  TensorRT-LLM's) runs fewer input launches per layer than the profile has input rows. A kind's input slots, less the
+  launches the layer before owes its output rows (each at least one per layer), are the launches its input rows can
+  hold; when one launch per layer is all they can hold and the rows need more, the kind's input rows of one format
+  are one item of one launch per layer (parts: the rows, each with its own calls per launch), its bytes per launch
+  theirs together. Rows of several formats, or room for two launches and more rows, are left to the walk, which says
+  what it cannot place."""
+  bound, ratios = _bind(items, groups)
+  min_out, _ = _minimums(items, lambda it: _unfused(it, bound, ratios))
+  for kind in kinds:
+    slots = {g["slot"] for g in groups if g["kind"] == kind and g["side"] == "input"}
+    before = {x[2][2] for g in groups if g["kind"] == kind and g["side"] == "input" for x in g["launches"] if x[2]}
+    ins = [it for it in items if it["kind"] == kind and it["sides"] == {"input"} and len(it["parts"]) == 1]
+    room = len(slots) - max((min_out[p] for p in before), default=0)
+    if not slots or len(ins) < 2 or room > 1 or sum(it.get("per_layer", 1) for it in ins) <= room:
+      continue
+    by_format: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+    for it in ins:
+      by_format[it["quant"]].append(it)
+    for same in by_format.values():
+      if len(same) < 2 or any(it.get("per_layer", 1) != int(it.get("per_layer", 1)) for it in same):
+        continue
+      calls = sum(int(it["per_layer"]) for it in same)  # the launch serves this many calls, each part its own
+      packed = {**same[0], "role": " + ".join(sorted(it["role"] for it in same)), "parts": [it["row"] for it in same],
+                "need": sum(it["need"] for it in same) // calls, "count": sum(it["count"] for it in same) // calls,
+                "weight_bytes": sum(it["weight_bytes"] * int(it["per_layer"]) for it in same), "nk": None,
+                "per_layer": 1, "own": 1, "stages": set().union(*(it["stages"] for it in same)), "packed": calls,
+                "slack": min(it.get("slack", 0) for it in same)}
+      items[items.index(same[0])] = packed
+      for it in same[1:]:
+        items.remove(it)
+  return items
+
+
+def _unfused(it:dict[str, Any], bound:dict, ratios:dict) -> bool:
+  """Whether the counts bind the item's format's templates in its kind to one launch per call (K and V then hold two
+  slots; gate and up may fuse)."""
+  krs = [kr for key, kr in ratios.items() if key[0] == it["kind"] and bound.get(key) == it["quant"]]
+  return bool(krs) and all(k == 1 for k, _ in krs)
+
+
+def _minimums(items:list[dict[str, Any]], unfused:Callable[[dict[str, Any]], bool]) -> tuple[collections.Counter, collections.Counter]:
+  """The launches each kind's rows need per layer on each side (output, input): each row runs at least one launch
+  per layer on its side, so a gap's first launches are the earlier layer's output rows', its last launches the later
+  layer's input rows'. A row whose format runs in only some layers (a mixed quant per layer) is no launch in every
+  layer: such rows count together per role and side, once when their layers cover every layer. A row the counts
+  bind to one launch per call holds its own launches (K and V: two); a mixed-quant row counts its own launches
+  (the carried role's per_layer spans its other formats' layers too)."""
+  min_out: collections.Counter = collections.Counter()
+  min_in: collections.Counter = collections.Counter()
+  partial: collections.Counter = collections.Counter()
+  for it in items:
+    if it["kind"] in (None, PRUNED):
+      continue
+    both = it["stages"] >= {"in", "out"}
+    for side, mins in (("output", min_out), ("input", min_in)):
+      if it["sides"] == {side} or both:
+        share = it.get("per_layer", 1) / (2 if both else 1)
+        if share >= 1:
+          mins[it["kind"]] += max(1, int(it.get("own", 1) / (2 if both else 1))) if unfused(it) else 1
+        else:
+          partial[(it["kind"], side, it["role"])] += share
+  for (kind, side, _), share in partial.items():
+    if share >= 1:
+      (min_out if side == "output" else min_in)[kind] += 1
+  return min_out, min_in
 
 
 def _facts(r:dict[str, Any]) -> dict[str, Any]:
@@ -627,30 +761,8 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
   in_min: dict[int, int] = {}  # gap -> lowest position an input row took
   placed: list[dict[str, Any]] = []
   state = {"nodes": nodes, "launch_visits": 0}
-  # each row runs at least one launch per layer on its side: a gap's first launches are the earlier layer's output
-  # rows', its last launches the later layer's input rows' (less the launches inside the block)
-  # A row whose format runs in only some layers (a mixed quant per layer) is no launch in every layer: such rows
-  # count together per role and side, once when their layers cover every layer.
-  # K and V hold two slots when the counts bind their format's templates to one launch per call (gate+up may fuse);
-  # a mixed-quant row counts its own launches: the carried role's per_layer spans its other formats' layers too
-  unfused = lambda it: bool(krs := [kr for key, kr in ratios.items() if key[0] == it["kind"] and bound.get(key) == it["quant"]]) and all(k == 1 for k, _ in krs)  # noqa: E731
-  min_out: dict[str, int] = collections.Counter()
-  min_in: dict[str, int] = collections.Counter()
-  partial: dict[tuple[str, str, str], float] = collections.Counter()
-  for it in items:
-    if it["kind"] in (None, PRUNED):
-      continue
-    both = it["stages"] >= {"in", "out"}
-    for side, mins in (("output", min_out), ("input", min_in)):
-      if it["sides"] == {side} or both:
-        share = it.get("per_layer", 1) / (2 if both else 1)
-        if share >= 1:
-          mins[it["kind"]] += max(1, int(it.get("own", 1) / (2 if both else 1))) if unfused(it) else 1  # its own launches, not a carried role's
-        else:
-          partial[(it["kind"], side, it["role"])] += share
-  for (kind, side, _), share in partial.items():
-    if share >= 1:
-      (min_out if side == "output" else min_in)[kind] += 1
+  # the launches a gap's two layers owe their rows (_minimums), less the input launches inside the block
+  min_out, min_in = _minimums(items, lambda it: _unfused(it, bound, ratios))
   inside = collections.Counter()  # input launches inside a block, per kind
   for g in groups:
     if g["side"] == "input" and g.get("inside"):
@@ -662,16 +774,18 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
     score = (sum(len(p["launches"]) * p["fused"] / p["split"] * p["item"]["weight_bytes"] for p in placed),
              sum(len(p["launches"]) * p["group"]["median_us"] for p in placed))
     if score > best["score"]:
-      tie, out = swaps()  # rows that could exchange their launches are withdrawn: no pairing is shown that the walk cannot stand behind
+      tie, out, exchanged = swaps()  # rows that could exchange their launches are withdrawn: no pairing is shown that the walk cannot stand behind
       gone = [{"item": it, "reason": why} for it, why in out.values()]
-      best.update(score=score, placed=[p for p in placed if id(p["item"]) not in out], unplaced=list(unplaced) + gone,
-                  ambiguous={"reason": "; ".join(tie), "kind": TIE} if tie else None)
+      swap = {id(ia): ib for ia, ib in exchanged} | {id(ib): ia for ia, ib in exchanged}  # at M = 1, the row of more bytes the slower launches
+      best.update(score=score, placed=[{**p, "item": swap[id(p["item"])]} if id(p["item"]) in swap else p for p in placed if id(p["item"]) not in out],
+                  unplaced=list(unplaced) + gone, ambiguous={"reason": "; ".join(tie), "kind": TIE} if tie else None)
 
   def _avail(g, side):
     """The group's launches not yet taken that the gap's order allows this side to take."""
     state["launch_visits"] += len(g["launches"])
     if state["launch_visits"] > MAX_LAUNCH_VISITS:
-      raise _TooMany(f"pairing search exceeded {MAX_LAUNCH_VISITS:,} launch visits; attribution unresolved")
+      raise _TooMany(f"pairing search exceeded {MAX_LAUNCH_VISITS:,} launch visits (MAX_LAUNCH_VISITS, policy "
+                     "pairing_max_launch_visits); attribution unresolved")
     out = []
     for x in g["launches"]:
       l, _, gap, pos = x
@@ -686,12 +800,14 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       out.append(x)
     return out
 
-  def ordered(item, g):
+  def ordered(item, g, k=1, r=1):
     stage = _output_stage(item)
     if g["side"] == "input" and item.get("nk"):  # on one template more operations per launch is more time per launch
       return all(not _apart(item["nk"], p["item"]["nk"], _walls(g["launches"]), _walls(p["group"]["launches"])) or
                  (item["nk"] - p["item"]["nk"]) * (g["median_us"] - p["group"]["median_us"]) >= 0 for p in placed
                  if p["group"]["side"] == "input" and p["group"]["template"] == g["template"] and p["item"].get("nk"))
+    if not item.get("nk") and not all(_bytes_ordered(item, g, k, r, p) for p in placed):  # at M = 1: more bytes, more time
+      return False
     if g["side"] != "output" or not stage:
       return True
     # order holds within a layer (only groups that share layers are compared), an FFN's stages within its branch
@@ -714,7 +830,8 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       got = _avail(g, g["side"])
       if got:
         cand.append((g, got))
-    cand.sort(key=lambda c: ((fmt.get(key(c[0])) or stated_format(c[0]["template"])) != item["quant"], c[0]["kind"] == "tail",
+    # a group whose grids read the row's output rows (_grid_read) is evidence for it; one whose kernel states no rows is not
+    cand.sort(key=lambda c: ((fmt.get(key(c[0])) or stated_format(c[0]["template"])) != item["quant"], c[0]["kind"] == "tail", not _grid_read(item, c[0]),
                              c[0]["slot"] if c[0]["side"] == "output" else -c[0]["slot"] if c[0]["side"] == "input" else 0, -c[0]["median_us"]))
     # a role held in several formats (a mixed quant per layer): its formats share the role's slots, as many per layer
     # as its launches per layer, and a slot of the role launches its format's template for this row in every layer (a
@@ -735,7 +852,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       if item["need"] * r % k:
         continue
       fit = [(g, ls) for g, ls in cand if ratios.get(key(g), (k, r)) == (k, r)
-             and fits(item, g, k, r) and ordered(item, g)]
+             and fits(item, g, k, r) and ordered(item, g, k, r)]
       opts = [{"n": len(ls), "pick": (g, ls)} for g, ls in fit]
       want, slack = item["need"] * r // k, item.get("slack", 0) * r // k
       # a short last layer's group (_groups) is a slot the row holds in the unit's other layers too: its later launches
@@ -754,6 +871,9 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
         at = held | {(x["pick"][0]["side"], x["pick"][0]["slot"]) for x in subset if steady(x["pick"][0])}
         if fam and (len(at) > round(item["role_per_layer"]) or any((g["side"], g["slot"]) in at and all(g is not x["pick"][0] for x in subset) for g in every)): continue
         out.append((k, r, {key(x["pick"][0]) for x in subset}, [x["pick"] for x in subset]))
+    # at any launch ratio, the options whose launches all read the row's output rows in their grids come first: a fused
+    # launch of the row's rows serving two calls is evidence, a second launch of a kernel stating no rows only room
+    out.sort(key=lambda o: not all(_grid_read(item, g) for g, _ in o[3]))
     return out
 
   def swaps():
@@ -763,7 +883,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
     by_item: dict[int, list] = collections.defaultdict(list)
     for p in placed:
       by_item[id(p["item"])].append(p)
-    found, out = [], {}
+    found, out, exchanged = [], {}, []
     seen = list(by_item.values())
     for i, a in enumerate(seen):
       for b in seen[i + 1:]:
@@ -781,11 +901,23 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
             and _apart(ia["nk"], ib["nk"], _walls(x for p in a for x in p["launches"]), _walls(x for p in b for x in p["launches"]))
             and (ia["nk"] - ib["nk"]) * (us(a) - us(b)) > 0):
           continue  # on one template the exchange would give the row of more operations per launch the less time
-        if (all(fits(ia, p["group"], p["fused"], p["split"]) for p in b)
-            and all(fits(ib, p["group"], p["fused"], p["split"]) for p in a)):
-          found.append(f"{ia['role']} {ia['quant']} and {ib['role']} {ib['quant']} could exchange their launches")
-          out[id(ia)] = (ia, found[-1])
-          out[id(ib)] = (ib, found[-1])
+        if not (all(fits(ia, p["group"], p["fused"], p["split"]) for p in b)
+                and all(fits(ib, p["group"], p["fused"], p["split"]) for p in a)):
+          continue
+        per = lambda it, ps: it["weight_bytes"] * ps[0]["fused"] / ps[0]["split"]  # noqa: E731  bytes per launch at M = 1
+        if (not ia.get("nk") and not ib.get("nk") and ia["quant"] == ib["quant"]
+            and _bytes_apart(per(ia, a), per(ib, b), _walls(x for p in a for x in p["launches"]), _walls(x for p in b for x in p["launches"]))):
+          if (per(ia, a) - per(ib, b)) * (us(a) - us(b)) > 0:
+            continue  # at M = 1 the exchange would give the row of more bytes per launch the less time
+          # the walk gave the row of more bytes the faster launches: the exchange is the reading to stand behind, when
+          # the rows' other relations (the data flow's order, one template's order) hold with it
+          trial = [{**p, "item": ib} if p in a else {**p, "item": ia} if p in b else p for p in placed]
+          if _order_ok(trial) and all(_bytes_ordered(p["item"], p["group"], p["fused"], p["split"], q) for p in trial for q in trial if q is not p):
+            exchanged.append((ia, ib))
+            continue
+        found.append(f"{ia['role']} {ia['quant']} and {ib['role']} {ib['quant']} could exchange their launches")
+        out[id(ia)] = (ia, found[-1])
+        out[id(ib)] = (ib, found[-1])
     free = [g for g in groups if len(_avail(g, g["side"])) == g["n"]]
     key = lambda g: (g["kind"] if g["kind"] != "tail" else None, g["template"])  # noqa: E731
     for p in placed:
@@ -794,20 +926,22 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       # it): a free group is a twin only when the walk had the same reason, or none, to take it, and the row fits it
       serves = key(g) in bound or stated_format(g["template"]) == q or any(o is not p and key(o["group"]) == key(g) for o in placed)
       twin = next((f for f in free if f["kind"] == g["kind"] and f["side"] == g["side"] and f["n"] == len(p["launches"])
-                   and ordered(p["item"], f) and stated_format(f["template"]) in (None, q)
+                   and ordered(p["item"], f, p["fused"], p["split"]) and stated_format(f["template"]) in (None, q)
                    and (f["template"] == g["template"] or (fmt.get(key(f)) == q or stated_format(f["template"]) == q) == serves)
+                   and (_grid_read(p["item"], f) or not _grid_read(p["item"], g))
                    and _fits(p["item"], f, p["fused"], p["split"], bandwidth_gbs, peak_of(f["template"]))), None)
       if twin is not None:
         found.append(f"{p['item']['role']} {p['item']['quant']} took {_place(g)}, but {_place(twin)} fits it equally; "
                      "no semantic evidence tells them apart")
         out[id(p["item"])] = (p["item"], found[-1])
         break
-    return found, out
+    return found, out, exchanged
 
   def walk(i, unplaced, strict):
     state["nodes"] += 1
     if state["nodes"] > MAX_NODES:
-      raise _TooMany(f"more than {MAX_NODES} ways to walk {len(items)} rows over {len(groups)} slot groups")
+      raise _TooMany(f"more than {MAX_NODES} ways to walk {len(items)} rows over {len(groups)} slot groups (MAX_NODES, "
+                     "policy pairing_max_nodes)")
     if i == len(items):
       record(unplaced)
       return not unplaced
@@ -857,6 +991,13 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
   return best
 
 
+def _grid_read(item:dict[str, Any], g:dict[str, Any]) -> bool:
+  """Whether the group's launches state the rows they write (llama_mmq.rows_per_block) and the item has output rows to
+  read there: such a group that fits (_fits checks the rows) is positive evidence, one of a kernel that states no rows
+  only room."""
+  return any(r.get("n") for r in item.get("parts", [item])) and all(llama_mmq.rows_per_block(l["key"]) is not None for l, *_ in g["launches"])
+
+
 def _walls(launches) -> list[float]:
   return [x[0]["wall_us"] for x in launches]
 
@@ -867,6 +1008,60 @@ def _apart(nk_a:float, nk_b:float, us_a:list[float], us_b:list[float]) -> bool:
   own spread can flip."""
   return (min(nk_a, nk_b) > 0 and bool(us_a) and bool(us_b) and max(nk_a, nk_b) >= value("operations_order_ratio") * min(nk_a, nk_b)
           and (max(us_a) < min(us_b) or max(us_b) < min(us_a)))
+
+
+def _bands_apart(us_a:list[float], us_b:list[float]) -> bool:
+  """Two slots' launch times are apart when their inner spreads (SPREAD) do not overlap: every launch of one's inner
+  spread faster than every launch of the other's."""
+  if not us_a or not us_b:
+    return False
+  def band(us):
+    s, cut = sorted(us), int(SPREAD * (len(us) - 1))  # as many launches cut from each end
+    return s[cut], s[len(s) - 1 - cut]
+  (lo_a, hi_a), (lo_b, hi_b) = band(us_a), band(us_b)
+  return hi_a < lo_b or hi_b < lo_a
+
+
+def _bytes_apart(bytes_a:float, bytes_b:float, us_a:list[float], us_b:list[float]) -> bool:
+  """At M = 1 two rows' launches are told apart by bytes: their bytes per launch differ by the policy
+  operations_order_ratio and their launch times are apart (_bands_apart)."""
+  return min(bytes_a, bytes_b) > 0 and max(bytes_a, bytes_b) >= value("operations_order_ratio") * min(bytes_a, bytes_b) and _bands_apart(us_a, us_b)
+
+
+def _bytes_ordered(item:dict[str, Any], g:dict[str, Any], k:int, r:int, p:dict[str, Any]) -> bool:
+  """At M = 1 a launch's work is its weight bytes: on one template, among rows of one format on one side of one layer
+  kind, a row of more bytes per launch than a placed row takes no faster launches, and one of fewer no slower, where
+  the two slots' times are apart (as the input side orders rows by their operations in prefill, nk). Across
+  templates the walk prefers the same order when two rows could exchange their launches (_search's swaps), since a
+  kernel's floor differs by template."""
+  q = p["item"]
+  if (p["group"]["side"] != g["side"] or p["group"]["template"] != g["template"] or q["kind"] != item["kind"]
+      or q["quant"] != item["quant"] or q.get("nk")):
+    return True
+  mine, theirs = item["weight_bytes"] * k / r, q["weight_bytes"] * p["fused"] / p["split"]
+  if not _bytes_apart(mine, theirs, _walls(g["launches"]), _walls(p["group"]["launches"])):
+    return True
+  return (mine - theirs) * (g["median_us"] - p["group"]["median_us"]) > 0
+
+
+def _order_ok(placed:list[dict[str, Any]]) -> bool:
+  """Whether a set of placements keeps the output side's data-flow order (the rule _search's ordered applies as rows
+  are placed): within a layer kind, among groups that share layers, an earlier stage's slots come before a later
+  stage's, an FFN's stages within its branch."""
+  outs = [p for p in placed if p["group"]["side"] == "output" and _output_stage(p["item"])]
+  for p in outs:
+    g, stage, b = p["group"], _output_stage(p["item"]), FFN_BRANCH.get(p["item"]["row"].get("role_class"))
+    i = OUTPUT_ORDER.index(stage)
+    for q in outs:
+      if q is p or q["group"]["kind"] != g["kind"] or not (q["group"]["layers"] & g["layers"]):
+        continue
+      st, ub = _output_stage(q["item"]), FFN_BRANCH.get(q["item"]["row"].get("role_class"))
+      if not (ub == b or "ffn" not in st or "ffn" not in stage):
+        continue
+      j = OUTPUT_ORDER.index(st)
+      if (j < i and not q["group"]["slot"] < g["slot"]) or (j > i and not q["group"]["slot"] > g["slot"]):
+        return False
+  return True
 
 
 def _why(item:dict[str, Any], bandwidth_gbs:float | None) -> str:
@@ -939,22 +1134,30 @@ def ambiguity_kind(ambiguous:dict[str, Any] | None) -> str | None:
 def pair(launches:list[dict[str, Any]], rows:list[dict[str, Any]], *, kinds:dict[str, int], widths:list[int],
          outputs:int | None = None, candidate:Callable[[str], bool] = projection_candidate, bandwidth_gbs:float | None = None,
          peak_of:Callable[[str], float | None] = lambda t: None,
-         flat:list[dict[str, Any]] | None = None, prune:dict[str, Any] | None = None) -> dict[str, Any]:
+         flat:list[dict[str, Any]] | None = None, prune:dict[str, Any] | None = None,
+         order:list[str] | None = None) -> dict[str, Any]:
   """The whole walk: structure, then assign; the flat way when the window has no structure (said in "structure").
   widths: each unit's M (a chunk's tokens; 1 per decode token). flat: kernel groups for a window with no launches.
-  prune: the engine adapter's {stages, outputs: output tokens per unit, kernels} when it prunes the last layer (_pruned)."""
+  prune: the engine adapter's {stages, outputs: output tokens per unit, kernels} when it prunes the last layer (_pruned).
+  order: the profile's layer sequence (layer_order), each layer's kind; the walk follows it (sequence), else the counts."""
   units = len(widths)
   try:
     if flat is not None:
       raise NoStructure("kernel groups without launches")
-    st = structure(launches, kinds=kinds, units=units, candidate=candidate)
+    walked = sequence(order, rows, kinds) if order else None  # the model's own layer order: a kind per block layer
+    if walked:
+      order, kinds, rows = walked
+    st = structure(launches, kinds=kinds, units=units, candidate=candidate, order=order)
     if split := signatures(st, rows, kinds):  # layers of one kind that launch differently: a kind per set of tensors
       order, kinds, rows = split
       st = structure(launches, kinds=kinds, units=units, candidate=candidate, order=order)
     cut, small = _pruned(st, prune) if prune else (None, [])
     groups, words = _groups(st, widths) + small, {k: dict(v) for k, v in st["sides"].items()}
     got = assign(groups, rows, units=units, outputs=outputs, kinds=kinds, bandwidth_gbs=bandwidth_gbs, peak_of=peak_of, prune=cut)
+    if walked:
+      got["words"] += SEQUENCE_RULE
     got["structure"] = {"layers": len(st["layers"]), "units": units, "sides": words, "flat": None,
+                        **({"sequence": walked[0]} if walked else {}),
                         **({"signatures": split[0]} if split else {}),
                         **({"pruned": {"stages": list(cut["stages"]), "offered": sum(g["n"] for g in small)}} if cut else {})}
   except NoStructure as exc:

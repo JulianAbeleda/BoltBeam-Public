@@ -77,6 +77,9 @@ PATHS = (
   Path("fp4", "mma.sync.aligned.m16n8k64.row.col.kind::mxf4.block_scale.scale_vec::2X.f32.e2m1.e2m1.f32.ue8m0",
        16, 8, 64, arch_suffix="a", extra=", {sa}, {{0, 0}}, {sb}, {{0, 0}}",
        words="fp4 e2m1 in with ue8m0 block scales, fp32 accumulate"),
+  Path("fp8_mx", "mma.sync.aligned.m16n8k32.row.col.kind::mxf8f6f4.block_scale.scale_vec::1X.f32.e4m3.e4m3.f32.ue8m0",
+       16, 8, 32, arch_suffix="a", extra=", {sa}, {{0, 0}}, {sb}, {{0, 0}}",
+       words="fp8 e4m3 in with ue8m0 block-32 scales, fp32 accumulate"),  # QMMA.SF.16832...E4M3.E4M3.E8: a Mamba out_proj (Nemotron 3.5 on vLLM, RTX 5090)
   Path("fp32_fma", "fma.rn.f32", 1, 1, 1, kind="fma", words="fp32 vector fused multiply-add (no matrix instruction)"),
   Path("nvfp4", "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3",
        16, 8, 64, arch_suffix="a", extra=", {sa}, {{0, 0}}, {sb}, {{0, 0}}",

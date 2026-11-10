@@ -7,6 +7,7 @@ ignore_eos, greedy), step ms = (time of N - time of 1) / (N - 1).
 
 --probe prints {"reason": null} when TensorRT-LLM imports and its torch runs on GPU 0, else the reason.
 --once N is the capture mode, as in the vLLM driver.
+--backend auto picks the backend for the checkpoint's architecture (choose_backend); every row records it and why.
 """
 from __future__ import annotations
 
@@ -34,6 +35,52 @@ def probe() -> str | None:
   return None
 
 
+BACKENDS = ("pytorch", "tensorrt")
+
+
+def architecture(model:str) -> str | None:
+  """The checkpoint's architecture, as its config.json names it (the name both backends' registries are keyed by)."""
+  try:
+    with open(os.path.join(model, "config.json")) as f:
+      return (json.load(f).get("architectures") or [None])[0]
+  except (OSError, ValueError, AttributeError):
+    return None
+
+
+def registered(arch:str | None) -> dict[str, bool | None]:
+  """Whether each backend's model registry in the installed TensorRT-LLM lists arch: the classic builder's MODEL_MAP
+  and the PyTorch backend's MODEL_CLASS_MAPPING. None where the registry cannot be read (another release's layout)."""
+  out: dict[str, bool | None] = {}
+  try:
+    from tensorrt_llm.models import MODEL_MAP
+    out["tensorrt"] = arch in MODEL_MAP
+  except Exception:  # noqa: BLE001  a registry that moved is a fact (None), not a failure of the run
+    out["tensorrt"] = None
+  try:
+    import tensorrt_llm._torch.models  # noqa: F401  importing the package registers its model classes
+    from tensorrt_llm._torch.models.modeling_utils import MODEL_CLASS_MAPPING
+    out["pytorch"] = arch in MODEL_CLASS_MAPPING
+  except Exception:  # noqa: BLE001
+    out["pytorch"] = None
+  return out
+
+
+def choose_backend(requested:str | None, arch:str | None, listed:dict[str, bool | None]) -> tuple[str, str]:
+  """The backend a run starts and why. A named backend is used as asked. Otherwise the classic builder when its
+  registry lists the architecture: a built engine needs no kernel built at run time, and the PyTorch backend's
+  FlashInfer build needs a curand.h that some system CUDA installs lack (the RTX 5090 box's /usr/local/cuda 13.2).
+  Otherwise the PyTorch backend, TensorRT-LLM's own default (NemotronHForCausalLM, 1.2.1: PyTorch backend only)."""
+  if requested in BACKENDS:
+    return requested, "asked for by name"
+  name = arch or "the checkpoint's architecture (config.json names none)"
+  if listed.get("tensorrt"):
+    return "tensorrt", f"TensorRT-LLM's classic builder lists {name}: a built engine needs no kernel built at run time"
+  if listed.get("tensorrt") is None:
+    return "pytorch", "TensorRT-LLM's classic builder registry could not be read; its default, the PyTorch backend"
+  also = {True: "its PyTorch backend does", False: "nor does its PyTorch backend", None: "its PyTorch backend registry could not be read"}
+  return "pytorch", f"TensorRT-LLM's classic builder does not list {name}; {also[listed.get('pytorch')]}"
+
+
 def main() -> int:
   ap = argparse.ArgumentParser()
   ap.add_argument("--probe", action="store_true")
@@ -48,8 +95,8 @@ def main() -> int:
   ap.add_argument("--reps", type=int, default=3)
   ap.add_argument("--warm", type=int, default=1)
   ap.add_argument("--once", type=int, default=None)
-  ap.add_argument("--backend", default=None, choices=["pytorch", "tensorrt"],
-                  help="pytorch (TensorRT-LLM's default) or tensorrt (build a TensorRT engine)")
+  ap.add_argument("--backend", default="auto", choices=["auto", *BACKENDS],
+                  help="pytorch (TensorRT-LLM's default), tensorrt (build a TensorRT engine) or auto (choose_backend)")
   a = ap.parse_args()
   if a.probe:
     print(json.dumps({"reason": probe()}), flush=True)
@@ -60,7 +107,9 @@ def main() -> int:
   # the built engine goes under $TMPDIR, not TensorRT-LLM's fixed /tmp: an 8B's engine filled a small root disk (2026-11-09)
   os.environ.setdefault("TLLM_LLMAPI_BUILD_CACHE_ROOT", os.path.join(tempfile.gettempdir(), ".cache", "tensorrt_llm", "llmapi"))
   from tensorrt_llm import SamplingParams
-  if a.backend == "tensorrt":  # a TensorRT engine is built for this GPU, then run
+  arch = architecture(a.model)
+  backend, why = choose_backend(a.backend, arch, {} if a.backend in BACKENDS else registered(arch))
+  if backend == "tensorrt":  # a TensorRT engine is built for this GPU, then run
     from tensorrt_llm._tensorrt_engine import LLM
   else:  # TensorRT-LLM's default LLM: its PyTorch backend
     from tensorrt_llm import LLM
@@ -68,7 +117,6 @@ def main() -> int:
   contexts = [int(x) for x in a.contexts.split(",")]
   batches = [int(x) for x in a.batches.split(",")]
   max_len = a.model_context_limit or max(contexts) + max(a.tokens, a.once or 0) + 8
-  backend = a.backend or "pytorch"
   # The scheduler needs capacity for this request's prompts, not an unrelated 8192-token build profile.
   max_tokens = a.max_num_tokens or max(1, max(contexts)) * max(batches)
   llm = LLM(model=a.model, max_seq_len=max_len, max_batch_size=max(batches), max_num_tokens=max_tokens,
@@ -111,6 +159,7 @@ def main() -> int:
                         "step_ms": step_ms, "tok_s_stream": 1000.0 / step_ms, "tok_s_total": batch * 1000.0 / step_ms,
                         "backend": backend, "engine": {"build": importlib.metadata.version("tensorrt_llm"),
                                                         "max_seq_len": max_len, "max_num_tokens": max_tokens, "backend": backend,
+                                                        "backend_reason": why, "architecture": arch,
                                                         "worker_single_process": a.worker_single_process}}), flush=True)
   return 0
 
