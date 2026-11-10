@@ -171,7 +171,7 @@ def validate(run:Path, res:dict) -> dict:
   if tie.get('lines') and tie.get('token_ms') is not None and not tie.get('refused'):
     equal('loss.tie_out.token_ms = sum(lines.ms)', tie['token_ms'], sum(r['ms'] for r in tie['lines']))
   where(loss.get('where_token_goes'), 'loss.where_token_goes')
-  from boltbeam.workflow.tie_out import check_end_to_end, overhead_words, replication, GAPS_BOUND_ROW
+  from boltbeam.workflow.tie_out import check_end_to_end, overhead_words, replication, rows_stand, GAPS_BOUND_ROW
   w, e, b = loss.get('where_token_goes') or {}, tie.get('end_to_end') or {}, tie.get('gaps_bound')
   if b:  # over the ceiling: the gaps are the untraced token less the kernels, and the table sums to the untraced token
     from boltbeam.collectors.providers import TRACES
@@ -185,10 +185,10 @@ def validate(run:Path, res:dict) -> dict:
     rep = replication(json.loads(p.read_text()).get('replicas') if p.is_file() else None)
     if tie.get('replication') != rep or not all(x in str(w.get('qualification')) for x in ((rep or {}).get('words', 'Kernel rows unqualified'), f"{b['ms']:.2f} ms")):
       failures.append('loss.tie_out.replication: the kernel rows\' qualification is not what the run\'s captures derive, or the table does not say it')
-  if e.get('confirms') is False and not w.get('estimate') and not (b and (tie.get('replication') or {}).get('qualifies')) and any(r.get('tok_s_gain') is not None for r in w.get('rows') or []):
+  if e.get('confirms') is False and not w.get('estimate') and not rows_stand(tie) and any(r.get('tok_s_gain') is not None for r in w.get('rows') or []):
     failures.append('loss.where_token_goes: throughput gains on a capture above the ceiling whose kernel rows no replication qualifies')
   if loss.get('semantic_capture') and w.get('rows'):  # the same rule on a semantic capture's table, from the capture's own repeats
-    from boltbeam.workflow.tie_out import end_to_end, over_ceiling, qualification_words, rows_stand
+    from boltbeam.workflow.tie_out import end_to_end, over_ceiling, qualification_words
     capture = (json.loads((run / loss['source']).read_text()).get('contexts') or {}).get(str(w.get('context'))) or {}
     steps = len((capture.get('engine') or {}).get('decode_steps') or [1])
     count = (capture.get('speculation') or {}).get('tokens') or steps

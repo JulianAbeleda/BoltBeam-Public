@@ -656,7 +656,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
   from boltbeam.profile.gguf import read_gguf_split, read_tensor
   from boltbeam.workflow import tie_out
   from boltbeam.workflow.common import load_manifest, read_json
-  from boltbeam.workflow.screen import run_bandwidth
+  from boltbeam.workflow.limit import run_bandwidth
   from boltbeam.target.targets import get_target
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
   manifest = load_manifest(run)

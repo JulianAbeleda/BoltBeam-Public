@@ -275,7 +275,8 @@ def fetch_one(ssh:Ssh, got:dict[str, Any], run:dict[str, Any], saved:pathlib.Pat
               shadows:list[pathlib.Path] = ()) -> dict[str, Any]:
   """One run into saved/<id>: skipped when here, refused on a same-id conflict or any file that does not match."""
   from boltbeam.core.canonical import pretty_json
-  from boltbeam.workflow.screen import SAVE_RECORD, results
+  from boltbeam.workflow.results import results
+  from boltbeam.workflow.run_folder import SAVE_RECORD
   dest, st = saved / run["id"], state(run, saved)
   if st == "here":
     return {"id": run["id"], "status": "skipped", "dir": str(dest), "why": "already here with the same files"}

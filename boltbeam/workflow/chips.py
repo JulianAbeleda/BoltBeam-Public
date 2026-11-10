@@ -1,7 +1,9 @@
 """Chip autoscan: use the profile that fits this machine's GPU, or measure a new one and keep it.
 
-    known   a registry row or a profile made earlier on this machine claims the GPU (targets.match_target): use it
-    new     nothing claims it: measure read bandwidth and an fp16 matrix rate here, save the profile, use it
+    known   a profile made earlier on this machine claims the GPU (targets.match_target): use it
+    new     no profile made here claims it: measure read bandwidth and the matrix rates here, save the profile, use it.
+            A registry row that claims the GPU is what it uses until then, or when the measurement fails: a chip's
+            figures are derived on the GPU in front of it, not taken from another machine
 
 The match rule is the exact GPU name, the architecture, the memory size in GiB, and the core count where the driver
 tool reports one (autoscan.match_facts). A profile is a registry row in the registry's own shape, saved in this
@@ -21,7 +23,9 @@ from typing import Any, Callable
 from boltbeam.collectors import path_rates
 from boltbeam.target import targets as reg
 from boltbeam.target import vendors
+from boltbeam.target.targets import fact_uncertainty
 from boltbeam.target.vendors import NoVendorRow  # noqa: F401  (re-exported: chips.NoVendorRow)
+from boltbeam.workflow import layout as lay
 from boltbeam.workflow.autoscan import _hardware_profile, chip_profile_id
 from boltbeam.workflow.common import first_gpu
 
@@ -137,7 +141,8 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
       "memory_bandwidth_gbs": {"kind": "measurement", "scope": scope, "method": read["method"],
                                "value_gbs": read["read_gbs"], "observed_at": today,
                                # cold burst, sustained series, the regime between them, and the measured uncertainty
-                               **{k: read.get(k) for k in ("regime", "cold_gbs", "sustained_gbs", "shape_spread", "drift", "uncertainty")
+                               **{k: read.get(k) for k in ("regime", "cold_gbs", "sustained_gbs", "shape_spread", "drift", "uncertainty",
+                                                            "uncertainty_source")
                                   if read.get(k) is not None}},
       # a probe of every matrix path (the row's compute module) keeps each path's rate and clock; the fp16-only probe a lower bound
       "matrix_tflops": path_rates.fact_source(matrix, scope=scope, today=today)
@@ -163,6 +168,61 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
   }
 
 
+def _agreeing(figure:dict[str, Any], value:float, ref, ref_value:float, u:float, unit:str) -> dict[str, Any]:
+  """One run of a figure that landed inside the reference's spread: this GPU's own number stands, and the uncertainty
+  beside it is the reference's, said so (no repeats were made on this GPU)."""
+  return {**figure, "uncertainty": u, "runs": 1,
+          "uncertainty_source": (f"one run, {value:.1f} {unit}, inside the spread recorded for {ref.target_id} ({ref_value:.1f} {unit} "
+                                 f"± {u:.2%}); the uncertainty is {ref.target_id}'s, not from repeats on this GPU")}
+
+
+def _measure(read_probe:Measure, matrix_probe:Measure, ref) -> tuple[dict[str, Any], dict[str, Any]]:
+  """Every figure measured on this GPU. With no reference, each READ_RUNS times (the repeats' spread is its
+  uncertainty). Against a reference (the registry row that claims the GPU, or the profile made here when it is
+  measured again), one run first: a figure inside the reference's recorded spread stands on that run with the
+  reference's uncertainty (layout.spread_band, the rule the machine facts' staleness check uses); a figure outside,
+  or one the reference has no spread for, is measured READ_RUNS times as without a reference. The value saved is
+  always this GPU's own."""
+  from boltbeam.collectors.read_bandwidth import repeated, repeated_paths
+  runs:list[dict[str, Any]] = []
+  def read_once() -> float:
+    runs.append(read_probe())
+    return float(runs[-1].get("read_gbs") or 0.0)
+  u = fact_uncertainty(ref) if ref else None
+  if ref is not None and ref.memory_bandwidth_gbs and u is not None:
+    lo, hi = lay.spread_band(ref.memory_bandwidth_gbs, u)
+    now, reads = lay.confirmed(read_once, lo, hi, READ_RUNS)
+    if len(reads) == 1:
+      read = _agreeing(runs[0], reads[0], ref, ref.memory_bandwidth_gbs, u, "GB/s")
+    else:
+      read = repeated(runs, "read_gbs", "gbs")
+      read["uncertainty_source"] = (f"the spread of {len(runs)} whole runs at the best launch shape: the first, {reads[0]:.1f} GB/s, "
+                                    f"fell outside the spread recorded for {ref.target_id} ({ref.memory_bandwidth_gbs:.1f} GB/s ± {u:.2%}); "
+                                    f"the median of {len(reads)}, {now:.1f} GB/s, {'is inside it' if lo <= now <= hi else 'is outside it too'}")
+  else:
+    read = repeated([read_probe() for _ in range(READ_RUNS)], "read_gbs", "gbs")
+  # the matrix paths are run as often as the read, so each path's peak has an uncertainty a compute check can use;
+  # one pass stands when every path it measured lands inside the reference's spread for that path
+  matrix = matrix_probe()
+  paths = [p for p in matrix.get("paths") or [] if p.get("available")]
+  reference = {p["path"]: ((ref.matrix_tflops or {}).get(p["path"]), fact_uncertainty(ref, "matrix_tflops", path=p["path"]))
+               for p in paths} if ref is not None else {}
+  if paths and all(_inside(p["tops"], *reference.get(p["path"], (None, None))) for p in paths):
+    matrix["paths"] = [_agreeing(p, p["tops"], ref, *reference[p["path"]], "TFLOP/s") if p.get("available") else p
+                       for p in matrix["paths"]]
+  elif matrix.get("paths"):
+    matrix = repeated_paths([matrix, *(matrix_probe() for _ in range(READ_RUNS - 1))])
+  return read, matrix
+
+
+def _inside(value:float, ref_value:float | None, u:float | None) -> bool:
+  """Whether one run lands inside a reference figure's recorded spread; never without a figure or a spread."""
+  if not ref_value or u is None:
+    return False
+  lo, hi = lay.spread_band(ref_value, u)
+  return lo <= value <= hi
+
+
 def _view(device:dict[str, Any], tid:str | None, status:str, action:str, path:str | None = None) -> dict[str, Any]:
   return {"kind": "chip_autoscan", "status": status, "action": action, "name": device.get("name"), "target_id": tid,
           "source": "generated" if reg.is_local(tid) else ("registry" if tid else None),
@@ -172,30 +232,30 @@ def _view(device:dict[str, Any], tid:str | None, status:str, action:str, path:st
 def autoscan(*, remeasure:bool = False, hardware:dict[str, Any] | None = None,
              probes:Callable[[str, dict[str, Any]], tuple[Measure, Measure]] = _probes,
              driver:Callable[[], dict[str, Any]] = _nvidia_smi_facts) -> dict[str, Any]:
-  """Match this machine's first GPU to a profile, or measure one. remeasure refreshes a profile made here (a
-  registry row is reviewed data and is never rewritten from one machine)."""
+  """Match this machine's first GPU to its own profile, or measure one. A GPU only a registry row claims is measured
+  too: the row is never rewritten, and the profile made here comes before it from then on (targets.match_target).
+  remeasure refreshes a profile made here. A GPU with a reference (that row, or the profile being refreshed) is
+  measured once per figure first, and again only where it disagrees with the reference (_measure)."""
   device = first_gpu(hardware or _hardware_profile())
   if device is None:
     return {"kind": "chip_autoscan", "status": "no_gpu", "action": "none", "name": None, "target_id": None,
             "source": None, "match": None, "path": None}
   profile = device.get("profile") or {}
-  if profile.get("status") == "known" and not (remeasure and profile.get("source") == "generated"):
-    action = "kept" if not remeasure else "kept: a built-in profile is not measured again from one machine"
-    return _view(device, profile.get("id"), "known", action)
+  if profile.get("status") == "known" and profile.get("source") == "generated" and not remeasure:
+    return _view(device, profile.get("id"), "known", "kept")
   today = _today()
   try:
     read_probe, matrix_probe = probes(device.get("vendor") or "", device)
-    from boltbeam.collectors.read_bandwidth import repeated, repeated_paths
-    read = repeated([read_probe() for _ in range(READ_RUNS)], "read_gbs", "gbs")
-    # the matrix paths are run as often as the read, so each path's peak has an uncertainty a compute check can use
-    matrix = matrix_probe()
-    matrix = repeated_paths([matrix, *(matrix_probe() for _ in range(READ_RUNS - 1))]) if matrix.get("paths") else matrix
+    reference = reg.TARGETS.get(profile.get("id")) if profile.get("status") == "known" else None
+    read, matrix = _measure(read_probe, matrix_probe, reference)
     row = profile_row(device, read, matrix, driver() if device.get("vendor") == "nvidia" else {}, today=today)
   except (RuntimeError, OSError, subprocess.SubprocessError, KeyError) as exc:  # the probe's own words, not a guess
     return {**_view(device, profile.get("id") if profile.get("status") == "known" else None, profile.get("status") or "new",
                     "failed"), "reason": str(exc)[-300:]}
   path = reg.save_local_profile(row, measured_at=today)
-  return _view(device, row["target_id"], "known", "measured again" if remeasure else "generated", str(path))
+  action = ("measured again" if remeasure and profile.get("source") == "generated" else
+            f"generated: this GPU's own, before the built-in {profile.get('id')}" if profile.get("source") == "registry" else "generated")
+  return _view(device, row["target_id"], "known", action, str(path))
 
 
 # --- the chip list Setup draws ------------------------------------------------------------------------------------
@@ -232,7 +292,7 @@ def chip_list(detected:dict[str, Any] | None = None, facts_roots:list | None = N
   """Every chip in the four groups Setup shows, in order. `detected` is this machine's first GPU from the scan.
   facts_roots are the run folders the ceiling reads this machine's measured read from: the chip's words use the
   same number, so the picker and the speed limit never disagree."""
-  from boltbeam.workflow.screen import target_facts
+  from boltbeam.workflow.limit import target_facts
   device = detected if detected is not None else (first_gpu(_hardware_profile()) or {})
   profile = device.get("profile") or {}
   here = profile.get("id") if profile.get("status") == "known" else None

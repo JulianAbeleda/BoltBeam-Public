@@ -37,6 +37,12 @@ python -m boltbeam.workflow.screen results --run RUN > RUN/results.json
 ```
 
 `TARGET` is the chip profile id `boltbeam` made (`~/.boltbeam/chips/`), or a registry row such as `nvidia_sm120`.
+Your GPU's own profile is always measured on it. The registry's rows (RTX 5090, RTX 4090, L40S, RTX 3090, H100 SXM,
+H200 SXM, H200 NVL, each measured on one machine in the 2026-11-09 sweep) are only the reference its first scan is
+held against: a figure that agrees is read once, one that does not is read three times.
+AMD rows are TBD: the Radeon AI PRO R9700 (gfx1201, 32 GB) and the RX 7900 XTX (gfx1100, 24 GB), measured on the
+owner's machines. Until then `amd_gfx1100` holds vendor spec figures only, no match rule and no measured spread, so
+an AMD GPU is measured from scratch (three runs per figure).
 
 ## Check it
 

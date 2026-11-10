@@ -15,7 +15,7 @@ def tables(res:dict) -> list[dict]:
 
 def build(run:Path, res:dict, date:str) -> dict:
   from boltbeam.workflow.gameplan import SCHEMA
-  from boltbeam.workflow.screen import measurement_words
+  from boltbeam.workflow.results import measurement_words
   loss=res.get('loss') or {}
   breakdowns=tables(res)
   if not breakdowns:
@@ -94,7 +94,7 @@ def presentation(plan:dict) -> dict:
 
 
 def markdown(plan:dict) -> str:
-  from boltbeam.workflow.screen import where_lines
+  from boltbeam.workflow.text_report import where_lines
   parts=plan['presentation']
   out=[parts['summary']]
   for w in plan['tables']:

@@ -35,9 +35,9 @@ def load_target_registry(path:str | pathlib.Path | None = None) -> dict[str, Tar
 
 
 # --- chip profiles made on this machine -------------------------------------------------------------------------
-# A chip no registry row claims gets a profile measured on the machine itself (workflow/chips.py). It is a registry
-# row in the same shape, saved per machine, never in the repo: the registry is reviewed and shared, a local profile is
-# one machine's measurement. One shape means get_target, the ceiling and the tie-out read both the same way.
+# Every GPU gets a profile measured on the machine itself (workflow/chips.py), and that profile comes before any
+# registry row that claims the same GPU (match_target): a chip's figures are derived where they are used. It is a
+# registry row in the same shape, saved per machine, never in the repo. One shape means get_target, the ceiling and the tie-out read both the same way.
 
 SCHEMA_CHIP_PROFILE = "boltbeam.chip_profile.v1"
 CHIPS_DIR_ENV = "BOLTBEAM_CHIPS_DIR"
@@ -90,7 +90,7 @@ def _fetched_row(row:dict) -> TargetProfile:
 def _load_all() -> dict[str, TargetProfile]:
   rows = load_target_registry()
   for tid, row in local_profiles().items():
-    rows.setdefault(tid, _from_row(row))  # a registry row with the same id wins: reviewed beats local
+    rows.setdefault(tid, _from_row(row))  # ids never collide in practice: a local id is the hardware's (chip_profile_id)
   hosts = chips_dir() / FETCHED
   for host in sorted(hosts.iterdir()) if hosts.is_dir() else ():
     for tid, row in local_profiles(host).items():
@@ -247,13 +247,14 @@ def match_target(observed:dict) -> str | None:
   backend, not a machine. Two rows claiming the same device is a registry fault, so it matches nothing
   rather than picking a winner.
 
-  Registry rows are asked first; a profile made on this machine only when no registry row claims the device
-  (BOLTBEAM_IGNORE_REGISTRY_TARGET=1 skips the registry rows).
+  A profile measured on this machine is asked first: a chip's figures are derived on the GPU in front of it, and a
+  registry row is what a GPU uses only until it has been measured (chips.autoscan measures it) or when its
+  measurement fails (BOLTBEAM_IGNORE_REGISTRY_TARGET=1 skips the registry rows altogether).
   """
   def hits(local:bool) -> list[str]:
     return [name for name, t in TARGETS.items() if is_exact_target(name) and is_local(name) == local and not is_fetched(name)
             and (rule := t.capabilities.get("match")) and all(observed.get(k) == v for k, v in rule.items())]
-  tiers = (True,) if ignore_registry() else (False, True)
+  tiers = (True,) if ignore_registry() else (True, False)
   for local in tiers:
     found = hits(local)
     if found:

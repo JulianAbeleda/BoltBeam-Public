@@ -68,7 +68,7 @@ def captured_whole(attr:dict[str, Any] | None, row:dict[str, Any], what:str, unt
                        untraced, what, band=band, reference=timing_reference(window), reference_window=window)
   return {**cap, "untraced_ms": untraced, "end_to_end": e2e, "words": f"Whole {what} captured by {cap['method']}, not split by role: captured "
           f"{ms:.2f} ms vs untraced " + (f"{untraced:.2f} ms" if untraced else "not measured") + f", GPU busy {busy:.2f} ms (the mean of "
-          f"the capture's {cap['prefills']} prefills: no buffer marks their edges); " + e2e["words"].split(" (", 1)[0] + arm_words(attr, row) + "."}
+          f"the capture's {cap['prefills']} prefills: no buffer marks their edges); " + tie.verdict_words(e2e) + arm_words(attr, row) + "."}
 
 
 def arm_words(attr:dict[str, Any], row:dict[str, Any]) -> str:
@@ -155,7 +155,7 @@ def scaled_mfu(where:dict[int, dict[str, Any]], length:int, untraced_ms:float, p
 def curve(run:pathlib.Path, manifest:dict[str, Any]) -> dict[str, Any] | None:
   """Prefill against prompt length for this run's engine: every length of this run and of its sibling prefill runs
   (same model, chip and engine, same runs folder). Per length: prefill ms, tokens/s, MFU, and per row ms and MFU."""
-  from boltbeam.workflow.screen import is_run, load_manifest, run_provider
+  from boltbeam.workflow.run_folder import is_run, load_manifest, run_provider
   provider = run_provider(run)
   runs = [run] + sorted(p for p in run.parent.iterdir() if p != run and is_run(p)) if run.parent.is_dir() else [run]
   points: dict[int, dict[str, Any]] = {}

@@ -525,7 +525,7 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
           seqs:int = 1, context:int = CONTEXT, text_only:bool = True) -> dict[str, Any]:
   """The recommended setup for this model on these GPUs with this engine: one row per layout, the settings, the
   recommended layout and the command lines. facts: machine facts (read bandwidth, join, cached engine overhead)."""
-  from boltbeam.workflow import screen
+  from boltbeam.workflow import limit
   tb = tensor_bytes(profile["source"])
   resident = weights_resident(tb, text_only=text_only)
   ws = [g.get("working_set_bytes") for g in gpus]  # Metal's measured per-process limit replaces the vendor's assumed share
@@ -541,7 +541,7 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   overhead, warm = measured["bytes"] if measured else None, cached(states)[1]
   by_key = _by_path(((facts or {}).get(OVERHEAD) or {}).get(provider))
   try:
-    base = screen.ceiling(profile, target, read=lay.read_bandwidth(facts))["decode"]["bytes_moved"]
+    base = limit.ceiling(profile, target, read=lay.read_bandwidth(facts))["decode"]["bytes_moved"]
   except (screen.Refused, SystemExit):
     base = None
   n = len(gpus)

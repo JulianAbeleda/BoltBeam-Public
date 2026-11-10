@@ -301,7 +301,7 @@ class UnnamedCapture(CaptureRefused):
 def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_ms:float | None,
                  long_kernels:int, band:float | None) -> str:
   """Refuse a window with no kernels, or with more GPU time per token than the captured run took per token by more
-  than the chip's measured uncertainty (screen.bandwidth_uncertainty). Returns what was checked: with no measured
+  than the chip's measured uncertainty (limit.bandwidth_uncertainty). Returns what was checked: with no measured
   uncertainty the token comparison is not checked."""
   if not window:
     row = vendors.BY_CAPTURE.get(method)  # the capture's vendor: its graphs hid the kernels (target/vendors.py)
@@ -345,12 +345,12 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   import json
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
   from boltbeam.workflow.common import load_manifest
-  from boltbeam.workflow.screen import _measured_vs_ceiling, _optional
+  from boltbeam.workflow import limit, run_folder
   manifest = load_manifest(run)
-  profile = _optional(run, "model_profile.json")
+  profile = run_folder.optional(run, "model_profile.json")
   # a decode capture is paired with the decode ceiling's bytes whatever the run's workload (a replay, a session):
   # any other workload reads the prefill block, whose role bytes are not one decode token's
-  ceil = _measured_vs_ceiling({**manifest, "workload": "decode"}, profile, pathlib.Path(run))
+  ceil = limit.measured_vs_ceiling({**manifest, "workload": "decode"}, profile, pathlib.Path(run))
   window_check = check_window(window, method=method, tokens=tokens, token_ms=token_ms, long_kernels=long_kernels,
                               band=ceil.get("uncertainty"))
   from boltbeam.collectors.vendor_capture import unnamed

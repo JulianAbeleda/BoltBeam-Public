@@ -312,7 +312,7 @@ def comparison(run:pathlib.Path) -> dict[str, Any] | None:
 
 def build_lines(engine:dict[str, Any]) -> list[str]:
   """The run's build beside upstream's newest, and the comparison it made: the words the summary, the report and the
-  TUI's Run page show (screen.results engine.build_lines)."""
+  TUI's Run page show (results.results engine.build_lines)."""
   latest, cmp = (engine.get("build") or {}).get("latest") or {}, engine.get("comparison") or {}
   return ([f"Upstream: {latest['words']}."] if latest.get("words") else []) + (
     [f"Upgrade comparison: {cmp['words']}."] if cmp.get("words") else [])

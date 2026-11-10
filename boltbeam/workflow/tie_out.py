@@ -52,7 +52,6 @@ REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slo
 # word for the readers that key on it (the HTML rule tables).
 NOISY = "{word}; noisy: {why}"
 from boltbeam.core.policy import value
-from boltbeam.roofline.prefill_work import CHIP_BEST_WORDS
 
 NOISY_FLOOR = "{floor:.1f} µs floor under a {us:.1f} µs kernel"
 # an isolated row's rule time: its time less the dispatch floor, the figure that matched nsys per role on the 5090
@@ -186,6 +185,13 @@ def attended_context(trace:dict[str, Any], provider:str) -> float | None:
   return base + ((n + 3) / 2 if captured else (n + 1) / 2)
 
 
+def step_limit_ms(weight_ms:float, batch:int, kv_ms_stream:float, state_ms_stream:float, shards:int = 1) -> float:
+  """The one decode limit rule: a step reads the weights once, and each of its B streams' KV cache and recurrent state;
+  a tensor-parallel split of `shards` GPUs reads its share of those at once. Every decode limit is this (batch_limit,
+  tie_out, results.decode_ceiling)."""
+  return weight_ms + batch * (kv_ms_stream + state_ms_stream) / shards
+
+
 def batch_limit(*, weight_ms:float, profile:dict[str, Any], context:float, batch:int, element_bytes:int,
                 bandwidth_gbs:float, params:float | None = None, peak_flops:float | None = None,
                 state:tuple[float, str | None] = (0.0, None)) -> dict[str, Any]:
@@ -193,7 +199,7 @@ def batch_limit(*, weight_ms:float, profile:dict[str, Any], context:float, batch
   own KV cache and recurrent state (state_ms: ms per stream, words), so step ms = weight ms + B x (KV ms + state ms). A matrix product of B columns also does 2 x params x B flops;
   when that takes longer than the reads, the step is compute bound and that is its floor. tokens/s per stream is
   1000 / step ms; in total it is B times that."""
-  mem = weight_ms + batch * (kv_ms(profile, context, element_bytes, bandwidth_gbs) + state[0])
+  mem = step_limit_ms(weight_ms, batch, kv_ms(profile, context, element_bytes, bandwidth_gbs), state[0])
   compute = 2.0 * params * batch / peak_flops * 1e3 if params and peak_flops else 0.0
   step = max(mem, compute)
   return {"batch": batch, "context": context, "step_ms": step, "memory_ms": mem, "compute_ms": compute,
@@ -320,9 +326,10 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   untraced, untraced_ctx = _step4(run, context, provider) if batch == 1 else (None, None)
   if context is None:
     context = float(untraced_ctx or 1)
-  kv = batch * kv_ms(profile, context, element, bandwidth_gbs)
+  kv_stream = kv_ms(profile, context, element, bandwidth_gbs)
+  kv = batch * kv_stream
   st, st_words = state_ms(profile, provider, run, bandwidth_gbs)
-  limit = limit_ms + kv + batch * st
+  limit = step_limit_ms(limit_ms, batch, kv_stream, st)
   streams = f" for each of {batch} streams" if batch > 1 else ""
   out = {"provider": provider, "context": context, "limit_ms_ctx1": limit_ms, "limit_ms": limit, "kv_ms": kv,
          "batch": batch, **({"state_ms": batch * st, "state_source": st_words} if st_words else {}),
@@ -374,7 +381,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
       out["end_to_end"] = e2e = end_to_end({"measured_ms": cap_ms, "wall_ms": cap_ms, "busy_ms": busy_ms, "gaps_ms": cap_ms - busy_ms, "timing_window": cap.get("timing_window")},
                                            untraced, "token", reference="untraced reference", reference_window=(native or {}).get("timing_window"))
       out["captured_token"] = {**cap, "untraced_ms": untraced, "words": f"Whole token captured by {cap['method']}, not split by role: captured {cap_ms:.2f} ms vs untraced "
-                               + (f"{untraced:.2f} ms" if untraced else "not measured") + f", GPU busy {busy_ms:.2f} ms of it; " + e2e["words"].split(" (", 1)[0] + "."}
+                               + (f"{untraced:.2f} ms" if untraced else "not measured") + f", GPU busy {busy_ms:.2f} ms of it; " + verdict_words(e2e) + "."}
     return _isolated(out, table, token, limit, context)
   match = out.get("timing_match") or {}
   out["end_to_end"] = end_to_end({"measured_ms": whole.get("token_ms"), "wall_ms": token,
@@ -574,7 +581,7 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
   if not project:
     words.append("Native throughput allocation unavailable: capture timing is unqualified.")
   if (e2e := tie.get("end_to_end") or {}).get("status") == "checked":  # a checked verdict is always disclosed, over the ceiling too
-    words.append(e2e["words"].split(" (", 1)[0] + ".")
+    words.append(verdict_words(e2e) + ".")
   if est:
     words.append("Estimate from isolated weight timings; the remaining time is inferred.")
     words.append("% of peak uses isolated time minus the measured dispatch floor.")
@@ -646,6 +653,11 @@ def overhead_words(pct:float, reference:str = "native") -> str:
   shown = f"{pct:+.4f}" if not within_ceiling(pct) and f"{abs(pct):.2f}" == f"{CEILING_PCT:.2f}" else f"{pct:+.2f}"  # never round an excess into the ceiling
   return (f"capture {shown}% {'over' if pct >= 0 else 'under'} {reference}, {'within' if within_ceiling(pct) else 'above' if pct >= 0 else 'beyond'} "
           f"the {CEILING_PCT:g}% capture-overhead ceiling" + ("" if pct >= 0 or within_ceiling(pct) else " below it: the arms are not comparable"))
+
+
+def verdict_words(e2e:dict[str, Any]) -> str:
+  """An end-to-end verdict as every table says it: its words before the parenthesised numbers."""
+  return e2e["words"].split(" (", 1)[0]
 
 
 def check_end_to_end(e:dict[str, Any]) -> list[str]:
@@ -862,13 +874,12 @@ def where_decode_capture_goes(attr:dict[str, Any], *, untraced_ms:float | None,
   if not (comparable or rows_stand(rule)):
     words+="Capture timing is unqualified"+(f": {rule['refused']}. " if rule.get('refused') else ". ")
   if (attr.get('end_to_end') or {}).get('status')=='checked':  # a checked verdict is always disclosed, over the ceiling too
-    words+=attr['end_to_end']['words'].split(' (',1)[0]+'. '
+    words+=verdict_words(attr['end_to_end'])+'. '
   if overlap:
     words+="Overlap subtracts concurrent time. "
   words+="No model = measured time, unknown savings. Roofline is an upper bound. "
   words+=' '.join(capture_limit_notes(attr))
-  columns=tuple('ms above limit' if c=='ms lost' else '+ Tok/S if roofline' if c=='tok/s if fixed' else c for c in WHERE_COLUMNS)
-  result=table(WHERE_TITLE,columns,rows,now=token,limit=limit,lost=total,no_limit="no model",
+  result=table(WHERE_TITLE,WHERE_COLUMNS,rows,now=token,limit=limit,lost=total,no_limit="no model",
                if_fixed=('tok_s_if_fixed','≤{:.1f}' if overlap else '{:.1f}'),peak=('pct_peak','{:.1f}%'),sum_name='= token',
                estimate=False,token_ms=token,base_ms=base,limit_ms=limit,words=words,
                workload='decode',context=context,**({'qualification':q,**rule} if (q:=qualification_words(rule)) else {}))
@@ -948,7 +959,7 @@ def where_prefill_goes(attr:dict[str, Any] | None, *, untraced_ms:float | None, 
   if e2e.get("confirms") is None and e2e:
     words.append(e2e["words"][:1].upper() + e2e["words"][1:] + ".")
   if e2e.get("confirms") is True:
-    words.append(e2e["words"].split(" (", 1)[0] + ".")
+    words.append(verdict_words(e2e) + ".")
   if e2e.get("confirms") is False:
     words.append(f"Not qualified end to end: {e2e['words']}.")
   mixed = [r["name"] for r in rows if " + " in str(r.get("path") or "") and r.get("limit_ms") is not None]

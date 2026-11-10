@@ -4,7 +4,7 @@ It is a report, so it exits 0 either way. It probes nothing of its own: the GPU 
 (workflow/autoscan._hardware_profile, once), the engines are looked for by the engine scan and listed the way
 Setup lists them (collectors/engine_scan, collectors/providers.available), the capture tool by the vendor table
 (collectors/vendor_capture.plan), the GPU's health and counters by the vendor table too (target/vendors.py), each
-Triton engine's Python.h (engine_common.missing_headers), the tinygrad fork by role_compare.readiness, and the Go
+Triton engine's Python.h (engine_common.missing_headers), the tinygrad fork by tinygrad_fork.readiness, and the Go
 toolchain and the screen binary by cli/tui. --json prints the same rows as one object for an agent.
 
     row      found / not found / n/a, a detail, and for a gap the fix: one command or one env var
@@ -19,7 +19,7 @@ from typing import Any
 
 from boltbeam.cli import tui
 from boltbeam.collectors import engine_common as ec, engine_scan, providers, tinygrad_role_time, vendor_capture
-from boltbeam.search import role_compare
+from boltbeam.search import tinygrad_fork
 from boltbeam.target import targets as reg
 from boltbeam.vocab import SCHEMA_DOCTOR as SCHEMA
 from boltbeam.workflow import autoscan
@@ -81,7 +81,7 @@ def _engines(target, scanned:dict[str, Any], root) -> list[dict[str, Any]]:
     elif e["state"] == "not_compatible":
       out.append(row(name, None, e["reason"]))
     elif name == tinygrad_role_time.PROVIDER:
-      ready = role_compare.readiness(root)
+      ready = tinygrad_fork.readiness(root)
       out.append(row(name, False, ready["message"] or e["reason"], ready["fix"]))
     elif getattr(providers.ENGINES[name], "python", lambda: None)():
       out.append(row(name, False, e["reason"], "its python is found but it does not run here: the sentence above says why"))

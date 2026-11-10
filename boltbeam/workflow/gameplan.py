@@ -13,7 +13,7 @@ Each role block shows the search's lineage in order, every layer read off the ru
                   futuresight_static_evidence, or the request's futuresight_evidence)
   3. Measured     the campaign's results for this role: candidates measured, the best median against the model's own
                   kernel, the spread (kernel_compare/<stem>-search-result.json, route_policy.json compare)
-  4. Promotion    the verdict (search/role_compare.py role_verdict) and, for a winner, the promotion record to add,
+  4. Promotion    the verdict (search/search_stage.py role_verdict) and, for a winner, the promotion record to add,
                   the fork emitter with its spec arguments, and the check
 A layer the run does not hold says "not recorded in this run" and names the file it would be in. Nothing here is
 filled from the code's defaults: a missing field reads "not recorded" with its file. Every number carries its
@@ -30,7 +30,7 @@ from typing import Any
 
 from boltbeam.core.canonical import pretty_json
 from boltbeam.report.html import PLAIN_VERDICT
-from boltbeam.search import role_compare
+from boltbeam.search import compare_record, role_numbers, search_stage
 from boltbeam.workflow import evidence as ev
 from boltbeam.workflow.common import load_manifest
 
@@ -47,8 +47,8 @@ TOP_REASONS = 2  # rejection reasons named per layer
 FIRST_ORDER = 3  # candidates named from FutureSight's measurement order
 
 # where each layer's facts live in a run; role_compare.compare_run writes the per-role files by stem
-POLICY, STATUS = "route_policy.json", f"{role_compare.FOLDER}/{role_compare.STATUS_FILE}"
-REQUEST, RESULT = role_compare.FOLDER + "/{stem}-search-request.json", role_compare.FOLDER + "/{stem}-search-result.json"
+POLICY, STATUS = "route_policy.json", f"{compare_record.FOLDER}/{compare_record.STATUS_FILE}"
+REQUEST, RESULT = compare_record.FOLDER + "/{stem}-search-request.json", compare_record.FOLDER + "/{stem}-search-result.json"
 NORM_ROLES = ("attn_norm", "ffn_norm", "output_norm", "norm")
 
 # The fork emitter that produces a kernel of each kind (tinygrad/llm/decode_kernels.py), by quant and role: the
@@ -218,13 +218,13 @@ def _measured(stem:str, result:dict[str, Any] | None, route:dict[str, Any] | Non
       summary = m.get("summary_ns") if isinstance(m.get("summary_ns"), dict) else {}
       spread = (f"min {summary['min'] / 1000:.1f}, max {summary['max'] / 1000:.1f} µs over {m.get('samples') or m.get('sample_count') or '?'} samples"
                 if {"min", "max"} <= set(summary) else _nr(file_r, f"population[{i}].measurement.summary_ns"))
-      text = role_compare.plan_text(sched)
+      text = role_numbers.plan_text(sched)
       lines.append(f"provider rank 1 (ordering only): {text} at {_f(m.get('median_ns'), '{:.0f}', file_r, f'population[{i}].measurement.median_ns')} ns median "
                    f"({spread}); plan_kind {sched.get('plan_kind')}, transforms {json.dumps(sched.get('transforms') or [], sort_keys=True)}")
       ptrs.append(_ptr(file_r, f"population[{i}]"))
       facts.update(best_plan=text, best_median_ns=m.get("median_ns"), plan_kind=sched.get("plan_kind"), transforms=sched.get("transforms"),
                    spread_ns=summary or None)
-      default = next(((j, r) for j, r in measured if ((r.get("candidate") or {}).get("schedule") or {}).get("plan_kind") == role_compare.DEFAULT_KIND), None)
+      default = next(((j, r) for j, r in measured if ((r.get("candidate") or {}).get("schedule") or {}).get("plan_kind") == role_numbers.DEFAULT_KIND), None)
       if default is not None:
         j, d = default
         lines.append(f"provider reference (ordering only): {_f((d.get('measurement') or {}).get('median_ns'), '{:.0f}', file_r, f'population[{j}].measurement.median_ns')} ns median (not the model's kernel)")
@@ -307,7 +307,7 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
     return _layer("promotion", True, lines, {**facts, "plan": "nothing to emit"}, ptrs)
   if verdict == "not_searched":
     why = (status or {}).get("reason") or reason
-    hint = NOT_SEARCHED_ENGINE if (why or "").startswith(role_compare.TINYGRAD_ONLY) else NOT_SEARCHED
+    hint = NOT_SEARCHED_ENGINE if (why or "").startswith(search_stage.TINYGRAD_ONLY) else NOT_SEARCHED
     lines.append(hint + (f" ({why})" if why and why != reason else ""))  # the verdict line said it once
     return _layer("promotion", True, lines, {**facts, "plan": NOT_SEARCHED, "why_off": why}, ptrs + ([_ptr(STATUS, "reason")] if status else []))
   # applied or found, not applied: the plan, its gain, the emitter, the record, the check
@@ -351,7 +351,7 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
 
 # --- fusions --------------------------------------------------------------------------------------------------------
 
-FUSIONS = f"{role_compare.FOLDER}/{role_compare.FUSIONS_FILE}"
+FUSIONS = f"{compare_record.FOLDER}/{compare_record.FUSIONS_FILE}"
 
 
 def _fusion_block(f:dict[str, Any], i:int) -> dict[str, Any]:
@@ -456,7 +456,7 @@ def gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None
 
 
 def _gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None) -> dict[str, Any]:
-  """The plan for one run from the seam's results (workflow/screen.py results) and the run's files. Refused when the
+  """The plan for one run from the seam's results (workflow/results.py) and the run's files. Refused when the
   run holds neither a per-role table nor a measured work breakdown."""
   loss = res.get("loss") or {}
   roles = loss.get("roles") or []
@@ -483,8 +483,8 @@ def _gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = Non
   t = loss.get("tie_out") or {}
   token = next((x for x in loss.get("runtimes") or [] if not x.get("per_role")), None)
   ceil = res.get("ceiling") or {}
-  band = ceil.get("uncertainty")  # the bandwidth's measured uncertainty (screen.bandwidth_uncertainty)
-  from boltbeam.workflow.screen import measurement_words
+  band = ceil.get("uncertainty")  # the bandwidth's measured uncertainty (limit.bandwidth_uncertainty)
+  from boltbeam.workflow.results import measurement_words
   header = {
     "model_id": res.get("model_id"), "target_id": res.get("target_id"), "engine": (res.get("engine") or {}).get("provider") or loss.get("provider"),
     "weight_format": (res.get("engine") or {}).get("weight_format"), "batch": t.get("batch") or 1,
@@ -539,7 +539,7 @@ def to_markdown(plan:dict[str, Any]) -> str:
 
 
 def _to_markdown(plan:dict[str, Any]) -> str:
-  from boltbeam.workflow.screen import where_lines
+  from boltbeam.workflow.text_report import where_lines
   if plan.get('kind')=='replay_report':
     from boltbeam.workflow.replay import lines
     return '# Forced replay report\n\n```text\n'+'\n'.join(lines(plan['replay']))+'\n```\n'
@@ -597,7 +597,7 @@ def emit(run:pathlib.Path, res:dict[str, Any] | None = None, *, now:_dt.date | N
   from boltbeam.workflow.report_validation import require, require_emit, ReportInvalid
   try:
     if res is None:
-      from boltbeam.workflow.screen import results_core
+      from boltbeam.workflow.results import results_core
       res = results_core(run)
     require(run, res)
     plan = gameplan(run, res, now=now)

@@ -12,6 +12,7 @@ import pytest
 from boltbeam.collectors import engine_builds as eb
 from boltbeam.target import vendors
 from boltbeam.workflow import engine_update, screen
+from boltbeam.workflow import pipeline as pp
 
 CUDA = vendors.for_backend("CUDA")
 TRT_INDEX = ('<a href="x">tensorrt_llm-1.2.1-cp310-cp310-linux_x86_64.whl</a><br>'
@@ -303,11 +304,11 @@ def test_a_pending_build_runs_the_previous_once_compares_becomes_current_and_pru
   old = old_build(tmp_path)
   pending_machine(tmp_path, older=old)
   seen, out = [], io.StringIO()
-  monkeypatch.setattr(screen, "pipeline", fake_pipeline(seen))
-  monkeypatch.setattr(screen, "output_run", lambda run: None)
+  monkeypatch.setattr(pp, "pipeline", fake_pipeline(seen))
+  monkeypatch.setattr(pp, "output_run", lambda run: None)
   monkeypatch.setattr(replay, "diff", lambda a, b, bands=None: {"parts": []})
   monkeypatch.setattr(replay, "diff_lines", lambda d: ["Engine upgrade audit: ..."])
-  assert screen.pipeline_current(args(tmp_path), out) == 0
+  assert pp.pipeline_current(args(tmp_path), out) == 0
   assert seen == [("r-was-0.31.0", "/b/0.31.0/venv/bin/python"), ("r", "/b/0.33.0/venv/bin/python")]
   assert "previous build: stage load: start" in out.getvalue()  # the screen reads only the new build's stage lines
   record = json.loads((tmp_path / "runs" / "r" / eb.UPGRADE_FILE).read_text())
@@ -317,7 +318,7 @@ def test_a_pending_build_runs_the_previous_once_compares_becomes_current_and_pru
   assert e["current"]["version"] == "0.33.0" and e["previous"]["version"] == "0.31.0" and e["pending"] is None
   assert not pathlib.Path(old["folder"]).exists() and e["deleted"][0]["version"] == "0.29.0"
   seen.clear()
-  assert screen.pipeline_current(args(tmp_path, run=str(tmp_path / "runs" / "s")), out) == 0
+  assert pp.pipeline_current(args(tmp_path, run=str(tmp_path / "runs" / "s")), out) == 0
   assert seen == [("s", "/b/0.33.0/venv/bin/python")]  # once: the next run uses the new current build alone
 
 
@@ -325,10 +326,10 @@ def test_a_refused_comparison_deletes_nothing(tmp_path, monkeypatch):
   from boltbeam.workflow import diff, replay
   old = old_build(tmp_path)
   pending_machine(tmp_path, older=old)
-  monkeypatch.setattr(screen, "pipeline", fake_pipeline([]))
-  monkeypatch.setattr(screen, "output_run", lambda run: None)
+  monkeypatch.setattr(pp, "pipeline", fake_pipeline([]))
+  monkeypatch.setattr(pp, "output_run", lambda run: None)
   monkeypatch.setattr(replay, "diff", lambda a, b, bands=None: (_ for _ in ()).throw(diff.DiffRefused("a run holds no captured where table")))
-  assert screen.pipeline_current(args(tmp_path), io.StringIO()) == 0
+  assert pp.pipeline_current(args(tmp_path), io.StringIO()) == 0
   e = eb.load()["engines"]["vllm"]
   assert pathlib.Path(old["folder"]).exists() and not e.get("deleted")
   assert [b["version"] for b in e["older"]] == ["0.29.0"]
@@ -336,8 +337,8 @@ def test_a_refused_comparison_deletes_nothing(tmp_path, monkeypatch):
 
 def test_a_failed_new_build_run_keeps_the_previous_build_current(tmp_path, monkeypatch):
   pending_machine(tmp_path)
-  monkeypatch.setattr(screen, "pipeline", fake_pipeline([], fail=("r",)))
-  assert screen.pipeline_current(args(tmp_path), io.StringIO()) == 1
+  monkeypatch.setattr(pp, "pipeline", fake_pipeline([], fail=("r",)))
+  assert pp.pipeline_current(args(tmp_path), io.StringIO()) == 1
   e = eb.load()["engines"]["vllm"]
   assert e["current"]["version"] == "0.31.0" and e["pending"]["version"] == "0.33.0"
 
@@ -345,10 +346,10 @@ def test_a_failed_new_build_run_keeps_the_previous_build_current(tmp_path, monke
 def test_a_run_without_analyze_or_with_the_users_build_makes_no_comparison(tmp_path, monkeypatch):
   pending_machine(tmp_path)
   seen = []
-  monkeypatch.setattr(screen, "pipeline", fake_pipeline(seen))
-  assert screen.pipeline_current(args(tmp_path, analyze=False), io.StringIO()) == 0
+  monkeypatch.setattr(pp, "pipeline", fake_pipeline(seen))
+  assert pp.pipeline_current(args(tmp_path, analyze=False), io.StringIO()) == 0
   monkeypatch.setenv("BOLTBEAM_VLLM_PYTHON", "/mine/python")
-  assert screen.pipeline_current(args(tmp_path), io.StringIO()) == 0
+  assert pp.pipeline_current(args(tmp_path), io.StringIO()) == 0
   assert seen == [("r", "/b/0.31.0/venv/bin/python"), ("r", "/mine/python")]
   assert eb.load()["engines"]["vllm"]["pending"]["version"] == "0.33.0"
 
@@ -392,10 +393,11 @@ def test_engines_latest_looks_once_per_window_installs_nothing_and_records_no_bu
 def test_the_feature_is_upgrade_engines_and_the_old_flag_still_parses(monkeypatch, tmp_path):
   root = pathlib.Path(__file__).resolve().parent.parent
   said = [p for d in ("boltbeam", "docs", "tui") for p in (root / d).rglob("*") if p.suffix in (".py", ".md", ".go", ".txt", ".ansi")
-          and not p.name.endswith("_test.go") and "stay current" in p.read_text(errors="ignore").lower()]
+          and not p.name.endswith("_test.go") and not p.name.startswith("release-")  # a release record is history
+          and "stay current" in p.read_text(errors="ignore").lower()]
   assert said == []
   seen = []
-  monkeypatch.setattr(screen, "pipeline_current", lambda args, out=None: seen.append(args.update_engines) or 0)
+  monkeypatch.setattr(pp, "pipeline_current", lambda args, out=None: seen.append(args.update_engines) or 0)
   for flag in ("--upgrade-engines", "--update-engines", None):
     assert screen.main(["pipeline", "m", "--run", str(tmp_path / "r"), "--target", "nvidia_sm120", *([flag] if flag else [])]) == 0
   assert seen == [True, True, False]

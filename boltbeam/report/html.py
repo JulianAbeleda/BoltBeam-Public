@@ -1,7 +1,7 @@
 """Self-contained HTML run report: the TUI results screen on paper.
 
 The point of the page is to show where the token loses time against the roofline, and what to try about it. It
-reads `workflow.screen.results(run)`, the same seam the TUI reads (loss, tie_out, roles), and computes nothing
+reads `workflow.results.results(run)`, the same seam the TUI reads (loss, tie_out, roles), and computes nothing
 new: every number on the page is a measured or derived number from that seam, or a share of two of them.
 
 Sections, in order (a measured run):
@@ -304,7 +304,7 @@ def roofline_kernels(timing:dict[str, Any], context:Any = None) -> tuple[list[di
 
 # Shown instead of the per-role table while no role has had kernels compared; boltbeam-tui prints the same line.
 NO_KERNEL_CHOICE = "No kernels compared yet. Every role runs the default kernel."
-# Plain words for a role's kernel search verdict (search/role_compare.py role_verdict); boltbeam-tui uses the same.
+# Plain words for a role's kernel search verdict (search/search_stage.py role_verdict); boltbeam-tui uses the same.
 PLAIN_VERDICT = {"applied": "applied", "found_not_applied": "found, not applied", "none_faster": "none faster",
                  "not_reproduced": "not reproduced by BoltBeam",
                  "not_searched": "not searched"}
@@ -887,7 +887,7 @@ def _per_role(loss:dict[str, Any]) -> str:
       f'<span class="rtags"><span class="why {REASON_CLASS.get(word, "")}">{_e(why)}</span>{tag}</span></span></summary><div class="rdet">{det}</div></details>')
   t = loss.get("tie_out") or {}
   if est:
-    from boltbeam.workflow.screen import estimate_how
+    from boltbeam.workflow.results import estimate_how
     columns = f' {_e(est["columns_words"])}.' if est.get("columns_words") else ""
     body = (f'<p class="note">{_e(est["method"])}</p>'
             f'<p class="muted" style="margin:0 0 10px">est. lost ms per token {_e(est["label"])}, {_e(estimate_how(est))}; '
@@ -1076,7 +1076,7 @@ def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, An
                  f'{step.get("source") or "step 4"}.{graph}'))
   cap = loss.get("capture") or {}
   if cap.get("method"):
-    from boltbeam.workflow.screen import CAPTURE_WORDS
+    from boltbeam.workflow.results import CAPTURE_WORDS
     rows.append(("Capture", CAPTURE_WORDS.get(cap["method"], cap["method"]) + (f'; {cap["reason"]}' if cap.get("reason") else "")))
   elif (loss.get("replay") or {}).get("forced"):
     rows.append(("Capture", "Observed native activity and exact work identity; timing admission is reported separately."))
@@ -1088,7 +1088,7 @@ def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, An
     rows.append(("Capture", "whole step only, untraced" + (f'; per role: {loss["missing"]}' if loss.get("missing") else "")))
   if loss.get("role_source_words"):
     rows.append(("Per-role source", loss["role_source_words"]))
-  from boltbeam.workflow.screen import measurement_words
+  from boltbeam.workflow.results import measurement_words
   if words := measurement_words(results.get("measurement")):
     rows.append(("Measurement", words.removeprefix("Measurement: ")))
   if lat := loss.get("latency"):
@@ -1115,7 +1115,7 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
                     primitive:dict[str, Any], timing:dict[str, Any], runner:dict[str, Any],
                     source_run:str = "", results:dict[str, Any] | None = None,
                     measure:dict[str, Any] | None = None, gameplan:str | None = None) -> str:
-  """Render one run as a standalone HTML document from `results` (workflow.screen.results). The other arguments
+  """Render one run as a standalone HTML document from `results` (workflow.results). The other arguments
   are the run's artifacts, `{}` when absent; the page reads only the manifest and the policy from them. gameplan is
   the gameplan file's name when Emit wrote one into the run; the Facts link it."""
   results = results or {}

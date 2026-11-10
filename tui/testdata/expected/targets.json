@@ -118,6 +118,149 @@
       "scope": "Mac mini (2024), Apple M4, 10-core GPU",
       "scope_observed_at": "2026-10-09",
       "source": "registry"
+    },
+    {
+      "backend": "CUDA",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "measurement"
+      },
+      "has_ceiling": true,
+      "id": "nvidia_rtx4090",
+      "matrix_tflops": {
+        "bf16": 173.9,
+        "fp16": 174.3,
+        "fp16_f16acc": 344.8,
+        "fp32_fma": 82.6,
+        "fp8": 348.3,
+        "int8": 690.6,
+        "tf32": 87.0
+      },
+      "memory_bandwidth_gbs": 962.0,
+      "peak_tflops": {},
+      "scope": "NVIDIA GeForce RTX 4090, driver 595.58.03",
+      "scope_observed_at": "2026-11-09",
+      "source": "registry"
+    },
+    {
+      "backend": "CUDA",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "measurement"
+      },
+      "has_ceiling": true,
+      "id": "nvidia_l40s",
+      "matrix_tflops": {
+        "bf16": 340.7,
+        "fp16": 335.6,
+        "fp16_f16acc": 347.2,
+        "fp32_fma": 83.8,
+        "fp8": 692.8,
+        "int8": 725.7,
+        "tf32": 174.7
+      },
+      "memory_bandwidth_gbs": 761.8,
+      "peak_tflops": {},
+      "scope": "NVIDIA L40S, driver 570.211.01",
+      "scope_observed_at": "2026-11-09",
+      "source": "registry"
+    },
+    {
+      "backend": "CUDA",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "measurement"
+      },
+      "has_ceiling": true,
+      "id": "nvidia_rtx3090",
+      "matrix_tflops": {
+        "bf16": 82.1,
+        "fp16": 81.0,
+        "fp16_f16acc": 150.1,
+        "fp32_fma": 37.3,
+        "int8": 296.0,
+        "tf32": 41.1
+      },
+      "memory_bandwidth_gbs": 897.8,
+      "peak_tflops": {},
+      "scope": "NVIDIA GeForce RTX 3090, driver 595.71.05",
+      "scope_observed_at": "2026-11-09",
+      "source": "registry"
+    },
+    {
+      "backend": "CUDA",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "measurement"
+      },
+      "has_ceiling": true,
+      "id": "nvidia_h100_sxm",
+      "matrix_tflops": {
+        "bf16": 649.9,
+        "fp16": 643.3,
+        "fp16_f16acc": 654.1,
+        "fp32_fma": 64.9,
+        "int8": 1323.0,
+        "tf32": 326.8
+      },
+      "memory_bandwidth_gbs": 3237.0,
+      "peak_tflops": {},
+      "scope": "NVIDIA H100 80GB HBM3, driver 580.126.20",
+      "scope_observed_at": "2026-11-09",
+      "source": "registry"
+    },
+    {
+      "backend": "CUDA",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "measurement"
+      },
+      "has_ceiling": true,
+      "id": "nvidia_h200_sxm",
+      "matrix_tflops": {
+        "bf16": 643.2,
+        "bf16_wgmma": 880.8,
+        "fp16": 642.9,
+        "fp16_f16acc": 646.7,
+        "fp16_k8": 468.6,
+        "fp16_wgmma": 781.5,
+        "fp32_fma": 64.4,
+        "int8": 1290.7,
+        "tf32": 322.4
+      },
+      "memory_bandwidth_gbs": 4661.6,
+      "peak_tflops": {},
+      "scope": "NVIDIA H200, driver 595.91.07",
+      "scope_observed_at": "2026-11-09",
+      "source": "registry"
+    },
+    {
+      "backend": "CUDA",
+      "backend_status": "descriptor_only",
+      "fact_status": {
+        "memory_bandwidth_gbs": "measurement",
+        "peak_tflops": "measurement"
+      },
+      "has_ceiling": true,
+      "id": "nvidia_h200_nvl",
+      "matrix_tflops": {
+        "bf16": 573.7,
+        "fp16": 573.5,
+        "fp16_f16acc": 576.8,
+        "fp32_fma": 58.0,
+        "int8": 1148.6,
+        "tf32": 287.0
+      },
+      "memory_bandwidth_gbs": 4513.0,
+      "peak_tflops": {},
+      "scope": "NVIDIA H200 NVL, driver 615.78.08",
+      "scope_observed_at": "2026-11-09",
+      "source": "registry"
     }
   ]
 }

@@ -162,7 +162,7 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
     if recorded and (recorded != window_scope or recorded.get("independent_pairs") != BENCH_REPS):
       raise ValueError("fresh native timing is required for symmetric decode pair sampling")
   if layout == "row":
-    # not split by role, as vLLM's split by rows says it (screen._run_stages): the run stands whole and its report is
+    # not split by role, as vLLM's split by rows says it (pipeline._run_stages): the run stands whole and its report is
     # written; a plain refusal ended a measured 2 x RTX 3090 tensor split "failed" with no report (2026-11-09)
     raise attribution.NotSplitByRole("split by rows runs every weight kernel on every GPU at once; per-role "
                                      f"attribution across devices is not built, so this run has the whole step only ({lay.LIMITED})")
@@ -424,7 +424,7 @@ def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_be
     say(f"decode at depth {ctx}: llama-bench")
     bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), [*layout_args, *llama_flags(run, int(ctx))], layout_env, cwd=run)
     progress.report(len(bench), parts)
-  from boltbeam.workflow.screen import run_bandwidth
+  from boltbeam.workflow.limit import run_bandwidth
   trace = build_timing_trace(manifest, bench, run_bandwidth(run, facts["target"])[0])
   trace["aux_sources"] = {"llama_bench": {str(k): v for k, v in bench.items()}}
   trace["provider"] = PROVIDER

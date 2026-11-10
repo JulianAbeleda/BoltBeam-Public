@@ -57,13 +57,14 @@ def standard(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   from boltbeam.roofline.prefill_work import kv_bytes_per_token, recurrent_state_bytes
   from boltbeam.target.targets import get_target
   from boltbeam.workflow.common import load_manifest
-  from boltbeam.workflow.screen import _measured_vs_ceiling, run_bandwidth
+  from boltbeam.workflow import limit
+  from boltbeam.workflow.limit import run_bandwidth
   manifest = load_manifest(run)
   profile = _read(run / "model_profile.json")
   server = next((r for r in trace.get("rows") or [] if r.get("scope") == "server"), None)
   if server and (server.get("settings") or {}).get("speculative_config"):
     return None  # draft and verification work need their own model; the ordinary token roofline is not valid
-  ceil = _measured_vs_ceiling({**manifest, "workload": "decode"}, profile, run)
+  ceil = limit.measured_vs_ceiling({**manifest, "workload": "decode"}, profile, run)
   if not (profile and server) or ceil.get("status") != "modeled":
     return None
   target = get_target(manifest.get("target_id"))
@@ -305,7 +306,7 @@ def decode_where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | Non
   from boltbeam.collectors import replay as rp
   from boltbeam.collectors.tinygrad_role_time import loss
   from boltbeam.workflow.common import load_manifest
-  from boltbeam.workflow.screen import _measured_vs_ceiling
+  from boltbeam.workflow import limit
   d = _read(run / rp.CAPTURE).get("decode")
   if not d:
     return None
@@ -313,7 +314,7 @@ def decode_where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | Non
     return {"status": "failed", "words": f"Decode at {d['context']:,}: not captured: {d['failed'][-200:]}"}
   s = standard(run, trace)
   manifest = load_manifest(run)
-  ceil = _measured_vs_ceiling({**manifest, "workload": "decode"}, _read(run / "model_profile.json"), run)
+  ceil = limit.measured_vs_ceiling({**manifest, "workload": "decode"}, _read(run / "model_profile.json"), run)
   if not s:
     return None
   limit = decode_ms_per_token(s, d["context"])
@@ -406,7 +407,7 @@ def lines(t:dict[str, Any] | None) -> list[str]:
 
 
 def tie_lines(w:dict[str, Any]) -> list[str]:
-  from boltbeam.workflow.screen import where_lines
+  from boltbeam.workflow.text_report import where_lines
   return where_lines(w) + [f"  {w['server_line']}"]
 
 

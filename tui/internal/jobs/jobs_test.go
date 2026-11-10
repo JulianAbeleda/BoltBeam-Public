@@ -69,3 +69,30 @@ func TestAliveListsOnlyRunningJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStopSignalsBenchmarkChild(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	_, err := s.Start("tree", t.TempDir(), []string{"sh", "-c", `sh -c 'trap "echo child-terminated; exit 0" TERM; echo child-ready; while :; do sleep 1; done' & wait`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		lines, _ := s.Tail("tree", 0)
+		if strings.Contains(strings.Join(lines, "\n"), "\nchild-ready") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := s.Stop("tree"); err != nil {
+		t.Fatal(err)
+	}
+	for time.Now().Before(deadline) {
+		lines, _ := s.Tail("tree", 0)
+		if strings.Contains(strings.Join(lines, "\n"), "\nchild-terminated") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("Stop left the benchmark child alive")
+}

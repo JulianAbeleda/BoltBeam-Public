@@ -15,7 +15,7 @@ LLAMA_FIELDS = {"n_ubatch": "chunk_size", "n_batch": "batch_size", "type_k": "ca
                 "type_v": "cache_type_v", "flash_attn": "flash_attention"}
 GEMM_BACKENDS = ("ATEN", "TRITON", "CUTLASS", "CPP")  # Inductor's matrix backends; a request is a comma list of these
 # The settings a run asks for on the pipeline's command line, each its value type, its name on screen and its help:
-# the one table the parser (screen pipeline), the request (screen._engine_settings) and the screen's Settings page
+# the one table the parser (screen pipeline), the request (pipeline._engine_settings) and the screen's Settings page
 # read. Which engine honors which is ACCEPTED; tensor_parallel_size is not asked, the layout sets it.
 ASKED = {
   "chunk_size": (int, "chunk size", "requested engine chunk size; unsupported adapters refuse it"),

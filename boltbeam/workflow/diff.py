@@ -96,7 +96,7 @@ def _prefill_sides(run:pathlib.Path, record:dict | None = None) -> dict[str, dic
 
 def _decode_side(run:pathlib.Path, record:dict | None = None) -> dict[str, dict[str, Any]]:
   """The decode where table (per token) and its tie-out: the captured token against the untraced one."""
-  from boltbeam.workflow.screen import results
+  from boltbeam.workflow.results import results
   # Repeat evidence must not depend on the band it is used to derive. The normal report still applies
   # calibrated floor refusals; this reader compares observations, not the validity of the roofline.
   loss = results(run, repeat_evidence=True).get("loss") or {}
@@ -146,7 +146,7 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
   is unknown. Names both pins (data/engine_pins.json) and says plainly when a build is not its pin."""
   from boltbeam.collectors import providers
   from boltbeam.workflow.common import load_manifest
-  from boltbeam.workflow.screen import run_provider
+  from boltbeam.workflow.run_folder import run_provider
   from boltbeam.collectors.toolchain import changes
   ma, mb = load_manifest(a), load_manifest(b)
   refuse_unless_same([("workload", ma.get("workload"), mb.get("workload")), ("model", _model(a, ma), _model(b, mb)),
@@ -184,8 +184,8 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
                   "untraced_ms": (tb["untraced_ms"] - ta["untraced_ms"]) if ta["untraced_ms"] and tb["untraced_ms"] else None,
                   "unchanged": held if checked else None, "status": "checked" if checked else "not checked",
                   **(rb.strength(n) if n else {}), "pin_refused": rb.pin_words(ba)})
-  from boltbeam.workflow.screen import _setting_words
-  settings = [_setting_words(a), _setting_words(b)]
+  from boltbeam.workflow.results import setting_words
+  settings = [setting_words(a), setting_words(b)]
   return {"schema": AUDIT_SCHEMA, "before": a.name, "after": b.name, "builds": builds, "provider": run_provider(a), "pins": pins,
           "toolchain": changes(ma, mb), "settings": settings,
           "model": _model(a, ma), "target": ma.get("target_id"), "workload": ma.get("workload"), "parts": parts,

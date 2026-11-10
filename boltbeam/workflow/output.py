@@ -81,7 +81,7 @@ def semantic_roles(loss:dict[str, Any]) -> list[str]:
 def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str, Any],
                 plan:dict[str, Any], primitive:dict[str, Any], timing:dict[str, Any],
                 runner:dict[str, Any], res:dict[str, Any] | None = None, measure:dict[str, Any] | None = None) -> str:
-  from boltbeam.workflow.screen import summary_text
+  from boltbeam.workflow.text_report import summary_text
   res, measure = res or {}, measure or {}
   if replay:=(res.get('loss') or {}).get('replay'):
     if replay.get('forced'):
@@ -108,7 +108,7 @@ def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str
     "",
   ]
   lines.append(next_step(report, plan, probe, measure))  # the one ladder (report/html.py), the same words everywhere
-  if roles or semantic_roles(res.get("loss") or {}) or measured:  # a measured whole step reports too (a split run)  # the measured per-role table, the same text the screen and the TUI print (screen.summary_text); a labeled vLLM capture's lives in where-the-token-goes
+  if roles or semantic_roles(res.get("loss") or {}) or measured:  # a measured whole step reports too (a split run)  # the measured per-role table, the same text the screen and the TUI print (text_report.summary_text); a labeled vLLM capture's lives in where-the-token-goes
     lines += ["", "## Measured", "", "```", summary_text(res).rstrip(), "```"]
   if timing and not roles:  # the whole-step profile's buckets say something only before a per-role table exists
     lines += ["", "## Timing Profile", ""]
@@ -226,7 +226,7 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
     "includes_runner_plan": bool(runner),
   }
   write_json(out / "provider_plan.json", provider_plan)
-  from boltbeam.workflow.screen import results as screen_results
+  from boltbeam.workflow.results import results as screen_results
   from boltbeam.workflow.report_validation import ReportInvalid
   try:
     res = screen_results(out)
@@ -243,7 +243,7 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   write_json(out / 'report_validation.json', res['validation'])
   import time
   from boltbeam.collectors.providers import latest_llama, run_build
-  from boltbeam.workflow.screen import run_provider
+  from boltbeam.workflow.run_folder import run_provider
   update = (_load_optional(out, "output_manifest.json").get("engine_update") or {})
   if run_provider(out) == "llama.cpp" and (update.get("build") != run_build(out) or
       str(update.get("checked_at", ""))[:10] != time.strftime("%Y-%m-%d", time.gmtime())):
@@ -258,7 +258,7 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   # report.html renders the same staged facts as summary.md, standalone and self-contained (no server, no CDN).
   # It renders from `final`, not the pre-update manifest, so the pipeline rail shows the output stage as run and
   # a second `boltbeam output` over an unchanged run reproduces the file byte for byte.
-  # The headline reads the speed limit and measured tokens/s from screen.results: the same function the TUI reads,
+  # The headline reads the speed limit and measured tokens/s from results.results: the same function the TUI reads,
   # so the page and the TUI cannot disagree. Imported here because screen imports this module.
   (out / "report.html").write_text(
     render_run_html(manifest=final, profile=profile, report=report, plan=plan, policy=policy,

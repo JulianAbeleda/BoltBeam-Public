@@ -3,7 +3,7 @@
 This mirrors the chip autoscan (workflow/chips.py): the machine is read once, the answer is saved per machine and
 never in the repo, and every reader sees the same engines with no env vars set. The order of authority is fixed:
 an env var always wins; then PATH; then the saved file. The finders in engine_common, llama_bench_decode,
-engine_kernels and role_compare read the saved file as their last fallback, so `providers.available()`, the
+engine_kernels and tinygrad_fork read the saved file as their last fallback, so `providers.available()`, the
 pipeline, `boltbeam doctor` and the screen agree.
 
     item (its env var)             looked for, in order; the first hit wins
@@ -14,7 +14,7 @@ pipeline, `boltbeam doctor` and the screen agree.
     BOLTBEAM_GGML_CUDA_SRC         <llama.cpp checkout>/ggml/src/ggml-cuda (the folder that holds mmvq.cu)
     BOLTBEAM_GGML_METAL            engine_kernels.ggml_library's candidates under the Homebrew prefixes
     BOLTBEAM_TINYGRAD_ROOT         the fork next to the checkout, ~/tinygrad-arkey*, ~/env/tinygrad*,
-                                   ~/storage/*/tinygrad*; the first that role_compare.readiness calls ready, else
+                                   ~/storage/*/tinygrad*; the first that tinygrad_fork.readiness calls ready, else
                                    the first that is a fork at all
     BOLTBEAM_VLLM_PYTHON           a venv python that can import vllm: */bin/python and */*/bin/python under
                                    ~/env, ~/storage, ~/venvs, ~/.venvs and ~/storage/*; NVIDIA machines only
@@ -255,9 +255,9 @@ def fork_candidates(home:pathlib.Path, checkout:pathlib.Path | None) -> list[pat
 
 
 def _fork(home:pathlib.Path, checkout:pathlib.Path | None) -> dict[str, str] | None:
-  from boltbeam.search import role_compare
-  forks = [p for p in fork_candidates(home, checkout) if _is_file(p / role_compare.PROVIDER)]
-  ready = next((p for p in forks if role_compare.readiness(p)["ready"]), None)
+  from boltbeam.search import tinygrad_fork
+  forks = [p for p in fork_candidates(home, checkout) if _is_file(p / tinygrad_fork.PROVIDER)]
+  ready = next((p for p in forks if tinygrad_fork.readiness(p)["ready"]), None)
   pick = ready or (forks[0] if forks else None)
   return _scan_hit(pick) if pick else None
 

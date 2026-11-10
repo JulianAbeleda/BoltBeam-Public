@@ -132,7 +132,7 @@ def collect_timing_trace(run:pathlib.Path, evidence:dict[str, Any], *, llama_ben
     say(f"decode at depth {ctx}: llama-bench")
     bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), cwd=run)
     progress.report(len(bench), parts)
-  from boltbeam.workflow.screen import run_bandwidth
+  from boltbeam.workflow.limit import run_bandwidth
   peak_gbs, peak_source = run_bandwidth(run, facts["target"])
   trace = build_timing_trace(facts["manifest"], request, evidence, bench, peak_gbs)
   trace["peak_source"] = peak_source

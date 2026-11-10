@@ -45,7 +45,7 @@ def loss_block(run:Path, provider:str, token:dict | None) -> dict:
   from boltbeam.workflow.repeat_bands import find
   batch=(capture.get('engine') or {}).get('batch') or 1
   if batch!=(token.get('batch') or 1):
-    from boltbeam.workflow.screen import Refused
+    from boltbeam.workflow.run_folder import Refused
     raise Refused(f'the decode capture is of {batch} stream(s) and the untraced step of {token.get("batch") or 1}: '
                   'no report ties them out')
   band=capture.get('reference_band');host=capture.get('host_step_ms');comparison=None

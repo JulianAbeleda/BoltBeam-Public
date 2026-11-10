@@ -40,7 +40,7 @@ def _read(run:pathlib.Path, name:str) -> dict:
 
 def scope(run:pathlib.Path) -> dict:
   from boltbeam.collectors import providers
-  from boltbeam.workflow.screen import run_provider
+  from boltbeam.workflow.run_folder import run_provider
   manifest = load_manifest(run)
   profile = _read(run, "model_profile.json")
   profile = {k: v for k, v in profile.items() if k not in ("source", "model_id")}
@@ -274,7 +274,7 @@ def end_to_end_width(band:dict | None, *, captured_key:str = "captured_ms") -> f
 
 def for_decode(run:pathlib.Path, trace:dict | None = None) -> dict | None:
   from boltbeam.collectors.providers import TRACES
-  from boltbeam.workflow.screen import run_provider
+  from boltbeam.workflow.run_folder import run_provider
   from boltbeam.workflow.tie_out import attended_context
   provider = run_provider(run)
   trace = trace or _read(run, TRACES[provider])

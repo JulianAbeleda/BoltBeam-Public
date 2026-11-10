@@ -19,7 +19,7 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   from boltbeam.collectors.cuda_module_load import NoModuleCapture
   from boltbeam.collectors.prefill import library_paths, gpu_arch, last_level_cache, vllm_formats
   from boltbeam.target.targets import fact_uncertainty
-  from boltbeam.workflow.screen import run_bandwidth
+  from boltbeam.workflow.limit import run_bandwidth
   from boltbeam.workflow.common import run_gpu
   if type(batch) is not int or batch<1:
     raise ValueError('semantic graph decode needs a positive whole number of streams')
@@ -142,7 +142,7 @@ def collect(run:Path, *, target, model:str, context:int, tokens:int, batch:int) 
   (raw/'instruction_paths.json').write_text(json.dumps(paths,indent=1))
   bandwidth,source=run_bandwidth(run,target)
   peaks=dict(target.matrix_tflops or {})
-  from boltbeam.workflow.screen import bandwidth_uncertainty, run_read
+  from boltbeam.workflow.limit import bandwidth_uncertainty, run_read
   # the uncertainty of the bandwidth the limit uses: this run's read probe when it has one, as the ceiling's is
   uncertainty={'bandwidth':bandwidth_uncertainty(target,run_read(run,target.target_id)),
                'peaks':{p:fact_uncertainty(target,'matrix_tflops',p) for p in peaks}}

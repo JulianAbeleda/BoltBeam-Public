@@ -12,7 +12,7 @@ device the candidates' target names (METAL, NV, CUDA, AMD); no `--backend` is ne
 
 ## Run's kernel search is this pipeline
 
-Run's search stage (`boltbeam/search/role_compare.py`) runs these four steps per role, for the role's recorded
+Run's search stage (`boltbeam/search/search_stage.py`, the per-role comparison in `role_compare.py`) runs these four steps per role, for the role's recorded
 tensor and shape on the run's target, then checks the provider's claims itself (`boltbeam/search/provider_check.py`):
 the device identity against BoltBeam's own bridge, and every measured kernel rebuilt from the source the provider
 returned, checked against BoltBeam's reference on the model's bytes and timed by the kernel timer. Every decision

@@ -49,10 +49,10 @@ def own_timing_reason(backend:str) -> str | None:
 
 def available(target, root:pathlib.Path | None = None) -> str | None:
   """Why tinygrad cannot measure this target here, or None when it can."""
-  from boltbeam.search import role_compare
+  from boltbeam.search import tinygrad_fork
   if not device_for(target):
     return f"{target.target_id} names no tinygrad device"
-  ready = role_compare.readiness(root)
+  ready = tinygrad_fork.readiness(root)
   return None if ready["ready"] else ready["message"]
 
 
@@ -180,7 +180,7 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
     if summary.get(key) != settings.get(key):
       raise ValueError(f"tinygrad captured {key} differs from the untraced run")
   # the peak is the run's one read bandwidth (workflow/screen.py run_bandwidth): the limit's number, one source
-  from boltbeam.workflow.screen import run_bandwidth
+  from boltbeam.workflow.limit import run_bandwidth
   peak_gbs, peak_source = run_bandwidth(run, target)
   peak = {"peak_gbs": peak_gbs} if peak_gbs else {}
   trace = decode_profile_events(load_profile_events(events, tinygrad_root=root), model_id=model_id,
@@ -281,7 +281,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
     from boltbeam.role_key import role_label
     delta = width(chip["calibration"], role_label(c["role"], c["quant"], shape_nk(c)),
                   work={"calls": got["calls"] / tokens, "limit_ms": c["floor_ms"]})
-    u = c.get("floor_uncertainty")  # the floor's own measured uncertainty (screen._measured_vs_ceiling); None: not checked
+    u = c.get("floor_uncertainty")  # the floor's own measured uncertainty (limit.measured_vs_ceiling); None: not checked
     tol = delta + c["floor_ms"] * u if delta is not None and u is not None else None
     noise = tol is not None and 0 < c["floor_ms"] - ms <= tol
     if tol is not None and c["floor_ms"] - ms > tol:  # unknown is not pass: this row's ceiling is in doubt, not the table

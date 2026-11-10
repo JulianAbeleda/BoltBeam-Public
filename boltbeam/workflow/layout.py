@@ -348,6 +348,22 @@ def cached_machine(run:pathlib.Path, devs:list[dict[str, Any]]) -> dict[str, Any
   return max(found, key=lambda f: (f[0], f[1]))[2] if found else None
 
 
+def spread_band(best:float, u:float, runs:list[float] | None = None) -> tuple[float, float]:
+  """Where a fresh figure may land against a measured one whose repeats spread u: at most the best plus u (over it,
+  the figure understates the GPU), at least the slowest run less u (under it, the GPU is slower than anything that
+  made the figure). With no runs recorded, the figure itself less u."""
+  return (min(runs) if runs else best) * (1 - u), best * (1 + u)
+
+
+def confirmed(read:Callable[[], float], lo:float, hi:float, confirm:int = 3) -> tuple[float, list[float]]:
+  """One read decides when it lands inside lo..hi; a read outside is read again, up to confirm reads, and their
+  median decides. A single new run falls outside n runs' range with probability 2/(n+1). (the figure, the reads)"""
+  reads = [read()]
+  if not lo <= reads[0] <= hi:
+    reads += [read() for _ in range(confirm - 1)]
+  return sorted(reads)[len(reads) // 2], reads
+
+
 def stale_reason(cached:dict[str, Any], *, driver:str | None,
                  fresh_read:Callable[[dict[str, Any]], float] | None, confirm:int = 3) -> str | None:
   """Why cached machine facts no longer stand for this machine, or None when they still do. Not their age: a figure
@@ -375,11 +391,8 @@ def stale_reason(cached:dict[str, Any], *, driver:str | None,
       return f"GPU {g.get('index')}: its read bandwidth has no repeated runs to verify a fresh read against"
     if fresh_read is None:
       return None  # no native read here: nothing could verify a remeasure either
-    hi, lo = g["read_gbs"] * (1 + u), min(runs) * (1 - u)
-    reads = [fresh_read(g)]
-    if not lo <= reads[0] <= hi:
-      reads += [fresh_read(g) for _ in range(confirm - 1)]
-    now = sorted(reads)[len(reads) // 2]
+    lo, hi = spread_band(g["read_gbs"], u, runs)
+    now, reads = confirmed(lambda: fresh_read(g), lo, hi, confirm)
     said = f"reads {now:.1f} GB/s now" + (f" (median of {len(reads)} reads)" if len(reads) > 1 else "")
     if now > hi:
       return (f"GPU {g.get('index')} {said}, {now / g['read_gbs'] - 1:+.1%} over the cached best "

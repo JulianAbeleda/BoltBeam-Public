@@ -6,6 +6,7 @@ import json
 
 from boltbeam.collectors import capture_settings as cs, vllm_mtp
 from boltbeam.workflow import recommend as rec, repeat_bands as rb, screen
+from boltbeam.workflow import pipeline as pp
 from tests.test_recommend import checkpoint, facts, run
 from tests.test_repeat_bands import repeat
 
@@ -18,21 +19,21 @@ def test_offered_settings_follow_the_engine_and_the_parser(monkeypatch, tmp_path
   assert by["mtp_prompt"]["choices"] == vllm_mtp.prompt_set()["ids"] and by["gemm_backends"]["choices"] == list(cs.GEMM_BACKENDS)
   assert by["mtp"]["draft_head"] and by["mtp"]["whole"] and not by["attention_backend"]["draft_head"]
   seen = {}
-  monkeypatch.setattr(screen, "pipeline_current", lambda args, out=None: seen.setdefault("args", args) and 0)
+  monkeypatch.setattr(pp, "pipeline_current", lambda args, out=None: seen.setdefault("args", args) and 0)
   argv = ["pipeline", "m", "--run", str(tmp_path / "r"), "--target", "nvidia_sm120", "--provider", "vllm"]
   for s, v in zip(by.values(), ["512", "TRITON_ATTN", "TRITON", "2", "explain-tcp"]):
     argv += [s["flag"], v]  # every flag the screen is given parses, and lands in the request with its type
   assert screen.main(argv) == 0
-  assert screen._engine_settings(seen["args"]) == {"chunk_size": 512, "attention_backend": "TRITON_ATTN",
+  assert pp._engine_settings(seen["args"]) == {"chunk_size": 512, "attention_backend": "TRITON_ATTN",
                                                    "gemm_backends": "TRITON", "mtp": 2, "mtp_prompt": "explain-tcp"}
 
 
 def test_repeats_run_the_setup_n_times_then_save_the_band(monkeypatch, tmp_path):
   said = io.StringIO()
-  monkeypatch.setattr(screen.pipeline_repeated, "__defaults__", (said,))  # its lines, as the screen reads them
+  monkeypatch.setattr(pp.pipeline_repeated, "__defaults__", (said,))  # its lines, as the screen reads them
   runs, saved = [], {}
-  monkeypatch.setattr(screen, "pipeline_current", lambda args, out: runs.append((args.run, args.update_engines, args.hold_machine)) or 0)
-  monkeypatch.setattr(screen, "output_run", lambda run: None)
+  monkeypatch.setattr(pp, "pipeline_current", lambda args, out: runs.append((args.run, args.update_engines, args.hold_machine)) or 0)
+  monkeypatch.setattr(pp, "output_run", lambda run: None)
   monkeypatch.setattr(rb, "save", lambda paths, out, fixed: saved.update(paths=paths, out=out, fixed=fixed) or rb.strength(len(paths)))
   r = tmp_path / "q-001"
   assert screen.main(["pipeline", "m", "--run", str(r), "--target", "nvidia_sm120", "--repeats", "3", "--update-engines"]) == 0
@@ -45,7 +46,7 @@ def test_repeats_run_the_setup_n_times_then_save_the_band(monkeypatch, tmp_path)
   assert screen.main(["pipeline", "m", "--run", str(tmp_path / "x"), "--target", "nvidia_sm120", "--repeats", "2"]) == 1
   assert said.getvalue().splitlines()[-1] == "repeat band: failed: repeat work differs"
   assert screen.main(["pipeline", "m", "--run", str(tmp_path / "y"), "--target", "nvidia_sm120", "--repeats", "1"]) == 2
-  monkeypatch.setattr(screen, "pipeline_current", lambda args, out: 1 if args.run.endswith("-2") else 0)
+  monkeypatch.setattr(pp, "pipeline_current", lambda args, out: 1 if args.run.endswith("-2") else 0)
   assert screen.main(["pipeline", "m", "--run", str(tmp_path / "z"), "--target", "nvidia_sm120", "--repeats", "3"]) == 1
 
 
@@ -90,6 +91,6 @@ def test_a_held_repeat_takes_the_first_runs_machine_facts_as_they_are(tmp_path):
   first.mkdir(); second.mkdir()
   facts = {"driver": "595.99.02", "gpus": [{"index": 0, "read_gbs": 1710.0, "read_from": "probe", "uncertainty": 0.0023}]}
   (first / lay.MACHINE).write_text(json.dumps(facts))
-  got = screen.machine(second, hold=first)
+  got = pp.machine(second, hold=first)
   assert got["reused"] and got["reused_because"] == "held fixed for the repeat band: the facts of r-001"
   assert json.loads((second / lay.MACHINE).read_text()) == facts

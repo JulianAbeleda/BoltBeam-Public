@@ -404,9 +404,9 @@ def linked_libraries(binary:pathlib.Path) -> list[pathlib.Path]:
 # --- the tinygrad fork -------------------------------------------------------------------------------------------
 
 def _fork(root:pathlib.Path | None):
-  from boltbeam.search import role_compare
-  root = pathlib.Path(root) if root else role_compare.default_fork_root()
-  return root, role_compare.fork_python(root)
+  from boltbeam.search import tinygrad_fork
+  root = pathlib.Path(root) if root else tinygrad_fork.default_fork_root()
+  return root, tinygrad_fork.fork_python(root)
 
 
 EAGER_SAMPLES = 1  # an eager prefill schedules its graph again: minutes at long prompts, so one is timed after the warm one
@@ -780,11 +780,12 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   from boltbeam.target.targets import get_target
   from boltbeam.workflow import tie_out
   from boltbeam.workflow.common import load_manifest, read_json
-  from boltbeam.workflow.screen import _measured_vs_ceiling, _optional, run_bandwidth
+  from boltbeam.workflow import limit, run_folder
+  from boltbeam.workflow.limit import run_bandwidth
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
-  profile = _optional(run, "model_profile.json")
-  ceil = _measured_vs_ceiling({**manifest, "workload": "decode"}, profile, run)
+  profile = run_folder.optional(run, "model_profile.json")
+  ceil = limit.measured_vs_ceiling({**manifest, "workload": "decode"}, profile, run)
   bw, bw_source = run_bandwidth(run, target)
   roles = prefill_roles(profile, ceil.get("_roles") or [])
   # the engine's own timing slows its run (one command buffer per kernel): its idle is profiling, not the engine's,

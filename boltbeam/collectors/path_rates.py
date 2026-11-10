@@ -19,7 +19,7 @@ def fact_source(result:dict[str, Any], *, scope:str, today:str) -> dict[str, Any
           "clock_policy": result["clock_policy"].get("policy"), "throttled": result["telemetry"].get("throttled"),
           "paths": {r["path"]: ({"tops": r["tops"], "sm_mhz": r["sm_mhz"], "ops_per_sm_per_clock": r["ops_per_sm_per_clock"],
                                  "instruction": r["instruction"], "words": r["words"], "throttled": r["clock"].get("throttled"),
-                                 **{k: r[k] for k in ("uncertainty", "shape_spread") if k in r},
+                                 **{k: r[k] for k in ("uncertainty", "shape_spread", "uncertainty_source") if k in r},
                                  "power_w_mean": (r["clock"].get("power_w") or {}).get("mean")}
                                 if r.get("available") else {"available": False, "reason": r["reason"], "instruction": r["instruction"]})
                     for r in result["paths"]}}

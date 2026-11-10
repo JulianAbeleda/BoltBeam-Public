@@ -49,7 +49,7 @@ def snapshot(provider:str | None = None, vendor:str | None = None) -> dict:
   adapter = providers.ENGINES.get(provider)
   python = adapter.python() if adapter and hasattr(adapter, "python") else sys.executable
   if provider == "tinygrad":
-    from boltbeam.search.role_compare import default_fork_root, fork_python
+    from boltbeam.search.tinygrad_fork import default_fork_root, fork_python
     python = str(fork_python(default_fork_root()))
   field = f", '{rt}': torch.version.{rt}" if rt else ""
   raw_torch = _read([python, "-c", "import json, torch; print(json.dumps({'version': str(torch.__version__)" + field + "}))"]) if python else ""
