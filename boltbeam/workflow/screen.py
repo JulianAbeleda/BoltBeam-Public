@@ -20,7 +20,8 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
                                                looked up in DIR/ID, DIR/.work/ID, then SAVED/ID (find_run)
     delete   --run DIR --root ROOT             remove one run folder; refused unless DIR is a run directly under ROOT
     save     --run DIR --to SAVED              export a run: the run, results.json, report.html, summary.txt
-    saved    --root SAVED                      the saved runs, newest first, with the share of the limit reached
+    saved    --root SAVED                      the saved runs, newest first, with the share of the limit reached; a run
+                                               brought home by `boltbeam fetch` says from where and when (fetched)
     clean-work --work DIR --before ISO         remove temporary runs started before ISO (never --keep ones)
     results  --run DIR | --run ID --root DIR   what won per role, the timing against the ceiling, the regimes
     emit     --run DIR | --run ID --root DIR   Emit: write <run>/gameplan.json and gameplan.md (workflow/gameplan.py), the
@@ -101,7 +102,7 @@ from boltbeam.target import vendors
 from boltbeam.target.targets import get_target
 from boltbeam.workflow import analyze_run, autoscan_run, ingest_probe_run, ingest_timing_run, load_run, output_run
 from boltbeam.workflow.autoscan import _hardware_profile
-from boltbeam.workflow import prefill_audit, progress
+from boltbeam.workflow import fetch, prefill_audit, progress
 from boltbeam.collectors.attribution import NotSplitByRole
 from boltbeam.workflow.common import load_manifest, read_json, write_json
 from boltbeam.vocab import Workload
@@ -133,8 +134,9 @@ def target_facts(target) -> dict[str, Any]:
   sources = caps.get("fact_sources", {}) or {}
   return {
     "id": target.target_id,
-    # registry: the repo's reviewed rows; generated: a profile measured on this machine (workflow/chips.py)
-    "source": "generated" if reg.is_local(target.target_id) else "registry",
+    # registry: the repo's reviewed rows; generated: a profile measured on this machine (workflow/chips.py);
+    # fetched: another machine's profile brought home with its runs (workflow/fetch.py)
+    "source": "generated" if reg.is_local(target.target_id) else "fetched" if reg.is_fetched(target.target_id) else "registry",
     "backend": target.backend,
     "backend_status": target.backend_status,
     "scope": (sources.get("memory_bandwidth_gbs") or {}).get("scope"),
@@ -280,6 +282,7 @@ def summary(run:pathlib.Path) -> dict[str, Any]:
     "measured": {"probe": (run / "primitive_profile.json").exists(), "timing": (run / "timing_profile.json").exists()},
     "report": "report.html" if (run / "report.html").exists() else None,
     "measure": _optional(run, MEASURE_STATUS) or None,
+    **({"fetched": f} if (f := fetch.provenance(run)) else {}),  # a run brought home by `boltbeam fetch`: from where
   }
 
 
@@ -412,8 +415,10 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
                                          "latency": None, "cross_check": None, "role_source": None,
                                          "role_source_words": None, "estimate": None, "findings": []})
   if ceil.get("status") != "modeled" or not ceil.get("floor_ms"):
-    return {"status": "absent", "reason": ceil.get("reason"), "runtimes": [], "roles": [], "provider": provider,
-            "capture": plan, "others": []}
+    # no limit, but a measured speed stands: the headline says both (a Mamba2 hybrid with no capture, mamba2.FORMULA_REFUSED)
+    return {"status": "absent", "reason": ceil.get("reason"), "missing": _missing(provider, target, manifest, _optional(run, MEASURE_STATUS)), "roles": [], "provider": provider,
+            "capture": plan, "others": [], "runtimes": [{"provider": provider, "tok_s": token["tok_s"], "ms": token["ms"], "lost_ms": None,
+            "per_role": False, "note": f"whole step, measured untraced, at context {token['context']}; no limit"}] if token else []}
   limit_ms = ceil["floor_ms"]
   runtimes = []
   if token:
@@ -421,6 +426,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
                      "per_role": False, "note": f"whole step, measured untraced, at context {token['context']}"
                      + (f"; {state}" if (state := gpu_telemetry.run_state_words(run)) else "")})
   out = {"status": "modeled", "limit_tok_s": ceil["tok_s"], "limit_ms": limit_ms, "runtimes": runtimes, "roles": [],
+         **({"batch": b, "per": f"per step of {b} streams"} if (b := (token or {}).get("batch") or 1) > 1 else {}),
          "not_attributed_ms": None, "source": None, "missing": None, "refused": None,
          "provider": provider, "capture": plan, "roles_provider": None, "provider_missing": None, "others": [], "unpaired_roles": [],
          "not_timed": [], "tie_out": None, "role_rule": None, "step": step_facts(token), "latency": None, "cross_check": None,
@@ -456,7 +462,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
       continue
     runtimes.append({"provider": name, "tok_s": table["tok_s"], "ms": table["kernel_ms"],
                      "lost_ms": table["kernel_ms"] - limit_ms, "per_role": True, "capture": capture.get("method"),
-                     "note": "GPU kernel time per token, " + _capture_words(capture.get("method"))})
+                     "note": f"GPU kernel time {out.get('per') or 'per token'}, " + _capture_words(capture.get("method"))})
     if name != provider:
       out["others"].append({"provider": name, "capture": capture, "tok_s": table["tok_s"], "ms": table["kernel_ms"],
                             "roles": table["roles"], "not_attributed_ms": table["not_attributed_ms"]})
@@ -812,16 +818,19 @@ def the_token(run:pathlib.Path) -> dict[str, Any] | None:
   provider = run_provider(run)
   role_trace = _optional(run, providers.TRACES[provider])
   near = tie.attended_context(role_trace, provider) if role_trace else None
+  # a per-role capture of B streams ties out against step 4's step of B streams at its requested context
+  whole = next((r for r in role_trace.get("rows", []) if r.get("scope") == "whole_step"), {}) if role_trace else {}
+  batch, at = whole.get("batch") or 1, whole.get("context")
   captured=_optional(run,'decode_capture.json')
   if captured.get('contexts'):
-    near=float(next(iter(captured['contexts'])))
+    near=at=float(next(iter(captured['contexts'])))
     batch=(next(iter(captured['contexts'].values())).get('engine') or {}).get('batch') or 1
-    if batch>1:
-      step=batch_step(_optional(run,"timing_trace.json"),provider,int(near),batch)
-      if step is None:
-        raise Refused(f"the decode capture is of {batch} streams at context {int(near)}, and step 4 timed no step of "
-                      f"{batch} streams there: time that batch (--batch 1,{batch}) before reading the capture")
-      return step
+  if batch>1:
+    step=batch_step(_optional(run,"timing_trace.json"),provider,int(at),batch)
+    if step is None:
+      raise Refused(f"the per-role capture is of {batch} streams at context {int(at)}, and step 4 timed no step of "
+                    f"{batch} streams there: time that batch (--batch 1,{batch}) before reading the capture")
+    return step
   return tie.measured_step(_optional(run, "timing_trace.json"), provider, near=near)
 
 
@@ -849,6 +858,10 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
   primitive = _optional(run, "primitive_profile.json")
   timing = _optional(run, "timing_profile.json")
   ceil = _measured_vs_ceiling(manifest, profile, run)
+  from boltbeam.roofline.mamba2 import FORMULA_REFUSED, formula_cannot_limit
+  from boltbeam.workflow import captured_decode
+  if formula_cannot_limit(profile) and manifest.get("workload") == "decode" and not (run / captured_decode.TRACE).is_file():
+    ceil = {"status": "absent", "reason": FORMULA_REFUSED}  # speed only, said: never the formula's limit for a Mamba2 hybrid
   token = the_token(run)
   context = token["context"] if token else None
   kernels, context = roofline_kernels(timing, context) if timing else ([], context)
@@ -947,9 +960,10 @@ def decode_ceiling(ceil:dict[str, Any], loss:dict[str, Any], token:dict[str, Any
   split = layout["gpus"] if layout_ms and (layout.get("gpus") or 1) > 1 else 1
   weight = layout_ms if split > 1 else ceil["floor_ms"]
   element, _ = providers.kv_element(provider, run)
-  # a tensor-parallel split shards the KV heads: each GPU reads its share of the cache at once
-  limit = weight + tie.kv_ms(profile, token["context"], element, ceil["peak_bandwidth_gbs"]) / (split if provider in ENGINE_JOINS else 1)
-  loss.update(limit_ms=limit, limit_tok_s=1000.0 / limit, limit_context=token["context"])
+  state, words = tie.state_ms(profile, provider, run, ceil["peak_bandwidth_gbs"])
+  # a tensor-parallel split shards the KV and state heads: each GPU reads its share at once; a step of B streams reads B
+  limit = weight + (token.get("batch") or 1) * (tie.kv_ms(profile, token["context"], element, ceil["peak_bandwidth_gbs"]) + state) / (split if provider in ENGINE_JOINS else 1)
+  loss.update(limit_ms=limit, limit_tok_s=1000.0 / limit, limit_context=token["context"], **({"state_words": words} if words else {}))
   for runtime in loss.get("runtimes", []):
     if runtime.get("isolated"):
       continue
@@ -994,6 +1008,7 @@ def batch_rows(run:pathlib.Path, manifest:dict[str, Any], profile:dict[str, Any]
     return []
   provider = trace.get("provider") or run_provider(run)
   element, _ = providers.kv_element(provider, run)
+  state = tie.state_ms(profile, provider, run, ceil.get("peak_bandwidth_gbs") or 0.0)
   params = sum(float(r.get("rows") or 0) * float(r.get("cols") or 0) * float(r.get("count") or 1)
                for r in profile.get("roles") or [])
   try:
@@ -1012,7 +1027,7 @@ def batch_rows(run:pathlib.Path, manifest:dict[str, Any], profile:dict[str, Any]
     else:
       lim = tie.batch_limit(weight_ms=ceil.get("_weight_floor_ms", ceil["floor_ms"]), profile=profile, context=float(p["context"]), batch=int(p["batch"]),
                           element_bytes=element, bandwidth_gbs=ceil["peak_bandwidth_gbs"], params=params or None,
-                          peak_flops=peak_flops)
+                          peak_flops=peak_flops, state=state)
     out.append({"context": p["context"], "batch": p["batch"], "step_ms": p["step_ms"], "tok_s_stream": p["tok_s_stream"],
                 "tok_s_total": p["tok_s_total"], "source": p.get("source"), "limit": lim,
                 "pct_of_limit": 100.0 * lim["step_ms"] / p["step_ms"] if p["step_ms"] and 'step_ms' in lim else None})
@@ -1134,6 +1149,13 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
 def _parse_batches(text:str | None) -> list[int]:
   """--batch "1,32": the batch sizes to time. Batch 1 is always timed."""
   return sorted({1, *(int(x) for x in (text or "1").split(",") if x.strip())})
+
+
+def _capture_batch(text:str | None) -> int:
+  """The batch the per-role capture runs at: the one batch named beside 1 (the TUI's pick), else 1. A sweep
+  (--batch 1,2,4,16) keeps its headline, tie-out and per-role table at batch 1; its batches are the per-batch rows."""
+  named = set(_parse_batches(text)) - {1}
+  return named.pop() if len(named) == 1 else 1
 
 
 def _measure_steps(args, plan:dict[str, Any], say=lambda _: None) -> list[tuple[str, Any]]:
@@ -1298,6 +1320,8 @@ def _load(args) -> dict[str, Any]:
   result = load_run(args.model, args.run, target_id=args.target, model_id=args.id, workload=args.workload,
                   contexts=contexts, target_source="user", provider=getattr(args, "provider", None),
                   engine_settings=_engine_settings(args))
+  from boltbeam.target.targets import keep_run_chip
+  keep_run_chip(pathlib.Path(args.run), args.target)
   if getattr(args, "bands", None):
     from boltbeam.workflow.common import write_json
     from boltbeam.workflow.repeat_bands import ARTIFACT, SCHEMA as BAND_SCHEMA
@@ -1352,7 +1376,7 @@ def pipeline(args, out=sys.stdout) -> int:
       steps.append(("role_time", lambda: mod.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say)))
     elif can_time:
       steps.append(("role_time", lambda: providers.role_time(pathlib.Path(args.run), plan["provider"], root=root, say=say,
-                                                             batch=max(_parse_batches(getattr(args, "batch", None))),
+                                                             batch=_capture_batch(getattr(args, "batch", None)),
                                                              step=progress.report, measurement=_role_time_arg(args))))
     if getattr(args, "no_search", False) or getattr(args, "workload", "decode") == "replay":
       why = "skipped with --no-search" if getattr(args, "no_search", False) else "a replay has no per-role kernel search"
@@ -1743,7 +1767,7 @@ def where_lines(w:dict[str, Any] | None) -> list[str]:
     cells.append([row['name'],*row['cells']])
   cells+=([list(w['baseline_cells'])] if w.get('baseline_cells') else [])+[list(w['sum_cells'])]
   width = [max(len(row[i]) for row in cells) for i in range(len(cells[0]))]
-  out = [w["title"] + (" (estimate)" if w["estimate"] else "") + ":", f"  {w['words']}"]
+  out = [w["title"] + (" (estimate)" if w["estimate"] else "") + ":", *([f"  {w['qualification']}"] if w.get("qualification") else []), f"  {w['words']}"]
   for row in cells:
     out.append(("  " + row[0].ljust(width[0]) + " " + " ".join(c.rjust(width[i + 1]) for i, c in enumerate(row[1:]))).rstrip())
   return out
@@ -1773,7 +1797,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   loss = res.get("loss") or {}
   t = loss.get("tie_out") or {}
   m = next((r for r in loss.get("runtimes") or [] if not r.get("per_role")), None)
-  batch = t.get("batch") or 1
+  batch = loss.get("batch") or 1  # the batch every figure below is of (the token's, loss_block)
   head = f"{res.get('model_id')} on {res.get('target_id')} with {loss.get('provider')}, batch {batch}"
   if loss.get("workload") == "replay" and (loss.get("replay") or {}).get("headline"):  # workflow/replay.py: per session
     h = loss["replay"]["headline"]
@@ -1782,13 +1806,16 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
              f": a {h['warm_turns']}-turn replay in {h['time_ms'] / 1e3:.1f} s, no ceiling ({loss.get('reason') or 'see below'})")
   elif m and loss.get("limit_tok_s"):
     pct = 100.0 * loss["limit_ms"] / m["ms"] if m.get("ms") else 0.0
-    head += (f": {m['tok_s']:.1f} tok/s measured, limit {loss['limit_tok_s']:.1f} tok/s, {pct:.0f}% of roofline, "
+    each = f" per stream ({batch * m['tok_s']:.1f} in total)" if batch > 1 else ""  # tools/check_run_math.py HEAD
+    head += (f": {m['tok_s']:.1f} tok/s{each} measured, limit {loss['limit_tok_s']:.1f} tok/s{each and ' per stream'}, {pct:.0f}% of roofline, "
              f"{m['lost_ms']:.1f} ms {loss.get('per') or 'per token'} lost")
   elif m:  # measured, with no limit to hold it against yet (a prefill not yet captured in the model)
-    head += f": {m['tok_s']:.1f} tok/s measured, {m['ms']:.1f} ms {loss.get('per') or 'per token'}; no limit yet: {loss.get('missing')}"
+    head += f": {m['tok_s']:.1f} tok/s measured, {m['ms']:.1f} ms {loss.get('per') or 'per token'}; no limit yet: {loss.get('reason') or loss.get('missing')}"
   else:
     head += ": not measured"
   lines = [head]
+  if state := loss.get("state_words"):  # the limit counts each stream's recurrent state, or says why it does not
+    lines.append(f"Limit: {state}.")
   if basis := loss.get("limit_basis"):  # a split whose copies were not measured: its limit is its weights alone
     lines.append(f"Limit: {basis}.")
   if spec := loss.get("speculation"):  # the limit is this speculation's, at the acceptance the capture measured
@@ -1807,23 +1834,26 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   if t.get("refused"):
     lines.append(f"Not tied out: {t['refused']}")
   elif est and t.get("token_ms") is not None:
-    lines.append(f"Tie-out, ms per token at context {t['context']:.0f} (only what is measured):")
+    lines.append(f"Tie-out, ms {loss.get('per') or 'per token'} at context {t['context']:.0f} (only what is measured):")
     lines.append(f"    {'limit at context 1 (ideal)':<48} {t['limit_ms_ctx1']:9.3f}  derived")
     for i, l in enumerate(t["lines"]):
       lines.append(f"  {'  ' if i == 0 else '+ '}{l['label']:<48} {l['ms']:9.3f}  {l['how']}")
-    lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
+    lines.append(f"  = {'measured token' if batch == 1 else f'measured step of {batch} streams':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
     lines.append(f"  estimated split (isolated): weight kernels {'up to ' if est['scaled'] else ''}{est['weight_ms']:.1f} ms, "
                  f"other and gaps {'at least ' if est['scaled'] else ''}{est['other_ms']:.1f} ms ({est['other_how']})")
     if ct := t.get("captured_token"): lines.append(f"  {ct['words']}")
   elif t.get("lines") and t.get("token_ms") is not None:
-    lines.append(f"Tie-out, ms per token at context {t['context']:.0f}:")
+    lines.append(f"Tie-out, ms {loss.get('per') or 'per token'} at context {t['context']:.0f}:")
     for i, l in enumerate(t["lines"]):
       lines.append(f"  {'  ' if i == 0 else '+ '}{l['label']:<48} {l['ms']:9.3f}  {l['how']}")
       for k in l.get("kernels") or []:  # GEMVs no role took, named with their launches
         lines.append(f"      {k['kernel']}: {k['calls_per_token']:.0f} per token, {k['us_per_call']:.1f} us each, {k['ms']:.3f} ms")
       if l.get("parts"):
         lines.append("      " + ", ".join(f"{p['kind']} {p['ms']:.3f}" for p in l["parts"]))
-    lines.append(f"  = {'measured token':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
+    lines.append(f"  = {'measured token' if batch == 1 else f'measured step of {batch} streams':<48} {t['token_ms']:9.3f}  {t.get('token_source') or ''}")
+    if b := t.get("gaps_bound"):  # over the ceiling: the gaps the untraced token leaves room for, and what recording added
+      lines.append(f"  − {'added by recording (captured gaps − bound)':<48} {b['captured_ms'] - b['ms']:9.3f}  difference")
+      lines.append(f"  = {'untraced token':<48} {b['untraced_ms']:9.3f}  gaps at most {b['ms']:.3f} ms (untraced token − kernels)")
   lines += where_lines(loss.get("where_token_goes"))
   lines += where_lines(loss.get("capture_comparison"))
   lines += curve_lines(loss.get("prefill_curve"))
@@ -1832,6 +1862,14 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   from boltbeam.workflow.replay import lines as replay_lines
   lines += session_lines(loss.get("session"))
   lines += replay_lines(loss.get("replay"))
+  if res.get("batches"):  # step 4's points, each against its own limit (batch_rows); tools/check_run_math.py BATCH
+    lines.append("Per batch, untraced, each beside its own limit (the weights read once, each stream's own reads B times):")
+    for b in res["batches"]:
+      lim = b["limit"]
+      lines.append(f"  context {b['context']:g}, batch {b['batch']}: {b['tok_s_stream']:.2f} tok/s per stream, "
+                   f"{b['tok_s_total']:.1f} tok/s in total, step {b['step_ms']:.3f} ms; " +
+                   (f"limit {lim['step_ms']:.3f} ms, {lim['tok_s_total']:.1f} tok/s in total; {b['pct_of_limit']:.1f}% of limit"
+                    if b.get("pct_of_limit") is not None else f"no limit: {lim.get('reason')}"))
   if t.get("band"):
     lines.append(f"Band: {t['band']}")
   roles = loss.get("roles") or []
@@ -1973,6 +2011,7 @@ def saved(root:pathlib.Path) -> dict[str, Any]:
                    "provider": run_provider(d), "saved_at": rec.get("saved_at"), "tok_s": timing.get("tok_s"),
                    "pct_of_limit": pct, "workload": manifest.get("workload"), "measured": bool(res.get("measured")),
                    "validation_failed": validation.get("status") == "failed", "layout": _layout_words(d),
+                   "fetched": fetch.provenance(d),
                    "roofline_pct": ((res.get("loss") or {}).get("replay") or {}).get("headline", {}).get("e_pct")})
   rows.sort(key=lambda r: r["saved_at"] or "", reverse=True)
   return {"schema": SCHEMA, "kind": "saved", "root": str(root), "runs": rows}
@@ -2026,10 +2065,11 @@ def _saved_arg(args) -> pathlib.Path | None:
 
 
 def _run_arg(args) -> pathlib.Path:
-  """--run as a folder; with --root, an id looked up by find_run."""
-  if args.root:
-    return find_run(pathlib.Path(args.root).expanduser(), args.run, _saved_arg(args))
-  return pathlib.Path(args.run).expanduser()
+  """--run as a folder; with --root, an id looked up by find_run. The run's own chip profile is adopted."""
+  from boltbeam.target.targets import adopt_run_chip
+  run = find_run(pathlib.Path(args.root).expanduser(), args.run, _saved_arg(args)) if args.root else pathlib.Path(args.run).expanduser()
+  adopt_run_chip(run)
+  return run
 
 
 def main(argv:list[str] | None = None) -> int:

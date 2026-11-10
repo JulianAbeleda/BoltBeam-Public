@@ -22,30 +22,41 @@
 #                 (a file:// URL links a model that is already on the machine)
 #   MODEL_SHA256  the full expected sha256 of that file; required for a non-default URL
 #                 (the default digest is pinned to the upstream GGUF object)
+#   MODEL_STREAMS the byte ranges an https model downloads in at once: 8 (1 is one plain curl). Measured on a rented
+#                 RTX 4090 host, 2026-11-09: one stream 13 MB/s, eight 68 MB/s from the same Hugging Face file.
 #   BOLTBEAM_REPO, BOLTBEAM_REF   the public mirror, main
-#   LLAMA_REPO, LLAMA_REF         ggml-org/llama.cpp at commit 50569eb87
+#   LLAMA_REPO, LLAMA_REF         ggml-org/llama.cpp at commit 097cf33d9 (b11571, the engine pin in boltbeam/data/engine_pins.json)
+#   LLAMA_PREBUILT                1 (default): step 4 first fetches the prebuilt llama.cpp of the pin
+#                                 (tools/build-llama-prebuilt.sh; driver 525 or newer); 0 compiles on the pod
+#   LLAMA_PREBUILT_URL            the archive; default the llama-<LLAMA_REF> release asset on the public mirror
+#   LLAMA_PREBUILT_SHA256         the archive's sha256; default the one recorded below for the pinned LLAMA_REF
 #   TINYGRAD_REPO, TINYGRAD_REF   the in-house tinygrad engine: off by default (a rented pod measures the mature
 #                                 engines); TINYGRAD_REF=exp clones the fork
 #   LAYOUT        how step 9 uses the pod's GPUs, the pipeline's --layout: one (default), layer (llama.cpp split by
 #                 layer) or row (split by rows); more than one GPU gives tok/s and the limit, not the per-role split
-#   ENGINES       the CUDA engines step 4 installs: "llama.cpp vllm tensorrt-llm" (Ollama is not installed)
+#   ENGINES       the CUDA engines step 4 installs: "llama.cpp vllm" (default); add tensorrt-llm to install it too
+#                 (a multi-GB wheel set that was most of step 4 on a slow host, 2026-11-09); Ollama is not installed
 #   VLLM_VERSION, TRTLLM_VERSION  default: the pins in boltbeam/data/engine_pins.json (vLLM 0.31.0, TensorRT-LLM 1.2.1)
 #   VLLM_CUDA     cu130 or cu129; default: cu130 on a driver of 580 or newer, else cu129
 #   TRTLLM_PYTHON the interpreter for TensorRT-LLM's venv (3.10 or 3.12 have wheels); default: PYTHON
 #   CUDA_ARCH     CMAKE_CUDA_ARCHITECTURES; default: the GPU's compute capability from nvidia-smi (H100: 90)
-#   RUN_TAG       the run ids: <RUN_TAG>-in-model and <RUN_TAG>-generic; default h100
+#   RUN_TAG       the run ids: <RUN_TAG>-in-model and <RUN_TAG>-generic; default from the GPUs, such as rtx3090,
+#                 h100 or 8xrtx4090 ("pod" when nvidia-smi names none)
 #   PYTHON        the interpreter for the venv; default python3 (3.10 or newer)
 #   JOBS          parallel compile jobs for llama.cpp; default: every CPU
 #
 # Steps:
 #    1 facts        nvidia-smi, nvcc, nsys, CUDA version, free disk -> $WORK/facts.json
-#    2 packages     apt only what is missing, only as root (cmake, git, build-essential, python3-venv, python3-dev, curl;
+#    2 packages     apt only what is missing, only as root (cmake, git, build-essential, python3-venv, python3-dev, curl, zstd;
 #                   libopenmpi-dev when ENGINES has tensorrt-llm; nsys from the NVIDIA apt repo as nsight-systems-cli)
 #    3 boltbeam     clone, venv under $WORK, pip install -e . (the pipeline runs the checkout) plus numpy; the tinygrad fork beside it when public
-#    4 engines      llama.cpp: clone at LLAMA_REF, cmake -DGGML_CUDA=ON Release, CUDA arch from the GPU, llama-bench;
-#                   vLLM and TensorRT-LLM: each in its own venv under $WORK/engines at its pinned version (they need
-#                   different torch builds); a failed optional engine is noted and the run goes on with llama.cpp
-#    5 model        download fresh, full sha256 verified before installation
+#    4 engines      llama.cpp: clone at LLAMA_REF; the prebuilt archive when its sha256, this GPU's architecture, the
+#                   driver and llama-bench --list-devices all check out, else cmake -DGGML_CUDA=ON Release for the
+#                   GPU's arch (facts.json llama_cpp says which and why); vLLM and TensorRT-LLM: each in its own venv
+#                   under $WORK/engines at its pinned version (they need different torch builds), installed with uv
+#                   (pip if uv fails); the three at once; a failed optional engine is noted, the run goes on with llama.cpp
+#    5 model        download fresh, full sha256 verified before installation; on a real run it starts in the
+#                   background before step 3 ($WORK/logs/step5-model.log) and step 9 waits for it
 #    6 env          $WORK/env.sh (PATH, BOLTBEAM_LLAMA_BENCH, BOLTBEAM_GGML_CUDA_SRC, TMPDIR, BOLTBEAM_CUDA_CACHE,
 #                   BOLTBEAM_VLLM_PYTHON and BOLTBEAM_TRTLLM_PYTHON for the engines step 4 installed)
 #    7 check        boltbeam doctor when the ref has it, then boltbeam selfcheck
@@ -60,17 +71,25 @@ if [[ -z "${KEEP:-}" ]]; then if [[ -d /workspace && -w /workspace ]]; then KEEP
 MODEL_URL_DEFAULT="https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf"
 MODEL_URL="${MODEL_URL:-$MODEL_URL_DEFAULT}"
 if [[ "$MODEL_URL" == "$MODEL_URL_DEFAULT" ]]; then MODEL_SHA256="${MODEL_SHA256:-d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785}"; else MODEL_SHA256="${MODEL_SHA256:-}"; fi
+MODEL_STREAMS="${MODEL_STREAMS:-8}"
+MODEL_RANGE_MIN="${MODEL_RANGE_MIN:-67108864}"   # a file under 64 MiB is one curl: ranges save nothing
 BOLTBEAM_REPO="${BOLTBEAM_REPO:-https://github.com/JulianAbeleda/BoltBeam-Public}"
 BOLTBEAM_REF="${BOLTBEAM_REF:-main}"
 LLAMA_REPO="${LLAMA_REPO:-https://github.com/ggml-org/llama.cpp}"
-LLAMA_REF="${LLAMA_REF:-50569eb87}"
+LLAMA_REF_PIN=097cf33d9
+LLAMA_REF="${LLAMA_REF:-$LLAMA_REF_PIN}"
+# The prebuilt llama.cpp of the pin (tools/build-llama-prebuilt.sh, CUDA 12.8): the sha256 a fetched archive must have
+LLAMA_PREBUILT_SHA256_PIN=2b5e75859f32f4f88e09139038e75d8e7196a160039ea5657653ec7ca7547f8e
+LLAMA_PREBUILT="${LLAMA_PREBUILT:-1}"
+LLAMA_PREBUILT_URL="${LLAMA_PREBUILT_URL:-https://github.com/JulianAbeleda/BoltBeam-Public/releases/download/llama-$LLAMA_REF/llama.cpp-$LLAMA_REF-cuda-linux-x86_64.tar.gz}"
+if [[ "$LLAMA_REF" == "$LLAMA_REF_PIN" ]]; then LLAMA_PREBUILT_SHA256="${LLAMA_PREBUILT_SHA256:-$LLAMA_PREBUILT_SHA256_PIN}"; else LLAMA_PREBUILT_SHA256="${LLAMA_PREBUILT_SHA256:-}"; fi
 TINYGRAD_REPO="${TINYGRAD_REPO:-https://github.com/JulianAbeleda/tinygrad-arkey}"
 TINYGRAD_REF="${TINYGRAD_REF-}"
 CUDA_ARCH="${CUDA_ARCH:-}"
-RUN_TAG="${RUN_TAG:-h100}"
+RUN_TAG="${RUN_TAG:-}"
 PYTHON="${PYTHON:-python3}"
 JOBS="${JOBS:-}"
-ENGINES="${ENGINES-llama.cpp vllm tensorrt-llm}"
+ENGINES="${ENGINES-llama.cpp vllm}"
 LAYOUT="${LAYOUT:-one}"
 case "$LAYOUT" in one|layer|row) ;; *) echo "LAYOUT must be one, layer or row: $LAYOUT" >&2; exit 2 ;; esac
 LSUF=""; [[ "$LAYOUT" == one ]] || LSUF="-$LAYOUT"  # a split layout gets its own run folder: runs/<tag>-<mode>-<layout>
@@ -187,6 +206,18 @@ cuda_arch() {
   fail "no nvidia-smi and no CUDA_ARCH: set CUDA_ARCH (an H100 is 90)"
 }
 
+# gpu_tag: the default RUN_TAG, from nvidia-smi's GPU names: "NVIDIA GeForce RTX 3090" is rtx3090, eight H100s are
+# 8xh100, mixed GPUs take the first one's name; "pod" when there is no nvidia-smi (a dry run off the pod)
+gpu_tag() {
+  local names n name
+  names="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || true)"
+  [[ -n "$names" ]] || { echo pod; return; }
+  n="$(grep -c . <<<"$names")"
+  name="$(head -1 <<<"$names" | tr 'A-Z' 'a-z' | sed -E 's/nvidia|geforce|tesla//g; s/[- ][0-9]+ ?gb.*$//; s/[^a-z0-9]//g')"
+  [[ -n "$name" ]] || name=gpu
+  ((n > 1)) && echo "${n}x$name" || echo "$name"
+}
+
 # head_model: "<bytes> <sha256-or-empty>" for an https MODEL_URL, from the response headers after redirects
 head_model() {
   local headers
@@ -205,6 +236,20 @@ check_sha() {
 }
 
 [[ "$MODEL_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "MODEL_SHA256 must be a full 64-hex digest for MODEL_URL"
+
+# facts_set KEY NAME=VALUE...: one entry of $WORK/facts.json, under a lock (steps 4 and 5 write it at the same time)
+facts_set() {
+  "$PYTHON" - "$WORK/facts.json" "$@" <<'PY'
+import fcntl, json, sys
+p, key, pairs = sys.argv[1], sys.argv[2], sys.argv[3:]
+with open(p + ".lock", "w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try: facts = json.load(open(p))
+    except (FileNotFoundError, ValueError): facts = {}
+    facts[key] = dict(kv.split("=", 1) for kv in pairs)
+    json.dump(facts, open(p, "w"), indent=2)
+PY
+}
 
 
 # git_at DIR REPO REF: a clone at DIR checked out at REF (a branch, tag or commit), fetched fresh
@@ -311,6 +356,7 @@ step_packages() {
   have git || { missing+=(git); pkgs+=(git); }
   { have gcc && have g++ && have make; } || { missing+=(build-essential); pkgs+=(build-essential); }
   have curl || { missing+=(curl); pkgs+=(curl); }
+  have zstd || { missing+=(zstd); pkgs+=(zstd); }  # cuBLASLt keeps 5,000+ kernels zstd-compressed in .ldata (instruction_path)
   "$PYTHON" -c 'import venv, ensurepip' >/dev/null 2>&1 || { missing+=(python3-venv); pkgs+=(python3-venv); }
   # Triton (vLLM, TensorRT-LLM) compiles a C helper against Python.h at startup: NVIDIA's CUDA images ship no headers,
   # and vLLM then failed to inspect its model class (a Vast RTX 3090, 2026-11-08)
@@ -322,7 +368,7 @@ step_packages() {
   local nsys_missing=0
   nsys_bin >/dev/null || nsys_missing=1
   if ((DRY)); then
-    note "on this machine: ${missing[*]:-nothing} missing of cmake git build-essential curl python3-venv python3-dev$(wants tensorrt-llm && echo ' libopenmpi-dev'); nsys $( ((nsys_missing)) && echo absent || echo present)"
+    note "on this machine: ${missing[*]:-nothing} missing of cmake git build-essential curl zstd python3-venv python3-dev$(wants tensorrt-llm && echo ' libopenmpi-dev'); nsys $( ((nsys_missing)) && echo absent || echo present)"
     echo "+ [root] apt-get update -q && apt-get install -y -q <the missing ones>"
     echo "+ [root, nsys absent] the NVIDIA apt repo (cuda-keyring for this Ubuntu) && apt-get install -y -q nsight-systems-cli"
     return
@@ -411,10 +457,12 @@ step_engines() {
   wants llama.cpp || note "llama.cpp skipped: not in ENGINES (steps 9 and 10 measure with it)"
   if ((DRY)); then
     wants llama.cpp && step_llama
+    { wants vllm || wants tensorrt-llm; } && ensure_uv
     wants vllm && install_vllm
     wants tensorrt-llm && install_trtllm
     return 0
   fi
+  if wants vllm || wants tensorrt-llm; then ensure_uv; fi
   local -A pid=() fn=([llama.cpp]=step_llama [vllm]=install_vllm [tensorrt-llm]=install_trtllm)
   local e rc log
   for e in llama.cpp vllm tensorrt-llm; do
@@ -428,12 +476,40 @@ step_engines() {
     [[ -n "${pid[$e]:-}" ]] || continue
     rc=0; wait "${pid[$e]}" || rc=$?
     log="$WORK/logs/engine-$e.log"
-    if ((rc == 0)); then note "$e: ready ($(grep -E '^(vllm|tensorrt_llm) [0-9]' "$log" | tail -1 || true))"; continue; fi
+    if ((rc == 0)); then note "$e: ready ($(grep -E '^(vllm|tensorrt_llm) [0-9]|^llama\.cpp: ' "$log" | tail -1 || true))"; continue; fi
     tail -n 15 "$log" | sed 's/^/   | /'
     [[ "$e" == llama.cpp ]] && fail "llama.cpp did not build (log above; full log $log)"
     note "$e not installed (log above; full log $log); the run goes on with llama.cpp; rerun --from 4 after fixing"
   done
   return 0
+}
+
+# uv installs the Python engines: vLLM and TensorRT-LLM are multi-GB wheel sets that pip fetches one at a time. It is
+# the one on PATH, else Astral's standalone installer puts it under $WORK/uv (pip into a venv there when that fails).
+# Its cache sits on the venvs' disk so installs hard-link from it; UV is empty when none of that works (pip then).
+UV=""
+ensure_uv() {
+  export UV_CACHE_DIR="$WORK/tmp/uv-cache" UV_HTTP_TIMEOUT=300
+  local c
+  if have uv; then UV="$(command -v uv)"; note "uv: $UV"; return 0; fi
+  ((DRY)) && { echo "+ [no uv] curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=$WORK/uv/bin sh  (else pip install uv into $WORK/uv)"; UV="$WORK/uv/bin/uv"; return 0; }
+  for c in "$WORK/uv/bin/uv" "$WORK/uv/bin/bin/uv"; do [[ -x "$c" ]] && { UV="$c"; note "uv: $UV"; return 0; }; done
+  run_sh 'curl -LsSf --retry 3 https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$1" UV_NO_MODIFY_PATH=1 sh -s -- -q' "$WORK/uv/bin" \
+    || { run "$PYTHON" -m venv "$WORK/uv" && run "$WORK/uv/bin/pip" install -q uv; } || true
+  for c in "$WORK/uv/bin/uv" "$WORK/uv/bin/bin/uv"; do [[ -x "$c" ]] && { UV="$c"; note "uv: $UV"; return 0; }; done
+  note "uv could not be installed: the Python engines install with pip"
+}
+
+# pip_install VENV ARG...: pip's arguments, run by uv into VENV (pip's index precedence: unsafe-best-match), then by
+# the venv's own pip when uv is absent or fails
+pip_install() {
+  local venv="$1"; shift
+  if [[ -n "$UV" ]]; then
+    run "$UV" pip install -q --python "$venv/bin/python" --index-strategy unsafe-best-match "$@" && return 0
+    note "uv pip install failed: retrying with pip"
+  fi
+  run "$venv/bin/pip" install -q --no-cache-dir --upgrade pip || return 1
+  run "$venv/bin/pip" install -q --no-cache-dir "$@"
 }
 
 # vLLM at its pin in its own venv: the default wheel is built for CUDA 13 (driver 580 or newer); an older driver
@@ -452,11 +528,10 @@ install_vllm() {
   if exists -f "$stamp"; then note "vLLM $ver ($cuda) already installed in $VLLM_VENV"; return 0; fi
   note "vLLM $ver for $cuda (driver ${drv:-unknown})"
   exists -x "$VLLM_VENV/bin/python" || run "$PYTHON" -m venv "$VLLM_VENV" || return 1
-  run "$VLLM_VENV/bin/pip" install -q --no-cache-dir --upgrade pip || return 1
   if [[ "$cuda" == cu130 ]]; then
-    run "$VLLM_VENV/bin/pip" install -q --no-cache-dir "vllm==$ver" || return 1
+    pip_install "$VLLM_VENV" "vllm==$ver" || return 1
   else
-    run "$VLLM_VENV/bin/pip" install -q --no-cache-dir "vllm==$ver" \
+    pip_install "$VLLM_VENV" "vllm==$ver" \
       --extra-index-url "https://wheels.vllm.ai/$ver/$cuda" --extra-index-url "https://download.pytorch.org/whl/$cuda" || return 1
   fi
   run "$VLLM_VENV/bin/python" -c 'import vllm, torch; print("vllm", vllm.__version__, "torch", torch.__version__, "cuda", torch.version.cuda)' || return 1
@@ -481,31 +556,118 @@ install_trtllm() {
   if exists -f "$stamp"; then note "TensorRT-LLM $ver already installed in $TRTLLM_VENV"; return 0; fi
   note "TensorRT-LLM $ver (driver ${drv:-unknown}, $py)"
   exists -x "$TRTLLM_VENV/bin/python" || run "$py" -m venv "$TRTLLM_VENV" || return 1
-  run "$TRTLLM_VENV/bin/pip" install -q --no-cache-dir --upgrade pip setuptools wheel || return 1
-  run "$TRTLLM_VENV/bin/pip" install -q --no-cache-dir "torch>=2.9.1,<2.10" torchvision --index-url https://download.pytorch.org/whl/cu130 || return 1
+  pip_install "$TRTLLM_VENV" --upgrade setuptools wheel || return 1
+  pip_install "$TRTLLM_VENV" "torch>=2.9.1,<2.10" torchvision --index-url https://download.pytorch.org/whl/cu130 || return 1
   run_sh '"$1" -c "import torch; print(\"torch==\" + torch.__version__)" > "$2"' "$TRTLLM_VENV/bin/python" "$TRTLLM_VENV/torch-constraint.txt" || return 1
   # pyarrow < 20: tensorrt_llm pins numpy < 2 and the newest pyarrow needs numpy 2, so importing tensorrt_llm (its
   # datasets import) failed with "pyarrow requires NumPy 2.0 or newer" (1.2.1, 2026-11-08)
-  run "$TRTLLM_VENV/bin/pip" install -q --no-cache-dir "tensorrt_llm==$ver" "pyarrow<20" -c "$TRTLLM_VENV/torch-constraint.txt" \
+  pip_install "$TRTLLM_VENV" "tensorrt_llm==$ver" "pyarrow<20" -c "$TRTLLM_VENV/torch-constraint.txt" \
     --extra-index-url https://pypi.nvidia.com --extra-index-url https://download.pytorch.org/whl/cu130 || return 1
   run "$TRTLLM_VENV/bin/python" -c 'import tensorrt_llm, torch; print("tensorrt_llm", tensorrt_llm.__version__, "torch", torch.__version__)' || return 1
   run touch "$stamp"
 }
 
+# llama.cpp: the clone at the pin always (the ggml-cuda source is what role timing reads), then the prebuilt binaries
+# when they fit this machine, else a compile for this GPU (the 3090 host's compile was most of a 21-minute step 4).
 step_llama() {
   local arch nvcc
   arch="$(cuda_arch)"
-  nvcc="$(nvcc_bin || true)"
-  [[ -n "$nvcc" ]] || ((DRY)) || fail "no nvcc: install the CUDA toolkit or put /usr/local/cuda/bin on PATH"
   git_at "$LLAMA_DIR" "$LLAMA_REPO" "$LLAMA_REF"
-  local sha="" stamp
-  ((DRY)) || sha="$(git -C "$LLAMA_DIR" rev-parse --short HEAD)"
-  stamp="$LLAMA_BUILD/.pod-built-${sha:-<sha>}-sm$arch"
-  if exists -f "$stamp" && exists -x "$LLAMA_BUILD/bin/llama-bench"; then note "llama.cpp $sha already built for sm_$arch"; return; fi
+  local sha="" commit="" built fetched
+  ((DRY)) || { sha="$(git -C "$LLAMA_DIR" rev-parse --short HEAD)"; commit="$(git -C "$LLAMA_DIR" rev-parse HEAD)"; }
+  built="$LLAMA_BUILD/.pod-built-${sha:-<sha>}-sm$arch"
+  fetched="$LLAMA_BUILD/.pod-prebuilt-${sha:-<sha>}-sm$arch"
+  if exists -x "$LLAMA_BUILD/bin/llama-bench" && exists -f "$fetched"; then llama_path prebuilt "already in place for sm_$arch"; return; fi
+  if exists -x "$LLAMA_BUILD/bin/llama-bench" && exists -f "$built"; then llama_path compiled "already built for sm_$arch"; return; fi
+  if llama_prebuilt "$arch" "$commit"; then
+    run rm -f "$built"; run touch "$fetched"
+    llama_path prebuilt "$LLAMA_PREBUILT_URL"
+    return
+  fi
+  note "prebuilt llama.cpp not used: $LLAMA_WHY; compiling for sm_$arch"
+  nvcc="$(nvcc_bin || true)"
+  [[ -n "$nvcc" ]] || ((DRY)) || fail "no nvcc to compile llama.cpp (the prebuilt was refused: $LLAMA_WHY): install the CUDA toolkit or put /usr/local/cuda/bin on PATH"
   run cmake -S "$LLAMA_DIR" -B "$LLAMA_BUILD" -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF \
     -DGGML_NATIVE=ON "-DCMAKE_CUDA_ARCHITECTURES=$arch" "-DCMAKE_CUDA_COMPILER=${nvcc:-/usr/local/cuda/bin/nvcc}"
   run cmake --build "$LLAMA_BUILD" --config Release --parallel "${JOBS:-$(cpus)}" --target llama-bench llama-batched-bench
-  run touch "$stamp"
+  run rm -f "$fetched"; run touch "$built"
+  llama_path compiled "$LLAMA_WHY"
+}
+
+# llama_path prebuilt|compiled WHY: say which llama.cpp step 4 left (step 4's summary greps this line) and record it
+llama_path() {
+  echo "llama.cpp: $1 ($2)"
+  ((DRY)) || facts_set llama_cpp "path=$1" "ref=$LLAMA_REF" "why=$2"
+}
+
+# manifest KEY: a value of the unpacked archive's PREBUILT.txt (tools/build-llama-prebuilt.sh writes it)
+manifest() { sed -n "s/^$1=//p" "$WORK/tmp/llama-prebuilt/PREBUILT.txt" 2>/dev/null | head -1; }
+
+# llama_prebuilt ARCH COMMIT: fetch the prebuilt llama.cpp, check it and move its bin/ into LLAMA_BUILD. Each check
+# that fails returns 1 with LLAMA_WHY saying which, and nothing in LLAMA_BUILD is touched: a tampered archive (sha256),
+# one for another commit, one without this GPU's architecture, a driver older than its CUDA allows, or libraries that
+# do not load here (llama-bench --list-devices must list a CUDA device).
+LLAMA_WHY=""
+llama_prebuilt() {
+  local arch="$1" commit="$2" tgz="$WORK/tmp/llama-prebuilt.tar.gz" dir="$WORK/tmp/llama-prebuilt" got drv floor out a
+  LLAMA_WHY=""
+  [[ "$LLAMA_PREBUILT" != 0 ]] || { LLAMA_WHY="LLAMA_PREBUILT=0"; return 1; }
+  [[ "$LLAMA_PREBUILT_SHA256" =~ ^[0-9a-f]{64}$ ]] || { LLAMA_WHY="no sha256 recorded for LLAMA_REF $LLAMA_REF (set LLAMA_PREBUILT_SHA256)"; return 1; }
+  if ((DRY)); then
+    echo "+ curl -fsSL --retry 5 -o $tgz $LLAMA_PREBUILT_URL"
+    echo "+ check: sha256 $LLAMA_PREBUILT_SHA256; PREBUILT.txt names the checkout's commit, sm_$arch and a driver floor this machine meets;"
+    echo "         bin/llama-bench --list-devices lists CUDA0; then bin/ -> $LLAMA_BUILD/bin. Any check failing: compile, as below"
+    LLAMA_WHY="dry run"; return 1
+  fi
+  rm -rf "$dir" "$tgz"; mkdir -p "$dir"
+  run curl -fsSL --retry 5 --retry-all-errors --connect-timeout 20 -o "$tgz" "$LLAMA_PREBUILT_URL" \
+    || { LLAMA_WHY="no archive at $LLAMA_PREBUILT_URL"; return 1; }
+  got="$(sha256sum "$tgz" | cut -d' ' -f1)"
+  if [[ "$got" != "$LLAMA_PREBUILT_SHA256" ]]; then rm -f "$tgz"; LLAMA_WHY="refused: sha256 $got is not the recorded $LLAMA_PREBUILT_SHA256"; return 1; fi
+  note "sha256 verified: $got"
+  run tar -xzf "$tgz" -C "$dir" --strip-components=1 || { LLAMA_WHY="the archive does not unpack"; return 1; }
+  rm -f "$tgz"
+  [[ "$(manifest llama_commit)" == "$commit" ]] || { LLAMA_WHY="the archive is llama.cpp $(manifest llama_commit), the checkout is $commit"; return 1; }
+  for a in ${arch//;/ }; do
+    [[ " $(manifest archs) " == *" $a "* || " $(manifest archs) " == *" ${a}a "* ]] || { LLAMA_WHY="it covers sm $(manifest archs), not sm_$a"; return 1; }
+  done
+  drv="$(driver_major || true)"; floor="$(manifest driver_floor)"
+  [[ -n "$drv" && -n "$floor" ]] && ((drv >= floor)) \
+    || { LLAMA_WHY="CUDA $(manifest cuda) needs driver $floor or newer; this machine has ${drv:-none}"; return 1; }
+  out="$("$dir/bin/llama-bench" --list-devices 2>&1)" || { LLAMA_WHY="llama-bench --list-devices failed: $(tail -n 2 <<<"$out" | tr '\n' ' ')"; return 1; }
+  grep -q CUDA0 <<<"$out" || { LLAMA_WHY="llama-bench lists no CUDA device: $(tr '\n' ' ' <<<"$out")"; return 1; }
+  sed 's/^/   | /' <<<"$out"
+  run rm -rf "$LLAMA_BUILD/bin"
+  run mkdir -p "$LLAMA_BUILD"
+  run mv "$dir/bin" "$LLAMA_BUILD/bin"
+  run mv "$dir/PREBUILT.txt" "$LLAMA_BUILD/PREBUILT.txt"
+  rm -rf "$dir"
+}
+
+# fetch_model BYTES: MODEL_URL into $MODEL.download, in MODEL_STREAMS byte ranges at once when the file is large.
+# A range that fails, or a server that answers a range with another length, falls back to one plain curl; the caller
+# checks the sha256 of whatever arrived, so a wrong join cannot be installed.
+fetch_model() {
+  local size="$1" n="$MODEL_STREAMS" i a b ok=1 pids=() t0; t0=$(date +%s)
+  if ((n > 1 && size >= MODEL_RANGE_MIN)); then
+    local part=$(( (size + n - 1) / n ))
+    note "downloading in $n ranges of up to $part bytes"
+    for ((i = 0; i < n; i++)); do
+      a=$((i * part)); b=$(( a + part - 1 )); ((b < size)) || b=$((size - 1))
+      curl -fsSL --retry 5 --retry-all-errors -r "$a-$b" -o "$MODEL.part$i" "$MODEL_URL" & pids+=($!)
+    done
+    for i in "${pids[@]}"; do wait "$i" || ok=0; done
+    : > "$MODEL.download"
+    for ((i = 0; i < n && ok; i++)); do  # joined one range at a time, each removed as it is appended
+      a=$((i * part)); b=$(( a + part - 1 )); ((b < size)) || b=$((size - 1))
+      [[ "$(wc -c < "$MODEL.part$i" | tr -d ' ')" == "$((b - a + 1))" ]] || { ok=0; break; }
+      cat "$MODEL.part$i" >> "$MODEL.download"; rm -f "$MODEL.part$i"
+    done
+    rm -f "$MODEL".part*
+    ((ok)) || note "a range failed or came back another length: downloading in one stream"
+  else ok=0; fi
+  ((ok)) || run curl -fL --retry 5 --retry-all-errors -o "$MODEL.download" "$MODEL_URL"
+  local s=$(( $(date +%s) - t0 )); note "downloaded $size bytes in ${s}s ($(( size / 1048576 / (s > 0 ? s : 1) )) MB/s)"
 }
 
 step_model() {
@@ -520,14 +682,14 @@ step_model() {
     note "HEAD: $size bytes, sha256 ${sha:-not declared by the server}"
     if ((DRY)); then
       [[ -n "$sha" ]] && check_sha "$sha" "$MODEL_SHA256"
-      echo "+ curl -fL --retry 5 -o $MODEL $MODEL_URL"
+      echo "+ curl -fL --retry 5 -o $MODEL $MODEL_URL   # in $MODEL_STREAMS byte ranges when the file is 64 MiB or more"
       echo "+ sha256sum $MODEL > $MODEL.sha256"
       return
     fi
     local have_size=0
     [[ -f "$MODEL" ]] && have_size="$(stat -Lc %s "$MODEL" 2>/dev/null || stat -Lf %z "$MODEL")"
     if [[ "$have_size" == "$size" ]]; then note "model already complete at $MODEL"; else
-      run curl -fL --retry 5 --retry-all-errors -o "$MODEL.download" "$MODEL_URL"
+      fetch_model "$size"
       local downloaded; downloaded="$(sha256sum "$MODEL.download")"
       check_sha "${downloaded%% *}" "$MODEL_SHA256"
       run mv "$MODEL.download" "$MODEL"
@@ -540,20 +702,39 @@ step_model() {
   local actual; actual="$(cat "$MODEL.sha256")"
   note "model $MODEL $(stat -Lc %s "$MODEL" 2>/dev/null || stat -Lf %z "$MODEL") bytes"
   check_sha "$actual" "$MODEL_SHA256"
-  "$PYTHON" - "$WORK/facts.json" "$MODEL" "$actual" "$MODEL_URL" <<'PY'
-import json, sys
-p, model, sha, url = sys.argv[1:]
-try: facts = json.load(open(p))
-except FileNotFoundError: facts = {}
-facts["model"] = {"path": model, "sha256": sha, "url": url}
-json.dump(facts, open(p, "w"), indent=2)
-PY
+  facts_set model "path=$MODEL" "sha256=$actual" "url=$MODEL_URL"
+}
+
+# Step 5 runs in the background from before step 3 (curl and python are there after step 2), so the download overlaps
+# the clones, the engine installs, the checks and the chip scan; step 9, the first step that reads the model, waits.
+# A lock keeps a rerun's download from writing the file a failed run left downloading: it waits for that one instead.
+MODEL_PID=""
+MODEL_LOG="$WORK/logs/step5-model.log"
+model_start() {
+  mkdir -p "$WORK/logs" "$KEEP/models"
+  (
+    if have flock; then exec 9>"$KEEP/models/.$MODEL_NAME.lock"; flock 9; fi
+    t0=$(date +%s)
+    step_model
+    printf '%s\t%s\t%s\t%s\n' 5 model "$(( $(date +%s) - t0 ))" "$(date +%FT%T)" >> "$TIMINGS"
+  ) > "$MODEL_LOG" 2>&1 &
+  MODEL_PID=$!
+  note "step 5 (model) downloads in the background: $MODEL_LOG; step 9 waits for it"
+}
+model_wait() {
+  [[ -n "$MODEL_PID" ]] || return 0
+  local pid="$MODEL_PID" rc=0 t0; MODEL_PID=""; t0=$(date +%s)
+  note "waiting for the model (step 5, in the background)"
+  wait "$pid" || rc=$?
+  tr '\r' '\n' < "$MODEL_LOG" | grep -vE '^ *[0-9]|% Total|Dload' | tail -n 8 | sed 's/^/   | /' || true
+  ((rc == 0)) || { current=5; fail "the model download failed (log above, full log $MODEL_LOG); rerun --from 5"; }
+  note "model ready; waited $(( $(date +%s) - t0 ))s"
 }
 
 step_env() {
   local nsys_dir="" ; local nsys
   nsys="$(nsys_bin || true)"; [[ -n "$nsys" ]] && nsys_dir="$(dirname "$nsys")"
-  local text
+  local text  # BOLTBEAM_RUNS: the TUI saves where step 9 writes and boltbeam fetch looks, not under the checkout
   text="$(
     printf '# BoltBeam pod environment, written by tools/pod-setup.sh\n'
     # the venv first: nsys can live in /usr/local/bin, whose python would shadow the venv python in an interactive shell
@@ -563,7 +744,8 @@ step_env() {
       BOLTBEAM_LLAMA_BATCHED_BENCH "$LLAMA_BUILD/bin/llama-batched-bench" \
       BOLTBEAM_GGML_CUDA_SRC "$LLAMA_DIR/ggml/src/ggml-cuda" \
       BOLTBEAM_CHIPS_DIR "$WORK/chips" TMPDIR "$WORK/tmp" BOLTBEAM_CUDA_CACHE "$WORK/tmp/boltbeam-cuda" \
-      BOLTBEAM_MODEL "$MODEL" BOLTBEAM_REPO "$BOLTBEAM_DIR"
+      BOLTBEAM_MODEL "$MODEL" BOLTBEAM_REPO "$BOLTBEAM_DIR" \
+      BOLTBEAM_RUNS "$RUNS"
     [[ -z "$TINYGRAD_REF" ]] || printf 'export BOLTBEAM_TINYGRAD_ROOT=%q\n' "$TINYGRAD_DIR"
     if wants vllm && { ((DRY)) || compgen -G "$VLLM_VENV/.pod-vllm-*" >/dev/null; }; then printf 'export BOLTBEAM_VLLM_PYTHON=%q\n' "$VLLM_VENV/bin/python"; fi
     if wants tensorrt-llm && { ((DRY)) || compgen -G "$TRTLLM_VENV/.pod-trtllm-*" >/dev/null; }; then printf 'export BOLTBEAM_TRTLLM_PYTHON=%q\n' "$TRTLLM_VENV/bin/python"; fi
@@ -618,6 +800,7 @@ read_target() {
 }
 
 step_pipeline() {
+  model_wait
   load_env; read_target
   local mode run_dir
   for mode in in-model generic; do
@@ -679,6 +862,7 @@ step_bundle() {
 
 # --- main --------------------------------------------------------------------------------------------------------
 
+[[ -n "$RUN_TAG" ]] || RUN_TAG="$(gpu_tag)"
 current=0
 say "pod-setup $( ((DRY)) && echo '(dry run) ' )WORK=$WORK  KEEP=$KEEP"
 note "MODEL_URL=$MODEL_URL"
@@ -720,17 +904,23 @@ else
   TIMINGS="$WORK/logs/timings.tsv"
   exec > >(tee -a "$LOG") 2>&1
   note "log: $LOG"
-  trap 'rc=$?; if ((rc && current > 0)); then echo "FAILED in step $current (${STEPS[$((current - 1))]}); fix it and rerun: $0 --from $current" >&2; fi; exit $rc' EXIT
+  trap 'rc=$?; if ((rc && current > 0)); then echo "FAILED in step $current (${STEPS[$((current - 1))]}); fix it and rerun: $0 --from $current" >&2
+    [[ -z "$MODEL_PID" ]] || echo "   the model download goes on in the background ($MODEL_LOG); a rerun from step 5 or earlier waits for it" >&2; fi; exit $rc' EXIT
 fi
 
 fns=(step_facts step_packages step_boltbeam step_engines step_model step_env step_check step_autoscan step_pipeline step_results step_bundle)
+model_bg=0; ((!DRY && FROM <= 5 && TO >= 5)) && model_bg=1   # step 5 in range: it goes to the background before step 3
 for i in "${!fns[@]}"; do
   current=$((i + 1))
   ((current < FROM || current > TO)) && continue
+  if ((model_bg == 1 && current >= 3)); then model_bg=2; model_start; fi
+  if ((current == 5 && model_bg == 2)); then say "step 5: model  (in the background: $MODEL_LOG)"; continue; fi
+  ((current == 5 && DRY)) && note "(a real run starts this step in the background before step 3; step 9 waits for it)"
   begin_step "$current"
   "${fns[$i]}"
   end_step "$current"
 done
+model_wait   # --to before step 9: the model is still finished and checked before the run ends
 if ((DRY)); then say "dry run complete: nothing was installed, cloned, downloaded or measured"
 elif ((TO < 11)); then say "done: steps $FROM to $TO; continue with $0 --from $((TO + 1))"
 else say "done: report bundle under $WORK"; fi

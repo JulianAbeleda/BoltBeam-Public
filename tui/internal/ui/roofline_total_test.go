@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -106,5 +107,20 @@ func TestUnavailableProjectionHasVisiblePlaceholder(t *testing.T) {
 		if strings.Contains(line, "projection") && !strings.Contains(line, "—") {
 			t.Fatalf("unavailable value is blank: %s", line)
 		}
+	}
+}
+
+func TestAnOverCeilingCaptureSaysWhichRowsStandAboveTheTable(t *testing.T) {
+	note := "Kernel rows qualified by replication: 3 captures agree, worst row 0.6% apart (attn_kv Q4_K) over 44 rows. Gaps shown as a bound: at most 0.31 ms (untraced token − kernels); the capture showed 1.78 ms, added by recording."
+	var w seam.Where // as the results JSON carries it (tie_out.where_token_goes)
+	raw := `{"title": "Where the token goes", "words": "Context 529 · 12.34 ms/token.", "qualification": "` + note + `", "columns": ["row", "ms now"],
+		"rows": [{"name": "kernel gaps, at most", "cells": ["0.31"]}], "sum_cells": ["= total at roofline", "12.34"]}`
+	if err := json.Unmarshal([]byte(raw), &w); err != nil {
+		t.Fatal(err)
+	}
+	got := whereBody(&w)
+	at, header := strings.Index(got, "Kernel rows qualified by replication"), strings.Index(got, "┌")
+	if at < 0 || header < 0 || at > header || !strings.Contains(got, "at most 0.31 ms") {
+		t.Fatalf("the qualification is not above the table:\n%s", got)
 	}
 }

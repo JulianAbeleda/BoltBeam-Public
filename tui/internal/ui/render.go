@@ -692,6 +692,9 @@ func whereBody(w *seam.Where) string {
 	}
 	var b strings.Builder
 	b.WriteString("\n" + stHeader.Render(title) + "\n")
+	if w.Qualification != "" { // which rows stand and how: above the words, so it is on screen with the table's header
+		b.WriteString(stWarn.Render(glyphWarn+" "+w.Qualification) + "\n")
+	}
 	b.WriteString(stMuted.Render(strings.Join(strings.Fields(w.Words), " ")) + "\n\n")
 	last := strings.ToUpper(w.Columns[len(w.Columns)-1]) // the peak column goes first, then the share
 	drops := [][]string{nil, {last}, {last, "SHARE"}, {last, "SHARE", "MS AT CHIP BEST"}, {last, "SHARE", "MS AT CHIP BEST", "MS ABOVE LIMIT", "MS LOST"}}
@@ -1272,7 +1275,7 @@ func lossBodyAt(l seam.Loss, batch int) string {
 			continue
 		}
 		if r.PerRole {
-			what = fmt.Sprintf("%.1f ms of GPU time per token", r.Ms)
+			what = fmt.Sprintf("%.1f ms of GPU time %s", r.Ms, per)
 		}
 		label := r.Provider
 		if r.PerRole {
@@ -1555,15 +1558,17 @@ func resultBody(f Facts, width int) string {
 		}
 		fmt.Fprintf(&b, "%s %s "+note+"\n", stAccent.Render(glyphBolt),
 			stHeader.Render(fmt.Sprintf("Replay measured: %d turns.", len(res.Loss.Replay.Rows))))
+	case res.Timing.TokS != nil: // measured with no limit to hold it against (a Mamba2 hybrid with no capture): the speed and why
+		fmt.Fprintf(&b, "%s %s measured · no limit\n", stAccent.Render(glyphBolt), stHeader.Render(fmt.Sprintf("%.1f tok/s", *res.Timing.TokS)))
+		if res.Ceiling.Reason != "" {
+			b.WriteString(stMuted.Render("No limit: "+res.Ceiling.Reason) + "\n")
+		}
 	case res.Ceiling.TokS != nil:
 		fmt.Fprintf(&b, "%s %.1f tokens per second at best. Nothing measured yet.\n", stAccent.Render(glyphBolt), *res.Ceiling.TokS)
 	case res.Ceiling.Reason != "":
 		fmt.Fprintf(&b, "%s\n", stMuted.Render("No speed limit for this chip: "+res.Ceiling.Reason))
 	}
-	batch := 1
-	if ms := f.Run.Measure; ms != nil {
-		batch = slices.Max(append([]int{1}, ms.Batches...))
-	}
+	batch := max(1, res.Loss.Batch)                                                     // the batch the figures are of, not the largest one timed (those are batchTable's)
 	if s := measurementSentence(res.Measurement); s != "" && res.Loss.Estimate == nil { // the method line says it otherwise
 		b.WriteString(stMuted.Render(s) + "\n")
 	}

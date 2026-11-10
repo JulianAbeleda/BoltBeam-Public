@@ -75,7 +75,7 @@ def _read(path:pathlib.Path) -> dict[str, Any]:
 
 def _prefill_sides(run:pathlib.Path, record:dict | None = None) -> dict[str, dict[str, Any]]:
   """Per captured length: the rows (now_ms and work) and the tie-out."""
-  from boltbeam.collectors.prefill import TRACE
+  from boltbeam.collectors.prefill import TRACE, timing_reference
   native = {int(r["context"]): r for r in _read(run / "timing_trace.json").get("rows") or [] if r.get("prefill_ms")}
   out = {}
   for length, attr in (_read(run / TRACE).get("lengths") or {}).items():
@@ -86,7 +86,7 @@ def _prefill_sides(run:pathlib.Path, record:dict | None = None) -> dict[str, dic
     row = native.get(int(length)) or {}
     truth = row.get("qualification_ms") or row.get("prefill_ms")
     e2e = tie.end_to_end(attr, truth, band=find(run, f"prefill {length}", record=record),
-                       reference="untraced final repetition", reference_window=(row.get("engine") or {}).get("timing_window"))
+                       reference=timing_reference((row.get("engine") or {}).get("timing_window")), reference_window=(row.get("engine") or {}).get("timing_window"))
     out[f"prefill {length}"] = {"rows": rows, "tie": {
       "captured_ms": attr.get("profiled_wall_ms"), "engine_elapsed_ms": attr.get("measured_ms"), "busy_ms": attr.get("busy_ms"), "gaps_ms": attr.get("gaps_ms"),
       "residual_ms": float(attr["wall_ms"]) - float(attr["busy_ms"]) - float(attr["gaps_ms"]),

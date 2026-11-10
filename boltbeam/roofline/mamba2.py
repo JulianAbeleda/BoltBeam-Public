@@ -14,6 +14,18 @@ import math
 DTYPE_BYTES = {'float32':4, 'bfloat16':2, 'float16':2}
 
 
+FORMULA_REFUSED = ('Mamba2 state traffic and SSD work are not validated against engine evidence; the Gated DeltaNet '
+                   'formula cannot supply this model\u2019s limit. Raw timings are retained.')
+
+
+def formula_cannot_limit(profile: dict | None) -> bool:
+  """A Mamba2 hybrid (Nemotron-H): its limit comes only from a capture's verified work, never the model formula."""
+  metadata = (profile or {}).get('metadata') or {}
+  recurrent = metadata.get('recurrent') or {}
+  arch = (metadata.get('architecture_signals') or {}).get('arch') or (profile or {}).get('architecture')
+  return recurrent.get('kind') == 'mamba2' or bool(recurrent and arch in ('nemotron_h', 'mamba', 'mamba2'))
+
+
 def shape(profile: dict) -> dict:
   r = (profile.get('metadata') or {}).get('recurrent') or {}
   required = ('layer_count','head_count','inner_size','state_size','group_count','conv_kernel')

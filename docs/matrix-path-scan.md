@@ -99,7 +99,21 @@ needs nvdisasm, which `/usr/local/cuda` on this box does not have; set `BOLTBEAM
 - **gfx1201 on a real R9700 compiler is unverified.** The gfx12 check ran with ROCm 7.2.4's clang 22 here, and no
   scan has been measured on a GPU yet. Only the compile, disassembly and naming are verified.
 - **NVIDIA scope.** Only the m16n8 `mma.sync` forms are scanned. m8n8 shapes, f64, b1, sparse `mma.sp`,
-  `.satfinite`, wgmma and tcgen05 are not. `sass_signatures` still compiles `PATHS`, not the scan.
+  `.satfinite` and tcgen05 are not. `sass_signatures` still compiles `PATHS`, not the scan.
+- **Hopper's `wgmma` is two fixed paths, not a scan.** `cuda_compute`'s `fp16_wgmma` and `bf16_wgmma` (fp32
+  accumulate) join a target's table when their probe lowers to exactly one opcode there (sm_90 only; scan version 2).
+  The opcode is kept without its N (`HGMMA.64x128x16.F32` is `HGMMA.64xNx16.F32`): every tile width is one path, and
+  the probe measures widths 8, 64, 128 and 256 and keeps the best, so its ceiling bounds a kernel of any width.
+  Integer, fp8 and tf32 `wgmma` forms are not probed: a kernel issuing one reads `unknown:<opcode>`.
+- **The wgmma rate is a sustained rate, and on an H200 it is set by the clock the board holds.** Eight probe runs
+  in alternating order (RunPod H200, 2026-11-09): `fp16_wgmma` 781 TFLOPS in every position (779.5 to 781.1),
+  `bf16_wgmma` 882 or 829. The two do the same work a clock (3,646 and 3,676 operations per SM per clock) and both
+  burst to 965 to 976 TFLOPS (NVIDIA's rating is about 989 at 1,980 MHz). Under sustained load the driver reports a
+  software power cap in every sample (497 to 594 W drawn of 700) and the clock settles at 1,622 MHz under the fp16
+  load and 1,710 to 1,818 MHz under bf16. bf16's two values are the two tile shapes that tie in the burst search
+  (N 256 holds 1,818 MHz, N 64 holds 1,712), so a profile's `bf16_wgmma` is one of two outcomes. Not run order and
+  not sample noise; why the fp16 load holds a lower clock is not established. To do: pick the shape by its sustained
+  rate, and store the rate with its clock.
 - **AMD builtins with modifier operands** (gfx1250's neg/reuse/clamp-mod forms) and sparse `swmmac` are excluded,
   not probed.
 - **Backend crash dumps.** A builtin of another family crashes clang's backend, and that is read as "not on this

@@ -93,8 +93,9 @@ def build_cubin(nvcc:str, source:str, macros:dict[str, str] | None = None, *, ca
   return cubin.read_bytes()
 
 
-def elf_symbols(cubin:bytes) -> list[str]:
-  """Function symbol names in a cubin (ELF64), for finding a template instantiation's mangled name."""
+def elf_symbols(cubin:bytes, *, entry:bool = False) -> list[str]:
+  """Function symbol names in a cubin (ELF64), for finding a template instantiation's mangled name. entry: only the
+  kernels a host can launch (STO_CUDA_ENTRY, what cuobjdump prints as STO_ENTRY), not device functions or imports."""
   if cubin[:4] != b"\x7fELF" or len(cubin) < 64:
     return []
   shoff, shentsize, shnum = struct.unpack_from("<Q", cubin, 0x28)[0], struct.unpack_from("<H", cubin, 0x3a)[0], struct.unpack_from("<H", cubin, 0x3c)[0]
@@ -105,8 +106,8 @@ def elf_symbols(cubin:bytes) -> list[str]:
       continue
     strtab = sections[sh[6]]
     for off in range(sh[4], sh[4] + sh[5], 24):
-      st_name, st_info = struct.unpack_from("<IB", cubin, off)
-      if st_info & 0xf == 2:  # STT_FUNC
+      st_name, st_info, st_other = struct.unpack_from("<IBB", cubin, off)
+      if st_info & 0xf == 2 and (st_other & 0x10 or not entry):  # STT_FUNC
         start = strtab[4] + st_name
         out.append(cubin[start:cubin.index(b"\x00", start)].decode())
   return out

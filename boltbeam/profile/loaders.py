@@ -207,7 +207,8 @@ def _safetensors_specs(path:pathlib.Path, default_quant:str | None = None,
       else:
         raise ValueError(f"{name}: declared float quantization {bits} bits disagrees with {dtype}")
       parts = [meta, *[header[k] for k in (module + ".weight_scale", module + ".weight_scale_2", module + ".weight_global_scale") if k in header]]
-      if module + ".weight_scale" not in header:
+      # one scale may stand over a table stored in shards (ngram_embedding.weight_scale over ngram_embedding.shard_N)
+      if module + ".weight_scale" not in header and module.rsplit(".", 1)[0] + ".weight_scale" not in header:
         raise ValueError(f"{name}: quantized weight has no scale tensor")
       stored = sum(int(p["data_offsets"][1]) - int(p["data_offsets"][0]) for p in parts)
       specs.append(TensorSpec(name=module + ".weight", shape=shape, quant=quant, weight_bytes=stored))
@@ -239,7 +240,9 @@ def _safetensors_specs(path:pathlib.Path, default_quant:str | None = None,
 def _float_quant_scheme(name:str, cfg:dict[str, Any]) -> dict[str, Any] | None:
   """Resolve a declared float weight scheme per module; a mixed checkpoint is never one global dtype."""
   module = name.rsplit(".weight", 1)[0]
-  matches = lambda pattern: bool(re.fullmatch(pattern[3:], module)) if pattern.startswith("re:") else fnmatch.fnmatchcase(module, pattern)
+  # a target may name a container (ModelOpt's mixed precision: "...mlp.experts" over experts.0.down_proj), so it also covers the modules beneath it
+  under = lambda pattern: fnmatch.fnmatchcase(module, pattern) or module.startswith(pattern + ".")
+  matches = lambda pattern: bool(re.fullmatch(pattern[3:], module)) if pattern.startswith("re:") else under(pattern)
   if any(matches(pattern) for pattern in cfg.get("ignore", [])):
     return None
   fallback = None
@@ -421,6 +424,7 @@ def _recurrent_from_config(cfg:dict[str, Any], specs:list[TensorSpec]) -> dict[s
     shape["head_count"] = int(cfg["mamba_num_heads"])
     if cfg.get("chunk_size"):
       shape["chunk_size"] = int(cfg["chunk_size"])
+  shape["ssm_dtype"] = cfg.get("mamba_ssm_dtype") or cfg.get("mamba_ssm_cache_dtype")  # an engine may keep the state in it
   return {"recurrent": {"layer_count": layers, **shape}} if layers and all(k in shape for k in _RECURRENT_CONFIG) else {}
 
 

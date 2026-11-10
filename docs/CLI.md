@@ -83,7 +83,8 @@ python3 -c "import json;print([t['target_id'] for t in json.load(open('boltbeam/
 | `apple_m4_10c` | Mac mini M4, 10-core GPU | vendor sheet: 120 GB/s |
 
 A GPU with no built-in row gets a generated profile from the autoscan, saved in the local registry; the Apple M5's
-`apple_m5_10c_16g` (131.3 GB/s, measured 2026-10-13) is one.
+`apple_m5_10c_16g` (131.3 GB/s, measured 2026-10-13) is one, see
+[metal-m5-macbook-air-20261108.md](metal-m5-macbook-air-20261108.md).
 
 A row records where each number came from, under `capabilities.fact_status` and
 `fact_sources`: `measurement`, `hardware_scan`, `derived`, `vendor_spec`, `estimate`, or
@@ -186,6 +187,19 @@ python3 -m boltbeam.cli output --run run/            # the run manifest so far
 `run_manifest.json` that every later stage appends to.
 
 ## 5. Bringing measurements back
+
+Runs measured on another machine (a rented pod, a Linux box) come home over SSH:
+
+```
+boltbeam fetch DEST [-p PORT]                    # list DEST's runs: id, model, chip, GPU, date, size, already here or not
+boltbeam fetch DEST [-p PORT] RUN_ID ... | --all # copy them into the local saved runs, every file checked by sha256
+    [--root REMOTE_RUNS_ROOT] [--with-traces] [--into LOCAL_RUNS_ROOT] [--json]
+```
+
+DEST is `user@host` or an ssh `Host` alias. The remote needs only `python3` and `rsync` or `tar`, not BoltBeam.
+Fetched runs go to `<runs>/saved/<id>` (`<runs>` is `--into`, else `BOLTBEAM_RUNS`) with a `fetched.json` saying
+where they came from; raw traces stay behind unless `--with-traces`; a run already here is skipped and a different
+run under the same id is refused. [pods.md](pods.md#bring-results-home) has the pod side.
 
 BoltBeam does not time anything itself. You measure with the vendor's profiler or the
 tinygrad fork, then hand it the result.

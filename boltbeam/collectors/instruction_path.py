@@ -32,7 +32,7 @@ from typing import Any, Iterable
 
 from boltbeam.collectors.cuda_compute import PATHS
 
-_MMA = re.compile(r"\b(?:w?mma)\.sync\.aligned\.[\w.:]+")
+_MMA = re.compile(r"\b(?:w?mma|wgmma\.mma_async)\.sync\.aligned\.[\w.:]+")
 _ENTRY = re.compile(r"\.entry\s+([^\s(]+)\s*\(")
 _SHAPE = re.compile(r"^m\d+n\d+k\d+$")
 _SKIP = {"sync", "aligned", "row", "col", "satfinite", "block_scale", "scale_vec::2X", "scale_vec::4X", "scale_vec::1X"}
@@ -42,7 +42,8 @@ NOT_FOUND = "kernel code not found"
 
 def signature(instr:str) -> tuple[str, str] | None:
   """(input type, accumulator type) of a PTX mma instruction: `mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32` is
-  ("s8", "s32"). The types follow the shape and layouts as D, A, B, C (a block-scaled one ends with its scale type)."""
+  ("s8", "s32"). The types follow the shape and layouts as D, A, B, C (a block-scaled one ends with its scale type);
+  a warpgroup instruction's are D, A, B, and its input is marked: `wgmma...m64n128k16.f32.f16.f16` is ("wgmma:f16", "f32")."""
   parts = instr.split(".")
   try:
     at = next(i for i, p in enumerate(parts) if _SHAPE.match(p))
@@ -50,7 +51,7 @@ def signature(instr:str) -> tuple[str, str] | None:
     return None
   types = [p for p in parts[at + 1:] if p not in _SKIP and not p.startswith("kind::")]
   if len(types) < 4:
-    return None
+    return (f"wgmma:{types[1]}", types[0]) if instr.startswith("wgmma.") and len(types) == 3 else None
   # Block-scale format/vector length identifies a distinct instruction path. MXFP4
   # and NVFP4 have the same operands but must not borrow one another's probe.
   scale = next((p for p in parts if p.startswith("scale_vec::")), None)
@@ -58,7 +59,9 @@ def signature(instr:str) -> tuple[str, str] | None:
   return operand, types[3]
 
 
-SIGNATURES = {signature(p.ptx): p.name for p in PATHS}
+SIGNATURES: dict[tuple, str] = {}
+for _p in PATHS:  # a path whose types an earlier one has is keyed with its K too (fp16_k8: fp16's types at K 8)
+  SIGNATURES[(*signature(_p.ptx), _p.k) if signature(_p.ptx) in SIGNATURES else signature(_p.ptx)] = _p.name
 _INPUT_ALIASES = {"u8": "s8", "e5m2": "e4m3"}  # same unit, same rate as the measured sibling
 
 
@@ -66,7 +69,8 @@ def path_of_instruction(instr:str) -> str | None:
   sig = signature(instr)
   if sig is None:
     return None
-  return SIGNATURES.get(sig) or SIGNATURES.get((_INPUT_ALIASES.get(sig[0], sig[0]), sig[1]))
+  k = next((int(p.rpartition("k")[2]) for p in instr.split(".") if _SHAPE.match(p)), 0)
+  return SIGNATURES.get((*sig, k)) or SIGNATURES.get(sig) or SIGNATURES.get((_INPUT_ALIASES.get(sig[0], sig[0]), sig[1]))
 
 
 def paths_in_text(text:str) -> dict[str, int]:
@@ -171,9 +175,18 @@ def library_table(library:str | pathlib.Path, *, cache:pathlib.Path | None = Non
 # The machine-code matrix opcode of each path is read from the probe's own kernel compiled for this GPU, so a kernel
 # is judged on the same instruction the probe measured: `HMMA.16816.F32.BF16` is whatever the bf16 probe compiles to.
 
-_SASS_MMA = re.compile(r"\b[A-Z]*MMA(?:\.[A-Z0-9_]+)+")
+_SASS_MMA = re.compile(r"\b[A-Z]*MMA(?:\.[A-Z0-9_x]+)+")
 _SASS_FMA = re.compile(r"\bFFMA(?:\.[A-Z0-9_]+)*\b")
-_SASS_FUNC = re.compile(r"^\s*\.text\.(\S+):")
+# a function starts at its `.section .text.<name>,` line; the `.text.<name>:` label after it is absent from the modules
+# cuBLASLt builds at run time (nvjet_sm120_*, no section symbol: RTX 5090, 2026-11-09), so both are read
+_SASS_FUNC = re.compile(r"^\s*(?:\.section\s+)?\.text\.([^\s:,]+)[:,]")
+
+
+def sass_ops(text:str) -> list[str]:
+  """The matrix opcodes in machine code. A warpgroup opcode is kept without its N (`HGMMA.64x128x16.F32` is
+  HGMMA.64xNx16.F32): N is the tile width a kernel picked, and every width is one path, measured at its best width.
+  The x was not read before (an H200's kernels all read `HGMMA.64`, 2026-11-09)."""
+  return [re.sub(r"(GMMA\.\d+x)\d+", r"\1N", op) for op in _SASS_MMA.findall(text)]
 
 
 def sass_entries(lines:Iterable[str], *, include_scalar:bool = False) -> dict[str, dict[str, int]]:
@@ -187,7 +200,7 @@ def sass_entries(lines:Iterable[str], *, include_scalar:bool = False) -> dict[st
       out.setdefault(cur, {})
       continue
     if cur:
-      for op in _SASS_MMA.findall(line) + (_SASS_FMA.findall(line) if include_scalar else []):
+      for op in sass_ops(line) + (_SASS_FMA.findall(line) if include_scalar else []):
         out[cur][op] = out[cur].get(op, 0) + 1
   return out
 
@@ -201,7 +214,7 @@ def sass_signatures(arch:str, *, cache:pathlib.Path | None = None, nvcc:str | No
   nvcc = nvcc or find_nvcc()
   out: dict[str, str] = {}
   for p in PATHS:
-    if (p.kind != "mma" and not (include_scalar and p.kind == "fma")) or not nvcc:
+    if (p.kind == "fma" and not include_scalar) or not nvcc:
       continue
     try:
       cubin = build_cubin(nvcc, source(p), cache=cache, arch=arch + p.arch_suffix)
@@ -247,8 +260,65 @@ def engine_tools(python:str | None) -> list[pathlib.Path]:
   return [*sorted(root.glob("lib/python*/site-packages/nvidia/*/bin")), *sorted(root.glob("lib/python*/site-packages/triton/backends/nvidia/bin"))]
 
 
+def _sections(lib:pathlib.Path, names:set[str]) -> dict[str, bytes]:
+  """Named sections of a host ELF64 library (none from a file that is not ELF)."""
+  import struct
+  with open(lib, "rb") as f:
+    if (h := f.read(64))[:4] != b"\x7fELF" or len(h) < 64:
+      return {}
+    size, num, strndx = struct.unpack_from("<HHH", h, 0x3a); f.seek(struct.unpack_from("<Q", h, 0x28)[0])
+    raw = f.read(size * num); heads = [struct.unpack_from("<IIQQQQ", raw, i * size) for i in range(num)]
+    f.seek(heads[strndx][4])
+    strs, out = f.read(heads[strndx][5]), {}
+    for name, kind, _, _, off, n in heads:  # SHT_NOBITS (8) holds no bytes
+      if (k := strs[name:strs.index(b"\0", name)].decode()) in names and kind != 8:
+        f.seek(off); out[k] = f.read(n)
+  return out
+
+
+def _zstd_end(b:bytes, o:int) -> int:
+  """The end of the zstd frame at o, read from its frame and block headers (RFC 8878)."""
+  d = b[o + 4]; o += 5 + (not d & 32) + (0, 1, 2, 4)[d & 3] + ((0, 2, 4, 8)[d >> 6] or (d >> 5 & 1))
+  while not (h := int.from_bytes(b[o:o + 3], "little")) & 1 and o < len(b):
+    o += 3 + (1 if h >> 1 & 3 == 1 else h >> 3)
+  return o + 3 + (1 if h >> 1 & 3 == 1 else h >> 3) + 4 * (d >> 2 & 1)
+
+
+def hidden_cubins(lib:pathlib.Path, folder:pathlib.Path, cuobjdump:str, zstd:str | None) -> str | None:
+  """Write the machine code cuobjdump does not list into folder as <store><n>[.k].<arch>.cubin. libcublasLt 13 keeps
+  383 fatbins (sm_100+ CUTLASS3) concatenated in .cask_resource and 387 cubins (sm_75-sm_120 CUTLASS, among them
+  cutlass_80_wmma_*) as zstd frames in .ldata: 8,381 kernels no other cubin holds (2026-11-09). Returns why .ldata
+  could not be read (no zstd decoder), else None."""
+  import struct
+  secs, magic = _sections(lib, {".cask_resource", ".ldata"}), b"\x28\xb5\x2f\xfd"
+  b, o, n = secs.get(".cask_resource", b""), 0, 0
+  while (o := b.find(b"\x50\xed\x55\xba", o)) >= 0:  # fatbins: magic, version, header size, size
+    (folder / f"cask{n}.fatbin").write_bytes(b[o:(o := o + sum(struct.unpack_from("<HQ", b, o + 6)))])
+    subprocess.run([cuobjdump, "-xelf", "all", f"cask{n}.fatbin"], cwd=folder, capture_output=True, timeout=600)
+    (folder / f"cask{n}.fatbin").unlink(); n += 1
+  b, o, n = secs.get(".ldata", b""), 0, 0
+  try:
+    import zstandard
+  except ImportError:
+    if magic in b and not zstd:
+      return f"{lib.name} keeps zstd-compressed cubins in .ldata, and neither zstd nor zstandard is installed"
+  while (o := b.find(magic, o)) >= 0:  # a frame is kept only when it decodes to a cubin
+    try:
+      end = _zstd_end(b, o)
+      elf = subprocess.run([zstd, "-dcq"], input=b[o:end], capture_output=True).stdout if zstd else zstandard.ZstdDecompressor().decompressobj().decompress(b[o:end])
+    except Exception:  # noqa: BLE001 - a magic inside other data: not a frame
+      elf = b""
+    if elf[:4] != b"\x7fELF" or len(elf) < 0x34:
+      o += 4; continue
+    e = struct.unpack_from("<I", elf, 0x30)[0]  # CUDA ELF ABI 8 (OSABI 0x41) moved the SM to bits 8-15
+    sm, accel = ((e >> 8) & 0xff, e & 8) if elf[7] == 0x41 else (e & 0xff, e & 0x800)
+    (folder / f"ldata{n}.sm_{sm}{'a' if accel else ''}.cubin").write_bytes(elf); o, n = end, n + 1
+  return None
+
+
 def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures:dict[str, str], *,
-               cache:pathlib.Path | None = None, cuobjdump:str | None = None, nvdisasm:str | None = None) -> dict[str, Any]:
+               cache:pathlib.Path | None = None, cuobjdump:str | None = None, nvdisasm:str | None = None,
+               zstd:str | None = None) -> dict[str, Any]:
   """{template: paths} for the wanted kernel templates found in a library's machine code for `arch`: its cubins
   extracted (cuobjdump -xelf), their function symbols read, and only the cubins that hold a wanted kernel
   disassembled. Each opcode is mapped to a path by `signatures` (sass_signatures); one it does not know is
@@ -259,7 +329,7 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
   sha = hashlib.sha256(lib.read_bytes()).hexdigest()
   cache = cache or default_cache()
   cache.mkdir(parents=True, exist_ok=True)
-  index_file = cache / f"sass-{sha[:16]}-{arch}-runnable.json"  # every cubin this GPU runs (runnable_archs)
+  index_file = cache / f"sass-{sha[:16]}-{arch}-stores.json"  # every cubin this GPU runs, hidden stores too
   try:  # an index cut short (a run stopped while writing it) is rebuilt, never trusted
     index = json.loads(index_file.read_text()) if index_file.exists() else None
   except ValueError:
@@ -272,17 +342,20 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
       index_file.write_text(json.dumps(index,sort_keys=True))
     # Saved unknown opcodes retain enough evidence to resolve newly measured
     # paths without rereading multi-GB libraries. Do not guess an opcode alias.
+    # A warpgroup opcode saved cut at its x (HGMMA.64) names no path: its kernel is read again.
+    index['paths'] = {t: p for t, p in index['paths'].items() if not any(re.fullmatch(r'unknown:[A-Z]*GMMA\.\d+', k) for k in p)}
     for paths in index['paths'].values():
       for old in list(paths):
         if old.startswith('unknown:') and old[8:] in signatures:
           new = signatures[old[8:]]
           paths[new] = paths.get(new, 0) + paths.pop(old)
-  tool = cuobjdump or find_cuda_tool('cuobjdump')
+  tool, unread = cuobjdump or find_cuda_tool('cuobjdump'), None
   with tempfile.TemporaryDirectory(dir=cache) as tmp:
     if index is None or any(t in index["symbols"] and t not in index["paths"] for t in wanted):
       if not tool:
         raise RuntimeError("cuobjdump is not installed: a library's machine code cannot be read")
       proc = subprocess.run([tool, "-xelf", "all", str(lib.absolute())], cwd=tmp, capture_output=True, text=True, timeout=3600)
+      unread = hidden_cubins(lib, pathlib.Path(tmp), tool, zstd or shutil.which("zstd")) if proc.returncode == 0 else None
       # best target last, so a kernel built for this GPU's own target wins over the same kernel for an older minor
       cubins = [c for a in reversed(runnable_archs(arch)) for c in sorted(pathlib.Path(tmp).glob(f"*.{a}.cubin"))] if proc.returncode == 0 else []
       if index is None:
@@ -303,9 +376,10 @@ def sass_table(library:str | pathlib.Path, wanted:set[str], arch:str, signatures
               p = signatures.get(op) or f"unknown:{op}"
               merged[p] = merged.get(p, 0) + n
             index["paths"][key] = merged
-      index_file.write_text(json.dumps(index, sort_keys=True))
+      if not unread:  # an index missing .ldata's cubins is not kept: a decoder installed later reads them
+        index_file.write_text(json.dumps(index, sort_keys=True))
   return {"library": str(lib), "sha256": sha, "how": f"machine code this {arch} runs (cuobjdump -xelf, nvdisasm)",
-          "kernels": {t: index["paths"][t] for t in wanted if t in index["paths"]}}
+          "kernels": {t: index["paths"][t] for t in wanted if t in index["paths"]}, "unread": unread}
 
 
 def mixed(paths:dict[str, int]) -> list[str]:
@@ -399,7 +473,7 @@ def ncu_entries(lines:Iterable[str], *, include_scalar:bool = False) -> dict[str
     elif cur is not None and col is None and "Source" in row and "Instructions Executed" in row:
       col = (row.index("Source"), row.index("Instructions Executed"))
     elif cur is not None and col is not None and len(row) > max(col):
-      ops = _SASS_MMA.findall(row[col[0]]) + (_SASS_FMA.findall(row[col[0]]) if include_scalar else [])
+      ops = sass_ops(row[col[0]]) + (_SASS_FMA.findall(row[col[0]]) if include_scalar else [])
       if ops:
         n = int(float(row[col[1]] or 0))
         for op in ops:out[cur][op] = out[cur].get(op, 0) + n

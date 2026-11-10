@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import importlib.metadata
 
-import argparse, json, os, statistics, time
+import argparse, json, os, statistics, tempfile, time
 
 
 def probe() -> str | None:
@@ -57,11 +57,14 @@ def main() -> int:
   if not a.contexts:
     ap.error("--contexts is required for a measurement")
   os.environ["TLLM_WORKER_USE_SINGLE_PROCESS"] = a.worker_single_process
+  # the built engine goes under $TMPDIR, not TensorRT-LLM's fixed /tmp: an 8B's engine filled a small root disk (2026-11-09)
+  os.environ.setdefault("TLLM_LLMAPI_BUILD_CACHE_ROOT", os.path.join(tempfile.gettempdir(), ".cache", "tensorrt_llm", "llmapi"))
   from tensorrt_llm import SamplingParams
   if a.backend == "tensorrt":  # a TensorRT engine is built for this GPU, then run
     from tensorrt_llm._tensorrt_engine import LLM
   else:  # TensorRT-LLM's default LLM: its PyTorch backend
     from tensorrt_llm import LLM
+    from tensorrt_llm.llmapi import KvCacheConfig
   contexts = [int(x) for x in a.contexts.split(",")]
   batches = [int(x) for x in a.batches.split(",")]
   max_len = a.model_context_limit or max(contexts) + max(a.tokens, a.once or 0) + 8
@@ -69,7 +72,8 @@ def main() -> int:
   # The scheduler needs capacity for this request's prompts, not an unrelated 8192-token build profile.
   max_tokens = a.max_num_tokens or max(1, max(contexts)) * max(batches)
   llm = LLM(model=a.model, max_seq_len=max_len, max_batch_size=max(batches), max_num_tokens=max_tokens,
-            **({"enable_build_cache": True} if backend == "tensorrt" else {}))
+            # no prefix reuse between calls, as the vLLM driver; a hybrid's recurrent-state cache refuses to start with it (Nemotron-H)
+            **({"enable_build_cache": True} if backend == "tensorrt" else {"kv_cache_config": KvCacheConfig(enable_block_reuse=False)}))
   vocab = 150000
 
   def prompts(context:int, batch:int) -> list[list[int]]:

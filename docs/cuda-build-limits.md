@@ -35,6 +35,12 @@ workers. Its Ninja hook dry-runs the exact requested targets and raises
 An explicit `BOLTBEAM_REQUIRE_PREBUILT=0` enables JIT for isolated development;
 use it only within the bounded runner.
 
+BoltBeam builds what an engine asks for itself: when a driven engine (vLLM, TensorRT-LLM, Ollama) stops with
+`Prebuild required: …/build.ninja`, `engine_common.run_driver` builds that module with
+`boltbeam/runtime/prebuild_cuda.py` (the same bounded build as the tool below) and starts the engine again, for
+each module in turn. Nemotron 3.5 Lightning NVFP4 on vLLM 0.31.0 asked for two on an RTX 5090: FlashInfer's
+`xqa` attention for its fp8 KV cache, then `trtllm_utils`.
+
 To calibrate all CUDA objects and complete a module without a loaded model:
 
 ```sh

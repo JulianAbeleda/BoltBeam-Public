@@ -49,21 +49,48 @@ RECURRENT_MODULES = ("ChunkGatedDeltaRule",)  # vLLM modules whose launches are 
 DRAFT_PREFIX = "draft "  # a row of a speculative draft head's work (collectors/vllm_speculation)
 
 def measured_window(launches:list[dict[str, Any]], warmup:bool | str = True,
-                    measured_ms:float | None = None) -> tuple[list[dict[str, Any]], str]:
+                    measured_ms:float | None = None, *, repetition_index:int | None = None,
+                    outputs:int = 1, head_count_bounds:list[int] | None = None) -> tuple[list[dict[str, Any]], str]:
   """The measured prefill. With warmup (the engine ran a warm-up prefill inside the capture): the second half of the
   launches, when the first half launched the same kernels the same number of times, else refused. Without: every
   launch (a prefill of identical chunks has identical halves too, so halves alone cannot say there was a warm-up).
   REPEAT (the capture holds other work, then the measured prefill twice): the shortest tail of launches that the
   launches just before it repeat kernel for kernel, in order (equal counts alone would also match a window that
-  straddles the two turns); a once-per-call kernel (the output head) makes that tail one whole call."""
+  straddles the two turns); a once-per-call kernel (the output head) makes that tail one whole call.
+  With repetition_index, require three exact ordered terminal turns with the expected output-head call count;
+  select the matching host-median index among repetitions three through five, without duration-based guessing.
+  The adapter must prove the whole-capture terminal-head multiplicity from its benchmark lifecycle; aliases or
+  missing/extra initialization calls are refused before a shorter repeated suffix can masquerade as a full turn."""
   timed = sorted((l for l in launches if "start_us" in l), key=lambda l: l["start_us"])
   from boltbeam.collectors.vendor_capture import unnamed
   if timed and all(unnamed(l["key"]) for l in timed):  # no kernel named (llama.cpp on Metal): no head, no turn, no role
     raise UnnamedCapture(f"the capture saw only {len(timed)} command buffers the engine did not name, not its kernels, "
                          "so it cannot split the prefill by role")
+  if not warmup and repetition_index is not None:
+    raise ValueError("steady repetition index requires repeated warm-up capture")
   if not warmup:
     return timed, f"one prefill of {len(timed)} launches (the capture holds the measured prefill only)"
   count = lambda ls: sorted(collections.Counter(template(l["key"]) for l in ls).items())  # noqa: E731
+  if repetition_index is not None:
+    if warmup != REPEAT or type(repetition_index) is not int or repetition_index not in (2, 3, 4):
+      raise ValueError("invalid steady repetition index")
+    from boltbeam.workflow.tie_out import GEMV_WORDS
+    keys = [l["key"] for l in timed]
+    if not keys or not any(word in keys[-1] for word in GEMV_WORDS):
+      raise ValueError("steady repetition boundary needs the terminal output-head kernel")
+    if (not isinstance(head_count_bounds, (list, tuple)) or len(head_count_bounds) != 2 or
+        not all(type(v) is int and v > 0 for v in head_count_bounds) or
+        not head_count_bounds[0] <= keys.count(keys[-1]) <= head_count_bounds[1]):
+      raise ValueError("steady output-head identity is aliased or its complete capture coverage is unproved")
+    candidates = [n for n in range(1, len(timed) // 3 + 1)
+                  if keys[-1] == keys[-n-1] and keys[-n:] == keys[-2*n:-n] == keys[-3*n:-2*n]
+                  and keys[-n:].count(keys[-1]) == outputs]
+    if len(candidates) != 1:
+      raise ValueError("steady repetition boundaries are missing or ambiguous (ordered names, geometry and output calls)")
+    n = candidates[0];start = len(timed) - 3*n + (repetition_index - 2)*n
+    return timed[start:start+n], (f"steady repetition index {repetition_index} (zero-based), selected by the host median "
+                                  f"of indices 2, 3, 4; three identical ordered full turns, {outputs} output-head call(s) "
+                                  f"and {n} launches each; first two repetitions retained as setup")
   if warmup == REPEAT:
     keys = [l["key"] for l in timed]  # geometry is part of a repeated launch, not just its template
     end = max(l['start_us'] + l['wall_us'] for l in timed)
@@ -139,6 +166,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
                       cache:dict[str, float] | None = None, depth:int = 0,
                       observed:dict[str, dict[str, int]] | None = None, observed_by:str | None = None, prune:dict[str, Any] | None = None,
                       unc:dict[str, Any] | None = None, measured_ms:float | None = None,
+                      repetition_index:int | None = None, head_count_bounds:list[int] | None = None,
                       explicit_overlap:bool = False, streams:int = 1) -> dict[str, Any]:
   """The measured prefill split by role, attention and other kernels, each with operations, bytes, path and ceiling.
   roles: {role, quant, n, k, count (per chunk), weight_bytes (per launch), role_class or fine}. kernel_paths: template
@@ -162,7 +190,7 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   gemm = lambda m, n, k, wb: work.gemm(m, n, k, wb, role_acts.get((n, k, wb), acts))["bytes"]  # noqa: E731
   if proof := formats.get("matrix_grid_constraint"):
     launches = [{**l, "matrix_grid_constraint": proof} for l in launches]
-  window, window_words = measured_window(launches, warmup, measured_ms)
+  window, window_words = measured_window(launches, warmup, measured_ms, repetition_index=repetition_index, outputs=outputs, head_count_bounds=head_count_bounds)
   window = unfused_attention(window, formats.get("unfused_attention"), lambda t: kernel_path(t, kernel_paths, observed, observed_by)["status"] != "none")
   shared, overlap = share_overlap(window)
   if explicit_overlap:

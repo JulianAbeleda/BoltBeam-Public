@@ -208,7 +208,7 @@ _ROWS = (
       "resources.scratch_bytes": "the CUDA bridge does not read cuFuncGetAttribute(LOCAL_SIZE_BYTES)"}),
     toolkit=Toolkit("cuda", ("CUDA_HOME", "CUDA_PATH"), "/usr/local/cuda", ("nvcc",)),
     owned_modules=("runtime/cuda_device.py", "collectors/cuda_compute.py", "collectors/cuda_path_scan.py", "collectors/instruction_path.py",
-                   "collectors/cuda_memory.py", "collectors/cuda_counter_stream.py", "collectors/cuda_activity_stream.py", "collectors/cupti_hes.py",
+                   "collectors/cuda_memory.py", "collectors/cuda_counter_stream.py", "collectors/cuda_activity_stream.py", "collectors/cupti_hes.py", "collectors/cuda_module_load.py",
                    "collectors/cubin_launch.py", "collectors/cublas_reduction_work.py", "collectors/kernel_oracle.py",
                    "profiler/ncu_counters.py", "profiler/ncu_audit.py", "profiler/importers/ncu.py", "cli/ncu.py",
                    "cli/gemm.py"),

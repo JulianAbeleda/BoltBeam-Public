@@ -347,3 +347,18 @@ func TestRunEngineBodySaysMeasuredSpeculation(t *testing.T) {
 		t.Errorf("no speculation, no line: %q", got)
 	}
 }
+
+// A measured run with no limit (Nemotron 3.5 on vLLM with no capture: the formula cannot model a Mamba2 hybrid) shows
+// its speed and why there is no limit; it said "No speed limit for this chip:" and hid the 375.9 tok/s it measured.
+func TestAMeasuredRunWithNoLimitShowsItsSpeedAndWhy(t *testing.T) {
+	var res seam.Results
+	raw := `{"measured":true,"workload":"decode","timing":{"tok_s":375.9},"ceiling":{"status":"absent","reason":"Mamba2 state traffic and SSD work are not validated"},
+	  "loss":{"status":"absent","runtimes":[{"provider":"vllm","tok_s":375.9,"ms":2.66,"lost_ms":null,"per_role":false,"note":"whole step"}]}}`
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatal(err)
+	}
+	got := plain(resultBody(Facts{Run: &seam.Run{Results: res}}, 160))
+	if !strings.Contains(got, "375.9 tok/s measured · no limit") || !strings.Contains(got, "No limit: Mamba2 state traffic") || strings.Contains(got, "for this chip") {
+		t.Fatalf("a measured run with no limit must show its speed and why: %s", got)
+	}
+}

@@ -99,6 +99,14 @@ def observed(run:pathlib.Path, context:int) -> dict[str, Any]:
   return next((r.get("engine") or {} for r in trace.get("rows", []) if r.get("context") == context), {})
 
 
+def vllm_streams(run:pathlib.Path, context:int) -> list[str]:
+  """The stream slots the untraced engine was built with. A sweep times every batch on one engine sized for its
+  largest, so a capture of a smaller batch asks for the same slots: sized for itself it is another allocation (and
+  vLLM 0.31.0 faults warming up a 1-stream hybrid 27B with the sweep's 8192 batched tokens)."""
+  slots = observed(run, context).get("max_num_seqs")
+  return ["--max-num-seqs", str(slots)] if slots is not None else []
+
+
 def llama_flags(run:pathlib.Path, context:int, *, capture:bool = False) -> list[str]:
   settings = requested(run)
   if capture:

@@ -57,6 +57,12 @@ def host_step(engine:dict) -> dict:
   return {'host_samples':engine['samples'],'host_step_ms':(engine['seconds']-engine['short_seconds'])*1000/(engine['tokens']-1),'timing_window':decode_window_vllm(engine['context'],engine['tokens'],engine['batch'],engine)}
 
 
+def production_graphs(config: dict) -> bool:
+  """vLLM ran its graphs: compiled, or its CUDA graphs alone (its breakable CUDA graph turns torch.compile off itself:
+  mode 0 with cudagraph_mode FULL_AND_PIECEWISE, Qwen3.8-Flash-Next on 0.31.0)."""
+  return bool(config.get('mode')) or config.get('cudagraph_mode') not in (None,'NONE',0)
+
+
 def join(path: Path, records: list[dict]) -> dict:
   passes={}
   for record in records:
@@ -72,7 +78,7 @@ def join(path: Path, records: list[dict]) -> dict:
       if field=='output_token_ids' and labels.get(field) is not None:  # both recorded, and they differ
         raise TokensDiverge(f'capture passes have absent or different {field}')
       raise ValueError(f'capture passes have absent or different {field}')
-  if (timing['enforce_eager'] or not timing['compilation_config'].get('mode') or
+  if (timing['enforce_eager'] or not production_graphs(timing['compilation_config']) or
       timing['runtime_graph_mode']!='production' or labels['runtime_graph_mode']!='NONE'):
     raise ValueError('capture requires production compilation and graphless labeling')
   for field in ('token_forcing','token_script_sha256','engine_nondeterministic'):
@@ -127,7 +133,7 @@ def replay_steps(path:Path, passes:dict, *, segments:list[dict] | None = None, a
                 'compilation_config','logits_processors','triton_autotune_cache'):
     if field not in timing or timing[field]!=labels.get(field):
       raise ValueError(f'replay passes have absent or different {field}')
-  if (timing['enforce_eager'] or not timing['compilation_config'].get('mode') or
+  if (timing['enforce_eager'] or not production_graphs(timing['compilation_config']) or
       timing.get('runtime_graph_mode')!='production' or labels.get('runtime_graph_mode')!='NONE'):
     raise ValueError('replay requires production compilation and graphless labeling')
   sessions={m:session_identities(p['model'],p['records'],p['responses']) for m,p in passes.items()}

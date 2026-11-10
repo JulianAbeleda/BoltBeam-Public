@@ -168,7 +168,7 @@ func none(Facts) string { return "" }
 
 var steps = []step{
 	{"Setup", "", none, func(Facts) (string, string) { return "", "" }, func(Facts, int) string { return "" }, setupActions},
-	{"Run", "", aboutRun, resultLine, resultsBody, runActions},
+	{"Run", "", aboutRunFrom, resultLine, resultsBody, runActions},
 	{"Saved runs", "", none, savedLine, savedBody, savedActions},
 	{"Gameplan", "", aboutRun, emitLine, emitBody, emitActions},
 	{"Model", "", none, modelLine, modelBody, modelChoices},
@@ -798,6 +798,9 @@ func savedActions(f Facts) []action {
 				engine += " " + *r.Workload
 			}
 			label := fmt.Sprintf("%s · %s · %s · %s · %s", deref(r.ModelID), deref(r.TargetID), engine, when, pct)
+			if r.Fetched != nil {
+				label += " · " + fetchedWords(r.Fetched)
+			}
 			if f.Confirm == r.ID {
 				label = stBad.Render("Press d again to delete saved run " + r.ID + " · any other key keeps it")
 			}
@@ -946,6 +949,26 @@ func aboutRun(f Facts) string {
 		return f.Run.ID
 	}
 	return ""
+}
+
+// aboutRunFrom is the Run page's header: the run, and where it came from when `boltbeam fetch` brought it home.
+func aboutRunFrom(f Facts) string {
+	about := aboutRun(f)
+	if f.Run != nil && f.Run.ID == about && f.Run.Fetched != nil {
+		about += " · " + fetchedWords(f.Run.Fetched)
+	}
+	return about
+}
+
+// fetchedWords is "from HOST, fetched DATE": the host it was fetched from, else its chip.
+func fetchedWords(x *seam.Fetched) string {
+	from := "another machine"
+	if x.Host != nil && *x.Host != "" {
+		from = *x.Host
+	} else if x.Chip != nil && *x.Chip != "" {
+		from = *x.Chip
+	}
+	return "from " + from + ", fetched " + cmp.Or(x.FetchedAt[:min(len(x.FetchedAt), 10)], "at an unknown time")
 }
 
 // --- 1 Model -----------------------------------------------------------------------------------------------

@@ -78,6 +78,15 @@ def kv_element(provider:str, run:pathlib.Path | None = None) -> tuple[float, str
   return getattr(m, "KV_ELEMENT", None) or (2, "f16 assumed")
 
 
+def state_element(provider:str, run:pathlib.Path | None = None, profile:dict[str, Any] | None = None) -> tuple[tuple[float, float] | None, str]:
+  """A recurrent state's bytes per element in this engine, (conv, state), and where that comes from: the adapter's
+  STATE_ELEMENT, or its state_element(run, profile) when the engine takes it from the model; (None, why) otherwise."""
+  m = ENGINES.get(provider)
+  if hasattr(m, "state_element"):
+    return m.state_element(run, profile)
+  return getattr(m, "STATE_ELEMENT", None) or (None, f"{provider}'s recurrent state dtype is not known to BoltBeam")
+
+
 def weight_format(profile:dict[str, Any]) -> str:
   """The weights as a label: the file family and the quant types by share of the weight bytes, largest first:
   "GGUF Q4_K+Q6_K", "GGUF F16", "safetensors BF16"."""

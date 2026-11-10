@@ -5,7 +5,7 @@ Changed programs stay unsupported. RMS arithmetic counts the algorithm's minimum
 adds/multiplies (including reduction), excluding rsqrt and address operations.
 Operand bytes never establish cache residency: a limit still requires counters.
 """
-import ast
+import ast, sys
 import hashlib
 import json
 import math
@@ -100,7 +100,10 @@ def program(source,name):
   matches=[n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name==name]
   if len(matches)!=1:raise ValueError('Triton source has no unique entry point')
   fn=matches[0];fn.name='kernel';fn.decorator_list=[]
-  digest=hashlib.sha256(ast.dump(fn,include_attributes=False).encode()).hexdigest()
+  # The reviewed digests are Python 3.12's dump. 3.13+ leaves out empty fields unless shown and 3.10/3.11 have no
+  # type_params, so every other Python read every reviewed program as unreviewed (no work, silently).
+  text=ast.dump(fn,include_attributes=False,**({'show_empty':True} if sys.version_info>=(3,13) else {}))
+  digest=hashlib.sha256((text if sys.version_info>=(3,12) else text[:-1]+', type_params=[])').encode()).hexdigest()
   width=next((n.value.value for n in fn.body if isinstance(n,ast.Assign) and len(n.targets)==1
               and isinstance(n.targets[0],ast.Name) and n.targets[0].id=='r0_numel' and isinstance(n.value,ast.Constant)),None)
   return digest,width

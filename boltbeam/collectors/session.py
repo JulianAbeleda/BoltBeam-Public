@@ -155,12 +155,12 @@ def agree(ref:dict[str, Any], got:dict[str, Any]) -> dict[str, Any]:
 # --- the turn per engine ---------------------------------------------------------------------------------------
 
 def llama_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) -> dict[str, Any]:
-  """llama-bench at the depth: the TURN-token prompt after `depth` tokens it filled untimed, REPS times (its depth
+  """llama-bench at the depth: the TURN-token prompt after `depth` tokens it filled untimed, LLAMA_REPS times (its depth
   is filled once and restored for each repetition), and DECODE generated tokens at that depth, its own row."""
   bench = pf._bench(run)
   from boltbeam.workflow.layout import one_gpu
   pin, env = one_gpu(run, "llama.cpp")
-  cmd = pf.llama_argv(bench, model, TURN, pf.REPS, depth=depth, gen=DECODE, extra=pin)
+  cmd = pf.llama_argv(bench, model, TURN, pf.LLAMA_REPS, depth=depth, gen=DECODE, extra=pin)
   with gpu_telemetry.run_telemetry(run, 0) as tele:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200, cwd=run, env={**os.environ, **env})
   pf.retain_native(run, f"{TURN}-at-{depth}", cmd, proc.stdout)
@@ -171,7 +171,9 @@ def llama_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) 
   rates = [DECODE / (float(x) / 1e9) for x in gen.get("samples_ns") or [gen["avg_ns"]]]
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   qualified = pf.qualification_sample(row, TURN, depth)
-  return {"ms": statistics.median(samples), "qualification_ms": qualified, "samples_ms": samples, "computed": [TURN] * len(samples),
+  return {"ms": qualified if qualified is not None else statistics.median(samples), "qualification_ms": qualified,
+          "benchmark_median_ms": statistics.median(samples), "benchmark_avg_ms": float(row["avg_ns"]) / 1e6 if row.get("avg_ns") is not None else None,
+          "selected_repetition_index": pf.qualification_index(row, TURN, depth), "samples_ms": samples, "computed": [TURN] * len(samples),
           "chunk": pf.chunk_record(pf.llama_chunks(TURN, b, ub) if ub else [], f"llama-bench n_ubatch {ub}, n_batch {b}",
                                    outputs=-(-TURN // b) if b else None),
           "decode": {"tok_s": statistics.median(rates), "tokens": DECODE, "from": depth, "samples_tok_s": rates},
@@ -378,7 +380,8 @@ def measure(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], No
       check["kind"] = "against llama.cpp, an independent engine, on the same tokens"
     tele = got["telemetry"]
     rows.append({**base, "turn_ms": got["ms"], "wall_us": got["ms"] * 1e3, "tok_s": TURN / got["ms"] * 1e3,
-                 "samples_ms": got["samples_ms"], "qualification_ms": got.get("qualification_ms"), "computed": got["computed"], "chunk": got["chunk"],
+                 "samples_ms": got["samples_ms"], "qualification_ms": got.get("qualification_ms"),
+                 **{k: got[k] for k in ("selected_repetition_index", "benchmark_median_ms", "benchmark_avg_ms") if k in got}, "computed": got["computed"], "chunk": got["chunk"],
                  "batched": got["chunk"]["batched"], "decode": got["decode"], "decode_tok_s": got["decode"]["tok_s"],
                  "check": check, "reference_fill_s": r.get("cold_s"), "telemetry": tele, "throttled": tele.get("throttled"),
                  "telemetry_samples": got.get("telemetry_samples"), "source": got["source"], "engine": got["engine"],

@@ -88,15 +88,10 @@ def validate(run:Path, res:dict) -> dict:
       failures.append(f'captured work evidence: {exc}')
   profile_path = run/'model_profile.json'
   if profile_path.is_file():
-    profile = json.loads(profile_path.read_text())
-    metadata = profile.get('metadata') or {}
-    recurrent = metadata.get('recurrent') or {}
-    arch = (metadata.get('architecture_signals') or {}).get('arch') or profile.get('architecture')
-    unsupported_scan = recurrent.get('kind') == 'mamba2' or (recurrent and arch in ('nemotron_h', 'mamba', 'mamba2'))
-    if unsupported_scan and (res.get('ceiling') or {}).get('floor_ms') and not (
+    from boltbeam.roofline.mamba2 import FORMULA_REFUSED, formula_cannot_limit
+    if formula_cannot_limit(json.loads(profile_path.read_text())) and (res.get('ceiling') or {}).get('floor_ms') and not (
         res.get('workload') in ('prefill','decode') and verified_work):
-      failures.append('roofline: Mamba2 state traffic and SSD work are not validated against engine evidence; '
-                      'the Gated DeltaNet formula cannot supply this model’s limit. Raw timings are retained.')
+      failures.append('roofline: ' + FORMULA_REFUSED)
 
   def equal(path, actual, expected, tolerance=ACCOUNTING_ATOL):
     nonlocal checks
@@ -139,6 +134,9 @@ def validate(run:Path, res:dict) -> dict:
         if w.get('estimate'):
           measured = [s for s in loss.get('roles', [])
                       if f"{s['role']} {s['quant']}" == r['name']]
+          if len(measured) > 1:  # one role and quant in two shapes (a 27B's two attention layer kinds): its own times
+            measured = [s for s in measured if abs((s.get('ideal_ms') or 0) - r['limit_ms']) < 1e-9
+                        and abs((s.get('est_ms') if s.get('est_ms') is not None else s.get('actual_ms', 0)) - r['now_ms']) < 1e-9]
           if len(measured) != 1:
             failures.append(p+'.pct_peak: no unique measured role behind the estimate')
             continue
@@ -173,7 +171,41 @@ def validate(run:Path, res:dict) -> dict:
   if tie.get('lines') and tie.get('token_ms') is not None and not tie.get('refused'):
     equal('loss.tie_out.token_ms = sum(lines.ms)', tie['token_ms'], sum(r['ms'] for r in tie['lines']))
   where(loss.get('where_token_goes'), 'loss.where_token_goes')
-  from boltbeam.workflow.tie_out import check_end_to_end, overhead_words
+  from boltbeam.workflow.tie_out import check_end_to_end, overhead_words, replication, GAPS_BOUND_ROW
+  w, e, b = loss.get('where_token_goes') or {}, tie.get('end_to_end') or {}, tie.get('gaps_bound')
+  if b:  # over the ceiling: the gaps are the untraced token less the kernels, and the table sums to the untraced token
+    from boltbeam.collectors.providers import TRACES
+    kernels = tie['token_ms'] - tie['lines'][-1]['ms']
+    gap = [r['now_ms'] for r in w.get('rows') or [] if r['what'] == 'gaps' and r['name'] == GAPS_BOUND_ROW] if w.get('rows') else [b['ms']]
+    for k, got, want in (('gaps_bound.ms = untraced - kernels', b['ms'], tie['untraced_ms'] - kernels), ('gaps_bound.captured_ms', b['captured_ms'], tie['lines'][-1]['ms']),
+                         ('gaps_bound.untraced_ms', b['untraced_ms'], tie['untraced_ms']), ('where_token_goes gaps row = the bound', gap[0] if len(gap) == 1 else None, b['ms']),
+                         ('where_token_goes.token_ms = untraced', w.get('token_ms', tie['untraced_ms']), tie['untraced_ms'])):
+      equal(f'loss.tie_out.{k}', got, want)
+    p = run / TRACES.get(tie.get('provider'), '')
+    rep = replication(json.loads(p.read_text()).get('replicas') if p.is_file() else None)
+    if tie.get('replication') != rep or not all(x in str(w.get('qualification')) for x in ((rep or {}).get('words', 'Kernel rows unqualified'), f"{b['ms']:.2f} ms")):
+      failures.append('loss.tie_out.replication: the kernel rows\' qualification is not what the run\'s captures derive, or the table does not say it')
+  if e.get('confirms') is False and not w.get('estimate') and not (b and (tie.get('replication') or {}).get('qualifies')) and any(r.get('tok_s_gain') is not None for r in w.get('rows') or []):
+    failures.append('loss.where_token_goes: throughput gains on a capture above the ceiling whose kernel rows no replication qualifies')
+  if loss.get('semantic_capture') and w.get('rows'):  # the same rule on a semantic capture's table, from the capture's own repeats
+    from boltbeam.workflow.tie_out import end_to_end, over_ceiling, qualification_words, rows_stand
+    capture = (json.loads((run / loss['source']).read_text()).get('contexts') or {}).get(str(w.get('context'))) or {}
+    steps = len((capture.get('engine') or {}).get('decode_steps') or [1])
+    count = (capture.get('speculation') or {}).get('tokens') or steps
+    wall, idle, gaps = capture.get('wall_ms', 0.0) / count, capture.get('gaps_ms', 0.0) / count, [r for r in w['rows'] if r['what'] == 'gaps']
+    verdict = end_to_end({'measured_ms': capture.get('host_step_ms'), 'wall_ms': wall, 'timing_window': capture.get('timing_window')}, w['base_ms'],
+                         what='decode step', reference_window=(capture.get('reference_band') or {}).get('timing_window'))
+    rule = (over_ceiling(busy=wall - idle, gaps=idle, untraced=w['base_ms'], replicas=capture.get('replicas'), of=capture.get('replicas_of'))
+            if verdict.get('confirms') is False else {})
+    equal('loss.where_token_goes kernel rows = the capture\'s kernels', sum(r['now_ms'] for r in w['rows'] if r['what'] != 'gaps'), wall - idle)
+    checks += 1
+    if any(w.get(k) != rule.get(k) for k in ('gaps_bound', 'replication')) or w.get('qualification') != qualification_words(rule):
+      failures.append('loss.where_token_goes: the over-ceiling rule (gaps bound, replication) is not what the run\'s capture derives, or the table does not say it')
+    if bound := rule.get('gaps_bound'):
+      equal('loss.where_token_goes gaps row = the bound', gaps[0]['now_ms'] if len(gaps) == 1 and gaps[0]['name'] == GAPS_BOUND_ROW else None, bound['ms'])
+      equal('loss.where_token_goes.token_ms = untraced', w['token_ms'], w['base_ms'])
+    if verdict.get('confirms') is False and not rows_stand(rule) and any(r.get('tok_s_gain') is not None for r in w['rows']):
+      failures.append('loss.where_token_goes: throughput gains on a capture above the ceiling whose kernel rows no replication qualifies')
   def verdicts(node, path):
     nonlocal checks
     if isinstance(node, dict) and 'confirms' in node and (node['confirms'] is not None or node.get('status') == 'checked'):
@@ -201,7 +233,10 @@ def validate(run:Path, res:dict) -> dict:
       cell('capture comparison total cell',comparison['sum_cells'][1],f'{wall:.6f}')
   if loss.get('semantic_capture'):
     w=loss.get('where_token_goes') or {}
-    from boltbeam.workflow.captured_decode import FORCING_WORDS, NONDETERMINISM_WORDS
+    from boltbeam.workflow.captured_decode import FORCING_WORDS, MODULE_LOAD_WORDS, NONDETERMINISM_WORDS
+    read=((trace.get('contexts') or {}).get(str(loss.get('limit_context'))) or {}).get('module_load')
+    if read and (loss.get('module_load')!=read or MODULE_LOAD_WORDS.format(kernels=', '.join(read)) not in (w.get('words') or '')):
+      failures.append('decode kernels were read from a module-load capture, and the report does not disclose it')
     for cap in captures:  # a capture whose passes were forced says so, as a field and in its words
       forcing=(cap.get('engine') or {}).get('token_forcing')
       if forcing and (loss.get('token_forcing')!=forcing or FORCING_WORDS not in (w.get('words') or '')):

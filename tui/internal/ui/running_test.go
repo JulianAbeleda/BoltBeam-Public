@@ -227,6 +227,10 @@ func TestBatchResults(t *testing.T) {
 	one.Limit.TokSTotal, one.Limit.Bound = 20.8, "memory"
 	r.Results.Batches = []seam.BatchRow{one, row}
 	r.Measure = &seam.MeasureStatus{Status: "measured", Provider: sp("llama.cpp"), Batches: []int{1, 8}}
+	if sweep := plain(resultBody(Facts{Run: &r}, 100)); strings.Contains(sweep, "· batch 8") { // figures of batch 1: no batch 8 title
+		t.Fatalf("a batch-1 result titled with the largest batch timed:\n%s", sweep)
+	}
+	r.Results.Loss.Batch = 8 // the figures are of a step of 8 streams (the per-role capture's)
 	got := plain(resultBody(Facts{Run: &r}, 100))
 	golden(t, "results-batch.txt", got)
 	for _, want := range []string{"Measured with llama.cpp · roles not timed · batch 8", "PER STREAM", "100.0", "164.0", "61%"} {

@@ -29,6 +29,21 @@ def bind_cache_rate(run:Path, raw:Path, capture:dict, cache:dict | None) -> None
   proof['cache_rate_source']=path.name
 
 
+def step_replicas(launches:list[dict], rows_of) -> dict:
+  """A semantic decode capture's repeats for tie_out.over_ceiling: it is one capture of many decode steps, so its
+  steps are dealt into tie_out.REPLICAS groups, every third step to a group (the context grows a token a step, so each
+  group spans the same contexts; contiguous thirds do not), and each group is attributed as the whole capture is:
+  ms per step by kernel row, the overlap row left out. One process, not fresh captures, and said so. Nothing with
+  fewer than two steps a group."""
+  from boltbeam.workflow.tie_out import REPLICAS
+  steps=sorted({l['capture_step'] for l in launches})
+  if len(steps)<2*REPLICAS:return {}
+  groups=[set(steps[g::REPLICAS]) for g in range(REPLICAS)]
+  return {'replicas':[{r['name']:r['ms']/len(own) for r in rows_of([l for l in launches if l['capture_step'] in own],[1]*len(own),len(own))['rows']
+                       if r['what']!='overlap'} for own in groups],
+          'replicas_of':f"groups of one capture's {len(steps)} decode steps (every {REPLICAS}rd step; one process, not fresh captures)"}
+
+
 def attribute(run:Path, raw:Path, *, peaks:dict, bandwidth_gbs:float,
               cache:dict | None, uncertainty:dict, formats:dict) -> dict:
   profile=json.loads((run/'model_profile.json').read_text())
@@ -54,11 +69,14 @@ def attribute(run:Path, raw:Path, *, peaks:dict, bandwidth_gbs:float,
   speculative=engine.get('speculative_steps')
   # a speculative step verifies k + 1 query tokens (collectors/vllm_speculation); a plain decode step, one
   chunks=([s['query_tokens'] for s in speculative] if speculative else [1]*length if engine.get('decode_steps') else [length])
-  attr=attribute_prefill(facts['launches'],[],chunk_widths=chunks,outputs=len(chunks),
+  rows_of=lambda launches,chunks,n=length:attribute_prefill(launches,[],chunk_widths=chunks,outputs=len(chunks),  # noqa: E731
     layers=profile['layer_count'],kernel_paths=paths['kernels'],observed=paths.get('observed'),observed_by=paths.get('observed_by'),
-    peaks=peaks,bandwidth_gbs=bandwidth_gbs,profile=profile,length=length,warmup=False,
+    peaks=peaks,bandwidth_gbs=bandwidth_gbs,profile=profile,length=n,warmup=False,
     formats=formats,cache=cache,
     depth=context,unc=uncertainty,explicit_overlap=True,streams=1 if replay is not None else engine['batch'])
+  attr=rows_of(facts['launches'],chunks)
+  if engine.get('decode_steps') and not speculative:
+    attr.update(step_replicas(facts['launches'],rows_of))
   digest=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
   sources=[raw/name for name in ('semantic_work.json','instruction_paths.json')]
   if engine.get('decode_steps'):
@@ -72,6 +90,7 @@ def attribute(run:Path, raw:Path, *, peaks:dict, bandwidth_gbs:float,
   if any(not p.resolve().is_relative_to(run.resolve()) for p in sources):
     raise ValueError('decode evidence must be stored inside its run')
   if paths.get('observed_scope'):attr['observed_scope']=paths['observed_scope']  # which decode steps ncu observed
+  if paths.get('module_load'):attr['module_load']=sorted(paths['module_load']['kernels'])  # kernels no file holds
   if speculative:
     from boltbeam.collectors.vllm_speculation import words
     spec=engine.get('speculation') or {}

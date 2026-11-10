@@ -318,10 +318,25 @@ def check_window(window:list[dict[str, Any]], *, method:str, tokens:int, token_m
   return f"checked: kernels within the captured token by the measured ±{100 * band:.2f}%"
 
 
+def fresh_replicas(attributed, folders:list[pathlib.Path], steps:list[float | None]) -> list[dict[str, float]] | None:
+  """A run's fresh capture pairs as its kernel rows' repeats (tie_out.over_ceiling), for every engine captured from
+  outside: attributed(i, out, token_ms=) writes pair i's trace into its folder, attributed like the run's own. A pair
+  that cannot be attributed replicates nothing; the rows stay unqualified unless two others do."""
+  from boltbeam.workflow.tie_out import replica_rows
+  out = []
+  for i, folder in enumerate(folders):
+    try:
+      out.append(replica_rows(attributed(i, str((folder / "attributed.json").absolute()), token_ms=steps[i])))
+    except CaptureRefused:
+      pass
+  return out or None
+
+
 def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str, model_id:str, target,
                    context:int, tokens:int, out:str, token_ms:float | None = None,
                    long_kernels:int = 0, overlap:dict[str, Any] | None = None, batch:int = 1,
-                   matrices:Any = None, engine:dict[str, Any] | None = None, unfused_attention:str | None = None) -> dict[str, Any]:
+                   matrices:Any = None, engine:dict[str, Any] | None = None, unfused_attention:str | None = None,
+                   replicas:list[dict[str, float]] | None = None) -> dict[str, Any]:
   """A boltbeam.timing_trace.v1 of one provider's captured decode window, attributed, written to run/out.
   token_ms is the captured run's own time per token, as the runtime printed it. With batch B, a token is one decode
   step of B streams: the weights are read once per step, so a role's calls per step are its count at any batch. Refused (CaptureRefused, no file
@@ -384,7 +399,7 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
                    + trace_rows(result, context=context, time_source=method),
            "pairs": result["pairs"], "unpaired_roles": result["unpaired"], "ambiguous": result["ambiguous"],
            "pairing_rule": result["rule"], "structure": result["structure"], "overlap": overlap, "pairing_roles": pairing_roles,
-           "window_check": window_check}
+           "window_check": window_check, **({"replicas": replicas} if replicas else {})}
   if packed:
     from boltbeam.artifacts.tinygrad_profile_events import matrix_work_coverage
     work = matrix_work_coverage(trace["rows"], profile, tokens, batch=batch)

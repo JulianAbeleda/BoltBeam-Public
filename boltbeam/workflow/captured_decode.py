@@ -14,6 +14,9 @@ FORCING_WORDS = (" Every pass was forced to one production-graph generation's to
 NONDETERMINISM_WORDS = (" The engine's own graphed generation did not repeat itself (stream, first differing token: {where}),"
                         " so the tokens forced are the first of two production generations that differ; one stream's"
                         " work does not depend on which tokens it takes.")
+MODULE_LOAD_WORDS = (" No library file holds the code of {kernels}: the roles on them take their matrix path from a"
+                     " module-load capture, the modules the driver loaded in one more pass of the same program outside"
+                     " the timed captures, each kernel found by its entry symbol.")
 
 
 def _graph_trace(run:Path) -> str | None:
@@ -71,14 +74,16 @@ def loss_block(run:Path, provider:str, token:dict | None) -> dict:
     table['words']+=NONDETERMINISM_WORDS.format(where=nondeterministic)
   if capture.get('observed_scope') and capture['observed_scope']!='every decode step':
     table['words']+=f" Closed kernels' executed paths were observed in {capture['observed_scope']}."
+  if capture.get('module_load'):table['words']+=MODULE_LOAD_WORDS.format(kernels=', '.join(capture['module_load']))
   return {'status':'modeled','provider':provider,'workload':'decode','per':'per token' if batch==1 else f'per step of {batch} streams',
           **({'batch':batch} if batch>1 else {}),**({'token_forcing':forcing} if forcing else {}),
           **({'engine_nondeterministic':nondeterministic} if nondeterministic else {}),
           **({'observed_scope':capture['observed_scope']} if capture.get('observed_scope') else {}),
+          **({'module_load':capture['module_load']} if capture.get('module_load') else {}),
           **({'speculation':{k:spec[k] for k in ('config','acceptance','tokens','steps','accounting','words','prompt')}} if spec else {}),
           'limit_ms':limit,'limit_tok_s':1000/limit,'limit_context':context,
           'source':TRACE,'semantic_capture':True,'where_token_goes':table,
           'capture_comparison':comparison,
           'runtimes':[{'provider':provider,'ms':token['ms'],'tok_s':token['tok_s'],'lost_ms':token['ms']-limit,'per_role':False,
-                       'note':f'Untraced at context {context}'+(f', {batch} streams' if batch>1 else '')+'; table uses captured time.'}],
+                       'note':f'Untraced at context {context}'+(f', {batch} streams' if batch>1 else '')+('; table sums to it, gaps as a bound.' if table.get('gaps_bound') else '; table uses captured time.')}],
           'roles':[],'others':[],'unpaired_roles':[],'not_timed':[],'tie_out':None,'estimate':None,'missing':None,'refused':None,'findings':[]}

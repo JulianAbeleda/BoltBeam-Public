@@ -18,6 +18,7 @@ import pathlib
 from typing import Any
 
 from boltbeam.workflow import tie_out as tie
+from boltbeam.collectors.prefill import timing_reference
 
 PER = "per prefill"
 
@@ -50,7 +51,7 @@ def tables(run:pathlib.Path) -> dict[int, dict[str, Any]]:
     t = truth.get(int(length)) or {}
     from boltbeam.workflow.repeat_bands import find
     attr = {**attr, "end_to_end": tie.end_to_end(attr, t.get("qualification_ms") or t.get("prefill_ms"), band=find(run, f"prefill {length}"),
-                                               reference="untraced final repetition", reference_window=(t.get("engine") or {}).get("timing_window"))}
+                                               reference=timing_reference((t.get("engine") or {}).get("timing_window")), reference_window=(t.get("engine") or {}).get("timing_window"))}
     w = tie.where_prefill_goes(attr, untraced_ms=t.get("prefill_ms"), length=int(length))
     if w:
       out[int(length)] = w
@@ -64,7 +65,7 @@ def captured_whole(attr:dict[str, Any] | None, row:dict[str, Any], what:str, unt
     return None
   ms, busy, window = float(cap["token_ms"]), float(cap["busy_ms"]), (row.get("engine") or {}).get("timing_window")
   e2e = tie.end_to_end({"measured_ms": ms, "wall_ms": ms, "busy_ms": busy, "gaps_ms": ms - busy, "timing_window": cap.get("timing_window")},
-                       untraced, what, band=band, reference="untraced final repetition", reference_window=window)
+                       untraced, what, band=band, reference=timing_reference(window), reference_window=window)
   return {**cap, "untraced_ms": untraced, "end_to_end": e2e, "words": f"Whole {what} captured by {cap['method']}, not split by role: captured "
           f"{ms:.2f} ms vs untraced " + (f"{untraced:.2f} ms" if untraced else "not measured") + f", GPU busy {busy:.2f} ms (the mean of "
           f"the capture's {cap['prefills']} prefills: no buffer marks their edges); " + e2e["words"].split(" (", 1)[0] + arm_words(attr, row) + "."}

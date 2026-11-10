@@ -15,6 +15,7 @@ The capture runs in-process (VLLM_ENABLE_V1_MULTIPROCESSING=0); whole-step timin
 """
 from __future__ import annotations
 
+import json
 import pathlib
 from typing import Any
 
@@ -31,6 +32,23 @@ DRIVER = ec.RUNTIME / "vllm_decode_drive.py"
 TOKENS, REPS = 64, 3
 ROLE_TOKENS = 32
 KV_ELEMENT = (2, "vLLM's default KV cache dtype (auto: the model's bf16)")
+
+
+def state_element(run, profile) -> tuple[tuple[float, float] | None, str]:
+  """vLLM 0.31.0's recurrent state dtypes (layers/mamba/mamba_utils.py, models/config.py): the conv state at the model
+  dtype (mamba_cache_dtype auto), the recurrent state at the config's mamba_ssm_dtype (Qwen3.5) or
+  mamba_ssm_cache_dtype (NemotronH, float32 unstated), else the conv's (mamba_ssm_cache_dtype auto)."""
+  from boltbeam.roofline.prefill_work import elem_bytes
+  r = ((profile or {}).get("metadata") or {}).get("recurrent") or {}
+  rows = json.loads((run / "timing_trace.json").read_text()).get("rows", []) if run and (run / "timing_trace.json").is_file() else []
+  engine = next((x.get("engine") or {} for x in rows if (x.get("engine") or {}).get("activation_dtype")), {})
+  if "ssm_dtype" not in r or not engine:
+    return None, "vLLM's state dtype needs the model config's (profile the model again) and the run's model dtype"
+  conv = engine["activation_dtype"]
+  ssm = r["ssm_dtype"] or ("float32" if engine.get("model_type") == "nemotron_h" else conv)
+  name = {"bfloat16": "BF16", "float16": "F16", "float32": "F32"}
+  return ((elem_bytes(name.get(conv, conv)), elem_bytes(name.get(ssm, ssm))),
+          f"vLLM keeps the conv state in the model's {conv} and the recurrent state in {ssm}")
 # FlashInfer's sampler is a run-time kernel build that needs curand.h; a system CUDA without it (the 5090 box's
 # /usr/local/cuda 13.2) fails the engine at start, and FlashInfer's own headers refuse pip's newer CUDA. vLLM's own
 # sampler is used instead: sampling is not weight reading, so the decode step's memory work is unchanged.

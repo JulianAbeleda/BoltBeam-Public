@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "fetched.json: where a run brought home by `boltbeam fetch` came from (boltbeam/workflow/fetch.py)",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "id", "source", "fetched_at", "target_id", "gpu", "boltbeam_version", "transport", "traces",
+               "files", "left_behind", "added", "chip_profile"],
+  "properties": {
+    "schema": {"const": "boltbeam.fetched.v1"},
+    "id": {"type": "string", "minLength": 1},
+    "source": {
+      "type": "object",
+      "required": ["dest", "host", "port", "path"],
+      "properties": {
+        "dest": {"type": "string"},
+        "host": {"type": "string"},
+        "port": {"type": ["integer", "null"]},
+        "path": {"type": "string"}
+      }
+    },
+    "fetched_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
+    "target_id": {"type": ["string", "null"]},
+    "gpu": {"type": ["string", "null"]},
+    "gpus": {"type": ["integer", "null"]},
+    "boltbeam_version": {"type": ["string", "null"]},
+    "transport": {"enum": ["rsync", "tar"]},
+    "traces": {"enum": ["included", "left behind"]},
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "size", "sha256"],
+        "properties": {"path": {"type": "string"}, "size": {"type": "integer"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}
+      }
+    },
+    "left_behind": {"type": "array", "items": {"type": "object", "required": ["path", "why"]}},
+    "added": {"type": "array", "items": {"type": "string"}},
+    "chip_profile": {
+      "type": "object",
+      "required": ["target_id", "used"],
+      "properties": {
+        "target_id": {"type": ["string", "null"]},
+        "used": {"enum": ["registry", "this machine's", "fetched", null]},
+        "path": {"type": "string"},
+        "remote_path": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "why": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

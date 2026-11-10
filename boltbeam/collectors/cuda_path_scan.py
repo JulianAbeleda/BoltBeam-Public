@@ -13,8 +13,10 @@
                 (nvdisasm; with none the scan says so and finds nothing): kept when it issues exactly one distinct matrix opcode; forms
                 lowering to one opcode keep the named one, else the shortest
     name        NAMES, the human rule (which weight format a path serves, roofline/prefill_work): two of one name keep
-                it for the largest K; any other is named by its PTX form and listed in `unmapped` (cuda_compute measures the
-                named ones; an unmapped one when passed in `paths`)
+                it for the largest K, unless NAMES names that K (fp16_k8); any other is named by its PTX form and listed
+                in `unmapped` (cuda_compute measures the named ones; an unmapped one when passed in `paths`)
+    warpgroup   cuda_compute's `wgmma` paths (kind wgmma, no `mma.sync` form: operands in shared memory) are not
+                spanned by GRAMMAR; each is kept when its own probe compiles for `sm_XYa` and issues one opcode
 
 The record is cached per toolkit and target and kept in the chip profile (matrix_path_scan); cuda_compute.PATHS is
 the verified reference it reproduces and the table used where there is no toolkit.
@@ -34,7 +36,7 @@ from typing import Any
 from boltbeam.collectors import cuda_compute as cc
 from boltbeam.collectors import path_scan
 
-SCAN_VERSION = 1
+SCAN_VERSION = 3
 SHAPES = ("m16n8k4", "m16n8k8", "m16n8k16", "m16n8k32", "m16n8k64")
 BITS = {"f16": 16, "bf16": 16, "tf32": 32, "s8": 8, "u8": 8, "s4": 4, "u4": 4, "e4m3": 8, "e5m2": 8, "e3m2": 6,
         "e2m3": 6, "e2m1": 4}
@@ -50,6 +52,7 @@ WORDS = {"f16": "fp16", "bf16": "bf16", "tf32": "tf32", "s8": "int8", "u8": "uin
 # (kind, accumulator, input, scale type) -> (path name, its words): the names prefill_work's weight formats key on
 NAMES = {("", "f32", "f16", ""): ("fp16", "fp16 in, fp32 accumulate"),
          ("", "f16", "f16", ""): ("fp16_f16acc", "fp16 in, fp16 accumulate"),
+         ("", "f32", "f16", "", 8): ("fp16_k8", "fp16 in, fp32 accumulate, K 8"),  # a K of its own: models run it
          ("", "f32", "bf16", ""): ("bf16", "bf16 in, fp32 accumulate"),
          ("", "f32", "tf32", ""): ("tf32", "tf32 in, fp32 accumulate"),
          ("", "s32", "s8", ""): ("int8", "int8 in, int32 accumulate"),
@@ -117,14 +120,14 @@ def valid(ptxas:str, version:str, sm:str, paths:list[cc.Path], scratch:pathlib.P
 
 def lower(nvcc:str, p:cc.Path, sm:str, nvdisasm:str, cache:pathlib.Path) -> set[str]:
   """The matrix opcodes the probe for one path issues on `sm`."""
-  from boltbeam.collectors.instruction_path import _SASS_MMA
+  from boltbeam.collectors.instruction_path import sass_ops
   from boltbeam.runtime.cuda_device import build_cubin
   cubin = build_cubin(nvcc, cc.source(p), cache=cache, arch=sm + p.arch_suffix)
   f = path_scan.keep(cache / f"c-{hashlib.sha256(cubin).hexdigest()[:16]}.cubin", cubin)
   proc = subprocess.run([nvdisasm, "-c", str(f)], capture_output=True, text=True, timeout=300)
   if proc.returncode:
     raise RuntimeError(f"nvdisasm exited {proc.returncode}: {proc.stderr.strip()[-200:]}")
-  return set(_SASS_MMA.findall(proc.stdout))
+  return set(sass_ops(proc.stdout))
 
 
 def table(kept:list[cc.Path]) -> tuple[tuple[cc.Path, ...], list[str]]:
@@ -132,8 +135,8 @@ def table(kept:list[cc.Path]) -> tuple[tuple[cc.Path, ...], list[str]]:
   named: dict[str, cc.Path] = {}
   rest = []
   for p in sorted(kept, key=lambda p: (-p.k, p.ptx)):
-    kind, acc, ins, st, _ = fields(p.ptx)
-    hit = NAMES.get((kind, acc, ins, st))
+    kind, acc, ins, st, k = fields(p.ptx)
+    hit = NAMES.get((kind, acc, ins, st, k)) or NAMES.get((kind, acc, ins, st))
     if hit and hit[0] not in named:
       named[hit[0]] = dataclasses.replace(p, name=hit[0], words=hit[1])
     else:
@@ -181,6 +184,13 @@ def scan(sm:str, *, nvcc:str | None = None, nvdisasm:str | None = None, cache:pa
       elif (op := ops.pop()) not in by_op or rank(p) > rank(by_op[op]):
         by_op[op] = p
     found, rec["unmapped"] = table(list(by_op.values()))
+    for p in (p for p in cc.PATHS if p.kind == "wgmma"):
+      try:
+        ops = lower(nvcc, p, sm, nvdisasm, cache)
+      except (RuntimeError, OSError, subprocess.SubprocessError):
+        continue  # not an instruction of this target
+      if len(ops) == 1:
+        found, by_op[ops.pop()] = (*found[:-1], p, found[-1]), p
     return {**rec, "candidates": len({p.ptx for p in forms}), "sass": {p.ptx: op for op, p in by_op.items()},
             "paths": [dataclasses.asdict(p) for p in found]}
   st = pathlib.Path(os.path.realpath(ptxas)).stat()

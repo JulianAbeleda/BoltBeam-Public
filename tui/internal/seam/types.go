@@ -11,7 +11,7 @@ type FactStatus struct {
 
 type Target struct {
 	ID                 string             `json:"id"`
-	Source             string             `json:"source"` // registry, or generated: a chip profile measured on this machine
+	Source             string             `json:"source"` // registry, generated (a chip profile measured on this machine) or fetched (another machine's, brought home with its runs)
 	Backend            string             `json:"backend"`
 	BackendStatus      string             `json:"backend_status"`
 	Scope              *string            `json:"scope"`
@@ -231,7 +231,8 @@ type Saved struct {
 		Measured         bool     `json:"measured"`
 		RooflinePct      *float64 `json:"roofline_pct"`
 		ValidationFailed bool     `json:"validation_failed"`
-		Layout           *string  `json:"layout"` // "split by layer (2 GPUs)"; nil for one GPU or an older Python
+		Layout           *string  `json:"layout"`  // "split by layer (2 GPUs)"; nil for one GPU or an older Python
+		Fetched          *Fetched `json:"fetched"` // nil for a run made here (or an older Python)
 	} `json:"runs"`
 }
 
@@ -403,6 +404,15 @@ type Summary struct {
 	Measure     *MeasureStatus `json:"measure"`
 	Where       string         `json:"where"` // runs, work or saved: set by `runs --all`
 	Dir         string         `json:"dir"`
+	Fetched     *Fetched       `json:"fetched"` // a run brought home by `boltbeam fetch`; absent for a run made here
+}
+
+// Fetched is where a run brought home by `boltbeam fetch` came from, read from its fetched.json (workflow/fetch.py).
+type Fetched struct {
+	Host      *string `json:"host"`
+	Chip      *string `json:"chip"`
+	GPU       *string `json:"gpu"`
+	FetchedAt string  `json:"fetched_at"` // UTC, 2026-11-09T12:00:00Z
 }
 
 type Runs struct {
@@ -745,6 +755,8 @@ type Loss struct {
 	CaptureComparison *Where `json:"capture_comparison"`
 	// Per is "per prefill" on a prefill run (workflow/prefill.py); nil on decode, whose times are per token.
 	Per *string `json:"per"`
+	// Batch is the streams every figure here is of (a per-role capture of B streams); 0 from Python means 1.
+	Batch int `json:"batch"`
 	// Session is a session run's table, one row per depth (workflow/session.py); nil on other runs.
 	Session *Session `json:"session"`
 	// Replay is a replay run's table, one row per turn, with its headline and where tables (workflow/replay.py).
@@ -843,16 +855,18 @@ type SessionRow struct {
 // Where is "Where the token goes": rows worst first, summing to TokenMs (now) and LimitMs (at the limit).
 // BaseMs is the headline token tok/s if fixed is taken from; Estimate says the rows come from kernels timed alone.
 type Where struct {
-	Title    string     `json:"title"`
-	Estimate bool       `json:"estimate"`
-	TokenMs  float64    `json:"token_ms"`
-	BaseMs   float64    `json:"base_ms"`
-	LimitMs  float64    `json:"limit_ms"`
-	LostMs   float64    `json:"lost_ms"`
-	Columns  []string   `json:"columns"`
-	NoLimit  string     `json:"no_limit"`
-	Words    string     `json:"words"`
-	Rows     []WhereRow `json:"rows"`
+	Title    string   `json:"title"`
+	Estimate bool     `json:"estimate"`
+	TokenMs  float64  `json:"token_ms"`
+	BaseMs   float64  `json:"base_ms"`
+	LimitMs  float64  `json:"limit_ms"`
+	LostMs   float64  `json:"lost_ms"`
+	Columns  []string `json:"columns"`
+	NoLimit  string   `json:"no_limit"`
+	Words    string   `json:"words"`
+	// Qualification says which rows of an over-ceiling capture stand and how (tie_out.where_token_goes): shown first.
+	Qualification string     `json:"qualification"`
+	Rows          []WhereRow `json:"rows"`
 	// SumCells is the sum row as text, Cells on each row the row as text after its name, in Columns' order: the
 	// renderers print them and format no number of their own (one table for decode and prefill).
 	SumCells      []string `json:"sum_cells"`

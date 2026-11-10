@@ -106,8 +106,20 @@ def json_lines(text:str) -> list[dict[str, Any]]:
 
 def run_driver(argv:list[str], *, env:dict[str, str] | None = None, log:pathlib.Path | None = None,
                timeout_s:float = 3600.0, cwd:pathlib.Path | None = None) -> list[dict[str, Any]]:
-  """Run a driver and return its JSON lines. A failure raises with the end of what it printed."""
-  proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, env={**os.environ, **(env or {})}, cwd=cwd)
+  """Run a driver and return its JSON lines. A failure raises with the end of what it printed.
+
+  An engine that refuses to compile inside a measurement (build_jobs.PrebuildRequired: a new model's FlashInfer
+  kernel) names the module; it is built outside the measurement, bounded (runtime/prebuild_cuda.py), and the driver
+  started again, for every engine, up to PREBUILD_TRIES modules."""
+  from boltbeam.runtime import prebuild_cuda as pc
+  built = []
+  while True:
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout_s, env={**os.environ, **(env or {})}, cwd=cwd)
+    need = pc.required(proc.stdout + proc.stderr) if proc.returncode else None
+    if need is None or need in built or len(built) >= pc.PREBUILD_TRIES or not need.is_file():
+      break
+    built.append(need)
+    pc.prebuild(need, report_path=need.parent / "boltbeam-build-profile.json", ninja=pc.ninja_beside(argv[0]))
   if log is not None:
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(proc.stdout + "\n--- stderr ---\n" + proc.stderr)
@@ -132,23 +144,33 @@ def captured_role_time(run:pathlib.Path, *, provider:str, trace:str, argv_for:Ca
   takes. Two driver runs at one context and batch, N tokens and 1 (--once), subtracted per kernel: what is left
   is N - 1 decode steps. The captured run's own time per step is the difference of the two runs' printed decode
   times over N - 1. warm runs the 1-token driver once uncaptured first: an engine's start-up can fill on-disk caches
-  (vLLM's Triton autotune, a JIT) in whichever capture runs first, and the subtraction needs both to start up alike."""
+  (vLLM's Triton autotune, a JIT) in whichever capture runs first, and the subtraction needs both to start up alike.
+  A batch-1 capture over the capture-overhead ceiling is repeated: tie_out.REPLICAS fresh pairs in all, each attributed
+  alike, are the repeats its kernel rows stand by (tie_out.over_ceiling). Within the ceiling, one pair."""
   from boltbeam.collectors import attribution, vendor_capture
   from boltbeam.workflow.common import run_gpu
+  from boltbeam.workflow.tie_out import REPLICAS, capture_over_ceiling
   raw = run / "kernel_compare" / f"{provider.replace('.', '_').replace('-', '_')}_capture"
   if warm:
     run_driver(argv_for(1), env=env, log=raw / "warm.log", cwd=cwd)
-  got, secs, matrices, engine = {}, {}, None, {}
-  for name, n in (("long", tokens), ("short", 1)):
-    got[name] = vendor_capture.capture(target.backend, argv_for(n), raw / name, cwd=cwd, env=env, flush_ms=flush_ms, device=run_gpu(run), **({"profiler_range": True} if profiler_range else {}))
-    printed = [r for r in json_lines(vendor_capture.program_output(raw / name)) if "seconds" in r]
-    secs[name] = printed[-1]["seconds"] if printed else None
-    matrices = matrices or (printed[-1].get("matrices") if printed else None)  # the engine's packed GEMMs, if it says
-    engine.update((printed[-1].get("engine") or {}) if printed else {})
-  window, overlap = attribution.shared_window(got["long"], got["short"])
-  token_ms = ((secs["long"] - secs["short"]) * 1000.0 / (tokens - 1)
-              if secs["long"] is not None and secs["short"] is not None else None)
-  return attribution.provider_trace(run, window, provider=provider, method=vendor_capture.plan(target.backend)["method"],
-                                    model_id=model_id, target=target, context=context, tokens=tokens - 1, out=trace,
-                                    token_ms=token_ms, long_kernels=len(got["long"]), overlap=overlap, batch=batch,
-                                    matrices=matrices, engine=engine)
+  def pair(folder:pathlib.Path) -> dict[str, Any]:
+    got, secs, matrices, engine = {}, {}, None, {}
+    for name, n in (("long", tokens), ("short", 1)):
+      got[name] = vendor_capture.capture(target.backend, argv_for(n), folder / name, cwd=cwd, env=env, flush_ms=flush_ms, device=run_gpu(run), **({"profiler_range": True} if profiler_range else {}))
+      printed = [r for r in json_lines(vendor_capture.program_output(folder / name)) if "seconds" in r]
+      secs[name] = printed[-1]["seconds"] if printed else None
+      matrices = matrices or (printed[-1].get("matrices") if printed else None)  # the engine's packed GEMMs, if it says
+      engine.update((printed[-1].get("engine") or {}) if printed else {})
+    window, overlap = attribution.shared_window(got["long"], got["short"])
+    return {"window": window, "overlap": overlap, "long": len(got["long"]), "matrices": matrices, "engine": engine,
+            "token_ms": ((secs["long"] - secs["short"]) * 1000.0 / (tokens - 1) if secs["long"] is not None and secs["short"] is not None else None)}
+  pairs = [pair(raw)]
+  attributed = lambda i, out, **kw: attribution.provider_trace(  # noqa: E731
+    run, pairs[i]["window"], provider=provider, method=vendor_capture.plan(target.backend)["method"], model_id=model_id, target=target,
+    context=context, tokens=tokens - 1, out=out, long_kernels=pairs[i]["long"], overlap=pairs[i]["overlap"], batch=batch,
+    matrices=pairs[i]["matrices"], engine=pairs[i]["engine"], **kw)
+  replicas = None
+  if batch == 1 and capture_over_ceiling(run, context, provider, pairs[0]["token_ms"]):
+    pairs += [pair(raw / f"pair-{i + 1}") for i in range(1, REPLICAS)]
+    replicas = attribution.fresh_replicas(attributed, [raw / f"pair-{i + 1}" for i in range(REPLICAS)], [p["token_ms"] for p in pairs])
+  return attributed(0, trace, token_ms=pairs[0]["token_ms"], replicas=replicas)

@@ -3,7 +3,7 @@
     pipeline MODEL --run RUN --target nvidia_sm120 --measure auto
 
 It answers trace_request.json with a boltbeam.timing_trace.v1 holding one whole_step row per requested depth:
-fresh llama-bench long/short decode pairs (`-p 0 -n N -d CTX`), estimating tokens 2..N from elapsed differences. The Metal
+the median of three fresh llama-bench long/short pairs (`-p 0 -n N -d CTX`), estimating tokens 3..N after two setup tokens from elapsed differences. The Metal
 collector (metal_native.py) takes the same rows from here.
 
 It writes no probe evidence and no kernel rows. BoltBeam's building-block probe kernels are Metal (MSL) only, and
@@ -38,13 +38,14 @@ PROVIDER = "llama.cpp"  # the provider adapter's name (collectors/providers.py)
 UNFUSED_ATTENTION = "soft_max"  # without flash attention (a head size its kernels lack) attention is KQ, soft_max, KQV
 TRACE = "llama_timing_trace.json"  # per-role time of llama.cpp's own kernels, from a vendor capture
 RAW = "kernel_compare/llama_capture"
-ROLE_TOKENS = 64  # decode tokens in the captured window
+GEN_TOKENS, SETUP_TOKENS, BENCH_REPS = 33, 2, 3
+ROLE_TOKENS = 64  # legacy default for batched role captures
 ENV = "BOLTBEAM_LLAMA_BENCH"
 DEFAULT = "llama-bench"
 BATCHED_ENV = "BOLTBEAM_LLAMA_BATCHED_BENCH"
 BATCHED = "llama-batched-bench"
 KV_ELEMENT = (2, "llama-bench's default KV cache type, f16")
-GEN_TOKENS, BENCH_REPS = 32, 3
+STATE_ELEMENT = ((4, 4), "llama.cpp keeps the conv and recurrent state in f32 (llama-model.cpp recurrent_type_r/s)")
 PROBE_ABSENT = ("no building-block probe in this run: this provider's path does not run BoltBeam's probe kernels, "
                 "and no fork path writes probe evidence")
 
@@ -114,7 +115,7 @@ def batched_points(text:str, tokens:int) -> list[dict[str, Any]]:
 
 
 def bench_batched(binary:str, model:pathlib.Path, context:int, batches:list[int], layout_args:list[str] | None = None,
-                  env:dict[str, str] | None = None, tokens:int = GEN_TOKENS, cwd:pathlib.Path | None = None) -> list[dict[str, Any]]:
+                  env:dict[str, str] | None = None, tokens:int = 32, cwd:pathlib.Path | None = None) -> list[dict[str, Any]]:
   cmd = batched_argv(binary, model, context, tokens, batches, layout_args)
   proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, env={**os.environ, **(env or {})}, cwd=cwd)
   if proc.returncode != 0:
@@ -140,19 +141,26 @@ def decode_argv(llama_bench:str, model:pathlib.Path | str, depth:int, tokens:int
           "--no-warmup", "-o", "json", *(extra or [])]
 
 
-def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int, tokens:int = ROLE_TOKENS,
+def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int, tokens:int | None = None,
               llama_bench:str = DEFAULT, layout:str = "one", gpus:int = 1, batch:int = 1,
               flags:list[str] | None = None, raw:pathlib.Path | None = None, out:str = TRACE) -> dict[str, Any]:
   """llama.cpp's kernels per role, captured from outside by the GPU vendor's tool (collectors/vendor_capture.py)
-  and attributed by bytes and count (collectors/attribution.py). Two captures at the same depth, one with
-  `tokens` decode tokens and one with 1, are subtracted per kernel: what is left is exactly tokens - 1 decode
-  tokens, with the context fill, the setup and the first token removed. flags: llama-bench flags a caller matches to
+  and attributed by bytes and count (collectors/attribution.py). Each fresh pair has captures at the same depth, one with
+  `tokens` decode tokens and one with SETUP_TOKENS, are subtracted per kernel: the remaining
+  steady tokens exclude context fill and initial graph construction; later graph rebuilds remain included. The host
+  median selects one of three pairs and its exact GPU window. flags: llama-bench flags a caller matches to
   another configuration (a replay's cache types); raw and out: the capture folder and trace file, when a run holds
   more than one decode capture."""
+  tokens = tokens if tokens is not None else (GEN_TOKENS if batch == 1 else ROLE_TOKENS)
   from boltbeam.collectors import attribution, vendor_capture
   from boltbeam.workflow import layout as lay
+  from boltbeam.collectors.capture_settings import observed
+  recorded = observed(run, context).get("timing_window") or {}
+  short_tokens = recorded.get("short_tokens", SETUP_TOKENS) if batch == 1 else 1
   if batch == 1:
-    decode_window(context, tokens)
+    window_scope = decode_window(context, tokens, short_tokens)
+    if recorded and (recorded != window_scope or recorded.get("independent_pairs") != BENCH_REPS):
+      raise ValueError("fresh native timing is required for symmetric decode pair sampling")
   if layout == "row":
     # not split by role, as vLLM's split by rows says it (screen._run_stages): the run stands whole and its report is
     # written; a plain refusal ended a measured 2 x RTX 3090 tensor split "failed" with no report (2026-11-09)
@@ -174,23 +182,35 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
   else:
     argv_for = lambda n: decode_argv(bench, model, context, n, extra)  # noqa: E731
   from boltbeam.workflow.common import run_gpu
-  long = vendor_capture.capture(target.backend, argv_for(tokens), raw / "long", env=env, device=run_gpu(run))
-  short = vendor_capture.capture(target.backend, argv_for(1), raw / "short", env=env, device=run_gpu(run))
-  window, overlap = attribution.shared_window(long, short)
-  method = vendor_capture.plan(target.backend)["method"]
-  printed = vendor_capture.program_output(raw / "long")
+  (run / out).unlink(missing_ok=True)
+  captured, pairs = [], []
+  for index in range(BENCH_REPS if batch == 1 else 1):
+    folder = raw / f"pair-{index + 1}" if batch == 1 else raw
+    long = vendor_capture.capture(target.backend, argv_for(tokens), folder / "long", env=env, device=run_gpu(run))
+    short = vendor_capture.capture(target.backend, argv_for(short_tokens), folder / "short", env=env, device=run_gpu(run))
+    window, overlap = attribution.shared_window(long, short)
+    printed = vendor_capture.program_output(folder / "long")
+    if batch == 1:
+      pairs.append(decode_pair(bench_row(printed), bench_row(vendor_capture.program_output(folder / "short")), context, tokens, short_tokens))
+    captured.append((window, overlap, len(long)))
   engine = None
   if batch > 1:
     pts = batched_points(printed, tokens)
-    token_ms = pts[-1]["step_ms"] if pts else None
+    token_ms, selected = pts[-1]["step_ms"] if pts else None, 0
   else:
-    pair = decode_pair(bench_row(printed), bench_row(vendor_capture.program_output(raw / "short")), context, tokens)
+    selected = median_pair(pairs)
+    pair = pairs[selected]
     token_ms = pair["step_ms"]
-    engine = {**pair["engine"], "timing_window": decode_window(context, tokens)}
-  return attribution.provider_trace(run, window, provider=PROVIDER, method=method, model_id=model_id,
-                                    target=target, context=context, tokens=tokens - 1, out=out,
-                                    token_ms=token_ms, long_kernels=len(long), overlap=overlap, batch=batch, engine=engine,
-                                    unfused_attention=UNFUSED_ATTENTION)
+    engine = {**pair["engine"], "timing_window": window_scope}
+    raw.mkdir(parents=True, exist_ok=True)
+    (raw / "pair_selection.json").write_text(pretty_json({"index_base": 0, "selected_pair_index": selected, "pairs": pairs}))
+  attributed = lambda i, out, **kw: attribution.provider_trace(  # noqa: E731
+    run, captured[i][0], provider=PROVIDER, method=vendor_capture.plan(target.backend)["method"], model_id=model_id, target=target,
+    context=context, tokens=tokens - short_tokens, out=out, long_kernels=captured[i][2], overlap=captured[i][1], batch=batch,
+    engine=engine, unfused_attention=UNFUSED_ATTENTION, **kw)
+  replicas = attribution.fresh_replicas(attributed, [raw / f"pair-{i + 1}" for i in range(len(captured) if batch == 1 else 0)],
+                                        [p["step_ms"] for p in pairs])
+  return attributed(selected, out, token_ms=token_ms, replicas=replicas)
 
 
 def bench_row(text:str) -> dict[str, Any]:
@@ -208,24 +228,31 @@ def bench_row(text:str) -> dict[str, Any]:
   raise ValueError("llama-bench printed no decode JSON row")
 
 
-def decode_window(depth:int, tokens:int) -> dict[str, Any]:
+def decode_window(depth:int, tokens:int, short_tokens:int = SETUP_TOKENS, independent_pairs:int | None = BENCH_REPS) -> dict[str, Any]:
   """A differential wall estimate and the exact token range used for kernel attribution."""
-  if type(tokens) is not int or tokens < 2 or type(depth) is not int or depth < 0:
-    raise ValueError("decode difference needs at least two tokens at a nonnegative depth")
-  return {"method": "long_minus_short", "long_tokens": tokens, "short_tokens": 1,
-          "context_start": depth + 2, "context_end": depth + tokens,
+  if type(tokens) is not int or type(short_tokens) is not int or short_tokens not in (1, SETUP_TOKENS) or tokens <= short_tokens or type(depth) is not int or depth < 0:
+    raise ValueError("decode difference needs more tokens than setup at a nonnegative depth")
+  window = {"method": "long_minus_short", "long_tokens": tokens, "short_tokens": short_tokens,
+          "context_start": depth + short_tokens + 1, "context_end": depth + tokens,
           "repetitions": 1, "warmup": False, "process": "fresh_per_sample"}
+  if short_tokens == SETUP_TOKENS:
+    window.update(estimand="steady_decode_after_initial_setup", discarded_setup_tokens=SETUP_TOKENS)
+    if independent_pairs is not None:
+      if type(independent_pairs) is not int or independent_pairs != BENCH_REPS:
+        raise ValueError("symmetric decode requires three independent pairs")
+      window.update(independent_pairs=BENCH_REPS, selection="median_step_ms_then_index")
+  return window
 
 
-def decode_pair(long:dict, short:dict, depth:int, tokens:int) -> dict[str, Any]:
+def decode_pair(long:dict, short:dict, depth:int, tokens:int, short_tokens:int = SETUP_TOKENS) -> dict[str, Any]:
   """Subtract synchronized engine elapsed samples, never rates or kernel busy time.
-  The first token is in a separate process: this estimates tokens 2..N and retains its subtraction noise."""
-  decode_window(depth, tokens)
+  The setup prefix is in a separate process; its full elapsed time is removed, retaining subtraction noise."""
+  decode_window(depth, tokens, short_tokens)
   fields = ("build_commit", "build_number", "model_filename", "n_batch", "n_ubatch", "type_k", "type_v", "flash_attn")
   if any(long.get(k) != short.get(k) for k in fields):
     raise ValueError("decode long/short engine settings differ")
   times = []
-  for row, count in ((long, tokens), (short, 1)):
+  for row, count in ((long, tokens), (short, short_tokens)):
     if any(type(row.get(k)) is not int for k in ("n_gen", "n_depth", "n_prompt")) \
         or row.get("n_gen") != count or row.get("n_depth") != depth or row.get("n_prompt") != 0:
       raise ValueError("decode long/short token window differs from the requested work")
@@ -236,8 +263,14 @@ def decode_pair(long:dict, short:dict, depth:int, tokens:int) -> dict[str, Any]:
     times.append(samples[0])
   if times[0] <= times[1]:
     raise ValueError("decode long-minus-short elapsed time is not positive")
-  return {"long_ns": times[0], "short_ns": times[1], "step_ms": (times[0] - times[1]) / (tokens - 1) / 1e6,
-          "engine": {k: long[k] for k in ("n_ubatch", "n_batch", "type_k", "type_v", "flash_attn") if k in long}}
+  return {"long_ns": times[0], "short_ns": times[1], "step_ms": (times[0] - times[1]) / (tokens - short_tokens) / 1e6,
+          "engine": {k: long[k] for k in fields if k in long}}
+
+
+def median_pair(pairs:list[dict]) -> int:
+  if len(pairs) != BENCH_REPS or any(p["engine"] != pairs[0]["engine"] for p in pairs):
+    raise ValueError("decode requires three pairs with identical engine settings")
+  return sorted(range(BENCH_REPS), key=lambda i: (pairs[i]["step_ms"], i))[1]
 
 
 def bench_tok_s(text:str) -> float | None:
@@ -251,12 +284,13 @@ def bench_tok_s(text:str) -> float | None:
 def bench_decode(llama_bench:str, model:pathlib.Path, depth:int, layout_args:list[str] | None = None,
                  env:dict[str, str] | None = None, cwd:pathlib.Path | None = None) -> dict[str, Any]:
   """Independent fresh long/short pairs with the same lifecycle as the vendor capture.
-  Each pair estimates tokens 2..N; raw commands, stdout and stderr survive even a refused pair in `cwd`."""
+  Each pair estimates steady tokens 3..N; the median pair supplies throughput. All raw commands, stdout and stderr
+  survive even a refused pair in `cwd`."""
   raw = pathlib.Path(tempfile.mkdtemp(prefix=f"decode-{depth}-", dir=cwd))
   pairs = []
   for repeat in range(BENCH_REPS):
     rows = []
-    for label, count in (("long", GEN_TOKENS), ("short", 1)):
+    for label, count in (("long", GEN_TOKENS), ("short", SETUP_TOKENS)):
       cmd = decode_argv(llama_bench, model, depth, count, layout_args)
       stem = raw / f"{repeat + 1}-{label}"
       stem.with_suffix(".command.json").write_text(pretty_json(cmd))
@@ -267,12 +301,14 @@ def bench_decode(llama_bench:str, model:pathlib.Path, depth:int, layout_args:lis
         raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
       rows.append(bench_row(proc.stdout))
     pairs.append(decode_pair(*rows, depth, GEN_TOKENS))
+  selected = median_pair(pairs)
+  (raw / "pair_selection.json").write_text(pretty_json({"index_base": 0, "selected_pair_index": selected, "pairs": pairs}))
   row = rows[0]
   times = [p["step_ms"] for p in pairs]
-  return {"tok_s": 1000.0 / statistics.mean(times), "stddev_tok_s": statistics.stdev([1000.0 / t for t in times]) if len(times) > 1 else 0.0,
-          "command": decode_argv(llama_bench, model, depth, GEN_TOKENS, layout_args), "raw": str(raw), "samples": pairs,
+  return {"tok_s": 1000.0 / times[selected], "stddev_tok_s": statistics.stdev([1000.0 / t for t in times]) if len(times) > 1 else 0.0,
+          "command": decode_argv(llama_bench, model, depth, GEN_TOKENS, layout_args), "raw": str(raw), "samples": pairs, "selected_pair_index": selected,
           "build": row.get("build_commit"), "build_number": row.get("build_number"), "build_installed": _installed(llama_bench), "backends": row.get("backends"), "gpu": row.get("gpu_info"),
-          "decode_tokens": GEN_TOKENS - 1, "measurement_scope": "differential_decode_elapsed",
+          "decode_tokens": GEN_TOKENS - SETUP_TOKENS, "measurement_scope": "differential_decode_elapsed",
           "engine": {**pairs[0]["engine"], "timing_window": decode_window(depth, GEN_TOKENS)}}
 
 
@@ -339,7 +375,7 @@ def build_timing_trace(manifest:dict[str, Any], bench:dict[int, dict[str, Any]],
     "measured": ["whole_step.tok_s (llama-bench long-minus-short elapsed estimate at each depth)"],
     "absent": ["kernel rows: llama.cpp's per-kernel time needs the vendor profiler (collect-hw-trace)",
                "candidate rows: " + PROBE_ABSENT],
-    "notes": ["Fresh long/short pairs estimate tokens 2..N at each requested depth; the subtracted first token is from a separate process, so its run-to-run noise remains."],
+    "notes": ["The median of three fresh long/short pairs estimates tokens 3..N after two setup tokens at each requested depth; the separate setup-prefix process retains subtraction noise. Initial graph setup is excluded; later graph rebuilds remain included."],
   }
   if peak_gbs:
     trace["peak_gbs"] = peak_gbs

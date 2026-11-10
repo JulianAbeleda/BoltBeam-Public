@@ -10,7 +10,9 @@ accumulators per warp in registers and issues the instruction in a loop, so no m
 unit's own. A path whose instruction this GPU or toolkit cannot compile is recorded as not available, with nvcc's
 words; nothing is assumed about which chip has which path. One path is not a matrix instruction: `fp32_fma`, the
 vector ALU's fused multiply-add, the rate of a kernel that issues no matrix instruction at all (a recurrent block's
-scan); it is measured the same way, with each lane's accumulators in registers.
+scan); it is measured the same way, with each lane's accumulators in registers. A warpgroup path (Hopper's
+`wgmma`, kind wgmma) reads its operands from tiles in shared memory, on chip, and is tried at each width of WGMMA_N:
+its rate is the best width's, so a ceiling from it bounds a kernel of any width.
 
 The figure kept is the plateau, not a burst: the best launch shape is found with a few short samples, then run back
 to back for `seconds` while the telemetry sampler (gpu_telemetry.py) logs the clock; the rate is the median launch of
@@ -20,6 +22,8 @@ the rate by the SM count and that clock, so a rate can be read at another clock.
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import itertools
 import json
 import statistics
 import struct
@@ -37,7 +41,7 @@ SHAPES = ((128, 4), (256, 2), (256, 4), (512, 2))  # threads per block, blocks p
 ITERS = 4096
 SECONDS = 2.0  # the plateau run per path
 METHOD = ("BoltBeam cuda_compute: native CUDA, one PTX matrix instruction ({ptx}) in a loop, {acc} accumulators per warp "
-          "in registers, no memory read; best launch shape of {reps} samples each, then that shape back to back for "
+          "in registers, no memory read (wgmma: one accumulator, operands in shared memory); best launch shape of {reps} samples each, then that shape back to back for "
           "{seconds:.0f} s: the median launch of the second half, at the mean SM clock over it")
 
 
@@ -57,7 +61,8 @@ class Path:
   arch_suffix: str = ""
   extra: str = ""
   words: str = ""
-  kind: str = "mma"  # mma: one warp-wide matrix instruction; fma: one fused multiply-add per lane per accumulator
+  kind: str = "mma"  # mma: one warp-wide matrix instruction; fma: one fused multiply-add per lane per accumulator;
+  # wgmma: one asynchronous matrix instruction per warpgroup (four warps), its operands tiles in shared memory
   scale_bits: int = 0x7F7F7F7F  # unit UE8M0 scales; NVFP4 uses unit UE4M3 instead
 
 
@@ -76,13 +81,20 @@ PATHS = (
   Path("nvfp4", "mma.sync.aligned.m16n8k64.row.col.kind::mxf4nvf4.block_scale.scale_vec::4X.f32.e2m1.e2m1.f32.ue4m3",
        16, 8, 64, arch_suffix="a", extra=", {sa}, {{0, 0}}, {sb}, {{0, 0}}",
        words="fp4 e2m1 in with ue4m3 block-16 scales, fp32 accumulate", scale_bits=0x38383838),
+  Path("fp16_wgmma", "wgmma.mma_async.sync.aligned.m64n128k16.f32.f16.f16", 64, 128, 16, arch_suffix="a", kind="wgmma",
+       words="fp16 in, fp32 accumulate, per warpgroup"),
+  Path("bf16_wgmma", "wgmma.mma_async.sync.aligned.m64n128k16.f32.bf16.bf16", 64, 128, 16, arch_suffix="a", kind="wgmma",
+       words="bf16 in, fp32 accumulate, per warpgroup"),
+  Path("fp16_k8", "mma.sync.aligned.m16n8k8.row.col.f32.f16.f16.f32", 16, 8, 8, a_regs=2, b_regs=1,
+       words="fp16 in, fp32 accumulate, K 8"),  # FlashInfer's Gated-DeltaNet precompute issues it beside m16n8k16
 )
+WGMMA_N = (8, 64, 128, 256)  # the widths a warpgroup instruction is tried at
 
 
 def source(p:Path) -> str:
   """The probe kernel for one path."""
-  if p.kind == "fma":
-    return _fma_source(p)
+  if p.kind != "mma":
+    return _fma_source(p) if p.kind == "fma" else _wgmma_source(p)
   acc_n = {"f32": 4, "s32": 4, "f16": 2}[p.acc]
   ctype, cons = {"f32": ("float", "f"), "s32": ("int", "r"), "f16": ("unsigned", "r")}[p.acc]
   d = ", ".join(f"%{i}" for i in range(acc_n))
@@ -150,13 +162,52 @@ extern "C" __global__ void mma_loop(float* out, int iters) {{
 """
 
 
+def _wgmma_source(p:Path) -> str:
+  """A warpgroup path: four warps issue one asynchronous matrix instruction on an M x K and an N x K tile in shared
+  memory (written once, before the loop), ACC of them per committed group onto one accumulator of N / 2 registers a
+  thread, as a GEMM's main loop does. The tile descriptor is CUTLASS's (mma_sm90_desc: K-major, 128-byte swizzle)."""
+  regs = p.n // 2
+  d = ", ".join(f"%{i}" for i in range(regs))
+  outs = ", ".join(f'"+f"(c[{i}])' for i in range(regs))
+  return f"""
+static __device__ unsigned long long tile(unsigned short* t) {{  // start, 16-byte leading and 1024-byte stride offsets
+  return ((__cvta_generic_to_shared(t) & 0x3FFFF) >> 4) | (1ull << 16) | (64ull << 32) | (1ull << 62);
+}}
+extern "C" __global__ void mma_loop(float* out, int iters) {{
+  __shared__ __align__(1024) unsigned short a[{p.m} * 64];
+  __shared__ __align__(1024) unsigned short b[{p.n} * 64];
+  for (int i = threadIdx.x; i < {max(p.m, p.n)} * 64; i += blockDim.x) {{
+    if (i < {p.m} * 64) a[i] = (i * 0x9E37u) & 0x3F3Fu;
+    if (i < {p.n} * 64) b[i] = (i * 0x85EBu) & 0x3F3Fu;
+  }}
+  __syncthreads();
+  unsigned long long da = tile(a), db = tile(b);
+  float c[{regs}];
+#pragma unroll
+  for (int i = 0; i < {regs}; i++) c[i] = 0.0f;
+  for (int it = 0; it < iters; it++) {{
+    asm volatile("wgmma.fence.sync.aligned;" ::: "memory");
+#pragma unroll
+    for (int k = 0; k < {ACC}; k++)
+      asm volatile("{{ .reg .pred p; setp.ne.b32 p, %{regs + 2}, 0; {p.ptx} {{{d}}}, %{regs}, %{regs + 1}, p, 1, 1, 0, 0; }}"
+                   : {outs} : "l"(da), "l"(db), "r"(1));
+    asm volatile("wgmma.commit_group.sync.aligned; wgmma.wait_group.sync.aligned 0;" ::: "memory");
+  }}
+  float s = 0.0f;
+#pragma unroll
+  for (int i = 0; i < {regs}; i++) {{ asm volatile("" : "+f"(c[i]) :: "memory"); s += c[i]; }}
+  out[blockIdx.x * blockDim.x + threadIdx.x] = s;  // every result is kept, so nothing is optimised away
+}}
+"""
+
+
 FMA_LANES = 4  # fp32 accumulators per lane per ACC group: ACC x FMA_LANES independent chains hide the FMA latency
 
 
 def ops_per_launch(p:Path, blocks:int, threads:int, iters:int) -> float:
   if p.kind == "fma":
     return blocks * threads * iters * ACC * FMA_LANES * 2.0
-  return blocks * (threads // 32) * iters * ACC * 2.0 * p.m * p.n * p.k
+  return blocks * (threads // (128 if p.kind == "wgmma" else 32)) * iters * ACC * 2.0 * p.m * p.n * p.k
 
 
 def _library(cuda, p:Path, facts:dict[str, Any]) -> int:
@@ -170,9 +221,10 @@ def _library(cuda, p:Path, facts:dict[str, Any]) -> int:
 
 def measure_path(cuda, p:Path, facts:dict[str, Any], tele:gpu_telemetry.Telemetry, *, reps:int = 5,
                  seconds:float = SECONDS, iters:int = ITERS) -> dict[str, Any]:
-  """One path's plateau rate, or why it is not available here."""
+  """One path's plateau rate, or why it is not available here. A warpgroup path is tried at every width of WGMMA_N."""
+  tried = [dataclasses.replace(p, n=n, ptx=p.ptx.replace(f"n{p.n}k", f"n{n}k")) for n in WGMMA_N] if p.kind == "wgmma" else [p]
   try:
-    pso = cuda.pipeline(_library(cuda, p, facts), "mma_loop")["pso"]
+    psos = [cuda.pipeline(_library(cuda, v, facts), "mma_loop")["pso"] for v in tried]
   except RuntimeError as exc:
     return {"path": p.name, "instruction": p.ptx, "words": p.words, "available": False,
             "reason": f"does not compile for this GPU: {str(exc).strip().splitlines()[-1][:300]}"}
@@ -180,12 +232,19 @@ def measure_path(cuda, p:Path, facts:dict[str, Any], tele:gpu_telemetry.Telemetr
   out = cuda.buffer(length=512 * 8 * sms * 4)
   arg = struct.pack("<i", iters)
   shapes = []
-  for threads, per_sm in SHAPES:
+  for (v, pso), (threads, per_sm) in itertools.product(zip(tried, psos), SHAPES):
     blocks = per_sm * sms
-    best = min(samples(lambda: cuda.dispatch(pso, [out, arg], (blocks, 1, 1), (threads, 1, 1)), warmups=1, count=reps))
-    shapes.append({"threads": threads, "blocks": blocks, "best_us": best,
-                   "tops": ops_per_launch(p, blocks, threads, iters) / (best * 1e-6) / 1e12})
+    try:  # a block the SM's register file cannot hold is refused at launch (CUresult 701: wgmma N 256 at 512 threads, H200)
+      best = min(samples(lambda: cuda.dispatch(pso, [out, arg], (blocks, 1, 1), (threads, 1, 1)), warmups=1, count=reps))
+    except RuntimeError as exc:
+      refused = str(exc).strip().splitlines()[-1][:300]
+      continue
+    shapes.append({"threads": threads, "blocks": blocks, "best_us": best, **({"n": v.n} if len(tried) > 1 else {}),
+                   "tops": ops_per_launch(v, blocks, threads, iters) / (best * 1e-6) / 1e12})
+  if not shapes:
+    return {"path": p.name, "instruction": p.ptx, "words": p.words, "available": False, "reason": f"no launch shape ran: {refused}"}
   top = max(shapes, key=lambda r: r["tops"])
+  p, pso = next((v, x) for v, x in zip(tried, psos) if v.n == top.get("n", p.n))
   series, t_start = [], time.monotonic()
   while time.monotonic() - t_start < seconds or len(series) < 4:
     t0 = time.monotonic()

@@ -143,6 +143,9 @@ func selfUpdateView(s selfUpdate, width, height int) string {
 	if s.running || s.ended != "" {
 		room := max(height-10, 1)
 		lines := s.lines
+		if n := len(lines); n > 0 && s.ended != "" && lines[n-1] == s.ended {
+			lines = lines[:n-1] // the ending is shown once, colored, below
+		}
 		if len(lines) > room {
 			lines = lines[len(lines)-room:]
 		}

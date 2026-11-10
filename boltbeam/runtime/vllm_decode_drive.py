@@ -80,11 +80,13 @@ def main() -> int:
                   "production-graph generation when absent (vllm_token_script)")
   ap.add_argument("--seed", type=int, default=0, help="prefill mode: the seed the prompt ids are drawn from")
   ap.add_argument("--max-num-batched-tokens", type=int)
+  ap.add_argument("--max-num-seqs", type=int, help="the engine's stream slots when they are more than the largest of "
+                  "--batches: a capture of one batch on the engine a sweep timed it on")
   ap.add_argument("--dtype", default="auto")
   ap.add_argument("--attention-backend", help="vLLM's attention backend by name (a requested engine setting)")
   ap.add_argument("--gemm-backends", help="Inductor's matrix backends, e.g. TRITON (a requested engine setting): the "
                   "compiled graph's matrix products become Triton kernels instead of cuBLAS calls")
-  ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+  ap.add_argument("--gpu-memory-utilization", type=float, default=float(os.environ.get("BOLTBEAM_VLLM_GPU_MEMORY", 0.85)))
   ap.add_argument("--tensor-parallel-size", type=int, default=1, help="GPUs the model is split across (collectors/multi_gpu.py)")
   ap.add_argument("--speculative-config", default=os.environ.get("BOLTBEAM_VLLM_SPECULATIVE_CONFIG"),
                   help="explicit MTP configuration; recorded in the measurement")
@@ -133,6 +135,9 @@ def main() -> int:
   max_len = a.model_context_limit or max(
     max(contexts, default=0) + max(a.tokens, a.once or 0) + 8,
     a.quality_max_tokens + 512 if a.quality_suite and (a.quality_thinking or a.quality_only) else 0)
+  seqs = a.max_num_seqs or max(max(batches), 1)
+  if seqs < max(batches):
+    ap.error(f"--max-num-seqs {seqs} is fewer stream slots than the largest batch asked, {max(batches)}")
   from contextlib import nullcontext
   if a.gemm_backends:  # compile_lm_head reaches the engine's worker process as a function, which vLLM sends by pickle
     os.environ.setdefault("VLLM_ALLOW_INSECURE_SERIALIZATION", "1")
@@ -141,7 +146,7 @@ def main() -> int:
             **({'logits_processors':[SCRIPT_PROCESSOR]} if a.token_script else {}),
             language_model_only=True, speculative_config=a.speculative_config,
             **({"disable_log_stats": False} if a.speculative_config else {}),
-            gpu_memory_utilization=a.gpu_memory_utilization, tensor_parallel_size=a.tensor_parallel_size, max_num_seqs=max(max(batches), 1), seed=0,
+            gpu_memory_utilization=a.gpu_memory_utilization, tensor_parallel_size=a.tensor_parallel_size, max_num_seqs=seqs, seed=0,
             **({"attention_backend": a.attention_backend} if a.attention_backend else {}),
             **({"compilation_config": gemm_config(a.gemm_backends)} if a.gemm_backends else {}),
             **({"max_num_batched_tokens": a.max_num_batched_tokens, "enable_chunked_prefill": True} if a.max_num_batched_tokens else {}))
@@ -305,6 +310,7 @@ def main() -> int:
                                    "speculative_config": a.speculative_config,
                                    **({"speculation":{**speculation_at(context),"repeats":repeat_counters}} if natural else {}),
                                    "max_num_batched_tokens": int(llm.llm_engine.vllm_config.scheduler_config.max_num_batched_tokens),
+                                   "max_num_seqs": int(llm.llm_engine.vllm_config.scheduler_config.max_num_seqs),
                                    "chunked_prefill": bool(llm.llm_engine.vllm_config.scheduler_config.enable_chunked_prefill),
                                    "attention_backend": _attention_backend(llm),
                                    "gemm_backends": a.gemm_backends,

@@ -9,6 +9,7 @@ from __future__ import annotations
 import collections
 import bisect
 import json
+import re
 import sqlite3
 from functools import lru_cache
 from pathlib import Path
@@ -16,6 +17,19 @@ from pathlib import Path
 
 def read(path: Path) -> list[dict]:
   return list(iter_read(path))
+
+
+# PyTorch picks a fill's kernel variant (vectorized at 4 or 2 elements, or unrolled) from its buffer's address
+# alignment: the same constant into the same elements at the same geometry. The 27B vLLM batch-16 capture's eager and
+# graphed passes differed only so, 10 of 67,054 launches, all in the prefill step and outside every module (2026-11-09).
+FILL = re.compile(r'void at::native::(?:vectorized_elementwise_kernel<\(int\)\d+, |unrolled_elementwise_kernel<)'
+                  r'(at::native::FillFunctor<\w+>), .* (grid=\S+ block=\S+)')
+
+
+def _fill_variant(label: dict, timed: dict) -> bool:
+  """The two passes ran one unlabelled fill in alignment-chosen variants (FILL); anything else stays a divergence."""
+  fill = [FILL.fullmatch(x.get('key') or '') for x in (label, timed)]
+  return all(fill) and fill[0].groups() == fill[1].groups() and label.get('semantic') is None is timed.get('semantic')
 
 
 def join_step(labels: list[dict], timing: list[dict], step: int) -> list[dict]:
@@ -30,10 +44,11 @@ def join_step(labels: list[dict], timing: list[dict], step: int) -> list[dict]:
   for position,(label,timed) in enumerate(zip_longest(labels,timing)):
     left=label.get('key') if label is not None else '<end>'
     right=timed.get('key') if timed is not None else '<end>'
-    if label is None or timed is None or not left or left!=right:
+    variant = label is not None and timed is not None and left!=right and _fill_variant(label, timed)
+    if (label is None or timed is None or not left or left!=right) and not variant:
       raise ValueError(f'capture sequence divergence at step {step}, kernel {position}: '
                        f'labeling={left!r}, timing={right!r}')
-    if (label.get('raw_entry') or timed.get('raw_entry')) and label.get('raw_entry')!=timed.get('raw_entry'):
+    if not variant and (label.get('raw_entry') or timed.get('raw_entry')) and label.get('raw_entry')!=timed.get('raw_entry'):
       raise ValueError(f'raw kernel entry divergence at step {step}, kernel {position}')
     if label.get('triton') or timed.get('triton'):
       if (not label.get('triton') or not timed.get('triton') or
@@ -41,7 +56,7 @@ def join_step(labels: list[dict], timing: list[dict], step: int) -> list[dict]:
         raise ValueError(f'compiled Triton binary divergence at step {step}, kernel {position}')
     joined.append({**timed,'semantic':label.get('semantic'),'semantic_range':label.get('semantic_range'),
                    **({'triton':label['triton']} if label.get('triton') else {}),
-                   'label_position':position,'capture_step':step})
+                   **({'label_variant':left} if variant else {}),'label_position':position,'capture_step':step})
   if not joined:raise ValueError(f'capture step {step} has no kernels in either pass')
   return joined
 

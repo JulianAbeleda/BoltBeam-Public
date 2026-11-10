@@ -105,8 +105,12 @@ func TestSelfUpdateFollowsTheUpgradeLog(t *testing.T) {
 	if cmd != nil || got.running || !strings.HasPrefix(got.ended, "updated: BoltBeam 0.3.14") || len(got.lines) != 3 {
 		t.Fatalf("the ended upgrade: %+v", got)
 	}
-	if view := plain(m.View()); !strings.Contains(view, "==> Upgrading boltbeam") || !strings.Contains(view, "▸ Continue") {
+	view := plain(m.View())
+	if !strings.Contains(view, "==> Upgrading boltbeam") || !strings.Contains(view, "▸ Continue") {
 		t.Fatalf("the log and Continue:\n%s", view)
+	}
+	if n := strings.Count(view, "updated: BoltBeam 0.3.14"); n != 1 { // the Mac's first upgrade showed it twice
+		t.Fatalf("the ending is shown once, not %d times:\n%s", n, view)
 	}
 	if m, _ = hit(m, tea.KeyEnter); m.(Model).upd.shown {
 		t.Fatal("Continue closes the prompt")

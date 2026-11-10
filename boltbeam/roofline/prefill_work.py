@@ -43,15 +43,16 @@ def gemm(m:float, n:int, k:int, weight_bytes:float, activations:dict[str, str] |
   return {"flops": 2.0 * m * n * k, "bytes": float(weight_bytes) + m * k * elem_bytes(a["in"]) + m * n * elem_bytes(a["out"])}
 
 
-def recurrent_state_bytes(profile:dict[str, Any], element_bytes:int = 4) -> float | None:
+def recurrent_state_bytes(profile:dict[str, Any], element_bytes:float = 4, conv_bytes:float | None = None) -> float | None:
   """The fixed state a recurrent block holds whatever the context (Mamba2, Gated DeltaNet), over its layers: the
-  convolution's last conv_kernel - 1 inputs of inner + 2 x groups x state channels, and the state matrix of state x
-  inner, at element_bytes (llama.cpp keeps both in f32). None when the model has no recurrent layers."""
+  convolution's last conv_kernel - 1 inputs of inner + 2 x groups x state channels at conv_bytes (default
+  element_bytes), and the state matrix of state x inner at element_bytes (llama.cpp keeps both in f32). None when the
+  model has no recurrent layers."""
   r = (profile.get("metadata") or {}).get("recurrent") or {}
   if not (r.get("layer_count") and r.get("state_size") and r.get("inner_size")):
     return None
   conv = (int(r.get("conv_kernel") or 1) - 1) * (r["inner_size"] + 2 * int(r.get("group_count") or 0) * r["state_size"])
-  return float(r["layer_count"] * (conv + r["state_size"] * r["inner_size"]) * element_bytes)
+  return float(r["layer_count"] * (conv * (element_bytes if conv_bytes is None else conv_bytes) + r["state_size"] * r["inner_size"] * element_bytes))
 
 
 def attention(profile:dict[str, Any], length:int, chunks:list[int] | None = None, kv_format:str = "F16",
@@ -284,9 +285,11 @@ def compute_ms(flops:float, paths:dict[str, int], peaks:dict[str, float]) -> flo
 # The matrix paths (cuda_compute.PATHS) that hold a weight format's values exactly and accumulate in fp32 or int32.
 # Integer weights of at most 8 bits (block quants, INTn) are exact as int8, fp16 or bf16 operands, their scales applied
 # outside the product; a float weight only on its own type. fp16 with fp16 accumulation, tf32 and fp8 round.
-FLOAT_WEIGHT_PATHS = {"F16": ("fp16",), "BF16": ("bf16",), "F32": (FP32_PATH,),
-                      "FP8_E4M3": ("fp8", "fp16", "bf16"), "NVFP4_G16": ("nvfp4", "fp16", "bf16")}
-INTEGER_WEIGHT_PATHS = ("int8", "fp16", "bf16")
+# A warpgroup path (Hopper's wgmma) holds what its warp-wide sibling holds.
+HALF_PATHS = ("fp16", "bf16", "fp16_wgmma", "bf16_wgmma")
+FLOAT_WEIGHT_PATHS = {"F16": ("fp16", "fp16_wgmma"), "BF16": ("bf16", "bf16_wgmma"), "F32": (FP32_PATH,),
+                      "FP8_E4M3": ("fp8", *HALF_PATHS), "NVFP4_G16": ("nvfp4", *HALF_PATHS)}
+INTEGER_WEIGHT_PATHS = ("int8", *HALF_PATHS)
 CHIP_BEST_WORDS = ("ms at chip best is the same bytes at the bandwidth, with the operations at the fastest path this "
                    "chip measured that holds the row's weights exactly (fp32 or int32 accumulate), or the engine's own "
                    "path when that is faster")

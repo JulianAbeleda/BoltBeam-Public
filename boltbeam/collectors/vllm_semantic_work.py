@@ -36,7 +36,9 @@ def is_projection(key):
   # overhead stays separate, like split-K reduction for a GEMM.
   dot='dot_kernel<' in name and 'cublasgemvtensorstridedbatched<' in name
   xmma='_xmma_gemm_' in name and '_execute_kernel' in name and '_cublas' in name
-  marlin='marlin::marlin<' in name
+  # Marlin's MoE GEMM too: vLLM 0.31.0 runs NVFP4 experts as marlin_moe_wna16::Marlin on an RTX 5090 (Nemotron 3.5
+  # Lightning, 2026-11-09), where an H200 runs CUTLASS's grouped GEMM
+  marlin='marlin::marlin<' in name or 'marlin_moe_wna16::marlin<' in name
   # cuBLAS's prebuilt SASS GEMMs, named by architecture: ampere_bf16_s16816gemm_bf16_64x64_ldg8_f2f_stages_64x5_tn ran
   # Qwen3-8B's BF16 projections in vLLM on an RTX 3090 and no role had a captured product (2026-11-09)
   sass=re.match(r'(?:void )?(?:maxwell|pascal|volta|turing|ampere)_\w*?gemm_',name) is not None  # sm*_xmma_*: the xmma rule
@@ -172,7 +174,9 @@ def _attach(launches, *, cfg, profile, registry, tensors, expected_tensors,
     if not matrix:
       continue
     if cls=='MoERunner':
-      if len(matrix)!=2 or not all('GroupProblemShape' in l['key'] for l in matrix):
+      # CUTLASS's grouped GEMM takes the experts' format as its input; Marlin's dequantizes the weights to bf16 inside
+      marlin_moe=all('marlin_moe_wna16::' in l['key'] for l in matrix)
+      if len(matrix)!=2 or not (marlin_moe or all('GroupProblemShape' in l['key'] for l in matrix)):
         raise ValueError(f'{name}: expected two grouped expert GEMMs from vLLM MoERunner')
       topk=cfg['num_experts_per_tok'];length=s['inputs'][0]['shape'][0]
       selected=topk
@@ -188,7 +192,7 @@ def _attach(launches, *, cfg, profile, registry, tensors, expected_tensors,
           raise ValueError('heterogeneous experts need actual routing evidence')
         t=ts[0];n,k=t.shape
         covered_tensors.update(canonical(t.name) for t in ts)
-        q=t.quant;acts={'in':q,'out':'BF16'}
+        q=t.quant;acts={'in':'BF16' if marlin_moe else q,'out':'BF16'}
         w=prefill_work.gemm(length*topk,n,k,weight(t)*selected,acts)
         by_launch[id(l)]['semantic_work']={'name':role_from_tensor_name(t.name,t.shape)+' '+q,
           'what':'role','quant':q,**w,'source_module':name,

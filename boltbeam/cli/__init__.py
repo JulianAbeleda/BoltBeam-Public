@@ -4,9 +4,9 @@ import argparse
 import sys
 import textwrap
 
-from boltbeam.cli import analysis, doctor, gemm, ncu, profile, roofline, selfcheck, self_update, tui, workflow
+from boltbeam.cli import analysis, doctor, fetch, gemm, ncu, profile, roofline, selfcheck, self_update, tui, workflow
 
-_MODULES = (analysis, profile, roofline, workflow, gemm, ncu, selfcheck, doctor, self_update, tui)
+_MODULES = (analysis, profile, roofline, workflow, gemm, ncu, selfcheck, doctor, self_update, fetch, tui)
 
 # The core group `boltbeam --help` shows first, in the order a reader uses them.
 # Every other command still runs. Scripts and papers call them by name. --help lists them after the core group.
@@ -15,7 +15,7 @@ CORE: tuple[tuple[str, tuple[str, ...]], ...] = (
   ("Open the screen", ("tui",)),
   ("Read a model (no GPU)", ("inspect", "roofline-theoretical")),
   ("Run the pipeline", ("load", "autoscan", "analyze", "output")),
-  ("Bring in measurements", ("ingest-timing", "ingest-probe", "collect-hw-trace", "import-hw-trace",
+  ("Bring in measurements", ("fetch", "ingest-timing", "ingest-probe", "collect-hw-trace", "import-hw-trace",
                              "metal-measure", "metal-bandwidth")),
   ("Record what you learned", ("evaluate", "ledger", "reopen-check")),
 )

@@ -70,11 +70,77 @@ def local_profiles(folder:pathlib.Path | None = None) -> dict[str, dict]:
   return out
 
 
+# A chip profile another machine made, brought home with a run by `boltbeam fetch` (workflow/fetch.py), lives apart
+# from this machine's own: <chips_dir>/fetched/<host>/<id>.json, marked profile_source "fetched". It is read only for
+# what that machine's runs need (their limit and results): a registry row or a profile made here with the same id wins,
+# it never claims this machine's GPU (match_target), and it is never written over this machine's own profile.
+FETCHED = "fetched"
+
+
+def fetched_profile_path(host:str, target_id:str) -> pathlib.Path:
+  if not host or host != pathlib.Path(host).name or host.startswith(".") or target_id != pathlib.Path(target_id).name:
+    raise ValueError(f"not a plain host and chip id: {host!r}, {target_id!r}")
+  return chips_dir() / FETCHED / host / f"{target_id}.json"
+
+
+def _fetched_row(row:dict) -> TargetProfile:
+  return _from_row({**row, "capabilities": {**(row.get("capabilities") or {}), "profile_source": FETCHED}})
+
+
 def _load_all() -> dict[str, TargetProfile]:
   rows = load_target_registry()
   for tid, row in local_profiles().items():
     rows.setdefault(tid, _from_row(row))  # a registry row with the same id wins: reviewed beats local
+  hosts = chips_dir() / FETCHED
+  for host in sorted(hosts.iterdir()) if hosts.is_dir() else ():
+    for tid, row in local_profiles(host).items():
+      rows.setdefault(tid, _fetched_row(row))  # reviewed, then made here, then fetched (first host by name)
   return rows
+
+
+# A run keeps the chip profile it was measured against (RUN_CHIP), byte for byte, so the run opens on any machine:
+# reading a run is reading its data, and a Mac that never saw an H100 still has the H100's measured row in the run.
+RUN_CHIP = "chip_profile.json"
+
+
+def keep_run_chip(run:pathlib.Path, target_id:str) -> None:
+  """Copy this machine's (or a fetched) profile of target_id into the run; a registry row needs none."""
+  hosts = chips_dir() / FETCHED
+  for src in [chips_dir() / f"{target_id}.json", *(sorted(hosts.glob(f"*/{target_id}.json")) if hosts.is_dir() else ())]:
+    if src.is_file():
+      (pathlib.Path(run) / RUN_CHIP).write_bytes(src.read_bytes())
+      return
+
+
+def adopt_run_chip(run:pathlib.Path) -> None:
+  """A run's own chip profile becomes a target when this machine knows none by its id (read only, never saved)."""
+  try:
+    doc = json.loads((pathlib.Path(run) / RUN_CHIP).read_text())
+  except (OSError, ValueError):
+    return
+  row = doc.get("target") if isinstance(doc, dict) and doc.get("schema") == SCHEMA_CHIP_PROFILE else None
+  if isinstance(row, dict) and row.get("target_id"):
+    TARGETS.setdefault(row["target_id"], _fetched_row(row))
+
+
+def is_fetched(name:str | None) -> bool:
+  """Whether a target is a chip profile another machine made, brought home by `boltbeam fetch`."""
+  return target_capability(name, "profile_source") == FETCHED if name else False
+
+
+def save_fetched_profile(raw:bytes, host:str) -> pathlib.Path:
+  """Keep one fetched chip profile, byte for byte as the other machine wrote it (its sha256 stays checkable), and make
+  it a target now, unless an id this machine already knows has it. An existing file is never replaced."""
+  doc = json.loads(raw)
+  row = doc.get("target") if isinstance(doc, dict) and doc.get("schema") == SCHEMA_CHIP_PROFILE else None
+  if not isinstance(row, dict) or not row.get("target_id"):
+    raise ValueError("not a chip profile")
+  path = fetched_profile_path(host, row["target_id"])
+  if not path.exists():
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+  TARGETS.setdefault(row["target_id"], _fetched_row(row))
+  return path
 
 
 def is_local(name:str | None) -> bool:
@@ -185,7 +251,7 @@ def match_target(observed:dict) -> str | None:
   (BOLTBEAM_IGNORE_REGISTRY_TARGET=1 skips the registry rows).
   """
   def hits(local:bool) -> list[str]:
-    return [name for name, t in TARGETS.items() if is_exact_target(name) and is_local(name) == local
+    return [name for name, t in TARGETS.items() if is_exact_target(name) and is_local(name) == local and not is_fetched(name)
             and (rule := t.capabilities.get("match")) and all(observed.get(k) == v for k, v in rule.items())]
   tiers = (True,) if ignore_registry() else (False, True)
   for local in tiers:

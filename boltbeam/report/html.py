@@ -708,7 +708,8 @@ def _where_token(loss:dict[str, Any]) -> str:
   if w.get("baseline_cells"):
     rows.append('<tr>'+"".join(f"<td>{_e(c)}</td>" for c in w["baseline_cells"])+'</tr>')
   rows.append(f'<tr class="sum">{"".join(f"<td>{_e(c)}</td>" for c in w["sum_cells"])}</tr>')
-  body = (f'<p class="muted" style="margin:0 0 10px">{_e(w["words"])}</p>'
+  body = ((f'<p class="note"><strong>{_e(w["qualification"])}</strong></p>' if w.get("qualification") else "")
+          + f'<p class="muted" style="margin:0 0 10px">{_e(w["words"])}</p>'
           f'<div class="tscroll"><table class="tie where"><thead><tr>{head}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
   return _section(2, w["title"] + (" (estimate)" if w["estimate"] else ""), body)
 
