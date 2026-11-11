@@ -483,6 +483,9 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
   kernels, context = roofline_kernels(timing, context) if timing else ([], context)
   chosen = next((s for s in timing.get("context_summaries", []) if s.get("context") == context), {}) if timing else {}
   loss = loss_block(run, manifest, ceil, token, beside=beside, repeat_evidence=repeat_evidence)
+  if manifest.get("workload") == "decode" and token and (why := limit.pct_withheld(run)):  # the limit stands for the parts;
+    from boltbeam.report.plain import words
+    loss.update(pct_withheld=why, pct_withheld_says=words()["no_limit"][why])  # the speed is not a % of it (a speculative run)
   if clock_words := gpu_telemetry.measurement_clock_words(run):
     loss["timing_scope"] = clock_words
   if manifest.get("workload") in ("prefill", "session"):  # one ceiling: the sum of the kernels' own, as the where table has it
@@ -491,7 +494,7 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
     ceil = replay_ceiling(ceil, loss)
   elif manifest.get("workload") == "decode" and token and ceil.get("status") == "modeled":
     ceil = decode_ceiling(ceil, loss, token, profile, run_provider(run), run)
-  moe = offload.run_block(run, profile, token, ceil.get("peak_bandwidth_gbs")) if manifest.get("workload") == "decode" else None  # experts in RAM: its own limit
+  moe = offload.run_block(run, profile, token, ceil.get("peak_bandwidth_gbs"), withheld=loss.get("pct_withheld")) if manifest.get("workload") == "decode" else None  # experts in RAM: its own limit
   engine_build = manifest.get("engine")
   if not (engine_build or {}).get("build"):
     recorded = providers.run_build(run)

@@ -181,5 +181,5 @@ def captured_role_time(run:pathlib.Path, *, provider:str, trace:str, argv_for:Ca
   replicas = None
   if batch == 1 and capture_over_ceiling(run, context, provider, pairs[0]["token_ms"]):
     pairs += [pair(raw / f"pair-{i + 1}") for i in range(1, REPLICAS)]
-    replicas = attribution.fresh_replicas(attributed, [raw / f"pair-{i + 1}" for i in range(REPLICAS)], [p["token_ms"] for p in pairs])
+    replicas = attribution.fresh_replicas(attributed, [raw, *(raw / f"pair-{i + 1}" for i in range(1, REPLICAS))], [p["token_ms"] for p in pairs])
   return attributed(0, trace, token_ms=pairs[0]["token_ms"], replicas=replicas)

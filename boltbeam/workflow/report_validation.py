@@ -355,7 +355,7 @@ def require_emit(run:Path, res:dict, plan:dict) -> None:
   for key, expected in [('limit_ms',loss.get('limit_ms')),('limit_tok_s',loss.get('limit_tok_s')),
                          ('token_ms',(token or {}).get('ms')),('tok_s',(token or {}).get('tok_s')),
                          ('lost_ms',(token or {}).get('lost_ms')),
-                         ('pct_of_limit',100*loss['limit_ms']/token['ms'] if token and token.get('ms') and loss.get('limit_ms') else None),
+                         ('pct_of_limit',100*loss['limit_ms']/token['ms'] if token and token.get('ms') and loss.get('limit_ms') and not loss.get('pct_withheld') else None),
                          ('where_token_goes',loss.get('where_token_goes'))]:
     if h.get(key) != expected:
       failures.append(f'gameplan.header.{key}: {h.get(key)!r} != run {expected!r}')

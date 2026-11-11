@@ -72,6 +72,8 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     head += (f": a {h['warm_turns']}-turn replay at {h['e_pct']:.1f}% of its roofline, {(h['time_ms'] - h['roofline_ms']) / 1e3:.1f} s "
              f"of {h['time_ms'] / 1e3:.1f} s lost" if h.get("e_pct") is not None else
              f": a {h['warm_turns']}-turn replay in {h['time_ms'] / 1e3:.1f} s, no ceiling ({loss.get('reason') or 'see below'})")
+  elif m and loss.get("pct_withheld"):  # a speculative run: its speed is not a % of the one-token limit
+    head += f": {m['tok_s']:.1f} tok/s measured. " + plain.words()["no_limit"][loss["pct_withheld"]]
   elif m and res.get("offload"):  # experts in RAM: held against the offload limit, never the all-in-GPU-memory one
     head += f": {m['tok_s']:.1f} tok/s measured, " + plain.offload_close(res["offload"], [])["close"]
   elif m and loss.get("limit_tok_s"):

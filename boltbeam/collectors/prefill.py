@@ -117,7 +117,8 @@ def llama_argv(bench:str, model:str, length:int, reps:int, *, warmup:bool = True
   depth: the prompt goes after that many tokens already in the cache (llama-bench -d, which fills them untimed);
   gen: also that many generated tokens at the depth, its own row; extra: flags a caller matches to another
   configuration (a replay's cache types, chunk and flash attention, read from the user's server)."""
-  return [bench, "-m", str(pathlib.Path(model).absolute()), "-p", str(length), "-n", str(gen), "-ngl", "99", "-r", str(reps),
+  from boltbeam.collectors.capture_settings import all_layers
+  return [bench, "-m", str(pathlib.Path(model).absolute()), "-p", str(length), "-n", str(gen), *all_layers(extra), "-r", str(reps),
           *(["-d", str(depth)] if depth else []), "-o", "json", *([] if warmup else ["--no-warmup"]), *(extra or [])]
 
 
@@ -149,7 +150,7 @@ def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> d
   bench = _bench(run)
   from boltbeam.collectors.capture_settings import llama_flags
   pin, env = one_gpu(run, "llama.cpp")
-  cmd = llama_argv(bench, model, length, LLAMA_REPS, extra=[*pin, *llama_flags(run, length)])
+  cmd = llama_argv(bench, model, length, LLAMA_REPS, extra=[*pin, *llama_flags(run, length, binary=bench)])
   with gpu_telemetry.run_telemetry(run, device) as tele:
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=3600, cwd=run, env={**os.environ, **env})
   retain_native(run, str(length), cmd, proc.stdout)
@@ -220,7 +221,7 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   bench = _bench(run)
   raw = raw or run / RAW / (f"{length}-at-{depth}" if depth else str(length))
   from boltbeam.collectors.capture_settings import llama_flags
-  settings = llama_flags(run, length, capture=True) if not depth else []
+  settings = llama_flags(run, length, capture=True, binary=bench) if not depth else []
   pin, env = one_gpu(run, "llama.cpp")
   argv = llama_argv(bench, model, length, LLAMA_REPS, depth=depth, extra=[*pin, *settings, *(extra or [])])
   launches = vendor_capture.capture(target.backend, argv, raw, env=env, device=run_gpu(run))

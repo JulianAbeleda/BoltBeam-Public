@@ -317,6 +317,8 @@ def _speed_core(res:dict[str, Any], kind:str) -> dict[str, Any]:
     nums.update(best_tok_s_total=best["tok_s_total"], best_batch=best["batch"], best_context=best["context"])
   if o := res.get("offload"):  # the experts sat in RAM: the all-in-GPU-memory limit below does not apply (workflow/offload.run_block)
     return {"fast": fast, "numbers": nums, **offload_close(o, figs)}
+  if why := loss.get("pct_withheld"):  # the limit stands for the parts; the speed is not a % of it (results.pct_withheld)
+    return {"fast": fast, "close": words()["no_limit"][why], "numbers": nums, "figures": figs}
   limit_ms = loss.get("limit_ms")
   if not limit_ms or not m.get("ms"):
     # one sentence per reason key (results: the ceiling's reason_key, or the missing split's); the run's words stay in Full detail
@@ -337,13 +339,15 @@ def offload_close(o:dict[str, Any], figs:list[dict[str, str]]) -> dict[str, Any]
   rate is unknown; a sentence for a run it cannot limit; 'estimate' when the shapes were not read from a header."""
   w = words()["offload"]
   if o["status"] != "modeled":
-    return {"close": w["none"].format(reason=o["reason"]), "figures": figs}
+    return {"close": o["reason"] if o.get("reason_key") else w["none"].format(reason=o["reason"]), "figures": figs}
   lim, pct = o["tok_s"], o["pct"]
   if pct["low"] > 100:
     return {"close": w["over"].format(limit=_range(lim["low"], lim["high"], "{:.0f}")), "figures": figs}
   limit = _range(lim["low"], lim["high"], "{:.0f}")
   close = w["close_one" if o["hit_rate_known"] or round(lim["low"]) == round(lim["high"]) else "close_band"].format(pct=_range(pct["low"], pct["high"], "{:.0f}"), limit=limit)
-  return {"close": close + (w["estimate"] if o["estimated"] else ""), "figures": figs + [_fig(_range(pct["low"], pct["high"], "{:.0f}"), _unit("pct"), w["figure"].format(limit=limit), "pct")]}
+  cpu = (o.get("cpu_experts") or {}).get("ms") or {}  # the experts the processor computes: their own part of the limit
+  return {"close": close + (w["estimate"] if o["estimated"] else ""), "figures": figs + [_fig(_range(pct["low"], pct["high"], "{:.0f}"), _unit("pct"), w["figure"].format(limit=limit), "pct")]
+          + ([_fig(_range(cpu["low"], cpu["high"], "{:.1f}"), _unit("ms"), w["cpu_figure"], "ms")] if cpu.get("high") else [])}
 
 
 def _range(lo:float, hi:float, fmt:str) -> str:

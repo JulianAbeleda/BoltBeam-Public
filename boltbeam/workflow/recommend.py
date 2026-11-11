@@ -459,14 +459,22 @@ def llama_settings(profile:dict[str, Any], tb:dict[str, Any], *, kv:str, seqs:in
   return [{"flag": f, "recommended": bool(r), "changes": c, "when": w} for f, r, c, w in rows]
 
 
-def llama_flags(profile:dict[str, Any], *, kv:str, seqs:int, layout:str, gpus:int, context:int, machine_gpus:int = 1, **_) -> list[str]:
+def llama_flags(profile:dict[str, Any], *, kv:str, seqs:int, layout:str, gpus:int, context:int, machine_gpus:int = 1,
+                placement:dict[str, Any] | None = None, **_) -> list[str]:
   """llama.cpp's options: -c is the context to hold (b11571's -fit fits one only when -c is not given), then the
-  recommended settings."""
-  out = ["-c", str(context // 256 * 256), "-np", str(seqs), "-ngl", "99", "-fa", "on"]  # it rounds -c up to 256 cells
+  recommended settings. placement: where the layers and experts sit and the expert cache, as engine settings
+  (n_gpu_layers, n_cpu_moe, override_tensor, cpu_moe, moe_cache_mib, moe_cache_cpu_share, chunk_size), checked and
+  turned into flags by the one table captures use (collectors/capture_settings.render_llama); all layers on the GPU
+  unless it places them."""
+  from boltbeam.collectors.capture_settings import all_layers, check_llama, render_llama
+  placed = render_llama(placement) if placement else []
+  if placement:
+    check_llama(placement)
+  out = ["-c", str(context // 256 * 256), "-np", str(seqs), *all_layers(placed), "-fa", "on"]  # it rounds -c up to 256 cells
   if kv == "q8_0":
     out += ["-ctk", "q8_0", "-ctv", "q8_0"]
   return out + (tgpu.engine_args(layout, "llama.cpp", _llama_bench())[0] if layout in ("row", "layer") else
-                tgpu.engine_args("one", "llama.cpp")[0] if machine_gpus > 1 else [])
+                tgpu.engine_args("one", "llama.cpp")[0] if machine_gpus > 1 else []) + placed
 
 
 def _llama_bench() -> str | None:
@@ -677,9 +685,12 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   if offload or not any(r["fits"]["value"] for r in rows):  # nothing holds the weights: say what offloading the experts gives
     kvb = ((pw.kv_bytes_per_token(profile, element_bytes=eng.kv[kv]) or 0.0) + extra.get(kv, 0.0)) * context
     moe = off.for_setup(profile, provider, usable=usable - (dr["bytes"] if dr else 0), kv_bytes=kvb + (dr["kv_bytes"] if dr else 0), vram_gbs=(limit.read_bandwidth(facts) or {}).get("gbs") or target.memory_bandwidth_gbs,
-                        pci_bus_id=(gpus[0].get("pci_bus_id") if gpus else None), context=context, host=host, estimate=moe_estimate)
+                        pci_bus_id=(gpus[0].get("pci_bus_id") if gpus else None), context=context, target=target, kv=kv, host=host, estimate=moe_estimate)
     if moe["status"] == "recommended" and argv is not None:
-      argv = eng.flags(profile, kv=kv, seqs=seqs, layout="one", gpus=1, text_only=text_only, tb=tb, context=context, **opts) + moe["flags"]
+      argv = eng.flags(profile, kv=kv, seqs=seqs, layout="one", gpus=1, text_only=text_only, tb=tb, context=context, placement=moe["settings"], **opts)
+      if (pre := moe.get("prefill") or {}).get("status") == "recommended":  # the setup for prompts: its own command
+        pre_argv = eng.flags(profile, kv=kv, seqs=seqs, layout="one", gpus=1, text_only=text_only, tb=tb, context=context, placement=pre["settings"], **opts)
+        pre["command"] = eng.command(shlex.quote(profile["source"]), [shlex.quote(a) for a in pre_argv])
   env = dict(row.vllm_env) if provider == "vllm" else {}
   key = (provider, (facts or {}).get("gpus", [{}])[0].get("target_id"), profile.get("hidden_size"), profile.get("layer_count"), profile.get("ffn_size"))
   return {"schema": "boltbeam.recommended_setup.v1", "model": profile.get("source"), "provider": provider, "gpu_count": n,

@@ -33,6 +33,9 @@
     "replica_large_row_share": {"value": 0.03, "reason": "a kernel row of at least this share of the kernel time is a large row for the replication rule (workflow/tie_out.py REPLICA_TOL)"},
     "replica_large_row_pct": {"value": 1.0, "reason": "a run's repeats agree when every large row is within this many percent (workflow/tie_out.py REPLICA_TOL)"},
     "replica_any_row_pct": {"value": 2.5, "reason": "and every other row within this many percent (workflow/tie_out.py REPLICA_TOL)"},
-    "gemm_prune_ratio": {"value": 6.0, "reason": "GEMM configs the model puts beyond this ratio of its best are pruned: measured winners sit up to 5.3x above the model's floor, and every cuBLAS pick within 2x (search/gemm_strategy.py PRUNE_RATIO)"}
+    "gemm_prune_ratio": {"value": 6.0, "reason": "GEMM configs the model puts beyond this ratio of its best are pruned: measured winners sit up to 5.3x above the model's floor, and every cuBLAS pick within 2x (search/gemm_strategy.py PRUNE_RATIO)"},
+    "prefill_ubatch_min": {"value": 512, "reason": "the smallest prompt chunk (llama.cpp -ub) the prefill setup for experts in RAM considers: llama.cpp's default (workflow/offload.prefill_plan)"},
+    "prefill_ubatch_max": {"value": 8192, "reason": "the largest prompt chunk the prefill setup considers: the compute buffer a chunk needs is not in the fit, and the audit's best chunk with the model in VRAM was 2048 (docs/evidence/strata-audit-20261111)"},
+    "prefill_ubatch_tie_pct": {"value": 5.0, "reason": "the prefill setup takes the smallest chunk whose prompt limit is within this many percent of the best one's: a larger chunk costs compute-buffer memory for less than that"}
   }
 }

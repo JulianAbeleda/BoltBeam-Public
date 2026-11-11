@@ -738,7 +738,11 @@ type Loss struct {
 	LimitTokS       *float64 `json:"limit_tok_s"`
 	LimitMs         *float64 `json:"limit_ms"`
 	// LimitBasis says when the limit is a split's weights alone, its copies between GPUs not measured.
-	LimitBasis      *string    `json:"limit_basis"`
+	LimitBasis *string `json:"limit_basis"`
+	// PctWithheld is why the speed is not shown as a % of the limit (a speculative run: the limit holds one token per
+	// step); PctWithheldSays is that reason as the reports say it. Nil: the % is shown.
+	PctWithheld     *string    `json:"pct_withheld"`
+	PctWithheldSays *string    `json:"pct_withheld_says"`
 	Runtimes        []Runtime  `json:"runtimes"`
 	Roles           []RoleLoss `json:"roles"`
 	NotAttributedMs *float64   `json:"not_attributed_ms"`

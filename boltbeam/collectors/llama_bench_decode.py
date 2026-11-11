@@ -139,7 +139,8 @@ def decode_argv(llama_bench:str, model:pathlib.Path | str, depth:int, tokens:int
   """One decode of `tokens` tokens after a `depth`-token context: no warmup, one repetition, so a capture of
   this command holds exactly that work. The model path is made absolute: a capture runs the program in its own
   capture folder (vendor_capture.capture)."""
-  return [llama_bench, "-m", str(pathlib.Path(model).absolute()), "-p", "0", "-n", str(tokens), "-d", str(depth), "-ngl", "99", "-r", "1",
+  from boltbeam.collectors.capture_settings import all_layers
+  return [llama_bench, "-m", str(pathlib.Path(model).absolute()), "-p", "0", "-n", str(tokens), "-d", str(depth), *all_layers(extra), "-r", "1",
           "--no-warmup", "-o", "json", *(extra or [])]
 
 
@@ -171,9 +172,15 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
   bench = find(llama_bench)
   if bench is None:
     raise CannotMeasure(available() or "llama-bench is missing", f"export {ENV}=/path/to/llama-bench")
+  from boltbeam.collectors import llama_server_decode as server
+  if server.needs_server(run, bench):  # settings only llama-server of this build runs (its fork row's flags)
+    if batch != 1 or gpus > 1 or flags:
+      raise CannotMeasure("the requested settings run only in llama-server, whose capture times one stream on one GPU",
+                          "measure one stream on one GPU")
+    return server.role_time(run, target=target, model=model, model_id=model_id, context=context, bench=bench)
   extra, env = engine_args(layout, PROVIDER, bench) if gpus > 1 else ([], {})
   from boltbeam.collectors.capture_settings import llama_flags
-  extra = [*extra, *llama_flags(run, context, capture=True), *(flags or [])]
+  extra = [*extra, *llama_flags(run, context, capture=True, binary=bench), *(flags or [])]
   raw = raw or run / RAW
   if batch > 1:  # B streams: llama-batched-bench, the step time from its own t_tg
     batched = find_batched()
@@ -432,6 +439,12 @@ def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_be
   request = read_json(run / "trace_request.json")
   if request.get("workload") != "decode":
     raise CannotMeasure("llama-bench-decode times decode only; this run is prefill", "plan the run with workload decode")
+  from boltbeam.collectors import llama_server_decode as server
+  if server.needs_server(run, facts["llama_bench"]):  # settings only llama-server of this build runs (its fork row's flags)
+    if gpus > 1 or any(int(b) > 1 for b in batches):
+      raise CannotMeasure("the requested settings run only in llama-server, which BoltBeam times for one stream on one GPU",
+                          "measure batch 1 on one GPU")
+    return server.measure(run, bench=facts["llama_bench"], model=facts["model"], target=facts["target"], timing_out=timing_out, say=say)
   bench = {}
   from boltbeam.collectors.capture_settings import contexts as requested_contexts, llama_flags
   contexts = requested_contexts(run)
@@ -439,16 +452,16 @@ def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_be
   progress.report(0, parts)
   for ctx in contexts:
     say(f"decode at depth {ctx}: llama-bench")
-    bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), [*layout_args, *llama_flags(run, int(ctx))], layout_env, cwd=run)
+    bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), [*layout_args, *llama_flags(run, int(ctx), binary=facts["llama_bench"])], layout_env, cwd=run)
     progress.report(len(bench), parts)
   from boltbeam.collectors import engine_args
-  engine_args.record(run, decode_argv(facts["llama_bench"], facts["model"], max(contexts), GEN_TOKENS, [*layout_args, *llama_flags(run, max(contexts))])[1:],
+  engine_args.record(run, decode_argv(facts["llama_bench"], facts["model"], max(contexts), GEN_TOKENS, [*layout_args, *llama_flags(run, max(contexts), binary=facts["llama_bench"])])[1:],
                      engine=PROVIDER, env=layout_env)  # what llama-bench was told: -ngl 99 and no offload flag is all on the GPU, said
   from boltbeam.roofline.limit import run_bandwidth
   trace = build_timing_trace(manifest, bench, run_bandwidth(run, facts["target"])[0])
   trace["aux_sources"] = {"llama_bench": {str(k): v for k, v in bench.items()}}
   trace["provider"] = PROVIDER
-  trace["batches"] = batch_points(bench, facts["model"], batches, say=say, layout_args=[*layout_args, *llama_flags(run, max(contexts))], env=layout_env, cwd=run)
+  trace["batches"] = batch_points(bench, facts["model"], batches, say=say, layout_args=[*layout_args, *llama_flags(run, max(contexts), binary=facts["llama_bench"])], env=layout_env, cwd=run)
   out = timing_out or run / "timing_trace.json"
   out.parent.mkdir(parents=True, exist_ok=True)
   out.write_text(pretty_json(trace))

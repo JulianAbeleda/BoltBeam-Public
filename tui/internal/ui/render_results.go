@@ -747,6 +747,8 @@ func resultBody(f Facts, width int) string {
 	switch {
 	case sessionHeadline(res) != "":
 		b.WriteString(sessionHeadline(res))
+	case res.Timing.TokS != nil && res.Loss.PctWithheldSays != nil: // a speculative run: no % of the one-token limit
+		fmt.Fprintf(&b, "%s %s measured\n%s\n", stAccent.Render(glyphBolt), stHeader.Render(fmt.Sprintf("%.1f tok/s", *res.Timing.TokS)), *res.Loss.PctWithheldSays)
 	case res.Timing.TokS != nil && res.Ceiling.TokS != nil && *res.Ceiling.TokS > 0:
 		ratio := *res.Timing.TokS / *res.Ceiling.TokS
 		fmt.Fprintf(&b, "%s %s measured · roofline %.1f tok/s\n", stAccent.Render(glyphBolt),

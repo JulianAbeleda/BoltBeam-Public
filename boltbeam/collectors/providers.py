@@ -7,7 +7,8 @@ count (attribution.py), and the floor rule (tinygrad_role_time.loss).
 
     provider      weights       whole step (step 4)                    per role (step 5)
     llama.cpp     GGUF          llama-bench decode; batch > 1 with     the vendor's capture of llama-bench
-                                llama-batched-bench
+                                llama-batched-bench; llama-server      (of llama-server for those settings,
+                                for settings llama-bench lacks         llama_server_decode.py)
     tinygrad      GGUF          the fork's decode, no profiling        the vendor's capture where it sees tinygrad
                                                                        (Metal), else tinygrad's own profile events
     vllm          safetensors   offline LLM API, N minus 1 tokens      nsys of the same driver, CUDA graphs on

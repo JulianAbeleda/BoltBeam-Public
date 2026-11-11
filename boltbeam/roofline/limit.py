@@ -213,6 +213,20 @@ def decode_refused(profile:dict[str, Any] | None, run:pathlib.Path) -> str | Non
   return FORMULA_REFUSED if formula_cannot_limit(profile) and not (run / DECODE_CAPTURE).is_file() else None
 
 
+SPECULATIVE_SETTINGS = ("spec_type", "draft_model", "mtp")  # llama.cpp's --spec-type and -md, vLLM's MTP draft count
+
+
+def pct_withheld(run:pathlib.Path) -> str | None:
+  """Why the run's speed is not shown as a % of its limit, which still stands for its parts, as a plain-words key
+  (data/plain_words.json no_limit); None: it is shown. A run that drafted tokens ahead (it asked for speculation, or its
+  engine reported drafts: vLLM's speculation, llama-server's draft_n) emits several tokens per step and the one-token
+  limit holds one, as the replay's standard refuses it; a capture of its steps (DECODE_CAPTURE) limits it at its acceptance."""
+  asked = optional(run, "trace_request.json").get("engine_settings") or {}
+  rows = optional(run, "timing_trace.json").get("rows") or []
+  drafted = any(asked.get(k) for k in SPECULATIVE_SETTINGS) or any((r.get("engine") or {}).get(k) for r in rows for k in ("speculation", "draft_n"))
+  return "speculative" if drafted and not (run / DECODE_CAPTURE).is_file() else None
+
+
 def profile_read(gpu:dict[str, Any]) -> tuple[float, str] | None:
   """A GPU's read bandwidth from the chip profile made on this machine, with its date; None for a registry chip.
   One measurement: the profile's number is the limit's number."""

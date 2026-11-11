@@ -403,7 +403,8 @@
   },
   "no_limit": {
     "formula_refused": "There is no limit for this run yet: BoltBeam cannot yet work out the fastest this GPU allows for a model with these state-space layers.",
-    "no_matrix_rate": "There is no limit for this run yet: this GPU's speed for one kind of math this model uses has not been measured yet."
+    "no_matrix_rate": "There is no limit for this run yet: this GPU's speed for one kind of math this model uses has not been measured yet.",
+    "speculative": "No percentage of the limit is shown: this run drafted tokens ahead and checked several in one step, and the limit is for one token per step."
   },
   "not_parts": {
     "names": [
@@ -434,11 +435,16 @@
   "offload": {
     "close_band": "{pct}% of the fastest this GPU and this machine's memory allow with the experts kept in RAM ({limit} tok/s). The range is because it depends on how often the needed parts are already on the card, and this run did not report that.",
     "close_one": "{pct}% of the fastest this GPU and this machine's memory allow with the experts kept in RAM ({limit} tok/s).",
+    "cpu_experts": "The experts the processor computes from RAM are their own part: they are not GPU time and not GPU memory reads, so a GPU capture sees them only as gaps between kernels.",
+    "cpu_figure": "of each token at least, for the experts the processor computes from RAM (not GPU time)",
     "decode_tuned": "This setup is tuned for writing replies: with the experts in RAM a long prompt is read 5 to 18 times slower than with the whole model on the card (measured on an RTX 5090).",
     "estimate": " This is an estimate: the model's shapes were not read from a header.",
     "figure": "of the offload limit ({limit} tok/s)",
+    "for_decode": "For writing replies (decode): every expert in RAM, a cache of the ones in use on the card.",
+    "for_prefill": "For reading prompts (prefill): whole layers' experts on the card, the rest in RAM, a larger chunk.",
     "none": "There is no limit for this run yet: it kept experts in RAM, so the limit for a model held in GPU memory does not apply, and {reason}.",
     "over": "Faster than the limit it was held against ({limit} tok/s), so that limit is wrong for this run; no percentage is shown.",
+    "prefill_tuned": "This setup is tuned for reading prompts: a prompt never hits the expert cache, so the card holds whole layers instead, and a larger chunk uploads each expert once for more tokens.",
     "unrecorded": "Placement not recorded: this run did not say whether the experts were on the card or in RAM."
   },
   "parts": {

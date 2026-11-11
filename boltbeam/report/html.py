@@ -530,7 +530,7 @@ def _ties(loss:dict[str, Any], results:dict[str, Any], m:dict[str, Any]) -> str:
   """The equations behind section 1 and the bar in section 2."""
   t = loss.get("tie_out") or {}
   headline_limit = loss.get("limit_ms")
-  if not headline_limit or not m.get("ms") or not m.get("tok_s"):
+  if not headline_limit or not m.get("ms") or not m.get("tok_s") or loss.get("pct_withheld"):
     return ""
   inputs = {i.get("what", ""): i.get("value") for i in (loss.get("layout") or {}).get("inputs") or []}
   ceil = results.get("ceiling") or {}
@@ -615,7 +615,8 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
                          target=manifest.get("target_id") or "TARGET")
     return _section(1, "The answer", who + f'<div class="hero"><span class="big dim">not measured yet</span>{lim}</div>'
                     f'<p class="note">Missing: a measured token ({_e(reason)}). Measure it with <code>{_e(cmd)}</code>.</p>')
-  pct = 100.0 * limit_ms / m["ms"] if limit_ms and m.get("ms") else None
+  withheld = plain.words()["no_limit"][loss["pct_withheld"]] if loss.get("pct_withheld") else None  # a speculative run
+  pct = 100.0 * limit_ms / m["ms"] if limit_ms and m.get("ms") and not withheld else None
   per = loss.get("per") or "per token"  # a prefill run's times are per prefill (workflow/prefill.py)
   gauge = (f'<div class="gauge" role="img" aria-label="{pct:.0f}% of roofline"><i style="width:{_pct(pct, 100):.1f}%"></i><s></s></div>'
            f'<div class="gauge-l"><span><b>{pct:.0f}%</b> of roofline</span><span>roofline {limit_ms:.1f} ms {per}</span></div>'
@@ -627,7 +628,7 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
                   f'<div class="hero"><span class="big">{m["tok_s"]:.1f}</span><span class="big-u">tok/s measured</span>{lim}</div>'
                   + gauge +
                   f'<p class="note">{m["tok_s"]:.1f} tok/s = {m["ms"]:.1f} ms {per}.</p>'
-                  + ("" if offloaded else f'<p class="note"><span class="lost">{m["lost_ms"]:.1f} ms {per} lost</span> against the limit: '
+                  + ("" if offloaded else f'<p class="note">{_e(withheld)}</p>' if withheld else f'<p class="note"><span class="lost">{m["lost_ms"]:.1f} ms {per} lost</span> against the limit: '
                      f'{m["ms"]:.1f} ms measured, {_ideal_words(loss, limit_ms)}. <span class="muted">{_e(m.get("note") or "")}</span></p>'
                      if m.get("lost_ms") is not None else
                      f'<p class="note">No limit yet: {_e(loss.get("missing") or "")}. <span class="muted">{_e(m.get("note") or "")}</span></p>')
@@ -674,7 +675,7 @@ def _where(loss:dict[str, Any]) -> str:
     segs.append(f'<span class="{cls}" style="width:{w:.2f}%" title="{_e(_line_label(l))}">{text}</span>')
     tag = f' <span class="sub" style="display:inline">±{frac * 100:.1f}%</span>' if i == 0 and frac else ""
     rows.append(f'<tr><td><span class="sw {cls}"></span>{"" if i == 0 else "+ "}{_e(_line_label(l))}{tag}</td>'
-                f'<td>{l["ms"]:.3f}</td><td>{_pct(l["ms"], token):.0f}%</td><td class="how">{_e(l["how"])}</td></tr>')
+                f'<td>{l["ms"]:.3f}</td><td>{"" if i == 0 and loss.get("pct_withheld") else format(_pct(l["ms"], token), ".0f") + "%"}</td><td class="how">{_e(l["how"])}</td></tr>')
   band = ""
   if frac:
     ideal = t["lines"][0]["ms"]

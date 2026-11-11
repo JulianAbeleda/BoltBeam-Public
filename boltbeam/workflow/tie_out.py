@@ -333,12 +333,33 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
                   "parts": [{"kind": k, "ms": v} for k, v in sorted(parts.items(), key=lambda kv_: -kv_[1])]})
   else:
     lines.append({"label": "all kernels above the ideal, not split by role", "ms": busy - limit, "how": "measured"})
+  if (cpu := cpu_line(trace, bandwidth_gbs)) is not None:  # experts the CPU computed: no kernel, no GPU bytes, their own line
+    lines[-1] = {**lines[-1], "ms": lines[-1]["ms"] + cpu["ideal_ms"], **({"ideal_ms": lines[-1]["ideal_ms"] - cpu["ideal_ms"]} if "ideal_ms" in lines[-1] else {})}
+    lines.append(cpu)
   gaps = token - limit - sum(l["ms"] for l in lines[1:])
   lines.append({"label": ("gaps between kernels" if outside else "captured wall outside GPU kernels") if gaps >= 0 else
                 (f"gaps between kernels (below 0, within measured repeat spread ±{spread:.6f} ms)" if spread is not None else
                  "gaps between kernels (below 0; not checked: no repeat band)"), "ms": gaps, "how": "difference"})
   out["lines"] = lines
   return out
+
+
+CPU_EXPERTS_LABEL = "experts computed on the CPU above their ideal"
+CPU_EXPERTS_ROW = "experts computed on the CPU"  # where the token goes: the row of that line
+
+
+def cpu_line(trace:dict[str, Any] | None, bandwidth_gbs:float) -> dict[str, Any] | None:
+  """The experts the CPU computed (the trace's cpu_experts, attribution.cpu_side) as their own line: at least their
+  bytes over the host RAM rate, less the ideal the limit gave them (the same bytes over GPU memory), which leaves the
+  other kernels' ideal. Derived, not measured: the capture sees the GPU only, so their time is inside the gaps. None
+  when the CPU computed none, the share is not known (a cache whose hit rate was not reported) or RAM was not measured."""
+  cpu = (trace or {}).get("cpu_experts") or {}
+  if not (cpu.get("share") and cpu.get("bytes_per_token") and cpu.get("ram_gbs") and bandwidth_gbs):
+    return None
+  floor, ideal = cpu["bytes_per_token"] / (cpu["ram_gbs"] * 1e6), cpu["bytes_per_token"] / (bandwidth_gbs * 1e6)
+  return {"label": CPU_EXPERTS_LABEL, "ms": floor - ideal, "how": "derived", "floor_ms": floor, "ideal_ms": ideal, "share": cpu["share"],
+          "words": f"{cpu['bytes_per_token'] / 1e9:.2f} GB per token read from host RAM at {cpu['ram_gbs']:.1f} GB/s: at least "
+                   f"{floor:.3f} ms, which the capture sees as gaps ({cpu['basis']})"}
 
 
 def scale_roles(roles:list[dict[str, Any]], weight_ms:float | None, isolated_sum_ms:float) -> tuple[list[dict[str, Any]], float | None]:
@@ -472,6 +493,8 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
       rest_limit -= kv
     if abs(rest_limit) > 1e-9:
       add(LIMIT_ROW, "limit", 0.0, rest_limit)
+    if cpu := next((l for l in lines if l.get("label") == CPU_EXPERTS_LABEL), None):  # no kernel: its RAM floor, its ideal
+      add(CPU_EXPERTS_ROW, "rest", cpu["floor_ms"], cpu["ideal_ms"])
     gaps = lines[-1]
     add("outside GPU kernels (profiled wall)" if tie.get("profiled_wall_ms") is not None else GAPS_BOUND_ROW if bound else GAPS_ROW,
         "gaps", bound["ms"] if bound else gaps["ms"], 0.0)

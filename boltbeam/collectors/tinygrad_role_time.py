@@ -268,6 +268,12 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
         slot["spread_pct"] = max(float(r["spread_pct"]), slot["spread_pct"] or 0.0)
       if r.get("wall_us_less_floor") is not None:
         floor_us = (r.get("timing") or {}).get("dispatch_floor_us", floor_us)
+  cpu = trace.get("cpu_experts") or {}  # experts the CPU computed (attribution.cpu_side): only the GPU's share is its floor
+  if s := cpu.get("share"):
+    on_cpu = {tuple(k) for k in cpu["roles"]}
+    cpu_ideal = sum(c["floor_ms"] * s for c in ceiling_roles if (c["role"], c["quant"]) in on_cpu)
+    ceiling_roles = [{**c, "floor_ms": c["floor_ms"] * (1 - s)} if (c["role"], c["quant"]) in on_cpu else c for c in ceiling_roles]
+    limit_ms = limit_ms - cpu_ideal if limit_ms is not None else None
   from collections import Counter
   shape_counts = Counter((c["role"], c["quant"]) for c in ceiling_roles)
   out, refused = [], []

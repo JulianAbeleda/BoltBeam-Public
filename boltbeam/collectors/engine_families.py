@@ -61,6 +61,28 @@ def find(fork:Mapping[str, Any], env:Mapping[str, str] | None = None, home:pathl
   return shutil.which(fork["binary"], path=env.get("PATH")) if fork.get("binary") else None
 
 
+def build_of(binary:str, family:str, env:Mapping[str, str] | None = None, home:pathlib.Path | None = None) -> dict[str, Any] | None:
+  """The fork row whose build this program is: a fork with no provider whose found program sits in the same folder
+  (llama-bench and llama-server are built side by side), else the family's row with a provider (the root BoltBeam
+  runs); None when the family has neither."""
+  here = pathlib.Path(binary).expanduser().resolve().parent
+  rows = next((fam["forks"] for fam in families() if fam["family"] == family), ())
+  for f in rows:
+    where = None if f.get("provider") else find(f, env, home)
+    if where and pathlib.Path(where).expanduser().resolve().parent == here:
+      return f
+  return next((f for f in rows if f.get("provider")), None)
+
+
+def tool_flags(binary:str, tool:str, family:str = "llama.cpp", env:Mapping[str, str] | None = None,
+               home:pathlib.Path | None = None) -> tuple[dict[str, Any] | None, tuple[str, ...] | None]:
+  """The fork row of this program's build (build_of) and the flags its `tool` has (the row's flags); None for the
+  flags when the row lists none, so nothing is checked."""
+  row = build_of(binary, family, env, home)
+  flags = ((row or {}).get("flags") or {}).get(tool)
+  return row, tuple(flags) if flags is not None else None
+
+
 def _fix(fork:Mapping[str, Any]) -> str:
   """The one thing to do for a fork not here: get it from its repo, and name it by its env var (the engine scan's,
   for a fork with a provider)."""

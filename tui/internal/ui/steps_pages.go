@@ -507,7 +507,7 @@ func resultLine(f Facts) (string, string) {
 		return "pass", fmt.Sprintf("%.1f prompt tokens per second at depth %s · %.0f%% of the limit", r.TokS, count(s.Focus), r.TokS / *res.Ceiling.TokS * 100)
 	}
 	if res.Measured && res.Timing.TokS != nil {
-		if res.Ceiling.TokS != nil && *res.Ceiling.TokS > 0 {
+		if res.Ceiling.TokS != nil && *res.Ceiling.TokS > 0 && res.Loss.PctWithheld == nil {
 			return "pass", fmt.Sprintf("%.1f tokens per second · %.0f%% of the limit", *res.Timing.TokS, *res.Timing.TokS / *res.Ceiling.TokS * 100)
 		}
 		return "pass", fmt.Sprintf("%.1f tokens per second measured", *res.Timing.TokS)

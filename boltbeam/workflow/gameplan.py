@@ -29,6 +29,7 @@ from collections import Counter
 from typing import Any
 
 from boltbeam.core.canonical import pretty_json
+from boltbeam.report import plain
 from boltbeam.report.html import PLAIN_VERDICT
 from boltbeam.search import compare_record, role_numbers, search_stage
 from boltbeam.workflow import evidence as ev
@@ -452,6 +453,9 @@ def gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = None
   plan = _gameplan(run, res, now=now)
   if words := (res.get("loss") or {}).get("timing_scope"):
     plan["timing_scope"] = words
+  from boltbeam.workflow.offload import run_setups
+  if setups := run_setups(run, res):  # experts in RAM: the setup for replies and the one for prompts, apart
+    plan["setups"] = setups
   return plan
 
 
@@ -491,7 +495,8 @@ def _gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = Non
     "measurement": measurement_words(res.get("measurement")), "role_source": loss.get("role_source_words"),
     "token_ms": token["ms"] if token else None, "tok_s": token["tok_s"] if token else None,
     "limit_ms": loss.get("limit_ms"), "limit_tok_s": loss.get("limit_tok_s"),
-    "pct_of_limit": (100.0 * loss["limit_ms"] / token["ms"]) if token and loss.get("limit_ms") and token.get("ms") else None,
+    "pct_of_limit": (100.0 * loss["limit_ms"] / token["ms"]) if token and loss.get("limit_ms") and token.get("ms") and not loss.get("pct_withheld") else None,
+    **({"pct_withheld": plain.words()["no_limit"][loss["pct_withheld"]]} if loss.get("pct_withheld") else {}),
     "lost_ms": token["lost_ms"] if token else None,
     "where_token_goes": loss.get("where_token_goes"),
     "evidence": list((loss.get("step") or {}).get("evidence") or []) + list((loss.get("evidence") or {}).get("common") or []),
@@ -535,7 +540,24 @@ def _num(v:Any, fmt:str) -> str:
 
 def to_markdown(plan:dict[str, Any]) -> str:
   prefix = plan.get("timing_scope")
-  return (prefix + "\n\n" if prefix else "") + _to_markdown(plan)
+  return (prefix + "\n\n" if prefix else "") + _to_markdown(plan) + setups_markdown(plan.get("setups"))
+
+
+def setups_markdown(s:dict[str, Any] | None) -> str:
+  """The two setups for a model whose experts sit in RAM (offload.run_setups), each under the workload it is for."""
+  if not s:
+    return ""
+  out = ["", "## Setups: one for replies, one for prompts", ""]
+  if s["status"] != "derived":
+    return "\n".join(out + [f"Not derived: {s.get('reason')}.", ""])
+  for key, title in (("decode", "Replies (decode)"), ("prefill", "Prompts (prefill)")):
+    d = s[key]
+    if d.get("status") == "not derived":
+      out += [f"### {title}", f"Not derived: {d.get('reason')}.", ""]
+      continue
+    out += [f"### {title}", d.get("for") or "", "", f"```\n{d.get('command') or ' '.join(d.get('flags') or [])}\n```", d.get("says") or "", ""]
+    out += [f"- {line}" for line in d.get("arithmetic") or []] + [f"- note: {n}" for n in d.get("notes") or []] + [""]
+  return "\n".join(out)
 
 
 def _to_markdown(plan:dict[str, Any]) -> str:
@@ -550,7 +572,9 @@ def _to_markdown(plan:dict[str, Any]) -> str:
   out = [f"# Gameplan: {h.get('model_id')} on {h.get('target_id')}", "",
          f"Run {plan['id']} · {h.get('engine')} · batch {h.get('batch')} · {h.get('weight_format') or 'weights ' + NOT_RECORDED}"
          + (f" · {h['measurement']}" if h.get("measurement") else "")]
-  if h.get("token_ms") is not None:
+  if h.get("pct_withheld") and h.get("token_ms") is not None:  # a speculative run: no % of the one-token limit, said why
+    out.append(f"Measured {_num(h['token_ms'], '{:.1f}')} ms per token ({_num(h['tok_s'], '{:.1f}')} tok/s). {h['pct_withheld']}")
+  elif h.get("token_ms") is not None:
     out.append(f"Measured {_num(h['token_ms'], '{:.1f}')} ms per token ({_num(h['tok_s'], '{:.1f}')} tok/s); the limit is "
                f"{_num(h['limit_ms'], '{:.1f}')} ms ({_num(h['limit_tok_s'], '{:.1f}')} tok/s); {_num(h['pct_of_limit'], '{:.0f}')}% of the limit; "
                f"{_num(h['lost_ms'], '{:.1f}')} ms per token lost.")

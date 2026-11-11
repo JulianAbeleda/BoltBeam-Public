@@ -284,7 +284,7 @@ def saved(root:pathlib.Path) -> dict[str, Any]:
       timing, ceil, loss = res.get("timing") or {}, res.get("ceiling") or {}, res.get("loss") or {}
       if loss.get("session") and loss.get("runtimes"):  # the limit is the focus depth's: so is the turn set against it
         timing = {"tok_s": loss["runtimes"][0].get("tok_s")}
-      pct = (100.0 * timing["tok_s"] / ceil["tok_s"]) if timing.get("tok_s") and ceil.get("tok_s") else None
+      pct = (100.0 * timing["tok_s"] / ceil["tok_s"]) if timing.get("tok_s") and ceil.get("tok_s") and not loss.get("pct_withheld") else None
       rows.append({"id": d.name, "dir": str(d), "model_id": manifest.get("model_id"), "target_id": manifest.get("target_id"),
                    "provider": providers.run_provider(d), "saved_at": rec.get("saved_at"), "tok_s": timing.get("tok_s"),
                    "pct_of_limit": pct, "workload": manifest.get("workload"), "measured": bool(res.get("measured")),

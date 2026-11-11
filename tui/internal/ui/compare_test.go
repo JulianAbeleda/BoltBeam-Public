@@ -435,3 +435,18 @@ func TestLossBodyRefusesOneRowNotTheTable(t *testing.T) {
 		}
 	}
 }
+
+// A speculative run's speed is not a % of the one-token limit: the result and the step line say why instead.
+func TestWithheldPercentIsNotShown(t *testing.T) {
+	run := measuredRun(t)
+	if run.Results.Timing.TokS == nil || run.Results.Ceiling.TokS == nil {
+		t.Skip("the pinned run has no speed and limit")
+	}
+	says := "No percentage of the limit is shown: this run drafted tokens ahead."
+	run.Results.Loss.PctWithheld, run.Results.Loss.PctWithheldSays = sp("speculative"), sp(says)
+	f := Facts{Path: "m.gguf", Run: run}
+	body := plain(resultBody(f, 120))
+	if !strings.Contains(body, says) || strings.Contains(body, "of the limit\n") {
+		t.Errorf("withheld run body:\n%s", body)
+	}
+}

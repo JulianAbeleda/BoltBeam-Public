@@ -65,3 +65,26 @@ def band(hit_rates, **kwargs) -> list[dict]:
   rates = list(hit_rates)
   if not rates: raise Refused('a band needs at least one hit rate')
   return [offload_limit(hit_rate=h, **kwargs) for h in rates]
+
+
+def cpu_share(*, layers:int, cpu_moe:bool = False, n_cpu_moe:int | None = None, all_in_ram:bool = False, cache:bool = False,
+              cpu_share:float = 0.0, hit_rate:float | None = None, strata:bool = False) -> dict:
+  """The share of a token's expert bytes the CPU computes: experts that are neither GPU time nor GPU bytes, read from
+  host RAM by the CPU (offload_limit's CPU term). Without a cache the CPU computes every expert kept in RAM (--cpu-moe
+  or an -ot exps=CPU pattern: all; --n-cpu-moe N: the first N of `layers` expert layers); with one, the CPU share s of
+  the misses, s x (1 - hit_rate), which is a range from 0 to s when the hit rate is not reported. Strata uploads its
+  misses: none. {"share": the share or None when only the range is known, "low", "high", "basis"}."""
+  def out(share, basis, low=None, high=None):
+    return {"share": share, "low": share if low is None else low, "high": share if high is None else high, "basis": basis}
+  if strata:
+    return out(0.0, "Strata uploads the experts it misses; its CPU computes none")
+  in_ram = 1.0 if cpu_moe or all_in_ram else min(n_cpu_moe or 0, layers) / layers if layers else 0.0
+  if not in_ram:
+    return out(0.0, "no expert is kept in RAM")
+  if not cache:
+    return out(in_ram, "no expert cache: the CPU computes every expert kept in RAM" + ("" if in_ram == 1 else f" ({n_cpu_moe} of {layers} layers)"))
+  if not cpu_share:
+    return out(0.0, "the expert cache uploads every miss (CPU share 0)")
+  if hit_rate is None:
+    return out(None, f"the CPU computes {cpu_share:g} of the cache misses, and the run did not report its hit rate", 0.0, cpu_share)
+  return out(cpu_share * (1 - hit_rate), f"the CPU computes {cpu_share:g} of the cache misses at the reported hit rate {hit_rate:g}")

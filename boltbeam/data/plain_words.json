@@ -119,7 +119,12 @@
   "none": "There is no limit for this run yet: it kept experts in RAM, so the limit for a model held in GPU memory does not apply, and {reason}.",
   "figure": "of the offload limit ({limit} tok/s)",
   "decode_tuned": "This setup is tuned for writing replies: with the experts in RAM a long prompt is read 5 to 18 times slower than with the whole model on the card (measured on an RTX 5090).",
-  "unrecorded": "Placement not recorded: this run did not say whether the experts were on the card or in RAM."
+  "unrecorded": "Placement not recorded: this run did not say whether the experts were on the card or in RAM.",
+  "for_decode": "For writing replies (decode): every expert in RAM, a cache of the ones in use on the card.",
+  "for_prefill": "For reading prompts (prefill): whole layers' experts on the card, the rest in RAM, a larger chunk.",
+  "prefill_tuned": "This setup is tuned for reading prompts: a prompt never hits the expert cache, so the card holds whole layers instead, and a larger chunk uploads each expert once for more tokens.",
+  "cpu_figure": "of each token at least, for the experts the processor computes from RAM (not GPU time)",
+  "cpu_experts": "The experts the processor computes from RAM are their own part: they are not GPU time and not GPU memory reads, so a GPU capture sees them only as gaps between kernels."
  },
  "units": {
   "tok_s": "tok/s",
@@ -530,6 +535,7 @@
  ],
  "no_limit": {
   "formula_refused": "There is no limit for this run yet: BoltBeam cannot yet work out the fastest this GPU allows for a model with these state-space layers.",
+  "speculative": "No percentage of the limit is shown: this run drafted tokens ahead and checked several in one step, and the limit is for one token per step.",
   "no_matrix_rate": "There is no limit for this run yet: this GPU's speed for one kind of math this model uses has not been measured yet."
  },
  "not_split": {

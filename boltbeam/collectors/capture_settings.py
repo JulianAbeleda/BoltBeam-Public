@@ -10,11 +10,29 @@ from boltbeam.artifacts.run_io import read_json
 # The engine settings the vLLM adapter can honor: the one list every vLLM run and capture checks a request against.
 MTP_CONTEXT = "mtp_context.json"  # a speculative run's natural context ids, the same for every process of the run
 VLLM_SETTINGS = ("chunk_size", "attention_backend", "tensor_parallel_size", "gemm_backends", "mtp", "mtp_prompt")
+# llama.cpp's flag per setting, in the order they are passed. Where the experts sit (n_gpu_layers, n_cpu_moe,
+# override_tensor, cpu_moe), the MoE cache (moe_cache_mib, moe_cache_cpu_share) and the draft (spec_type, draft_model,
+# cache_type_k_draft): which program of which build has which is the fork row's flags (data/engine_families.json).
 LLAMA_FLAGS = {"chunk_size": "-ub", "batch_size": "-b", "cache_type_k": "-ctk",
-               "cache_type_v": "-ctv", "flash_attention": "-fa"}
+               "cache_type_v": "-ctv", "flash_attention": "-fa",
+               "n_gpu_layers": "-ngl", "n_cpu_moe": "-ncmoe", "override_tensor": "-ot", "cpu_moe": "--cpu-moe",
+               "moe_cache_mib": "--moe-cache-mib", "moe_cache_cpu_share": "--moe-cache-cpu-share",
+               "spec_type": "--spec-type", "draft_model": "-md", "cache_type_k_draft": "-ctkd"}
+LLAMA_SWITCHES = ("cpu_moe",)  # a flag with no value: the setting is true
+LLAMA_WHOLE = {"chunk_size": 1, "batch_size": 1, "n_gpu_layers": 0, "n_cpu_moe": 0, "moe_cache_mib": 1}  # whole numbers, at least this
+LLAMA_TEXT = ("override_tensor", "spec_type", "draft_model", "cache_type_k_draft")  # passed as written
 LLAMA_FIELDS = {"n_ubatch": "chunk_size", "n_batch": "batch_size", "type_k": "cache_type_k",
                 "type_v": "cache_type_v", "flash_attn": "flash_attention"}
 GEMM_BACKENDS = ("ATEN", "TRITON", "CUTLASS", "CPP")  # Inductor's matrix backends; a request is a comma list of these
+
+
+def switch(value:str) -> bool:
+  """A switch setting on the command line (llama.cpp's --cpu-moe): `on` is its one value, as the screen passes it."""
+  if str(value).lower() not in ("on", "true"):
+    raise ValueError(f"a switch is on or not asked, got {value!r}")
+  return True
+
+
 # The settings a run asks for on the pipeline's command line, each its value type, its name on screen and its help:
 # the one table the parser (screen pipeline), the request (pipeline._engine_settings) and the screen's Settings page
 # read. Which engine honors which is ACCEPTED; tensor_parallel_size is not asked, the layout sets it.
@@ -27,7 +45,21 @@ ASKED = {
   "mtp": (int, "MTP draft tokens", "vLLM: multi-token prediction with this many draft tokens per step (speculative "
           "decoding); decode runs on natural text (data/mtp_prompts.json) at one context; recorded with the run"),
   "mtp_prompt": (str, "MTP prompt", "vLLM with --mtp: the prompt id (data/mtp_prompts.json) the context is built from "
-                 "(default: the set's first)")}
+                 "(default: the set's first)"),
+  "n_gpu_layers": (int, "GPU layers", "llama.cpp -ngl: layers kept on the GPU (default: all)"),
+  "n_cpu_moe": (int, "layers with experts in RAM", "llama.cpp -ncmoe: the experts of the first N layers stay in host RAM "
+                "and the CPU computes them (the model's layer count: all of them, as --cpu-moe)"),
+  "override_tensor": (str, "tensor placement", "llama.cpp -ot: tensor name pattern=buffer type, as llama.cpp takes it "
+                      "(exps=CPU keeps every expert in RAM)"),
+  "cpu_moe": (switch, "every expert in RAM", "llama.cpp --cpu-moe (on): every expert stays in host RAM and the CPU computes "
+              "it; the dense parts stay on the GPU"),
+  "moe_cache_mib": (int, "expert cache MiB", "llama.cpp --moe-cache-mib (llama-server): MiB of GPU memory caching the "
+                    "experts kept in RAM; needs experts in RAM"),
+  "moe_cache_cpu_share": (float, "CPU share of cache misses", "llama.cpp --moe-cache-cpu-share (llama-server, master "
+                          "builds): the share of cache misses the CPU computes instead of uploading; needs the cache"),
+  "spec_type": (str, "speculation", "llama.cpp --spec-type (llama-server): draft-mtp with --draft-model for an MTP head"),
+  "draft_model": (str, "draft model", "llama.cpp -md (llama-server): the draft or MTP head file"),
+  "cache_type_k_draft": (str, "draft K cache type", "llama.cpp -ctkd (llama-server): the draft head's K cache type (q8_0, f16)")}
 TINYGRAD_WARM = 3  # warm tokens before the measured window (runtime/tinygrad_decode_profile.py --warm)
 ACCEPTED = {"vllm": VLLM_SETTINGS, "llama.cpp": tuple(LLAMA_FLAGS)}  # per engine (collectors/providers.ENGINES)
 
@@ -115,7 +147,7 @@ def offered(provider:str) -> list[dict[str, Any]]:
   """The settings a run on this engine may ask for, as the screen offers them: the flag, a whole number or text, the
   values when they are a fixed set, the help, and whether the checkpoint needs a draft head (the mtp rows)."""
   from boltbeam.collectors.vllm_mtp import prompt_set
-  choices = {"gemm_backends": lambda: list(GEMM_BACKENDS), "mtp_prompt": lambda: prompt_set()["ids"]}
+  choices = {"gemm_backends": lambda: list(GEMM_BACKENDS), "mtp_prompt": lambda: prompt_set()["ids"], "cpu_moe": lambda: ["on"]}
   return [{"name": k, "flag": "--" + k.replace("_", "-"), "label": label, "whole": kind is int,
            "choices": choices[k]() if k in choices else None, "about": about, "draft_head": k.startswith("mtp")}
           for k, (kind, label, about) in ASKED.items() if k in ACCEPTED.get(provider, ())]
@@ -155,7 +187,15 @@ def setting_words(settings:dict[str, Any]) -> list[str]:
            "gemm_backends": lambda v: (f"matrix backends {str(v).upper()}: the compiler's own GEMM kernels in place of "
                                        f"cuBLAS; not stock vLLM"),
            "mtp": lambda v: f"MTP k={v}: speculative decoding, {v} draft token{'s' if v != 1 else ''} per step",
-           "mtp_prompt": lambda v: f"MTP context: natural text from prompt {v}"}
+           "mtp_prompt": lambda v: f"MTP context: natural text from prompt {v}",
+           "n_gpu_layers": lambda v: f"{v} layers on the GPU",
+           "n_cpu_moe": lambda v: f"the experts of the first {v} layers in host RAM",
+           "override_tensor": lambda v: f"tensor placement {v}",
+           "cpu_moe": lambda v: "every expert in host RAM",
+           "moe_cache_mib": lambda v: f"expert cache {v} MiB on the GPU",
+           "moe_cache_cpu_share": lambda v: f"the CPU computes {v:g} of the cache misses",
+           "spec_type": lambda v: f"speculative decoding {v}",
+           "draft_model": lambda v: f"draft {pathlib.Path(str(v)).name}"}
   return [words[k](v) if k in words else f"{k} {v}" for k, v in settings.items() if v is not None]
 
 
@@ -191,7 +231,10 @@ def vllm_streams(run:pathlib.Path, context:int) -> list[str]:
   return ["--max-num-seqs", str(slots)] if slots is not None else []
 
 
-def llama_flags(run:pathlib.Path, context:int, *, capture:bool = False) -> list[str]:
+def llama_flags(run:pathlib.Path, context:int, *, capture:bool = False, binary:str | None = None,
+                tool:str = "llama-bench") -> list[str]:
+  """The requested settings as llama.cpp flags. capture: take what the untraced run recorded (a recorded value that
+  differs from the request is an error). binary: the program that will run them, whose build must have each flag."""
   settings = requested(run)
   if capture:
     engine = observed(run, context)
@@ -201,13 +244,68 @@ def llama_flags(run:pathlib.Path, context:int, *, capture:bool = False) -> list[
         if name in settings and str(settings[name]).lower() != str(actual).lower():
           raise ValueError(f"untraced {name} {actual!r} differs from request {settings[name]!r}")
         settings[name] = actual
+  check_llama(settings)
+  if tool == "llama-bench" and "," in str(settings.get("override_tensor", "")):
+    raise ValueError("override_tensor for llama-bench separates patterns with ';' (a ',' starts another configuration of the benchmark)")
+  if binary is not None:
+    missing_flags(settings, binary, tool)
+  return render_llama(settings)
+
+
+def all_layers(extra:list[str] | None) -> list[str]:
+  """-ngl 99 (every layer on the GPU) unless the flags already place the layers: llama-bench reads a second -ngl as
+  a second configuration to run, not a replacement."""
+  return [] if "-ngl" in (extra or []) else ["-ngl", "99"]
+
+
+def check_llama(settings:dict[str, Any]) -> None:
+  """The requested llama.cpp settings, each of its kind, and the ones that only mean something with another: a ValueError
+  in plain words for the first that is not."""
   unknown = set(settings) - LLAMA_FLAGS.keys()
   if unknown:
     raise ValueError(f"llama.cpp does not support requested settings {sorted(unknown)}")
-  for key in ("chunk_size", "batch_size"):
-    if key in settings and (type(settings[key]) is not int or settings[key] <= 0):
-      raise ValueError(f"{key} must be a positive integer")
-  return [value for key, flag in LLAMA_FLAGS.items() if key in settings for value in (flag, str(settings[key]))]
+  for key, least in LLAMA_WHOLE.items():
+    if key in settings and (type(settings[key]) is not int or settings[key] < least):
+      raise ValueError(f"{key} must be a positive integer" if least else f"{key} must be a whole number, 0 or more")
+  for key in LLAMA_SWITCHES:
+    if key in settings and settings[key] is not True:
+      raise ValueError(f"{key} is on or not asked: true is its one value")
+  for key in LLAMA_TEXT:
+    if key in settings and (type(settings[key]) is not str or not settings[key].strip()):
+      raise ValueError(f"{key} must be text, as llama.cpp takes it")
+  if "draft_model" in settings and not pathlib.Path(settings["draft_model"]).is_absolute():
+    raise ValueError("draft_model must be an absolute path: a capture runs the engine in its own folder")
+  share = settings.get("moe_cache_cpu_share")
+  if share is not None and (type(share) not in (int, float) or not 0 <= share <= 1):
+    raise ValueError("moe_cache_cpu_share is a share of the cache misses, from 0 to 1")
+  in_ram = settings.get("cpu_moe") or settings.get("n_cpu_moe") or "override_tensor" in settings
+  if "moe_cache_mib" in settings and not in_ram:
+    raise ValueError("moe_cache_mib caches experts kept in RAM, and this run keeps none there (ask cpu_moe, n_cpu_moe or override_tensor)")
+  if share is not None and "moe_cache_mib" not in settings:
+    raise ValueError("moe_cache_cpu_share is a share of the expert cache's misses, and this run asks for no cache (moe_cache_mib)")
+
+
+def render_llama(settings:dict[str, Any]) -> list[str]:
+  """The settings as llama.cpp's flags, in LLAMA_FLAGS order: the one place a setting becomes a flag."""
+  return [value for key, flag in LLAMA_FLAGS.items() if key in settings
+          for value in ((flag,) if key in LLAMA_SWITCHES else (flag, f"{settings[key]:g}" if type(settings[key]) is float else str(settings[key])))]
+
+
+def missing_flags(settings:dict[str, Any], binary:str, tool:str = "llama-bench") -> None:
+  """Refuse a setting whose flag this build's program lacks (the fork row's flags, collectors/engine_families.tool_flags),
+  saying which build, which flag, and where it is instead."""
+  from boltbeam.collectors import engine_families
+  row, have = engine_families.tool_flags(binary, tool)
+  if have is None:
+    return
+  lacking = [(k, LLAMA_FLAGS[k]) for k in LLAMA_FLAGS if k in settings and LLAMA_FLAGS[k] not in have]
+  if not lacking:
+    return
+  key, flag = lacking[0]
+  build = f"llama.cpp {row['label']}" + (f" ({row['commit']})" if row.get("commit") else "")
+  other = [t for t, flags in (row.get("flags") or {}).items() if t != tool and flag in flags]
+  raise ValueError(f"{tool} of {build} has no {flag}, so it cannot run the requested {key}"
+                   + (f"; {other[0]} of this build has it" if other else "; no program of this build has it"))
 
 
 def require_supported(run:pathlib.Path, supported:tuple[str, ...] = ()) -> dict[str, Any]:

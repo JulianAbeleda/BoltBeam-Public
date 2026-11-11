@@ -350,6 +350,34 @@ def fresh_replicas(attributed, folders:list[pathlib.Path], steps:list[float | No
   return out or None
 
 
+def cpu_side(run, profile:dict[str, Any], roles:list[dict[str, Any]], read:dict[tuple, dict[str, Any]],
+             counts:dict[tuple, int]) -> dict[str, Any] | None:
+  """The experts the CPU computed in this run (expert_placement.cpu_experts): no GPU kernel reads them, so the expert
+  roles the GPU pairs with keep only the GPU's share of their bytes (and of their launches, when whole layers sit in
+  RAM: --n-cpu-moe), and a role the CPU computes whole is not paired at all. Returned beside the trace as its own bucket:
+  the share, the bytes per token the CPU read, the host RAM rate (target/host.py, None when not measured) and the roles,
+  with the adjusted roles and counts under _roles and _counts. None: no expert in RAM."""
+  from boltbeam.collectors.expert_placement import cpu_experts
+  from boltbeam.core.refused import Refused
+  cpu = cpu_experts(run, profile)
+  if cpu is None:
+    return None
+  ex = lambda r: (r["role"], r["quant"]) in set(cpu["roles"])  # noqa: E731
+  s = cpu["share"]
+  try:
+    from boltbeam.target import host
+    ram = host.ram_read()["ram_gbs"] if s else None
+  except (Refused, OSError, KeyError):
+    ram = None
+  out = {**cpu, "roles": [list(k) for k in cpu["roles"]], "bytes_per_token": s * sum(r["bytes_moved"] for r in roles if ex(r)) if s else (0.0 if s == 0 else None),
+         "ram_gbs": ram, "_roles": roles, "_counts": counts}
+  if s:
+    out["_roles"] = [r for r in roles if not ex(r)] if s >= 1 else [{**r, "bytes_moved": r["bytes_moved"] * (1 - s)} if ex(r) else r for r in roles]
+    if cpu["per_layer"] and s < 1:
+      out["_counts"] = {k: round(n * (1 - s)) if (read.get(k) or {}).get("n_expert") else n for k, n in counts.items()}
+  return out
+
+
 def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str, model_id:str, target,
                    context:int, tokens:int, out:str, token_ms:float | None = None,
                    long_kernels:int = 0, overlap:dict[str, Any] | None = None, batch:int = 1,
@@ -387,6 +415,8 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
                for m in got]
       counts = {(m["role"], m["quant"]): m["count"] for m in got}
       packed = {(m["role"], m["quant"]): m["part_roles"] for m in got}
+  if cpu := cpu_side(run, profile, roles, read, counts):
+    roles, counts = cpu.pop("_roles"), cpu.pop("_counts")
   from boltbeam.target.targets import upper
   result = attribute(window, roles, counts, tokens, upper(ceil.get("peak_bandwidth_gbs"), ceil.get("uncertainty")), kinds=pairing.layer_kinds(profile), read=read,
                        unfused_attention=unfused_attention, order=pairing.layer_order(profile))
@@ -416,7 +446,7 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
                    + trace_rows(result, context=context, time_source=method),
            "pairs": result["pairs"], "unpaired_roles": result["unpaired"], "ambiguous": result["ambiguous"],
            "pairing_rule": result["rule"], "structure": result["structure"], "overlap": overlap, "pairing_roles": pairing_roles,
-           "window_check": window_check, **({"replicas": replicas} if replicas else {})}
+           "window_check": window_check, **({"replicas": replicas} if replicas else {}), **({"cpu_experts": cpu} if cpu else {})}
   if packed:
     from boltbeam.artifacts.tinygrad_profile_events import matrix_work_coverage
     work = matrix_work_coverage(trace["rows"], profile, tokens, batch=batch)

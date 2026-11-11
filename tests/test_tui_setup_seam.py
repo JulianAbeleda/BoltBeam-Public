@@ -4,6 +4,8 @@
 import io
 import json
 
+import pytest
+
 from boltbeam.collectors import capture_scope
 from boltbeam.collectors import capture_settings as cs, vllm_mtp
 from boltbeam.workflow import recommend as rec, repeat_bands as rb, screen
@@ -14,7 +16,8 @@ from tests.test_repeat_bands import repeat
 
 def test_offered_settings_follow_the_engine_and_the_parser(monkeypatch, tmp_path):
   assert [s["name"] for s in cs.offered("vllm")] == [k for k in cs.ASKED if k in cs.VLLM_SETTINGS]
-  assert [s["name"] for s in cs.offered("llama.cpp")] == ["chunk_size"]
+  assert [s["name"] for s in cs.offered("llama.cpp")] == ["chunk_size", "n_gpu_layers", "n_cpu_moe", "override_tensor", "cpu_moe", "moe_cache_mib",
+                                                         "moe_cache_cpu_share", "spec_type", "draft_model", "cache_type_k_draft"]
   assert cs.offered("tinygrad") == []
   by = {s["name"]: s for s in cs.offered("vllm")}
   assert by["mtp_prompt"]["choices"] == vllm_mtp.prompt_set()["ids"] and by["gemm_backends"]["choices"] == list(cs.GEMM_BACKENDS)
@@ -27,6 +30,22 @@ def test_offered_settings_follow_the_engine_and_the_parser(monkeypatch, tmp_path
   assert screen.main(argv) == 0
   assert pp._engine_settings(seen["args"]) == {"chunk_size": 512, "attention_backend": "TRITON_ATTN",
                                                    "gemm_backends": "TRITON", "mtp": 2, "mtp_prompt": "explain-tcp"}
+
+
+def test_cpu_moe_and_the_draft_cache_type_parse_like_the_other_llama_flags(monkeypatch, tmp_path):
+  by = {s["name"]: s for s in cs.offered("llama.cpp")}
+  assert by["cpu_moe"]["choices"] == ["on"] and not by["cpu_moe"]["whole"] and by["cache_type_k_draft"]["choices"] is None
+  seen = {}
+  monkeypatch.setattr(pp, "pipeline_current", lambda args, out=None: seen.setdefault("args", args) and 0)
+  argv = ["pipeline", "m", "--run", str(tmp_path / "r"), "--target", "nvidia_sm120", "--provider", "llama.cpp",
+          by["cpu_moe"]["flag"], "on", by["cache_type_k_draft"]["flag"], "q8_0", "--moe-cache-mib", "20000"]
+  assert screen.main(argv) == 0
+  got = pp._engine_settings(seen["args"])
+  assert got == {"cpu_moe": True, "cache_type_k_draft": "q8_0", "moe_cache_mib": 20000}
+  cs.check_llama(got)
+  assert cs.render_llama(got) == ["--cpu-moe", "--moe-cache-mib", "20000", "-ctkd", "q8_0"]
+  with pytest.raises(SystemExit):  # a switch has one value
+    screen.main(argv[:7] + ["--cpu-moe", "off"])
 
 
 def test_repeats_run_the_setup_n_times_then_save_the_band(monkeypatch, tmp_path):
