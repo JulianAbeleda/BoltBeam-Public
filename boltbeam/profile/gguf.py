@@ -17,13 +17,8 @@ GGML_TYPE_NAMES = {
   10: "Q2_K", 11: "Q3_K", 12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 15: "Q8_K", 16: "IQ2_XXS", 17: "IQ2_XS",
   18: "IQ3_XXS", 19: "IQ1_S", 20: "IQ4_NL", 21: "IQ3_S", 22: "IQ2_S",
   23: "IQ4_XS", 24: "I8", 25: "I16", 26: "I32", 27: "I64", 28: "F64", 29: "IQ1_M", 30: "BF16",
-  34: "TQ1_0", 35: "TQ2_0", 39: "MXFP4", 41: "Q1_0", 42: "Q2_0", 142: "PQ2_0", 143: "PTQ1_0",
+  34: "TQ1_0", 35: "TQ2_0", 39: "MXFP4", 41: "Q1_0", 42: "Q2_0",
 }
-# ids only an engine fork defines: where their names and block layouts (decode_roles.GGML_BLOCK_LAYOUTS) were read
-_PRISM = {"engine_family": "llama.cpp", "fork": "prismml",  # data/engine_families.json names its repo
-          "commit": "6447906bf96c1a023980d3453fb59daa6af3bb23", "files": "ggml/include/ggml.h, ggml/src/ggml-common.h"}
-GGML_FORK_TYPES = {142: _PRISM, 143: _PRISM}  # a profile holding one names its source (metadata quant_sources)
-
 
 GGML_TYPE_IDS = {name: value for value, name in GGML_TYPE_NAMES.items()}
 
@@ -249,8 +244,6 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
     "gguf_architecture": arch,
     "tensor_count": len(all_tensors),
     "quant_types": sorted({GGML_TYPE_NAMES.get(typ, f"GGML_{typ}") for _, _, typ, _ in all_tensors}),
-    **({"quant_sources": {GGML_TYPE_NAMES[t]: GGML_FORK_TYPES[t] for t in sorted(forks)}}
-       if (forks := {typ for *_, typ, _ in all_tensors} & GGML_FORK_TYPES.keys()) else {}),
     "architecture_signals": arch_signals,
     "weights": ledger,
     "attention": {k: v for k, v in {

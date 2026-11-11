@@ -11,8 +11,8 @@
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Choose                                                                       │
 │ llama.cpp · roles not timed here                                             │
-│ ▸ ● llama.cpp     ‹ upstream · [PrismML] · Ollama · Strata ›                 │
-│         PrismML · found at /opt/llama.cpp-prism/build/bin/llama-bench ·      │
+│ ▸ ● llama.cpp     ‹ upstream · [TestFork] · Ollama · Strata ›                │
+│         TestFork · found at /opt/llama.cpp-testfork/build/bin/llama-bench ·  │
 │         BoltBeam can't run it yet: a run with it is not wired yet            │
 │     vLLM          not on this GPU type: BoltBeam runs vLLM on CUDA or AMD G… │
 │     tinygrad      ‹ [upstream] · own fork ›                                  │

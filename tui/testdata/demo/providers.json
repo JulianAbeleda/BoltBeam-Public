@@ -64,17 +64,6 @@
      "fix": null
     },
     {
-     "fork": "prismml",
-     "label": "PrismML",
-     "repo": "https://github.com/PrismML-Eng/llama.cpp",
-     "provider": null,
-     "runs": false,
-     "state": "not_here",
-     "path": null,
-     "reason": null,
-     "fix": "get it from https://github.com/PrismML-Eng/llama.cpp (branch prism), then export BOLTBEAM_LLAMA_PRISM=<its path>"
-    },
-    {
      "fork": "ollama",
      "label": "Ollama",
      "repo": "https://github.com/ollama/ollama",

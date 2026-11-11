@@ -377,6 +377,9 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], base:dict[str, Any]) -
     t["not_captured"] = "No turn captured: step 5 (role time) has not run for this run."
   if any(w.get("rows") for w in t["wheres"]) or (t["decode_where"] or {}).get("rows"):
     t["evidence_words"] += " Kernel evidence: separate llama-bench captures; see each capture's validation below."
+    if cap.get("moe") and cap.get("prompt_kind") == "random_tokens":  # the timings above are the server's, on the user's text; the captures are not
+      from boltbeam.report.plain import words
+      t["evidence_words"] += " " + words()["prompt_kind"]["random_tokens_moe_capture"]
   elif not t["not_captured"]:
     t["not_captured"] = "No captured kernel evidence is available; see any capture failures below."
   out.update(status="modeled" if h.get("roofline_ms") else "measured", limit_ms=h.get("roofline_ms"),

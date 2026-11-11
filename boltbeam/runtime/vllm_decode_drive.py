@@ -71,6 +71,7 @@ def main() -> int:
   ap.add_argument("--once", type=int, default=None, help="capture mode: one call of this many tokens")
   ap.add_argument("--prefill", type=int, default=None, help="prefill mode: one prompt of this many tokens")
   ap.add_argument("--capture", action="store_true", help="prefill mode: the measured call alone, marked for the profiler")
+  ap.add_argument("--corpus", default=None, help="prefill mode: real text (data/gate_corpus.json) instead of random ids")
   ap.add_argument("--semantic-capture", action="store_true", help="compiled graphless NVTX labeling pass; never production timing")
   ap.add_argument("--capture-pass", choices=('label','timing','paired'), help="compiled decode labeling or production graph timing")
   ap.add_argument("--semantic-dispatch", action="store_true", help="NVTX operator evidence preserving compiled execution; refuses unobserved graph nodes")
@@ -390,9 +391,10 @@ def prefill(a) -> int:
   vocab = llm.get_tokenizer().vocab_size
   rng = random.Random(a.seed)
   params = SamplingParams(max_tokens=1, temperature=0.0)
+  text_ids = corpus_ids(llm.get_tokenizer(), a.corpus) if a.corpus else None
 
   def call() -> tuple[float, float | None]:
-    ids = [rng.randrange(vocab) for _ in range(a.prefill)]
+    ids = window(text_ids, a.prefill) if text_ids else [rng.randrange(vocab) for _ in range(a.prefill)]
     t0 = time.perf_counter()
     out = llm.generate([TokensPrompt(prompt_token_ids=ids)], params, use_tqdm=False)[0]
     wall = time.perf_counter() - t0
@@ -410,7 +412,8 @@ def prefill(a) -> int:
     from vllm_semantics import install_routing
     install_routing(llm)
   sc = llm.llm_engine.vllm_config.scheduler_config
-  line = {"length": a.prefill, "max_model_len": llm.llm_engine.vllm_config.model_config.max_model_len, **_resolved_formats(llm), "seed": a.seed, "max_num_batched_tokens": int(sc.max_num_batched_tokens),
+  line = {"length": a.prefill, "prompt_kind": "real_text" if a.corpus else "random_tokens",
+          **({"corpus": {"file": Path(a.corpus).name, "tokens": len(text_ids)}} if a.corpus else {}), "max_model_len": llm.llm_engine.vllm_config.model_config.max_model_len, **_resolved_formats(llm), "seed": a.seed, "max_num_batched_tokens": int(sc.max_num_batched_tokens),
           "speculative_config": a.speculative_config,
           "chunked_prefill": bool(sc.enable_chunked_prefill), "vllm": __import__("vllm").__version__}
   if a.capture:
@@ -443,6 +446,22 @@ def prefill(a) -> int:
     line.update(wall_samples_s=[w for w, _ in got], engine_samples_s=[e for _, e in got])
   print(json.dumps(line), flush=True)
   return 0
+
+
+def corpus_ids(tokenizer, path:str) -> list[int]:
+  """The corpus's documents (data/gate_corpus.json, the llama path's text) as this engine's token ids, in order."""
+  text = "\n\n".join(d["text"] for d in json.loads(Path(path).read_text())["documents"])
+  ids = tokenizer.encode(text, add_special_tokens=False)
+  if not ids:
+    raise SystemExit(f"the corpus {path} tokenized to nothing")
+  return ids
+
+
+def window(ids:list[int], n:int) -> list[int]:
+  """Every call's prompt: the corpus's first n ids (repeated past its end), the window the llama.cpp path sends
+  (llama_server_decode_drive.corpus_ids). Each call is the same text, as there: prefix caching is off (LLM(...,
+  enable_prefix_caching=False)), as llama-server's prompt cache is, so a repeat is read in full."""
+  return [ids[i % len(ids)] for i in range(n)]
 
 
 def gemm_config(backends:str) -> dict:

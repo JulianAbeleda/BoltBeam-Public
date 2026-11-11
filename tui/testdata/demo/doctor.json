@@ -36,7 +36,7 @@
     {
       "item": "llama.cpp",
       "found": true,
-      "detail": "upstream: /opt/homebrew/bin/llama-bench (path); per-role time: metal-system-trace \u00b7 PrismML: /opt/llama.cpp-prism/build/bin/llama-bench (BoltBeam cannot run it yet)",
+      "detail": "upstream: /opt/homebrew/bin/llama-bench (path); per-role time: metal-system-trace",
       "fix": null,
       "blocks": false,
       "forks_missing": [

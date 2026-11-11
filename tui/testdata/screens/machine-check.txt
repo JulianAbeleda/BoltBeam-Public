@@ -12,7 +12,7 @@
 │                                                                                                  │
 │ Engines you can run here                                                                         │
 │ ✓ llama.cpp · upstream: /opt/homebrew/bin/llama-bench (path); per-role time: metal-system-       │
-│   trace · PrismML: /opt/llama.cpp-prism/build/bin/llama-bench (BoltBeam cannot run it yet)       │
+│   trace                                                                                          │
 │   forks not found: Ollama, Strata                                                                │
 │ ✓ tinygrad · own fork: /opt/tinygrad (scan: /opt); per-role time: metal-system-trace             │
 │   forks not found: upstream                                                                      │

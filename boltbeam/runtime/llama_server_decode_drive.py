@@ -16,6 +16,13 @@ draft_n and draft_n_accepted, kept as the acceptance. So
 It prints one JSON line per point: {"context", "batch", "tokens", "prompt_tokens", "step_ms", "tok_s_stream",
 "tok_s_total", "engine"}. --once N is the capture mode: one request of N tokens and the line {"tokens", "seconds",
 "engine"}, seconds the server's predicted_ms.
+
+--prefill is the prefill mode: the prompt is real text (--corpus, the shipped Gutenberg excerpts of data/gate_corpus.json,
+tokenized by the server and cut to exactly `context` tokens; repeated from the start only when the corpus is shorter),
+sent as token ids with the prompt cache off, one token asked for. One warm-up and --reps timed requests; each must report
+prompt_n equal to the context (and cache_n 0 where the server reports it): a prompt the server partly reused is refused.
+It prints {"prefill", "context", "prompt_tokens", "samples_ms" (the server's prompt_ms), "wall_samples_ms" (client wall: request sent to reply read), "n_batch", "n_ubatch", "corpus",
+"engine"}. Real text, because an MoE routes random token ids to far more experts than real text and reads ~2x slow.
 """
 from __future__ import annotations
 
@@ -82,6 +89,31 @@ def engine(t:dict, build:str | None) -> dict:
   return out
 
 
+def corpus_ids(base:str, path:str, n:int) -> tuple[list[int], int]:
+  """n token ids of the corpus's documents in order (the server's tokenizer), and how many times the corpus was repeated."""
+  text = "\n\n".join(d["text"] for d in json.loads(pathlib.Path(path).read_text())["documents"])
+  ids = call(base, "/tokenize", {"content": text})["tokens"]
+  if not ids:
+    raise SystemExit(f"the corpus {path} tokenized to nothing")
+  cycles = -(-n // len(ids))
+  return (ids * cycles)[:n], cycles
+
+
+def flag_int(flags:list, name:str, default:int) -> int:
+  return int(flags[flags.index(name) + 1]) if name in flags else default
+
+
+def prefill(base:str, ids:list[int]) -> tuple[float, float]:
+  """(the server's prompt_ms, the client's wall ms from the request sent to the reply read) for one cold prompt."""
+  t0 = time.perf_counter()
+  got = call(base, "/completion", {"prompt": ids, "n_predict": 1, "temperature": 0, "top_k": 1, "seed": 0, "cache_prompt": False})
+  wall = (time.perf_counter() - t0) * 1e3
+  t = got.get("timings") or {}
+  if t.get("prompt_n") != len(ids) or t.get("cache_n", 0) != 0:
+    raise SystemExit(f"asked for a cold prompt of {len(ids)} tokens, the server read prompt_n {t.get('prompt_n')} with cache_n {t.get('cache_n')}")
+  return float(t["prompt_ms"]), wall
+
+
 def main() -> int:
   ap = argparse.ArgumentParser()
   ap.add_argument("--server", required=True)
@@ -92,6 +124,8 @@ def main() -> int:
   ap.add_argument("--tokens", type=int, default=64)
   ap.add_argument("--reps", type=int, default=3)
   ap.add_argument("--once", type=int, default=None)
+  ap.add_argument("--prefill", action="store_true", help="time a cold prefill of the first --contexts value on real text")
+  ap.add_argument("--corpus", default=None, help="--prefill: data/gate_corpus.json")
   ap.add_argument("--flags", default="[]", help="the engine flags, a JSON list")
   ap.add_argument("--log", default="llama-server.log")
   ap.add_argument("--ready-s", type=float, default=1800.0)
@@ -108,6 +142,16 @@ def main() -> int:
   with Server(argv, a.port, pathlib.Path(a.log), a.ready_s) as s:
     the = call(s.base, "/tokenize", {"content": " the"})["tokens"][-1]
     build = call(s.base, "/props").get("build_info")
+    if a.prefill:
+      flags = json.loads(a.flags)
+      ids, cycles = corpus_ids(s.base, a.corpus, contexts[0])
+      prefill(s.base, ids)  # load and warm
+      got = [prefill(s.base, ids) for _ in range(a.reps)]
+      samples, walls = [g[0] for g in got], [g[1] for g in got]
+      print(json.dumps({"prefill": True, "context": contexts[0], "prompt_tokens": len(ids), "samples_ms": samples, "wall_samples_ms": walls,
+                        "n_batch": flag_int(flags, "-b", 2048), "n_ubatch": flag_int(flags, "-ub", 512),
+                        "corpus": {"file": pathlib.Path(a.corpus).name, "repeats": cycles}, "engine": {"build": build, "server": "llama-server"}}), flush=True)
+      return 0
     if a.once:
       prompt = [the] * contexts[0]
       generate(s.base, prompt, 2)  # load and warm

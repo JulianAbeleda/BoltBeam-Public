@@ -14,6 +14,7 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     ceiling  MODEL | --profile P  --target T   the roofline: the best tokens/s this chip allows for this model
     ceilings MODEL | --profile P               the decode limit on every registered chip with a ceiling (what-if)
     recommend MODEL | --profile P --target T [--gpus N] [--engine E]  the engine settings for this model on this machine: context, speed, flags (derived)
+    offload MODEL --target T [--engine E]  the offload page: what goes to the card and to RAM, each setup's limits, the pinned-copy gap (derived)
     runs     --root DIR [--all]                one summary per run folder under DIR; --all adds DIR/.work and the
                                                saved runs, each row marked where: runs, work or saved
     run      --run DIR | --run ID --root DIR   the stages, what is blocked, the next step, the results; an id is
@@ -493,6 +494,14 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--context", type=int, default=None, help="the context the sequence count and the speed are stated at")
   p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts there")
   _offload_args(p)
+  q = sub.add_parser("offload", help="the offload page for this model on this machine: the card and RAM, each setup's limits, the pinned-copy gap (derived; the first call on a GPU measures its copy rate, about a second)")
+  q.add_argument("model", nargs="?")
+  q.add_argument("--profile", help="a model_profile.json instead of the model file")
+  q.add_argument("--id", default=None)
+  q.add_argument("--target", required=True)
+  q.add_argument("--engine", default="llama.cpp", choices=list(providers.NAMES))
+  q.add_argument("--context", type=int, default=None, help="the context the KV and the prompt are stated at")
+  q.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts there")
   p.add_argument("--check", action="store_true", help="start the engine once with these flags (a free GPU, a minute or two), "
                  "read its KV cache figures, cache its overhead in the facts and show predicted against measured")
   p = sub.add_parser("mtp", help="vLLM's multi-token prediction per draft count on natural prompts (collectors/vllm_mtp)")
@@ -568,6 +577,13 @@ def main(argv:list[str] | None = None) -> int:
       roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
       out = recommended(_profile_arg(args), target, engine=args.engine, gpus=args.gpus, seqs=args.seqs, context=args.context,
                         facts=lay.newest_facts(roots, target.target_id), check_in=roots if args.check else None, **_offload_kw(args))
+    elif args.command == "offload":
+      target = _target_arg(args.target)
+      roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
+      got = recommended(_profile_arg(args), target, engine=args.engine, context=args.context, facts=lay.newest_facts(roots, target.target_id), offload=True,
+                        probe_h2d=True)  # the offload page may measure the copy rate (an idle GPU only); recommend reads the saved one
+      moe = got.get("offload") or {}
+      out = {"schema": SCHEMA, "kind": "offload", "target_id": target.target_id, "model": got.get("model"), "status": moe.get("status"), "page": moe.get("page")}
     elif args.command == "engines" and args.update:
       target = _target_arg(args.target or chips.detect().get("target_id") or "")
       out = {"schema": SCHEMA, "kind": "engines-update", "file": str(engine_builds.state_file()),

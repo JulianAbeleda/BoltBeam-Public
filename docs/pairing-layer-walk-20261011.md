@@ -386,3 +386,47 @@ What the report still cannot show: the llama.cpp trace's kernel rows carry no sh
 cannot time a (role, format) the ceiling holds at two shapes (the mixers' down and up, the indexer's q and k, and
 attn_qo's q and o here and on the 27B): their launches read as weight kernels no role took in the report although
 the trace pairs them.
+
+## A per-layer-quant MoE prefill on llama-server: chunks walked apart, layers anchored (2026-11-11)
+
+The Flash-Next Coder IQ1_M capture on llama-server (10,000 tokens, -b 2048 -ub 2048, RTX 5090) failed its output stage
+with an unresolved pairing (search_limit + no_fit). Notes: `~/storage/boltbeam-runs/pairing-anchor-20261111.md`.
+
+- **The chunks.** The server checkpoints a model whose memory cannot roll back (a recurrent state): it ends a batch where
+  min(n_batch, 4 + n_ubatch) and min(n_batch, 4) tokens remain (llama.cpp server-context.cpp), so the prompt ran as
+  2,048 x 3, 1,808, 2,044 and 4, not llama-bench's 2,048 x 4 and 1,808. The record said five chunks, the capture held six
+  (72 attention runs), so the layers did not read and the window fell to the flat pairing, which exhausted its budget.
+  `llama_server_prefill.server_chunks` records the server's chunks.
+- **A narrow chunk.** The 4-token chunk runs its projections as matrix-vector kernels (no matrix instruction, so no
+  weight launch by path): they are weight launches where a window has a narrow tail (`prefill_attribution.narrow_weights`).
+- **Chunks that launch otherwise.** A chunk of another width runs a layer's kernels otherwise (the shared expert's gate
+  and up fused at 2,048 tokens, two launches at 1,808; one expert launch for gate and up at 4 tokens), so the j-th launch
+  of a layer is not one role across chunks. When the one walk runs out of nodes or reads no layers, `pair` walks each run
+  of alike chunks apart (`_segments`, `_segmented`), in order, each run on the launches the runs before it left; only the
+  last holds the head and the pruned layer, and before it the last layer's pruned stages ran on no token.
+- **Anchored layers.** With a format per layer every layer is its own kind (`signatures`); a failing layer made the one
+  walk backtrack over all the layers before it. When that walk runs out of nodes, `_search` walks one layer kind at a time
+  (`staged`), each with its share of the node budget, keeping its best pairing before the next; ties are found over the
+  whole pairing as before. Within it a layer's output slots go in launch order after a format-stating template.
+- **Smaller rules.** A row may serve its calls at each template's own ratio when no one ratio fits (`mixed`); a row and its
+  transpose (a low-rank mixer's down and up: one role, format and count) exchanging launches is no tie; a cuBLAS gemv over
+  a chunk serves no many-row weight; `mix_out` is a pruned stage (llama.cpp prunes before the last FFN mixer); the mixer's
+  inject (no limit role) is paired in a prefill as one row per mixer (`vocab.PREFILL_ONLY_CLASSES`).
+
+- **The per-layer embedding (0.3.20).** `ple_key` and `ple_value` (Flash-Next's one PLE layer) are a role of their own,
+  `per_layer_embedding`, a limit role (a decode reads them once per token; they were counted before as an unclassified
+  weight, so the limit's bytes are the same). They read the layer's own token lookup, not the layer before's output, so
+  llama.cpp runs them anywhere before the layer (between layer 0's routed and shared experts here): their stage `ple` is
+  one the gap's order neither binds nor is set by (`vocab.UNORDERED_STAGES`), and they join no row of another stage.
+  The FFN mixer's inject reads after the whole FFN, routed and shared (`mix_post`, pruned with it). A role held at two
+  shapes (PLE's key and value, attn_qo's q and o) has each launch's work counted from its own row's shape. A free group
+  in a gap two chunk runs share is no twin (the other run may own it).
+- **Straight to the anchored walk (0.3.20).** When the chunks launch their layers in more than one way and the profile's
+  per-layer tensors set the layers apart (`signatures`), `pair` walks the runs apart at once (`_apart_first`) instead of
+  spending the one walk's 50,000 nodes first; every other window walks as before.
+
+Every saved capture the one walk settled pairs as recorded (the replay fixtures unchanged); the Flash-Next capture is a
+new fixture (`flash-next-iq1m-server-prefill-10000`): before, search_limit with 385 rows unplaced; after, no search
+limit, and (0.3.20, with the per-layer embedding classified) every row placed in all six chunks, no tie. Re-analysed
+offline with the profile rebuilt, the capture's output stage passes (474 checks, no failure); the attribution takes
+about 6 s, against 25 s for the failing flat search and 71 s for the one walk spent first.

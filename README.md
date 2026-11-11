@@ -31,13 +31,13 @@ It answers, per role and per kernel:
 - **Did an engine upgrade change anything?** The engine-upgrade audit compares two builds row by row and names what
   moved beyond run-to-run noise ([docs/engine-upgrade-audit.md](docs/engine-upgrade-audit.md)).
 
-Engines, by family (each a root and its forks, data/engine_families.json): llama.cpp (forks: Ollama, PrismML, master;
-Strata, its own engine on llama.cpp's ggml, listed in the family, not run yet), vLLM, TensorRT-LLM and tinygrad (run
-through its fork). Chips: Apple Metal and NVIDIA CUDA, measured the same way. BoltBeam says where the time goes. Why a
-kernel is slow is the engine developer's question. On Metal, llama.cpp names no kernels in its capture. Qualified
-there: its whole decode token, its whole prefill at 512 tokens, and its session turn at depth 512. The prefill and turn
-qualify only with the GPU idled 60 s before each arm, because the M4's clock steps down under sustained load. Per-role
-time is the kernel timer's estimate.
+Engines, by family (each a root and its forks, data/engine_families.json): llama.cpp (forks: Ollama, master;
+Strata, its own engine on llama.cpp's ggml, listed in the family, not run yet), vLLM, TensorRT-LLM and tinygrad (run through its fork). Chips: Apple Metal and NVIDIA CUDA, measured
+the same way. BoltBeam says where the time goes. Why a kernel is slow is the engine developer's question. On Metal, llama.cpp names no
+kernels in its capture. Qualified there: its whole decode token, its whole prefill at 512 tokens, and its
+session turn at depth 512. The prefill and turn qualify only with the GPU idled 60 s before each arm, because
+the M4's clock steps down under sustained load. Per-role time is the kernel timer's estimate
+([docs/metal-qualification-20261023.md](docs/metal-qualification-20261023.md)).
 
 ## Install
 
@@ -170,9 +170,13 @@ server attribution requires matching recorded intervals and repeat-band checks. 
 Emit before using a capture to explain server latency.
 
 Timing confirmation compares matching engine elapsed intervals. GPU first-to-last kernel time is a separate
-measurement and excludes host work. Prefill and session compare the final repetition after the same warmup and
-repetition count; their throughput headlines retain the native median. Decode compares fresh long/short process
-pairs to estimate the same generated-token window on both sides, retaining subtraction noise and both the
+measurement and excludes host work. Prefill and session retain five repetitions after warmup, treating the first
+two as setup. Their host check uses the median of repetitions three through five; kernel attribution selects
+that exact captured repetition by its ordered full-turn launches and output-head boundaries. Throughput headlines
+use the same steady median; all five samples and the engine's aggregate remain separately recorded. Earlier
+final-repetition bands cannot qualify this steady interval. Decode subtracts a fresh two-token setup run from
+a fresh 33-token run, attributing steady tokens 3–33 after initial graph construction. Earlier 32/1 records
+retain their original scope and verdicts. Both sides retain subtraction noise and both the
 requested depth and mean attended context. Older kernel-span bands cannot qualify these host intervals.
 Matching the interval establishes comparability. A capture then qualifies when its measured overhead,
 `100 * (captured - native) / native`, is at most the 5% capture-overhead ceiling. A capture more than 5% faster than native is refused as not

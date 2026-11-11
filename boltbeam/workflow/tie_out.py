@@ -332,7 +332,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
                   "busy_ms": other_busy - loose_ms, "ideal_ms": other_ideal,
                   "parts": [{"kind": k, "ms": v} for k, v in sorted(parts.items(), key=lambda kv_: -kv_[1])]})
   else:
-    lines.append({"label": "all kernels above the ideal, not split by role", "ms": busy - limit, "how": "measured"})
+    lines.append({"label": "all kernels above the ideal, not split by role", "ms": busy - limit, "how": "measured", "busy_ms": busy, "ideal_ms": limit})  # ideal_ms: the carve below takes the CPU's share out of it, as for the split line
   if (cpu := cpu_line(trace, bandwidth_gbs)) is not None:  # experts the CPU computed: no kernel, no GPU bytes, their own line
     lines[-1] = {**lines[-1], "ms": lines[-1]["ms"] + cpu["ideal_ms"], **({"ideal_ms": lines[-1]["ideal_ms"] - cpu["ideal_ms"]} if "ideal_ms" in lines[-1] else {})}
     lines.append(cpu)

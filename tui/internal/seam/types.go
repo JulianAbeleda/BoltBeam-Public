@@ -1378,3 +1378,30 @@ type FetchOutcome struct {
 	Files  int    `json:"files"`
 	Bytes  int64  `json:"bytes"`
 }
+
+// OffloadRow is one label and value line of an offload page section; both are Python's words.
+type OffloadRow struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// OffloadSection is a titled block of an offload page: aligned rows, then free lines.
+type OffloadSection struct {
+	Title string       `json:"title"`
+	Rows  []OffloadRow `json:"rows"`
+	Lines []string     `json:"lines"`
+}
+
+// OffloadPage is the page Python wrote: a headline and sections, every sentence Python's.
+type OffloadPage struct {
+	Status   string           `json:"status"`
+	Headline string           `json:"headline"`
+	Sections []OffloadSection `json:"sections"`
+}
+
+// Offload is `screen offload`: what goes to the card and to RAM for this model on this chip and engine.
+type Offload struct {
+	TargetID string      `json:"target_id"`
+	Status   string      `json:"status"`
+	Page     OffloadPage `json:"page"`
+}

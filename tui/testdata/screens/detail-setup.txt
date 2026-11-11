@@ -7,6 +7,7 @@
 │   Engine             llama.cpp                                             › │
 │                                                                              │
 │   Recommended setup  context, speed and engine flags for this model on y…  › │
+│   Offload            working out the plan, a few seconds…                  › │
 │                                                                              │
 │   Workload           decode                                                › │
 │   Batch              1                                                     › │
@@ -17,4 +18,3 @@
 │                                                                              │
 │   Saved runs (2)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-

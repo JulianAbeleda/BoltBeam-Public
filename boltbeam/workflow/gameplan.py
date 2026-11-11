@@ -550,6 +550,7 @@ def setups_markdown(s:dict[str, Any] | None) -> str:
   out = ["", "## Setups: one for replies, one for prompts", ""]
   if s["status"] != "derived":
     return "\n".join(out + [f"Not derived: {s.get('reason')}.", ""])
+  out += [s["host_says"], ""] if s.get("host_says") else []
   for key, title in (("decode", "Replies (decode)"), ("prefill", "Prompts (prefill)")):
     d = s[key]
     if d.get("status") == "not derived":

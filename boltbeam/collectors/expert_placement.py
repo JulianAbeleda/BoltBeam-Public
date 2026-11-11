@@ -9,7 +9,7 @@ from typing import Any
 from boltbeam.core.refused import Refused
 
 _FLAGS = {"--cpu-moe": "cpu_moe", "-cmoe": "cpu_moe", "--n-cpu-moe": "n_cpu_moe", "-ncmoe": "n_cpu_moe", "--override-tensor": "ot", "-ot": "ot",
-          "--moe-cache-mib": "cache_mib", "--moe-cache-cpu-share": "cpu_share"}
+          "--moe-cache-mib": "cache_mib", "--moe-cache-cpu-share": "cpu_share", "-ngl": "ngl", "--n-gpu-layers": "ngl", "--gpu-layers": "ngl"}
 _LONELY = ("cpu_moe",)  # flags with no value
 PLACEMENT = ("cpu_moe", "n_cpu_moe", "override_tensor", "moe_cache_mib", "moe_cache_cpu_share")  # the engine settings that place experts in RAM
 
@@ -27,6 +27,8 @@ def parse_flags(tokens:list[str]) -> dict[str, Any]:
       out[key] = True
       continue
     if i + 1 >= len(toks): raise Refused(f"{t} has no value in the run's recorded engine arguments")
+    if key == "ngl" and not toks[i + 1].lstrip("-").isdigit():
+      continue  # "auto" and "all" put every layer on the GPU the model fits; only a count can leave layers behind
     try:
       out[key] = (out.get(key, []) + [toks[i + 1]]) if key == "ot" else float(toks[i + 1]) if key == "cpu_share" else int(toks[i + 1])
     except ValueError as exc:
@@ -45,11 +47,30 @@ def recorded(run) -> dict[str, Any] | None:
   from boltbeam.collectors.capture_settings import render_llama
   toks += render_llama({k: True if k == "cpu_moe" else s[k] for k in PLACEMENT if s.get(k) is not None and (k != "cpu_moe" or s[k])})
   flags = parse_flags(toks)
+  if (left := cpu_layers(run, flags.pop("ngl", None))):  # a partial -ngl is an offload: whole layers (attention too) run on the CPU
+    flags["ngl_cpu_layers"] = left
   fork = str(((optional(run, "timing_trace.json").get("rows") or [{}])[0].get("engine") or {}).get("fork") or (load_manifest(run).get("engine") or {}).get("fork") or "")
   strata = "strata" in (fork + str(s.get("engine") or "")).lower()
   if not flags and not strata:
     return None
   return {"flags": flags, "strata": strata, "hit_rate": s.get("moe_cache_hit_rate")}
+
+
+def cpu_layers(run, ngl:int | None) -> int:
+  """The layers a -ngl count leaves on the CPU: llama.cpp puts the last `ngl` of the n_layer + 1 (the output layer counts one)
+  on the GPU (n_layer: the profile's layer_count, the header's block_count). 0 for no -ngl, for a negative count (llama.cpp's
+  -1 is auto and -2 all: common/common.h n_gpu_layers, arg.cpp's "auto"/"all"), for a count that covers every layer, and for a
+  model with no expert layers (the offload limit is for MoE models; a dense model's partial offload is not modeled here).
+  -ngl 0 is every layer on the CPU, as llama.cpp reads it."""
+  if ngl is None or ngl < 0:
+    return 0
+  from boltbeam.artifacts.run_io import optional
+  profile = optional(run, "model_profile.json")
+  experts = max([int(r["count"]) for r in profile.get("roles") or [] if r.get("n_expert") and r.get("count")] or [0])
+  if not experts:
+    return 0
+  layers = int(profile.get("layer_count") or experts)
+  return min(layers, max(0, layers + 1 - ngl))
 
 
 def cpu_experts(run, profile:dict[str, Any]) -> dict[str, Any] | None:
@@ -63,6 +84,9 @@ def cpu_experts(run, profile:dict[str, Any]) -> dict[str, Any] | None:
     return None
   f, roles = rec["flags"], sorted({(r["role"], r["quant"]) for r in experts})
   patterns = f.get("ot", [])
+  if f.get("ngl_cpu_layers"):
+    return {"share": None, "low": None, "high": None, "roles": roles, "per_layer": False,
+            "basis": f"-ngl leaves {f['ngl_cpu_layers']} whole layers on the CPU: their attention and experts both run there, which the expert share does not model"}
   if any("=CPU" in p and ("exps" not in p or "blk" in p) for p in patterns):
     return {"share": None, "low": None, "high": None, "roles": roles, "basis": "an -ot pattern moves tensors that are not all the experts"}
   layers = max(int(r["count"]) for r in experts)

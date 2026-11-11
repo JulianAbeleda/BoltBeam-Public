@@ -310,6 +310,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if c := next.loadRecommend(); c != nil {
 		cmd = tea.Batch(cmd, c)
 	}
+	if c := next.loadOffload(); c != nil {
+		cmd = tea.Batch(cmd, c)
+	}
 	if c := next.loadPlain(); c != nil { // a finished run on screen: its plain block, once per state
 		cmd = tea.Batch(cmd, c)
 	}
@@ -497,6 +500,14 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			if msg.check {
 				m.note = "Check done."
 			}
+		}
+	case offloadMsg:
+		switch {
+		case msg.key != m.f.OffKey:
+		case msg.err != nil:
+			m.f.OffErr = msg.err.Error()
+		default:
+			m.f.Offload, m.f.OffErr = msg.off, ""
 		}
 	case readyMsg:
 		if msg.id == m.runID() {
@@ -878,7 +889,7 @@ func (m Model) key(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 // backToSetup shows Setup again; from a picker the cursor rests on that picker's line.
 func (m *Model) backToSetup() {
 	m.row = 0
-	if picker(m.cursor) || m.cursor == pageRecommend || m.cursor == pageDoctor { // the cursor rests on the Setup line that opened the page
+	if picker(m.cursor) || m.cursor == pageRecommend || m.cursor == pageDoctor || m.cursor == pageOffload { // the cursor rests on the Setup line that opened the page
 		for i, a := range setupActions(m.f) {
 			if a.do == "page" && a.arg == fmt.Sprint(m.cursor) {
 				m.row = i

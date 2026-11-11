@@ -86,7 +86,7 @@ machine, detected (autoscan: a known profile is used, a new GPU is measured into
 format with no block layout is named, from `inspect`'s `formats`); when only a fork reads that format (`needs`), Run
 and Recommended setup name the fork, and the engine is never switched for you. Engine is one row per family
 (`screen providers` `families`, data/engine_families.json): llama.cpp, vLLM, TensorRT-LLM and tinygrad. ↑↓ moves
-between families, ←→ between a family's root and its forks (llama.cpp: upstream, PrismML, Ollama, Strata; tinygrad:
+between families, ←→ between a family's root and its forks (llama.cpp: upstream, Ollama, Strata; tinygrad:
 upstream and its own fork), each with its state under the row: found, or not found with its one fix. The root is the
 default; enter picks the fork in brackets when it runs here, and Setup then says it ("llama.cpp · Ollama fork"). An
 engine this machine lacks or that cannot read the selected format is unavailable. On a machine with more than one GPU the

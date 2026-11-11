@@ -1,4 +1,10 @@
 {
+  "cache_ram": {
+    "changes": "turns off llama-server's prompt cache in host RAM (8 GiB by default), which saves the previous request's whole state to RAM before each new prompt starts: about 80 ms for a 10,000-token prompt on one model (measured), outside the engine's prompt timer. The cost: switching between conversations reads their shared start again; a conversation's own checkpoints still work",
+    "one_shot": "one-shot prompts (no conversation comes back to an earlier start); with plenty of RAM and returning conversations, keep the default",
+    "report": "This server kept its prompt cache in RAM (the default), which saves the previous request's state before each prompt; that is part of the time outside its timer.",
+    "tight": "RAM is tight: the experts in RAM and the 8 GiB cache are more than the {usable} GB usable"
+  },
   "engines": {
     "llama.cpp": "llama.cpp",
     "tensorrt-llm": "TensorRT-LLM",
@@ -313,6 +319,7 @@
   ],
   "head_to_head": {
     "better": "better",
+    "by_wall": "Prompt speed and time are wall times, because each engine's own prompt timer leaves out different things: a server's from request sent to reply received, vLLM's around its generate call in the same process. Turning text into tokens is outside both, because each engine was sent token ids.",
     "diff_fields": {
       "model": "model",
       "provider": "engine",
@@ -342,10 +349,16 @@
       "time"
     ],
     "none": "none",
+    "not_by_wall": "Prompt speed and time are each engine's own timer here, and engines define their timer differently: one run has no client wall time, so do not read a small gap between them as a win.",
     "not_measured": "Not compared: {run} has no measured result yet.",
+    "other_prompts": "The two runs read different prompts ({a} against {b}), so neither time says which engine is faster, and no winner is marked.",
     "parts_differ": "The parts line up only between two runs of the same model on the same GPU, engine and work; these differ in {field}, so only the headline figures are side by side.",
     "parts_other_model": "The parts line up only between two runs of the same model, so only the headline figures are side by side.",
     "parts_refused": "The parts are not compared: {reason}.",
+    "prompt_kinds": {
+      "random_tokens": "random token ids",
+      "real_text": "real text"
+    },
     "rows": {
       "gain": "biggest gain on offer",
       "ms": "time",
@@ -354,7 +367,11 @@
       "time": "time",
       "total": "total across streams"
     },
-    "same": "Same model, GPU, engine, build, weights and settings."
+    "same": "Same model, GPU, engine, build, weights and settings.",
+    "wall_rows": {
+      "ms": "time, by wall time",
+      "speed": "speed, by wall time"
+    }
   },
   "kind": "words",
   "labels": {
@@ -447,6 +464,59 @@
     "prefill_tuned": "This setup is tuned for reading prompts: a prompt never hits the expert cache, so the card holds whole layers instead, and a larger chunk uploads each expert once for more tokens.",
     "unrecorded": "Placement not recorded: this run did not say whether the experts were on the card or in RAM."
   },
+  "offload_page": {
+    "bound_cpu": "the processor reading experts from RAM at {gbs} GB/s",
+    "bound_gpu": "reading weights from GPU memory at {gbs} GB/s",
+    "bound_pcie_link": "copies to the card at the link's {gbs} GB/s (not measured: an upper bound)",
+    "bound_pcie_pageable": "copies from normal memory at {gbs} GB/s",
+    "card_prompts": "{dense} dense parts + {kv} KV cache + the experts of {on} of {layers} layers ({experts}) = {used} of {usable} usable",
+    "card_replies": "{dense} dense parts + {kv} KV cache + a {cache} cache of experts = {used} of {usable} usable",
+    "copies": "{pageable} GB/s from normal memory, {pinned} GB/s from pinned memory (measured on this GPU, {when})",
+    "copies_unmeasured": "not measured; the link's {gbs} GB/s stands in, an upper bound",
+    "fits_card": "The whole model fits on the card, so nothing needs to go to RAM; this is what offloading would give.",
+    "link": "gen {gen} x{width}: {gbs} GB/s on the wire",
+    "machine": "This machine",
+    "notes": "Notes",
+    "past_card": "The model does not fit on the card: part of it has to live in RAM.",
+    "pinned": "What pinned memory would change",
+    "pinned_caveat": "These are limits, not promises: llama.cpp copies from normal memory, and an engine with pinned copies still has to keep them busy.",
+    "pinned_gap": "An engine that pins its host memory copies at {pinned} GB/s here, against {pageable} GB/s from normal memory (both measured on this GPU).",
+    "pinned_prompts": "Reading prompts with this setup: at most {now} tok/s now, at most {then} tok/s with pinned copies.",
+    "pinned_prompts_none": "Reading prompts with this setup copies nothing (every expert is on the card), so pinned copies would not change it.",
+    "pinned_replies": "Writing replies with every miss copied (no processor share): at most {now} tok/s now, {then} tok/s with pinned copies.",
+    "pinned_replies_none": "Writing replies with this setup copies nothing after loading (every expert is in the card's cache), so pinned copies would not change it.",
+    "pinned_unmeasured": "No pinned copy rate was measured here ({why}), so the gap cannot be stated.",
+    "prompts": "Setup for reading prompts",
+    "prompts_limit": "at most {tok_s} tok/s reading a {prompt}-token prompt; writing replies with this setup, at most {replies} tok/s",
+    "ram_now": "{total} in all, {available} available now",
+    "ram_now_unknown": "{total} in all; how much is available could not be read",
+    "ram_prompts": "the experts of {n} of {layers} layers, {experts}",
+    "ram_prompts_none": "no experts: every layer's experts fit on the card",
+    "ram_reads": "{gbs} GB/s (measured)",
+    "ram_replies": "every expert, {experts}",
+    "ram_replies_cached": "every expert, {experts}, read once to fill the card's cache",
+    "refused": "No offload plan here: {reason}.",
+    "replies": "Setup for writing replies",
+    "replies_limit": "at most {span} {unit}, depending on how often the needed experts are already on the card",
+    "replies_limit_cached": "at most {span} {unit}: every expert is in the card's cache",
+    "replies_limit_flat": "at most {span} {unit}, however often the needed experts are already on the card",
+    "set_prompts": "the experts of {n} of {layers} layers in RAM, chunks of {ubatch} tokens",
+    "set_prompts_none": "every expert on the card, chunks of {ubatch} tokens",
+    "set_replies": "every expert in RAM, a {mib} MiB cache of the ones in use on the card, the processor computes {pct}% of the misses",
+    "set_replies_cached": "every expert in RAM and all of them in a {mib} MiB cache on the card, so there are no misses to compute or copy",
+    "spill": "{spill} more than the usable RAM: the engine would read it from disk, which no limit here covers",
+    "spill_if_offloaded": "only if you choose to offload: {spill} more than the usable RAM, which the engine would read from disk, and no limit here covers that",
+    "tables": "{tables}: the model's input embeddings, not counted in the RAM above: the engine maps them from disk and the system keeps the rows it reads, so under memory pressure they compete with the experts for RAM",
+    "title": "Offload: running a model past GPU memory",
+    "where": "Where the weights go"
+  },
+  "outside_timer": {
+    "line": "The engine's own timer leaves {outside} ms outside it; timed {timed}, the same prompt takes {wall} ms ({wall_tok_s} tok/s).",
+    "timed": {
+      "client": "by the client from request sent to reply received",
+      "vllm": "around vLLM's own generate call, in the same process"
+    }
+  },
   "parts": {
     "KV cache write": "saving to the memory of earlier tokens",
     "attention": "attention",
@@ -475,6 +545,10 @@
     "transform": "reshaping data",
     "weight kernel, unattributed": "weight reads not matched to a part",
     "weight kernels, unattributed": "weight reads not matched to a part"
+  },
+  "prompt_kind": {
+    "random_tokens_moe": "Measured on random token ids, which send this model's tokens to many more of its expert parts than real text does: the speed reads low, about half on one model, and is not its speed on text. BoltBeam normally measures this on real text; it did not here.",
+    "random_tokens_moe_capture": "The split of time by part above was recorded on random token ids. These send a model's tokens to many more of its expert parts than real text does. So it is not the split of the turns the server really ran."
   },
   "report_roles": [
     "attn_kv",
@@ -531,6 +605,7 @@
     "moe_shared_expert_up": "shared expert feed-forward up",
     "norm": "normalizing",
     "other": "other weights",
+    "per_layer_embedding": "per-layer embedding (the layer's own token lookup)",
     "ssm_alpha": "state-space decay gate",
     "ssm_alpha_beta": "state-space decay and update gates",
     "ssm_beta": "state-space update gate",

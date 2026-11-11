@@ -8,6 +8,7 @@
 │   Engine             looking for engines…                                  › │
 │                                                                              │
 │   Recommended setup  context, speed and engine flags for this model on y…  › │
+│   Offload            what goes to the card and to RAM, and each setup's …  › │
 │                                                                              │
 │   Workload           decode                                                › │
 │   Batch              1                                                     › │
@@ -18,7 +19,6 @@
 │                                                                              │
 │   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-
 
 
  ↑↓ move · enter pick · ? all keys · q quit

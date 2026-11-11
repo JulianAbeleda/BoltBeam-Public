@@ -14,8 +14,9 @@ import (
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
 
-// recordedDoctor is `boltbeam doctor --json` as this Mac printed it (an Apple M5: llama.cpp with its PrismML fork, the
-// Ollama and Strata forks not here, the screen binary stale, vLLM and TensorRT-LLM n/a), home paths replaced.
+// recordedDoctor is `boltbeam doctor --json` as this Mac printed it (an Apple M5: llama.cpp, the Ollama and Strata
+// forks not here, the screen binary stale, vLLM and TensorRT-LLM n/a), home paths replaced. Edited after the recording:
+// the PrismML fork's entry was cut from the llama.cpp row's detail when BoltBeam dropped PrismML support (2026-11-11).
 func recordedDoctor(t *testing.T) *seam.Doctor {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", "doctor-mac.json"))

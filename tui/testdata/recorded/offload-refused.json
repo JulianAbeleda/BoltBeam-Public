@@ -1,0 +1,12 @@
+{
+ "schema": "boltbeam.tui.v1",
+ "kind": "offload",
+ "target_id": "nvidia_sm120",
+ "status": "refused",
+ "page": {
+  "schema": "boltbeam.offload_page.v1",
+  "status": "refused",
+  "headline": "No offload plan here: llama.cpp has no way to keep experts in RAM for this model.",
+  "sections": []
+ }
+}

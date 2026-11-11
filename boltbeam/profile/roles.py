@@ -7,10 +7,11 @@ the name PATTERNS live here.
 
 A pattern matches whole components of the tensor's dotted name, never a substring of one: `ffn_up` is the
 component `ffn_up` (`blk.0.ffn_up.weight`), not `hc_ffn_up`, and `q_proj` is `self_attn.q_proj.qweight`'s, not
-`qkv_proj`. A per-head norm (`attn_q_norm`) is its own component and falls through to `norm`. Two families are named
+`qkv_proj`. A per-head norm (`attn_q_norm`) is its own component and falls through to `norm`. Three families are named
 by their own component before any pattern: a hyper-connection mixer's tensors (`hc_attn_*` before the token mixer,
 `hc_ffn_*` before the FFN, `output_hc_*` before the head, each layer's two `hc_*_inject`) and a sparse attention
-indexer's (`indexer.*`, `indexer_*`); their norms stay `norm`. (Flash-Next's `hc_ffn_up`/`hc_ffn_down` were
+indexer's (`indexer.*`, `indexer_*`), and a per-layer embedding's key and value (`ple_key`, `ple_value`; its
+`ple_norm_*` and conv taps are not); their norms stay `norm`. (Flash-Next's `hc_ffn_up`/`hc_ffn_down` were
 the FFN's up and down and its `indexer.q_proj`/`k_proj` attention's q and k while the patterns were substrings.)
 
 Every weight a decode reads once per token is named by what it is, never left as `other`: a fused `attn_qkv`
@@ -51,7 +52,7 @@ def _component_role(parts:list[str], table:dict[str, RoleClass]) -> RoleClass | 
 _FAMILIES: tuple[tuple[str, RoleClass], ...] = (  # a component's prefix -> its family's class (where the model runs it)
   ("indexer", R.ATTENTION_INDEXER), ("hc_attn_inject", R.HYPER_CONNECTION_INJECT), ("hc_ffn_inject", R.HYPER_CONNECTION_INJECT),
   ("hc_attn_", R.HYPER_CONNECTION_ATTN), ("hc_ffn_", R.HYPER_CONNECTION_FFN), ("output_hc_", R.HYPER_CONNECTION_HEAD),
-  ("hc_head_", R.HYPER_CONNECTION_HEAD))
+  ("hc_head_", R.HYPER_CONNECTION_HEAD), ("ple_key", R.PER_LAYER_EMBEDDING), ("ple_value", R.PER_LAYER_EMBEDDING))
 
 
 def _family(parts:list[str]) -> RoleClass | None:

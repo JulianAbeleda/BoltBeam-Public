@@ -120,6 +120,8 @@ class RoleClass(str, Enum):
   HYPER_CONNECTION_FFN = "hyper_connection_ffn"
   HYPER_CONNECTION_INJECT = "hyper_connection_inject"
   HYPER_CONNECTION_HEAD = "hyper_connection_head"
+  PER_LAYER_EMBEDDING = "per_layer_embedding"  # a per-layer embedding's key and value projections (`ple_key`, `ple_value`):
+                                               # they read the layer's own token embedding (llama.cpp qwen4exp build_ple)
   ATTENTION_INDEXER = "attention_indexer"  # a sparse attention's indexer (`indexer.q_proj`, `indexer.k_proj`): it scores
                                            # which cached blocks attention reads; not attention's own q or k
   OTHER = "other"
@@ -155,6 +157,7 @@ class RoleGroup(str, Enum):
   HYPER_CONNECTION_INJECT = "hyper_connection_inject"
   HYPER_CONNECTION_HEAD = "hyper_connection_head"
   ATTN_INDEXER = "attn_indexer"
+  PER_LAYER_EMBEDDING = "per_layer_embedding"
   OTHER = "other"
 
 
@@ -195,6 +198,7 @@ ROLE_GROUP_OF: dict[str, str] = {
   RoleClass.HYPER_CONNECTION_INJECT.value: RoleGroup.HYPER_CONNECTION_INJECT.value,
   RoleClass.HYPER_CONNECTION_HEAD.value: RoleGroup.HYPER_CONNECTION_HEAD.value,
   RoleClass.ATTENTION_INDEXER.value: RoleGroup.ATTN_INDEXER.value,
+  RoleClass.PER_LAYER_EMBEDDING.value: RoleGroup.PER_LAYER_EMBEDDING.value,
   RoleClass.OTHER.value: RoleGroup.OTHER.value,
 }
 
@@ -220,7 +224,7 @@ WEIGHT_GEMV_ROLES: tuple[str, ...] = (
   RoleGroup.MOE_ROUTER.value, RoleGroup.MOE_EXPERT_GATE_UP.value, RoleGroup.MOE_EXPERT_DOWN.value,
   RoleGroup.MOE_SHARED_EXPERT_GATE_UP.value, RoleGroup.MOE_SHARED_EXPERT_DOWN.value,
   RoleGroup.HYPER_CONNECTION_ATTN.value, RoleGroup.HYPER_CONNECTION_FFN.value, RoleGroup.HYPER_CONNECTION_HEAD.value,
-  RoleGroup.ATTN_INDEXER.value,
+  RoleGroup.ATTN_INDEXER.value, RoleGroup.PER_LAYER_EMBEDDING.value,
 )
 _ROLE_GROUPS = frozenset(g.value for g in RoleGroup)
 
@@ -238,25 +242,39 @@ def is_weight_gemv_role(role:str) -> bool:
 # runs once per call, after the last layer. Keyed by the fine RoleClass. A coarse group whose classes sit at
 # different stages (attn_qo: q reads the input, o writes the output) holds one launch per class per layer.
 # A hyper-connection mixer runs before the token mixer (mix_in, the layer's input side), before the FFN (mix_out, after
-# the out projection) and before the head (on the tail). A sparse attention's indexer reads the layer's input before
-# attention reads the cache (in).
+# the out projection) and before the head (on the tail). Each mixer's inject (4 rows, the scatter weights) is read when
+# its combine needs it (llama.cpp models/qwen4exp.cpp build_hc_combine): the token mixer's after the block's out
+# projection (out), the FFN's after the FFN, its routed and shared experts both (mix_post, pruned with the FFN). It is no
+# limit role (WEIGHT_GEMV_ROLES), but a prefill runs it as a matrix kernel the walk pairs: PREFILL_ONLY_CLASSES names the
+# class and the classes its one profile row (both tensors, one shape and format) is split into, one per mixer
+# (prefill.prefill_roles). A sparse attention's indexer reads the layer's input before attention reads the cache (in). A
+# per-layer embedding (PLE) layer's key and value read that layer's token embedding first, before its mixer (ple).
 STAGE: dict[str, str] = {
+  "per_layer_embedding": "ple",
   "hyper_connection_attn": "mix_in",
   "attention_q": "in", "attention_k": "in", "attention_v": "in", "attention_qkv": "in",
   "attention_kv_a": "in", "attention_kv_b": "in", "attention_indexer": "in",
   "ssm_in": "in", "ssm_alpha": "in", "ssm_beta": "in", "ssm_projection": "in",
   "attention_gate": "gate",
-  "attention_o": "out", "ssm_out": "out",
+  "attention_o": "out", "ssm_out": "out", "hyper_connection_inject_attn": "out",
   "hyper_connection_ffn": "mix_out",
   "ffn_gate": "ffn_in", "ffn_up": "ffn_in", "moe_router": "ffn_in", "moe_expert_gate": "ffn_in", "moe_expert_up": "ffn_in",
   "moe_shared_expert_gate": "ffn_in", "moe_shared_expert_up": "ffn_in",
-  "ffn_down": "ffn_out", "moe_expert_down": "ffn_out", "moe_shared_expert_down": "ffn_out",
+  "ffn_down": "ffn_out", "moe_expert_down": "ffn_out", "moe_shared_expert_down": "ffn_out", "hyper_connection_inject_ffn": "mix_post",
   "lm_head": "head", "hyper_connection_head": "head",
 }
-STAGES: tuple[str, ...] = ("mix_in", "in", "gate", "out", "mix_out", "ffn_in", "ffn_out", "head")  # in a layer's order
-STAGE_SIDE: dict[str, str | None] = {"mix_in": "input", "in": "input", "gate": None, "out": "output", "mix_out": "output",
-                                     "ffn_in": "output", "ffn_out": "output", "head": "tail"}  # None: either side of the block
-OUTPUT_ORDER: tuple[str, ...] = ("gate", "out", "mix_out", "ffn_in", "ffn_out")  # the output side's data flow
+STAGES: tuple[str, ...] = ("ple", "mix_in", "in", "gate", "out", "mix_out", "ffn_in", "ffn_out", "mix_post", "head")  # in a layer's order
+STAGE_SIDE: dict[str, str | None] = {"ple": "input", "mix_in": "input", "in": "input", "gate": None, "out": "output", "mix_out": "output",
+                                     "ffn_in": "output", "ffn_out": "output", "mix_post": "output", "head": "tail"}  # None: either side of the block
+OUTPUT_ORDER: tuple[str, ...] = ("gate", "out", "mix_out", "ffn_in", "ffn_out", "mix_post")  # the output side's data flow
+# stages whose rows read no output of the layer before (a per-layer embedding reads its own token lookup): the engine may
+# run them anywhere before the layer (llama.cpp ran Flash-Next's layer-1 PLE between layer 0's routed and shared
+# experts), so the gap's order neither binds nor is set by them
+UNORDERED_STAGES: tuple[str, ...] = ("ple",)
+# classes a prefill pairs although they are no limit role: a matrix the ledger counts as a small vector at one token,
+# which a chunk of tokens runs as a matrix kernel (Flash-Next's mixer inject: a cutlass GEMM of N = 4 at 2,048 tokens),
+# each with the classes its profile row is split into, evenly (one tensor per class in every layer)
+PREFILL_ONLY_CLASSES: dict[str, tuple[str, ...]] = {"hyper_connection_inject": ("hyper_connection_inject_attn", "hyper_connection_inject_ffn")}
 # a shared expert is an FFN beside the routed one (either may run first): the FFN stages keep their order within each
 FFN_BRANCH: dict[str, str] = {c: "shared_expert" for c in ("moe_shared_expert_gate", "moe_shared_expert_up", "moe_shared_expert_down")}
 

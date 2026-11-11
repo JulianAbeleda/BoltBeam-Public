@@ -323,13 +323,14 @@ def bench_decode(llama_bench:str, model:pathlib.Path, depth:int, layout_args:lis
 
 def fork_of(llama_bench:str, env:dict[str, str] | None = None, home:pathlib.Path | None = None) -> dict[str, str] | None:
   """{engine_family, fork, label} when this llama-bench is the build of a llama.cpp fork the families table finds here
-  (engine_families.find: its env var, then its paths); None for upstream. The commit is the build's own."""
+  (engine_families.find: its env var, then its paths); None for upstream. The commit is the build's own. A program in the
+  same folder counts as the same build (llama-server sits beside llama-bench), as engine_families.build_of reads it."""
   from boltbeam.collectors import engine_families
   here = pathlib.Path(llama_bench).expanduser().resolve()
   for fam in engine_families.families():
     for f in fam["forks"] if fam["family"] == PROVIDER else ():
       where = None if f.get("provider") else engine_families.find(f, {**os.environ, **(env or {})}, home)
-      if where and pathlib.Path(where).expanduser().resolve() == here:
+      if where and pathlib.Path(where).expanduser().resolve().parent == here.parent:
         return {"engine_family": fam["family"], "fork": f["fork"], "label": f["label"]}
   return None
 

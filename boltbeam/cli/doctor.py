@@ -12,7 +12,12 @@ toolchain and the screen binary by cli/tui. --json prints the same rows as one o
     blocks   a gap no run gets past: Python too old, no GPU, no chip profile, a GPU that needs a reset, or no
              engine at all; any other gap costs one engine or one per-role split
     group    what the row is about, for a screen that groups them: gpu, engines, tools (what splits a step by
-             role) or boltbeam (its own Python, Go and screen)
+             role), host (RAM now, RAM reads, the PCIe link, the copies to the GPU) or boltbeam (its own Python, Go
+             and screen)
+
+The host rows read what is saved (target/host.py's host.json) and what the system states now (/proc/meminfo, sysfs);
+a figure not measured yet is never a gap, its fix is `boltbeam host`, which measures the RAM reads and the copies to
+the GPU (about a second on the GPU) and prints the same rows.
 """
 from __future__ import annotations
 
@@ -201,6 +206,66 @@ def _screen(facts:dict[str, Any]) -> list[dict[str, Any]]:
   return [go, screen]
 
 
+HOST_SCAN = "boltbeam host"
+
+
+def _pci(gpu:dict[str, Any]) -> str | None:
+  devs = tgpu.devices(gpu) if gpu.get("status") == "detected" else []
+  return (devs[0].get("pci_bus_id") if devs else None) or gpu.get("pci_bus_id")
+
+
+def _unified(gpu:dict[str, Any]) -> bool:
+  """The GPU shares the CPU's memory: its vendor row has no profile shape of its own (target/vendors.py: unified memory)."""
+  from boltbeam.target import vendors
+  name = gpu.get("vendor") or next((d.get("vendor") for d in gpu.get("devices") or []), None)
+  row = vendors.VENDORS.get(name or "")
+  return row is not None and row.profile is None
+
+
+def _host(gpu:dict[str, Any], *, measure:bool = False, remeasure:bool = False) -> list[dict[str, Any]]:
+  """RAM total and available now, RAM read GB/s, the PCIe link and the copies to the GPU from pinned and from pageable
+  memory. measure: run the probes for what is not saved (remeasure: all of it); else saved figures only."""
+  from boltbeam.core.refused import Refused
+  from boltbeam.target import host
+  from boltbeam.workflow.offload import machine_rows
+  pci = _pci(gpu)
+  try:
+    ram = host.ram_read(remeasure=remeasure) if measure else host._load(host.host_file())
+    if not isinstance(ram.get("ram_gbs"), (int, float)):
+      ram = {k: v for k, v in ram.items() if k != "ram_gbs"}
+  except Refused as exc:  # a failed remeasure keeps the saved figure, and says the new one could not be taken
+    saved = host._load(host.host_file())
+    ram = {"ram_gbs": saved["ram_gbs"], "remeasure_failed": str(exc)} if isinstance(saved.get("ram_gbs"), (int, float)) else {"error": str(exc)}
+  try:
+    link = host.pcie_link(pci)
+  except Refused as exc:
+    link = {"error": str(exc)}
+  why = "not measured yet"
+  try:
+    copies = host.h2d(pci, remeasure=remeasure) if measure else host.saved_h2d(pci)
+  except Refused as exc:  # a failed (re)measure keeps the saved figure, as the RAM row does
+    copies, why = host.saved_h2d(pci), str(exc)
+  mem = host.memory()
+  figures = {"ram_bytes": mem["total_bytes"], "ram_available_bytes": mem["available_bytes"], "ram_gbs": ram.get("ram_gbs"),
+             "pcie_gbs": link.get("gbs"), "pcie_gen": link.get("gen"), "pcie_width": link.get("width"),
+             "h2d_gbs": (copies or {}).get("h2d_gbs"), "h2d_measured_at": (copies or {}).get("measured_at")}
+  rows = {r["label"]: r["value"] for r in machine_rows(figures)}
+  out = [row("RAM", True, rows["RAM"] + f" ({mem['source']})")]
+  out.append(row("RAM reads", True, rows["RAM reads"] + (f"; saved figure kept, the remeasure failed: {ram['remeasure_failed']}" if ram.get("remeasure_failed") else "")) if "RAM reads" in rows else
+             row("RAM reads", True, ram.get("error") or "not measured yet", HOST_SCAN + "   (measures RAM reads and the copies to the GPU, a few seconds)"))
+  out.append(row("PCIe link", True, rows["PCIe link"]) if "PCIe link" in rows else row("PCIe link", None, link.get("error") or "no link read"))
+  if "Copies to the card" in rows and (copies or {}).get("h2d_gbs"):
+    out.append(row("copies to the GPU", True, rows["Copies to the card"] + ("" if why == "not measured yet" else f"; saved figure kept, the remeasure failed: {why}")))
+  elif pci:
+    out.append(row("copies to the GPU", True, ("not measured: " + why) if measure else "not measured yet; an offload plan uses the link's rate, an upper bound",
+                   None if measure else HOST_SCAN + "   (about a second on the GPU)"))
+  elif _unified(gpu):
+    out.append(row("copies to the GPU", True, "unified memory: the GPU reads the same RAM, so no copy is needed"))
+  else:
+    out.append(row("copies to the GPU", None, "no GPU to copy to"))
+  return out
+
+
 def report(root=None) -> dict[str, Any]:
   """Every row with its group, then the count of gaps. One GPU read, one engine scan, nothing measured."""
   scanned = engine_scan.scan_and_save()
@@ -210,7 +275,7 @@ def report(root=None) -> dict[str, Any]:
   if not any(r["found"] for r in engines):  # no engine at all: every engine gap stops the run
     engines = [{**r, "blocks": r["found"] is False} for r in engines]
   grouped = (("boltbeam", [_python()]), ("gpu", [*_gpu(gpu), _health(target)]), ("engines", [*engines, *_headers(target)]),
-             ("tools", [_kernel_source(target), _capture(target)]), ("gpu", [_counters(target)]),
+             ("tools", [_kernel_source(target), _capture(target)]), ("gpu", [_counters(target)]), ("host", _host(gpu)),
              ("boltbeam", _screen(tui.facts())))
   rows = [{**r, "group": group} for group, some in grouped for r in some]
   gaps = sum(1 for r in rows if r["found"] is False)
@@ -236,7 +301,19 @@ def cmd_doctor(args) -> int:
   return 0
 
 
+def cmd_host(args) -> int:
+  """`boltbeam host`: measure what is not saved (or all with --remeasure) and print the host rows."""
+  rows = [{**r, "group": "host"} for r in _host(hardware.hardware_profile()["gpu"], measure=True, remeasure=args.remeasure)]
+  rep = {"schema": SCHEMA, "rows": rows, "gaps": 0, "ready": True}
+  sys.stdout.write(json.dumps(rep, indent=2) + "\n" if args.json else render(rep).rsplit("\n", 2)[0] + "\n")
+  return 0
+
+
 def register(sub) -> None:
+  h = sub.add_parser("host", help="this machine's RAM (total and available now), RAM reads, PCIe link and copies to the GPU from pinned and pageable memory; measures what is not saved")
+  h.add_argument("--remeasure", action="store_true", help="measure the RAM reads and the copies again")
+  h.add_argument("--json", action="store_true", help="the same rows as one JSON object")
+  h.set_defaults(fn=cmd_host)
   p = sub.add_parser("doctor", help="what this machine has for BoltBeam, and the one thing to do for each gap (a report: exit 0)")
   p.add_argument("--json", action="store_true", help="the same rows as one JSON object")
   p.set_defaults(fn=cmd_doctor)

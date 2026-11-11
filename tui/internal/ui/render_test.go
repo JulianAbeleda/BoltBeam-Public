@@ -225,13 +225,13 @@ func TestFramesFit80x24(t *testing.T) {
 	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	saved, _ := page(program(s, nil, nil, nil, 80, 24), pageSaved).Update(savedListMsg{savedSample(), nil})
-	for _, m := range []tea.Model{program(s, &s.planned, nil, nil, 80, 24), page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun),
+	for i, m := range []tea.Model{program(s, &s.planned, nil, nil, 80, 24), page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun),
 		page(program(s, nil, nil, nil, 80, 24), pageModel), page(program(s, nil, nil, nil, 80, 24), pageChip),
 		page(program(s, nil, nil, nil, 80, 24), pageEngine),
 		page(program(s, &s.measured, nil, nil, 80, 24), pageRun), saved} {
 		lines := strings.Split(frame(m), "\n")
 		if len(lines) != 24 {
-			t.Fatalf("%d lines", len(lines))
+			t.Fatalf("%d lines (frame %d)\n%s", len(lines), i, frame(m))
 		}
 		for _, l := range lines {
 			if w := lipgloss.Width(l); w > 80 {
@@ -249,13 +249,13 @@ func TestSetupHasThreeSectionsAndRun(t *testing.T) {
 	acts := setupActions(facts(program(s, nil, nil, nil, 80, 24)))
 	// groups apart by a blank line; Run and Emit each say what they do, or why not
 	want := []string{"page|Machine            checking this Mac…\t›", "head|", "page|Model              Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K\t›", "page|Chip               apple_m3_10c · this Mac · 97.2 GB/s\t›",
-		"page|Engine             llama.cpp\t›", "head|", "page|Recommended setup  context, speed and engine flags for this model on your GPUs\t›", "head|", "page|Workload           decode\t›", "page|Batch              1\t›", "page|Measurement        auto\t›", "head|",
+		"page|Engine             llama.cpp\t›", "head|", "page|Recommended setup  context, speed and engine flags for this model on your GPUs\t›", "page|Offload            working out the plan, a few seconds…\t›", "head|", "page|Workload           decode\t›", "page|Batch              1\t›", "page|Measurement        auto\t›", "head|",
 		"analyze|[ Run ]            Measures decode speed: Qwen3-8B, this Mac, llama.cpp", "|[ Emit ]           No run yet: Run first", "head|",
 		"page|Saved runs (0)\t›"}
 	if got := rows(acts); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
-	if acts[0].arg != fmt.Sprint(pageDoctor) || acts[2].arg != "4" || acts[3].arg != "5" || acts[4].arg != "6" || acts[6].arg != fmt.Sprint(pageRecommend) || acts[8].arg != "7" || acts[9].arg != "8" || acts[10].arg != "9" {
+	if acts[0].arg != fmt.Sprint(pageDoctor) || acts[2].arg != "4" || acts[3].arg != "5" || acts[4].arg != "6" || acts[6].arg != fmt.Sprint(pageRecommend) || acts[9].arg != "7" || acts[10].arg != "8" || acts[11].arg != "9" {
 		t.Fatalf("each line opens its picker: %+v", acts[:4])
 	}
 	none := New(seam.Client{}, jobs.Store{}, "", "", 512)

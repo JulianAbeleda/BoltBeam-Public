@@ -81,7 +81,7 @@ func DetailActions(f Facts, i, row, width, maxRows int) string {
 // DetailView is the open view at a given height: the step's whole result scrolls on top, actions at the bottom.
 func DetailView(f Facts, i, row, width, height int, scroll *viewport.Model) string {
 	if i == pageSetup { // Setup is its rows only: one box, padded to the screen
-		actions := DetailActions(f, i, row, width, height-2)
+		actions := DetailActions(f, i, row, width, height-3) // the box adds two border lines and the padding below it one
 		return actions + strings.Repeat("\n", max(height-lipgloss.Height(actions), 0))
 	}
 	if i == pageSaved { // the list is the page: the rows scroll in the box on top, the hint sits below

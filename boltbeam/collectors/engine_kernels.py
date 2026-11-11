@@ -195,7 +195,7 @@ def ggml_source(path:str | pathlib.Path) -> str:
 
 
 def ggml_type_name(quant:str) -> str:
-  """ggml's type name for a GGUF quant: Q4_K -> q4_K, Q8_0 -> q8_0, PTQ1_0 -> ptq1_0 (ggml_type_name)."""
+  """ggml's type name for a GGUF quant: Q4_K -> q4_K, Q8_0 -> q8_0 (ggml_type_name)."""
   return quant.lower().replace("_k", "_K")
 
 
@@ -263,7 +263,6 @@ def ggml_metal_spec(text:str, quant:str, rows:int, cols:int, weights:bytes, x:li
 
 _MMVQ_CANDIDATES = ("~/env/llama.cpp/ggml/src/ggml-cuda", "~/llama.cpp/ggml/src/ggml-cuda", "/usr/local/src/llama.cpp/ggml/src/ggml-cuda")
 from boltbeam.collectors.gemv_reference import GGML_TYPES as GGML_TYPE  # noqa: E402  the one ggml.h type table (gemv_reference)
-from boltbeam.profile.gguf import GGML_FORK_TYPES  # noqa: E402
 from boltbeam.artifacts.run_io import load_manifest, read_json
 Q8_1_BLOCK, Q8_1_BYTES = 32, 36  # block_q8_1: half d, half s, 32 int8 (ggml-common.h)
 MATRIX_ROW_PADDING = 512  # ggml-cuda common.cuh: the quantized vector is padded to this many columns
@@ -599,7 +598,7 @@ def mmvq_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:bytes
 # --- the adapters, one row per (engine, backend) --------------------------------------------------------------------------
 
 # the formats whose mul_mv METAL_RULE mirrors; ggml's Metal IQ kernels also take threadgroup memory it does not set
-METAL_FORMATS = ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K", "PTQ1_0")  # PTQ1_0: the PrismML fork only
+METAL_FORMATS = ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K")
 
 
 def _metal_setup(bench:str | None) -> dict[str, Any]:
@@ -616,7 +615,7 @@ def _mmvq_setup(bench:str | None) -> dict[str, Any]:
   return {"source": src, "engine": "llama.cpp (ggml-cuda mmvq)", "macros": {},
           "spec": lambda s, quant, rows, cols, w, x: mmvq_spec(pathlib.Path(s["source"]["dir"]), quant, rows, cols, w, x,
                                                                cc=s.get("cc"), warp=s.get("warp") or 32, macros=s["macros"]),
-          "kernel": lambda s, quant: f"mul_mat_vec_q<(ggml_type){GGML_TYPE[quant]}, 1, ...>" if quant in GGML_TYPE and GGML_TYPE[quant] not in GGML_FORK_TYPES else None,  # mmvq reads upstream's rules
+          "kernel": lambda s, quant: f"mul_mat_vec_q<(ggml_type){GGML_TYPE[quant]}, 1, ...>" if quant in GGML_TYPE else None,
           "device": lambda bridge: {"cc": bridge.ggml_cc(), "warp": bridge.facts().get("warp_size"),
                                     "macros": dict(bridge.GGML_MACROS), "engine": f"llama.cpp (ggml {bridge.API} backend)"},
           "bridge": {"includes": mmvq_includes(pathlib.Path(src["dir"]))}}

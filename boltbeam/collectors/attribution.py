@@ -350,13 +350,19 @@ def fresh_replicas(attributed, folders:list[pathlib.Path], steps:list[float | No
   return out or None
 
 
+OFFLOAD_BATCH = 32  # ggml_backend_sched's offload_op: an op on a CPU-held weight moves to the GPU from 32 tokens a step
+
+
 def cpu_side(run, profile:dict[str, Any], roles:list[dict[str, Any]], read:dict[tuple, dict[str, Any]],
-             counts:dict[tuple, int]) -> dict[str, Any] | None:
+             counts:dict[tuple, int], batch:int = 1) -> dict[str, Any] | None:
   """The experts the CPU computed in this run (expert_placement.cpu_experts): no GPU kernel reads them, so the expert
   roles the GPU pairs with keep only the GPU's share of their bytes (and of their launches, when whole layers sit in
   RAM: --n-cpu-moe), and a role the CPU computes whole is not paired at all. Returned beside the trace as its own bucket:
   the share, the bytes per token the CPU read, the host RAM rate (target/host.py, None when not measured) and the roles,
-  with the adjusted roles and counts under _roles and _counts. None: no expert in RAM."""
+  with the adjusted roles and counts under _roles and _counts. None: no expert in RAM, or a batch of OFFLOAD_BATCH or more
+  tokens a step: llama.cpp then uploads the CPU-held experts and the GPU computes them (the upload is not a CPU term)."""
+  if batch >= OFFLOAD_BATCH:
+    return None
   from boltbeam.collectors.expert_placement import cpu_experts
   from boltbeam.core.refused import Refused
   cpu = cpu_experts(run, profile)
@@ -415,7 +421,7 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
                for m in got]
       counts = {(m["role"], m["quant"]): m["count"] for m in got}
       packed = {(m["role"], m["quant"]): m["part_roles"] for m in got}
-  if cpu := cpu_side(run, profile, roles, read, counts):
+  if cpu := cpu_side(run, profile, roles, read, counts, batch):
     roles, counts = cpu.pop("_roles"), cpu.pop("_counts")
   from boltbeam.target.targets import upper
   result = attribute(window, roles, counts, tokens, upper(ceil.get("peak_bandwidth_gbs"), ceil.get("uncertainty")), kinds=pairing.layer_kinds(profile), read=read,

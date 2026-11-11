@@ -20,6 +20,7 @@
     "plain qwen3-14b-q4-k-m-nvidia_geforce_rtx_4090_24g-001": "../recorded/plain-decode.json",
     "run qwen3-8-27b-w4a16-awq-nvidia_sm120-001": "../recorded/run-batch.json",
     "plain qwen3-8-27b-w4a16-awq-nvidia_sm120-001": "../recorded/plain-batch.json",
+    "offload": "../recorded/offload.json",
     "saved": "saved.json",
     "providers": "providers.json",
     "fetch": {"kind": "error",

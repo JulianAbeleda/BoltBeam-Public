@@ -75,6 +75,9 @@ def table(trace:dict[str, Any]) -> dict[str, Any] | None:
     words.append(" ".join(f"Depth {r['depth']:,} not run: {r['failed'][-200:]}" for r in failed))
   out: dict[str, Any] = {"title": TITLE, "columns": list(COLUMNS), "rows": out_rows, "words": " ".join(words),
                          "focus": trace.get("focus"), "kv": kv}
+  if label := turn_prompt_label(rows):
+    out["prompt_kind"] = "random_tokens_moe"
+    out["words"] += " " + label
   if warm:
     out["warm"] = (f"Warm cache, depth {warm['context']:,}: the same context and turn sent again with the prefix cache on "
                    f"computed {warm['computed']} token(s) in {warm['ms']:.1f} ms ({warm['source']}).")
@@ -82,6 +85,14 @@ def table(trace:dict[str, Any]) -> dict[str, Any] | None:
     out["max_context"] = caps_words(kv["caps"])
   out["compaction"] = compaction(comp, done)
   return out
+
+
+def turn_prompt_label(rows:list[dict[str, Any]]) -> str | None:
+  """The plain sentence when the turns were timed on llama-bench's random ids and the model is an MoE (they read about half
+  the speed on text); None for real text, a dense model or the fork's driver."""
+  from boltbeam.report.plain import words
+  eng = [r.get("engine") or {} for r in rows if r.get("scope") == "whole_step" and not r.get("failed")]
+  return words()["prompt_kind"]["random_tokens_moe"] if any(e.get("moe") and e.get("prompt_kind") == "random_tokens" for e in eng) else None
 
 
 def caps_words(c:dict[str, Any]) -> str:

@@ -183,7 +183,8 @@ def llama_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) 
           "source": (f"llama-bench -p {TURN} -n {DECODE} -d {depth}: the prompt after {depth} tokens it filled untimed "
                      f"(its own random ids, fixed seed), {len(samples)} repetitions after its warm-up, untraced"),
           "engine": {"timing_window": pf.timing_window(TURN, depth) if qualified is not None else None, "build": row.get("build_commit"), "build_number": row.get("build_number"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
-                     "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd, **fork_fact(cmd[0])}}
+                     "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd, **fork_fact(cmd[0]),
+                     "prompt_kind": "random_tokens", "moe": pf.moe_model(run)}}  # llama-bench -d: its own ids
 
 
 def _fork_session(run, model, depth, target, root, mode, extra:list[str]) -> dict[str, Any]:

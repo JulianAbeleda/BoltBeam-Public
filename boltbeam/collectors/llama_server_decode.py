@@ -93,7 +93,7 @@ def measure(run:pathlib.Path, *, bench:str, model:pathlib.Path, target, timing_o
   serve_log = log.with_suffix(".serve.log")
   engine_args.record(run, [server, "-m", str(model), *flags][1:], engine=PROVIDER,
                      log=serve_log.read_text(errors="replace") if serve_log.is_file() else None)
-  fork = fork_fact(bench)
+  fork = fork_fact(server)  # the server's own build: beside llama-bench, or the $BOLTBEAM_LLAMA_SERVER one
   manifest = load_manifest(run)
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
            "workload": manifest["workload"], "provider": PROVIDER, "provider_id": PROVIDER_ID, "collector_id": COLLECTOR_ID,

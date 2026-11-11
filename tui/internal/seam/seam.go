@@ -527,6 +527,18 @@ func (c Client) Recommend(model, target, engine string, check bool) (*Recommend,
 	return &r, err
 }
 
+// Offload is the offload page for the model on this chip and engine, from the newest machine facts in the run
+// folders. The first call on a machine measures the GPU's copy rate, so it can take a couple of seconds.
+func (c Client) Offload(model, target, engine string) (*Offload, error) {
+	var o Offload
+	args := []string{"offload", model, "--target", target, "--engine", engine}
+	for _, pl := range c.Places() {
+		args = append(args, "--facts-root", pl.Dir)
+	}
+	_, _, err := c.decode(&o, nil, "boltbeam.workflow.screen", args...)
+	return &o, err
+}
+
 // Providers lists the runtimes that can measure the target on this machine. With a model, each layout of a multi-GPU
 // machine carries its predicted decode limit, from the newest machine facts in the run folders.
 func (c Client) Providers(target, model string) (*Providers, error) {

@@ -581,13 +581,15 @@ def pick(rows:list[dict[str, Any]], *, seqs:int, fits_one:bool) -> dict[str, Any
 
 def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpus:list[dict[str, Any]], *, target,
           seqs:int = 1, context:int = CONTEXT, text_only:bool = True, host:dict[str, Any] | None = None,
-          moe_estimate:dict[str, Any] | None = None, offload:bool = False, draft:str | None = None) -> dict[str, Any]:
+          moe_estimate:dict[str, Any] | None = None, offload:bool = False, draft:str | None = None, probe_h2d:bool = False) -> dict[str, Any]:
   """The recommended setup for this model on these GPUs with this engine: one row per layout, the settings, the
   recommended layout and the command lines. facts: machine facts (read bandwidth, join, cached engine overhead).
   When no layout holds the weights (or offload=True), `offload` is the experts-in-RAM setup with its limit band, or the
   reason there is none (workflow/offload.py); host: the host's RAM and PCIe (target/host.py) and moe_estimate (experts,
   bits_per_weight) stand in for a probe or a header. draft: a draft model's file (an MTP head kept apart): its bytes and its KV
-  at the stated context count against the fit, as an MTP head the plan turns on does (draft_cost)."""
+  at the stated context count against the fit, as an MTP head the plan turns on does (draft_cost). probe_h2d: the offload
+  page may measure the copy rate to the GPU (an idle GPU, a child process with a timeout); everything else reads the saved
+  figure only."""
   from boltbeam.roofline import limit
   tb = tensor_bytes(profile["source"])
   resident = weights_resident(tb, text_only=text_only)
@@ -685,12 +687,18 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   if offload or not any(r["fits"]["value"] for r in rows):  # nothing holds the weights: say what offloading the experts gives
     kvb = ((pw.kv_bytes_per_token(profile, element_bytes=eng.kv[kv]) or 0.0) + extra.get(kv, 0.0)) * context
     moe = off.for_setup(profile, provider, usable=usable - (dr["bytes"] if dr else 0), kv_bytes=kvb + (dr["kv_bytes"] if dr else 0), vram_gbs=(limit.read_bandwidth(facts) or {}).get("gbs") or target.memory_bandwidth_gbs,
-                        pci_bus_id=(gpus[0].get("pci_bus_id") if gpus else None), context=context, target=target, kv=kv, host=host, estimate=moe_estimate)
+                        pci_bus_id=(gpus[0].get("pci_bus_id") if gpus else None), context=context, target=target, kv=kv, host=host, estimate=moe_estimate,
+                        host_tables=tb.get("host", 0), fits=any(r["fits"]["value"] for r in rows), probe=probe_h2d)
     if moe["status"] == "recommended" and argv is not None:
       argv = eng.flags(profile, kv=kv, seqs=seqs, layout="one", gpus=1, text_only=text_only, tb=tb, context=context, placement=moe["settings"], **opts)
       if (pre := moe.get("prefill") or {}).get("status") == "recommended":  # the setup for prompts: its own command
         pre_argv = eng.flags(profile, kv=kv, seqs=seqs, layout="one", gpus=1, text_only=text_only, tb=tb, context=context, placement=pre["settings"], **opts)
         pre["command"] = eng.command(shlex.quote(profile["source"]), [shlex.quote(a) for a in pre_argv])
+  cram = cache_ram_row(moe) if provider == "llama.cpp" else None
+  if cram and cram["recommended"] and argv is not None:
+    argv = [*argv, *CACHE_RAM_OFF]
+    if (pre := (moe or {}).get("prefill") or {}).get("command"):
+      pre["command"] += " " + " ".join(CACHE_RAM_OFF)
   env = dict(row.vllm_env) if provider == "vllm" else {}
   key = (provider, (facts or {}).get("gpus", [{}])[0].get("target_id"), profile.get("hidden_size"), profile.get("layer_count"), profile.get("ffn_size"))
   return {"schema": "boltbeam.recommended_setup.v1", "model": profile.get("source"), "provider": provider, "gpu_count": n,
@@ -699,12 +707,32 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
           "layouts": rows, "recommended_layout": chosen, "flags_layout": {"id": layout, "gpus": gcount}, "kv_dtype": kv, "kv_formats": list(eng.kv), "engine_note": eng.note,
           "offload": moe, "draft": dr,
           "settings": (eng.settings(profile, tb, kv=kv, seqs=seqs, layout=layout, gpus=gcount, text_only=text_only, full_context=full_ctx, **opts) if eng.settings else [])
-                      + (off.settings(moe) if moe and moe["status"] == "recommended" else []),
+                      + (off.settings(moe) if moe and moe["status"] == "recommended" else []) + ([cram] if cram else []),
           "flags": argv, "env": env, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), eng.command(shlex.quote(profile["source"]), [shlex.quote(a) for a in argv])]) if argv else None,
           "arkey_vllm_args": arkey_args(argv) if argv and provider == "vllm" else None, "usable_bytes": usable, "reserve_bytes": eng.reserve, "scratch_per_token": extra,
           "measured_only": MEASURED.get(key) or "not measured here (MTP, throughput, prefill share)",
           # Measure MTP: what it runs here (collectors/vllm_mtp.offer), and this checkpoint's measurement kept in the facts
           "mtp_measure": vllm_mtp.offer(provider, tb["mtp"], facts=bool(facts)), "mtp_measured": mtp_of(facts, provider, profile.get("source"))}
+
+
+CACHE_RAM_OFF = ["--cache-ram", "0"]
+CACHE_RAM_DEFAULT = 8 * 2**30  # llama-server's prompt cache in host RAM by default (common/arg.cpp --cache-ram, 8192 MiB)
+
+
+def cache_ram_row(moe:dict[str, Any] | None) -> dict[str, Any]:
+  """The llama-server setting row for its prompt cache in host RAM: recommended off when RAM is tight (the experts the
+  card's cache does not hold and the default 8 GiB cache past the usable RAM the offload plan read; the mapped input
+  embeddings count as the page says them, resident only where read, so not whole), else stated for one-shot prompts.
+  Never silent: the row says what it costs."""
+  from boltbeam.report.plain import words
+  w = words()["cache_ram"]
+  ram = (moe or {}).get("ram") or {}
+  tight = None
+  if (moe or {}).get("status") == "recommended" and ram.get("usable_bytes") is not None:
+    need = moe["shapes"]["expert_total"] - moe["cache_mib"] * 2**20 + CACHE_RAM_DEFAULT
+    tight = need > ram["usable_bytes"]
+  return {"flag": " ".join(CACHE_RAM_OFF), "recommended": bool(tight), "changes": w["changes"],
+          "when": w["tight"].format(usable=f"{ram['usable_bytes'] / 1e9:.1f}") if tight else w["one_shot"]}
 
 
 def draft_cost(profile:dict[str, Any], tb:dict[str, Any], element_bytes:float, context:int, *, mtp:bool, draft:str | None) -> dict[str, Any] | None:

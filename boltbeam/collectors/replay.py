@@ -146,14 +146,29 @@ def llama_settings(argv:list[str], log:str) -> dict[str, Any]:
   return out
 
 
+# ggml types llama.cpp's CUDA backend runs through mul_mat_q (ggml_cuda_should_use_mmq, ggml-cuda/mmq.cu 364-382 at b11571;
+# the same list in master): weights in their block format, activations quantized to q8_1, int8 products. MXFP4 and NVFP4
+# take a native fp4 path on Blackwell when the activations are q4 (mmq.cu 64-77); their q8 path is int8 too.
+LLAMA_MMQ = ("Q1_0", "Q2_0", "Q4_0", "Q4_1", "Q5_0", "Q5_1", "Q8_0", "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K",
+             "IQ1_S", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ4_XS", "IQ4_NL", "MXFP4", "NVFP4")
+
+
 def llama_weight_path(quant:str) -> str | None:
-  """A weight's matrix path in llama.cpp's prefill: block quants run mul_mat_q on int8 (activations quantized to
-  q8_1); float weights run cuBLAS on their own type."""
-  from boltbeam.quantization.quant import load_quant_registry
-  q = load_quant_registry().get(str(quant).upper())
-  if q is None:
-    return None
-  return {"F16": "fp16", "BF16": "bf16"}.get(str(quant).upper()) if q.dequant_family == "float_passthrough" else "int8"
+  """A weight's matrix path in llama.cpp's prefill: a type in ggml's mul_mat_q list (LLAMA_MMQ) runs on int8
+  (activations quantized to q8_1); F16 and BF16 run cuBLAS on their own type. None for any other type (F32, IQ1_M,
+  TQ1_0 ...: cuBLAS after a conversion BoltBeam does not model): weight_path_note says which."""
+  name = str(quant).upper()
+  return "int8" if name in LLAMA_MMQ else {"F16": "fp16", "BF16": "bf16"}.get(name)
+
+
+def weight_path_note(role:str, quant:str) -> str:
+  """Why a weight has no matrix path in the prompt limit (llama_weight_path None), in one line."""
+  from boltbeam.profile.gguf import GGML_TYPE_NAMES
+  name = str(quant).upper()
+  if name not in GGML_TYPE_NAMES.values():
+    return f"{role} {quant}: BoltBeam's format table has no entry for {quant}, so only its bytes bound it"
+  return (f"{role} {quant}: llama.cpp computes {quant} outside mul_mat_q (cuBLAS after converting the weight), a path "
+          "BoltBeam does not model, so only its bytes bound it")
 
 
 def llama_attention_paths(binary:pathlib.Path, device:dict[str, Any] | None = None) -> dict[str, int]:
@@ -639,7 +654,8 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   flags = engine(provider)["bench_flags"](server.get("settings") or {})
   model = str(manifest["model_path"])
   out: dict[str, Any] = {"schema": "boltbeam.replay_capture.v1", "flags": flags, "tie_out": "repeat-band agreement is disclosed, not a gate; qualification is the 5% capture-overhead rule", "turns": [],
-                         "decode": None}
+                         "decode": None,
+                         "prompt_kind": "random_tokens", "moe": pf.moe_model(run)}  # llama-bench -d fills the depth with its own random ids
   turns = [r for r in timing["rows"] if r["scope"] == "turn"]
   for name, r in picks(turns):
     n, c = r["prompt_n"], r["cache_n"]

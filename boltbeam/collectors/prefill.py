@@ -111,6 +111,11 @@ def _bench(run:pathlib.Path) -> str:
   return bench
 
 
+def find_bench() -> str | None:
+  from boltbeam.collectors.llama_bench_decode import find
+  return find()
+
+
 def llama_argv(bench:str, model:str, length:int, reps:int, *, warmup:bool = True, depth:int = 0, gen:int = 0,
                extra:list[str] | None = None) -> list[str]:
   """One prompt of `length` tokens, no generation, the engine's own ubatch and batch (its defaults, recorded back).
@@ -156,22 +161,50 @@ def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> d
   retain_native(run, str(length), cmd, proc.stdout)
   if proc.returncode != 0:
     raise RuntimeError(f"llama-bench exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
-  row = llama_row(proc.stdout)
+  return llama_truth_record(row := llama_row(proc.stdout), length, cmd, tele,
+                            f"llama-bench -p {length} -n 0, {len(row.get('samples_ns') or [0])} repetitions after its warm-up, untraced",
+                            PROMPT_WORDS["llama.cpp"], "random_tokens", moe_model(run), batched_calls=True)
+
+
+def outside_timer(engine_ms:list[float], wall_ms:list[float]) -> dict[str, Any]:
+  """The client's wall time beside the engine's own prompt timer, per request: engines define their timers differently
+  (what each leaves out), so engines are compared on wall time. wall_ms / outside_ms are medians; outside_ms is the median
+  of the per-request gap (wall less the engine timer). Empty when the program gave no wall time for every request."""
+  if not wall_ms or len(wall_ms) != len(engine_ms):
+    return {}
+  gaps = [w - e for w, e in zip(wall_ms, engine_ms)]
+  return {"wall_samples_ms": list(wall_ms), "wall_ms": statistics.median(wall_ms), "outside_samples_ms": gaps,
+          "outside_ms": statistics.median(gaps)}
+
+
+def moe_model(run:pathlib.Path) -> bool:
+  """True when the model has expert stacks (model_profile.json: a role with n_expert), the models whose speed follows
+  which experts the prompt's tokens pick."""
+  p = run / "model_profile.json"
+  return p.exists() and any((r.get("n_expert") or 0) > 0 for r in json.loads(p.read_text()).get("roles") or [])
+
+
+def llama_truth_record(row:dict[str, Any], length:int, cmd:list[str], tele, source:str, prompt:str, kind:str, moe:bool, *,
+                       batched_calls:bool = False, tool:str = "llama-bench", binary:str | None = None,
+                       engine:dict[str, Any] | None = None) -> dict[str, Any]:
+  """A llama.cpp prefill's truth from a benchmark-shaped row (samples_ns, n_ubatch, n_batch, n_prompt ...), whichever
+  program timed it. kind: "random_tokens" (llama-bench's own ids) or "real_text"; with moe it is said beside the speed
+  (report/plain.py): random ids route an MoE to far more experts than text does and read ~2x slow.
+  batched_calls: llama-bench reads an output token at the end of every n_batch call; the server once, at the prompt's end."""
   samples = [float(x) / 1e6 for x in row.get("samples_ns") or [row["avg_ns"]]]
   ub, b = int(row.get("n_ubatch") or 0), int(row.get("n_batch") or 0)
   qualified = qualification_sample(row, length)
-  chunk = chunk_record(llama_chunks(length, b, ub) if ub else [], f"llama-bench n_ubatch {ub}, n_batch {b}",
-                       outputs=-(-length // b) if b else None)
+  chunk = chunk_record(llama_chunks(length, b, ub) if ub else [], f"{tool} n_ubatch {ub}, n_batch {b}",
+                       outputs=(-(-length // b) if b else None) if batched_calls else 1)
   return {"ms": qualified if qualified is not None else statistics.median(samples), "qualification_ms": qualified,
           "benchmark_median_ms": statistics.median(samples), "benchmark_avg_ms": float(row["avg_ns"]) / 1e6 if row.get("avg_ns") is not None else None,
           "selected_repetition_index": qualification_index(row, length), "samples_ms": samples, "chunk": chunk, "telemetry": tele.summary(),
-          "telemetry_samples": gpu_telemetry.compact(tele.samples),
-          "source": f"llama-bench -p {length} -n 0, {len(samples)} repetitions after its warm-up, untraced",
+          "telemetry_samples": gpu_telemetry.compact(tele.samples), "source": source,
           "engine": {"timing_window": timing_window(length) if qualified is not None else None, "build": row.get("build_commit"), "build_number": row.get("build_number"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
-                     "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd, **fork_fact(cmd[0]),
+                     "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd, **fork_fact(binary or cmd[0]),
                      "n_ctx": int(row.get("n_prompt") or length) + int(row.get("n_gen") or 0),
                      "n_ctx_source": "llama-bench sizes its context to n_prompt + n_gen + n_depth",
-                     "prompt": PROMPT_WORDS["llama.cpp"]}}
+                     "prompt": prompt, "prompt_kind": kind, "moe": moe, **(engine or {})}}
 
 
 LLAMA_TILE_ROWS = 128  # mmq_y: the weight rows of one mul_mat_q output tile on a CUDA matrix-instruction build
@@ -243,6 +276,18 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
     raise UnnamedCapture(str(exc), {"method": vendor_capture.plan(target.backend)["method"], "token_ms": qualified, "prefills": calls,
                                     "busy_ms": sum(l["wall_us"] for l in launches) / 1e3 / calls,
                                     "timing_window": timing_window(length, depth)} if qualified else None) from exc
+  return llama_capture_record(run, target, bench, row, launches, measured_launches, raw, argv, env, length,
+                              llama_chunks(length, b, ub), -(-length // b), selected, qualified, depth=depth, head_bounds=[head_calls, head_calls],
+                              prune=llama_prunes(measured_launches, llama_chunks(length, b, ub), -(-length // b), copies=1,
+                                                 ends=call_ends(length, b, ub)))
+
+
+def llama_capture_record(run:pathlib.Path, target, binary:str, row:dict, launches:list, measured_launches:list, raw:pathlib.Path,
+                         argv:list[str], env:dict[str, str], length:int, chunk:list[int], outputs:int, selected:int,
+                         qualified:float | None, *, depth:int = 0, head_bounds:list[int], prune) -> dict[str, Any]:
+  """What a llama.cpp prefill capture hands to the attribution, whichever program (llama-bench, llama-server) was captured."""
+  from boltbeam.collectors import vendor_capture
+  from boltbeam.collectors.prefill_attribution import REPEAT
   formats = llama_formats(row.get("type_k"), weight_quants(run))
   if target.backend == "CUDA" and target.compute_units:
     from boltbeam.collectors import engine_kernels, llama_mmq
@@ -253,21 +298,22 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
         formats["matrix_grid_constraint"] = llama_mmq.constraints(pathlib.Path(source["dir"]), target.compute_units, commit)
     except engine_kernels.NoEngineSource:
       pass
-  return {"launches": launches, "chunk": llama_chunks(length, b, ub), "outputs": -(-length // b) if b else 1,
+  return {"launches": launches, "chunk": chunk, "outputs": outputs,
           "warmup": REPEAT, "copies": LLAMA_REPS if depth else COPIES, "formats": formats, "timing_window": timing_window(length, depth) if qualified is not None else None,
           "method": vendor_capture.plan(target.backend)["method"],
-          "paths": library_paths(linked_libraries(pathlib.Path(bench).resolve()), launches, device=run_gpu(run)),
+          "paths": library_paths(linked_libraries(pathlib.Path(binary).resolve()), launches, device=run_gpu(run)),
           "program": {"argv": argv, "env": env, "raw": raw, "profiler_range": False, "arch": (run_gpu(run) or {}).get("architecture")},
           "captured_ms": qualified, "window": vendor_capture.busy_window(raw, measured_launches),
           "benchmark_avg_ms": float(row["avg_ns"]) / 1e6, "benchmark_median_ms": statistics.median(row["samples_ns"]) / 1e6,
           "measured_ms": qualified, "selected_repetition_index": selected,
-          "output_head_count_bounds": [head_calls, head_calls],
+          "output_head_count_bounds": head_bounds,
           "host_samples_ms": [x / 1e6 for x in row["samples_ns"]],
-          "prune": llama_prunes(measured_launches, llama_chunks(length, b, ub), -(-length // b), copies=1,
-                                ends=call_ends(length, b, ub))}
+          "prune": prune}
 
 
-LLAMA_PRUNED_STAGES = ("ffn_in", "ffn_out")  # llama.cpp keeps only the output rows (inp_out_ids) before the last FFN
+# llama.cpp keeps only the output rows (inp_out_ids) before the last FFN, and before a hyper-connection model's last FFN
+# mixer (mix_out: Flash-Next's capture runs the last layer's hc_ffn down and up at the output token alone)
+LLAMA_PRUNED_STAGES = ("mix_out", "ffn_in", "ffn_out", "mix_post")
 
 
 def llama_prunes(launches:list[dict[str, Any]], chunk:list[int], outputs:int, copies:int = 2,
@@ -506,6 +552,16 @@ def is_kernel_code(src:str) -> bool:
 VLLM_WARM = 2  # warm calls before the timed or captured one (the first call after load runs slower)
 
 
+def vllm_prompt(run:pathlib.Path) -> tuple[list[str], str]:
+  """The driver flags and the prompt kind for this run's vLLM prefill: real text (the in-tree corpus, tokenized by vLLM's own
+  tokenizer inside its venv) for an MoE model, as the llama.cpp path does (llama_server_prefill.mode); random ids otherwise."""
+  from boltbeam.collectors import llama_server_prefill as sp
+  m = sp.mode()
+  if m == "real" or (m == "auto" and moe_model(run)):
+    return ["--corpus", str(sp.CORPUS)], "real_text"
+  return [], "random_tokens"
+
+
 def _vllm(model:str, length:int, *extra:str) -> tuple[list[str], dict[str, str]]:
   from boltbeam.collectors import engine_common as ec, vllm_decode as vd
   py = vd.python()
@@ -526,7 +582,8 @@ def vllm_chunk(length:int, line:dict[str, Any]) -> dict[str, Any]:
 def vllm_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> dict[str, Any]:
   from boltbeam.collectors import engine_common as ec, vllm_decode as vd
   from boltbeam.collectors.capture_settings import vllm_flags
-  argv, env = _vllm(model, length, "--reps", str(REPS), *vllm_flags(run, length))
+  prompt_flags, kind = vllm_prompt(run)
+  argv, env = _vllm(model, length, "--reps", str(REPS), *prompt_flags, *vllm_flags(run, length))
   with gpu_telemetry.run_telemetry(run, device) as tele:
     line = ec.run_driver(argv, env={**env, **vd.RUN_ENV})[-1]
   engine = [s for s in line["engine_samples_s"] if s]
@@ -538,9 +595,10 @@ def vllm_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> di
                      "warm-up calls, untraced" if own else
                      f"the wall time of LLM.generate (vLLM reported no request timing), {len(samples)} prompts after "
                      f"{VLLM_WARM} warm-up calls, untraced"),
-          "engine": {**{k: line.get(k) for k in ("activation_dtype", "kv_cache_dtype", "model_type", "max_model_len")}, "vllm": line.get("vllm"), "speculative_config": line.get("speculative_config"), "max_num_batched_tokens": line["max_num_batched_tokens"],
+          "engine": {**(outside_timer(samples, [s * 1e3 for s in line["wall_samples_s"]]) if own else {}),  # no engine timer: nothing is outside it
+                     **{k: line.get(k) for k in ("activation_dtype", "kv_cache_dtype", "model_type", "max_model_len")}, "vllm": line.get("vllm"), "speculative_config": line.get("speculative_config"), "max_num_batched_tokens": line["max_num_batched_tokens"],
                      "chunked_prefill": line.get("chunked_prefill"), "wall_samples_ms": [s * 1e3 for s in line["wall_samples_s"]],
-                     "command": argv, "prompt": PROMPT_WORDS["vllm"]}}
+                     "command": argv, "prompt": vllm_prompt_words(kind, line), "prompt_kind": kind, "moe": moe_model(run)}}
 
 
 def vllm_formats(weights:set[str], resolved:dict[str, Any] | None = None, *, require_resolved:bool = False) -> dict[str, Any]:
@@ -571,7 +629,8 @@ def vllm_capture(run:pathlib.Path, model:str, length:int, target) -> dict[str, A
   # labels the launches by module where geometry cannot pair them: Mamba2's kernels, and ROCm's, whose matrices share
   # grids and order (two FFN launches after a recurrent block fit one role equally on an R9700)
   semantic = ((profile.get('metadata') or {}).get('recurrent') or {}).get('kind') == 'mamba2' or target.backend == 'AMD'
-  argv, env = _vllm(model, length, "--capture", *(['--semantic-dispatch'] if semantic else []), *vllm_flags(run, length, capture=True))
+  prompt_flags, _ = vllm_prompt(run)
+  argv, env = _vllm(model, length, "--capture", *prompt_flags, *(['--semantic-dispatch'] if semantic else []), *vllm_flags(run, length, capture=True))
   raw = run / RAW / str(length)
   if semantic:
     # Reuse the measured autotuner choice across the timing/counter processes.
@@ -665,9 +724,26 @@ PROMPT_WORDS["vllm"] = ("the driver's own prompt: token ids drawn by random.Rand
                         "prefix caching off, so nothing is cached between prompts")
 
 
+def vllm_prompt_words(kind:str, line:dict[str, Any]) -> str:
+  if kind != "real_text":
+    return PROMPT_WORDS["vllm"]
+  return ("real text: the shipped Gutenberg excerpts (data/gate_corpus.json) tokenized by vLLM's tokenizer, each call the "
+          f"corpus's first tokens up to the prompt's length, as the llama.cpp path sends ({(line.get('corpus') or {}).get('tokens')} "
+          "corpus tokens, repeated past its end), prefix caching off, so nothing is cached between prompts")
+
+
+def llama_prefill(run:pathlib.Path, model:str, length:int, target, *, capture:bool):
+  """llama.cpp's prefill truth or capture: llama-server on real text for an MoE model, else llama-bench (llama_server_prefill)."""
+  from boltbeam.collectors import llama_server_prefill as sp
+  server = sp.use_server(run, find_bench())
+  if server:
+    return sp.capture(run, model, length, target, server) if capture else sp.truth(run, model, length, server)
+  return llama_capture(run, model, length, target) if capture else llama_truth(run, model, length)
+
+
 ENGINES: dict[str, dict[str, Callable[..., dict[str, Any]]]] = {
-  "llama.cpp": {"truth": lambda run, model, length, target, root: llama_truth(run, model, length),
-                "capture": lambda run, model, length, target, root: llama_capture(run, model, length, target)},
+  "llama.cpp": {"truth": lambda run, model, length, target, root: llama_prefill(run, model, length, target, capture=False),
+                "capture": lambda run, model, length, target, root: llama_prefill(run, model, length, target, capture=True)},
   "tinygrad": {"truth": lambda run, model, length, target, root: tinygrad_truth(run, model, length, target=target, root=root),
                "capture": lambda run, model, length, target, root: tinygrad_capture(run, model, length, target, root=root)},
   "vllm": {"truth": lambda run, model, length, target, root: vllm_truth(run, model, length),
@@ -737,18 +813,23 @@ def last_level_cache(target) -> dict[str, Any] | None:
           **({'calibration':rate['calibration']} if rate.get('calibration') else {})} if size and gbs else None
 
 
-def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> list[dict[str, Any]]:
+def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]], *, pairing:bool = False,
+                  skipped:list[str] | None = None) -> list[dict[str, Any]]:
   """The profile's weight roles with their shape, launches per chunk, weight bytes per launch (the limit's own
   bytes over the role's count, so a role's bytes are the decode table's) and fine class (its place in the layer).
   An expert stack (n_expert) runs every token through experts_read experts (routed: products per token); its bytes
   stay the decode's experts_read experts: exact for one token; a chunk's ceiling is refused (prefill_attribution.ROUTED_REFUSED).
   last_layer: the row's calls in the model's last layer, when the profile read it (the layer an engine may prune);
-  layer_kinds: a hybrid's row's calls per layer kind and fine class, when the profile read them."""
+  layer_kinds: a hybrid's row's calls per layer kind and fine class, when the profile read them. pairing: the rows a
+  capture's launches are paired with (role_time): a class a prefill runs as a matrix kernel but the limit counts as a
+  small vector (vocab.PREFILL_ONLY_CLASSES) is a row too, its bytes its tensor's; the limits' rows stay the limit's.
+  skipped: why a prefill-only row could not be made (_prefill_only), one line each.
+  """
   from boltbeam.role_key import role_key
   by = {role_key(r): r for r in ceil_roles}
   out = []
-  for r in profile.get("roles") or []:
-    c = by.get(role_key(r))
+  for r in [x for r in profile.get("roles") or [] for x in ([r] if by.get(role_key(r)) or not pairing else _prefill_only(r, skipped))]:
+    c = by.get(role_key(r)) or r.get("_bytes")
     if c and r.get("count") and r.get("rows") and r.get("cols"):
       moe = {"n_expert": int(r["n_expert"]), **({"routed": int(r["experts_read"])} if r.get("experts_read") else {})} if r.get("n_expert") else {}
       out.append({"role": r["role"], "quant": r["quant"], "n": int(r["rows"]), "k": int(r["cols"]), "count": int(r["count"]),
@@ -757,6 +838,33 @@ def prefill_roles(profile:dict[str, Any], ceil_roles:list[dict[str, Any]]) -> li
                   **({"layer_kinds": r["layer_kinds"]} if r.get("layer_kinds") else {}),
                   **({"per_layer": r["per_layer"]} if r.get("per_layer") else {})})
   return out
+
+
+def _prefill_only(r:dict[str, Any], skipped:list[str] | None = None) -> list[dict[str, Any]]:
+  """A profile row of a class a prefill pairs but the limit does not (vocab.PREFILL_ONLY_CLASSES), split evenly into its
+  classes' rows, each with its tensor's own bytes (bytes_moved over its count, as a limit role's); none when its counts
+  do not split evenly or its format has no known layout, and then the reason is added to `skipped`."""
+  from boltbeam.profile.decode_roles import _physical_bytes
+  from boltbeam.vocab import PREFILL_ONLY_CLASSES
+  classes = PREFILL_ONLY_CLASSES.get(r.get("role_class") or "")
+  if not classes or not (r.get("count") and r.get("rows") and r.get("cols")):
+    return []
+  n = len(classes)
+  per_layer = {p: sum(c.values()) for p, c in (r.get("per_layer") or {}).items()}
+  kinds = {k: sum(c.values()) for k, c in (r.get("layer_kinds") or {}).items()}
+  name = f"{r.get('role')} {r.get('quant')}"
+  if int(r["count"]) % n or any(v % n for v in [*per_layer.values(), *kinds.values(), int(r.get("last_layer") or 0)]):
+    (skipped if skipped is not None else []).append(f"{name}: its counts do not split evenly into its {n} classes")
+    return []
+  try:
+    each = _physical_bytes(int(r["rows"]) * int(r["cols"]), int(r["ggml_type"]), tensor_name=str(r.get("tensor_name")))
+  except (KeyError, TypeError, ValueError) as exc:
+    (skipped if skipped is not None else []).append(f"{name}: its bytes could not be read ({type(exc).__name__}: {exc})")
+    return []
+  return [{**r, "role_class": cls, "count": int(r["count"]) // n, "_bytes": {"bytes_moved": each * (int(r["count"]) // n)},
+           **({"per_layer": {p: {cls: v // n} for p, v in per_layer.items()}} if per_layer else {}),
+           **({"layer_kinds": {k: {cls: v // n} for k, v in kinds.items()}} if kinds else {}),
+           **({"last_layer": int(r["last_layer"]) // n} if r.get("last_layer") is not None else {})} for cls in classes]
 
 
 def capture_peaks(peaks:dict[str, float], source:dict[str, Any] | None, seen:dict[str, Any],
@@ -785,7 +893,8 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   profile = optional(run, "model_profile.json")
   ceil = limit.measured_vs_ceiling({**manifest, "workload": "decode"}, profile, run)
   bw, bw_source = limit.run_bandwidth(run, target)
-  roles = prefill_roles(profile, ceil.get("_roles") or [])
+  skipped: list[str] = []
+  roles = prefill_roles(profile, ceil.get("_roles") or [], pairing=True, skipped=skipped)
   # the engine's own timing slows its run (one command buffer per kernel): its idle is profiling, not the engine's,
   # so its gaps are the untraced prefill less the busy time, as the decode tie-out treats its own timing
   truth_rows = [r for r in read_json(run / "timing_trace.json").get("rows") or [] if r.get("prefill_ms")]
@@ -795,7 +904,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   out = {"schema": "boltbeam.prefill_trace.v1", "provider": provider, "model_id": manifest["model_id"],
          "target_id": target.target_id, "bandwidth_gbs": bw, "bandwidth_source": bw_source,
          "peaks": dict(target.matrix_tflops or {}), "peaks_source": ((target.capabilities or {}).get("fact_sources") or {}).get("matrix_tflops"),
-         "lengths": {}, **({"depth": depth} if depth else {})}
+         "lengths": {}, **({"depth": depth} if depth else {}), **({"prefill_only_skipped": skipped} if skipped else {})}
   from boltbeam.target.targets import fact_uncertainty  # each figure's own measured uncertainty, for the guards
   out["uncertainty"] = {"bandwidth": ceil.get("uncertainty"),
                         "peaks": {p: fact_uncertainty(target, "matrix_tflops", p) for p in out["peaks"]}}

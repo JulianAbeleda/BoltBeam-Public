@@ -1,6 +1,6 @@
 {
   "schema": "boltbeam.engine_families.v1",
-  "about": "The one table of engine families: a root engine and its forks, in Setup's order (collectors/engine_families.py reads it). provider is the adapter that runs a fork (collectors/providers.ENGINES); the engine scan finds a fork with a provider (collectors/engine_scan.PRIMARY). A fork with no provider is found by env (one env var naming the binary or checkout), then paths (globs, ~ is the home folder), then binary on PATH. formats are the weight formats (profile/gguf.py GGML_TYPE_NAMES) only that fork reads: a model in one needs it. runs says whether BoltBeam can run it yet; why says why not, when it cannot. flags (llama.cpp): per program, the command-line flags of BoltBeam's engine settings that build has (capture_settings.LLAMA_FLAGS), read from its --help (upstream: the pinned b11571; prismml b12136; master 7592b61d3, 2026-11-11); a run that asks for a flag its build lacks is refused.",
+  "about": "The one table of engine families: a root engine and its forks, in Setup's order (collectors/engine_families.py reads it). provider is the adapter that runs a fork (collectors/providers.ENGINES); the engine scan finds a fork with a provider (collectors/engine_scan.PRIMARY). A fork with no provider is found by env (one env var naming the binary or checkout), then paths (globs, ~ is the home folder), then binary on PATH. formats are the weight formats (profile/gguf.py GGML_TYPE_NAMES) only that fork reads: a model in one needs it. runs says whether BoltBeam can run it yet; why says why not, when it cannot. flags (llama.cpp): per program, the command-line flags of BoltBeam's engine settings that build has (capture_settings.LLAMA_FLAGS), read from its --help (upstream: the pinned b11571; master 7592b61d3, 2026-11-11); a run that asks for a flag its build lacks is refused.",
   "families": [
     {
       "family": "llama.cpp",
@@ -8,10 +8,6 @@
       "forks": [
         {"fork": "upstream", "label": "upstream", "repo": "https://github.com/ggml-org/llama.cpp", "provider": "llama.cpp", "runs": true,
          "flags": {"llama-bench": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot"], "llama-server": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot", "--cpu-moe", "--moe-cache-mib", "--spec-type", "-md", "-ctkd"]}},
-        {"fork": "prismml", "label": "PrismML", "repo": "https://github.com/PrismML-Eng/llama.cpp", "branch": "prism",
-         "env": "BOLTBEAM_LLAMA_PRISM", "paths": ["~/env/llama.cpp-prism/build/bin/llama-bench"], "formats": ["PQ2_0", "PTQ1_0"], "runs": true,
-         "flags": {"llama-bench": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot"], "llama-server": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot", "--cpu-moe", "--moe-cache-mib", "--spec-type", "-md", "-ctkd"]},
-         "why": "run it with BOLTBEAM_LLAMA_BENCH set to its llama-bench; Setup cannot pick it yet"},
         {
          "fork": "master",
          "label": "master",

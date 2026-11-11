@@ -58,6 +58,9 @@ type Facts struct {
 	Providers   *seam.Providers    // the runtimes that can measure the chip here (step 4)
 	Recommend   *seam.Recommend    // the recommended setup for this model, chip and engine (recommendKey)
 	RecKey      string             // what Recommend was asked for
+	Offload     *seam.Offload      // the offload page for this model, chip and engine (recommendKey)
+	OffKey      string             // what Offload was asked for
+	OffErr      string
 	RecErr      string
 	RecChecking bool      // Check is running: one real engine start
 	CJob        *jobs.Job // the compare job, id "<run>-compare"
@@ -182,6 +185,7 @@ const (
 	pageRecommend
 	pageDoctor
 	pageFetch
+	pageOffload
 )
 
 func none(Facts) string { return "" }
@@ -203,6 +207,7 @@ var steps = []step{
 	{"Recommended setup", recommendHint, none, func(Facts) (string, string) { return "", "" }, recommendBody, recommendActions},
 	{"This machine", "", none, doctorLine, doctorBody, doctorActions},
 	{"Fetch runs", "", none, fetchLine, fetchBody, fetchActions},
+	{"Offload", offloadHint, none, func(Facts) (string, string) { return "", "" }, offloadBody, offloadActions},
 }
 
 // picker reports whether a page is one of the three pickers Setup opens.
@@ -355,6 +360,7 @@ func setupActions(f Facts) []action {
 	if len(f.settingsOffered()) > 0 { // what the run asks the engine for, when the engine takes anything
 		groups[2] = append(groups[2], setupLine{"Settings", settingsValue(f), pageSettings})
 	}
+	groups[2] = append(groups[2], setupLine{"Offload", offloadValue(f), pageOffload})
 	if f.repeatRuns() > 1 {
 		groups[3] = append(groups[3], setupLine{"Repeats", repeatsValue(f), pageRepeats})
 	}

@@ -1,0 +1,127 @@
+{
+ "kind": "offload",
+ "page": {
+  "headline": "The whole model fits on the card, so nothing needs to go to RAM; this is what offloading would give.",
+  "schema": "boltbeam.offload_page.v1",
+  "sections": [
+   {
+    "lines": [
+     "27.9 GB of RAM for the experts: 30.2 GB available now (of 33.6 GB), less 2.1 GB kept free for the system and the engine. Read when this plan was made: it changes with what else runs."
+    ],
+    "rows": [
+     {
+      "label": "On the card, replies",
+      "value": "4.1 GB dense parts + 0.1 GB KV cache + a 25.1 GB cache of experts = 29.3 GB of 33.1 GB usable"
+     },
+     {
+      "label": "In RAM, replies",
+      "value": "every expert, 25.1 GB, read once to fill the card's cache"
+     },
+     {
+      "label": "On the card, prompts",
+      "value": "4.1 GB dense parts + 0.1 GB KV cache + the experts of 48 of 48 layers (25.1 GB) = 29.3 GB of 33.1 GB usable"
+     },
+     {
+      "label": "In RAM, prompts",
+      "value": "no experts: every layer's experts fit on the card"
+     },
+     {
+      "label": "Mapped from disk",
+      "value": "29.1 GB: the model's input embeddings, not counted in the RAM above: the engine maps them from disk and the system keeps the rows it reads, so under memory pressure they compete with the experts for RAM"
+     }
+    ],
+    "title": "Where the weights go"
+   },
+   {
+    "lines": [],
+    "rows": [
+     {
+      "label": "Settings",
+      "value": "every expert in RAM and all of them in a 23,981 MiB cache on the card, so there are no misses to compute or copy"
+     },
+     {
+      "label": "Flags",
+      "value": "--cpu-moe --moe-cache-mib 23981 --moe-cache-cpu-share 0.75"
+     },
+     {
+      "label": "Replies",
+      "value": "at most 335 tok/s: every expert is in the card's cache"
+     },
+     {
+      "label": "Limited by",
+      "value": "reading weights from GPU memory at 1707 GB/s"
+     }
+    ],
+    "title": "Setup for writing replies"
+   },
+   {
+    "lines": [],
+    "rows": [
+     {
+      "label": "Settings",
+      "value": "every expert on the card, chunks of 4096 tokens"
+     },
+     {
+      "label": "Flags",
+      "value": "-ub 4096 -b 4096"
+     },
+     {
+      "label": "Prompts",
+      "value": "at most 37224 tok/s reading a 4,096-token prompt; writing replies with this setup, at most 335 tok/s"
+     },
+     {
+      "label": "Limited by",
+      "value": "reading weights from GPU memory at 1707 GB/s"
+     }
+    ],
+    "title": "Setup for reading prompts"
+   },
+   {
+    "lines": [
+     "An engine that pins its host memory copies at 28.3 GB/s here, against 11.5 GB/s from normal memory (both measured on this GPU).",
+     "Reading prompts with this setup copies nothing (every expert is on the card), so pinned copies would not change it.",
+     "Writing replies with this setup copies nothing after loading (every expert is in the card's cache), so pinned copies would not change it.",
+     "These are limits, not promises: llama.cpp copies from normal memory, and an engine with pinned copies still has to keep them busy."
+    ],
+    "rows": [],
+    "title": "What pinned memory would change"
+   },
+   {
+    "lines": [],
+    "rows": [
+     {
+      "label": "RAM",
+      "value": "33.6 GB in all, 30.2 GB available now"
+     },
+     {
+      "label": "RAM reads",
+      "value": "34.8 GB/s (measured)"
+     },
+     {
+      "label": "PCIe link",
+      "value": "gen 4 x16: 31.5 GB/s on the wire"
+     },
+     {
+      "label": "Copies to the card",
+      "value": "11.5 GB/s from normal memory, 28.3 GB/s from pinned memory (measured on this GPU, 2026-11-11)"
+     }
+    ],
+    "title": "This machine"
+   },
+   {
+    "lines": [
+     "PCIe at the measured pageable host-to-device rate",
+     "routing assumed uniform: no measured routing profile",
+     "attention on llama.cpp's fp16 flash-attention path: its instruction sites were not read for a setup",
+     "the compute buffer a larger chunk needs is not in the fit"
+    ],
+    "rows": [],
+    "title": "Notes"
+   }
+  ],
+  "status": "recommended"
+ },
+ "schema": "boltbeam.tui.v1",
+ "status": "recommended",
+ "target_id": "nvidia_sm120"
+}

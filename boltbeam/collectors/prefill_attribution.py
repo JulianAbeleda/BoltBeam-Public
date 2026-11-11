@@ -157,6 +157,29 @@ def _peak(t:dict[str, Any], peaks:dict[str, float]) -> float | None:
   return None
 
 
+def narrow_weights(ordered:list[dict[str, Any]], by_t:dict[str, dict[str, Any]], widths:list[int], paired:set[int]) -> set[str]:
+  """A window's trailing narrow chunks (pairing.narrow_from: llama-server's last few prompt tokens, run apart for a
+  checkpoint) read their layers' weights through matrix-vector kernels, which hold no matrix instruction and so are no
+  weight launch by path: those that run before the window's last block kernel are those layers' weight launches (one that
+  runs only after it is the head or a pruned last layer, as in every other window). Empty without a narrow tail."""
+  if pairing.narrow_from(widths) is None:
+    return set()
+  last = max((i for i, l in enumerate(ordered) if kind_of({"kernel": l["key"]}) in pairing.BLOCKS), default=-1)
+  inside = {template(l["key"]) for l in ordered[:last]}
+  return {t for t, x in by_t.items() if t in inside and any(w in x["name"] for w in GEMV_WORDS)
+          and not any(id(l) in paired for l in x["launches"])}
+
+
+def _skipped(it:dict[str, Any]) -> int:
+  """The launches a row's need asks for and the capture lacks: at its one launch ratio, its need less its launches; a row
+  whose launches serve its calls at several ratios (pairing's mixed, chunk runs walked apart), its calls unserved."""
+  ratios = {(k, r) for _, _, k, r in it["launches"]}
+  if len(ratios) == 1:
+    (k, r), = ratios
+    return max(it["need"] * r // k - len(it["launches"]), 0)
+  return max(round(it["need"] - sum(k / r for _, _, k, r in it["launches"])), 0)
+
+
 def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]], *, chunk_widths:list[int], outputs:int = 1,
                       layers:int, kernel_paths:dict[str, dict[str, int]], peaks:dict[str, float],
                       bandwidth_gbs:float | None, profile:dict[str, Any] | None = None, length:int | None = None,
@@ -247,33 +270,37 @@ def attribute_prefill(launches:list[dict[str, Any]], roles:list[dict[str, Any]],
   kinds = pairing.layer_kinds(profile or {}) or ({"attention": layers} if layers else {})
   weight = {t["template"] for t in templates if t["path"]["status"] in ("one", "mixed", "not_found")
             and not t.get("attention") and not t.get("recurrent") and not any(id(l) in paired for l in t["launches"])}
+  weight |= narrow_weights(ordered, by_t, chunk_widths, paired)
   got = pairing.pair(shared, roles, kinds=kinds, widths=chunk_widths, outputs=outputs, candidate=weight.__contains__,
                      bandwidth_gbs=upper(bandwidth_gbs, unc.get("bandwidth")), prune=prune, order=pairing.layer_order(profile or {}),
                      peak_of=lambda t: upper(_peak(by_t[t], peaks), _u(by_t[t], unc)) if t in by_t else None)
   per_item: dict[tuple, dict[str, Any]] = {}  # one row per role set, over every layer kind it ran in
   for p in got["placed"]:
     key = (tuple(sorted((x["role"], str(x["quant"])) for x in p["item"]["parts"])), p["item"]["kind"] == pairing.PRUNED)
-    it = per_item.setdefault(key, {"item": p["item"], "launches": [], "templates": set(), "need": 0, "kinds": set()})
+    it = per_item.setdefault(key, {"item": p["item"], "launches": [], "templates": set(), "need": 0, "kinds": set(), "own": {}})
     it["launches"] += [(l, m / p["split"], p["fused"], p["split"]) for l, m, _, _ in p["launches"]]
+    it["own"].update({id(l): p["item"] for l, *_ in p["launches"]})  # each launch's own row (a role at two shapes: PLE's key, value)
     it["templates"].add(p["group"]["template"])
-    if p["item"]["kind"] not in it["kinds"]:
-      it["kinds"].add(p["item"]["kind"])
+    if id(p["item"]) not in it["kinds"]:  # each item's need once, however many groups it took
+      it["kinds"].add(id(p["item"]))
       it["need"] += p["item"]["need"]
   for it in per_item.values():
     item = it["item"]
     parts = item["parts"]
+    own = lambda l: it["own"][id(l)]  # noqa: E731
     for l, _, _, _ in it["launches"]:
       paired.add(id(l))
-      shapes[id(l)] = [(r, r["count"] / item["count"]) for r in parts]
+      shapes[id(l)] = [(r, r["count"] / own(l)["count"]) for r in own(l)["parts"]]
     calls = len(it["launches"])
-    flops = sum(2.0 * m * item["nk"] * k for _, m, k, _ in it["launches"])
-    nbytes = sum(sum(gemm(m * r.get("routed", 1), r["n"], r["k"], r["weight_bytes"]) * r["count"] for r in parts) / item["count"] * k for _, m, k, _ in it["launches"])
+    flops = sum(2.0 * m * own(l)["nk"] * k for l, m, k, _ in it["launches"])
+    nbytes = sum(sum(gemm(m * r.get("routed", 1), r["n"], r["k"], r["weight_bytes"]) * r["count"] for r in own(l)["parts"]) / own(l)["count"] * k
+                 for l, m, k, _ in it["launches"])
     us = sum(l["wall_us"] for l, _, _, _ in it["launches"])
     t = {"template": " + ".join(sorted(it["templates"])), "path": _merge_paths([by_t[x]["path"] for x in sorted(it["templates"])])}
     _, _, k0, r0 = it["launches"][0]
     pruned = item["kind"] == pairing.PRUNED
     rows.append(_row(f"{item['role']} {item['quant']}{PRUNED_NAME if pruned else ''}", "role", t, calls, us, flops, nbytes, peaks, bandwidth_gbs, item["quant"],
-                     roles=[(r["role"], r["quant"]) for r in parts], skipped=max(it["need"] * r0 // k0 - calls, 0),
+                     roles=[(r["role"], r["quant"]) for r in parts], skipped=_skipped(it),
                      tokens_per_call=sorted(m for _, m, _, _ in it["launches"])[calls // 2],
                      **({"fused": k0} if k0 > 1 else {}), **({"split": r0} if r0 > 1 else {}),
                      **({"pruned_layer": prune.get("words")} if pruned and prune else {}),

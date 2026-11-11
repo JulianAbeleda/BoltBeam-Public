@@ -43,7 +43,7 @@ from boltbeam.collectors import llama_mmq
 from boltbeam.collectors.instruction_path import template
 from boltbeam.core.policy import value
 from boltbeam.profile.gguf import GGML_TYPE_NAMES
-from boltbeam.vocab import FFN_BRANCH, LAYER_CLASSES, OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE, STAGES
+from boltbeam.vocab import FFN_BRANCH, LAYER_CLASSES, OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE, STAGES, UNORDERED_STAGES
 from boltbeam.collectors.kernel_kind import UNATTRIBUTED, kind_of
 
 # the pairing's limits are stated choices in data/policy.json (core.policy.value), read once here
@@ -77,6 +77,14 @@ SEQUENCE_RULE = ("; the layers run in the profile's recorded sequence: a layer w
                  "runs in the gap after the block layer before it, as a kind of that layer's own (recurrent/moe), its rows "
                  "after that layer's")  # added to RULE when the walk followed a sequence (pair)
 PRUNED = "pruned"  # the side and kind of a pruned last layer's launches (`prune`)
+STAGED_RULE = ("; the one walk ran out of nodes, so the layer kinds the profile's tensors set apart were walked one at a "
+               "time in the unit's order, each keeping its best pairing before the next (they meet only at the gap they share)")
+MAX_MIXED = 256  # ways to give a row's templates their own launch ratios the anchored walk tries (mixed)
+NARROW = 8  # llama.cpp's MMVQ_MAX_BATCH_SIZE: a chunk of at most this many tokens runs its projections as matrix-vector kernels
+SEGMENT_RULE = ("; the one walk could not settle a window whose chunks launch their layers in more than one way (a "
+                "chunk of another width runs other kernels): each run of alike chunks was walked apart, in order, one layer "
+                "kind at a time, on the launches the runs before it left, the last run holding the head and the pruned layer")
+UNORDERED = frozenset(UNORDERED_STAGES)
 _RANK = {s: i for i, s in enumerate(STAGES)}
 
 
@@ -422,6 +430,8 @@ def _fits(item:dict[str, Any], g:dict[str, Any], k:int, r:int, bandwidth_gbs:flo
   if not projection_candidate(g.get("template", "")) and not all(
       launch.get("logical_parts") for launch, *_ in g.get("launches", [])):
     return False
+  if m_over_one_vector(g, item):
+    return False
   for launch, m, _, _ in g.get("launches", []):
     if not any(llama_mmq.serves(launch["key"], r) and llama_mmq.rows_fit(launch["key"], r) for r in item.get("parts", [item])):
       return False  # an expert stack's launches are its grid.y = k ones (serves); a matrix-vector grid.x its rows (rows_fit)
@@ -443,9 +453,18 @@ def _fits(item:dict[str, Any], g:dict[str, Any], k:int, r:int, bandwidth_gbs:flo
   return True
 
 
+def m_over_one_vector(g:dict[str, Any], item:dict[str, Any]) -> bool:
+  """A library's matrix-vector kernel (cuBLAS's gemv, by name) multiplies by one vector: launched for a chunk of tokens
+  (M > 1), its one vector is the weight, so it serves no row of more than one output row (a shared expert's gate vector
+  times the chunk, not a mixer's 4-row inject). An engine's own batched matrix-vector kernel (llama.cpp's mul_mat_vec,
+  several columns a launch) is not one."""
+  return "internal::gemv" in g.get("template", "") and g.get("m", 1) > 1 and all((r.get("n") or 0) > 1 for r in item.get("parts", [item]))
+
+
 def assign(groups:list[dict[str, Any]], rows:list[dict[str, Any]], *, units:int, outputs:int | None = None,
            kinds:dict[str, int] | None = None, bandwidth_gbs:float | None = None,
-           peak_of:Callable[[str], float | None] = lambda t: None, prune:dict[str, Any] | None = None) -> dict[str, Any]:
+           peak_of:Callable[[str], float | None] = lambda t: None, prune:dict[str, Any] | None = None,
+           anchored:bool = False, shared:frozenset = frozenset()) -> dict[str, Any]:
   """Rows to slot groups (_groups or flat_groups). prune: {stages, kind, units} (pair's): the pruned layer's rows. rows: {role, quant, count (per unit), weight_bytes (per call),
   nk (n x k; None at M = 1), role_class or fine}. outputs: the calls that ended in an output (the head's launches per
   window; the units when None). Returns {"placed": [{item, group, fused, split}], "unplaced": [{item, reason}],
@@ -459,17 +478,19 @@ def assign(groups:list[dict[str, Any]], rows:list[dict[str, Any]], *, units:int,
     items = _items(rows, kinds, units, outputs if outputs is not None else units, split, flat, prune, carry)
     if not flat:
       items = _packed(items, groups, kinds)
-    got = _search(items, groups, bandwidth_gbs, peak_of, best["nodes"])
+    got = _search(items, groups, bandwidth_gbs, peak_of, best["nodes"], anchored, shared)
     best["nodes"] = got["nodes"]
     if got["score"] > best["score"]:
       best.update({k: v for k, v in got.items() if k != "nodes"})
+    if got.get("staged") and not got.get("budget_exhausted"):
+      break  # the anchored walk spent the budget the one walk ran out of, and every layer kind kept its pairing
     if got["nodes"] > MAX_NODES or got.get("budget_exhausted"):
       best["budget_exhausted"] = True
       best["ambiguous"] = got["ambiguous"]  # the walk ran out of nodes: what it found is said as unsure
       break
     if not got["unplaced"]:
       break
-  best["words"] = FLAT_RULE if flat else RULE
+  best["words"] = (FLAT_RULE if flat else RULE) + (STAGED_RULE if best.get("staged") else "")
   return best
 
 
@@ -549,8 +570,9 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
         cut = r["last_layer"] if r.get("last_layer") is not None else int(per_layer) if per_layer == int(per_layer) else 0
         if prune and k == prune["kind"] and stg and stg <= set(prune["stages"]) and cut:
           need -= cut * units  # the unit's last layer runs this row at output width: its own item
-          items.append({"row": r, "parts": [r], "need": cut * prune["units"], "kind": PRUNED, "stages": stg,
-                        **_facts(r), "slack": 0, "sides": {PRUNED}})
+          if prune["units"]:
+            items.append({"row": r, "parts": [r], "need": cut * prune["units"], "kind": PRUNED, "stages": stg,
+                          **_facts(r), "slack": 0, "sides": {PRUNED}})
         if need:  # a format only the pruned layer holds has nothing left
           items.append({"row": r, "parts": [r], "need": need, "kind": k, "stages": stg, **_facts(r), "per_layer": per_layer, "own": own,
                         "role_per_layer": per_role[(r["role"], k)],
@@ -560,6 +582,7 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
   for it in sorted(items, key=lambda i: (str(i["kind"]), str(i["quant"]), -(i.get("nk") or 0))):
     last = out[-1] if out else None
     if (last and it["kind"] and last["kind"] == it["kind"] and last["quant"] == it["quant"] and it["sides"] == last["sides"] == {"input"}
+        and _join_stages(last, it)
         and it.get("nk") and last.get("nk") and last["nk"] < it["nk"] * value("same_row_work_ratio")
         and kinds_allowed(last["row"], kinds) == kinds_allowed(it["row"], kinds)):
       _join(last, it)
@@ -574,6 +597,12 @@ def _items(rows, kinds, units, outputs, split, flat, prune=None, carry=None) -> 
     return (rank if at < 0 else 0, at, rank, OUTPUT_ORDER.index(stage) if stage else 0, -(i["weight_bytes"] * i["need"]), i["role"])
   out.sort(key=order)
   return out
+
+
+def _join_stages(last:dict[str, Any], it:dict[str, Any]) -> bool:
+  """Whether two input rows' stages let them be one row: a per-layer embedding's key and value (ple) read the layer's own
+  token embedding, not its input, so they join no row of another stage (the mixer's down beside them, also BF16)."""
+  return "ple" not in it["stages"] | last["stages"] or it["stages"] == last["stages"]
 
 
 def _join(last:dict[str, Any], it:dict[str, Any]) -> None:
@@ -738,7 +767,7 @@ def _bind(items:list[dict[str, Any]], groups:list[dict[str, Any]]) -> tuple[dict
 
 
 def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_gbs:float | None,
-            peak_of:Callable[[str], float | None], nodes:int) -> dict[str, Any]:
+            peak_of:Callable[[str], float | None], nodes:int, anchored:bool = False, shared:frozenset = frozenset()) -> dict[str, Any]:
   """Depth first over the items (_items' order): each takes the launches of slot groups of its sides and templates,
   in the output side's order, within the checks, preferring a template already serving its format and the slowest
   slots; then goes unplaced. A launch is taken once (a gap launch is a slot on both sides). In a gap, a layer's output
@@ -780,10 +809,11 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       best.update(score=score, placed=[{**p, "item": swap[id(p["item"])]} if id(p["item"]) in swap else p for p in placed if id(p["item"]) not in out],
                   unplaced=list(unplaced) + gone, ambiguous={"reason": "; ".join(tie), "kind": TIE} if tie else None)
 
-  def _avail(g, side):
-    """The group's launches not yet taken that the gap's order allows this side to take."""
+  def _avail(g, side, free=False):
+    """The group's launches not yet taken that the gap's order allows this side to take. free: a row of a stage the gap's
+    order does not bind (vocab.UNORDERED_STAGES) takes any launch not yet taken."""
     state["launch_visits"] += len(g["launches"])
-    if state["launch_visits"] > MAX_LAUNCH_VISITS:
+    if state["launch_visits"] - state.get("visits_from", 0) > MAX_LAUNCH_VISITS:
       raise _TooMany(f"pairing search exceeded {MAX_LAUNCH_VISITS:,} launch visits (MAX_LAUNCH_VISITS, policy "
                      "pairing_max_launch_visits); attribution unresolved")
     out = []
@@ -791,7 +821,7 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
       l, _, gap, pos = x
       if id(l) in taken:
         continue
-      if gap is not None and pos is not None:
+      if gap is not None and pos is not None and not free:
         gi, glen, prev_kind, next_kind, unit_end = gap
         if side == "output" and (pos >= in_min.get(gi, 1 << 30) or pos >= glen - min_in.get(next_kind, 0)):
           continue
@@ -827,11 +857,15 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
         continue
       if not (g["side"] in item["sides"] and (item["kind"] is None or g["kind"] == item["kind"])):
         continue
-      got = _avail(g, g["side"])
+      got = _avail(g, g["side"], bool(item["stages"]) and item["stages"] <= UNORDERED)
       if got:
         cand.append((g, got))
     # a group whose grids read the row's output rows (_grid_read) is evidence for it; one whose kernel states no rows is not
-    cand.sort(key=lambda c: ((fmt.get(key(c[0])) or stated_format(c[0]["template"])) != item["quant"], c[0]["kind"] == "tail", not _grid_read(item, c[0]),
+    # the anchored walk (staged) walks one layer at a time: there, after a template whose name states the row's format, a
+    # layer's output slots go in launch order, as the data flow runs, so a row is not drawn past the layer's own launches
+    # to the next layer's by a template another row bound
+    lead = lambda c: (stated_format(c[0]["template"]) is None, c[0]["slot"] if c[0]["side"] == "output" else 0) if state.get("staged") else ()  # noqa: E731
+    cand.sort(key=lambda c: lead(c) + ((fmt.get(key(c[0])) or stated_format(c[0]["template"])) != item["quant"], c[0]["kind"] == "tail", not _grid_read(item, c[0]),
                              c[0]["slot"] if c[0]["side"] == "output" else -c[0]["slot"] if c[0]["side"] == "input" else 0, -c[0]["median_us"]))
     # a role held in several formats (a mixed quant per layer): its formats share the role's slots, as many per layer
     # as its launches per layer, and a slot of the role launches its format's template for this row in every layer (a
@@ -871,10 +905,44 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
         at = held | {(x["pick"][0]["side"], x["pick"][0]["slot"]) for x in subset if steady(x["pick"][0])}
         if fam and (len(at) > round(item["role_per_layer"]) or any((g["side"], g["slot"]) in at and all(g is not x["pick"][0] for x in subset) for g in every)): continue
         out.append((k, r, {key(x["pick"][0]) for x in subset}, [x["pick"] for x in subset]))
+    if not out and split_in is None and item.get("per_layer", 1) > 1 and state.get("staged"):
+      out = mixed(item, cand, held, fam, every, steady)
     # at any launch ratio, the options whose launches all read the row's output rows in their grids come first: a fused
     # launch of the row's rows serving two calls is evidence, a second launch of a kernel stating no rows only room
-    out.sort(key=lambda o: not all(_grid_read(item, g) for g, _ in o[3]))
+    out.sort(key=lambda o: not all(_grid_read(item, g) for g, *_ in o[3]))
     return out
+
+  def mixed(item, cand, held, fam, every, steady):
+    """A row of several calls per layer whose launches serve them at a ratio of each template's own: an engine fuses a
+    layer's gate and up into one launch at some chunk widths and launches them apart at others (llama.cpp's fused MMQ
+    variant at 2,048 tokens, two plain launches at 1,808), so no one ratio fits the row's launches. Each template keeps
+    one ratio (bound by the counts where they bind it), at least two ratios are used, and the calls sum to the row's
+    need as at one ratio. Tried only in the anchored walk (staged), when no one ratio places the row, over at most
+    MAX_MIXED ways to give the templates their ratios."""
+    key = lambda g: (g["kind"] if g["kind"] != "tail" else None, g["template"])  # noqa: E731
+    per_t: dict[tuple, list] = collections.defaultdict(list)
+    for g, ls in cand:
+      per_t[key(g)].append((g, ls))
+    ts = sorted(per_t, key=str)
+    allowed = [[k for k in (([ratios[t][0]] if ratios[t][1] == 1 else []) if t in ratios else range(1, MAX_FUSED + 1))
+                if all(fits(item, g, k, 1) and ordered(item, g, k, 1) for g, _ in per_t[t])] for t in ts]
+    out = []
+    size = 1
+    for a in allowed:
+      size *= len(a)
+    for combo in itertools.product(*allowed) if 1 < len(ts) and all(allowed) and size <= MAX_MIXED else ():
+      if len(set(combo)) < 2:
+        continue
+      opts = [{"n": len(ls) * k, "pick": (g, ls, k)} for t, k in zip(ts, combo) for g, ls in per_t[t]]
+      opts.sort(key=lambda o: [x for x, _ in cand].index(o["pick"][0]))  # the walk's preference order
+      for subset in _sums(opts, item["need"], item.get("slack", 0)):
+        at = held | {(x["pick"][0]["side"], x["pick"][0]["slot"]) for x in subset if steady(x["pick"][0])}
+        if fam and (len(at) > round(item["role_per_layer"]) or any((g["side"], g["slot"]) in at and all(g is not x["pick"][0] for x in subset) for g in every)): continue
+        if len({x["pick"][2] for x in subset}) > 1:
+          out.append((max(x["pick"][2] for x in subset), 1, {key(x["pick"][0]) for x in subset}, [x["pick"] for x in subset]))
+      if len(out) >= 8:
+        break
+    return out[:8]
 
   def swaps():
     """Rows that could exchange their slots (equal launches, each fitting the other's and its format), and a slot group no row took
@@ -893,9 +961,10 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
         if any(bound.get((p["group"]["kind"], p["group"]["template"]), stated_format(p["group"]["template"]) or q) != q
                for q, ps in ((ia["quant"], b), (ib["quant"], a)) for p in ps):
           continue  # a template the counts bound, or whose name states, one format cannot serve the other
-        identity = lambda it: sorted((r["role"], r["quant"], r.get("n"), r.get("k"), r["count"]) for r in it["parts"])
+        identity = lambda it: sorted((r["role"], r["quant"], *sorted((r.get("n") or 0, r.get("k") or 0)), r["count"]) for r in it["parts"])
         if identity(ia) == identity(ib):
-          continue  # exchanging identical logical rows changes no attribution
+          continue  # exchanging identical logical rows, or a row and its transpose (a low-rank mixer's down and up: one
+          # role, format, count and n x k), changes no attribution: the weights, operations and activations are the same
         us = lambda ps: sum(p["group"]["median_us"] * len(p["launches"]) for p in ps)  # noqa: E731
         if (ia["sides"] == {"input"} and ia.get("nk") and ib.get("nk") and {p["group"]["template"] for p in a} == {p["group"]["template"] for p in b}
             and _apart(ia["nk"], ib["nk"], _walls(x for p in a for x in p["launches"]), _walls(x for p in b for x in p["launches"]))
@@ -918,7 +987,8 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
         found.append(f"{ia['role']} {ia['quant']} and {ib['role']} {ib['quant']} could exchange their launches")
         out[id(ia)] = (ia, found[-1])
         out[id(ib)] = (ib, found[-1])
-    free = [g for g in groups if len(_avail(g, g["side"])) == g["n"]]
+    # a free group in a gap another run of chunks shares (_segmented) is no twin: that run may own its launches
+    free = [g for g in groups if len(_avail(g, g["side"])) == g["n"] and not all(id(x[0]) in shared for x in g["launches"])]
     key = lambda g: (g["kind"] if g["kind"] != "tail" else None, g["template"])  # noqa: E731
     for p in placed:
       g, q = p["group"], p["item"]["quant"]
@@ -937,13 +1007,47 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
         break
     return found, out, exchanged
 
-  def walk(i, unplaced, strict):
+  trail: list[tuple] = []  # the options the walk holds now, in item order (staged replays a layer's best)
+
+  def apply(item, stage, k, r, ts, picks):
+    saved = (dict(out_max), dict(in_min), [t for t in ts if t not in fmt])
+    for g, ls, *own in picks:  # a mixed option's pick carries its own ratio (mixed)
+      for l, _, gap, pos in ls:
+        taken.add(id(l))
+        if gap is not None and pos is not None and not (item["stages"] and item["stages"] <= UNORDERED):  # sets no order
+          if g["side"] == "output":
+            out_max[gap[0]] = max(out_max.get(gap[0], -1), pos)
+          elif g["side"] == "input":
+            in_min[gap[0]] = min(in_min.get(gap[0], 1 << 30), pos)
+      placed.append({"item": item, "group": g, "launches": ls, "fused": own[0] if own else k, "split": r})
+      if g["side"] == "output" and stage:
+        used[(g["kind"], stage, FFN_BRANCH.get(item["row"].get("role_class")))].append(g)
+    for t in ts:
+      fmt.setdefault(t, item["quant"])
+    return saved
+
+  def undo(item, stage, picks, saved):
+    for t in saved[2]:
+      del fmt[t]
+    for g, ls, *_ in picks:
+      for l, _, _, _ in ls:
+        taken.discard(id(l))
+      placed.pop()
+      if g["side"] == "output" and stage:
+        used[(g["kind"], stage, FFN_BRANCH.get(item["row"].get("role_class")))].pop()
+    out_max.clear(); out_max.update(saved[0])
+    in_min.clear(); in_min.update(saved[1])
+
+  def walk(i, unplaced, strict, end=None, reached=None):
     state["nodes"] += 1
-    if state["nodes"] > MAX_NODES:
-      raise _TooMany(f"more than {MAX_NODES} ways to walk {len(items)} rows over {len(groups)} slot groups (MAX_NODES, "
+    if state["nodes"] > state.get("limit", MAX_NODES):
+      raise _TooMany(state.get("limit_words") or f"more than {MAX_NODES} ways to walk {len(items)} rows over {len(groups)} slot groups (MAX_NODES, "
                      "policy pairing_max_nodes)")
-    if i == len(items):
-      record(unplaced)
+    if i == (len(items) if end is None else end):
+      if reached is not None:
+        reached(unplaced)
+      else:
+        record(unplaced)
       return not unplaced
     item = items[i]
     stage = _output_stage(item)
@@ -951,42 +1055,80 @@ def _search(items:list[dict[str, Any]], groups:list[dict[str, Any]], bandwidth_g
     if strict and not options:
       return False
     for k, r, ts, picks in options:
-      saved_out, saved_in = dict(out_max), dict(in_min)
-      for g, ls in picks:
-        for l, _, gap, pos in ls:
-          taken.add(id(l))
-          if gap is not None and pos is not None:
-            if g["side"] == "output":
-              out_max[gap[0]] = max(out_max.get(gap[0], -1), pos)
-            elif g["side"] == "input":
-              in_min[gap[0]] = min(in_min.get(gap[0], 1 << 30), pos)
-        placed.append({"item": item, "group": g, "launches": ls, "fused": k, "split": r})
-        if g["side"] == "output" and stage:
-          used[(g["kind"], stage, FFN_BRANCH.get(item["row"].get("role_class")))].append(g)
-      new = [t for t in ts if t not in fmt]
-      for t in ts:
-        fmt.setdefault(t, item["quant"])
-      done = walk(i + 1, unplaced, strict)
-      for t in new:
-        del fmt[t]
-      for g, ls in picks:
-        for l, _, _, _ in ls:
-          taken.discard(id(l))
-        placed.pop()
-        if g["side"] == "output" and stage:
-          used[(g["kind"], stage, FFN_BRANCH.get(item["row"].get("role_class")))].pop()
-      out_max.clear(); out_max.update(saved_out)
-      in_min.clear(); in_min.update(saved_in)
+      saved = apply(item, stage, k, r, ts, picks)
+      trail.append((item, stage, k, r, ts, picks, saved))
+      done = walk(i + 1, unplaced, strict, end, reached)
+      trail.pop()
+      undo(item, stage, picks, saved)
       if done:
         return True
-    return False if strict else walk(i + 1, unplaced + [{"item": item, "reason": _why(item, bandwidth_gbs)}], strict)
+    return False if strict else walk(i + 1, unplaced + [{"item": item, "reason": _why(item, bandwidth_gbs)}], strict, end, reached)
 
+  def staged():
+    """The anchored walk: kinds a layer's tensors set apart (signatures, sequence) walked one layer kind at a time, in the
+    unit's layer order, each with its share of the node budget; a layer's best pairing (every row placed, else the most
+    bytes) is kept before the next layer is walked. A layer meets the next only at the gap they share, whose order the
+    kept pairing fixes; what the layers cannot place is unplaced and said, and rows that could exchange their launches
+    are found over the whole pairing (record), as in the one walk."""
+    state["staged"], state["launch_visits"] = True, 0  # the anchored walk has budgets of its own
+    for x in (taken, used, out_max, in_min, placed):
+      x.clear()
+    fmt.clear(); fmt.update(bound)
+    trail.clear()
+    cuts = [0] + [i for i in range(1, len(items)) if items[i]["kind"] != items[i - 1]["kind"]] + [len(items)]
+    share = max(MAX_NODES // max(len(cuts) - 1, 1), 1)
+    unplaced_all, short = [], []
+    for lo, hi in zip(cuts, cuts[1:]):
+      keep: dict[str, Any] = {"score": None, "trail": None, "unplaced": None}
+      def reached(unplaced, keep=keep, lo=lo):
+        score = (sum(len(p["launches"]) * p["fused"] / p["split"] * p["item"]["weight_bytes"] for p in placed),
+                 sum(len(p["launches"]) * p["group"]["median_us"] for p in placed))
+        if keep["score"] is None or score > keep["score"]:
+          keep.update(score=score, trail=[t[:6] for t in trail], unplaced=list(unplaced))
+      state["visits_from"] = state["launch_visits"]
+      state["limit"], state["limit_words"] = state["nodes"] + share, (
+        f"more than {share} ways to walk the {items[lo]['kind']} layer's {hi - lo} rows (MAX_NODES over the {len(cuts) - 1} "
+        "layer kinds, policy pairing_max_nodes)")
+      try:
+        if not walk(lo, [], True, hi, reached):
+          walk(lo, [], False, hi, reached)
+      except _TooMany as exc:
+        short.append(str(exc))
+        while trail:  # the walk stopped mid-way: what it held is let go before the kept pairing is placed
+          item, stage, _, _, _, picks, saved = trail.pop()
+          undo(item, stage, picks, saved)
+      if keep["trail"] is None:  # the budget ran out before any pairing of this layer: its rows are unplaced
+        keep.update(trail=[], unplaced=[{"item": it, "reason": _why(it, bandwidth_gbs)} for it in items[lo:hi]])
+      for item, stage, k, r, ts, picks in keep["trail"]:
+        apply(item, stage, k, r, ts, picks)
+      unplaced_all += keep["unplaced"]
+    state.pop("limit"), state.pop("limit_words"), state.pop("visits_from")
+    best.update(score=(-1, 0.0), placed=[], unplaced=[], ambiguous=None)
+    state["launch_visits"] = 0
+    try:
+      record(unplaced_all)
+    except _TooMany as exc:  # the ties could not be looked for within the budget: nothing is shown as settled
+      best.update(placed=[], unplaced=[{"item": it, "reason": _why(it, bandwidth_gbs)} for it in items])
+      short.append(str(exc))
+    if short:
+      best["budget_exhausted"] = True
+      reason = "; ".join(short)
+      best["ambiguous"] = {"reason": f"{best['ambiguous']['reason']}; {reason}" if best["ambiguous"] else reason, "kind": SEARCH_LIMIT,
+                           "kinds": [SEARCH_LIMIT] + ([TIE] if best["ambiguous"] else [])}
+    best["staged"] = True
+
+  split = any("/" in str(it["kind"]) for it in items)  # a layer kind per set of tensors: the anchored walk may run
   try:
-    if not walk(0, [], True):
+    if anchored and split:
+      staged()
+    elif not walk(0, [], True):
       walk(0, [], False)
   except _TooMany as exc:
-    best["budget_exhausted"] = True
-    best["ambiguous"] = {"reason": str(exc), "kind": SEARCH_LIMIT}
+    if split and not state.get("staged"):
+      staged()
+    else:
+      best["budget_exhausted"] = True
+      best["ambiguous"] = {"reason": str(exc), "kind": SEARCH_LIMIT}
   best["nodes"] = state["nodes"]
   return best
 
@@ -1135,11 +1277,29 @@ def pair(launches:list[dict[str, Any]], rows:list[dict[str, Any]], *, kinds:dict
          outputs:int | None = None, candidate:Callable[[str], bool] = projection_candidate, bandwidth_gbs:float | None = None,
          peak_of:Callable[[str], float | None] = lambda t: None,
          flat:list[dict[str, Any]] | None = None, prune:dict[str, Any] | None = None,
-         order:list[str] | None = None) -> dict[str, Any]:
+         order:list[str] | None = None, anchored:bool = False, segments:bool = True, shared:frozenset = frozenset()) -> dict[str, Any]:
   """The whole walk: structure, then assign; the flat way when the window has no structure (said in "structure").
   widths: each unit's M (a chunk's tokens; 1 per decode token). flat: kernel groups for a window with no launches.
   prune: the engine adapter's {stages, outputs: output tokens per unit, kernels} when it prunes the last layer (_pruned).
-  order: the profile's layer sequence (layer_order), each layer's kind; the walk follows it (sequence), else the counts."""
+  order: the profile's layer sequence (layer_order), each layer's kind; the walk follows it (sequence), else the counts.
+  When that walk runs out of nodes, or reads no layers, in a window whose chunks launch their layers in more than one
+  way, the chunks are walked apart (_segmented). anchored: the anchored walk (_search's staged) from the start."""
+  if segments and flat is None and _apart_first(launches, rows, kinds=kinds, widths=widths, candidate=candidate, order=order):
+    if apart := _segmented(launches, rows, kinds=kinds, widths=widths, outputs=outputs, candidate=candidate,
+                           bandwidth_gbs=bandwidth_gbs, peak_of=peak_of, prune=prune, order=order):
+      return apart
+  got = _pair(launches, rows, kinds=kinds, widths=widths, outputs=outputs, candidate=candidate, bandwidth_gbs=bandwidth_gbs,
+              peak_of=peak_of, flat=flat, prune=prune, order=order, anchored=anchored, shared=shared)
+  if segments and flat is None and (SEARCH_LIMIT in ambiguity_kinds(got.get("ambiguous")) or got["structure"]["flat"]):
+    apart = _segmented(launches, rows, kinds=kinds, widths=widths, outputs=outputs, candidate=candidate,
+                       bandwidth_gbs=bandwidth_gbs, peak_of=peak_of, prune=prune, order=order)
+    held = lambda g: sum(len(p["launches"]) for p in g["placed"])  # noqa: E731
+    if apart and held(apart) >= held(got):  # never a pairing that holds fewer launches than the one walk's
+      return apart
+  return got
+
+
+def _pair(launches, rows, *, kinds, widths, outputs, candidate, bandwidth_gbs, peak_of, flat, prune, order, anchored, shared=frozenset()) -> dict[str, Any]:
   units = len(widths)
   try:
     if flat is not None:
@@ -1152,8 +1312,13 @@ def pair(launches:list[dict[str, Any]], rows:list[dict[str, Any]], *, kinds:dict
       order, kinds, rows = split
       st = structure(launches, kinds=kinds, units=units, candidate=candidate, order=order)
     cut, small = _pruned(st, prune) if prune else (None, [])
+    if prune and cut is None and prune.get("outputs") and not any(prune["outputs"]):
+      # no unit ends in an output (a window's wide chunks before its narrow ones, _segmented): the last layer runs the
+      # pruned stages on no token, so its rows of those stages have no launch at all
+      cut = {"stages": tuple(prune["stages"]), "kind": st["layers"][len(st["layers"]) // units - 1]["kind"], "units": 0}
     groups, words = _groups(st, widths) + small, {k: dict(v) for k, v in st["sides"].items()}
-    got = assign(groups, rows, units=units, outputs=outputs, kinds=kinds, bandwidth_gbs=bandwidth_gbs, peak_of=peak_of, prune=cut)
+    got = assign(groups, rows, units=units, outputs=outputs, kinds=kinds, bandwidth_gbs=bandwidth_gbs, peak_of=peak_of, prune=cut,
+                 anchored=anchored, shared=shared)
     if walked:
       got["words"] += SEQUENCE_RULE
     got["structure"] = {"layers": len(st["layers"]), "units": units, "sides": words, "flat": None,
@@ -1168,6 +1333,103 @@ def pair(launches:list[dict[str, Any]], rows:list[dict[str, Any]], *, kinds:dict
     got = assign(groups, rows, units=units, outputs=outputs, kinds={}, bandwidth_gbs=bandwidth_gbs, peak_of=peak_of)
     got["structure"] = {"layers": 0, "units": units, "sides": {}, "flat": str(exc)}
   return got
+
+
+def narrow_from(widths:list[int]) -> int | None:
+  """The first unit of a window's trailing narrow chunks (NARROW tokens or fewer) after wide ones, or None: a window of
+  one width class, or narrow chunks anywhere but at its end, has no narrow tail."""
+  cls = [w <= NARROW for w in widths]
+  if not any(cls) or all(cls):
+    return None
+  at = cls.index(True)
+  return at if all(cls[at:]) else None
+
+
+def _apart_first(launches, rows, *, kinds, widths, candidate, order) -> bool:
+  """Whether the window goes straight to the chunk runs walked apart (_segmented), not after the one walk: its chunks
+  launch their layers in more than one way and the profile's per-layer tensors set its layers apart (signatures), so
+  slot j is one role neither across chunks nor across layers, and the one walk only spends its budget (a 10,000-token
+  Flash-Next prefill: 50,000 nodes, about 45 s). Every other window walks as before."""
+  try:
+    k, o, r = kinds, order, rows
+    if order:
+      o, k, r = sequence(order, rows, kinds)
+    st = structure(launches, kinds=k, units=len(widths), candidate=candidate, order=o)
+  except NoStructure:
+    return False
+  return len(_segments(st, widths)) > 1 and signatures(st, r, k) is not None
+
+
+def _segments(st:dict[str, Any], widths:list[int]) -> list[tuple[int, int]]:
+  """The window's units in runs that launch their layers alike: one narrowness (NARROW) and, layer by layer within the
+  unit, as many launches inside each block and in each gap after it (the unit's own last gap aside). A run is [first,
+  end) units."""
+  units = len(widths)
+  per = len(st["layers"]) // max(units, 1)
+  sig = [(widths[u] <= NARROW, tuple((l["inside"], len(l["output"]) if i + 1 < per else None)
+                                      for i, l in enumerate(st["layers"][u * per:(u + 1) * per]))) for u in range(units)]
+  runs: list[tuple[int, int]] = []
+  for u in range(units):
+    if runs and sig[runs[-1][0]] == sig[u]:
+      runs[-1] = (runs[-1][0], u + 1)
+    else:
+      runs.append((u, u + 1))
+  return runs
+
+
+def _segmented(launches:list[dict[str, Any]], rows:list[dict[str, Any]], *, kinds:dict[str, int], widths:list[int],
+               outputs:int | None, candidate:Callable[[str], bool], bandwidth_gbs:float | None,
+               peak_of:Callable[[str], float | None], prune:dict[str, Any] | None, order:list[str] | None) -> dict[str, Any] | None:
+  """A window whose chunks launch their layers in more than one way, walked one run of alike chunks at a time
+  (_segments): a chunk of another width may run a layer's kernels otherwise (llama.cpp fuses a shared expert's gate and
+  up at 2,048 tokens and not at 1,808; a narrow chunk runs matrix-vector kernels and one expert launch for gate and up),
+  so the j-th launch of a layer is not one role across them. Each run is walked on its own launches, anchored (one layer
+  kind at a time, _search's staged) and with every check; the gap before a run's first block holds the run before's
+  last output launches and its own first input launches, and the earlier run takes its own first. Only the last run ends
+  in the outputs (the head, a pruned last layer); before it the last layer runs the pruned stages on no token. What a run
+  cannot place is unplaced and said. None (the one walk stands) when the window reads no layers, its chunks launch alike,
+  or a run before the last ends in an output."""
+  try:
+    k, o = kinds, order
+    if order:
+      o, k, _ = sequence(order, rows, kinds)
+    st = structure(launches, kinds=k, units=len(widths), candidate=candidate, order=o)
+  except NoStructure:
+    return None
+  runs = _segments(st, widths)
+  outs = list((prune or {}).get("outputs") or [])
+  if len(runs) < 2 or any(outs[:runs[-1][0]]):
+    return None
+  per, seq = len(st["layers"]) // len(widths), st["seq"]
+  common = dict(kinds=kinds, candidate=candidate, bandwidth_gbs=bandwidth_gbs, peak_of=peak_of, order=order, anchored=True, segments=False)
+  taken: set[int] = set()
+  begin, walks = 0, []
+  # the gaps two runs share: from the last block of one run's last layer to the next run's first block
+  gaps = [(st["layers"][b * per - 1]["last"] + 1, st["layers"][b * per]["first"]) for _, b in runs[:-1]]
+  for i, (a, b) in enumerate(runs):
+    last = i + 1 == len(runs)
+    end = len(seq) if last else st["layers"][b * per]["first"]
+    got = pair([l for l in seq[begin:end] if id(l) not in taken], rows if last else [r for r in rows if "head" not in stages(r)],
+               widths=widths[a:b], outputs=outputs if last else 0, prune={**prune, "outputs": outs[a:b]} if prune else None,
+               shared=frozenset(id(l) for lo, hi in gaps for l in seq[lo:hi]), **common)
+    taken |= {id(l) for p in got["placed"] for l, *_ in p["launches"]}
+    begin = st["layers"][b * per - 1]["last"] + 1
+    if i:  # a run's layers are kinds of their own: a row's need is counted per kind
+      for p in got["placed"] + got["unplaced"]:
+        if p["item"]["kind"] not in (None, PRUNED) and not str(p["item"]["kind"]).endswith("]"):
+          p["item"]["kind"] = f"{p['item']['kind']} [chunks {a + 1}-{b}]"
+    walks.append((a, b, got))
+  why = [g["ambiguous"] for _, _, g in walks if g.get("ambiguous")]
+  found = {x for g in why for x in ambiguity_kinds(g)}
+  return {"placed": [p for _, _, g in walks for p in g["placed"]], "unplaced": [u for _, _, g in walks for u in g["unplaced"]],
+          "nodes": sum(g["nodes"] for _, _, g in walks),
+          "ambiguous": {"reason": "; ".join(g["reason"] for g in why), "kind": [x for x in KINDS if x in found][0],
+                        "kinds": [x for x in KINDS if x in found]} if why else None,
+          **({"budget_exhausted": True} if any(g.get("budget_exhausted") for _, _, g in walks) else {}),
+          "words": walks[0][2]["words"] + SEGMENT_RULE,
+          "structure": {"layers": sum(g["structure"]["layers"] for _, _, g in walks), "units": len(widths),
+                        "sides": walks[0][2]["structure"]["sides"], "flat": next((g["structure"]["flat"] for _, _, g in walks if g["structure"]["flat"]), None),
+                        "segments": [{"chunks": widths[a:b], **g["structure"]} for a, b, g in walks]}}
 
 
 def _pruned(st:dict[str, Any], prune:dict[str, Any]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:

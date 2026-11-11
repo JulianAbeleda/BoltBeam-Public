@@ -98,3 +98,18 @@ func TestFetchArgv(t *testing.T) {
 		t.Fatalf("all: %s", got)
 	}
 }
+
+func TestOffloadRecordedDecodes(t *testing.T) {
+	var o Offload
+	recorded(t, "offload.json", &o)
+	if o.Status != "recommended" || o.Page.Headline == "" || len(o.Page.Sections) != 6 ||
+		o.Page.Sections[0].Title != "Where the weights go" || len(o.Page.Sections[0].Rows) != 5 ||
+		o.Page.Sections[0].Rows[0].Label != "On the card, replies" || len(o.Page.Sections[0].Lines) != 1 {
+		t.Fatalf("offload decoded wrong: %+v", o)
+	}
+	var r Offload
+	recorded(t, "offload-refused.json", &r)
+	if r.Status != "refused" || !strings.HasPrefix(r.Page.Headline, "No offload plan here") || len(r.Page.Sections) != 0 {
+		t.Fatalf("refused offload decoded wrong: %+v", r)
+	}
+}

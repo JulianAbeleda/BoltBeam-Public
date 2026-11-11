@@ -93,7 +93,7 @@ func TestSpeedUpConfirmStartsOnlyOnYes(t *testing.T) {
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls.txt")
 	fake := filepath.Join(dir, "python")
-	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho \"$@\" >> "+calls+"\n"), 0o755); err != nil {
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\ncase \"$*\" in *\" offload \"*) ;; *) echo \"$@\" >> "+calls+" ;; esac\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	store := jobs.Store{Dir: filepath.Join(dir, "state")}
@@ -219,7 +219,7 @@ func TestSpeedUpEndsWithWordsAndWhatNext(t *testing.T) {
 	setProfile(colorprofile.NoTTY)
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "python")
-	script := "#!/bin/sh\necho \"$@\" >> " + filepath.Join(dir, "calls.txt") + "\ncat " + recordedPath("speedup-kept.json") + "\n"
+	script := "#!/bin/sh\ncase \"$*\" in *\" offload \"*) ;; *) echo \"$@\" >> " + filepath.Join(dir, "calls.txt") + " ;; esac\ncat " + recordedPath("speedup-kept.json") + "\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestSpeedUpChecksACopy(t *testing.T) {
 func TestSpeedUpCheckCallsTheSeam(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "python")
-	script := "#!/bin/sh\necho \"$@\" > " + filepath.Join(dir, "calls.txt") + "\necho '{\"kind\": \"speedup_verify\", \"ok\": true, \"head\": \"fine\", \"lines\": []}'\n"
+	script := "#!/bin/sh\ncase \"$*\" in *\" offload \"*) ;; *) echo \"$@\" > " + filepath.Join(dir, "calls.txt") + " ;; esac\necho '{\"kind\": \"speedup_verify\", \"ok\": true, \"head\": \"fine\", \"lines\": []}'\n"
 	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

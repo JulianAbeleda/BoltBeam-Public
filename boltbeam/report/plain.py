@@ -302,6 +302,16 @@ def _speed_core(res:dict[str, Any], kind:str) -> dict[str, Any]:
   tok, ms = f"{m['tok_s']:.1f}", f"{m['ms']:.1f}"
   if kind in ("prefill", "chat_turn"):
     fast = t["fast"].format(tok_s=tok, length=length, ms=ms, depth=f"{w.get('depth') or 0:,}")
+    if kind in ("prefill", "chat_turn") and (label := prompt_label(loss, length)):
+      fast = f"{fast} {label}"
+    if kind == "prefill" and (out := outside_timer(loss, length)):
+      ot = words()["outside_timer"]
+      fast = f"{fast} " + ot["line"].format(outside=f"{out['outside_ms']:,.0f}", wall=f"{out['wall_ms']:.1f}", wall_tok_s=f"{out['wall_tok_s']:.1f}",
+                                            timed=ot["timed"].get(str(loss.get("provider") or ""), ot["timed"]["client"]))
+      if _cache_ram_on(_prefill_engine(loss, length)):
+        fast = f"{fast} " + words()["cache_ram"]["report"]
+      nums.update(wall_ms=out["wall_ms"], wall_tok_s=out["wall_tok_s"], outside_ms=out["outside_ms"],
+                  prompt_kind=_prefill_engine(loss, length).get("prompt_kind"))
     figs = ([_fig(tok, u("tok_s"), fw["prompt"].format(length=length), "speed"), _fig(ms, u("ms"), fw["prompt_ms"], "ms")]
             if kind == "prefill" else
             [_fig(ms, u("ms"), fw["turn_ms"].format(length=length), "ms"), _fig(tok, u("tok_s"), fw["turn_tok_s"], "speed")])
@@ -332,6 +342,38 @@ def _speed_core(res:dict[str, Any], kind:str) -> dict[str, Any]:
                    else fw["limit"].format(limit=_f(limit_tok, "{:.1f}")), "pct"))
   return {"fast": fast, "close": t["close"].format(pct=f"{pct:.0f}", limit=_f(limit_tok, "{:.1f}"), limit_ms=f"{limit_ms:.1f}"),
           "numbers": nums, "figures": figs}
+
+
+def prompt_label(loss:dict[str, Any], length:Any) -> str | None:
+  """The plain line beside a prefill speed that was read on random token ids from an MoE model (llama-bench's own prompt):
+  such a speed is about half the model's on real text, so it is never shown as the model's prefill speed without this."""
+  if (loss.get("session") or {}).get("prompt_kind") == "random_tokens_moe":  # a chat turn timed by llama-bench -d (workflow/session)
+    return words()["prompt_kind"]["random_tokens_moe"]
+  eng = _prefill_engine(loss, length)
+  return words()["prompt_kind"]["random_tokens_moe"] if eng.get("moe") and eng.get("prompt_kind") == "random_tokens" else None
+
+
+def _cache_ram_on(eng:dict[str, Any]) -> bool:
+  """A llama-server prefill that kept its prompt cache in host RAM (the default: no --cache-ram 0 on its command)."""
+  cmd = [str(a) for a in eng.get("command") or []]
+  off = any(a in ("--cache-ram", "-cram") and cmd[i + 1:i + 2] == ["0"] for i, a in enumerate(cmd))
+  return bool(eng.get("server")) and not off
+
+
+def _prefill_engine(loss:dict[str, Any], length:Any) -> dict[str, Any]:
+  """The engine record of this prompt length's prefill; {} when the run has no row for that length (never another
+  length's record)."""
+  return (((loss.get("prefill") or {}).get("lengths") or {}).get(str(length)) or {}).get("engine") or {}
+
+
+def outside_timer(loss:dict[str, Any], length:Any) -> dict[str, float] | None:
+  """A prefill read from a server's own timer, beside the client's wall time for the same requests (collectors/prefill.
+  outside_timer): the wall ms, the tok/s it makes, and how much of it the engine's timer leaves outside. None for a run
+  with no wall time (llama-bench, an older record) or no row for this length."""
+  eng = _prefill_engine(loss, length)
+  if not eng.get("wall_ms") or eng.get("outside_ms") is None or not length:
+    return None
+  return {"wall_ms": float(eng["wall_ms"]), "outside_ms": float(eng["outside_ms"]), "wall_tok_s": float(length) / float(eng["wall_ms"]) * 1e3}
 
 
 def offload_close(o:dict[str, Any], figs:list[dict[str, str]]) -> dict[str, Any]:
@@ -635,13 +677,26 @@ def head_to_head(a:dict[str, Any], b:dict[str, Any]) -> dict[str, Any]:
   ra, rb = _record(a["res"], a.get("run")), _record(b["res"], b.get("run"))
   differ = [hw["field"].format(name=hw["fields"][k], a=ra[k] or hw["none"], b=rb[k] or hw["none"]) for k in hw["fields"] if ra[k] != rb[k]]
   out["differs"] = hw["differs"].format(fields="; ".join(differ)) if differ else hw["same"]
+  wall = [layer1(x["res"], x.get("run"))["numbers"] for x in (a, b)]
+  by_wall = all(n.get("wall_tok_s") for n in wall)  # two prefills, each with the client's wall time: compare on it
+  kinds = {n.get("prompt_kind") for n in wall}
+  other_prompts = by_wall and len(kinds) > 1  # random ids against real text: neither time says which engine is faster
+  if by_wall:
+    for s, n in zip(sides, wall):
+      s["figures"] = {**s["figures"], "speed": _fig(f"{n['wall_tok_s']:.1f}", _unit("tok_s"), "", "speed"),
+                      "ms": _fig(f"{n['wall_ms']:.1f}", _unit("ms"), "", "ms")}
+    out["differs"] += " " + hw["by_wall"] + (" " + hw["other_prompts"].format(
+      a=hw["prompt_kinds"].get(str(wall[0].get("prompt_kind")), hw["none"]), b=hw["prompt_kinds"].get(str(wall[1].get("prompt_kind")), hw["none"])) if other_prompts else "")
+  elif all(speed_type(x["res"]) == "prefill" for x in (a, b)):
+    out["differs"] += " " + hw["not_by_wall"]
   for key, label in hw["rows"].items():
+    label = hw["wall_rows"].get(key, label) if by_wall else label
     figs = [s["figures"].get(key) for s in sides]
     if not any(figs) or any(r["key"] == key for r in out["rows"]):
       continue
     nums = [float(f["value"]) if f else None for f in figs]
     better = None
-    if None not in nums and nums[0] != nums[1] and key in hw["higher"] + hw["lower"]:
+    if None not in nums and nums[0] != nums[1] and key in hw["higher"] + hw["lower"] and not (other_prompts and key in ("speed", "ms")):
       better = int((nums[1] > nums[0]) == (key in hw["higher"]))
     out["rows"].append({"key": key, "label": label, "cells": [f["figure"] if f else "" for f in figs], "better": better})
   return out
