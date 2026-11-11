@@ -48,6 +48,16 @@ its end is worded by `screen speedup-plain`: the copy kept with its speeds, NOT 
 that the copy was deleted), a refusal with its one fix, or SPEED NOT MEASURED. What next offers Measure MTP on the copy and
 Compare with the original; a copy offers Check this copy (`screen speedup-verify`). A copy is `<model> · BoltBeam` in model lists.
 
+**Tuned for this machine.** On Recommended setup, under the recommendation: the chosen engine's knob rows for this model and
+the build the Engine picker rests on (`screen tune MODEL --engine E [--build B]`, workflow/tune.py), read from facts only (no
+engine starts) as soon as the model, chip and engine are known, the way Offload is. Each row is the knob's value, its source
+(derived, measured or default), a tag where it changes outputs, and its reason. `[ Measure on this machine ]` runs the
+sweeps as a job (`--measure`: pipeline progress lines, then the page), with a bar, the point in flight and Stop; its end
+replaces the facts page. `[ Use these ]` copies the values into Engine settings: a run's settings by name, the rest as the
+engine's environment, which Run passes as `--engine-env NAME=VALUE` (set for every engine the run starts, recorded in
+`workload_profile.json`, said on the run's settings line). What a run cannot pass is said. The screen knows no engine's
+knobs; a test scans the new files for engine names and flags.
+
 ## The three screens
 
 **Setup.** The choices and a button.
@@ -155,7 +165,10 @@ to the limit, what holds it back, under the labels of `screen words`, led by the
 (each bold, with its short label); the three parts that lose the most time as bars as
 long as their share of the lost time, each with its gain as a figure; the weight reads no part took, as one caveat; a
 batch sweep's curve of tok/s per stream count; the one trust line), then layer 2 as sections that open and close: `t` the table (four columns, `a` all of them),
-`m` How it was measured, `e` Machine and engine, `w` the words used, `f` Full detail (the page described above). No
+`b` Where the time went (a prefill's time budget, when its capture wrote one: kernels by family, copy time with no kernel
+running per stream, GPU idle by cause, host time outside the GPU work, unattributed, adding up to the wall; a trace longer
+than its wall is said even with the section closed), `m` How it was measured, `e` Machine and engine, `w` the words used,
+`f` Full detail (the page described above). No
 sentence on it is written in Go. While a run runs, the stage names are the words' own, the stages done are listed,
 and "about N min left" shows only when the last run's step times are logged.
 
@@ -181,7 +194,8 @@ and Saved runs lists it. A refused ssh, an empty runs folder or a run that diffe
 **Compare.** Any two saved runs, head to head (`screen head-to-head`, report/plain.head_to_head): from Saved runs (`c`
 picks the first, then the one beside it) or a run's own "Compare with a saved run" (it is the first). The page names
 each run (A, B) and says what differs between them (model, GPU, engine, build, weights, settings, workload, streams), then
-their headline figures side by side, the better one marked. Two runs of one model also compare part by part: two runs
+their headline figures side by side, the better one marked (two prefills sent in different prompt forms, token ids and
+a chat request, say so and mark no winner on time), then both time budgets side by side when either has one. Two runs of one model also compare part by part: two runs
 of one chip, engine and workload give the engine-upgrade audit row by row (`screen diff`,
 [docs/engine-upgrade-audit.md](../docs/engine-upgrade-audit.md); a run's `repeat_bands.json` bands are used), two replays
 of one trace on different engines give `screen replay-cross`, turn by turn. Otherwise one line says why the parts are not

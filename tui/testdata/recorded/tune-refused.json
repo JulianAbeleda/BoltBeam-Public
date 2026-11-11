@@ -1,0 +1,8 @@
+{
+  "engine": "tinygrad",
+  "kind": "tune",
+  "model": "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+  "page": null,
+  "refused": "No tuning here: BoltBeam has no knob table for tinygrad yet",
+  "schema": "boltbeam.tui.v1"
+}

@@ -104,6 +104,14 @@ type Facts struct {
 
 	Fetch FetchForm // Fetch runs (fetch.go)
 	Speed SpeedUp   // Speed up (speedup.go)
+	Tune  TuneState // Tuned for this machine (tune.go)
+	// Env is the environment Run sets for the engine (Use these on Tuned for this machine), by name; cleared with a new
+	// engine, as Settings is.
+	Env    map[string]string
+	EnvFor string // the model, engine and engine build Env was tuned for: another one's run does not pass it
+	// TunedSettings are the setting names the last Use these copied, so the next Use these clears them before it copies
+	// its own; a setting the user typed by hand is not in it and stays.
+	TunedSettings []string
 	// ForkAt is the fork ←→ rests on in each engine family on the Engine picker (families.go), by family
 	ForkAt map[string]string
 
@@ -357,7 +365,7 @@ func setupActions(f Facts) []action {
 		{{"Workload", workloadValue(f), pageWorkload}, {"Batch", fmt.Sprint(f.batch()), pageBatch},
 			{"Measurement", measurementValue(f), pageMeasurement}},
 	}
-	if len(f.settingsOffered()) > 0 { // what the run asks the engine for, when the engine takes anything
+	if len(f.settingsOffered()) > 0 || len(f.envNames()) > 0 { // what the run asks the engine for, when the engine takes anything
 		groups[2] = append(groups[2], setupLine{"Settings", settingsValue(f), pageSettings})
 	}
 	groups[2] = append(groups[2], setupLine{"Offload", offloadValue(f), pageOffload})

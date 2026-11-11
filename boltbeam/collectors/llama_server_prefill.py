@@ -33,6 +33,10 @@ HEAD = 1  # the server reads one output token per prompt, at its end
 STARTUP_HEADS = 1  # and (measured, 2026-11-11, llama.cpp master) runs one single-token decode as the first request starts
 WORDS = ("real text: the shipped Gutenberg excerpts (data/gate_corpus.json) cut to the prompt length and sent to llama-server as "
          "token ids, the prompt cache off (prompt_n equal to the length, cache_n 0 on every request), the server's own prompt_ms")
+CHAT_WORDS = ("real text sent as a chat request: the shipped Gutenberg excerpts (data/gate_corpus.json) as one user message to "
+              "llama-server's /v1/chat/completions, cut so the chat template makes a prompt of the length, the prompt cache off "
+              "(the same prompt_n on every request, cache_n 0), the server's own prompt_ms. The server breaks the first batch "
+              "where the user message starts, as it does for any chat client")
 
 
 CHECKPOINT_TAIL = 4  # the server ends a batch where 4 + n_ubatch and 4 tokens of the prompt remain (chunks)
@@ -47,16 +51,17 @@ def checkpoints(run:pathlib.Path) -> bool:
   return p.exists() and bool(layer_kinds(json.loads(p.read_text())).get("recurrent"))
 
 
-def server_chunks(length:int, batch:int, ubatch:int, checkpoint:bool) -> list[int]:
+def server_chunks(length:int, batch:int, ubatch:int, checkpoint:bool, head:int = 0) -> list[int]:
   """The server's chunks of a prompt. Like llama-bench it fills batches of n_batch tokens, each split into n_ubatch
   chunks; for a model it checkpoints (checkpoints) it also ends a batch where min(n_batch, 4 + n_ubatch) and min(n_batch,
   4) tokens remain, so the last tokens run apart and a checkpoint can be stored before them (llama.cpp server-context.cpp,
   "process the last few tokens of the prompt separately", PR 20288): 10,000 tokens at 2,048 / 2,048 are 2,048 x 3,
   1,808, 2,044 and 4, not 2,048 x 4 and 1,808. The capture's block kernels check it: the walk refuses a window whose
-  layers do not group into these chunks."""
+  layers do not group into these chunks. head: a chat prompt's template tokens before the user message (the driver's
+  chat_head_tokens): the server also ends the first batch there, where the user message starts."""
   if not checkpoint or batch <= 0 or ubatch <= 0:
     return pf.llama_chunks(length, batch, ubatch)
-  cuts = {length - min(batch, n) for n in (CHECKPOINT_TAIL + ubatch, CHECKPOINT_TAIL)}
+  cuts = {length - min(batch, n) for n in (CHECKPOINT_TAIL + ubatch, CHECKPOINT_TAIL)} | ({head} if 0 < head < length else set())
   out, pos = [], 0
   while pos < length:
     start = pos
@@ -81,13 +86,15 @@ def server_for(bench:str | None) -> str | None:
 
 def use_server(run:pathlib.Path, bench:str | None) -> str | None:
   """The llama-server to measure this run's prefill with, or None to use llama-bench."""
-  m = mode()
-  if m == "random" or (m == "auto" and not pf.moe_model(run)):
+  m, chat = mode(), pf.prompt_form() == "chat"
+  if chat and m == "random":
+    raise ValueError(f"{pf.FORM_ENV}=chat sends text, and {ENV}=random asks for llama-bench's random token ids: set one of them otherwise")
+  if m == "random" or (m == "auto" and not chat and not pf.moe_model(run)):
     return None
   server = server_for(bench)
-  if server is None and m == "real":
+  if server is None and (m == "real" or chat):
     from boltbeam.collectors.llama_bench_decode import CannotMeasure
-    raise CannotMeasure(f"{ENV}=real needs llama-server, which was not found beside llama-bench, in ${lsd.ENV} or on PATH",
+    raise CannotMeasure(f"{ENV}=real (or {pf.FORM_ENV}=chat) needs llama-server, which was not found beside llama-bench, in ${lsd.ENV} or on PATH",
                         f"export {lsd.ENV}=/path/to/llama-server")
   return server
 
@@ -103,7 +110,7 @@ def flags(run:pathlib.Path, length:int, server:str, *, capture:bool = False) -> 
 def argv(server:str, model:str, length:int, flag_list:list[str], reps:int, log:str) -> list[str]:
   return [lsd.sys.executable, str(lsd.DRIVER), "--server", server, "--model", str(pathlib.Path(model).absolute()), "--port", "0",
           "--ctx-size", str(length + lsd.HEADROOM), "--contexts", str(length), "--reps", str(reps), "--flags", json.dumps(flag_list),
-          "--log", log, "--prefill", "--corpus", str(CORPUS)]
+          "--log", log, "--prefill", "--corpus", str(CORPUS), "--prompt-form", pf.prompt_form()]
 
 
 def row_of(driver:dict[str, Any], length:int) -> dict[str, Any]:
@@ -125,12 +132,16 @@ def truth(run:pathlib.Path, model:str, length:int, server:str, *, device:int = 0
   driver = next(l for l in lines if l.get("prefill"))
   (folder / f"{length}.command.json").write_text(json.dumps(cmd))
   (folder / f"{length}.stdout").write_text(json.dumps(driver) + "\n")
+  form = driver.get("prompt_form") or "ids"
+  words = CHAT_WORDS if form == "chat" else WORDS
   return pf.llama_truth_record(row_of(driver, length), length, cmd, tele,
-                               f"llama-server prompt_ms, a cold {length}-token prompt of real text, {len(driver['samples_ms'])} requests after a warm-up, untraced",
-                               WORDS + f" (corpus repeated {driver['corpus']['repeats']}x)" if driver["corpus"]["repeats"] > 1 else WORDS,
+                               f"llama-server prompt_ms, a cold {length}-token prompt of real text{' sent as a chat request' if form == 'chat' else ''}, "
+                               f"{len(driver['samples_ms'])} requests after a warm-up, untraced",
+                               words + f" (corpus repeated {driver['corpus']['repeats']}x)" if driver["corpus"]["repeats"] > 1 else words,
                                "real_text", pf.moe_model(run), tool="llama-server", binary=server,
                                engine={"n_ctx": length + lsd.HEADROOM, "n_ctx_source": "llama-server -c: the prompt and a small headroom",
-                                       "server": True, "corpus": driver["corpus"],
+                                       "server": True, "corpus": driver["corpus"], "prompt_form": form,
+                                       "prompt_tokens": driver.get("prompt_tokens") or length,
                                        **pf.outside_timer(driver["samples_ms"], driver.get("wall_samples_ms") or [])})
 
 
@@ -158,7 +169,37 @@ def capture(run:pathlib.Path, model:str, length:int, target, server:str) -> dict
     raise UnnamedCapture(str(exc), {"method": vendor_capture.plan(target.backend)["method"], "token_ms": qualified, "prefills": pf.COPIES,
                                     "busy_ms": sum(l["wall_us"] for l in launches) / 1e3 / pf.COPIES,
                                     "timing_window": pf.timing_window(length)} if qualified else None) from exc
-  chunks = server_chunks(length, b, ub, checkpoints(run))
+  chunks = server_chunks(int(driver.get("prompt_tokens") or length), b, ub, checkpoints(run), int(driver.get("chat_head_tokens") or 0))
   ends = [0] * (len(chunks) - 1) + [1]
-  return pf.llama_capture_record(run, target, server, row, launches, measured, raw, cmd, env, length, chunks, HEAD, selected, qualified,
-                                 head_bounds=heads, prune=pf.llama_prunes(measured, chunks, HEAD, copies=1, ends=ends))
+  rec = pf.llama_capture_record(run, target, server, row, launches, measured, raw, cmd, env, length, chunks, HEAD, selected, qualified,
+                                head_bounds=heads, prune=pf.llama_prunes(measured, chunks, HEAD, copies=1, ends=ends))
+  if budget := request_budget(raw, driver, selected, server, target.backend):
+    rec["time_budget"] = budget
+  return rec
+
+
+def request_budget(raw:pathlib.Path, driver:dict[str, Any], index:int, server:str, backend:str) -> dict[str, Any] | None:
+  """The time budget of the capture's measured request (collectors/time_budget.py), written beside the capture; None
+  when the capture has no sqlite export or the driver no request spans. Kernel families: the fork's rows, then llama.cpp's."""
+  import sqlite3
+  from boltbeam.collectors import time_budget
+  from boltbeam.collectors.llama_bench_decode import fork_of
+  from boltbeam.target.vendors import NoVendorRow, for_backend
+  db = raw / "capture.sqlite"
+  if not db.is_file():
+    return None
+  try:
+    vendor = for_backend(backend).vendor
+  except NoVendorRow:
+    vendor = None
+  fork = (fork_of(server) or {}).get("fork")
+  try:
+    got = time_budget.request_budget(db, driver, index, engine=[*([fork] if fork else []), lsd.PROVIDER], vendor=vendor,
+                                     what=f"one cold {driver.get('prompt_tokens')}-token prefill, {driver.get('prompt_form') or 'ids'} form, llama-server")
+  except (sqlite3.Error, ValueError, KeyError, IndexError, TypeError) as exc:  # the budget is a disclosure: never fails the capture
+    (raw / "time_budget.json").write_text(json.dumps({"refused": "The time budget could not be read from this capture's trace.",
+                                                      "detail": f"{type(exc).__name__}: {exc}"}, indent=1))  # the raw text: provenance
+    return None
+  if got:
+    (raw / "time_budget.json").write_text(json.dumps(got, indent=1))
+  return got

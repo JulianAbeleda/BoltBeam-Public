@@ -177,6 +177,21 @@ def outside_timer(engine_ms:list[float], wall_ms:list[float]) -> dict[str, Any]:
           "outside_ms": statistics.median(gaps)}
 
 
+FORM_ENV = "BOLTBEAM_PREFILL_FORM"
+FORMS = ("ids", "chat")
+
+
+def prompt_form() -> str:
+  """How a real-text prefill sends its prompt, the same for every engine's driver (BOLTBEAM_PREFILL_FORM): ids (the
+  corpus's token ids, the default) or chat (the corpus text as one user message, through the engine's chat endpoint or
+  its chat template, as a chat client sends it). A chat prompt is text, so chat implies real text. Two engines' prefill
+  times compare only on the same form, as on the same prompt kind (report/plain.head_to_head)."""
+  f = os.environ.get(FORM_ENV, "ids").lower()
+  if f not in FORMS:
+    raise ValueError(f"{FORM_ENV} is {' or '.join(FORMS)}, not {f!r}")
+  return f
+
+
 def moe_model(run:pathlib.Path) -> bool:
   """True when the model has expert stacks (model_profile.json: a role with n_expert), the models whose speed follows
   which experts the prompt's tokens pick."""
@@ -556,9 +571,11 @@ def vllm_prompt(run:pathlib.Path) -> tuple[list[str], str]:
   """The driver flags and the prompt kind for this run's vLLM prefill: real text (the in-tree corpus, tokenized by vLLM's own
   tokenizer inside its venv) for an MoE model, as the llama.cpp path does (llama_server_prefill.mode); random ids otherwise."""
   from boltbeam.collectors import llama_server_prefill as sp
-  m = sp.mode()
-  if m == "real" or (m == "auto" and moe_model(run)):
-    return ["--corpus", str(sp.CORPUS)], "real_text"
+  m, form = sp.mode(), prompt_form()
+  if form == "chat" and m == "random":
+    raise ValueError(f"{FORM_ENV}=chat sends text, and {sp.ENV}=random asks for random token ids: set one of them otherwise")
+  if m == "real" or form == "chat" or (m == "auto" and moe_model(run)):
+    return ["--corpus", str(sp.CORPUS), "--prompt-form", form], "real_text"
   return [], "random_tokens"
 
 
@@ -598,7 +615,8 @@ def vllm_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> di
           "engine": {**(outside_timer(samples, [s * 1e3 for s in line["wall_samples_s"]]) if own else {}),  # no engine timer: nothing is outside it
                      **{k: line.get(k) for k in ("activation_dtype", "kv_cache_dtype", "model_type", "max_model_len")}, "vllm": line.get("vllm"), "speculative_config": line.get("speculative_config"), "max_num_batched_tokens": line["max_num_batched_tokens"],
                      "chunked_prefill": line.get("chunked_prefill"), "wall_samples_ms": [s * 1e3 for s in line["wall_samples_s"]],
-                     "command": argv, "prompt": vllm_prompt_words(kind, line), "prompt_kind": kind, "moe": moe_model(run)}}
+                     "command": argv, "prompt": vllm_prompt_words(kind, line), "prompt_kind": kind, "moe": moe_model(run),
+                     "prompt_form": line.get("prompt_form") or "ids", "prompt_tokens": line.get("prompt_tokens") or length}}
 
 
 def vllm_formats(weights:set[str], resolved:dict[str, Any] | None = None, *, require_resolved:bool = False) -> dict[str, Any]:
@@ -727,6 +745,10 @@ PROMPT_WORDS["vllm"] = ("the driver's own prompt: token ids drawn by random.Rand
 def vllm_prompt_words(kind:str, line:dict[str, Any]) -> str:
   if kind != "real_text":
     return PROMPT_WORDS["vllm"]
+  if line.get("prompt_form") == "chat":
+    return ("real text sent in chat form: the shipped Gutenberg excerpts (data/gate_corpus.json) as one user message in the "
+            f"model's chat template (what LLM.chat renders), cut so the templated prompt is {line.get('prompt_tokens')} tokens, "
+            "prefix caching off, so nothing is cached between prompts")
   return ("real text: the shipped Gutenberg excerpts (data/gate_corpus.json) tokenized by vLLM's tokenizer, each call the "
           f"corpus's first tokens up to the prompt's length, as the llama.cpp path sends ({(line.get('corpus') or {}).get('tokens')} "
           "corpus tokens, repeated past its end), prefix caching off, so nothing is cached between prompts")
@@ -964,7 +986,8 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                                    "method": cap["method"], "captured_ms": cap.get("captured_ms"), "telemetry": seen, **settled,
                                    **({"measured_ms": cap["measured_ms"]} if cap.get("measured_ms") else {}),
                                    "peaks_at": peaks, "peaks_clock": peaks_clock, "pairing_roles": pairing_source,
-                                   "paths_how": cap["paths"]["how"], "libraries": cap["paths"]["libraries"], **attr}
+                                   "paths_how": cap["paths"]["how"], "libraries": cap["paths"]["libraries"], **attr,
+                                   **({"time_budget": cap["time_budget"]} if cap.get("time_budget") else {})}
     from boltbeam.collectors.semantic_attribution import bind_cache_rate
     bind_cache_rate(run,run/RAW/str(length),out['lengths'][str(length)],last_level_cache(target))
     # Preserve completed lengths if a later capture is stopped or rejected.

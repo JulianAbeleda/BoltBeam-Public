@@ -362,6 +362,7 @@ type EngineSetting struct {
 	Flag      string   `json:"flag"`
 	Label     string   `json:"label"`
 	Whole     bool     `json:"whole"`
+	Least     *int     `json:"least,omitempty"` // the smallest whole number it takes; nil: 1
 	Choices   []string `json:"choices"`
 	About     string   `json:"about"`
 	DraftHead bool     `json:"draft_head"`
@@ -624,6 +625,10 @@ type RunEngine struct {
 	// BuildLines is the build beside upstream's newest at run time and the one-time comparison with the previous
 	// build when this run made one (collectors/engine_builds.build_lines), empty for an older run.
 	BuildLines []string `json:"build_lines"`
+	// PromptForm is how a prefill sent its prompt (ids or chat) and PromptFormWords its sentence; nil for a run with no
+	// prefill.
+	PromptForm      *string `json:"prompt_form"`
+	PromptFormWords *string `json:"prompt_form_words"`
 }
 
 // EngineBuild is the run's build against its pin: Matches is nil when the run recorded no build.
@@ -723,7 +728,9 @@ type Run struct {
 	Model     ModelFacts `json:"model"`
 	NextStep  string     `json:"next_step"`
 	Artifacts []string   `json:"artifacts"`
-	Results   Results    `json:"results"`
+	// EngineEnv is the environment the run set for its engine (--engine-env), by name; absent when it set none.
+	EngineEnv map[string]string `json:"engine_env"`
+	Results   Results           `json:"results"`
 }
 
 // Loss is the end result: measured vs the speed limit in ms per token, and per role where the run's provider

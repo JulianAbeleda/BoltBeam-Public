@@ -6,6 +6,7 @@ package ui
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -163,5 +164,9 @@ func againArgv(c seam.Client, store jobs.Store, run *seam.Run) (argv []string, m
 	if l := run.Results.Loss.Layout; l != nil && l.Layout != "one" {
 		p.Layout = l.Layout
 	}
-	return c.PipelineArgv(p), model, target, nil
+	argv = c.PipelineArgv(p)
+	for _, name := range slices.Sorted(maps.Keys(run.EngineEnv)) { // the engine's environment is part of the run
+		argv = append(argv, "--engine-env", name+"="+run.EngineEnv[name])
+	}
+	return argv, model, target, nil
 }

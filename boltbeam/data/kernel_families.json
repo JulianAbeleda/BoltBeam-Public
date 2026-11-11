@@ -1,0 +1,50 @@
+{
+ "schema": "boltbeam.kernel_families.v1",
+ "note": "Which family a captured kernel's time goes to in a time budget (collectors/time_budget.py), by a regular expression on the name the capture tool reports (nsys shortName). Read only through collectors/time_budget.families_for. A trace is read with one engine's rows, then the rows of the engines that engine lists in `also` (in order), then the rows of the GPU vendor (libraries every engine on that vendor links: cuBLAS, CUTLASS, nvjet), then `any` rows; within a set the first matching row wins; a row with `after` matches a launch only when a kernel matching `after` ran on the same stream since that row last matched there (the launch's role is told by the call that prepared it, when its name and template are the same in both roles); no match is `other`. A name the rows do not know is never guessed: it is `other`, and the budget lists the largest `other` kernels so a missing row is visible. Families are for the budget's split of kernel time only; the role attribution (collectors/kernel_kind.py, pairing) does not read this table.",
+ "families": ["expert_mmq", "expert_routing", "dense_gemm", "attention", "recurrent", "elementwise", "copy_gather", "other"],
+ "engines": {
+  "llama.cpp": {
+   "also": [],
+   "rows": [
+    {"pattern": "^mul_mat_q$|^mul_mat_q_stream_k_fixup$", "after": "^mm_ids_helper", "family": "expert_mmq", "why": "the routed-expert matmuls: llama.cpp's MUL_MAT_ID path (ggml-cuda/mmq.cu ggml_cuda_mul_mat_q with ids) launches its ids helper (mm_ids_helper) on the stream before each expert mul_mat_q. The kernel's name and template (type, tile, fallback, precision, fusion) are the same for a dense weight, so the helper before it is what tells the two apart"},
+    {"pattern": "^mul_mat_vec_q_moe|^mul_mat_vec_f_moe", "family": "expert_mmq", "why": "the expert GEMV for a few tokens"},
+    {"pattern": "^quantize_mmq|^quantize_scatter", "after": "^mm_ids_helper", "family": "expert_routing", "why": "the activation quantize of the MUL_MAT_ID path, which gathers each token's row into expert order (after the ids helper)"},
+    {"pattern": "^mm_ids_helper|^moe_|^topk_moe|^argsort", "family": "expert_routing", "why": "the routing: top-k selection, the expert sort (mm_ids_helper) and the weighted combine of the experts' outputs"},
+    {"pattern": "^mul_mat_q|^mul_mat_vec|^mul_mat_f", "family": "dense_gemm", "why": "the dense matmuls: mul_mat_q with no ids helper before it (a quantized dense weight, shared experts included), the GEMV and float matmul paths"},
+    {"pattern": "flash_attn|^lightning_indexer|^top_k_|^rope|^k_set_rows|soft_max", "family": "attention", "why": "flash attention, the sparse-attention indexer and its top-k block select, rope, the KV write"},
+    {"pattern": "^gdn_|gated_delta_net|^ssm_|delta_net", "family": "recurrent", "why": "the gated delta net and its short convolution"},
+    {"pattern": "^convert_|^quantize_|^rms_norm|^norm_f32|^group_norm|^l2_norm|^unary|^k_bin_bcast|^scale_f32|^clamp_f32|^softplus|^sum_rows|^cumsum|^fill_|^k_repeat", "family": "elementwise", "why": "elementwise work, norms and type conversion: the F32->BF16 convert that feeds cuBLAS, the activation quantize of a dense matmul, rms norm, the unary and binary ops"},
+    {"pattern": "^cpy_|^concat|^k_get_rows|^dup", "family": "copy_gather", "why": "copies, concatenation and row gathers"}
+   ]
+  },
+  "strata-stripped": {"also": ["strata"], "rows": []},
+  "strata": {
+   "also": ["llama.cpp"],
+   "rows": [
+    {"pattern": "^mul_mat_q", "family": "expert_mmq", "why": "Strata runs ggml's mul_mat_q for the routed experts only (a dense weight goes to its dequant + CUTLASS path), so no helper launch is needed to tell them apart"},
+    {"pattern": "^dequant_kernel|^dequant_q8_0_kernel|^to_bf16_kernel", "family": "dense_gemm", "why": "Strata dequantizes a dense weight to bf16 for the CUTLASS GEMM that follows (src/kernels/cuda/dequant_bf16.cu)"},
+    {"pattern": "^gr_up_multi|^gr_down_staged|^native_gu_multi|^native_down_multi", "family": "expert_mmq", "why": "the grouped expert matmuls (src/prefill/moe_mmq.cu)"},
+    {"pattern": "^moe_combine|^route_kernel|^router_top|^swiglu_kernel|^swiglu_pair|^combine_k10|^add_hits|^swiglu_q8_1_entries|^quantize_mmq", "family": "expert_routing", "why": "the routing, the experts' activation and its quantize, and the combine of the experts' outputs (src/prefill/moe_mmq.cu, kernels.cu)"},
+    {"pattern": "^native_.*mmvq|^bf16_f32_mmvf|^native_quantize_q8_1|^native_q8_1_interleave|^native_swiglu_quantize", "family": "dense_gemm", "why": "Strata's own GEMV paths and the quantize that feeds them"},
+    {"pattern": "attn|^block_scores|^block_topk|^kv_append|^rope_kernel|^norm_rope|^split_q_kernel|^append_blocks|^append_tail|^append_first|^append$", "family": "attention", "why": "the int8 prompt attention, the sparse block scores and top-k, the KV append and rope"},
+    {"pattern": "^gdn_|^conv_residual|^history_", "family": "recurrent", "why": "the gated delta net, its convolution and its history"},
+    {"pattern": "^copy|^fetch_blobs|^embed_rows|broadcast|^rebase_ptrs|^iota_kernel", "family": "copy_gather", "why": "the expert token-group copy (copy16_group_kernel), mapped-row copies, the embedding row gather"}
+   ]
+  }
+ },
+ "vendors": {
+  "nvidia": {
+   "rows": [
+    {"pattern": "^Kernel2$|cutlass|^nvjet|cublas|gemm|^splitKreduce|xmma|^sm\\d+_xmma", "family": "dense_gemm", "why": "cuBLAS and CUTLASS GEMM kernels (Kernel2 is CUTLASS's device kernel name)"}
+   ]
+  },
+  "amd": {
+   "rows": [
+    {"pattern": "Cijk_|rocblas|hipblaslt|gemm", "family": "dense_gemm", "why": "rocBLAS / hipBLASLt (Tensile) GEMM kernels"}
+   ]
+  }
+ },
+ "any": [
+  {"pattern": "flash|attention", "family": "attention", "why": "a kernel that names attention"}
+ ]
+}

@@ -320,6 +320,8 @@
   "head_to_head": {
     "better": "better",
     "by_wall": "Prompt speed and time are wall times, because each engine's own prompt timer leaves out different things: a server's from request sent to reply received, vLLM's around its generate call in the same process. Turning text into tokens is outside both, because each engine was sent token ids.",
+    "by_wall_chat": "Prompt speed and time are wall times, because each engine's own prompt timer leaves out different things: a server's from request sent to reply received, vLLM's around its generate call in the same process. Each engine was sent the prompt as a chat request: a server turns the text into tokens inside its wall time, vLLM's driver before its generate call.",
+    "by_wall_mixed": "Prompt speed and time are wall times, because each engine's own prompt timer leaves out different things: a server's from request sent to reply received, vLLM's around its generate call in the same process.",
     "diff_fields": {
       "model": "model",
       "provider": "engine",
@@ -351,10 +353,15 @@
     "none": "none",
     "not_by_wall": "Prompt speed and time are each engine's own timer here, and engines define their timer differently: one run has no client wall time, so do not read a small gap between them as a win.",
     "not_measured": "Not compared: {run} has no measured result yet.",
+    "other_forms": "The two runs sent the prompt in different forms ({a} against {b}). A chat request adds the chat template and can change how the server splits the prompt. So neither time says which engine is faster, and no winner is marked.",
     "other_prompts": "The two runs read different prompts ({a} against {b}), so neither time says which engine is faster, and no winner is marked.",
     "parts_differ": "The parts line up only between two runs of the same model on the same GPU, engine and work; these differ in {field}, so only the headline figures are side by side.",
     "parts_other_model": "The parts line up only between two runs of the same model, so only the headline figures are side by side.",
     "parts_refused": "The parts are not compared: {reason}.",
+    "prompt_forms": {
+      "chat": "a chat request",
+      "ids": "token ids"
+    },
     "prompt_kinds": {
       "random_tokens": "random token ids",
       "real_text": "real text"
@@ -368,6 +375,8 @@
       "total": "total across streams"
     },
     "same": "Same model, GPU, engine, build, weights and settings.",
+    "unlisted": "a build BoltBeam does not know by name",
+    "unset": "(unset)",
     "wall_rows": {
       "ms": "time, by wall time",
       "speed": "speed, by wall time"
@@ -389,6 +398,7 @@
     "engine": "Engine: {words}.",
     "gpus": "GPUs used: {gpus}.",
     "measurement": "How parts were timed: {label}.",
+    "prompt_form": "The prompt was sent as {form}.",
     "settings": "Engine settings asked for: {words}.",
     "toolchain": "Toolchain: {words}.",
     "upstream": "{line}",
@@ -545,6 +555,10 @@
     "transform": "reshaping data",
     "weight kernel, unattributed": "weight reads not matched to a part",
     "weight kernels, unattributed": "weight reads not matched to a part"
+  },
+  "prompt_form": {
+    "chat": "The prompt was sent as a chat request, the way a chat app sends it: the model's chat template wraps the text, and the server may split the first batch where the user message starts.",
+    "ids": "The prompt was sent as token ids, with no chat template around it."
   },
   "prompt_kind": {
     "random_tokens_moe": "Measured on random token ids, which send this model's tokens to many more of its expert parts than real text does: the speed reads low, about half on one model, and is not its speed on text. BoltBeam normally measures this on real text; it did not here.",
@@ -860,6 +874,71 @@
       "holds": "{part}, {lost_s} seconds of the lost time."
     }
   },
+  "time_budget": {
+    "cause": "{words} took {ms} ms",
+    "copy": "{direction} copies from {memory} on GPU queue {stream}: {gb} GB in {busy} ms ({gbs} GB/s), {exposed} ms with no kernel running.",
+    "directions": {
+      "DtoD": "GPU-to-GPU",
+      "DtoH": "GPU-to-host",
+      "HtoD": "Host-to-GPU",
+      "PtoP": "GPU-to-GPU (peer)",
+      "memset": "Memset"
+    },
+    "families": {
+      "attention": "attention",
+      "copy_gather": "copies and gathers",
+      "dense_gemm": "dense matrix multiplies",
+      "elementwise": "elementwise kernels (norms, type conversion)",
+      "expert_mmq": "expert matrix multiplies",
+      "expert_routing": "expert routing and combine",
+      "other": "other kernels",
+      "recurrent": "recurrent layers"
+    },
+    "family": "{name} {ms} ms",
+    "idle": "Of the GPU idle time, {causes}.",
+    "kernels": "Kernel time by family: {families}.",
+    "line": "Where the {wall} ms of the traced request (under the profiler) went: GPU kernels {kernels} ms, copies with no kernel running {exposed} ms, GPU idle {idle} ms, host time before and after the GPU work {host} ms.",
+    "line_no_wall": "Where the {window} ms of GPU work went: GPU kernels {kernels} ms, copies with no kernel running {exposed} ms, GPU idle {idle} ms. The request's own wall time was not recorded, so the host time outside the GPU work is not known.",
+    "line_unfit": "Where the {wall} ms of the traced request (under the profiler) went: GPU kernels {kernels} ms, copies with no kernel running {exposed} ms, GPU idle {idle} ms; the host time before and after the GPU work is unknown. These do not add up: the trace's GPU work ({window} ms) is longer than the request's wall time, so the trace holds more than this one request.",
+    "memories": {
+      "device": "GPU memory",
+      "managed": "memory shared by the host and the GPU",
+      "pageable": "ordinary (pageable) host memory",
+      "pinned": "pinned host memory"
+    },
+    "no_rows": "BoltBeam has no kernel family rows for {engines}: its kernels are counted by the GPU vendor's rows or as other kernels.",
+    "over": "The parts exceed the wall by {ms} ms.",
+    "page": {
+      "copies_overlap": "Copies on different GPU queues overlap each other, so their times with no kernel running add up to more than the copy total.",
+      "copy_key": "{direction}, {memory}, queue {stream}",
+      "copy_row": "{direction}, {memory}, queue {stream} ({busy} ms in all)",
+      "ms": "ms",
+      "no_wall": "The request's own wall time was not recorded, so the parts add up to the GPU work ({window} ms), not to a wall time.",
+      "of": "the {length}-token prompt's traced request (under the profiler), from its GPU trace",
+      "only_one": "this run has no time budget (a prefill capture writes one).",
+      "other_copies": "{n} smaller copies",
+      "other_copies_key": "smaller copies",
+      "queues": "A GPU queue (a stream) runs its work in order; copies and kernels on different queues can overlap. Pinned host memory is locked in RAM, so the GPU reads it directly; ordinary (pageable) memory is first staged through a pinned buffer.",
+      "small_key": "short gaps under {threshold} ms each",
+      "small_row": "{n} short gaps under {threshold} ms each",
+      "title": "Where the time went",
+      "window_not_fit": "The GPU work in this trace ({window} ms) is longer than the traced request's wall time ({wall} ms): the trace holds more than this one request, so the parts do not add up to the wall and the host time outside the GPU work is unknown."
+    },
+    "residual": "The GPU work fits inside the request's wall time; the host time is what is left of the wall, so the parts add up to it by how they are counted.",
+    "rows": {
+      "exposed": "copies with no kernel running",
+      "host": "host time outside the GPU work",
+      "idle": "GPU idle (no kernel, no copy)",
+      "kernels": "GPU kernels (their union)",
+      "unattributed": "not accounted for",
+      "wall": "wall time of the traced request (under the profiler)"
+    },
+    "small_gaps": "{ms} ms is in {n} short gaps under {threshold} ms each",
+    "sums": "These add up to the wall time within {tol} ms.",
+    "trace_longer": "The trace's GPU work runs {ms} ms longer than the request's wall time: the trace holds more than this one request.",
+    "unattributed": "These parts leave {ms} ms of the wall time unaccounted for.",
+    "unknown": "unknown"
+  },
   "tools": {
     "amdgpu": "AMD GPU driver",
     "cuda": "CUDA",
@@ -873,7 +952,7 @@
     "xctrace": "Xcode trace tool"
   },
   "trust": {
-    "checked": "Checked ✓",
+    "checked": "Checked \u2713",
     "checked_how": "the parts add up to the measured time",
     "estimate": "The split by part is an estimate: each part was timed alone, outside the engine.",
     "left_out": "Some parts are left out of the totals: {parts}.",
@@ -887,6 +966,66 @@
     "unqualified": "The recording's timing was not checked against the run without it, so gains per part aren't shown.",
     "whole_only": "Only the speed is measured, so there is nothing yet to check it against.",
     "within_overhead": "recording slowed the run by {pct}%, under the {ceiling}% allowed"
+  },
+  "tune": {
+    "build": "{engine} build: {fork}, at {path} ({backend}{version}).",
+    "command": "Command:",
+    "groups": "Its {what}: {groups}.",
+    "host": "Host: {total:.1f} GiB RAM, {avail} GiB available now, {usable:.0f} GiB usable for the model; L3 {l3} ({l3_source}).",
+    "lacks": "This {engine} build lacks these knobs: {knobs}.",
+    "measure_hint": "Rows marked derived or default for a chunk size or crossover are the starting point; --measure confirms them with a short real-text prefill sweep (it starts the engine once per point).",
+    "missing": "not checked: {fact} could not be read here",
+    "none": "none",
+    "not_applicable": "Not used with this model and placement:",
+    "not_bitwise": "[changes outputs: not bitwise identical]",
+    "not_in_build": "Not in this build (no knobs from it): {groups}.",
+    "older_group": "This build has an older version of a {noun}: these of its knobs are not in it: {knobs}.",
+    "page": {
+      "confirm": "to confirm: {how}",
+      "env": "environment variable for the engine; the run passes it as set here",
+      "facts": "Read from this machine and the build; nothing ran to get them.",
+      "failed": "The measurement stopped without an answer: the values read from facts stand. Its log: {log}",
+      "held": "{knob} is not copied: its value assumes {needs}, which a run does not pass yet.",
+      "measure": "Measure on this machine",
+      "measure_helper": "short sweeps, one engine start per point",
+      "measure_none": "Nothing here is measured: every row is set from facts or left at its default.",
+      "measured": "Measured on this machine: {knobs}.",
+      "not_passed": "A run does not pass these yet, so they are not copied: {knobs}.",
+      "not_used": "Not used with this model and placement",
+      "progress": "{knob}: point {i} of at most {n}",
+      "refused": "No tuning here: {reason}",
+      "running": "Measuring on this machine",
+      "starting": "starting",
+      "stop": "Stop",
+      "stop_helper": "the values read from facts stand",
+      "stopped": "Sent stop to the measurement. Nothing measured is kept; the values read from facts stand.",
+      "title": "Tuned for this machine",
+      "use": "Use these",
+      "use_helper": "copy into Engine settings for the next run",
+      "use_none": "Nothing to copy: every row is at its default.",
+      "used": "Copied {n} values into Engine settings; the next run passes them."
+    },
+    "setup": "Setup (value, where it came from, why):",
+    "source_default": "default",
+    "source_derived": "derived",
+    "source_measured": "measured",
+    "sweep_failed": "the measurement stopped without an answer (the engine did not start or did not answer); its log is in {out}",
+    "unlisted": "a build BoltBeam does not know by name",
+    "unset": "(unset)"
+  },
+  "tune_llama_cpp": {
+    "model": "Model: {name}, {layers} expert layers of {experts} experts, {gib:.2f} GiB of experts; {host:.2f} GiB of them in host RAM ({placement}).",
+    "model_dense": "Model: {name}, dense (no experts): there are no experts to place in host RAM.",
+    "no_patch": "This build has none of BoltBeam's local llama.cpp patches, so their knobs do not apply: only stock flags are recommended below.",
+    "no_plan": "the offload plan could not be worked out here",
+    "routing_changed": "A saved routing profile ({what}) changed the chunk -ub from {before} to {after}.",
+    "unified": "The GPU shares memory with the CPU (unified memory): nothing is copied to it, so the knobs for copying experts (the pin budget, the staging ring) do not apply."
+  },
+  "tune_vllm": {
+    "busy": " Another program holds {held:.1f} of the GPU's {total:.1f} GiB (over {pct:.0f}%), so this share is lower than on an idle GPU.",
+    "model": "Model: {name}, {gib:.2f} GiB of weights on the GPU (text only, no MTP head), {kv:,.0f} bytes of KV per token, {draft} MTP layer(s), {experts} experts per layer.",
+    "no_fit": "This model does not fit this machine: the weights and a {context}-token KV cache need {need:.1f} GiB, and the GPU's share ({gpu:.1f} GiB) plus the usable RAM ({ram:.0f} GiB, less {headroom} GiB kept free for vLLM itself) cannot hold them. Use a smaller model, a shorter --context, or free memory.",
+    "placement": "--experts-in-ram is a llama.cpp placement; vLLM keeps weights in host RAM through --cpu-offload-gb, set below when the model does not fit."
   },
   "units": {
     "ms": "ms",

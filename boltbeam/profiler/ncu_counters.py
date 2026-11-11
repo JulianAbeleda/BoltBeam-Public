@@ -16,7 +16,7 @@ schema is accepted by ``load_counters`` so the committed audit evidence imports 
 """
 from __future__ import annotations
 
-import csv, io, json, pathlib, re, subprocess
+import csv, io, json, pathlib, re, subprocess, sys
 from typing import Any, Iterable, Mapping, Sequence
 
 from boltbeam.vocab import SCHEMA_HW_TRACE
@@ -102,8 +102,21 @@ def _f(value:Any, default:float | None=0.0) -> float | None:
   except (TypeError, ValueError): return default
 
 
+def _wide_fields() -> None:
+  """Let the csv module read ncu's longest cells (a launch's full demangled name and argument list can pass csv's
+  128 KiB default): as large as the platform's C long holds (sys.maxsize overflows it on some, e.g. Windows)."""
+  limit = sys.maxsize
+  while True:
+    try:
+      csv.field_size_limit(limit)
+      return
+    except OverflowError:
+      limit //= 2
+
+
 def read_raw_csv(text:str) -> tuple[list[dict[str, str]], dict[str, str]]:
   """``ncu --page raw --csv``: header row, unit row, then one row per profiled kernel launch."""
+  _wide_fields()
   rows = list(csv.reader(io.StringIO(text)))
   if len(rows) < 2: raise ValueError("ncu raw CSV needs a header and a unit row")
   header = rows[0]

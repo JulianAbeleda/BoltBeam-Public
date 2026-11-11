@@ -313,6 +313,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if c := next.loadOffload(); c != nil {
 		cmd = tea.Batch(cmd, c)
 	}
+	if c := next.loadTune(); c != nil {
+		cmd = tea.Batch(cmd, c)
+	}
 	if c := next.loadPlain(); c != nil { // a finished run on screen: its plain block, once per state
 		cmd = tea.Batch(cmd, c)
 	}
@@ -522,6 +525,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case speedOfferMsg, speedStartedMsg, speedJobMsg, speedResultMsg, speedVerifyMsg:
 		next, cmd, _ := m.speedMsg(msg)
 		return next, cmd
+	case tuneMsg, tuneStartedMsg, tuneJobMsg:
+		next, cmd, _ := m.tuneMsg(msg)
+		return next, cmd
 	case mtpJobMsg:
 		was := m.f.measuringMtp()
 		m.f.MJob = msg.job
@@ -667,6 +673,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, tea.Batch(m.loadMtp(), fetch, tick())
 		case m.f.speeding():
 			return m, tea.Batch(m.readSpeed(), fetch, tick())
+		case m.f.tuning():
+			return m, tea.Batch(m.readTune(), fetch, tick())
 		case fetch != nil:
 			return m, tea.Batch(fetch, tick())
 		}
@@ -980,7 +988,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		case pageSettings:
 			return m, m.openSettings()
 		case pageRecommend:
-			return m, m.loadSpeed()
+			return m, tea.Batch(m.loadSpeed(), m.readTune())
 		}
 		return m, nil
 	case "fork": // a family row: the fork in brackets, when it runs here; else the line under the row says why
@@ -991,7 +999,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m.do(action{"", "engine", engine})
 	case "engine":
 		m.f.Engine, m.f.Layout, m.engineSet = a.arg, "", true
-		m.f.Measurement, m.f.Settings = "", nil
+		m.f.Measurement, m.f.Settings, m.f.Env, m.f.TunedSettings = "", nil, nil, nil
 		m.backToSetup()
 		return m, nil
 	case "batch":
@@ -1028,6 +1036,8 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, m.startMtp()
 	case "speedup", "speedstop", "speedcheck", "speedmtp":
 		return m.doSpeed(a)
+	case "tunemeasure", "tunestop", "tuneuse":
+		return m.doTune(a)
 	case "doctor":
 		return m, m.checkMachine()
 	case "fetchgo", "fetchstop":
@@ -1035,7 +1045,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 	case "enginelayout": // an engine and how it uses this machine's GPUs, picked on one row
 		engine, layout, _ := strings.Cut(a.arg, "|")
 		if engine != m.f.Engine {
-			m.f.Measurement, m.f.Settings = "", nil // another engine's settings are not this one's
+			m.f.Measurement, m.f.Settings, m.f.Env, m.f.TunedSettings = "", nil, nil, nil // another engine's settings are not this one's
 		}
 		m.f.Engine, m.f.Layout, m.engineSet = engine, layout, true
 		m.backToSetup()

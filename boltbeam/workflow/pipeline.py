@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import platform
+import re
 import sys
 import time
 from typing import Any
@@ -235,6 +237,59 @@ def _engine_settings(args) -> dict | None:
                                                             len(tgpu.devices(hardware_profile()["gpu"])))
   return {k: v for k, v in settings.items() if v is not None} or None
 
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def env_pair(item:str) -> str:
+  """--engine-env's type: NAME=VALUE with a variable's name, refused by the parser otherwise."""
+  name, eq, _ = str(item).partition("=")
+  if not eq or not ENV_NAME.match(name):
+    raise argparse.ArgumentTypeError(f"--engine-env takes NAME=VALUE, got {item!r}")
+  return item
+
+
+# Names a run may never set for its engine unless it says so: the device choice belongs to the run's target, not here.
+DEVICE_ENV = frozenset({"CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES"})
+
+
+def env_allowed(tab:dict[str, Any] | None = None) -> set[str]:
+  """The variable names --engine-env takes: exactly the env knobs the engines' table declares (Tuned for this machine
+  offers only these). Exact names, not prefixes: a prefix like GGML_ or LLAMA_ would also let through variables no one
+  has measured, and a new knob is one table row."""
+  from boltbeam.workflow import tune
+  return {k["name"] for k in (tab or tune.table())["knobs"] if k.get("kind") == "env"}
+
+
+def check_engine_env(args, tab:dict[str, Any] | None = None) -> None:
+  """Refuse, in plain words, an --engine-env name the table does not list or that picks a device or is BoltBeam's own."""
+  any_name = getattr(args, "engine_env_any", False)
+  allowed = None
+  for item in getattr(args, "engine_env", None) or []:
+    name = str(item).partition("=")[0]
+    if name.startswith("BOLTBEAM_") or name in DEVICE_ENV:
+      if not any_name:
+        why = "it belongs to BoltBeam itself" if name.startswith("BOLTBEAM_") else "the run's chip decides which devices the engine uses"
+        raise ValueError(f"{name} cannot be set for the engine: {why}. Pass --engine-env-any to set it anyway.")
+    elif not any_name:
+      allowed = env_allowed(tab) if allowed is None else allowed
+      if name not in allowed:
+        raise ValueError(f"{name} is not a setting BoltBeam knows for an engine. Take the variables from Tuned for this machine, "
+                         "or pass --engine-env-any to set another one.")
+
+
+def _engine_env(args, tab:dict[str, Any] | None = None) -> dict[str, str]:
+  """The environment a run sets for its engine (--engine-env NAME=VALUE, the screen's Engine settings, e.g. values from
+  Tuned for this machine): set in this process, so every engine it starts inherits it, and recorded with the run."""
+  out = {}
+  for item in getattr(args, "engine_env", None) or []:
+    name, eq, value = str(item).partition("=")
+    if not eq or not ENV_NAME.match(name):
+      raise ValueError(f"--engine-env takes NAME=VALUE, got {item!r}")
+    out[name] = value
+  check_engine_env(args, tab)
+  return out
+
+
 def _load(args) -> dict[str, Any]:
   """Step 0: the run folder. A replay also stages its trace and the server command (collectors/replay.stage), and its
   context is the prefix the trace reaches."""
@@ -249,7 +304,7 @@ def _load(args) -> dict[str, Any]:
     (pathlib.Path(args.run)/'forced_replay_request.json').write_text('{}')
   result = load_run(args.model, args.run, target_id=args.target, model_id=args.id, workload=args.workload,
                   contexts=contexts, target_source="user", provider=getattr(args, "provider", None),
-                  engine_settings=_engine_settings(args))
+                  engine_settings=_engine_settings(args), engine_env=_engine_env(args))
   keep_run_chip(pathlib.Path(args.run), args.target)
   if getattr(args, "bands", None):
     evidence = read_json(args.bands)
@@ -276,6 +331,7 @@ def tinygrad_root(args) -> pathlib.Path | None:
 def pipeline(args, out=sys.stdout) -> int:
   """Run the stages in order and say so, one line each. The run folder keeps whatever landed before a failure."""
   say = _say_to(out)
+  os.environ.update(_engine_env(args))  # every engine this run starts inherits it
   steps = [
     ("load", lambda: _load(args)),
     ("autoscan", lambda: autoscan_run(args.run, providers=())),

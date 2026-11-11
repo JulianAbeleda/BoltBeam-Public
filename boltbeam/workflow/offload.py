@@ -8,7 +8,7 @@ from typing import Any
 from boltbeam.collectors.expert_placement import parse_flags, recorded  # noqa: F401  (where a run kept its experts; tests read parse_flags here)
 from boltbeam.core.refused import Refused
 from boltbeam.report.plain import words as plain_words
-from boltbeam.roofline import offload as ol, offload_shapes as shapes
+from boltbeam.roofline import offload as ol, offload_shapes as shapes, routing_profile as rp
 
 GIB = 2**30
 
@@ -59,11 +59,13 @@ def ram_figure(host:dict[str, Any], host_tables:float = 0.0) -> dict[str, Any]:
 
 
 def plan(sh:dict[str, Any], *, usable_vram:float, kv_bytes:float, vram_gbs:float, host:dict[str, Any], ram:dict[str, Any] | None = None,
-         engine:str = "llama.cpp", context:int | None = None, fits:bool = False) -> dict[str, Any]:
+         engine:str = "llama.cpp", context:int | None = None, fits:bool = False, routing:dict[str, Any] | None = None) -> dict[str, Any]:
   """The offload setup for a model whose weights do not fit usable VRAM: the cache size from the free VRAM after the dense
   parts and the KV, the CPU share that balances RAM against the copy rate, and the limit as a band over hit rates. ram:
   ram_figure (default: from host). A Refused says why it cannot be done (dense parts and KV past the card; weights past
-  VRAM + RAM). fits: the model fits the card whole, so any read from disk is only if the reader chooses to offload."""
+  VRAM + RAM). fits: the model fits the card whole, so any read from disk is only if the reader chooses to offload.
+  routing: a measured routing profile (roofline/routing_profile.find): the band's first hit rate is then what a cache of the
+  hottest experts serves (in-sample: an upper estimate), not the cache's share of them (uniform routing)."""
   dense, total_exp = sh["dense_bytes"], sh["expert_total"]
   ram = ram or ram_figure(host)
   usable_ram = ram["usable_bytes"]
@@ -79,7 +81,7 @@ def plan(sh:dict[str, Any], *, usable_vram:float, kv_bytes:float, vram_gbs:float
   s = round(host["ram_gbs"] / (host["ram_gbs"] + rate), 2)  # the share that loads RAM and the copies equally
   common = dict(dense_bytes=dense, expert_bytes=sh["expert_bytes"], vram_gbs=vram_gbs, ram_gbs=host["ram_gbs"], pcie_gbs=host["pcie_gbs"],
                 estimated=sh["estimated"], cpu_gbs=host.get("cpu_gbs"), h2d_gbs=host.get("h2d_gbs"), memory=memory)
-  rates = shapes.hit_rates(cache, total_exp)
+  rates = shapes.hit_rates(cache, total_exp, hottest_hit(routing, cache, sh))
   band, plain = ol.band(rates, cpu_share=s, **common), ol.band(rates, cpu_share=0.0, **common)  # 0.0: llama.cpp's default share
   pinned = ol.band(rates, cpu_share=0.0, **{**common, "memory": "pinned"}) if (host.get("h2d_gbs") or {}).get("pinned") else None
   from boltbeam.collectors.capture_settings import render_llama
@@ -89,7 +91,7 @@ def plan(sh:dict[str, Any], *, usable_vram:float, kv_bytes:float, vram_gbs:float
   notes = list(band[0]["notes"]) + ([("only if you choose to offload: " if fits else "") + f"the experts the cache does not hold "
                                      f"({_gb(total_exp - cache)}) are more than the usable RAM ({_gb(usable_ram)}): {_gb(spill)} would be read from disk, "
                                      "which this limit does not cover; the speed is below it"] if spill else []) \
-          + ([] if memory else ["PCIe at the link's wire rate, an upper bound: no measured host-to-device rate"])
+          + ([] if memory else ["PCIe at the link's wire rate, an upper bound: no measured host-to-device rate"]) + [hit_rate_note(routing, rates[0], engine)]
   tok, lo_hi = [r["overlap"]["tok_s"] for r in band], shapes.span(band)
   say = (replies_words(lo_hi, all_cached=cache >= total_exp, unit="tokens a second")
          + (" (estimate: the model's shapes are not read from a header)" if sh["estimated"] else "") + ". " + plain_words()["offload"]["decode_tuned"])
@@ -97,7 +99,7 @@ def plan(sh:dict[str, Any], *, usable_vram:float, kv_bytes:float, vram_gbs:float
           "estimated": sh["estimated"], "notes": notes, "engine": engine,
           "shapes": {k: sh[k] for k in ("source", "dense_bytes", "expert_bytes", "expert_total", "experts", "top_k", "layers")},
           "cache_mib": mib, "cache_share_of_experts": cache / total_exp, "cpu_share": s, "ram_usable_bytes": usable_ram, "ram": ram, "spill_bytes": spill,
-          "host": host, "hit_rates": rates, "h2d_gbs": rate, "h2d_memory": memory, "vram_gbs": vram_gbs,
+          "host": host, "hit_rates": rates, "routing": rp.words(routing, engine), "h2d_gbs": rate, "h2d_memory": memory, "vram_gbs": vram_gbs,
           "band": [{"hit_rate": r["hit_rate"], "ms": r["ms"], "bound_by": r["bound_by"], "tok_s": r["overlap"]["tok_s"],
                     "tok_s_no_overlap": r["no_overlap"]["tok_s"]} for r in band],
           "tok_s": lo_hi, "tok_s_default_share": shapes.span(plain), "tok_s_pinned": shapes.span(pinned) if pinned else None,
@@ -107,7 +109,23 @@ def plan(sh:dict[str, Any], *, usable_vram:float, kv_bytes:float, vram_gbs:float
                          f"CPU: {s:g} x (1 - hit) x {_gb(sh['expert_bytes'])} / {min(host['ram_gbs'], host.get('cpu_gbs') or host['ram_gbs']):.1f} GB/s (RAM; CPU dequant rate unmeasured)",
                          f"PCIe: {1 - s:g} x (1 - hit) x {_gb(sh['expert_bytes'])} / {rate:.1f} GB/s ("
                          + (f"measured copies from {memory} memory: {host.get('h2d_source')}" if memory else host['pcie_source']) + ")",
-                         "the limit is the slowest of the three; hit rates: the cache's share of the experts, then 0.8 to 0.99 (a sweep, not an estimate)"]}
+                         "the limit is the slowest of the three; hit rates: the first is " + rp.hit_words(routing) + ", then 0.8 to 0.99 (a sweep, not an estimate)"]}
+
+
+def hottest_hit(routing:dict[str, Any] | None, cache:float, sh:dict[str, Any]) -> float | None:
+  """The hit rate of a cache holding the hottest experts it fits (experts of one size: the experts' total over layers x
+  experts each), over the layers the profile measured; None without a profile."""
+  if not routing:
+    return None
+  slots = int(cache // (sh["expert_total"] / (sh["layers"] * sh["experts"])) * len(routing["layers"]) / sh["layers"])
+  return round(rp.hit_rate(routing, slots), 4)
+
+
+def hit_rate_note(routing:dict[str, Any] | None, rate:float, engine:str | None = None) -> str:
+  """The band's first hit rate and what it is: with a profile, in-sample and hottest-first (an upper estimate for a cache
+  that keeps the recently used experts), from the routing words; else the cache's share under uniform routing."""
+  return (f"first hit rate {rate:.0%}: {rp.hit_words(routing)}; routing: {rp.words(routing, engine)}" if routing else
+          f"first hit rate {rate:.0%}: {rp.hit_words(None)}, under {rp.UNIFORM}")
 
 
 def _ubatches() -> list[int]:
@@ -123,7 +141,7 @@ LLAMA_BATCH = 2048  # llama.cpp's logical batch (-b) by default (common/common.h
 LLAMA_ATTENTION = {"fp16": 1}
 
 
-def prompt_work(profile:dict[str, Any], target, *, vram_gbs:float, kv:str) -> dict[str, Any]:
+def prompt_work(profile:dict[str, Any], target, *, vram_gbs:float, kv:str, routing:bool = True, engine:str = "llama.cpp") -> dict[str, Any]:
   """What prefill_work.turn_ceiling needs for llama.cpp on this GPU, from the profile alone: the weight roles (the
   decode limit's bytes, collectors/prefill.prefill_roles), llama.cpp's formats with this KV type, its weight paths, the
   chip's measured matrix peaks and the read bandwidth. A Refused when the profile has no roles to limit."""
@@ -135,7 +153,7 @@ def prompt_work(profile:dict[str, Any], target, *, vram_gbs:float, kv:str) -> di
     raise Refused("the model's profile has no weight roles to limit a prompt with")
   return {"profile": profile, "roles": roles, "formats": pf.llama_formats(kv, {str(r["quant"]).upper() for r in roles}),
           "weight_path": llama_weight_path, "attention_paths": LLAMA_ATTENTION, "peaks": dict(target.matrix_tflops or {}),
-          "bandwidth_gbs": vram_gbs}
+          "bandwidth_gbs": vram_gbs, "routing": rp.find(profile.get("source"), engine=engine) if routing else None, "engine": engine}
 
 
 def prompt_limit(work:dict[str, Any], *, layers:int, in_ram:int, ubatch:int, prompt:int, h2d_gbs:float, ram_gbs:float,
@@ -148,11 +166,12 @@ def prompt_limit(work:dict[str, Any], *, layers:int, in_ram:int, ubatch:int, pro
   for it); under uniform routing a chunk reaches as many experts in every layer, so the share of them in VRAM is the
   share of layers kept there."""
   from boltbeam.roofline.prefill_work import turn_ceiling
-  off = {"hit_rate": 1 - in_ram / layers, "cpu_share": 0.0, "pcie_gbs": h2d_gbs, "ram_gbs": ram_gbs, "estimated": estimated} if in_ram else None
+  prof = work.get("routing")
   try:
+    off = {"hit_rate": card_share(work, in_ram, layers, ubatch), "cpu_share": 0.0, "pcie_gbs": h2d_gbs, "ram_gbs": ram_gbs, "estimated": estimated} if in_ram else None
     c = turn_ceiling(work["profile"], work["roles"], prompt, 0, ubatch=ubatch, batch=max(ubatch, LLAMA_BATCH), formats=work["formats"],
                      weight_path=work["weight_path"], attention_paths=work["attention_paths"], peaks=work["peaks"],
-                     bandwidth_gbs=work["bandwidth_gbs"], offload=off)
+                     bandwidth_gbs=work["bandwidth_gbs"], offload=off, routing=prof["layers"] if prof else None)
   except ValueError as exc:  # FormulaRefused (a Mamba2 hybrid), a routing profile that does not fit
     raise Refused(str(exc)) from exc
   o = c.get("offload") or {"bytes": {"pcie": 0.0}, "ms": {"pcie": 0.0}}
@@ -160,7 +179,22 @@ def prompt_limit(work:dict[str, Any], *, layers:int, in_ram:int, ubatch:int, pro
   from boltbeam.collectors.replay import weight_path_note
   pathless = [weight_path_note(r["role"], r["quant"]) for r in work["roles"] if r["count"] != 1 and not work["weight_path"](r["quant"])]  # turn_ceiling notes a path with no peak, not a missing path
   return {"ubatch": ubatch, "flops": sum(r["flops"] for r in c["rows"]), "bytes": {"pcie": o["bytes"]["pcie"], "gpu_vram": sum(r["bytes"] for r in c["rows"])},
-          "ms": ms, "bound_by": max(ms, key=ms.get), "tok_s": prompt * 1000.0 / c["ms"], "unmodelled": c["unmodelled"] + pathless}
+          "ms": ms, "bound_by": max(ms, key=ms.get), "tok_s": prompt * 1000.0 / c["ms"], "unmodelled": c["unmodelled"] + pathless,
+          "routing": rp.words(prof, work.get("engine"))}
+
+
+def card_share(work:dict[str, Any], in_ram:int, layers:int, ubatch:int) -> float:
+  """The share of a chunk's reached expert bytes in the layers on the card (--n-cpu-moe keeps the first in_ram layers'
+  experts in RAM): 1 - in_ram / layers under uniform routing, else from the profile's per-layer reach at this chunk."""
+  prof = work.get("routing")
+  if not prof:
+    return 1 - in_ram / layers
+  from boltbeam.roofline.prefill_work import experts_reached
+  r = next((x for x in work["roles"] if x.get("routed") and x["count"] != 1), None)
+  if r is None:
+    return 1 - in_ram / layers
+  reach = experts_reached(ubatch, r["n_expert"], r["routed"], layers, prof["layers"])
+  return 1 - sum(reach[:in_ram]) / sum(reach)
 
 
 def prefill_plan(sh:dict[str, Any], work:dict[str, Any], *, usable_vram:float, kv_bytes:float, host:dict[str, Any], prompt:int,
@@ -194,13 +228,13 @@ def prefill_plan(sh:dict[str, Any], work:dict[str, Any], *, usable_vram:float, k
   replies = ol.offload_limit(dense_bytes=sh["dense_bytes"], expert_bytes=sh["expert_bytes"], hit_rate=1 - in_ram / layers, cpu_share=1.0,
                              vram_gbs=work["bandwidth_gbs"], ram_gbs=host["ram_gbs"], pcie_gbs=host["pcie_gbs"], estimated=sh["estimated"], cpu_gbs=host.get("cpu_gbs"))
   from boltbeam.collectors.capture_settings import render_llama
-  placed = ({"n_cpu_moe": in_ram} if in_ram else {}) | {"chunk_size": chosen["ubatch"]} \
+  placed = ({"n_cpu_moe": shapes.n_cpu_moe(sh, in_ram)} if in_ram else {}) | {"chunk_size": chosen["ubatch"]} \
            | ({"batch_size": chosen["ubatch"]} if chosen["ubatch"] > LLAMA_BATCH else {})  # llama.cpp's batch bounds the chunk
   w = plain_words()["offload"]
   say = (f"at most {chosen['tok_s']:.0f} tokens a second reading a {prompt}-token prompt (the setup for replies: at most "
          f"{decode_setup['tok_s']:.0f}); writing replies, at most {replies['overlap']['tok_s']:.0f} tokens a second. " + w["prefill_tuned"])
   return {"schema": "boltbeam.offload_setup.v1", "status": "recommended", "workload": "prefill", "for": w["for_prefill"], "engine": engine,
-          "estimated": True, "notes": ["routing assumed uniform: no measured routing profile",
+          "estimated": True, "notes": [("routing: " + rp.words(work.get("routing"), work.get("engine") or engine)) if work.get("routing") else "routing assumed uniform: no measured routing profile",
                                        "attention on llama.cpp's fp16 flash-attention path: its instruction sites were not read for a setup",
                                        "the compute buffer a larger chunk needs is not in the fit"] + (["shapes estimated, not read from a header"] if sh["estimated"] else [])
                                       + ([] if h2d else ["PCIe at the link's wire rate, an upper bound: no measured host-to-device rate"]) + list(chosen["unmodelled"])
@@ -317,7 +351,7 @@ def refusal(reason:str) -> dict[str, Any]:
 
 def for_setup(profile:dict[str, Any], provider:str, *, usable:float, kv_bytes:float, vram_gbs:float | None, pci_bus_id:str | None,
               context:int, target, kv:str = "f16", host:dict[str, Any] | None = None, estimate:dict[str, Any] | None = None,
-              host_tables:float = 0.0, fits:bool = False, probe:bool = False) -> dict[str, Any]:
+              host_tables:float = 0.0, fits:bool = False, probe:bool = False, routing:bool = True) -> dict[str, Any]:
   """recommend.setup's offload block: the plan, or the plain reason there is none, and the offload page (page()).
   kv: the setup's KV cache type, which the prompt limit's attention reads. host_tables: the model's bytes the engine
   maps from disk whatever the plan (a GGUF's input embeddings, recommend.tensor_bytes' host): not taken from the RAM
@@ -333,11 +367,12 @@ def for_setup(profile:dict[str, Any], provider:str, *, usable:float, kv_bytes:fl
     sh = shapes.moe_split(profile["source"], estimate)
     host = host or hostmod.facts(pci_bus_id, h2d_probe=hostmod._h2d_probe if probe else None)
     ram = ram_figure(host, host_tables)
-    out = plan(sh, usable_vram=usable, kv_bytes=kv_bytes, vram_gbs=vram_gbs, host=host, ram=ram, engine=provider, context=context, fits=fits)
+    out = plan(sh, usable_vram=usable, kv_bytes=kv_bytes, vram_gbs=vram_gbs, host=host, ram=ram, engine=provider, context=context, fits=fits,
+               routing=rp.find(profile.get("source"), engine=provider) if routing else None)
   except Refused as exc:
     return {**refusal(str(exc)), "page": page(refusal(str(exc)), usable_vram=usable, kv_bytes=kv_bytes, host=host)}
   try:  # the setup for prompts, apart: what is tuned for replies reads a long prompt 5 to 18 times slower
-    work = prompt_work(profile, target, vram_gbs=vram_gbs, kv=kv)
+    work = prompt_work(profile, target, vram_gbs=vram_gbs, kv=kv, routing=routing, engine=provider)
     out["prefill"] = prefill_plan(sh, work, usable_vram=usable, kv_bytes=kv_bytes, host=host, prompt=context, engine=provider, ram=ram, fits=fits)
   except Refused as exc:
     out["prefill"] = refusal(str(exc))
@@ -402,7 +437,7 @@ def run_block(run, profile:dict[str, Any], token:dict[str, Any] | None, vram_gbs
     host = host or hostmod.facts(_run_bus(run))  # the saved copy rate for the run's GPU, never a probe
     cache = f.get("cache_mib")
     s = 0.0 if rec["strata"] else f.get("cpu_share", 0.0) if cache else 1.0  # Strata reads host weights over PCIe; no cache: the CPU computes every expert
-    miss = min(f["n_cpu_moe"], sh["layers"]) / sh["layers"] if f.get("n_cpu_moe") and not cache else 1.0  # the first N layers' experts are in RAM: misses
+    miss = shapes.expert_layers_under(sh, f["n_cpu_moe"]) / sh["layers"] if f.get("n_cpu_moe") and not cache else 1.0  # the first N layers' experts are in RAM: misses
     _, memory = link(host)  # llama.cpp copies from pageable memory, as a setup's limit says; Strata's copies are not known
     common = dict(dense_bytes=sh["dense_bytes"], expert_bytes=sh["expert_bytes"], vram_gbs=vram_gbs, ram_gbs=host["ram_gbs"], pcie_gbs=host["pcie_gbs"],
                   estimated=sh["estimated"], cpu_gbs=host.get("cpu_gbs"), cpu_share=s,

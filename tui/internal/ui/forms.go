@@ -26,6 +26,7 @@ type formState struct {
 	traces     bool
 	confirmed  bool // the confirm step's answer: Make the copy
 	settings   map[string]*string
+	env        map[string]*string // the environment set for the engine, by name
 }
 
 // remoteRule is user@host or a host (an ssh Host alias): letters, digits, dot, dash and underscore, no leading dash.
@@ -133,6 +134,9 @@ func (m Model) formStep(msg tea.Msg) (Model, tea.Cmd) {
 				m.f.setSetting(set.Name, v)
 			}
 		}
+		for name, p := range s.env {
+			m.f.setEnv(name, strings.TrimSpace(*p))
+		}
 		m.backToSetup()
 	}
 	return m, nil
@@ -190,13 +194,14 @@ func (m *Model) openPick() tea.Cmd {
 			Options(huh.NewOption("leave them behind", false), huh.NewOption("copy them too", true)).Inline(true).Value(&s.traces))
 }
 
-// openSettings is the engine's settings, one field each with its help: a fixed set is chosen, anything else typed.
+// openSettings is the engine's settings, one field each with its help: a fixed set is chosen, anything else typed;
+// then each environment variable set for the engine (Use these), typed, empty to unset it.
 func (m *Model) openSettings() tea.Cmd {
 	offered := m.f.settingsOffered()
-	if len(offered) == 0 {
+	if len(offered) == 0 && len(m.f.envNames()) == 0 {
 		return nil
 	}
-	s := &formState{kind: "settings", settings: map[string]*string{}}
+	s := &formState{kind: "settings", settings: map[string]*string{}, env: map[string]*string{}}
 	fields := []huh.Field{}
 	for _, set := range offered {
 		v := new(string)
@@ -217,6 +222,16 @@ func (m *Model) openSettings() tea.Cmd {
 				}
 				return nil
 			}))
+	}
+	about := "environment variable for the engine"
+	if p := m.f.tunePage(); p != nil {
+		about = p.Use.EnvAbout
+	}
+	for _, name := range m.f.envNames() {
+		v := new(string)
+		*v = m.f.Env[name]
+		s.env[name] = v
+		fields = append(fields, huh.NewInput().Title(name).Description(about).Placeholder("not set").Value(v))
 	}
 	return m.openForm(s, fields...)
 }

@@ -95,12 +95,16 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], base:dict[str, Any]) -
   first = next(iter(truth))
   where = tables(run)
   trace = _read(run / "timing_trace.json")
+  from boltbeam.collectors.prefill import TRACE
+  captured = _read(run / TRACE).get("lengths") or {}
   for length, row in truth.items():
     w = where.get(length)
+    budget = (captured.get(str(length)) or {}).get("time_budget")  # the captured request's time budget (collectors/time_budget.py)
     out["prefill"]["lengths"][str(length)] = {"ms": row["prefill_ms"], "tok_s": row["tok_s"], "chunk": row["chunk"],
                                               "batched": row["batched"], "telemetry": row.get("telemetry"),
                                               "throttled": row.get("throttled"), "engine": row.get("engine"),
-                                              "ceiling_ms": w["limit_ms"] if w else None, "mfu_pct": w["mfu_pct"] if w else None}
+                                              "ceiling_ms": w["limit_ms"] if w else None, "mfu_pct": w["mfu_pct"] if w else None,
+                                              **({"time_budget": budget} if budget else {})}
   out["prefill"]["clock_policy"] = trace.get("clock_policy")
   head = truth[first]
   w = where.get(first)

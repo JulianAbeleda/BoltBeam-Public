@@ -11,7 +11,6 @@ import json
 import os
 import pathlib
 import platform
-import threading
 import time
 from typing import Any, Callable
 
@@ -19,7 +18,7 @@ from boltbeam.core.refused import Refused
 from boltbeam.target.hardware import run_tool
 
 FILE_ENV = "BOLTBEAM_HOST_FILE"
-PROBE_BYTES, THREADS, REPS = 256 << 20, 2, 5  # per thread; far beyond any cache; the best repetition (a lower bound on peak)
+PROBE_BYTES, REPS = 256 << 20, 5  # far beyond any cache; the best repetition (a lower bound on peak)
 RAM_MARGIN_BYTES = 2 * 2**30  # kept free of the plan: the system, the engine's own process and its page-cache churn
 RAM_SHARE = 0.85  # of total RAM, when what is available cannot be read (an assumed share)
 GENS = {2.5: 1, 5.0: 2, 8.0: 3, 16.0: 4, 32.0: 5, 64.0: 6}  # sysfs max_link_speed in GT/s -> PCIe generation
@@ -30,30 +29,43 @@ def host_file() -> pathlib.Path:
 
 
 def _sum_probe() -> tuple[float, str]:
-  """Read bandwidth in GB/s: THREADS threads each summing PROBE_BYTES (numpy, which releases the GIL), best of REPS."""
+  """Read bandwidth in GB/s with the standard library only: bytes.find of an absent byte over PROBE_BYTES of ones is one
+  C memchr pass that reads every byte and writes none, best of REPS. One thread: find holds the GIL, so a second
+  thread would not run beside it. A lower bound on the DDR peak (one core), about 80 percent of two cores' numpy sum."""
   try:
-    import numpy as np
-  except ImportError as exc:
-    raise Refused("host RAM bandwidth is measured with numpy, which is not installed here (pip install numpy)") from exc
-  arrays = [np.ones(PROBE_BYTES // 4, dtype=np.float32) for _ in range(THREADS)]
+    buf = bytes(b"\x01") * PROBE_BYTES  # every page touched, far beyond any cache
+  except MemoryError as exc:
+    raise Refused(f"the RAM read probe needs {PROBE_BYTES >> 20} MiB of free memory: close other programs and try again") from exc
   best = 0.0
   for _ in range(REPS):
-    ts = [threading.Thread(target=a.sum) for a in arrays]
     t0 = time.perf_counter()
-    [t.start() for t in ts]; [t.join() for t in ts]
-    best = max(best, THREADS * PROBE_BYTES / (time.perf_counter() - t0) / 1e9)
-  return best, f"numpy sum, {THREADS} threads x {PROBE_BYTES >> 20} MiB, best of {REPS}: a lower bound on the DDR peak"
+    buf.find(b"\x02")
+    best = max(best, PROBE_BYTES / (time.perf_counter() - t0) / 1e9)
+  return best, f"memory scan (Python standard library), {PROBE_BYTES >> 20} MiB, best of {REPS}: a lower bound on the DDR peak"
 
 
-def ram_read(*, probe:Callable[[], tuple[float, str]] = _sum_probe, path:pathlib.Path | None = None, remeasure:bool = False) -> dict[str, Any]:
-  """This machine's host RAM read bandwidth: the saved figure, else measured now and saved. A bad probe is a Refused."""
+RAM_METHOD = "memscan-stdlib-1t"  # _sum_probe's method; a saved figure of another method (numpy's 2-thread sum, before 0.3.21) is not this one
+
+
+def ram_read(*, probe:Callable[[], tuple[float, str]] = _sum_probe, path:pathlib.Path | None = None, remeasure:bool = False,
+             method:str = RAM_METHOD) -> dict[str, Any]:
+  """This machine's host RAM read bandwidth: the saved figure when it was measured by this method, else measured now and
+  saved with its method. A figure saved by another method (or none recorded) is measured again; when that cannot run,
+  the old figure stands, labelled with its method. A bad probe is a Refused."""
   path = path or host_file()
   saved = _load(path)
-  if isinstance(saved.get("ram_gbs"), (int, float)) and saved["ram_gbs"] > 0 and not remeasure:
+  have = isinstance(saved.get("ram_gbs"), (int, float)) and saved["ram_gbs"] > 0
+  if have and not remeasure and saved.get("ram_method") == method:
     return saved
-  gbs, how = probe()
+  try:
+    gbs, how = probe()
+  except Refused:
+    if have and not remeasure:  # the old figure, said as another method's
+      return {**saved, "ram_source": f"{saved.get('ram_source') or 'saved'} (measured by another method than BoltBeam's own now; not re-measured)"}
+    raise
   if not isinstance(gbs, (int, float)) or not gbs > 0: raise Refused(f"the RAM probe returned {gbs!r} GB/s")
-  saved = {**saved, "schema": "boltbeam.host.v1", "ram_gbs": gbs, "ram_source": how, "measured_at": datetime.date.today().isoformat()}
+  saved = {**saved, "schema": "boltbeam.host.v1", "ram_gbs": gbs, "ram_source": how, "ram_method": method,
+           "measured_at": datetime.date.today().isoformat()}
   _save(path, saved)
   return saved
 
@@ -304,3 +316,36 @@ def facts(pci_bus_id:str | None = None, *, h2d_probe:Callable[[str], dict[str, A
           "ram_gbs": ram["ram_gbs"], "ram_source": f"{ram['ram_source']} ({ram['measured_at']})", "pcie_gbs": link["gbs"], "pcie_source": link["source"],
           "pcie_gen": link["gen"], "pcie_width": link["width"], "cpu_gbs": None, "cpu_source": "CPU dequant rate not measured",
           "h2d_gbs": rates, "h2d_source": how, "h2d_measured_at": when, "h2d_reason": reason}
+
+
+def _size_bytes(text:str) -> int | None:
+  """A cache size as sysfs or lscpu print it ("32768K", "32 MiB", "1.5 MiB") in bytes; None when it does not parse."""
+  import re
+  m = re.fullmatch(r"\s*([\d.]+)\s*([KMG]?)(?:i?B)?\s*", text)
+  return int(float(m.group(1)) * {"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30}[m.group(2)]) if m else None
+
+
+def l3_cache(*, sysfs:str = "/sys/devices/system/cpu/cpu0/cache", system:str | None = None, run_command=run_tool) -> dict[str, Any]:
+  """One L3 instance's size, the cache the cores of cpu0 share (a chip with several L3s, one per core complex, has a copy
+  thread see only its own): {"bytes" (None when unknown), "source"}. Linux: sysfs cache/index*/level 3, else lscpu's total
+  over its instances. macOS: sysctl hw.l3cachesize (Apple silicon reports none: its last cache is the system cache)."""
+  system = system or platform.system()
+  if system == "Linux":
+    for d in sorted(pathlib.Path(sysfs).glob("index*")):
+      try:
+        if (d / "level").read_text().strip() == "3" and (n := _size_bytes((d / "size").read_text())):
+          return {"bytes": n, "source": f"sysfs {d.name}: {n >> 20} MiB shared by cpus {(d / 'shared_cpu_list').read_text().strip()}"}
+      except OSError:
+        continue
+    rc, out, _ = run_command(("lscpu",))
+    import re
+    m = re.search(r"^L3 cache:\s*([\d.]+\s*[KMG]i?B)(?:\s*\((\d+) instances?\))?", out, re.M) if rc == 0 else None
+    if m and (n := _size_bytes(m.group(1))):
+      k = int(m.group(2) or 1)
+      return {"bytes": n // k, "source": f"lscpu: {m.group(1)} in {k} instance(s)"}
+    return {"bytes": None, "source": "no L3 in sysfs or lscpu"}
+  if system == "Darwin":
+    rc, out, _ = run_command(("sysctl", "-n", "hw.l3cachesize"))
+    n = int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
+    return {"bytes": n, "source": "sysctl hw.l3cachesize"} if n > 0 else {"bytes": None, "source": "sysctl reports no L3 (Apple silicon: a system-level cache instead)"}
+  return {"bytes": None, "source": f"no reading of the L3 cache on {system}"}

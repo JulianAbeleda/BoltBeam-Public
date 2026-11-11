@@ -17,7 +17,9 @@ from tests.test_repeat_bands import repeat
 def test_offered_settings_follow_the_engine_and_the_parser(monkeypatch, tmp_path):
   assert [s["name"] for s in cs.offered("vllm")] == [k for k in cs.ASKED if k in cs.VLLM_SETTINGS]
   assert [s["name"] for s in cs.offered("llama.cpp")] == ["chunk_size", "n_gpu_layers", "n_cpu_moe", "override_tensor", "cpu_moe", "moe_cache_mib",
-                                                         "moe_cache_cpu_share", "spec_type", "draft_model", "cache_type_k_draft"]
+                                                         "moe_cache_cpu_share", "spec_type", "draft_model", "cache_type_k_draft", "cache_ram"]
+  by_llama = {s["name"]: s for s in cs.offered("llama.cpp")}  # a whole number whose least is 0 says so (the TUI takes 0)
+  assert by_llama["cache_ram"]["least"] == 0 and by_llama["n_cpu_moe"]["least"] == 0 and "least" not in by_llama["chunk_size"]
   assert cs.offered("tinygrad") == []
   by = {s["name"]: s for s in cs.offered("vllm")}
   assert by["mtp_prompt"]["choices"] == vllm_mtp.prompt_set()["ids"] and by["gemm_backends"]["choices"] == list(cs.GEMM_BACKENDS)

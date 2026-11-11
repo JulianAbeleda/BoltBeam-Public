@@ -21,4 +21,4 @@
 │   [ Back to setup ]                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · enter pick · t/a/m/e/w/f sections · esc setup · ? all keys · q quit
+ ↑↓ move · enter pick · t/a/b/m/e/w/f sections · esc setup · ? all keys · q quit

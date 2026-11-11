@@ -207,7 +207,8 @@
         }
       ],
       "title": "Where the token goes"
-    }
+    },
+    "time_budget": null
   },
   "schema": "boltbeam.plain_results.v1"
 }

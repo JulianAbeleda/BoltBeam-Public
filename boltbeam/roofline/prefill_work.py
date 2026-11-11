@@ -388,20 +388,39 @@ def experts_reached(w:int, n_expert:int, top_k:int, layers:int, routing:list[dic
   """The expected distinct experts a chunk of w tokens reaches, one figure per layer: the sum over experts of
   1 - (1 - q)^w, q the share of tokens that select the expert, tokens independent. routing: one measured record per
   layer in roofline/moe's form ({"shape": [tokens, top_k], "expert_counts": {expert: count}}, q = count / tokens);
-  None is uniform routing, q = top_k / n_expert, so n_expert x (1 - (1 - top_k / n_expert)^w): all experts for a large chunk."""
+  None is uniform routing, q = top_k / n_expert, so n_expert x (1 - (1 - top_k / n_expert)^w): all experts for a large chunk.
+  A None record is a layer not measured: uniform. Fewer records than layers that carry "layer" (a routing profile,
+  roofline/routing_profile) are placed by it, the rest uniform."""
+  uniform = n_expert * (1 - (1 - top_k / n_expert) ** w)
   if routing is None:
-    return [n_expert * (1 - (1 - top_k / n_expert) ** w)] * layers
+    return [uniform] * layers
   from boltbeam.roofline.moe import selected_experts
-  if len(routing) != layers:
+  if len(routing) != layers and all(r and r.get("layer", -1) >= 0 for r in routing):
+    first = max(0, max(r["layer"] for r in routing) + 1 - layers)  # dense layers before the experts' (ids are the model's)
+    at = {r["layer"] - first: r for r in routing}
+    if min(at) < 0:
+      raise ValueError(f"routing profile spans more layers than the role's {layers}")
+    routing = [at.get(i) for i in range(layers)]
+  elif len(routing) != layers:
     raise ValueError(f"routing profile has {len(routing)} layers, the role has {layers}")
-  for route in routing:
+  for route in filter(None, routing):
     selected_experts(route, tokens=route["shape"][0], top_k=top_k, experts=n_expert)
-  return [sum(1 - (1 - c / route["shape"][0]) ** w for c in route["expert_counts"].values()) for route in routing]
+  return [sum(1 - (1 - c / route["shape"][0]) ** w for c in route["expert_counts"].values()) if route else uniform for route in routing]
+
+
+def role_routing(role:dict[str, Any], routing:list[dict[str, Any]] | None) -> list[dict[str, Any] | None] | None:
+  """A routing profile's records in the order of a role's tensors: a role holds some layers' experts (per_layer: a layer
+  and its tensors of the role, e.g. gate and up), so each tensor reads its layer's record (None: not measured)."""
+  if routing is None or not role.get("per_layer") or not all("layer" in r for r in routing):
+    return routing
+  at = {r["layer"]: r for r in routing}
+  return [at.get(int(il)) for il, kinds in sorted(role["per_layer"].items(), key=lambda kv: int(kv[0])) for _ in range(sum(kinds.values()))]
 
 
 def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int, depth:int, *, ubatch:int, batch:int,
                  formats:dict[str, Any], weight_path:Callable[[str], str | None], attention_paths:dict[str, int],
-                 peaks:dict[str, float], bandwidth_gbs:float, offload:dict[str, Any] | None = None) -> dict[str, Any]:
+                 peaks:dict[str, float], bandwidth_gbs:float, offload:dict[str, Any] | None = None,
+                 routing:list[dict[str, Any]] | None = None) -> dict[str, Any]:
   """The ceiling of `length` tokens appended after `depth` in the cache, from the profile alone (no capture): per
   weight role, per chunk, a GEMM at its path's peak or the bandwidth (a role once per model runs once per output call
   over one token: the output head); attention at the depth with its operations split over its paths by instruction
@@ -414,7 +433,8 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
   (experts_reached: a measured per-layer routing profile, else uniform routing, which the result marks `estimated`).
   offload {hit_rate, cpu_share, pcie_gbs, ram_gbs, estimated, h2d_gbs, memory, routing}: hit_rate of those bytes is in
   VRAM (default 0, a cold cache), the rest uploaded per chunk (llama.cpp copy_experts) or CPU-computed (offload.py terms);
-  ms = max(GPU rows, PCIe, CPU), no_overlap_ms their sum."""
+  ms = max(GPU rows, PCIe, CPU), no_overlap_ms their sum. routing: the per-layer records (also taken from offload["routing"]);
+  the result says which routing it used (`routing`: measured or uniform)."""
   if formula_cannot_limit(profile):
     raise FormulaRefused(FORMULA_REFUSED)
   if length <= 0:
@@ -427,13 +447,14 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
   acts = formats.get("activations")
   rows, unmodelled, moved = [], [], 0.0
   offload = dict(offload or {})
-  routing = offload.pop("routing", None)
+  routing = offload.pop("routing", None) if routing is None else routing
+  offload.pop("routing", None)
   for r in roles:
     path = weight_path(r["quant"])
     once = r["count"] == 1
     role_acts = (formats.get("activations_by_quant") or {}).get(r["quant"], acts)
     ex = r.get("routed") and not once  # (m, weight bytes) per chunk and layer: an expert stack's are the products and the experts reached
-    reach = [(w * r["routed"], e * r["weight_bytes"] / r["routed"]) for w in chunks for e in experts_reached(w, r["n_expert"], r["routed"], r["count"], routing)] if ex else \
+    reach = [(w * r["routed"], e * r["weight_bytes"] / r["routed"]) for w in chunks for e in experts_reached(w, r["n_expert"], r["routed"], r["count"], role_routing(r, routing))] if ex else \
             [(w, r["weight_bytes"]) for w in chunks for _ in range(r["count"])]
     work_rows = [gemm(1, r["n"], r["k"], r["weight_bytes"], role_acts)] * outputs if once else [gemm(m, r["n"], r["k"], b, role_acts) for m, b in reach]
     moved += sum(b for _, b in reach) if ex else 0.0
@@ -456,7 +477,8 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
            **ceiling(rec["flops"], rec["bytes"], peaks.get(rec["path"]), bandwidth_gbs)}
     rows.append({**row, "best_ms": row["ms"]})  # its state's format is not a weight's: its own path
   out = {"ms": sum(r["ms"] or 0.0 for r in rows), "best_ms": sum(r["best_ms"] or 0.0 for r in rows), "rows": rows, "unmodelled": unmodelled, "chunks": len(chunks),
-         "outputs": outputs}
+         "outputs": outputs,
+         **({"routing": "uniform" if routing is None else "measured"} if any(r.get("routed") and r["count"] != 1 for r in roles) else {})}
   if offload and moved:
     from boltbeam.roofline.offload import offload_limit
     # The hit rate is an input, 0 by default: a cold cache. llama.cpp's MoE cache is only read by a large batch, never

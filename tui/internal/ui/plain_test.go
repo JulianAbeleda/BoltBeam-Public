@@ -259,3 +259,18 @@ func TestCompareSaysThePlainAnswerFirst(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// A run rebuilt from its record sets the engine environment it set before.
+func TestRunAgainPassesTheRecordedEngineEnv(t *testing.T) {
+	run, _ := recordedPlain(t, "batch")
+	r := *run
+	r.ModelPath = filepath.Join(t.TempDir(), "m.gguf")
+	if err := os.WriteFile(r.ModelPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.EngineEnv = map[string]string{"B_VAR": "2", "A_VAR": "1"}
+	got, _, _, err := againArgv(seam.Client{Python: "py"}, jobs.Store{Dir: t.TempDir()}, &r)
+	if err != nil || !strings.HasSuffix(strings.Join(got, " "), "--engine-env A_VAR=1 --engine-env B_VAR=2") {
+		t.Fatalf("%v %v", got, err)
+	}
+}

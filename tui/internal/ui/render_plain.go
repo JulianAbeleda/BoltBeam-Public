@@ -23,7 +23,7 @@ import (
 )
 
 // Sections are layer 2's open sections; all closed until a key opens one. All shows every column of the table.
-type Sections struct{ Table, All, Measured, Machine, Words, Full bool }
+type Sections struct{ Table, All, Budget, Measured, Machine, Words, Full bool }
 
 // The two section titles the plain block does not carry: the report's own (report/html.py "Words used here", "Full detail").
 const (
@@ -254,6 +254,9 @@ func (s Sections) toggle(msg tea.KeyPressMsg) (Sections, key.Binding, bool) {
 		s.All = !s.All
 		s.Table = s.Table || s.All
 		return s, keyAllCols, true
+	case key.Matches(msg, keyBudget):
+		s.Budget = !s.Budget
+		return s, keyBudget, true
 	case key.Matches(msg, keyMeasured):
 		s.Measured = !s.Measured
 		return s, keyMeasured, true
@@ -278,6 +281,10 @@ func sectionTitle(p *seam.Plain, k key.Binding) string {
 	case keyTable.Help().Key, keyAllCols.Help().Key:
 		if l2.Table != nil {
 			return l2.Table.Title
+		}
+	case keyBudget.Help().Key:
+		if l2.TimeBudget != nil {
+			return l2.TimeBudget.Title
 		}
 	case keyMeasured.Help().Key:
 		if len(l2.Sections) > 0 {
@@ -327,6 +334,14 @@ func layer2Body(f Facts, width int) string {
 			if w := t.AllColumns.Words; open.All && w != nil && *w != "" {
 				b.WriteString(paint(stMuted, hang(strings.Join(strings.Fields(*w), " "), 2, width)) + "\n")
 			}
+		}
+	}
+	if tb := l2.TimeBudget; tb != nil { // the record's caveat shows with the section closed: it is never hidden
+		b.WriteString(sectionHead(open.Budget, tb.Title, keyBudget, width) + "\n")
+		if open.Budget {
+			b.WriteString(budgetBody(tb, width))
+		} else {
+			b.WriteString(budgetWarn(tb.Warn, width))
 		}
 	}
 	for i, s := range l2.Sections {

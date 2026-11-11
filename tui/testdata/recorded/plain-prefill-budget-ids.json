@@ -1,0 +1,3397 @@
+{
+  "id": "flash-next-tb-ids",
+  "kind": "plain",
+  "layer1": {
+    "close": "12% of the fastest this GPU allows for this prompt (202.4 ms).",
+    "fast": "It reads a 10000-token prompt at 6163.2 tok/s (1622.5 ms). The engine's own timer leaves 244 ms outside it; timed by the client from request sent to reply received, the same prompt takes 1866.5 ms (5357.6 tok/s). This server kept its prompt cache in RAM (the default), which saves the previous request's state before each prompt; that is part of the time outside its timer. The prompt was sent as token ids, with no chat template around it. Where the 1,866.5 ms of the traced request (under the profiler) went: GPU kernels 1,344.4 ms, copies with no kernel running 261.3 ms, GPU idle 163.5 ms, host time before and after the GPU work 97.3 ms.",
+    "figures": [
+      {
+        "figure": "6163.2 tok/s",
+        "key": "speed",
+        "label": "reading a 10000-token prompt",
+        "unit": "tok/s",
+        "value": "6163.2"
+      },
+      {
+        "figure": "1622.5 ms",
+        "key": "ms",
+        "label": "for the whole prompt",
+        "unit": "ms",
+        "value": "1622.5"
+      },
+      {
+        "figure": "12%",
+        "key": "pct",
+        "label": "of this GPU's limit (202.4 ms)",
+        "unit": "%",
+        "value": "12"
+      },
+      {
+        "figure": "160.24 ms",
+        "key": "gain",
+        "label": "biggest saving on offer",
+        "unit": "ms",
+        "value": "160.24"
+      }
+    ],
+    "gains_note": null,
+    "holds": "idle time between GPU steps, 12% of the lost time.",
+    "numbers": {
+      "batch": 1,
+      "limit_ms": 202.35675247323255,
+      "limit_tok_s": 49417.67387437583,
+      "ms": 1622.523,
+      "outside_ms": 243.977,
+      "pct": 12.471733989178123,
+      "prompt_form": "ids",
+      "prompt_kind": "real_text",
+      "tok_s": 6163.2408292517275,
+      "wall_ms": 1866.5,
+      "wall_tok_s": 5357.621216180016
+    },
+    "run_type": "prefill",
+    "title": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M on NVIDIA GeForce RTX 5090 with llama.cpp",
+    "top": [
+      {
+        "gain": {
+          "cell": "160.24 ms",
+          "figure": "160.24 ms",
+          "text": "160.24 ms faster if this ran at full speed",
+          "unit": "ms",
+          "value": 160.24485700000605
+        },
+        "lost_ms": 160.24485700000605,
+        "ms": 160.24485700000605,
+        "name": "kernel gaps",
+        "part": "idle time between GPU steps",
+        "share": 0.11578431847049009,
+        "share_cell": "12%",
+        "time": "160.24 ms",
+        "what": "gaps"
+      },
+      {
+        "gain": {
+          "cell": "112.58 ms",
+          "figure": "112.58 ms",
+          "text": "112.58 ms faster if this ran at full speed",
+          "unit": "ms",
+          "value": 112.58021233333476
+        },
+        "lost_ms": 112.58021233333476,
+        "ms": 112.58021233333476,
+        "name": "moe_expert_gate_up IQ2_S",
+        "part": "expert feed-forward in (IQ2_S)",
+        "share": 0.08134440881480355,
+        "share_cell": "8%",
+        "time": "112.58 ms",
+        "what": "role"
+      },
+      {
+        "gain": {
+          "cell": "99.03 ms",
+          "figure": "99.03 ms",
+          "text": "99.03 ms faster if this ran at full speed",
+          "unit": "ms",
+          "value": 99.03015199999678
+        },
+        "lost_ms": 99.03015199999678,
+        "ms": 99.03015199999678,
+        "name": "moe_expert_down IQ4_NL",
+        "part": "expert feed-forward out (IQ4_NL)",
+        "share": 0.0715538637058925,
+        "share_cell": "7%",
+        "time": "99.03 ms",
+        "what": "role"
+      }
+    ],
+    "trust": {
+      "checked": true,
+      "key": "checked",
+      "text": "Checked \u2713: the parts add up to the measured time; recording slowed the run by 1.5%, under the 5% allowed."
+    },
+    "unassigned": "0.11 ms of weight reads could not be matched to a part."
+  },
+  "layer2": {
+    "glossary": [
+      {
+        "plain": "The fastest this GPU allows for this model: the time to move every byte the step needs once at the GPU's memory speed (or, for heavy maths, at its top compute speed). A real run is always slower.",
+        "term": "limit"
+      },
+      {
+        "plain": "Milliseconds: thousandths of a second.",
+        "term": "ms"
+      },
+      {
+        "plain": "The text the model reads before it starts to reply. Reading it is called prefill.",
+        "term": "prompt"
+      },
+      {
+        "plain": "One piece of the model's work in each step, such as the feed-forward or attention layers, or the time between GPU steps.",
+        "term": "part"
+      },
+      {
+        "plain": "How long this part takes now, in each token (or each step of several streams, or each prompt).",
+        "term": "time"
+      },
+      {
+        "plain": "This part's share of the lost time: of all the time the run takes beyond the limit, how much is in this part.",
+        "term": "share"
+      },
+      {
+        "plain": "What this part would give back if it ran at its own limit: its share of the distance from the measured speed to the limit.",
+        "term": "gain"
+      },
+      {
+        "plain": "A part's time now, less its time at the limit.",
+        "term": "time lost"
+      },
+      {
+        "plain": "The fastest this kind of work can run on this GPU by any method, not only the engine's.",
+        "term": "chip best"
+      },
+      {
+        "plain": "Gigabytes a second: how fast memory is read.",
+        "term": "GB/s"
+      },
+      {
+        "plain": "How much of the GPU's top maths speed a part uses.",
+        "term": "MFU"
+      },
+      {
+        "plain": "Time between GPU kernels, when the GPU waits for the next piece of work.",
+        "term": "idle time"
+      },
+      {
+        "plain": "A tool that watches the GPU and notes when every kernel starts and ends. Watching slows the run a little.",
+        "term": "recording"
+      },
+      {
+        "plain": "The run with no recording tool attached: the speed the engine really has.",
+        "term": "untraced"
+      },
+      {
+        "plain": "How the model's numbers are stored: fewer bits per number means less to read and a faster step, at some cost in accuracy.",
+        "term": "quant"
+      },
+      {
+        "plain": "What the model keeps about earlier tokens (keys and values), read again for every new token.",
+        "term": "KV cache"
+      },
+      {
+        "plain": "The part of the model that looks back at earlier tokens.",
+        "term": "attention"
+      },
+      {
+        "plain": "The largest part of each layer: two big matrix steps on every token.",
+        "term": "feed-forward"
+      },
+      {
+        "plain": "Layers that carry a running summary of the conversation instead of looking back at every token.",
+        "term": "state-space"
+      },
+      {
+        "plain": "The program that runs the model (llama.cpp, vLLM, TensorRT-LLM or tinygrad).",
+        "term": "engine"
+      },
+      {
+        "plain": "The engine's version. The pin is the version BoltBeam was last checked against; upstream is the newest release.",
+        "term": "build"
+      },
+      {
+        "plain": "The GPU driver and libraries the engine was built with.",
+        "term": "toolchain"
+      }
+    ],
+    "sections": [
+      {
+        "lines": [
+          "The speed is the engine running on its own, with nothing recording it, on the run's own prompt.",
+          "Recording slowed the run by 1.5% (the limit is 5%).",
+          "The limit is the sum of each recorded part's own fastest time on this GPU.",
+          "A part with no limit of its own counts all of its time as lost."
+        ],
+        "title": "How it was measured"
+      },
+      {
+        "lines": [
+          "GPU: NVIDIA GeForce RTX 5090, 1719.8 GB/s memory speed (measured on this GPU (native CUDA read probe, 2026-11-11)).",
+          "Engine: master (llama.cpp fork) commit 7592b61d3, not upstream llama.cpp \u00b7 no pin.",
+          "Weights: GGUF Q6_K+BF16.",
+          "Engine settings asked for: chunk size 2048.",
+          "The prompt was sent as token ids.",
+          "Toolchain: CUDA 13.2, GPU driver 595.99.02, Nsight Compute 2026.2.1, Nsight Systems 2026.1.3, PyTorch unknown.",
+          "How parts were timed: in-model."
+        ],
+        "title": "Machine and engine"
+      }
+    ],
+    "table": {
+      "all_columns": {
+        "baseline": null,
+        "columns": [
+          "row",
+          "ms now",
+          "ms at engine path",
+          "ms at chip best",
+          "ms lost",
+          "share",
+          "prefill ms if fixed",
+          "MFU"
+        ],
+        "rows": [
+          [
+            "recurrent state update",
+            "119.01",
+            "31.74",
+            "31.74",
+            "87.27",
+            "6%",
+            "1535.3",
+            "6.7%"
+          ],
+          [
+            "attention",
+            "92.88",
+            "44.15",
+            "44.15",
+            "48.73",
+            "4%",
+            "1573.8",
+            "47.5%"
+          ],
+          [
+            "attention query, keys and values, fused (Q6_K)",
+            "51.72",
+            "11.58",
+            "11.58",
+            "40.14",
+            "3%",
+            "1582.4",
+            "22.4%"
+          ],
+          [
+            "state-space output (Q6_K)",
+            "39.96",
+            "9.16",
+            "9.16",
+            "30.80",
+            "2%",
+            "1591.7",
+            "22.9%"
+          ],
+          [
+            "attention query and output (Q6_K)",
+            "29.25",
+            "6.63",
+            "6.63",
+            "22.61",
+            "2%",
+            "1599.9",
+            "22.7%"
+          ],
+          [
+            "attention output gate (Q6_K)",
+            "20.77",
+            "4.42",
+            "4.42",
+            "16.35",
+            "1%",
+            "1606.2",
+            "21.3%"
+          ],
+          [
+            "layer mixing before attention (BF16)",
+            "38.69",
+            "25.02",
+            "25.02",
+            "13.67",
+            "1%",
+            "1608.9",
+            "64.7%"
+          ],
+          [
+            "attention query, keys and values, fused (Q5_K)",
+            "18.58",
+            "5.26",
+            "5.26",
+            "13.32",
+            "1%",
+            "1609.2",
+            "28.3%"
+          ],
+          [
+            "layer mixing before feed-forward (BF16)",
+            "37.79",
+            "24.50",
+            "24.49",
+            "13.30",
+            "1%",
+            "1609.2",
+            "64.8%"
+          ],
+          [
+            "attention output gate (Q4_K)",
+            "11.50",
+            "3.16",
+            "3.16",
+            "8.34",
+            "1%",
+            "1614.2",
+            "27.5%"
+          ],
+          [
+            "attention output gate (IQ4_XS)",
+            "8.19",
+            "2.53",
+            "2.53",
+            "5.66",
+            "0%",
+            "1616.9",
+            "30.9%"
+          ],
+          [
+            "attention query and output (Q5_K)",
+            "6.81",
+            "1.90",
+            "1.90",
+            "4.92",
+            "0%",
+            "1617.6",
+            "27.8%"
+          ],
+          [
+            "shared expert feed-forward out (IQ4_NL)",
+            "7.41",
+            "3.15",
+            "3.15",
+            "4.26",
+            "0%",
+            "1618.3",
+            "20.9%"
+          ],
+          [
+            "attention query and output (IQ4_XS)",
+            "5.94",
+            "1.90",
+            "1.90",
+            "4.05",
+            "0%",
+            "1618.5",
+            "31.9%"
+          ],
+          [
+            "shared expert feed-forward in (Q6_K)",
+            "4.86",
+            "0.94",
+            "0.94",
+            "3.91",
+            "0%",
+            "1618.6",
+            "17.6%"
+          ],
+          [
+            "shared expert feed-forward in (Q4_K)",
+            "4.59",
+            "1.01",
+            "1.01",
+            "3.58",
+            "0%",
+            "1618.9",
+            "20.8%"
+          ],
+          [
+            "attention output gate (Q5_K)",
+            "4.68",
+            "1.26",
+            "1.26",
+            "3.42",
+            "0%",
+            "1619.1",
+            "27.0%"
+          ],
+          [
+            "other GPU work (small per-number steps)",
+            "5.16",
+            "1.94",
+            "1.94",
+            "3.22",
+            "0%",
+            "1619.3",
+            ""
+          ],
+          [
+            "state-space output (Q5_K)",
+            "4.40",
+            "1.26",
+            "1.26",
+            "3.14",
+            "0%",
+            "1619.4",
+            "28.7%"
+          ],
+          [
+            "shared expert feed-forward in (IQ4_XS)",
+            "3.99",
+            "0.97",
+            "0.97",
+            "3.02",
+            "0%",
+            "1619.5",
+            "23.1%"
+          ],
+          [
+            "layer mixing input (BF16)",
+            "9.21",
+            "6.40",
+            "6.40",
+            "2.81",
+            "0%",
+            "1619.7",
+            "3.4%"
+          ],
+          [
+            "attention keys and values (Q6_K)",
+            "3.43",
+            "0.68",
+            "0.68",
+            "2.74",
+            "0%",
+            "1619.8",
+            "16.1%"
+          ],
+          [
+            "attention query, keys and values, fused (Q4_K)",
+            "3.64",
+            "1.05",
+            "1.05",
+            "2.59",
+            "0%",
+            "1619.9",
+            "28.9%"
+          ],
+          [
+            "attention query and output (Q4_K)",
+            "3.29",
+            "0.95",
+            "0.95",
+            "2.34",
+            "0%",
+            "1620.2",
+            "28.8%"
+          ],
+          [
+            "state-space output (Q4_K)",
+            "3.22",
+            "0.95",
+            "0.95",
+            "2.27",
+            "0%",
+            "1620.3",
+            "29.4%"
+          ],
+          [
+            "expert router (BF16)",
+            "4.66",
+            "2.45",
+            "2.45",
+            "2.21",
+            "0%",
+            "1620.3",
+            "52.5%"
+          ],
+          [
+            "attention query, keys and values, fused (IQ4_XS)",
+            "3.24",
+            "1.05",
+            "1.05",
+            "2.19",
+            "0%",
+            "1620.3",
+            "32.5%"
+          ],
+          [
+            "shared expert feed-forward in (Q5_K)",
+            "1.77",
+            "0.39",
+            "0.39",
+            "1.37",
+            "0%",
+            "1621.1",
+            "20.5%"
+          ],
+          [
+            "attention indexer (picks the tokens to look at) (BF16)",
+            "2.69",
+            "1.56",
+            "1.56",
+            "1.13",
+            "0%",
+            "1621.4",
+            "58.1%"
+          ],
+          [
+            "state-space decay and update gates (BF16)",
+            "2.28",
+            "1.35",
+            "1.35",
+            "0.93",
+            "0%",
+            "1621.6",
+            "30.9%"
+          ],
+          [
+            "per-layer embedding (the layer's own token lookup) (BF16)",
+            "3.09",
+            "2.61",
+            "2.61",
+            "0.49",
+            "0%",
+            "1622.0",
+            "84.3%"
+          ],
+          [
+            "attention keys and values (Q5_K)",
+            "0.32",
+            "0.06",
+            "0.06",
+            "0.26",
+            "0%",
+            "1622.3",
+            "16.4%"
+          ],
+          [
+            "attention keys and values (IQ4_XS)",
+            "0.13",
+            "0.03",
+            "0.03",
+            "0.10",
+            "0%",
+            "1622.4",
+            "20.3%"
+          ],
+          [
+            "vocabulary output (Q6_K)",
+            "0.32",
+            "0.30",
+            "0.30",
+            "0.01",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "hyper_connection_ffn BF16, last layer at output (tokens)",
+            "0.02",
+            "0.01",
+            "0.01",
+            "0.01",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "layer mixing before the output (BF16)",
+            "0.02",
+            "0.01",
+            "0.01",
+            "0.01",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "moe_expert_gate_up IQ4_XS, last layer at output (tokens)",
+            "0.01",
+            "0.01",
+            "0.01",
+            "0.00",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "hyper_connection_inject BF16, last layer at output (tokens)",
+            "0.00",
+            "0.00",
+            "0.00",
+            "0.00",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "moe_expert_down IQ4_NL, last layer at output (tokens)",
+            "0.01",
+            "0.01",
+            "0.01",
+            "0.00",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "moe_shared_expert_gate_up Q5_K, last layer at output (tokens)",
+            "0.00",
+            "0.00",
+            "0.00",
+            "0.00",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "moe_shared_expert_down Q8_0, last layer at output (tokens)",
+            "0.00",
+            "0.00",
+            "0.00",
+            "0.00",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "moe_shared_expert_gate_up Q4_K, last layer at output (tokens)",
+            "0.00",
+            "0.00",
+            "0.00",
+            "0.00",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "moe_router BF16, last layer at output (tokens)",
+            "0.00",
+            "0.00",
+            "0.00",
+            "0.00",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "expert feed-forward in (IQ2_S)",
+            "112.58",
+            "no model",
+            "no model",
+            "112.58",
+            "8%",
+            "1509.9",
+            "11.7%"
+          ],
+          [
+            "expert feed-forward out (IQ4_NL)",
+            "99.03",
+            "no model",
+            "no model",
+            "99.03",
+            "7%",
+            "1523.5",
+            "12.6%"
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "84.11",
+            "no model",
+            "no model",
+            "84.11",
+            "6%",
+            "1538.4",
+            ""
+          ],
+          [
+            "other GPU work (normalizing)",
+            "77.85",
+            "no model",
+            "no model",
+            "77.85",
+            "6%",
+            "1544.7",
+            ""
+          ],
+          [
+            "expert feed-forward in (IQ3_XXS)",
+            "75.21",
+            "no model",
+            "no model",
+            "75.21",
+            "5%",
+            "1547.3",
+            "14.9%"
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "62.62",
+            "no model",
+            "no model",
+            "62.62",
+            "5%",
+            "1559.9",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "55.69",
+            "no model",
+            "no model",
+            "55.69",
+            "4%",
+            "1566.8",
+            ""
+          ],
+          [
+            "expert feed-forward in (IQ3_S)",
+            "47.12",
+            "no model",
+            "no model",
+            "47.12",
+            "3%",
+            "1575.4",
+            "14.0%"
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "41.73",
+            "no model",
+            "no model",
+            "41.73",
+            "3%",
+            "1580.8",
+            ""
+          ],
+          [
+            "other GPU work (copying)",
+            "36.01",
+            "no model",
+            "no model",
+            "36.01",
+            "3%",
+            "1586.5",
+            ""
+          ],
+          [
+            "other GPU work (summing steps)",
+            "32.38",
+            "no model",
+            "no model",
+            "32.38",
+            "2%",
+            "1590.1",
+            ""
+          ],
+          [
+            "other GPU work (converting numbers to a smaller format)",
+            "29.44",
+            "no model",
+            "no model",
+            "29.44",
+            "2%",
+            "1593.1",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "29.23",
+            "no model",
+            "no model",
+            "29.23",
+            "2%",
+            "1593.3",
+            ""
+          ],
+          [
+            "expert feed-forward out (Q2_0)",
+            "22.20",
+            "no model",
+            "no model",
+            "22.20",
+            "2%",
+            "1600.3",
+            "13.3%"
+          ],
+          [
+            "other GPU work (small per-number steps)",
+            "16.96",
+            "no model",
+            "no model",
+            "16.96",
+            "1%",
+            "1605.6",
+            ""
+          ],
+          [
+            "other GPU work (copying)",
+            "16.94",
+            "no model",
+            "no model",
+            "16.94",
+            "1%",
+            "1605.6",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "6.40",
+            "no model",
+            "no model",
+            "6.40",
+            "0%",
+            "1616.1",
+            ""
+          ],
+          [
+            "other GPU work (position encoding)",
+            "2.71",
+            "no model",
+            "no model",
+            "2.71",
+            "0%",
+            "1619.8",
+            ""
+          ],
+          [
+            "other GPU work (summing steps)",
+            "2.47",
+            "no model",
+            "no model",
+            "2.47",
+            "0%",
+            "1620.1",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "2.34",
+            "no model",
+            "no model",
+            "2.34",
+            "0%",
+            "1620.2",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "1.93",
+            "no model",
+            "no model",
+            "1.93",
+            "0%",
+            "1620.6",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "1.83",
+            "no model",
+            "no model",
+            "1.83",
+            "0%",
+            "1620.7",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "1.78",
+            "no model",
+            "no model",
+            "1.78",
+            "0%",
+            "1620.7",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "1.75",
+            "no model",
+            "no model",
+            "1.75",
+            "0%",
+            "1620.8",
+            ""
+          ],
+          [
+            "other GPU work (attention)",
+            "1.49",
+            "no model",
+            "no model",
+            "1.49",
+            "0%",
+            "1621.0",
+            ""
+          ],
+          [
+            "other GPU work (summing steps)",
+            "1.25",
+            "no model",
+            "no model",
+            "1.25",
+            "0%",
+            "1621.3",
+            ""
+          ],
+          [
+            "other GPU work (copying)",
+            "1.12",
+            "no model",
+            "no model",
+            "1.12",
+            "0%",
+            "1621.4",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "1.02",
+            "no model",
+            "no model",
+            "1.02",
+            "0%",
+            "1621.5",
+            ""
+          ],
+          [
+            "other GPU work (copying)",
+            "0.82",
+            "no model",
+            "no model",
+            "0.82",
+            "0%",
+            "1621.7",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.52",
+            "no model",
+            "no model",
+            "0.52",
+            "0%",
+            "1622.0",
+            ""
+          ],
+          [
+            "other GPU work (saving to the memory of earlier tokens)",
+            "0.51",
+            "no model",
+            "no model",
+            "0.51",
+            "0%",
+            "1622.0",
+            ""
+          ],
+          [
+            "other GPU work (attention)",
+            "0.45",
+            "no model",
+            "no model",
+            "0.45",
+            "0%",
+            "1622.1",
+            ""
+          ],
+          [
+            "other GPU work (converting numbers to a smaller format)",
+            "0.30",
+            "no model",
+            "no model",
+            "0.30",
+            "0%",
+            "1622.2",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.17",
+            "no model",
+            "no model",
+            "0.17",
+            "0%",
+            "1622.3",
+            ""
+          ],
+          [
+            "other GPU work (copying)",
+            "0.17",
+            "no model",
+            "no model",
+            "0.17",
+            "0%",
+            "1622.4",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.14",
+            "no model",
+            "no model",
+            "0.14",
+            "0%",
+            "1622.4",
+            ""
+          ],
+          [
+            "other GPU work (weight reads not matched to a part)",
+            "0.11",
+            "no model",
+            "no model",
+            "0.11",
+            "0%",
+            "1622.4",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.09",
+            "no model",
+            "no model",
+            "0.09",
+            "0%",
+            "1622.4",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.04",
+            "no model",
+            "no model",
+            "0.04",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "other GPU work (attention)",
+            "0.02",
+            "no model",
+            "no model",
+            "0.02",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "other GPU work (copying)",
+            "0.02",
+            "no model",
+            "no model",
+            "0.02",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.01",
+            "no model",
+            "no model",
+            "0.01",
+            "0%",
+            "1622.5",
+            ""
+          ],
+          [
+            "idle time between GPU steps",
+            "160.24",
+            "0.00",
+            "0.00",
+            "160.24",
+            "12%",
+            "1462.3",
+            ""
+          ]
+        ],
+        "sum": [
+          "= prefill",
+          "1586.35",
+          "202.36",
+          "202.35",
+          "1383.99",
+          "100%",
+          "",
+          ""
+        ],
+        "words": "10000-token prefill \u00b7 captured 1586.4 ms. Projected time fixes one row only. Limits use compute and memory; chip best uses the fastest exact path. No model = measured time, unknown savings. Untraced prefill: 1622.5 ms. capture +1.53% over native, within the 5% capture-overhead ceiling. attention, hyper_connection_attn BF16, hyper_connection_ffn BF16, moe_router BF16, attn_indexer BF16, per_layer_embedding BF16: instructions on more than one path; its operations are split over them by its instruction sites, each part at its own path's peak."
+      },
+      "columns": [
+        "part",
+        "time (per prefill)",
+        "share of the lost time",
+        "gain"
+      ],
+      "note": null,
+      "rows": [
+        {
+          "cells": [
+            "recurrent state update",
+            "119.01 ms",
+            "6%",
+            "87.27 ms"
+          ],
+          "gain": {
+            "cell": "87.27 ms",
+            "figure": "87.27 ms",
+            "text": "87.27 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 87.27199312644112
+          },
+          "lost_ms": 87.27199312644112,
+          "ms": 119.00902911667254,
+          "name": "recurrent",
+          "part": "recurrent state update",
+          "section": "Model operations",
+          "share": 0.06305805025434232,
+          "share_cell": "6%",
+          "time": "119.01 ms",
+          "what": "recurrent"
+        },
+        {
+          "cells": [
+            "attention",
+            "92.88 ms",
+            "4%",
+            "48.73 ms"
+          ],
+          "gain": {
+            "cell": "48.73 ms",
+            "figure": "48.73 ms",
+            "text": "48.73 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 48.733110736226394
+          },
+          "lost_ms": 48.733110736226394,
+          "ms": 92.87823699999917,
+          "name": "attention",
+          "part": "attention",
+          "section": "Model operations",
+          "share": 0.035211925793916014,
+          "share_cell": "4%",
+          "time": "92.88 ms",
+          "what": "attention"
+        },
+        {
+          "cells": [
+            "attention query, keys and values, fused (Q6_K)",
+            "51.72 ms",
+            "3%",
+            "40.14 ms"
+          ],
+          "gain": {
+            "cell": "40.14 ms",
+            "figure": "40.14 ms",
+            "text": "40.14 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 40.140116464957615
+          },
+          "lost_ms": 40.140116464957615,
+          "ms": 51.72310100000481,
+          "name": "attn_qkv Q6_K",
+          "part": "attention query, keys and values, fused (Q6_K)",
+          "section": "Model operations",
+          "share": 0.02900309011615293,
+          "share_cell": "3%",
+          "time": "51.72 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "state-space output (Q6_K)",
+            "39.96 ms",
+            "2%",
+            "30.80 ms"
+          ],
+          "gain": {
+            "cell": "30.80 ms",
+            "figure": "30.80 ms",
+            "text": "30.80 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 30.799904064704865
+          },
+          "lost_ms": 30.799904064704865,
+          "ms": 39.960991833333104,
+          "name": "ssm_out Q6_K",
+          "part": "state-space output (Q6_K)",
+          "section": "Model operations",
+          "share": 0.022254354790857318,
+          "share_cell": "2%",
+          "time": "39.96 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention query and output (Q6_K)",
+            "29.25 ms",
+            "2%",
+            "22.61 ms"
+          ],
+          "gain": {
+            "cell": "22.61 ms",
+            "figure": "22.61 ms",
+            "text": "22.61 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 22.614445723870844
+          },
+          "lost_ms": 22.614445723870844,
+          "ms": 29.248336866670602,
+          "name": "attn_qo Q6_K",
+          "part": "attention query and output (Q6_K)",
+          "section": "Model operations",
+          "share": 0.0163399826661905,
+          "share_cell": "2%",
+          "time": "29.25 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention output gate (Q6_K)",
+            "20.77 ms",
+            "1%",
+            "16.35 ms"
+          ],
+          "gain": {
+            "cell": "16.35 ms",
+            "figure": "16.35 ms",
+            "text": "16.35 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 16.34598723813304
+          },
+          "lost_ms": 16.34598723813304,
+          "ms": 20.768581333332882,
+          "name": "attn_gate Q6_K",
+          "part": "attention output gate (Q6_K)",
+          "section": "Model operations",
+          "share": 0.011810731573709671,
+          "share_cell": "1%",
+          "time": "20.77 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "layer mixing before attention (BF16)",
+            "38.69 ms",
+            "1%",
+            "13.67 ms"
+          ],
+          "gain": {
+            "cell": "13.67 ms",
+            "figure": "13.67 ms",
+            "text": "13.67 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 13.672905758988097
+          },
+          "lost_ms": 13.672905758988097,
+          "ms": 38.68974099999498,
+          "name": "hyper_connection_attn BF16",
+          "part": "layer mixing before attention (BF16)",
+          "section": "Model operations",
+          "share": 0.009879306608982877,
+          "share_cell": "1%",
+          "time": "38.69 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention query, keys and values, fused (Q5_K)",
+            "18.58 ms",
+            "1%",
+            "13.32 ms"
+          ],
+          "gain": {
+            "cell": "13.32 ms",
+            "figure": "13.32 ms",
+            "text": "13.32 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 13.317359029525123
+          },
+          "lost_ms": 13.317359029525123,
+          "ms": 18.582352000001123,
+          "name": "attn_qkv Q5_K",
+          "part": "attention query, keys and values, fused (Q5_K)",
+          "section": "Model operations",
+          "share": 0.009622407657428503,
+          "share_cell": "1%",
+          "time": "18.58 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "layer mixing before feed-forward (BF16)",
+            "37.79 ms",
+            "1%",
+            "13.30 ms"
+          ],
+          "gain": {
+            "cell": "13.30 ms",
+            "figure": "13.30 ms",
+            "text": "13.30 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 13.297668326504365
+          },
+          "lost_ms": 13.297668326504365,
+          "ms": 37.793319499990275,
+          "name": "hyper_connection_ffn BF16",
+          "part": "layer mixing before feed-forward (BF16)",
+          "section": "Model operations",
+          "share": 0.009608180214051252,
+          "share_cell": "1%",
+          "time": "37.79 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention output gate (Q4_K)",
+            "11.50 ms",
+            "1%",
+            "8.34 ms"
+          ],
+          "gain": {
+            "cell": "8.34 ms",
+            "figure": "8.34 ms",
+            "text": "8.34 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 8.3439472177179
+          },
+          "lost_ms": 8.3439472177179,
+          "ms": 11.5029430000035,
+          "name": "attn_gate Q4_K",
+          "part": "attention output gate (Q4_K)",
+          "section": "Model operations",
+          "share": 0.0060288876663116405,
+          "share_cell": "1%",
+          "time": "11.50 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention output gate (IQ4_XS)",
+            "8.19 ms",
+            "0%",
+            "5.66 ms"
+          ],
+          "gain": {
+            "cell": "5.66 ms",
+            "figure": "5.66 ms",
+            "text": "5.66 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 5.662386040837483
+          },
+          "lost_ms": 5.662386040837483,
+          "ms": 8.189582666665963,
+          "name": "attn_gate IQ4_XS",
+          "part": "attention output gate (IQ4_XS)",
+          "section": "Model operations",
+          "share": 0.004091335727892721,
+          "share_cell": "0%",
+          "time": "8.19 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention query and output (Q5_K)",
+            "6.81 ms",
+            "0%",
+            "4.92 ms"
+          ],
+          "gain": {
+            "cell": "4.92 ms",
+            "figure": "4.92 ms",
+            "text": "4.92 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 4.917440530627902
+          },
+          "lost_ms": 4.917440530627902,
+          "ms": 6.812837999999261,
+          "name": "attn_qo Q5_K",
+          "part": "attention query and output (Q5_K)",
+          "section": "Model operations",
+          "share": 0.0035530781525044217,
+          "share_cell": "0%",
+          "time": "6.81 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "shared expert feed-forward out (IQ4_NL)",
+            "7.41 ms",
+            "0%",
+            "4.26 ms"
+          ],
+          "gain": {
+            "cell": "4.26 ms",
+            "figure": "4.26 ms",
+            "text": "4.26 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 4.264601298621882
+          },
+          "lost_ms": 4.264601298621882,
+          "ms": 7.411999833335221,
+          "name": "moe_shared_expert_down IQ4_NL",
+          "part": "shared expert feed-forward out (IQ4_NL)",
+          "section": "Model operations",
+          "share": 0.0030813716218629278,
+          "share_cell": "0%",
+          "time": "7.41 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention query and output (IQ4_XS)",
+            "5.94 ms",
+            "0%",
+            "4.05 ms"
+          ],
+          "gain": {
+            "cell": "4.05 ms",
+            "figure": "4.05 ms",
+            "text": "4.05 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 4.046268530627365
+          },
+          "lost_ms": 4.046268530627365,
+          "ms": 5.941665999998724,
+          "name": "attn_qo IQ4_XS",
+          "part": "attention query and output (IQ4_XS)",
+          "section": "Model operations",
+          "share": 0.002923616101871295,
+          "share_cell": "0%",
+          "time": "5.94 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "shared expert feed-forward in (Q6_K)",
+            "4.86 ms",
+            "0%",
+            "3.91 ms"
+          ],
+          "gain": {
+            "cell": "3.91 ms",
+            "figure": "3.91 ms",
+            "text": "3.91 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 3.910304405399124
+          },
+          "lost_ms": 3.910304405399124,
+          "ms": 4.8552180000031475,
+          "name": "moe_shared_expert_gate_up Q6_K",
+          "part": "shared expert feed-forward in (Q6_K)",
+          "section": "Model operations",
+          "share": 0.002825375734781151,
+          "share_cell": "0%",
+          "time": "4.86 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "shared expert feed-forward in (Q4_K)",
+            "4.59 ms",
+            "0%",
+            "3.58 ms"
+          ],
+          "gain": {
+            "cell": "3.58 ms",
+            "figure": "3.58 ms",
+            "text": "3.58 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 3.5803690458206487
+          },
+          "lost_ms": 3.5803690458206487,
+          "ms": 4.5915750000013675,
+          "name": "moe_shared_expert_gate_up Q4_K",
+          "part": "shared expert feed-forward in (Q4_K)",
+          "section": "Model operations",
+          "share": 0.0025869821821686736,
+          "share_cell": "0%",
+          "time": "4.59 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention output gate (Q5_K)",
+            "4.68 ms",
+            "0%",
+            "3.42 ms"
+          ],
+          "gain": {
+            "cell": "3.42 ms",
+            "figure": "3.42 ms",
+            "text": "3.42 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 3.4178623537534443
+          },
+          "lost_ms": 3.4178623537534443,
+          "ms": 4.681460666667684,
+          "name": "attn_gate Q5_K",
+          "part": "attention output gate (Q5_K)",
+          "section": "Model operations",
+          "share": 0.002469563583281008,
+          "share_cell": "0%",
+          "time": "4.68 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "other GPU work (small per-number steps)",
+            "5.16 ms",
+            "0%",
+            "3.22 ms"
+          ],
+          "gain": {
+            "cell": "3.22 ms",
+            "figure": "3.22 ms",
+            "text": "3.22 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 3.21522590493162
+          },
+          "lost_ms": 3.21522590493162,
+          "ms": 5.158207000000117,
+          "name": "mul_mat_q_stream_k_fixup",
+          "part": "other GPU work (small per-number steps)",
+          "section": "Model operations",
+          "share": 0.0023231493796469133,
+          "share_cell": "0%",
+          "time": "5.16 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "state-space output (Q5_K)",
+            "4.40 ms",
+            "0%",
+            "3.14 ms"
+          ],
+          "gain": {
+            "cell": "3.14 ms",
+            "figure": "3.14 ms",
+            "text": "3.14 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 3.1395056870852573
+          },
+          "lost_ms": 3.1395056870852573,
+          "ms": 4.403103999999497,
+          "name": "ssm_out Q5_K",
+          "part": "state-space output (Q5_K)",
+          "section": "Model operations",
+          "share": 0.002268438021155216,
+          "share_cell": "0%",
+          "time": "4.40 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "shared expert feed-forward in (IQ4_XS)",
+            "3.99 ms",
+            "0%",
+            "3.02 ms"
+          ],
+          "gain": {
+            "cell": "3.02 ms",
+            "figure": "3.02 ms",
+            "text": "3.02 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 3.0164957284565963
+          },
+          "lost_ms": 3.0164957284565963,
+          "ms": 3.987830999999799,
+          "name": "moe_shared_expert_gate_up IQ4_XS",
+          "part": "shared expert feed-forward in (IQ4_XS)",
+          "section": "Model operations",
+          "share": 0.0021795576383988307,
+          "share_cell": "0%",
+          "time": "3.99 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "layer mixing input (BF16)",
+            "9.21 ms",
+            "0%",
+            "2.81 ms"
+          ],
+          "gain": {
+            "cell": "2.81 ms",
+            "figure": "2.81 ms",
+            "text": "2.81 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 2.8120453891625257
+          },
+          "lost_ms": 2.8120453891625257,
+          "ms": 9.211565333342081,
+          "name": "hyper_connection_inject BF16",
+          "part": "layer mixing input (BF16)",
+          "section": "Model operations",
+          "share": 0.002031832815029158,
+          "share_cell": "0%",
+          "time": "9.21 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention keys and values (Q6_K)",
+            "3.43 ms",
+            "0%",
+            "2.74 ms"
+          ],
+          "gain": {
+            "cell": "2.74 ms",
+            "figure": "2.74 ms",
+            "text": "2.74 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 2.7448186641463246
+          },
+          "lost_ms": 2.7448186641463246,
+          "ms": 3.425786999999331,
+          "name": "attn_kv Q6_K",
+          "part": "attention keys and values (Q6_K)",
+          "section": "Model operations",
+          "share": 0.001983258397823346,
+          "share_cell": "0%",
+          "time": "3.43 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention query, keys and values, fused (Q4_K)",
+            "3.64 ms",
+            "0%",
+            "2.59 ms"
+          ],
+          "gain": {
+            "cell": "2.59 ms",
+            "figure": "2.59 ms",
+            "text": "2.59 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 2.5911007392366963
+          },
+          "lost_ms": 2.5911007392366963,
+          "ms": 3.644099333331896,
+          "name": "attn_qkv Q4_K",
+          "part": "attention query, keys and values, fused (Q4_K)",
+          "section": "Model operations",
+          "share": 0.0018721900895758083,
+          "share_cell": "0%",
+          "time": "3.64 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention query and output (Q4_K)",
+            "3.29 ms",
+            "0%",
+            "2.34 ms"
+          ],
+          "gain": {
+            "cell": "2.34 ms",
+            "figure": "2.34 ms",
+            "text": "2.34 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 2.3383021986491306
+          },
+          "lost_ms": 2.3383021986491306,
+          "ms": 3.2860009333348104,
+          "name": "attn_qo Q4_K",
+          "part": "attention query and output (Q4_K)",
+          "section": "Model operations",
+          "share": 0.0016895314552817624,
+          "share_cell": "0%",
+          "time": "3.29 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "state-space output (Q4_K)",
+            "3.22 ms",
+            "0%",
+            "2.27 ms"
+          ],
+          "gain": {
+            "cell": "2.27 ms",
+            "figure": "2.27 ms",
+            "text": "2.27 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 2.2727542653133685
+          },
+          "lost_ms": 2.2727542653133685,
+          "ms": 3.2204529999990483,
+          "name": "ssm_out Q4_K",
+          "part": "state-space output (Q4_K)",
+          "section": "Model operations",
+          "share": 0.0016421700426878464,
+          "share_cell": "0%",
+          "time": "3.22 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "expert router (BF16)",
+            "4.66 ms",
+            "0%",
+            "2.21 ms"
+          ],
+          "gain": {
+            "cell": "2.21 ms",
+            "figure": "2.21 ms",
+            "text": "2.21 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 2.2146128826561795
+          },
+          "lost_ms": 2.2146128826561795,
+          "ms": 4.66417800000477,
+          "name": "moe_router BF16",
+          "part": "expert router (BF16)",
+          "section": "Model operations",
+          "share": 0.0016001602054180341,
+          "share_cell": "0%",
+          "time": "4.66 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention query, keys and values, fused (IQ4_XS)",
+            "3.24 ms",
+            "0%",
+            "2.19 ms"
+          ],
+          "gain": {
+            "cell": "2.19 ms",
+            "figure": "2.19 ms",
+            "text": "2.19 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 2.187850072569886
+          },
+          "lost_ms": 2.187850072569886,
+          "ms": 3.240848666665086,
+          "name": "attn_qkv IQ4_XS",
+          "part": "attention query, keys and values, fused (IQ4_XS)",
+          "section": "Model operations",
+          "share": 0.0015808228376908656,
+          "share_cell": "0%",
+          "time": "3.24 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "shared expert feed-forward in (Q5_K)",
+            "1.77 ms",
+            "0%",
+            "1.37 ms"
+          ],
+          "gain": {
+            "cell": "1.37 ms",
+            "figure": "1.37 ms",
+            "text": "1.37 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 1.374155602275476
+          },
+          "lost_ms": 1.374155602275476,
+          "ms": 1.7655759999961411,
+          "name": "moe_shared_expert_gate_up Q5_K",
+          "part": "shared expert feed-forward in (Q5_K)",
+          "section": "Model operations",
+          "share": 0.0009928909598756472,
+          "share_cell": "0%",
+          "time": "1.77 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention indexer (picks the tokens to look at) (BF16)",
+            "2.69 ms",
+            "0%",
+            "1.13 ms"
+          ],
+          "gain": {
+            "cell": "1.13 ms",
+            "figure": "1.13 ms",
+            "text": "1.13 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 1.1274667974388455
+          },
+          "lost_ms": 1.1274667974388455,
+          "ms": 2.6910190000017757,
+          "name": "attn_indexer BF16",
+          "part": "attention indexer (picks the tokens to look at) (BF16)",
+          "section": "Model operations",
+          "share": 0.0008146468921592778,
+          "share_cell": "0%",
+          "time": "2.69 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "state-space decay and update gates (BF16)",
+            "2.28 ms",
+            "0%",
+            "0.93 ms"
+          ],
+          "gain": {
+            "cell": "0.93 ms",
+            "figure": "0.93 ms",
+            "text": "0.93 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.9273780016066013
+          },
+          "lost_ms": 0.9273780016066013,
+          "ms": 2.2765242000017634,
+          "name": "ssm_alpha_beta BF16",
+          "part": "state-space decay and update gates (BF16)",
+          "section": "Model operations",
+          "share": 0.0006700734856067258,
+          "share_cell": "0%",
+          "time": "2.28 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "per-layer embedding (the layer's own token lookup) (BF16)",
+            "3.09 ms",
+            "0%",
+            "0.49 ms"
+          ],
+          "gain": {
+            "cell": "0.49 ms",
+            "figure": "0.49 ms",
+            "text": "0.49 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.48703452750017373
+          },
+          "lost_ms": 0.48703452750017373,
+          "ms": 3.093047000000099,
+          "name": "per_layer_embedding BF16",
+          "part": "per-layer embedding (the layer's own token lookup) (BF16)",
+          "section": "Model operations",
+          "share": 0.00035190496527575077,
+          "share_cell": "0%",
+          "time": "3.09 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention keys and values (Q5_K)",
+            "0.32 ms",
+            "0%",
+            "0.26 ms"
+          ],
+          "gain": {
+            "cell": "0.26 ms",
+            "figure": "0.26 ms",
+            "text": "0.26 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.2567200256438904
+          },
+          "lost_ms": 0.2567200256438904,
+          "ms": 0.3203595000013738,
+          "name": "attn_kv Q5_K",
+          "part": "attention keys and values (Q5_K)",
+          "section": "Model operations",
+          "share": 0.000185492088566084,
+          "share_cell": "0%",
+          "time": "0.32 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention keys and values (IQ4_XS)",
+            "0.13 ms",
+            "0%",
+            "0.10 ms"
+          ],
+          "gain": {
+            "cell": "0.10 ms",
+            "figure": "0.10 ms",
+            "text": "0.10 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.09888176450656325
+          },
+          "lost_ms": 0.09888176450656325,
+          "ms": 0.12998699999906238,
+          "name": "attn_kv IQ4_XS",
+          "part": "attention keys and values (IQ4_XS)",
+          "section": "Model operations",
+          "share": 7.144664688085115e-05,
+          "share_cell": "0%",
+          "time": "0.13 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "vocabulary output (Q6_K)",
+            "0.32 ms",
+            "0%",
+            "0.01 ms"
+          ],
+          "gain": {
+            "cell": "0.01 ms",
+            "figure": "0.01 ms",
+            "text": "0.01 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.012855361903428952
+          },
+          "lost_ms": 0.012855361903428952,
+          "ms": 0.31694300000088216,
+          "name": "lm_head Q6_K",
+          "part": "vocabulary output (Q6_K)",
+          "section": "Model operations",
+          "share": 9.288593372328743e-06,
+          "share_cell": "0%",
+          "time": "0.32 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "hyper_connection_ffn BF16, last layer at output (tokens)",
+            "0.02 ms",
+            "0%",
+            "0.01 ms"
+          ],
+          "gain": {
+            "cell": "0.01 ms",
+            "figure": "0.01 ms",
+            "text": "0.01 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.008818618908519833
+          },
+          "lost_ms": 0.008818618908519833,
+          "ms": 0.016495999999344348,
+          "name": "hyper_connection_ffn BF16, last layer at output tokens",
+          "part": "hyper_connection_ffn BF16, last layer at output (tokens)",
+          "section": "Model operations",
+          "share": 6.3718599104488415e-06,
+          "share_cell": "0%",
+          "time": "0.02 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "layer mixing before the output (BF16)",
+            "0.02 ms",
+            "0%",
+            "0.01 ms"
+          ],
+          "gain": {
+            "cell": "0.01 ms",
+            "figure": "0.01 ms",
+            "text": "0.01 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.008509785574778581
+          },
+          "lost_ms": 0.008509785574778581,
+          "ms": 0.016187166665603096,
+          "name": "hyper_connection_head BF16",
+          "part": "layer mixing before the output (BF16)",
+          "section": "Model operations",
+          "share": 6.148713547204255e-06,
+          "share_cell": "0%",
+          "time": "0.02 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "moe_expert_gate_up IQ4_XS, last layer at output (tokens)",
+            "0.01 ms",
+            "0%",
+            "0.00 ms"
+          ],
+          "gain": {
+            "cell": "0.00 ms",
+            "figure": "0.00 ms",
+            "text": "0.00 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.004349202347302664
+          },
+          "lost_ms": 0.004349202347302664,
+          "ms": 0.014608999998192302,
+          "name": "moe_expert_gate_up IQ4_XS, last layer at output tokens",
+          "part": "moe_expert_gate_up IQ4_XS, last layer at output (tokens)",
+          "section": "Model operations",
+          "share": 3.1424997912580475e-06,
+          "share_cell": "0%",
+          "time": "0.01 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "hyper_connection_inject BF16, last layer at output (tokens)",
+            "0.00 ms",
+            "0%",
+            "0.00 ms"
+          ],
+          "gain": {
+            "cell": "0.00 ms",
+            "figure": "0.00 ms",
+            "text": "0.00 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.002713658796410491
+          },
+          "lost_ms": 0.002713658796410491,
+          "ms": 0.0027679999988758936,
+          "name": "hyper_connection_inject BF16, last layer at output tokens",
+          "part": "hyper_connection_inject BF16, last layer at output (tokens)",
+          "section": "Model operations",
+          "share": 1.9607439526363533e-06,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "moe_expert_down IQ4_NL, last layer at output (tokens)",
+            "0.01 ms",
+            "0%",
+            "0.00 ms"
+          ],
+          "gain": {
+            "cell": "0.00 ms",
+            "figure": "0.00 ms",
+            "text": "0.00 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.0017082953846444043
+          },
+          "lost_ms": 0.0017082953846444043,
+          "ms": 0.0071680000014603135,
+          "name": "moe_expert_down IQ4_NL, last layer at output tokens",
+          "part": "moe_expert_down IQ4_NL, last layer at output (tokens)",
+          "section": "Model operations",
+          "share": 1.2343224023553442e-06,
+          "share_cell": "0%",
+          "time": "0.01 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "moe_shared_expert_gate_up Q5_K, last layer at output (tokens)",
+            "0.00 ms",
+            "0%",
+            "0.00 ms"
+          ],
+          "gain": {
+            "cell": "0.00 ms",
+            "figure": "0.00 ms",
+            "text": "0.00 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.001674155601244787
+          },
+          "lost_ms": 0.001674155601244787,
+          "ms": 0.0023360000017564743,
+          "name": "moe_shared_expert_gate_up Q5_K, last layer at output tokens",
+          "part": "moe_shared_expert_gate_up Q5_K, last layer at output (tokens)",
+          "section": "Model operations",
+          "share": 1.209654830318042e-06,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "moe_shared_expert_down Q8_0, last layer at output (tokens)",
+            "0.00 ms",
+            "0%",
+            "0.00 ms"
+          ],
+          "gain": {
+            "cell": "0.00 ms",
+            "figure": "0.00 ms",
+            "text": "0.00 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.0015856950804815561
+          },
+          "lost_ms": 0.0015856950804815561,
+          "ms": 0.0026079999996582045,
+          "name": "moe_shared_expert_down Q8_0, last layer at output tokens",
+          "part": "moe_shared_expert_down Q8_0, last layer at output (tokens)",
+          "section": "Model operations",
+          "share": 1.1457380138918215e-06,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "moe_shared_expert_gate_up Q4_K, last layer at output (tokens)",
+            "0.00 ms",
+            "0%",
+            "0.00 ms"
+          ],
+          "gain": {
+            "cell": "0.00 ms",
+            "figure": "0.00 ms",
+            "text": "0.00 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.0015212392137587004
+          },
+          "lost_ms": 0.0015212392137587004,
+          "ms": 0.0020639999998966234,
+          "name": "moe_shared_expert_gate_up Q4_K, last layer at output tokens",
+          "part": "moe_shared_expert_gate_up Q4_K, last layer at output (tokens)",
+          "section": "Model operations",
+          "share": 1.0991656699199316e-06,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "moe_router BF16, last layer at output (tokens)",
+            "0.00 ms",
+            "0%",
+            "0.00 ms"
+          ],
+          "gain": {
+            "cell": "0.00 ms",
+            "figure": "0.00 ms",
+            "text": "0.00 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.0014403200381291198
+          },
+          "lost_ms": 0.0014403200381291198,
+          "ms": 0.0022080000009154902,
+          "name": "moe_router BF16, last layer at output tokens",
+          "part": "moe_router BF16, last layer at output (tokens)",
+          "section": "Model operations",
+          "share": 1.0406978240441385e-06,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "expert feed-forward in (IQ2_S)",
+            "112.58 ms",
+            "8%",
+            "112.58 ms"
+          ],
+          "gain": {
+            "cell": "112.58 ms",
+            "figure": "112.58 ms",
+            "text": "112.58 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 112.58021233333476
+          },
+          "lost_ms": 112.58021233333476,
+          "ms": 112.58021233333476,
+          "name": "moe_expert_gate_up IQ2_S",
+          "part": "expert feed-forward in (IQ2_S)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.08134440881480355,
+          "share_cell": "8%",
+          "time": "112.58 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "expert feed-forward out (IQ4_NL)",
+            "99.03 ms",
+            "7%",
+            "99.03 ms"
+          ],
+          "gain": {
+            "cell": "99.03 ms",
+            "figure": "99.03 ms",
+            "text": "99.03 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 99.03015199999678
+          },
+          "lost_ms": 99.03015199999678,
+          "ms": 99.03015199999678,
+          "name": "moe_expert_down IQ4_NL",
+          "part": "expert feed-forward out (IQ4_NL)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0715538637058925,
+          "share_cell": "7%",
+          "time": "99.03 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "84.11 ms",
+            "6%",
+            "84.11 ms"
+          ],
+          "gain": {
+            "cell": "84.11 ms",
+            "figure": "84.11 ms",
+            "text": "84.11 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 84.10651999999956
+          },
+          "lost_ms": 84.10651999999956,
+          "ms": 84.10651999999956,
+          "name": "mm_ids_helper",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.060770849557588144,
+          "share_cell": "6%",
+          "time": "84.11 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (normalizing)",
+            "77.85 ms",
+            "6%",
+            "77.85 ms"
+          ],
+          "gain": {
+            "cell": "77.85 ms",
+            "figure": "77.85 ms",
+            "text": "77.85 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 77.85261639997069
+          },
+          "lost_ms": 77.85261639997069,
+          "ms": 77.85261639997069,
+          "name": "rms_norm_f32",
+          "part": "other GPU work (normalizing)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.05625211504301049,
+          "share_cell": "6%",
+          "time": "77.85 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "expert feed-forward in (IQ3_XXS)",
+            "75.21 ms",
+            "5%",
+            "75.21 ms"
+          ],
+          "gain": {
+            "cell": "75.21 ms",
+            "figure": "75.21 ms",
+            "text": "75.21 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 75.2058354999964
+          },
+          "lost_ms": 75.2058354999964,
+          "ms": 75.2058354999964,
+          "name": "moe_expert_gate_up IQ3_XXS",
+          "part": "expert feed-forward in (IQ3_XXS)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.05433969346280201,
+          "share_cell": "5%",
+          "time": "75.21 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "62.62 ms",
+            "5%",
+            "62.62 ms"
+          ],
+          "gain": {
+            "cell": "62.62 ms",
+            "figure": "62.62 ms",
+            "text": "62.62 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 62.62469100000106
+          },
+          "lost_ms": 62.62469100000106,
+          "ms": 62.62469100000106,
+          "name": "convert_unary_cont_vec4",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.045249234843523764,
+          "share_cell": "5%",
+          "time": "62.62 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "55.69 ms",
+            "4%",
+            "55.69 ms"
+          ],
+          "gain": {
+            "cell": "55.69 ms",
+            "figure": "55.69 ms",
+            "text": "55.69 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 55.69363250001392
+          },
+          "lost_ms": 55.69363250001392,
+          "ms": 55.69363250001392,
+          "name": "dsv4_hc_post_f32",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.040241224603918525,
+          "share_cell": "4%",
+          "time": "55.69 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "expert feed-forward in (IQ3_S)",
+            "47.12 ms",
+            "3%",
+            "47.12 ms"
+          ],
+          "gain": {
+            "cell": "47.12 ms",
+            "figure": "47.12 ms",
+            "text": "47.12 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 47.12051083333612
+          },
+          "lost_ms": 47.12051083333612,
+          "ms": 47.12051083333612,
+          "name": "moe_expert_gate_up IQ3_S",
+          "part": "expert feed-forward in (IQ3_S)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.03404674780182781,
+          "share_cell": "3%",
+          "time": "47.12 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "41.73 ms",
+            "3%",
+            "41.73 ms"
+          ],
+          "gain": {
+            "cell": "41.73 ms",
+            "figure": "41.73 ms",
+            "text": "41.73 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 41.729334999979095
+          },
+          "lost_ms": 41.729334999979095,
+          "ms": 41.729334999979095,
+          "name": "dsv4_hc_pre_f32",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.03015137398886484,
+          "share_cell": "3%",
+          "time": "41.73 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (copying)",
+            "36.01 ms",
+            "3%",
+            "36.01 ms"
+          ],
+          "gain": {
+            "cell": "36.01 ms",
+            "figure": "36.01 ms",
+            "text": "36.01 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 36.012800000000084
+          },
+          "lost_ms": 36.012800000000084,
+          "ms": 36.012800000000084,
+          "name": "concat_non_cont",
+          "part": "other GPU work (copying)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.026020913134291217,
+          "share_cell": "3%",
+          "time": "36.01 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (summing steps)",
+            "32.38 ms",
+            "2%",
+            "32.38 ms"
+          ],
+          "gain": {
+            "cell": "32.38 ms",
+            "figure": "32.38 ms",
+            "text": "32.38 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 32.37994099999888
+          },
+          "lost_ms": 32.37994099999888,
+          "ms": 32.37994099999888,
+          "name": "moe_weighted_reduction_f32",
+          "part": "other GPU work (summing steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.023396004533233837,
+          "share_cell": "2%",
+          "time": "32.38 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (converting numbers to a smaller format)",
+            "29.44 ms",
+            "2%",
+            "29.44 ms"
+          ],
+          "gain": {
+            "cell": "29.44 ms",
+            "figure": "29.44 ms",
+            "text": "29.44 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 29.444487999999275
+          },
+          "lost_ms": 29.444487999999275,
+          "ms": 29.444487999999275,
+          "name": "quantize_mmq_q8_1",
+          "part": "other GPU work (converting numbers to a smaller format)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.021275004013341352,
+          "share_cell": "2%",
+          "time": "29.44 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "29.23 ms",
+            "2%",
+            "29.23 ms"
+          ],
+          "gain": {
+            "cell": "29.23 ms",
+            "figure": "29.23 ms",
+            "text": "29.23 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 29.232141966663935
+          },
+          "lost_ms": 29.232141966663935,
+          "ms": 29.232141966663935,
+          "name": "unary_gated_op_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.021121574185951363,
+          "share_cell": "2%",
+          "time": "29.23 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "expert feed-forward out (Q2_0)",
+            "22.20 ms",
+            "2%",
+            "22.20 ms"
+          ],
+          "gain": {
+            "cell": "22.20 ms",
+            "figure": "22.20 ms",
+            "text": "22.20 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 22.19562700000185
+          },
+          "lost_ms": 22.19562700000185,
+          "ms": 22.19562700000185,
+          "name": "moe_expert_down Q2_0",
+          "part": "expert feed-forward out (Q2_0)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0160373667731522,
+          "share_cell": "2%",
+          "time": "22.20 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "other GPU work (small per-number steps)",
+            "16.96 ms",
+            "1%",
+            "16.96 ms"
+          ],
+          "gain": {
+            "cell": "16.96 ms",
+            "figure": "16.96 ms",
+            "text": "16.96 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 16.957147166666445
+          },
+          "lost_ms": 16.957147166666445,
+          "ms": 16.957147166666445,
+          "name": "k_bin_bcast",
+          "part": "other GPU work (small per-number steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.012252322880454143,
+          "share_cell": "1%",
+          "time": "16.96 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (copying)",
+            "16.94 ms",
+            "1%",
+            "16.94 ms"
+          ],
+          "gain": {
+            "cell": "16.94 ms",
+            "figure": "16.94 ms",
+            "text": "16.94 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 16.937902466640995
+          },
+          "lost_ms": 16.937902466640995,
+          "ms": 16.937902466640995,
+          "name": "cpy_scalar",
+          "part": "other GPU work (copying)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.012238417694862972,
+          "share_cell": "1%",
+          "time": "16.94 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "6.40 ms",
+            "0%",
+            "6.40 ms"
+          ],
+          "gain": {
+            "cell": "6.40 ms",
+            "figure": "6.40 ms",
+            "text": "6.40 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 6.401158000000491
+          },
+          "lost_ms": 6.401158000000491,
+          "ms": 6.401158000000491,
+          "name": "lightning_indexer_kernel_tile",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.004625132627201597,
+          "share_cell": "0%",
+          "time": "6.40 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (position encoding)",
+            "2.71 ms",
+            "0%",
+            "2.71 ms"
+          ],
+          "gain": {
+            "cell": "2.71 ms",
+            "figure": "2.71 ms",
+            "text": "2.71 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 2.710308500020362
+          },
+          "lost_ms": 2.710308500020362,
+          "ms": 2.710308500020362,
+          "name": "rope_multi",
+          "part": "other GPU work (position encoding)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0019583232085858583,
+          "share_cell": "0%",
+          "time": "2.71 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (summing steps)",
+            "2.47 ms",
+            "0%",
+            "2.47 ms"
+          ],
+          "gain": {
+            "cell": "2.47 ms",
+            "figure": "2.47 ms",
+            "text": "2.47 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 2.4652076666894738
+          },
+          "lost_ms": 2.4652076666894738,
+          "ms": 2.4652076666894738,
+          "name": "cublasLt::splitKreduce_kernel",
+          "part": "other GPU work (summing steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0017812265237058874,
+          "share_cell": "0%",
+          "time": "2.47 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "2.34 ms",
+            "0%",
+            "2.34 ms"
+          ],
+          "gain": {
+            "cell": "2.34 ms",
+            "figure": "2.34 ms",
+            "text": "2.34 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 2.3442499166680726
+          },
+          "lost_ms": 2.3442499166680726,
+          "ms": 2.3442499166680726,
+          "name": "unary_op_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.001693828956556813,
+          "share_cell": "0%",
+          "time": "2.34 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "1.93 ms",
+            "0%",
+            "1.93 ms"
+          ],
+          "gain": {
+            "cell": "1.93 ms",
+            "figure": "1.93 ms",
+            "text": "1.93 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 1.9330710000007567
+          },
+          "lost_ms": 1.9330710000007567,
+          "ms": 1.9330710000007567,
+          "name": "top_k_radix_select",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0013967331774657073,
+          "share_cell": "0%",
+          "time": "1.93 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "1.83 ms",
+            "0%",
+            "1.83 ms"
+          ],
+          "gain": {
+            "cell": "1.83 ms",
+            "figure": "1.83 ms",
+            "text": "1.83 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 1.8251569999883577
+          },
+          "lost_ms": 1.8251569999883577,
+          "ms": 1.8251569999883577,
+          "name": "top_k_mask_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.001318760322805794,
+          "share_cell": "0%",
+          "time": "1.83 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "1.78 ms",
+            "0%",
+            "1.78 ms"
+          ],
+          "gain": {
+            "cell": "1.78 ms",
+            "figure": "1.78 ms",
+            "text": "1.78 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 1.7810960000000677
+          },
+          "lost_ms": 1.7810960000000677,
+          "ms": 1.7810960000000677,
+          "name": "std::enable_if<!T7,void>::typeinternal:\u2026",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0012869242130530035,
+          "share_cell": "0%",
+          "time": "1.78 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "1.75 ms",
+            "0%",
+            "1.75 ms"
+          ],
+          "gain": {
+            "cell": "1.75 ms",
+            "figure": "1.75 ms",
+            "text": "1.75 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 1.7526023333317196
+          },
+          "lost_ms": 1.7526023333317196,
+          "ms": 1.7526023333317196,
+          "name": "scale_f32",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.001266336221415182,
+          "share_cell": "0%",
+          "time": "1.75 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (attention)",
+            "1.49 ms",
+            "0%",
+            "1.49 ms"
+          ],
+          "gain": {
+            "cell": "1.49 ms",
+            "figure": "1.49 ms",
+            "text": "1.49 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 1.490313999999904
+          },
+          "lost_ms": 1.490313999999904,
+          "ms": 1.490313999999904,
+          "name": "flash_attn_stream_k_fixup_general",
+          "part": "other GPU work (attention)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0010768207730811126,
+          "share_cell": "0%",
+          "time": "1.49 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (summing steps)",
+            "1.25 ms",
+            "0%",
+            "1.25 ms"
+          ],
+          "gain": {
+            "cell": "1.25 ms",
+            "figure": "1.25 ms",
+            "text": "1.25 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 1.2470666666641557
+          },
+          "lost_ms": 1.2470666666641557,
+          "ms": 1.2470666666641557,
+          "name": "topk_moe_cuda",
+          "part": "other GPU work (summing steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0009010633276484478,
+          "share_cell": "0%",
+          "time": "1.25 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (copying)",
+            "1.12 ms",
+            "0%",
+            "1.12 ms"
+          ],
+          "gain": {
+            "cell": "1.12 ms",
+            "figure": "1.12 ms",
+            "text": "1.12 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 1.1178741666699894
+          },
+          "lost_ms": 1.1178741666699894,
+          "ms": 1.1178741666699894,
+          "name": "k_get_rows_float",
+          "part": "other GPU work (copying)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0008077157728915248,
+          "share_cell": "0%",
+          "time": "1.12 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "1.02 ms",
+            "0%",
+            "1.02 ms"
+          ],
+          "gain": {
+            "cell": "1.02 ms",
+            "figure": "1.02 ms",
+            "text": "1.02 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 1.016241000001697
+          },
+          "lost_ms": 1.016241000001697,
+          "ms": 1.016241000001697,
+          "name": "top_k_radix_histogram",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0007342811107314437,
+          "share_cell": "0%",
+          "time": "1.02 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (copying)",
+            "0.82 ms",
+            "0%",
+            "0.82 ms"
+          ],
+          "gain": {
+            "cell": "0.82 ms",
+            "figure": "0.82 ms",
+            "text": "0.82 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.8192753666571215
+          },
+          "lost_ms": 0.8192753666571215,
+          "ms": 0.8192753666571215,
+          "name": "k_get_rows_float_vec",
+          "part": "other GPU work (copying)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0005919643334828032,
+          "share_cell": "0%",
+          "time": "0.82 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.52 ms",
+            "0%",
+            "0.52 ms"
+          ],
+          "gain": {
+            "cell": "0.52 ms",
+            "figure": "0.52 ms",
+            "text": "0.52 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.5203480000004529
+          },
+          "lost_ms": 0.5203480000004529,
+          "ms": 0.5203480000004529,
+          "name": "top_k_radix_gather",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0003759754894819042,
+          "share_cell": "0%",
+          "time": "0.52 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (saving to the memory of earlier tokens)",
+            "0.51 ms",
+            "0%",
+            "0.51 ms"
+          ],
+          "gain": {
+            "cell": "0.51 ms",
+            "figure": "0.51 ms",
+            "text": "0.51 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.5077855000084274
+          },
+          "lost_ms": 0.5077855000084274,
+          "ms": 0.5077855000084274,
+          "name": "k_set_rows",
+          "part": "other GPU work (saving to the memory of earlier tokens)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0003668985023817057,
+          "share_cell": "0%",
+          "time": "0.51 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (attention)",
+            "0.45 ms",
+            "0%",
+            "0.45 ms"
+          ],
+          "gain": {
+            "cell": "0.45 ms",
+            "figure": "0.45 ms",
+            "text": "0.45 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.4503029999897699
+          },
+          "lost_ms": 0.4503029999897699,
+          "ms": 0.4503029999897699,
+          "name": "flash_attn_mask_to_KV_max",
+          "part": "other GPU work (attention)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0003253647382831803,
+          "share_cell": "0%",
+          "time": "0.45 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (converting numbers to a smaller format)",
+            "0.30 ms",
+            "0%",
+            "0.30 ms"
+          ],
+          "gain": {
+            "cell": "0.30 ms",
+            "figure": "0.30 ms",
+            "text": "0.30 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.30059146667950165
+          },
+          "lost_ms": 0.30059146667950165,
+          "ms": 0.30059146667950165,
+          "name": "quantize_q8_1",
+          "part": "other GPU work (converting numbers to a smaller format)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.00021719123321087188,
+          "share_cell": "0%",
+          "time": "0.30 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.17 ms",
+            "0%",
+            "0.17 ms"
+          ],
+          "gain": {
+            "cell": "0.17 ms",
+            "figure": "0.17 ms",
+            "text": "0.17 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.17447200000113663
+          },
+          "lost_ms": 0.17447200000113663,
+          "ms": 0.17447200000113663,
+          "name": "fill_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.00012606408711334923,
+          "share_cell": "0%",
+          "time": "0.17 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (copying)",
+            "0.17 ms",
+            "0%",
+            "0.17 ms"
+          ],
+          "gain": {
+            "cell": "0.17 ms",
+            "figure": "0.17 ms",
+            "text": "0.17 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.1722100000008031
+          },
+          "lost_ms": 0.1722100000008031,
+          "ms": 0.1722100000008031,
+          "name": "concat_cont",
+          "part": "other GPU work (copying)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 0.0001244296875243574,
+          "share_cell": "0%",
+          "time": "0.17 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.14 ms",
+            "0%",
+            "0.14 ms"
+          ],
+          "gain": {
+            "cell": "0.14 ms",
+            "figure": "0.14 ms",
+            "text": "0.14 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.13717483333555916
+          },
+          "lost_ms": 0.13717483333555916,
+          "ms": 0.13717483333555916,
+          "name": "reduce_rows_f32",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 9.911515967754387e-05,
+          "share_cell": "0%",
+          "time": "0.14 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (weight reads not matched to a part)",
+            "0.11 ms",
+            "0%",
+            "0.11 ms"
+          ],
+          "gain": {
+            "cell": "0.11 ms",
+            "figure": "0.11 ms",
+            "text": "0.11 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.11058066667030407
+          },
+          "lost_ms": 0.11058066667030407,
+          "ms": 0.11058066667030407,
+          "name": "mul_mat_vec_f",
+          "part": "other GPU work (weight reads not matched to a part)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 7.989964461969043e-05,
+          "share_cell": "0%",
+          "time": "0.11 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.09 ms",
+            "0%",
+            "0.09 ms"
+          ],
+          "gain": {
+            "cell": "0.09 ms",
+            "figure": "0.09 ms",
+            "text": "0.09 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.09433599999985381
+          },
+          "lost_ms": 0.09433599999985381,
+          "ms": 0.09433599999985381,
+          "name": "top_k_radix_init",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 6.816212184092007e-05,
+          "share_cell": "0%",
+          "time": "0.09 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.04 ms",
+            "0%",
+            "0.04 ms"
+          ],
+          "gain": {
+            "cell": "0.04 ms",
+            "figure": "0.04 ms",
+            "text": "0.04 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.043937999999849126
+          },
+          "lost_ms": 0.043937999999849126,
+          "ms": 0.043937999999849126,
+          "name": "lightning_indexer_kernel_vec",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 3.174723657395589e-05,
+          "share_cell": "0%",
+          "time": "0.04 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (attention)",
+            "0.02 ms",
+            "0%",
+            "0.02 ms"
+          ],
+          "gain": {
+            "cell": "0.02 ms",
+            "figure": "0.02 ms",
+            "text": "0.02 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.021502800000629697
+          },
+          "lost_ms": 0.021502800000629697,
+          "ms": 0.021502800000629697,
+          "name": "flash_attn_stream_k_fixup_uniform",
+          "part": "other GPU work (attention)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 1.5536767231662664e-05,
+          "share_cell": "0%",
+          "time": "0.02 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (copying)",
+            "0.02 ms",
+            "0%",
+            "0.02 ms"
+          ],
+          "gain": {
+            "cell": "0.02 ms",
+            "figure": "0.02 ms",
+            "text": "0.02 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.016990000000050715
+          },
+          "lost_ms": 0.016990000000050715,
+          "ms": 0.016990000000050715,
+          "name": "cpy_scalar_contiguous",
+          "part": "other GPU work (copying)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 1.2276060571600274e-05,
+          "share_cell": "0%",
+          "time": "0.02 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.01 ms",
+            "0%",
+            "0.01 ms"
+          ],
+          "gain": {
+            "cell": "0.01 ms",
+            "figure": "0.01 ms",
+            "text": "0.01 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 0.006016000000033273
+          },
+          "lost_ms": 0.006016000000033273,
+          "ms": 0.006016000000033273,
+          "name": "op_clamp_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels \u2014 no model",
+          "share": 4.346838163562994e-06,
+          "share_cell": "0%",
+          "time": "0.01 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "idle time between GPU steps",
+            "160.24 ms",
+            "12%",
+            "160.24 ms"
+          ],
+          "gain": {
+            "cell": "160.24 ms",
+            "figure": "160.24 ms",
+            "text": "160.24 ms faster if this ran at full speed",
+            "unit": "ms",
+            "value": 160.24485700000605
+          },
+          "lost_ms": 160.24485700000605,
+          "ms": 160.24485700000605,
+          "name": "kernel gaps",
+          "part": "idle time between GPU steps",
+          "section": "Timing adjustments",
+          "share": 0.11578431847049009,
+          "share_cell": "12%",
+          "time": "160.24 ms",
+          "what": "gaps"
+        }
+      ],
+      "title": "Where the prefill time goes"
+    },
+    "time_budget": {
+      "line": "Where the 1,866.5 ms of the traced request (under the profiler) went: GPU kernels 1,344.4 ms, copies with no kernel running 261.3 ms, GPU idle 163.5 ms, host time before and after the GPU work 97.3 ms.",
+      "lines": [
+        "The GPU work fits inside the request's wall time; the host time is what is left of the wall, so the parts add up to it by how they are counted.",
+        "Of the GPU idle time, CPU work (no GPU API call in flight) took 158.4 ms; a copy call the host waits in took 0.2 ms; the host waiting for the GPU (synchronize) took 0.1 ms; 4.8 ms is in 8,820 short gaps under 1 ms each.",
+        "Kernel time by family: dense matrix multiplies 329.2 ms, expert matrix multiplies 304.4 ms, elementwise kernels (norms, type conversion) 227.0 ms, attention 118.6 ms, recurrent layers 118.6 ms, other kernels 103.7 ms, expert routing and combine 88.5 ms, copies and gathers 54.4 ms.",
+        "Host-to-GPU copies from pinned host memory on GPU queue 15: 17.42 GB in 607.5 ms (28.7 GB/s), 239.6 ms with no kernel running.",
+        "GPU-to-GPU copies from GPU memory on GPU queue 16: 17.84 GB in 21.5 ms (831.6 GB/s), 21.5 ms with no kernel running.",
+        "Host-to-GPU copies from pinned host memory on GPU queue 14: 0.24 GB in 9.7 ms (24.9 GB/s), 9.7 ms with no kernel running.",
+        "GPU-to-host copies from GPU memory on GPU queue 14: 0.24 GB in 8.4 ms (28.3 GB/s), 8.4 ms with no kernel running.",
+        "Copies on different GPU queues overlap each other, so their times with no kernel running add up to more than the copy total.",
+        "A GPU queue (a stream) runs its work in order; copies and kernels on different queues can overlap. Pinned host memory is locked in RAM, so the GPU reads it directly; ordinary (pageable) memory is first staged through a pinned buffer."
+      ],
+      "of": "the 10,000-token prompt's traced request (under the profiler), from its GPU trace",
+      "refused": null,
+      "rows": [
+        {
+          "depth": 0,
+          "key": "GPU kernels (their union)",
+          "label": "GPU kernels (their union)",
+          "ms": "1,344.4",
+          "part": "kernels",
+          "value": 1344.387463
+        },
+        {
+          "depth": 1,
+          "key": "dense matrix multiplies",
+          "label": "dense matrix multiplies",
+          "ms": "329.2",
+          "part": null,
+          "value": 329.180643
+        },
+        {
+          "depth": 1,
+          "key": "expert matrix multiplies",
+          "label": "expert matrix multiplies",
+          "ms": "304.4",
+          "part": null,
+          "value": 304.359429
+        },
+        {
+          "depth": 1,
+          "key": "elementwise kernels (norms, type conversion)",
+          "label": "elementwise kernels (norms, type conversion)",
+          "ms": "227.0",
+          "part": null,
+          "value": 227.030428
+        },
+        {
+          "depth": 1,
+          "key": "attention",
+          "label": "attention",
+          "ms": "118.6",
+          "part": null,
+          "value": 118.636736
+        },
+        {
+          "depth": 1,
+          "key": "recurrent layers",
+          "label": "recurrent layers",
+          "ms": "118.6",
+          "part": null,
+          "value": 118.620551
+        },
+        {
+          "depth": 1,
+          "key": "other kernels",
+          "label": "other kernels",
+          "ms": "103.7",
+          "part": null,
+          "value": 103.657352
+        },
+        {
+          "depth": 1,
+          "key": "expert routing and combine",
+          "label": "expert routing and combine",
+          "ms": "88.5",
+          "part": null,
+          "value": 88.536756
+        },
+        {
+          "depth": 1,
+          "key": "copies and gathers",
+          "label": "copies and gathers",
+          "ms": "54.4",
+          "part": null,
+          "value": 54.365568
+        },
+        {
+          "depth": 0,
+          "key": "copies with no kernel running",
+          "label": "copies with no kernel running",
+          "ms": "261.3",
+          "part": "exposed",
+          "value": 261.348628
+        },
+        {
+          "depth": 1,
+          "key": "Host-to-GPU, pinned host memory, queue 15",
+          "label": "Host-to-GPU, pinned host memory, queue 15 (607.5 ms in all)",
+          "ms": "239.6",
+          "part": null,
+          "value": 239.557501
+        },
+        {
+          "depth": 1,
+          "key": "GPU-to-GPU, GPU memory, queue 16",
+          "label": "GPU-to-GPU, GPU memory, queue 16 (21.5 ms in all)",
+          "ms": "21.5",
+          "part": null,
+          "value": 21.450709
+        },
+        {
+          "depth": 1,
+          "key": "Host-to-GPU, pinned host memory, queue 14",
+          "label": "Host-to-GPU, pinned host memory, queue 14 (9.7 ms in all)",
+          "ms": "9.7",
+          "part": null,
+          "value": 9.671798
+        },
+        {
+          "depth": 1,
+          "key": "GPU-to-host, GPU memory, queue 14",
+          "label": "GPU-to-host, GPU memory, queue 14 (8.4 ms in all)",
+          "ms": "8.4",
+          "part": null,
+          "value": 8.358098
+        },
+        {
+          "depth": 1,
+          "key": "smaller copies",
+          "label": "15 smaller copies",
+          "ms": "0.6",
+          "part": null,
+          "value": 0.637122
+        },
+        {
+          "depth": 0,
+          "key": "GPU idle (no kernel, no copy)",
+          "label": "GPU idle (no kernel, no copy)",
+          "ms": "163.5",
+          "part": "idle",
+          "value": 163.503699
+        },
+        {
+          "depth": 1,
+          "key": "CPU work (no GPU API call in flight)",
+          "label": "CPU work (no GPU API call in flight)",
+          "ms": "158.4",
+          "part": null,
+          "value": 158.366806
+        },
+        {
+          "depth": 1,
+          "key": "a copy call the host waits in",
+          "label": "a copy call the host waits in",
+          "ms": "0.2",
+          "part": null,
+          "value": 0.166846
+        },
+        {
+          "depth": 1,
+          "key": "the host waiting for the GPU (synchronize)",
+          "label": "the host waiting for the GPU (synchronize)",
+          "ms": "0.1",
+          "part": null,
+          "value": 0.14820999999999998
+        },
+        {
+          "depth": 1,
+          "key": "short gaps under 1 ms each",
+          "label": "8,820 short gaps under 1 ms each",
+          "ms": "4.8",
+          "part": null,
+          "value": 4.821837000000016
+        },
+        {
+          "depth": 0,
+          "key": "host time outside the GPU work",
+          "label": "host time outside the GPU work",
+          "ms": "97.3",
+          "part": "host",
+          "value": 97.26020999999992
+        },
+        {
+          "depth": 0,
+          "key": "not accounted for",
+          "label": "not accounted for",
+          "ms": "0.0",
+          "part": "unattributed",
+          "value": 0.0
+        },
+        {
+          "depth": 0,
+          "key": "wall time of the traced request (under the profiler)",
+          "label": "wall time of the traced request (under the profiler)",
+          "ms": "1,866.5",
+          "part": "wall",
+          "value": 1866.5
+        }
+      ],
+      "title": "Where the time went",
+      "unit": "ms",
+      "warn": null
+    }
+  },
+  "schema": "boltbeam.plain_results.v1"
+}

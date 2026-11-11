@@ -22,7 +22,24 @@ python -m boltbeam.workflow.screen diff --before runs/a --after runs/b          
 python -m boltbeam.workflow.screen replay-cross --a runs/a --b runs/b           # two engines, one replay trace
 python -m boltbeam.workflow.screen autoscan                       # measure this GPU once when it has no chip profile
 python -m boltbeam.workflow.screen recommend MODEL --target TARGET --engine ENGINE [--check]   # context, speed and flags per GPU layout
+boltbeam offload MODEL --target TARGET [--engine ENGINE]       # the offload page: what goes to the card and to RAM (the same as screen offload)
+boltbeam tune MODEL --engine llama.cpp|vllm [--build BIN] [--experts-in-ram all|N] [--prompt N] [--measure]
+boltbeam time-budget capture.sqlite --engine ENGINE [--driver LINE.json | --wall-ms MS] [--out budget.json]
+boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECORD] [--compare OTHER.json]
 ```
+
+- `tune` gives this machine's values for an engine's settings (chunk sizes, memory shares, offload, the local patch
+  knobs), each with where it came from, and the command to run. It reads facts only (the model file, the GPU, RAM, the
+  build); `--measure` also runs the measured rows' prefill sweeps, starting the engine once per point, and `--knob`
+  limits that to one setting. For vLLM, a model whose weights and KV cannot fit is refused in words.
+- `time-budget` splits one request's wall time from an nsys capture's sqlite export: GPU kernels by family, copies
+  no kernel hides, GPU idle by its cause, and host time outside the GPU work. Give the client's wall time with
+  `--wall-ms`, or the prefill driver's JSON line with `--driver`. The screen shows the same split as "Where the time
+  went" on Results and Compare.
+- `routing` records which experts an MoE model's router picks per layer on real text (the in-tree corpus), and saves
+  it to `~/.boltbeam/routing/`, where the prompt limit, the offload plan and `tune` then read it instead of assuming
+  uniform routing. `--from` reads a record the engine already wrote. A profile is in-sample: it describes the text it
+  was measured on, and a hottest-first cache's hit rate is an upper estimate for llama.cpp's LRU cache.
 
 `--provider` is `llama.cpp` (default), `tinygrad`, `vllm`, `ollama` or `tensorrt-llm`. Engines come in families, a root
 and its forks ([data/engine_families.json](../boltbeam/data/engine_families.json)): `ollama` is llama.cpp's Ollama fork,
@@ -60,6 +77,7 @@ Two commands say where this machine stands and open the screen:
 
 ```
 boltbeam doctor      # what this machine has (Python, GPU, engines, capture tool, Go) and the one fix per gap; exit 0
+boltbeam host        # RAM, RAM reads, PCIe link and copies to the GPU; measures what is not saved (no numpy needed)
 boltbeam tui         # the screen; builds boltbeam-tui into ~/.cache/boltbeam first when needed
 boltbeam update      # is a newer BoltBeam released, and how this install upgrades; --yes runs it (the screen asks at start;
                      # BOLTBEAM_NO_UPDATE_CHECK=1 turns that off)

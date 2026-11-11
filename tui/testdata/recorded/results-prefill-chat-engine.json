@@ -1,0 +1,49 @@
+{
+  "engine": {
+    "build": {
+      "build": "7592b61d3",
+      "build_number": null,
+      "builds_from_pin": null,
+      "commit": "7592b61d3",
+      "engine_family": "llama.cpp",
+      "fork": "master",
+      "installed": null,
+      "label": "master",
+      "latest": null,
+      "matches": null,
+      "pin": null,
+      "provider": "llama.cpp",
+      "words": "master (llama.cpp fork) commit 7592b61d3, not upstream llama.cpp \u00b7 no pin"
+    },
+    "build_lines": [],
+    "comparison": null,
+    "prompt_form": "chat",
+    "prompt_form_words": "The prompt was sent as a chat request.",
+    "provider": "llama.cpp",
+    "settings_words": [
+      "chunk size 2048"
+    ],
+    "speculation_words": [],
+    "toolchain": {
+      "recorded_at": "2026-11-11T13:38:05.897624+00:00",
+      "runtime": {
+        "cuda": "unknown"
+      },
+      "versions": {
+        "cuda": "13.2",
+        "driver": "595.99.02",
+        "nsight_compute": "2026.2.1",
+        "nsight_systems": "2026.1.3",
+        "torch": "unknown"
+      }
+    },
+    "weight_format": "GGUF Q6_K+BF16"
+  },
+  "id": "flash-next-tb-chat",
+  "kind": "results",
+  "measured": true,
+  "model_id": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002",
+  "schema": "boltbeam.tui.v1",
+  "target_id": "nvidia_sm120",
+  "workload": "prefill"
+}

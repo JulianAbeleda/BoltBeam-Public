@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BoltBeam routing profile",
+  "description": "Which experts an MoE model's router picks per layer on real text (roofline/routing_profile.py). layers are prefill_work.experts_reached's records; derived is computed from them; ranking is a source's order when it has no counts.",
+  "type": "object",
+  "required": ["schema", "model", "source", "n_expert", "layers"],
+  "properties": {
+    "schema": {"const": "boltbeam.routing_profile.v1"},
+    "model": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string", "minLength": 1}, "head_sha256": {"type": "string"},
+              "file": {"type": "string"}, "bytes": {"type": "integer"}, "files": {"type": "integer"}}},
+    "source": {"type": "object", "properties": {"engine": {"type": "string"}, "how": {"type": "string"}, "corpus": {"type": "string"},
+               "file": {"type": "string"}, "phase": {"enum": ["prefill", "decode"]}, "layers_not_measured": {"type": "array", "items": {"type": "integer"}}}},
+    "n_expert": {"type": "integer", "minimum": 1},
+    "layers": {"type": "array", "items": {"type": "object", "required": ["layer", "shape", "expert_counts"], "properties": {
+      "layer": {"type": "integer", "minimum": 0},
+      "shape": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2},
+      "expert_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}}}}},
+    "ranking": {"type": "array", "items": {"type": "array", "items": {"type": "integer", "minimum": 0}, "minItems": 2, "maxItems": 2}},
+    "derived": {"type": "object", "required": ["tokens", "top_k", "layers", "reached", "uniform", "top10_share"], "properties": {
+      "tokens": {"type": "integer"}, "top_k": {"type": "integer"}, "layers": {"type": "integer"},
+      "reached": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "number"}}},
+      "uniform": {"type": "object", "additionalProperties": {"type": "number"}},
+      "top10_share": {"type": "number", "minimum": 0, "maximum": 1}}}
+  }
+}

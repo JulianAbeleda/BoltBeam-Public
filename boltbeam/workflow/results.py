@@ -550,7 +550,9 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
                # what the run asked the engine for (trace_request.json); a setting changes what is measured
                "settings_words": setting_words(run),
                # what speculation did (MTP acceptance, collectors/vllm_speculation): measured, beside what was asked
-               "speculation_words": _speculation_words(run)},
+               "speculation_words": _speculation_words(run),
+               # how a prefill sent its prompt (collectors/prefill.prompt_form): token ids or a chat request
+               **_prompt_form(loss)},
     "batches": batch_rows(run, manifest, profile, ceil),
     # the band of n runs of this exact setup (screen pipeline --repeats), when there is one
     **({"repeats": band} if (band := repeat_summary(run)) else {}),
@@ -671,13 +673,29 @@ def show(run:pathlib.Path) -> dict[str, Any]:
     "artifacts": list(manifest.get("artifacts", []) or []),
     "results": res,
   })
+  if env := optional(run, "workload_profile.json").get("engine_env"):
+    out["engine_env"] = dict(env)  # only a run that set some, so a record without any is as it was
   return out
 
 def setting_words(run:pathlib.Path) -> list[str]:
+  """The settings a run asked its engine for, and the environment it set for it (pipeline --engine-env), as NAME=VALUE."""
+  env = [f"{k}={v}" for k, v in (optional(run, "workload_profile.json").get("engine_env") or {}).items()]
   try:
-    return capture_settings.setting_words(capture_settings.requested(run))
+    return capture_settings.setting_words(capture_settings.requested(run)) + env
   except (OSError, ValueError):
-    return []
+    return env
+
+
+def _prompt_form(loss:dict[str, Any]) -> dict[str, Any]:
+  """A prefill's prompt form: the key and its sentence ({} for a run with no prefill). A record from before the form was
+  recorded sent token ids."""
+  from boltbeam.report.plain import words
+  lengths = (loss.get("prefill") or {}).get("lengths") or {}
+  if not lengths:
+    return {}
+  form = (next(iter(lengths.values())).get("engine") or {}).get("prompt_form") or "ids"
+  hw = words()["head_to_head"]["prompt_forms"]
+  return {"prompt_form": form, "prompt_form_words": words()["machine"]["prompt_form"].format(form=hw.get(form, form))}
 
 
 def _speculation_words(run:pathlib.Path) -> list[str]:

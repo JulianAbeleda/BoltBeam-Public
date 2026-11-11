@@ -311,7 +311,11 @@ def _speed_core(res:dict[str, Any], kind:str) -> dict[str, Any]:
       if _cache_ram_on(_prefill_engine(loss, length)):
         fast = f"{fast} " + words()["cache_ram"]["report"]
       nums.update(wall_ms=out["wall_ms"], wall_tok_s=out["wall_tok_s"], outside_ms=out["outside_ms"],
-                  prompt_kind=_prefill_engine(loss, length).get("prompt_kind"))
+                  prompt_kind=_prefill_engine(loss, length).get("prompt_kind"), prompt_form=_prefill_engine(loss, length).get("prompt_form") or "ids")
+    if kind == "prefill" and (form := _prefill_engine(loss, length).get("prompt_form")):
+      fast = f"{fast} " + words()["prompt_form"].get(form, "")
+    if kind == "prefill" and (tb := (((loss.get("prefill") or {}).get("lengths") or {}).get(str(length)) or {}).get("time_budget")):
+      fast = f"{fast} " + time_budget_words(tb)["line"]
     figs = ([_fig(tok, u("tok_s"), fw["prompt"].format(length=length), "speed"), _fig(ms, u("ms"), fw["prompt_ms"], "ms")]
             if kind == "prefill" else
             [_fig(ms, u("ms"), fw["turn_ms"].format(length=length), "ms"), _fig(tok, u("tok_s"), fw["turn_tok_s"], "speed")])
@@ -351,6 +355,160 @@ def prompt_label(loss:dict[str, Any], length:Any) -> str | None:
     return words()["prompt_kind"]["random_tokens_moe"]
   eng = _prefill_engine(loss, length)
   return words()["prompt_kind"]["random_tokens_moe"] if eng.get("moe") and eng.get("prompt_kind") == "random_tokens" else None
+
+
+def time_budget_words(tb:dict[str, Any]) -> dict[str, Any]:
+  """A time budget (collectors/time_budget.py) in plain words: the one line of its four parts, and the lines under it
+  (whether they sum, the idle time by cause, kernel time by family, the copies) and the table rows."""
+  w = words()["time_budget"]
+  f = lambda x: f"{round(x, 1) + 0.0:,.1f}"  # noqa: E731  (no "-0.0")
+  if tb.get("refused"):
+    return {"line": tb["refused"], "lines": [], "rows": []}
+  parts = dict(kernels=f(tb["kernels_ms"]), exposed=f(tb["exposed_copy_ms"]), idle=f(tb["idle_ms"]))
+  unfit = budget_unfit(tb)
+  if tb.get("wall_ms") is not None and unfit:  # the window is longer than the wall: the host time is not known, never 0
+    line = w["line_unfit"].format(wall=f(tb["wall_ms"]), window=f(tb["window_ms"]), **parts)
+  elif tb.get("wall_ms") is not None:
+    line = w["line"].format(wall=f(tb["wall_ms"]), host=f(tb["host_outside_ms"] or 0.0), **parts)
+  else:
+    line = w["line_no_wall"].format(window=f(tb["window_ms"]), **parts)
+  un = tb["unattributed_ms"]
+  lines = [w["sums"].format(tol=f(tb["tolerance_ms"])) if tb["sums"] else
+           w["over"].format(ms=f(-un)) if un < 0 else w["unattributed"].format(ms=f(un))]
+  if tb.get("host_how") == "wall_less_window" and tb["sums"]:
+    lines = [w["residual"]]
+  if missing := rows_missing(tb):
+    lines.append(w["no_rows"].format(engines=", ".join(missing)))
+  if tb.get("trace_longer_than_wall_ms") and not unfit:
+    lines.append(w["trace_longer"].format(ms=f(tb["trace_longer_than_wall_ms"])))
+  g = tb["gaps"]
+  items = [w["cause"].format(words=r["words"], ms=f(r["ms"])) for r in g["by_cause"] if r["ms"] >= 0.05]
+  if g["small_count"]:
+    items.append(w["small_gaps"].format(ms=f(g["small_ms"]), n=f"{g['small_count']:,}", threshold=f"{g['threshold_ms']:g}"))
+  if items:
+    lines.append(w["idle"].format(causes="; ".join(items)))
+  lines.append(w["kernels"].format(families=", ".join(w["family"].format(name=w["families"].get(x["family"], x["family"]), ms=f(x["ms"]))
+                                                     for x in tb["families"])))
+  lines += [w["copy"].format(direction=w["directions"].get(c["kind"], c["kind"]), memory=w["memories"].get(c["memory"], f"{c['memory']} memory"), stream=c["stream"], gb=f"{c['bytes'] / 1e9:.2f}", busy=f(c["busy_ms"]),
+                             gbs=f"{c['gbs']:.1f}" if c.get("gbs") else "-", exposed=f(c["exposed_ms"]))
+            for c in tb["copies"] if c["busy_ms"] >= 1.0]
+  r = w["rows"]
+  rows = [[r["kernels"], tb["kernels_ms"]], [r["exposed"], tb["exposed_copy_ms"]], [r["idle"], tb["idle_ms"]],
+          [r["host"], tb["host_outside_ms"]], [r["unattributed"], tb["unattributed_ms"]], [r["wall"], tb.get("wall_ms")]]
+  return {"line": line, "lines": lines, "rows": rows}
+
+
+def budget_unfit(tb:dict[str, Any]) -> bool:
+  """The trace's GPU work is longer than the request's wall (a record from before host_outside_ms went null says it by
+  window_fits_wall false): its parts cannot add up to the wall and the host time outside the GPU work is unknown."""
+  return tb.get("wall_ms") is not None and (tb.get("window_fits_wall") is False or tb.get("host_outside_ms") is None)
+
+
+def rows_missing(tb:dict[str, Any]) -> list[str]:
+  """The engines a budget's kernels were read without family rows for, as labels: only when no key of the chain (a fork,
+  then its root) has rows; a fork with no rows of its own reads its root's, which is not missing."""
+  keys = [tb["engine"]] if isinstance(tb.get("engine"), str) else list(tb.get("engine") or [])
+  missing = list(tb.get("engine_rows_missing") or [])
+  if not missing or any(k not in missing for k in keys):
+    return []
+  from boltbeam.collectors import engine_families
+  labels = {}
+  for fam in engine_families.families():
+    labels.setdefault(fam["family"], fam["label"])
+    for fork in fam["forks"]:
+      for k in (fork.get("fork"), fork.get("provider")):
+        if k and k not in ("upstream", "own"):
+          labels.setdefault(k, f"{fam['label']} {fork.get('label') or k}" if fork.get("label") != fam["label"] else fam["label"])
+  return list(dict.fromkeys(labels.get(k, k) for k in missing))
+
+
+def time_budget_of(res:dict[str, Any]) -> tuple[Any, dict[str, Any]] | None:
+  """The prefill's time budget (results.json loss.prefill.lengths[L].time_budget, written beside a capture): the headline
+  length's, else the first length that has one; None for a run with none."""
+  loss, ceil = res.get("loss") or {}, res.get("ceiling") or {}
+  lengths = (loss.get("prefill") or {}).get("lengths") or {}
+  head = str((loss.get("where_token_goes") or {}).get("length") or ceil.get("context") or "")
+  for length in [head] + [k for k in lengths if k != head]:
+    if tb := (lengths.get(length) or {}).get("time_budget"):
+      return length, tb
+  return None
+
+
+def time_budget_page(tb:dict[str, Any], length:Any = None) -> dict[str, Any]:
+  """A time budget as a screen lays it out (data/plain_words.json time_budget.page): the parts as rows that add up to the
+  wall as the record states it (kernels by family, exposed copy with each stream's copy time, idle by cause, host time
+  outside the GPU work, unattributed), the wall last; then its lines. warn says when the trace's GPU work is longer
+  than the wall (window_fits_wall false): the parts then do not add up to it, and that is never hidden."""
+  w, wp = words()["time_budget"], words()["time_budget"]["page"]
+  said = time_budget_words(tb)
+  out = {"title": wp["title"], "of": wp["of"].format(length=f"{int(length):,}") if length else None, "line": said["line"],
+         "rows": [], "lines": said["lines"], "warn": None, "unit": wp["ms"], "refused": tb.get("refused")}
+  if tb.get("refused"):
+    return out
+  r, f = w["rows"], (lambda x: f"{round(x, 1) + 0.0:,.1f}" if x is not None else "-")  # noqa: E731
+  row = lambda label, ms, depth=0, part=None, key=None: {"label": label, "ms": f(ms), "value": ms, "depth": depth, "part": part,  # noqa: E731
+                                                         "key": key or label}  # key: the row's name across runs (no figures)
+  rows = [row(r["kernels"], tb["kernels_ms"], part="kernels")]
+  rows += [row(w["families"].get(x["family"], x["family"]), x["ms"], 1) for x in tb["families"]]
+  rows.append(row(r["exposed"], tb["exposed_copy_ms"], part="exposed"))
+  big = [c for c in tb["copies"] if c["busy_ms"] >= 1.0]
+  copy = lambda c: dict(direction=w["directions"].get(c["kind"], c["kind"]), memory=w["memories"].get(c["memory"], f"{c['memory']} memory"),  # noqa: E731
+                        stream=c["stream"])
+  rows += [row(wp["copy_row"].format(**copy(c), busy=f(c["busy_ms"])), c["exposed_ms"], 1, key=wp["copy_key"].format(**copy(c))) for c in big]
+  if small := [c for c in tb["copies"] if c["busy_ms"] < 1.0]:
+    rows.append(row(wp["other_copies"].format(n=len(small)), sum(c["exposed_ms"] for c in small), 1, key=wp["other_copies_key"]))
+  rows.append(row(r["idle"], tb["idle_ms"], part="idle"))
+  g = tb["gaps"]
+  rows += [row(c["words"], c["ms"], 1) for c in g["by_cause"] if c["ms"] >= 0.05]
+  if g["small_count"]:
+    rows.append(row(wp["small_row"].format(n=f"{g['small_count']:,}", threshold=f"{g['threshold_ms']:g}"), g["small_ms"], 1,
+                    key=wp["small_key"].format(threshold=f"{g['threshold_ms']:g}")))
+  rows.append(row(r["host"], None if budget_unfit(tb) else tb["host_outside_ms"], part="host"))
+  if budget_unfit(tb):
+    rows[-1]["ms"] = w["unknown"]
+  rows.append(row(r["unattributed"], tb["unattributed_ms"], part="unattributed"))
+  rows.append(row(r["wall"], tb.get("wall_ms") if tb.get("wall_ms") is not None else tb["window_ms"], part="wall"))
+  out["rows"] = rows
+  if sum(c["exposed_ms"] for c in tb["copies"]) > tb["exposed_copy_ms"] + tb.get("tolerance_ms", 0) / 10:
+    out["lines"] = out["lines"] + [wp["copies_overlap"]]
+  if big:
+    out["lines"] = out["lines"] + [wp["queues"]]
+  if budget_unfit(tb):
+    out["warn"] = wp["window_not_fit"].format(window=f(tb["window_ms"]), wall=f(tb.get("wall_ms")))
+  elif tb.get("wall_ms") is None:
+    out["warn"] = wp["no_wall"].format(window=f(tb["window_ms"]))
+  return out
+
+
+def time_budget_side_by_side(a:tuple[Any, dict[str, Any]] | None, b:tuple[Any, dict[str, Any]] | None) -> dict[str, Any] | None:
+  """Two runs' time budgets (time_budget_of) side by side: each part, then the rows under it present in either run, with
+  each run's ms or "-"; notes are each run's warning (or that it has no budget), "A: " or "B: " before it. None when
+  neither run has one."""
+  if a is None and b is None:
+    return None
+  wp = words()["time_budget"]["page"]
+  pages = [time_budget_page(x[1], x[0]) if x else None for x in (a, b)]
+  parts: dict[str, dict[str, Any]] = {}
+  for i, pg in enumerate(pages):
+    part = None
+    for r in (pg or {}).get("rows") or []:
+      if not r["depth"]:
+        part = r["part"]
+        parts.setdefault(part, {"row": {**r, "cells": ["-", "-"]}, "under": {}})["row"]["cells"][i] = r["ms"]
+        continue
+      under = parts[part]["under"].setdefault(r["key"], {**r, "label": r["key"], "part": None, "cells": ["-", "-"], "sums": [None, None]})
+      under["sums"][i] = (under["sums"][i] or 0.0) + (r["value"] or 0.0)  # two rows of one key in a run add up
+      under["cells"][i] = f"{round(under['sums'][i], 1) + 0.0:,.1f}"
+  rows = [{k: x[k] for k in ("label", "depth", "part", "cells")} for p in parts.values() for x in [p["row"], *p["under"].values()]]
+  notes = []
+  if all(pages) and pages[0]["of"] != pages[1]["of"]:  # two prompt lengths: said, the figures are not of one prompt
+    notes.append("; ".join(f"{side}: {pg['of']}" for side, pg in zip("AB", pages)))
+  for side, pg in zip("AB", pages):
+    if pg is None:
+      notes.append(f"{side}: " + wp["only_one"])
+    elif pg["refused"] or pg["warn"]:
+      notes.append(f"{side}: " + (pg["refused"] or pg["warn"]))
+  return {"title": wp["title"], "unit": wp["ms"], "columns": ["", "A", "B"], "rows": rows, "notes": notes}
 
 
 def _cache_ram_on(eng:dict[str, Any]) -> bool:
@@ -587,6 +745,8 @@ def machine_lines(res:dict[str, Any], run:pathlib.Path | None = None) -> list[st
     out.append(say("weights", format=engine["weight_format"]))
   if engine.get("settings_words"):
     out.append(say("settings", words="; ".join(engine["settings_words"])))
+  if engine.get("prompt_form_words"):
+    out.append(engine["prompt_form_words"])
   versions = ((engine.get("toolchain") or {}).get("versions") or {})
   if versions:
     tools = words()["tools"]
@@ -609,7 +769,9 @@ def layer2(res:dict[str, Any], run:pathlib.Path | None = None) -> dict[str, Any]
   texts = [line for s in sections for line in s["lines"]]
   if tab:
     texts += tab["columns"] + tab["all_columns"]["columns"] + [r["part"] for r in tab["rows"]]
-  return {"table": tab, "sections": sections, "glossary": glossary(texts)}
+  budget = time_budget_of(res)
+  return {"table": tab, "sections": sections, "glossary": glossary(texts),
+          "time_budget": time_budget_page(budget[1], budget[0]) if budget else None}
 
 
 def plain_results(res:dict[str, Any], run:pathlib.Path | None = None) -> dict[str, Any]:
@@ -670,7 +832,8 @@ def head_to_head(a:dict[str, Any], b:dict[str, Any]) -> dict[str, Any]:
   sides = [{"id": x["id"], "title": title(x["res"], x.get("run")), "measured": bool(x["res"].get("measured")),
             "figures": {f["key"]: f for f in layer1(x["res"], x.get("run"))["figures"]}} for x in (a, b)]
   out = {"schema": HEAD_TO_HEAD_SCHEMA, "kind": "head_to_head", "runs": [{k: s[k] for k in ("id", "title")} for s in sides],
-         "differs": None, "rows": [], "refused": None}
+         "differs": None, "rows": [], "refused": None,
+         "time_budget": time_budget_side_by_side(time_budget_of(a["res"]), time_budget_of(b["res"]))}
   if missing := next((s for s in sides if not s["measured"] or not s["figures"]), None):
     out["refused"] = hw["not_measured"].format(run=missing["id"])
     return out
@@ -680,13 +843,17 @@ def head_to_head(a:dict[str, Any], b:dict[str, Any]) -> dict[str, Any]:
   wall = [layer1(x["res"], x.get("run"))["numbers"] for x in (a, b)]
   by_wall = all(n.get("wall_tok_s") for n in wall)  # two prefills, each with the client's wall time: compare on it
   kinds = {n.get("prompt_kind") for n in wall}
-  other_prompts = by_wall and len(kinds) > 1  # random ids against real text: neither time says which engine is faster
+  forms = [n.get("prompt_form") or "ids" for n in wall]  # a record from before the form was recorded sent token ids
+  other_kinds = by_wall and len(kinds) > 1  # random ids against real text: neither time says which engine is faster
+  other_forms = by_wall and not other_kinds and forms[0] != forms[1]  # ids against a chat request: likewise
+  other_prompts = other_kinds or other_forms
   if by_wall:
     for s, n in zip(sides, wall):
       s["figures"] = {**s["figures"], "speed": _fig(f"{n['wall_tok_s']:.1f}", _unit("tok_s"), "", "speed"),
                       "ms": _fig(f"{n['wall_ms']:.1f}", _unit("ms"), "", "ms")}
-    out["differs"] += " " + hw["by_wall"] + (" " + hw["other_prompts"].format(
-      a=hw["prompt_kinds"].get(str(wall[0].get("prompt_kind")), hw["none"]), b=hw["prompt_kinds"].get(str(wall[1].get("prompt_kind")), hw["none"])) if other_prompts else "")
+    out["differs"] += " " + (hw["by_wall_chat"] if forms == ["chat", "chat"] else hw["by_wall_mixed"] if other_forms else hw["by_wall"]) + (" " + hw["other_prompts"].format(
+      a=hw["prompt_kinds"].get(str(wall[0].get("prompt_kind")), hw["none"]), b=hw["prompt_kinds"].get(str(wall[1].get("prompt_kind")), hw["none"])) if other_kinds else "") + \
+      (" " + hw["other_forms"].format(a=hw["prompt_forms"].get(forms[0], forms[0]), b=hw["prompt_forms"].get(forms[1], forms[1])) if other_forms else "")
   elif all(speed_type(x["res"]) == "prefill" for x in (a, b)):
     out["differs"] += " " + hw["not_by_wall"]
   for key, label in hw["rows"].items():

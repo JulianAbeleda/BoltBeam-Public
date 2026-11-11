@@ -1,0 +1,24 @@
+{
+ "schema": "boltbeam.gap_causes.v1",
+ "note": "What the host was doing while the GPU idled (no kernel, no copy in flight), by the CUDA/HIP runtime or driver API call in flight (an nsys export's CUPTI_ACTIVITY_KIND_RUNTIME rows; a version suffix such as _v4000 is dropped before matching). Read only through collectors/time_budget.py. Each instant of a gap goes to the first row (in this file's order) whose call is in flight then; an instant with no call in flight is `cpu` (the host computing, or waiting on something that is not a GPU API call). The calls are every thread's of the traced processes (the export's rows carry no thread filter here): a blocking call on a helper thread counts for the gap it overlaps. ORDER MATTERS: a slow host-side call (register, allocate) comes before the waits it overlaps.",
+ "cpu": "cpu_work",
+ "causes": {
+  "host_register": "pinning host memory (register / unregister)",
+  "allocate": "allocating or freeing memory",
+  "copy_call": "a copy call the host waits in",
+  "sync": "the host waiting for the GPU (synchronize)",
+  "launch": "launching work (kernel or graph launch calls)",
+  "module": "loading kernels (module load)",
+  "other_call": "another GPU API call",
+  "cpu_work": "CPU work (no GPU API call in flight)"
+ },
+ "rows": [
+  {"call": "^(cuda|hip|cu)(Host|Mem)(Register|Unregister|HostRegister|HostUnregister)", "cause": "host_register"},
+  {"call": "^(cuda|hip|cu)(Malloc|Free|MemAlloc|MemFree|HostAlloc|MallocHost|FreeHost|MemHostAlloc|MemFreeHost|MallocAsync|FreeAsync|MemCreate|MemMap|MemRelease|MemPool)", "cause": "allocate"},
+  {"call": "^(cuda|hip|cu)Memcpy|^(cuda|hip|cu)Memset|^cuMemcpy|^cuMemset", "cause": "copy_call"},
+  {"call": "Synchronize$|^(cuda|hip|cu)(StreamWaitEvent|EventSynchronize|StreamQuery|EventQuery|CtxSynchronize|DeviceSynchronize|StreamSynchronize)", "cause": "sync"},
+  {"call": "^(cuda|hip|cu)(LaunchKernel|LaunchKernelEx|GraphLaunch|LaunchCooperativeKernel)|^(cuda|hip)ModuleLaunchKernel|^hipExtModuleLaunchKernel", "cause": "launch"},
+  {"call": "^(cuda|hip|cu)(Module|Library|Func)", "cause": "module"},
+  {"call": ".", "cause": "other_call"}
+ ]
+}

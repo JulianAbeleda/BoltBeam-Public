@@ -581,7 +581,7 @@ def pick(rows:list[dict[str, Any]], *, seqs:int, fits_one:bool) -> dict[str, Any
 
 def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpus:list[dict[str, Any]], *, target,
           seqs:int = 1, context:int = CONTEXT, text_only:bool = True, host:dict[str, Any] | None = None,
-          moe_estimate:dict[str, Any] | None = None, offload:bool = False, draft:str | None = None, probe_h2d:bool = False) -> dict[str, Any]:
+          moe_estimate:dict[str, Any] | None = None, offload:bool = False, draft:str | None = None, probe_h2d:bool = False, routing:bool = True) -> dict[str, Any]:
   """The recommended setup for this model on these GPUs with this engine: one row per layout, the settings, the
   recommended layout and the command lines. facts: machine facts (read bandwidth, join, cached engine overhead).
   When no layout holds the weights (or offload=True), `offload` is the experts-in-RAM setup with its limit band, or the
@@ -688,7 +688,7 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
     kvb = ((pw.kv_bytes_per_token(profile, element_bytes=eng.kv[kv]) or 0.0) + extra.get(kv, 0.0)) * context
     moe = off.for_setup(profile, provider, usable=usable - (dr["bytes"] if dr else 0), kv_bytes=kvb + (dr["kv_bytes"] if dr else 0), vram_gbs=(limit.read_bandwidth(facts) or {}).get("gbs") or target.memory_bandwidth_gbs,
                         pci_bus_id=(gpus[0].get("pci_bus_id") if gpus else None), context=context, target=target, kv=kv, host=host, estimate=moe_estimate,
-                        host_tables=tb.get("host", 0), fits=any(r["fits"]["value"] for r in rows), probe=probe_h2d)
+                        host_tables=tb.get("host", 0), fits=any(r["fits"]["value"] for r in rows), probe=probe_h2d, routing=routing)
     if moe["status"] == "recommended" and argv is not None:
       argv = eng.flags(profile, kv=kv, seqs=seqs, layout="one", gpus=1, text_only=text_only, tb=tb, context=context, placement=moe["settings"], **opts)
       if (pre := moe.get("prefill") or {}).get("status") == "recommended":  # the setup for prompts: its own command

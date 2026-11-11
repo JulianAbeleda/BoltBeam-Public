@@ -4,9 +4,9 @@ import argparse
 import sys
 import textwrap
 
-from boltbeam.cli import analysis, doctor, fetch, gemm, ncu, profile, roofline, selfcheck, self_update, speed_up, tui, workflow
+from boltbeam.cli import analysis, doctor, fetch, gemm, ncu, offload, profile, roofline, routing, selfcheck, self_update, speed_up, tui, tune, workflow
 
-_MODULES = (analysis, profile, roofline, workflow, gemm, ncu, selfcheck, doctor, self_update, fetch, speed_up, tui)
+_MODULES = (analysis, profile, roofline, workflow, gemm, ncu, selfcheck, doctor, self_update, fetch, speed_up, tui, offload, tune, routing)
 
 # The core group `boltbeam --help` shows first, in the order a reader uses them.
 # Every other command still runs. Scripts and papers call them by name. --help lists them after the core group.
@@ -72,6 +72,8 @@ def main(argv:list[str] | None=None) -> int:
     return tui.run([])  # bare `boltbeam` opens the screen
   if argv[:1] == ["tui"] and argv[1:2] not in (["-h"], ["--help"]):
     return tui.run(argv[1:])  # every flag passes through to boltbeam-tui; argparse would claim the dashes
+  if argv[:1] == ["offload"]:
+    return offload.cmd_offload(argparse.Namespace(rest=argv[1:]))  # the screen's own flags and --help
   args = build_parser().parse_args(argv)
   return args.fn(args)
 

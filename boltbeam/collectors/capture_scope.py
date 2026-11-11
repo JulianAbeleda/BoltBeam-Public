@@ -55,6 +55,8 @@ def scope(run:pathlib.Path) -> dict:
                        for r in timing.get("rows", []) if r.get("scope") == "whole_step" or r.get("prefill_ms")],
           "toolchain": {"versions": (manifest.get("toolchain") or {}).get("versions", {}),
                         "runtime": (manifest.get("toolchain") or {}).get("runtime", {})}}
+  if env := optional(run, "workload_profile.json").get("engine_env"):
+    result["engine_env"] = dict(sorted(env.items()))  # the engine's environment is part of the setup; absent when none, so older bands match
   from boltbeam.collectors.gpu_telemetry import measurement_clock_scope
   if (clock := measurement_clock_scope(run)) is not None:
     result["measurement_clock"] = clock

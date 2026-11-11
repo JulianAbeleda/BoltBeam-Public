@@ -29,7 +29,9 @@ func (f Facts) settingsOffered() []seam.EngineSetting {
 	return out
 }
 
-// settingsArgv is what Run passes the pipeline: each offered setting with a value, as its flag and the value.
+// settingsArgv is what Run passes the pipeline: each offered setting with a value, as its flag and the value, then
+// each environment variable for the engine as --engine-env NAME=VALUE (the pipeline sets it for every engine it starts
+// and records it with the run).
 func (f Facts) settingsArgv() []string {
 	var argv []string
 	for _, s := range f.settingsOffered() {
@@ -37,7 +39,34 @@ func (f Facts) settingsArgv() []string {
 			argv = append(argv, s.Flag, v)
 		}
 	}
+	for _, name := range f.envNames() {
+		argv = append(argv, "--engine-env", name+"="+f.Env[name])
+	}
 	return argv
+}
+
+// envKey names what the tuned environment is for: the model, the engine and the engine's build.
+func (f Facts) envKey() string { return f.Path + "|" + f.Engine + "|" + f.engineBuild() }
+
+// envNames are the environment variables set for the engine, in order.
+func (f Facts) envNames() []string {
+	if f.EnvFor != "" && f.EnvFor != f.envKey() {
+		return nil
+	}
+	return slices.Sorted(maps.Keys(f.Env))
+}
+
+// setEnv sets name to v for the engine ("" unsets it), in a copy of the map, as setSetting does.
+func (f *Facts) setEnv(name, v string) {
+	f.Env = maps.Clone(f.Env)
+	if f.Env == nil {
+		f.Env = map[string]string{}
+	}
+	if v == "" {
+		delete(f.Env, name)
+		return
+	}
+	f.Env[name] = v
 }
 
 // settingsValue is the Setup line: the settings asked for, else the engine's own choice.
@@ -48,6 +77,9 @@ func settingsValue(f Facts) string {
 			parts = append(parts, s.Label+" "+v)
 		}
 	}
+	for _, name := range f.envNames() {
+		parts = append(parts, name+"="+f.Env[name])
+	}
 	if len(parts) == 0 {
 		return "engine defaults"
 	}
@@ -55,8 +87,20 @@ func settingsValue(f Facts) string {
 }
 
 func settingsBody(f Facts, width int) string {
-	return "Settings are what the run asks the engine for. Each one changes what is measured, so the Run page says it.\n\n" +
+	out := "Settings are what the run asks the engine for. Each one changes what is measured, so the Run page says it.\n\n" +
 		"A setting left unset keeps the engine's own choice."
+	if len(f.envNames()) > 0 {
+		out += "\n\nThe run also sets these for the engine: " + strings.Join(envPairs(f), ", ") + ". Empty one below to unset it."
+	}
+	return out
+}
+
+func envPairs(f Facts) []string {
+	out := []string{}
+	for _, name := range f.envNames() {
+		out = append(out, name+"="+f.Env[name])
+	}
+	return out
 }
 
 // settingsActions is the page's row when the engine takes no settings; otherwise the form takes the rows' place
@@ -78,7 +122,11 @@ func (f Facts) setting(name string) *seam.EngineSetting {
 // settingTyped checks a typed value: a whole number above 0 where the setting takes one; "" unsets it.
 func settingTyped(s seam.EngineSetting, v string) (string, bool) {
 	v = strings.TrimSpace(v)
-	if n, err := strconv.Atoi(v); v != "" && s.Whole && (err != nil || n < 1) {
+	least := 1
+	if s.Least != nil {
+		least = *s.Least
+	}
+	if n, err := strconv.Atoi(v); v != "" && s.Whole && (err != nil || n < least) {
 		return "", false
 	}
 	return v, true

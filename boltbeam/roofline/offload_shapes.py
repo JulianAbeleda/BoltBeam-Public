@@ -33,7 +33,8 @@ def moe_split(source:str | pathlib.Path, override:dict[str, Any] | None = None) 
   e_tok, e_total = sum(r["packed_weight_bytes"] for r in exp), sum(r["packed_weight_bytes"] * r["n_expert"] // r["experts_read"] for r in exp)
   n, k = max(r["n_expert"] for r in exp), max(r["experts_read"] for r in exp)
   out = {"estimated": False, "source": f"{p.name} GGUF tensor table", "dense_bytes": dense, "expert_bytes": e_tok, "expert_total": e_total,
-         "experts": n, "top_k": k, "layers": len({r["tensor_name"].split(".")[1] for r in exp})}
+         "experts": n, "top_k": k, "layers": len({r["tensor_name"].split(".")[1] for r in exp}),
+         "expert_layer_ids": sorted({int(r["tensor_name"].split(".")[1]) for r in exp})}
   if override:
     experts, bpw = override.get("experts", n), override.get("bits_per_weight")
     if type(experts) is not int or experts < k or not isinstance(bpw, (int, float)) or not 0 < bpw <= 32:
@@ -44,9 +45,23 @@ def moe_split(source:str | pathlib.Path, override:dict[str, Any] | None = None) 
   return out
 
 
-def hit_rates(cache_bytes:float, expert_total:float) -> list[float]:
-  """The sweep, from the cache's share of the experts (what a uniformly random routing would hit: the floor) up."""
-  floor = min(cache_bytes / expert_total, 1.0)
+def n_cpu_moe(sh:dict[str, Any], expert_layers:int) -> int:
+  """llama.cpp's --n-cpu-moe N for the first `expert_layers` expert layers in RAM: N counts the model's layers (0..N-1),
+  dense-first layers included, so it is the layer after the last of them, not the count."""
+  ids = sh.get("expert_layer_ids") or list(range(sh["layers"]))
+  return ids[min(expert_layers, len(ids)) - 1] + 1 if expert_layers > 0 else 0
+
+
+def expert_layers_under(sh:dict[str, Any], n:int) -> int:
+  """The expert layers --n-cpu-moe N keeps in RAM: those among the model's layers 0..N-1."""
+  ids = sh.get("expert_layer_ids") or list(range(sh["layers"]))
+  return sum(1 for i in ids if i < n)
+
+
+def hit_rates(cache_bytes:float, expert_total:float, measured:float | None = None) -> list[float]:
+  """The sweep, from the floor up: the cache's share of the experts (what a uniformly random routing would hit), or
+  `measured`, the share a cache of the hottest experts serves under a measured routing profile (routing_profile.hit_rate)."""
+  floor = min(cache_bytes / expert_total if measured is None else measured, 1.0)
   return [round(floor, 4)] + [h for h in HIT_RATES if h > floor]
 
 

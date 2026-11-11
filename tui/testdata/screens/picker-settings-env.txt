@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Engine settings                                                              │
+│ Settings are what the run asks the engine for. Each one changes what is      │
+│ measured, so the Run page says it.                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Choose                                                                       │
+│ ┃ chunk size                                                                 │
+│ ┃ requested engine chunk size                                                │
+│ ┃ > 4096                                                                     │
+│                                                                              │
+│   matrix backends                                                            │
+│   the compiler's matrix backends                                             │
+│   not set                                                                    │
+│                                                                              │
+│   LLAMA_SERVER_CKPT_MIN_HEAD                                                 │
+│   environment variable for the engine; the run passes it as set here         │
+│   > 256                                                                      │
+│                                                                              │
+│   LLAMA_WS_PIN_GIB                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+Copied 3 values into Engine settings; the next run passes them.
+ esc cancel · enter next · ctrl+c quit

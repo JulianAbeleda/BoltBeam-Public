@@ -1,0 +1,12 @@
+{
+ "schema": "boltbeam.routing_adapters.v1",
+ "about": "How `boltbeam routing MODEL --engine E` gets a routing profile (roofline/routing_profile.py, boltbeam.routing_profile.v1) from each engine: adapter is the module that reads the engine's own record (profile(path, model, n_expert=, corpus=, tokens=)) and, when captures is true, also runs one (capture(...)); from says what --from takes. An engine with no row has no routing source BoltBeam can read; why says so.",
+ "engines": {
+  "llama.cpp": {"adapter": "boltbeam.adapters.routing_llama_cpp", "captures": true,
+                "from": "an MoE cache trace (LLAMA_MOE_CACHE_TRACE, MCT1)"},
+  "strata": {"adapter": "boltbeam.adapters.routing_strata", "captures": false,
+             "from": "a --dump-routing trace (counts) or an --expert-profile file (a ranking only, a cross-check)"},
+  "vllm": {"adapter": "boltbeam.adapters.routing_vllm", "captures": false,
+           "from": "the vLLM prefill driver's JSON line with routing (--semantic-dispatch --capture)"}
+ }
+}

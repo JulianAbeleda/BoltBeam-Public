@@ -17,9 +17,10 @@ LLAMA_FLAGS = {"chunk_size": "-ub", "batch_size": "-b", "cache_type_k": "-ctk",
                "cache_type_v": "-ctv", "flash_attention": "-fa",
                "n_gpu_layers": "-ngl", "n_cpu_moe": "-ncmoe", "override_tensor": "-ot", "cpu_moe": "--cpu-moe",
                "moe_cache_mib": "--moe-cache-mib", "moe_cache_cpu_share": "--moe-cache-cpu-share",
-               "spec_type": "--spec-type", "draft_model": "-md", "cache_type_k_draft": "-ctkd"}
+               "spec_type": "--spec-type", "draft_model": "-md", "cache_type_k_draft": "-ctkd", "cache_ram": "--cache-ram"}
+SERVER_ONLY = ("cache_ram",)  # llama-server's own: llama-bench keeps no prompt cache, so it is not passed there
 LLAMA_SWITCHES = ("cpu_moe",)  # a flag with no value: the setting is true
-LLAMA_WHOLE = {"chunk_size": 1, "batch_size": 1, "n_gpu_layers": 0, "n_cpu_moe": 0, "moe_cache_mib": 1}  # whole numbers, at least this
+LLAMA_WHOLE = {"chunk_size": 1, "batch_size": 1, "n_gpu_layers": 0, "n_cpu_moe": 0, "moe_cache_mib": 1, "cache_ram": 0}  # whole numbers, at least this
 LLAMA_TEXT = ("override_tensor", "spec_type", "draft_model", "cache_type_k_draft")  # passed as written
 LLAMA_FIELDS = {"n_ubatch": "chunk_size", "n_batch": "batch_size", "type_k": "cache_type_k",
                 "type_v": "cache_type_v", "flash_attn": "flash_attention"}
@@ -59,7 +60,9 @@ ASKED = {
                           "builds): the share of cache misses the CPU computes instead of uploading; needs the cache"),
   "spec_type": (str, "speculation", "llama.cpp --spec-type (llama-server): draft-mtp with --draft-model for an MTP head"),
   "draft_model": (str, "draft model", "llama.cpp -md (llama-server): the draft or MTP head file"),
-  "cache_type_k_draft": (str, "draft K cache type", "llama.cpp -ctkd (llama-server): the draft head's K cache type (q8_0, f16)")}
+  "cache_type_k_draft": (str, "draft K cache type", "llama.cpp -ctkd (llama-server): the draft head's K cache type (q8_0, f16)"),
+  "cache_ram": (int, "prompt cache in RAM MiB", "llama.cpp --cache-ram (llama-server): MiB of host RAM for the prompt cache; 0 "
+                "turns it off (llama-bench keeps none, so it is not passed there)")}
 TINYGRAD_WARM = 3  # warm tokens before the measured window (runtime/tinygrad_decode_profile.py --warm)
 ACCEPTED = {"vllm": VLLM_SETTINGS, "llama.cpp": tuple(LLAMA_FLAGS)}  # per engine (collectors/providers.ENGINES)
 
@@ -149,8 +152,22 @@ def offered(provider:str) -> list[dict[str, Any]]:
   from boltbeam.collectors.vllm_mtp import prompt_set
   choices = {"gemm_backends": lambda: list(GEMM_BACKENDS), "mtp_prompt": lambda: prompt_set()["ids"], "cpu_moe": lambda: ["on"]}
   return [{"name": k, "flag": "--" + k.replace("_", "-"), "label": label, "whole": kind is int,
+           **({"least": LLAMA_WHOLE[k]} if kind is int and LLAMA_WHOLE.get(k, 1) != 1 else {}),
            "choices": choices[k]() if k in choices else None, "about": about, "draft_head": k.startswith("mtp")}
           for k, (kind, label, about) in ASKED.items() if k in ACCEPTED.get(provider, ())]
+
+
+# Where a run takes a tuned knob's value (workflow/tune.page, `screen tune`): the engine's flag or config key per setting a
+# run asks for. A knob with no row here is not passed by a run, and the screen says so.
+KNOB_SETTINGS = {"llama.cpp": {**{flag: name for name, flag in LLAMA_FLAGS.items()}, "--n-cpu-moe": "n_cpu_moe"},
+                 "vllm": {"--max-num-batched-tokens": "chunk_size", "--attention-backend": "attention_backend",
+                          "speculative_config.num_speculative_tokens": "mtp"}}
+
+
+def knob_setting(provider:str, knob:str) -> str | None:
+  """The setting a run on this engine passes a tuned knob as, when the run offers it; None otherwise."""
+  name = KNOB_SETTINGS.get(provider, {}).get(knob)
+  return name if name and name in ASKED and name in ACCEPTED.get(provider, ()) else None
 
 
 def contexts(run:pathlib.Path) -> list[int]:
@@ -195,7 +212,8 @@ def setting_words(settings:dict[str, Any]) -> list[str]:
            "moe_cache_mib": lambda v: f"expert cache {v} MiB on the GPU",
            "moe_cache_cpu_share": lambda v: f"the CPU computes {v:g} of the cache misses",
            "spec_type": lambda v: f"speculative decoding {v}",
-           "draft_model": lambda v: f"draft {pathlib.Path(str(v)).name}"}
+           "draft_model": lambda v: f"draft {pathlib.Path(str(v)).name}",
+           "cache_ram": lambda v: "prompt cache in RAM off" if not v else f"prompt cache in RAM {v} MiB"}
   return [words[k](v) if k in words else f"{k} {v}" for k, v in settings.items() if v is not None]
 
 
@@ -245,6 +263,8 @@ def llama_flags(run:pathlib.Path, context:int, *, capture:bool = False, binary:s
           raise ValueError(f"untraced {name} {actual!r} differs from request {settings[name]!r}")
         settings[name] = actual
   check_llama(settings)
+  if tool != "llama-server":
+    settings = {k: v for k, v in settings.items() if k not in SERVER_ONLY}
   if tool == "llama-bench" and "," in str(settings.get("override_tensor", "")):
     raise ValueError("override_tensor for llama-bench separates patterns with ';' (a ',' starts another configuration of the benchmark)")
   if binary is not None:

@@ -37,19 +37,20 @@ var (
 	// named by the section's own title (keys, sectionTitle).
 	keyTable    = key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "table"))
 	keyAllCols  = key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "all columns"))
+	keyBudget   = key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "where the time went"))
 	keyMeasured = key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "how it was measured"))
 	keyMachine  = key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "machine and engine"))
 	keyGlossary = key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "words used here"))
 	keyFull     = key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "full detail"))
-	// keySections is the six as one item of the footer.
-	keySections = key.NewBinding(key.WithKeys("t", "a", "m", "e", "w", "f"), key.WithHelp("t/a/m/e/w/f", "sections"))
+	// keySections is the seven as one item of the footer.
+	keySections = key.NewBinding(key.WithKeys("t", "a", "b", "m", "e", "w", "f"), key.WithHelp("t/a/b/m/e/w/f", "sections"))
 )
 
 // sectionBindings are layer 2's keys as this run offers them: each named by its section's title, off when the run
 // has no such section.
 func (m Model) sectionBindings() []key.Binding {
 	out := []key.Binding{}
-	for _, k := range []key.Binding{keyTable, keyAllCols, keyMeasured, keyMachine, keyGlossary, keyFull} {
+	for _, k := range []key.Binding{keyTable, keyAllCols, keyBudget, keyMeasured, keyMachine, keyGlossary, keyFull} {
 		title := sectionTitle(m.f.Plain, k)
 		if k.Help().Key == keyAllCols.Help().Key && title != "" {
 			title = vocab.Label("all_columns")

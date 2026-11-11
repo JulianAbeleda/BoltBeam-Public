@@ -14,7 +14,9 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     ceiling  MODEL | --profile P  --target T   the roofline: the best tokens/s this chip allows for this model
     ceilings MODEL | --profile P               the decode limit on every registered chip with a ceiling (what-if)
     recommend MODEL | --profile P --target T [--gpus N] [--engine E]  the engine settings for this model on this machine: context, speed, flags (derived)
-    offload MODEL --target T [--engine E]  the offload page: what goes to the card and to RAM, each setup's limits, the pinned-copy gap (derived)
+    tune MODEL --engine E [--build B] [--measure]  Tuned for this machine: each knob's value, source and reason (workflow/tune.py);
+                                               --measure prints pipeline progress lines, then the page
+    offload MODEL --target T [--engine E]  (also `boltbeam offload`) the offload page: what goes to the card and to RAM, each setup's limits, the pinned-copy gap (derived)
     runs     --root DIR [--all]                one summary per run folder under DIR; --all adds DIR/.work and the
                                                saved runs, each row marked where: runs, work or saved
     run      --run DIR | --run ID --root DIR   the stages, what is blocked, the next step, the results; an id is
@@ -241,6 +243,26 @@ def recommended(profile:dict[str, Any], target, *, engine:str = "vllm", gpus:int
   return {**out, "check": {**got, "after": rec.compare(after, got["overhead"], got["layout"])}}
 
 
+def tuned(model:str, engine:str, build:str | None = None, *, measure:bool = False, knobs:list[str] | None = None,
+          experts_in_ram:str | None = None, say=None) -> dict[str, Any]:
+  """Tuned for this machine (workflow/tune.py): the engine's knob rows as the Recommended setup page lays them out, and what
+  a run passes of them (capture_settings.knob_setting; env rows as environment). Facts only unless measure, which writes
+  its progress through say as pipeline lines. An engine with no knob table, or a build or model the adapter cannot read,
+  is a refusal in plain words, with no page."""
+  from boltbeam.core.refused import Refused
+  from boltbeam.workflow import tune
+  out = {"schema": SCHEMA, "kind": "tune", "engine": engine, "model": model, "page": None, "refused": None}
+  refused = plain.words()["tune"]["page"]["refused"]
+  if engine not in tune.engines():
+    return {**out, "refused": refused.format(reason=f"BoltBeam has no knob table for {engine} yet")}
+  try:
+    res = tune.tune(model, engine, build, measure=measure, knobs_only=knobs, experts_in_ram=experts_in_ram, say=say)
+  except Refused as exc:
+    return {**out, "refused": refused.format(reason=str(exc))}
+  return {**out, "build": res["build"].get("build"), "out": res.get("out"),
+          "page": tune.page(res, lambda r: capture_settings.knob_setting(engine, r["name"]))}
+
+
 def engines(*, cached:bool = False) -> dict[str, Any]:
   """Look for every engine on this machine now and save what was found (collectors/engine_scan.py): one row per
   item with its path and how it was found. The screen runs this at boot; `providers` then sees the saved paths."""
@@ -353,8 +375,8 @@ def _offload_kw(args) -> dict[str, Any]:
           "draft": args.draft}
 
 
-def main(argv:list[str] | None = None) -> int:
-  parser = argparse.ArgumentParser(prog="python -m boltbeam.workflow.screen", description=__doc__,
+def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.screen") -> int:
+  parser = argparse.ArgumentParser(prog=prog, description=__doc__,
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
   sub = parser.add_subparsers(dest="command", required=True)
   sub.add_parser("targets")
@@ -415,6 +437,10 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--bands", help="repeat calibration artifact; only an exact setup match can supply bands")
   for name, (kind, _, about) in capture_settings.ASKED.items():
     p.add_argument("--" + name.replace("_", "-"), type=kind, help=about)
+  p.add_argument("--engine-env", action="append", default=[], metavar="NAME=VALUE", type=pipeline.env_pair, help="an environment variable for the "
+                 "engine (repeatable): set for every engine the run starts, recorded with the run (workload_profile.engine_env)")
+  p.add_argument("--engine-env-any", action="store_true", help="let --engine-env set a name BoltBeam does not list for an engine, "
+                 "or one that picks devices (CUDA_VISIBLE_DEVICES and the like) or starts with BOLTBEAM_; without it those are refused")
   p.add_argument("--repeats", type=int, default=None, help=f"run the same setup N times (N >= 2; {PIN_RUNS} before a band "
                  "may justify an engine pin), then their repeat band into RUN/repeat_bands.json (workflow/repeat_bands.py)")
   p.add_argument("--ctxs", default=None, help="decode contexts (default 128,512) or prompt lengths (default: the sweep "
@@ -504,6 +530,14 @@ def main(argv:list[str] | None = None) -> int:
   q.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts there")
   p.add_argument("--check", action="store_true", help="start the engine once with these flags (a free GPU, a minute or two), "
                  "read its KV cache figures, cache its overhead in the facts and show predicted against measured")
+  p = sub.add_parser("tune", help="Tuned for this machine: the engine's knob rows, each with its value, source and reason "
+                     "(workflow/tune.py); facts only unless --measure (pipeline progress lines, then the page)")
+  p.add_argument("model")
+  p.add_argument("--engine", required=True, help="the engine (a provider name)")
+  p.add_argument("--build", help="the build the screen chose (its program or python); default: found as tune finds it")
+  p.add_argument("--measure", action="store_true", help="run the measured rows' sweeps on this machine's GPU")
+  p.add_argument("--knob", action="append", help="with --measure: only this knob (repeatable)")
+  p.add_argument("--experts-in-ram", help="all, or the first N layers' experts in host RAM (default: the offload plan's)")
   p = sub.add_parser("mtp", help="vLLM's multi-token prediction per draft count on natural prompts (collectors/vllm_mtp)")
   p.add_argument("model")
   p.add_argument("--target", required=True)
@@ -551,6 +585,10 @@ def main(argv:list[str] | None = None) -> int:
           + (" (weak)" if got["weak"] else ""))
     return 0
   if args.command == "pipeline":
+    try:
+      pipeline.check_engine_env(args)
+    except ValueError as exc:
+      parser.error(str(exc))
     return pipeline.pipeline_repeated(args) if args.repeats else pipeline.pipeline_current(args)
   if args.command == "compare":
     return pipeline.compare(args)
@@ -597,6 +635,10 @@ def main(argv:list[str] | None = None) -> int:
       out = {"schema": SCHEMA, **self_update.screen(args.skip)}
     elif args.command == "engines":
       out = engines(cached=args.cached)
+    elif args.command == "tune":
+      say = (lambda line: print(line, flush=True)) if args.measure else None  # the job's log: progress, then the page
+      out = tuned(str(pathlib.Path(args.model).expanduser()), args.engine, args.build, measure=args.measure, knobs=args.knob,
+                  experts_in_ram=args.experts_in_ram, say=say)
     elif args.command == "gpu-free":
       out = gpu_free(_target_arg(args.target))
     elif args.command == "mtp":

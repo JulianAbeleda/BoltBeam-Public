@@ -263,6 +263,9 @@ func compareRunsBody(f Facts, width int) string {
 		if h.Refused != nil {
 			return strings.TrimRight(b.String(), "\n")
 		}
+		if h.TimeBudget != nil { // both runs' budgets, side by side, under their figures
+			b.WriteString("\n" + budgetSides(h.TimeBudget, width))
+		}
 		if c.PartsNote != nil {
 			return b.String() + "\n" + paint(stMuted, hang(*c.PartsNote, 0, width))
 		}

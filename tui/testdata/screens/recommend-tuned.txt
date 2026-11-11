@@ -1,0 +1,99 @@
+
+Tuned for this machine
+  llama.cpp build: a build BoltBeam does not know by name, at
+  ~/llama.cpp/build/bin/llama-server (CUDA). Its local patches: llama-
+  pinned-copy-stream, llama-moe-prefill, llama-server-ckpt-min-head.
+  Model: Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf, 48 expert
+  layers of 256 experts, 23.42 GiB of experts; 11.07 GiB of them in host RAM
+  (--experts-in-ram 24 (given)).
+  Host: 31.3 GiB RAM, 28.3 GiB available now, 26 GiB usable for the model;
+  L3 32 MiB (sysfs index3: 32 MiB shared by cpus 0-15).
+  Read from this machine and the build; nothing ran to get them.
+
+  --cache-ram 0 · derived
+    off when the host experts (counted twice when the build can pin them:
+    the mmap pages the server still reads and a full pinned copy), the
+    tables' resident rows and the default 8 GiB prompt cache exceed the 26
+    GiB usable RAM; the pin budget below gets that RAM
+  -ub 4096 · derived
+    the chunk BoltBeam's prompt limit picks for this machine (the offload
+    page's prompt setup): the smallest within the policy tie of the best;
+    host experts are uploaded once per chunk, so bigger chunks upload less
+    (with experts in RAM, 4096 measured 15% faster than 2048)
+    to confirm: best over -ub [1024, 2048, 4096, 8192]
+  -b 2048 · default
+    raised to -ub when -ub is larger (the command does it); larger than -ub
+    measured no effect: -b 8192 at -ub 4096, 10k, 4,295 vs 4,312 tok/s (the
+    server's head and near-end breaks still set the decode calls)
+  LLAMA_WS=1 · default
+    on: it only engages for prefill chunks of at least LLAMA_WS_MIN_TOKENS
+    tokens with experts in host RAM; decode takes the stock path (measured
+    unchanged, 24.6 vs 24.8 tok/s)
+  LLAMA_WS_MIN_TOKENS=1024 · default
+    left at the patch's 1024: at -ub 4096 on a 10k prompt 256 and 1024
+    measured the same (4,329 vs 4,312 tok/s wall; the chat head batch is
+    shorter than either). It decides only chunks smaller than it, so it
+    matters only with small -ub (at -ub 256 and 512 the streamed path
+    measured 1.8-1.9x the stock one)
+  LLAMA_WS_PIN_GIB=12 · derived
+    a pinned copy is a second copy: the server's short chunks still read
+    every host expert from the mmap, so all 11.07 GiB stay in the page
+    cache. Pinned + host experts + tables' resident rows (0.08 GiB) + prompt
+    cache (0 GiB) must fit the 26 GiB usable RAM (28.3 GiB available when
+    this ran, less the 2 GiB margin). Conservative by the margin: on the 31
+    GB box the rule allows 1 GiB at -cmoe where 4 GiB measured best (+5%
+    over none) and 8 GiB collapsed. Run it with no other model server
+    holding RAM. What it pins is whole expert tensors in load order, not
+    experts by use: a measured routing profile (boltbeam routing MODEL --
+    engine E; on this model the hottest 10% of experts take 47% of
+    selections) says which experts a pin should hold first, which this patch
+    cannot do yet, so that is advice only, not a setting
+  GGML_CUDA_WS_RING_MIB=8 · derived
+    a quarter of the 32 MiB L3 the copying core shares (sysfs index3: 32 MiB
+    shared by cpus 0-15), a power of two: the memcpy's writes stay in cache
+    and the DMA reads them from there, so staging is not DRAM-bound twice.
+    The quarter is the measured best on one L3 size (32 MiB); other sizes
+    are extrapolated by it
+  GGML_CUDA_WS_CHUNK_KIB=1024 · derived
+    the ring in eight chunks, so the CPU fills one while the DMA drains the
+    others (measured: 8 chunks beat 4 at the same ring)
+  GGML_CUDA_WS_SLOTS=4 · default
+    4 slots run ~1.3 layers ahead, enough to overlap; 8 measured slower
+    (1,444 vs 1,485 tok/s) and cost VRAM. Streaming further ahead is not a
+    lever: Strata's own stream-ahead off measured the same (6,039 vs 6,045
+    tok/s)
+  GGML_CUDA_WS_THREADS=1 · default
+    the staging copy is bound by RAM, not by one core: 2 and 4 threads
+    measured slower (880 and 305 vs 1,661 tok/s)
+  GGML_CUDA_WS_PAGEABLE=0 · default
+    a debugging switch: pageable copies measured 751 vs 1,661 tok/s with the
+    ring
+  GGML_CUDA_MMID_PAR_MIN=256 · default
+    the patch's crossover (outputs are bit-identical either way; at 10k it
+    cut mm_ids 82 -> 26 ms); confirmed by --measure
+    to confirm: crossover over -ub [64, 128, 256, 512]
+  GGML_CUDA_MMQ_ID_J=(unset) · default
+    a sweep knob, left unset: wider tiles were measured slower (J=128 at -ub
+    2048: expert MMQ 354 -> 395 ms); llama.cpp's mean-columns rule was
+    already the best of the sweep
+  GGML_CUDA_BATCH_GET_STAGING=1 · default
+    on: each fresh 112 MiB pin cost ~40 ms per checkpoint; staging measured
+    +4.5% at 10k, results bit-identical
+  GGML_CUDA_BATCH_GET_STAGING_MAX_MIB=1024 · default
+    a cap on pinned memory: the largest staged span measured 448 MiB with
+    the prompt cache on (128 MiB with --cache-ram 0), under the cap
+  LLAMA_SERVER_CKPT_MIN_HEAD=256 · derived
+    ⚠ changes outputs: not bitwise identical
+    256 with experts in host RAM: the chat template's short head (42 tokens
+    here) otherwise runs as its own batch, which uploads every host layer's
+    experts per expert from pageable memory (2.6 GB, ~250 ms) and then takes
+    a checkpoint sync; measured +16% at 10k (4,551 -> 5,278 tok/s wall) and
+    +53% at 2.7k (3,089 -> 4,731). Outputs are not bitwise identical (the
+    batch boundaries move): the first argmax divergences are near-ties (top-
+    2 probabilities within 0.01-0.09), the same envelope as stock -ub 2048
+    vs 4096; checkpoint restore still works
+
+  LLAMA_WS_PIN_GIB=12 LLAMA_SERVER_CKPT_MIN_HEAD=256
+    ~/llama.cpp/build/bin/llama-server -m /models/Qwen3.8-Flash-Next-GSQ-
+    RCO-IQ1_M-00001-of-00002.gguf -ngl 99 --n-cpu-moe 24 --cache-ram 0 -ub
+    4096 -b 4096

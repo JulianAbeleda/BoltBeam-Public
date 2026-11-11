@@ -4,6 +4,7 @@ package seam
 // is one run's two layers, `words` the vocabulary itself (stage, role and part names, the layer-1 labels, the glossary).
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -22,18 +23,37 @@ type Plain struct {
 // PlainLayer1 leads with the headline figures, then answers how fast, how close to what this GPU allows, what holds it
 // back; then the top three, the caveats under them (GainsNote, Unassigned) and the trust line.
 type PlainLayer1 struct {
-	RunType    string              `json:"run_type"`
-	Title      string              `json:"title"`
-	Figures    []PlainFigure       `json:"figures"`
-	Fast       string              `json:"fast"`
-	Close      *string             `json:"close"`
-	Holds      *string             `json:"holds"`
-	Upgrade    []string            `json:"upgrade"`
-	Numbers    map[string]*float64 `json:"numbers"`
-	Top        []PlainPart         `json:"top"`
-	GainsNote  *string             `json:"gains_note"`
-	Unassigned *string             `json:"unassigned"`
-	Trust      PlainTrust          `json:"trust"`
+	RunType    string        `json:"run_type"`
+	Title      string        `json:"title"`
+	Figures    []PlainFigure `json:"figures"`
+	Fast       string        `json:"fast"`
+	Close      *string       `json:"close"`
+	Holds      *string       `json:"holds"`
+	Upgrade    []string      `json:"upgrade"`
+	Numbers    PlainNumbers  `json:"numbers"`
+	Top        []PlainPart   `json:"top"`
+	GainsNote  *string       `json:"gains_note"`
+	Unassigned *string       `json:"unassigned"`
+	Trust      PlainTrust    `json:"trust"`
+}
+
+// PlainNumbers are layer 1's numbers by name. A prefill's also carries words (its prompt kind and form); those are
+// not numbers and are left out here: the sentences that use them are Python's.
+type PlainNumbers map[string]*float64
+
+func (n *PlainNumbers) UnmarshalJSON(raw []byte) error {
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return err
+	}
+	*n = PlainNumbers{}
+	for k, v := range all {
+		var f *float64
+		if json.Unmarshal(v, &f) == nil {
+			(*n)[k] = f
+		}
+	}
+	return nil
 }
 
 // PlainFigure is one headline figure: Figure is the value and unit as layer 1 prints them ("100.4 tok/s", "14%"),
@@ -80,6 +100,8 @@ type PlainLayer2 struct {
 	Table    *PlainTable    `json:"table"`
 	Sections []PlainSection `json:"sections"`
 	Glossary []PlainTerm    `json:"glossary"`
+	// TimeBudget is where a prefill's wall time went (budget.go); nil for a run with no budget.
+	TimeBudget *TimeBudget `json:"time_budget"`
 }
 
 // PlainTable is the where table at four columns (three when no gain is known); AllColumns is the table as the report

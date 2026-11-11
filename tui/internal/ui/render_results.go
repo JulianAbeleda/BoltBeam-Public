@@ -331,8 +331,15 @@ func runEngineBody(e *seam.RunEngine) string {
 		return ""
 	}
 	var b strings.Builder
+	line := ""
 	if len(e.SettingsWords) > 0 { // a requested setting changes what was measured, so it leads
-		b.WriteString(stMuted.Render("Engine settings: "+strings.Join(e.SettingsWords, "; ")+".") + "\n")
+		line = "Engine settings: " + strings.Join(e.SettingsWords, "; ") + "."
+	}
+	if e.PromptFormWords != nil { // how a prefill sent its prompt: two forms' times do not compare
+		line = strings.TrimSpace(line + " " + *e.PromptFormWords)
+	}
+	if line != "" {
+		b.WriteString(stMuted.Render(line) + "\n")
 	}
 	if len(e.SpeculationWords) > 0 { // a speculative run's limit is at the acceptance it measured: said beside the request
 		b.WriteString(stMuted.Render("Speculation measured: "+strings.Join(e.SpeculationWords, "; ")+".") + "\n")
@@ -367,7 +374,7 @@ func runEngineBody(e *seam.RunEngine) string {
 	if len(when) > 16 {
 		when = strings.Replace(when[:16], "T", " ", 1)
 	}
-	line := "Toolchain (" + when + " UTC): " + strings.Join(parts, ", ")
+	line = "Toolchain (" + when + " UTC): " + strings.Join(parts, ", ")
 	switch {
 	case len(parts) == 0:
 		line = "Toolchain (" + when + " UTC): versions not recorded for " + strings.Join(missing, ", ")

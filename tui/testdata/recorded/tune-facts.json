@@ -1,0 +1,192 @@
+{
+  "build": "~/llama.cpp/build/bin/llama-server",
+  "engine": "llama.cpp",
+  "kind": "tune",
+  "model": "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
+  "out": null,
+  "page": {
+    "absent": [],
+    "command": "~/llama.cpp/build/bin/llama-server -m /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf -ngl 99 -ub 4096 -b 4096",
+    "head": "llama.cpp build: a build BoltBeam does not know by name, at ~/llama.cpp/build/bin/llama-server (CUDA). Its local patches: llama-pinned-copy-stream, llama-moe-prefill, llama-server-ckpt-min-head.",
+    "measure": {
+      "failed": "The measurement stopped without an answer: the values read from facts stand. Its log: {log}",
+      "helper": "short sweeps, one engine start per point",
+      "knobs": [
+        "-ub",
+        "GGML_CUDA_MMID_PAR_MIN"
+      ],
+      "label": "Measure on this machine",
+      "none": null,
+      "progress": "{knob}: point {i} of at most {n}",
+      "running": "Measuring on this machine",
+      "starting": "starting",
+      "stop": "Stop",
+      "stop_helper": "the values read from facts stand",
+      "stopped": "Sent stop to the measurement. Nothing measured is kept; the values read from facts stand."
+    },
+    "not_used": [
+      {
+        "name": "--cache-ram",
+        "reason": "no experts in host RAM, so the prompt cache competes with nothing this tool sets (boltbeam recommend says when to turn it off)"
+      },
+      {
+        "name": "LLAMA_WS",
+        "reason": "no experts in host RAM: the streamer has nothing to copy"
+      },
+      {
+        "name": "LLAMA_WS_MIN_TOKENS",
+        "reason": "no experts in host RAM: the streamer has nothing to copy"
+      },
+      {
+        "name": "LLAMA_WS_PIN_GIB",
+        "reason": "no experts in host RAM: nothing to pin"
+      },
+      {
+        "name": "GGML_CUDA_WS_RING_MIB",
+        "reason": "no experts in host RAM: nothing is staged"
+      },
+      {
+        "name": "GGML_CUDA_WS_CHUNK_KIB",
+        "reason": "no experts in host RAM: nothing is staged"
+      },
+      {
+        "name": "GGML_CUDA_WS_SLOTS",
+        "reason": "no experts in host RAM"
+      },
+      {
+        "name": "GGML_CUDA_WS_THREADS",
+        "reason": "no experts in host RAM"
+      },
+      {
+        "name": "GGML_CUDA_WS_PAGEABLE",
+        "reason": "no experts in host RAM"
+      }
+    ],
+    "not_used_title": "Not used with this model and placement",
+    "notes": [
+      "Model: Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf, 48 expert layers of 256 experts, 23.42 GiB of experts; 0.00 GiB of them in host RAM (the offload plan on nvidia_sm120 (boltbeam offload)).",
+      "Host: 31.3 GiB RAM, 28.5 GiB available now, 26 GiB usable for the model; L3 32 MiB (sysfs index3: 32 MiB shared by cpus 0-15)."
+    ],
+    "rows": [
+      {
+        "confirm": "to confirm: best over -ub [1024, 2048, 4096, 8192]",
+        "group": null,
+        "held": null,
+        "kind": "flag",
+        "name": "-ub",
+        "reason": "the chunk BoltBeam's prompt limit picks for this machine (the offload page's prompt setup): the smallest within the policy tie of the best; host experts are uploaded once per chunk, so bigger chunks upload less (with experts in RAM, 4096 measured 15% faster than 2048)",
+        "source": "derived",
+        "source_words": "derived",
+        "status": "set",
+        "tags": [],
+        "use": {
+          "setting": "chunk_size",
+          "value": "4096"
+        },
+        "value": "4096"
+      },
+      {
+        "confirm": null,
+        "group": null,
+        "held": null,
+        "kind": "flag",
+        "name": "-b",
+        "reason": "raised to -ub when -ub is larger (the command does it); larger than -ub measured no effect: -b 8192 at -ub 4096, 10k, 4,295 vs 4,312 tok/s (the server's head and near-end breaks still set the decode calls)",
+        "source": "default",
+        "source_words": "default",
+        "status": "default",
+        "tags": [],
+        "use": null,
+        "value": "2048"
+      },
+      {
+        "confirm": "to confirm: crossover over -ub [64, 128, 256, 512]",
+        "group": "llama-moe-prefill",
+        "held": null,
+        "kind": "env",
+        "name": "GGML_CUDA_MMID_PAR_MIN",
+        "reason": "the patch's crossover (outputs are bit-identical either way; at 10k it cut mm_ids 82 -> 26 ms); confirmed by --measure",
+        "source": "default",
+        "source_words": "default",
+        "status": "default",
+        "tags": [],
+        "use": null,
+        "value": "256"
+      },
+      {
+        "confirm": null,
+        "group": "llama-moe-prefill",
+        "held": null,
+        "kind": "env",
+        "name": "GGML_CUDA_MMQ_ID_J",
+        "reason": "a sweep knob, left unset: wider tiles were measured slower (J=128 at -ub 2048: expert MMQ 354 -> 395 ms); llama.cpp's mean-columns rule was already the best of the sweep",
+        "source": "default",
+        "source_words": "default",
+        "status": "default",
+        "tags": [],
+        "use": null,
+        "value": "(unset)"
+      },
+      {
+        "confirm": null,
+        "group": "llama-moe-prefill",
+        "held": null,
+        "kind": "env",
+        "name": "GGML_CUDA_BATCH_GET_STAGING",
+        "reason": "on: each fresh 112 MiB pin cost ~40 ms per checkpoint; staging measured +4.5% at 10k, results bit-identical",
+        "source": "default",
+        "source_words": "default",
+        "status": "default",
+        "tags": [],
+        "use": null,
+        "value": "1"
+      },
+      {
+        "confirm": null,
+        "group": "llama-moe-prefill",
+        "held": null,
+        "kind": "env",
+        "name": "GGML_CUDA_BATCH_GET_STAGING_MAX_MIB",
+        "reason": "a cap on pinned memory: the largest staged span measured 448 MiB with the prompt cache on (128 MiB with --cache-ram 0), under the cap",
+        "source": "default",
+        "source_words": "default",
+        "status": "default",
+        "tags": [],
+        "use": null,
+        "value": "1024"
+      },
+      {
+        "confirm": null,
+        "group": "llama-server-ckpt-min-head",
+        "held": null,
+        "kind": "env",
+        "name": "LLAMA_SERVER_CKPT_MIN_HEAD",
+        "reason": "stock (0): every expert is on the GPU, where the head batch costs no expert upload; not measured there",
+        "source": "derived",
+        "source_words": "derived",
+        "status": "default",
+        "tags": [
+          "changes outputs: not bitwise identical"
+        ],
+        "use": null,
+        "value": "0"
+      }
+    ],
+    "says": "Read from this machine and the build; nothing ran to get them.",
+    "title": "Tuned for this machine",
+    "use": {
+      "env": {},
+      "env_about": "environment variable for the engine; the run passes it as set here",
+      "helper": "copy into Engine settings for the next run",
+      "label": "Use these",
+      "none": null,
+      "not_passed": null,
+      "settings": {
+        "chunk_size": "4096"
+      },
+      "used": "Copied {n} values into Engine settings; the next run passes them."
+    }
+  },
+  "refused": null,
+  "schema": "boltbeam.tui.v1"
+}

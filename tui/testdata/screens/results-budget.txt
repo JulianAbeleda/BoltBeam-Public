@@ -1,0 +1,50 @@
+▾ Where the time went                                                      b
+  the 10,000-token prompt's traced request (under the profiler), from its
+  GPU trace (ms)
+  GPU kernels (their union)                                          1,344.4
+    dense matrix multiplies                                            329.2
+    expert matrix multiplies                                           304.4
+    elementwise kernels (norms, type conversion)                       227.0
+    attention                                                          118.6
+    recurrent layers                                                   118.6
+    other kernels                                                      103.7
+    expert routing and combine                                          88.5
+    copies and gathers                                                  54.4
+  copies with no kernel running                                        261.3
+    Host-to-GPU, pinned host memory, queue 15 (607.5 ms in all)        239.6
+    GPU-to-GPU, GPU memory, queue 16 (21.5 ms in all)                   21.5
+    Host-to-GPU, pinned host memory, queue 14 (9.7 ms in all)            9.7
+    GPU-to-host, GPU memory, queue 14 (8.4 ms in all)                    8.4
+    15 smaller copies                                                    0.6
+  GPU idle (no kernel, no copy)                                        163.5
+    CPU work (no GPU API call in flight)                               158.4
+    a copy call the host waits in                                        0.2
+    the host waiting for the GPU (synchronize)                           0.1
+    8,820 short gaps under 1 ms each                                     4.8
+  host time outside the GPU work                                        97.3
+  not accounted for                                                      0.0
+  ──────────────────────────────────────────────────────────────────────────
+  wall time of the traced request (under the profiler)               1,866.5
+  The GPU work fits inside the request's wall time; the host time is what is
+  left of the wall, so the parts add up to it by how they are counted.
+  Of the GPU idle time, CPU work (no GPU API call in flight) took 158.4 ms;
+  a copy call the host waits in took 0.2 ms; the host waiting for the GPU
+  (synchronize) took 0.1 ms; 4.8 ms is in 8,820 short gaps under 1 ms each.
+  Kernel time by family: dense matrix multiplies 329.2 ms, expert matrix
+  multiplies 304.4 ms, elementwise kernels (norms, type conversion) 227.0
+  ms, attention 118.6 ms, recurrent layers 118.6 ms, other kernels 103.7 ms,
+  expert routing and combine 88.5 ms, copies and gathers 54.4 ms.
+  Host-to-GPU copies from pinned host memory on GPU queue 15: 17.42 GB in
+  607.5 ms (28.7 GB/s), 239.6 ms with no kernel running.
+  GPU-to-GPU copies from GPU memory on GPU queue 16: 17.84 GB in 21.5 ms
+  (831.6 GB/s), 21.5 ms with no kernel running.
+  Host-to-GPU copies from pinned host memory on GPU queue 14: 0.24 GB in 9.7
+  ms (24.9 GB/s), 9.7 ms with no kernel running.
+  GPU-to-host copies from GPU memory on GPU queue 14: 0.24 GB in 8.4 ms
+  (28.3 GB/s), 8.4 ms with no kernel running.
+  Copies on different GPU queues overlap each other, so their times with no
+  kernel running add up to more than the copy total.
+  A GPU queue (a stream) runs its work in order; copies and kernels on
+  different queues can overlap. Pinned host memory is locked in RAM, so the
+  GPU reads it directly; ordinary (pageable) memory is first staged through
+  a pinned buffer.

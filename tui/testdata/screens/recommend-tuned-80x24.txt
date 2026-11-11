@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Recommended setup                                                            │
+│ context, speed and engine flags for this model on your GPUs · derived from   │
+│ the checkpoint and this machine's measured facts; nothing runs until Check   │
+│                                                                              │
+│ Contexts are upper bounds: this engine's own overhead is not measured here   │
+│ yet. Check measures it.                                                      │
+│                                                                              │
+│ Layout                                                                       │
+│   use one: one GPU                                                           │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ ▸ [ Copy engine command line ]                                               │
+│   [ Copy Arkey vllm_args ]                                                   │
+│   [ Check ] start the engine once with these flags and compare               │
+│   [ Speed up ] Makes a faster copy. The original stays.                      │
+│   [ Measure on this machine ] short sweeps, one engine start per point       │
+│   [ Use these ] copy into Engine settings for the next run                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · enter pick · esc setup · ? all keys · q quit

@@ -340,7 +340,53 @@ def cmd_prefill_role_trace(args) -> int:
   return 0
 
 
+def _register_time_budget(sub) -> None:
+  p = sub.add_parser("time-budget", help="where one request's wall time went, from an nsys sqlite export: kernels by family, "
+                     "exposed copy, GPU idle by cause, host time outside the GPU work (boltbeam.time_budget.v1)")
+  p.add_argument("trace", help="an nsys capture's sqlite export (capture.sqlite)")
+  p.add_argument("--wall-ms", type=float, default=None, help="the client's wall time for the request (default: from --driver, else unknown)")
+  p.add_argument("--driver", default=None, help="a prefill driver's JSON line (file): the request's span and wall time come from it")
+  p.add_argument("--request", type=int, default=None, help="with --driver: which timed request (default: the median wall)")
+  p.add_argument("--engine", action="append", required=True, help="kernel family rows to read (data/kernel_families.json engines: a fork, then its root), in order; repeatable")
+  p.add_argument("--vendor", default="nvidia", help="the GPU vendor's rows (target/vendors.py; nsys traces are nvidia)")
+  p.add_argument("--gap-ms", type=float, default=None, help="attribute idle gaps at least this long one by one (default 1)")
+  p.add_argument("--out", default=None, help="write the record here (JSON)")
+  p.set_defaults(fn=cmd_time_budget)
+
+
+def cmd_time_budget(args) -> int:
+  import statistics
+  from boltbeam.collectors import time_budget as tb
+  from boltbeam.report.plain import time_budget_words
+  if len(missing := tb.unknown_engines(args.engine)) == len(args.engine):  # a fork without rows of its own reads its root's
+    return _fail(f"BoltBeam has no kernel family rows for {', '.join(missing)}; engines it has rows for: {', '.join(tb.engine_names())}")
+  kw = dict(engine=args.engine, vendor=args.vendor, **({"gap_ms": args.gap_ms} if args.gap_ms is not None else {}),
+            what=f"from {pathlib.Path(args.trace).name}")
+  if args.driver:
+    line = json.loads(pathlib.Path(args.driver).read_text().strip().splitlines()[-1])
+    walls = line.get("wall_samples_ms") or []
+    i = args.request if args.request is not None else (walls.index(statistics.median_low(walls)) if walls else 0)
+    rec = tb.request_budget(args.trace, line, i, **kw)
+    if rec is None:
+      return _fail("the driver line has no request span for that request, or the trace no clock origin: pass --wall-ms instead")
+  else:
+    rec = tb.from_nsys(args.trace, wall_ms=args.wall_ms, **kw)
+  if args.out:
+    pathlib.Path(args.out).write_text(json.dumps(rec, indent=1) + "\n")
+  got = time_budget_words(rec)
+  print(got["line"])
+  for l in got["lines"]:
+    print("  " + l)
+  from boltbeam.report.plain import budget_unfit, words
+  unknown_row = words()["time_budget"]["rows"]["host"] if budget_unfit(rec) else None
+  print("| part | ms |\n|---|---|")
+  for label, v in got["rows"]:
+    print(f"| {label} | {'unknown' if v is None and label == unknown_row else '-' if v is None else f'{round(v, 1) + 0.0:,.1f}'} |")
+  return 0
+
+
 def register(sub) -> None:
+  _register_time_budget(sub)
   _register_schedule_trace(sub)
   _register_import_hw_trace(sub)
   _register_import_ncu(sub)

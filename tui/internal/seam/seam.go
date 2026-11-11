@@ -356,6 +356,8 @@ type HeadToHead struct {
 	Differs *string         `json:"differs"`
 	Rows    []HeadToHeadRow `json:"rows"`
 	Refused *string         `json:"refused"`
+	// TimeBudget is both runs' time budgets side by side (budget.go); nil when neither has one.
+	TimeBudget *TimeBudgetSides `json:"time_budget"`
 }
 
 // HeadToHeadRow is one kind of figure for both runs: "" where a run has none.

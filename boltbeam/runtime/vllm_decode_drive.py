@@ -72,6 +72,8 @@ def main() -> int:
   ap.add_argument("--prefill", type=int, default=None, help="prefill mode: one prompt of this many tokens")
   ap.add_argument("--capture", action="store_true", help="prefill mode: the measured call alone, marked for the profiler")
   ap.add_argument("--corpus", default=None, help="prefill mode: real text (data/gate_corpus.json) instead of random ids")
+  ap.add_argument("--prompt-form", default="ids", choices=("ids", "chat"),
+                  help="prefill mode with --corpus: the ids as they are, or the text as one user message in the model's chat template")
   ap.add_argument("--semantic-capture", action="store_true", help="compiled graphless NVTX labeling pass; never production timing")
   ap.add_argument("--capture-pass", choices=('label','timing','paired'), help="compiled decode labeling or production graph timing")
   ap.add_argument("--semantic-dispatch", action="store_true", help="NVTX operator evidence preserving compiled execution; refuses unobserved graph nodes")
@@ -81,6 +83,7 @@ def main() -> int:
                   "production-graph generation when absent (vllm_token_script)")
   ap.add_argument("--seed", type=int, default=0, help="prefill mode: the seed the prompt ids are drawn from")
   ap.add_argument("--max-num-batched-tokens", type=int)
+  ap.add_argument("--engine-args", type=json.loads, default={}, help="prefill mode: more LLM(...) keyword arguments, one JSON object (workflow/tune_vllm.py)")
   ap.add_argument("--max-num-seqs", type=int, help="the engine's stream slots when they are more than the largest of "
                   "--batches: a capture of one batch on the engine a sweep timed it on")
   ap.add_argument("--dtype", default="auto")
@@ -107,6 +110,8 @@ def main() -> int:
     ap.error('--profile-end requires an ordered profiler range')
   if a.token_script and not a.capture_pass:
     ap.error('--token-script requires a decode --capture-pass')
+  if a.prompt_form == "chat" and not (a.prefill and a.corpus):
+    ap.error("--prompt-form chat needs --prefill and --corpus: a chat request is text")
   if a.semantic_capture and not (a.capture and a.prefill):
     ap.error('--semantic-capture requires --prefill and --capture')
   if a.semantic_dispatch and (not (a.capture and a.prefill) or a.semantic_capture):
@@ -387,14 +392,16 @@ def prefill(a) -> int:
             language_model_only=True, speculative_config=a.speculative_config,
             gpu_memory_utilization=a.gpu_memory_utilization, tensor_parallel_size=a.tensor_parallel_size, max_num_seqs=1, seed=0, disable_log_stats=False,
             **({"attention_backend": a.attention_backend} if a.attention_backend else {}),
-            **({"max_num_batched_tokens": a.max_num_batched_tokens, "enable_chunked_prefill": True} if a.max_num_batched_tokens else {}))
+            **({"max_num_batched_tokens": a.max_num_batched_tokens, "enable_chunked_prefill": True} if a.max_num_batched_tokens else {}),
+            **a.engine_args)
   vocab = llm.get_tokenizer().vocab_size
   rng = random.Random(a.seed)
   params = SamplingParams(max_tokens=1, temperature=0.0)
   text_ids = corpus_ids(llm.get_tokenizer(), a.corpus) if a.corpus else None
+  chat = chat_ids(llm.get_tokenizer(), window(text_ids, a.prefill), a.prefill) if a.prompt_form == "chat" else None
 
   def call() -> tuple[float, float | None]:
-    ids = window(text_ids, a.prefill) if text_ids else [rng.randrange(vocab) for _ in range(a.prefill)]
+    ids = chat or (window(text_ids, a.prefill) if text_ids else [rng.randrange(vocab) for _ in range(a.prefill)])
     t0 = time.perf_counter()
     out = llm.generate([TokensPrompt(prompt_token_ids=ids)], params, use_tqdm=False)[0]
     wall = time.perf_counter() - t0
@@ -412,7 +419,8 @@ def prefill(a) -> int:
     from vllm_semantics import install_routing
     install_routing(llm)
   sc = llm.llm_engine.vllm_config.scheduler_config
-  line = {"length": a.prefill, "prompt_kind": "real_text" if a.corpus else "random_tokens",
+  line = {"length": a.prefill, "prompt_kind": "real_text" if a.corpus else "random_tokens", "prompt_form": a.prompt_form,
+          "prompt_tokens": len(chat) if chat else a.prefill,
           **({"corpus": {"file": Path(a.corpus).name, "tokens": len(text_ids)}} if a.corpus else {}), "max_model_len": llm.llm_engine.vllm_config.model_config.max_model_len, **_resolved_formats(llm), "seed": a.seed, "max_num_batched_tokens": int(sc.max_num_batched_tokens),
           "speculative_config": a.speculative_config,
           "chunked_prefill": bool(sc.enable_chunked_prefill), "vllm": __import__("vllm").__version__}
@@ -455,6 +463,28 @@ def corpus_ids(tokenizer, path:str) -> list[int]:
   if not ids:
     raise SystemExit(f"the corpus {path} tokenized to nothing")
   return ids
+
+
+def chat_ids(tokenizer, ids:list[int], n:int) -> list[int]:
+  """The chat form of a prompt: the text of the window's first k ids as one user message, through the model's chat
+  template with the generation prompt, as token ids; k chosen so the result is n tokens (a few tries: a detokenized cut
+  can tokenize back a token longer or shorter). It is what LLM.chat renders and tokenizes; vLLM has no batch break at the
+  user message, so the form changes only the tokens."""
+  def render(k:int) -> list[int]:
+    got = tokenizer.apply_chat_template([{"role": "user", "content": tokenizer.decode(ids[:k])}], add_generation_prompt=True, tokenize=True)
+    return list(got["input_ids"] if hasattr(got, "keys") else got)  # newer transformers: a BatchEncoding
+  base, k, best = len(render(0)), n, None
+  for _ in range(12):
+    got = render(k)
+    if best is None or abs(len(got) - n) < abs(len(best) - n):
+      best = got
+    if len(got) == n:
+      break
+    step = round((n - len(got)) * k / max(len(got) - base, 1))  # the text's tokens per id so far
+    k = max(1, k + (step or (1 if len(got) < n else -1)))
+  if len(best) != n:  # a prompt of another length is another measurement: refused, as llama's chat form refuses it
+    raise SystemExit(f"could not fit the corpus text to a {n}-token chat prompt (closest {len(best)})")
+  return best
 
 
 def window(ids:list[int], n:int) -> list[int]:

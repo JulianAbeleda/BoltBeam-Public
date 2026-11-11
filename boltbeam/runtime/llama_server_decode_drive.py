@@ -22,7 +22,15 @@ tokenized by the server and cut to exactly `context` tokens; repeated from the s
 sent as token ids with the prompt cache off, one token asked for. One warm-up and --reps timed requests; each must report
 prompt_n equal to the context (and cache_n 0 where the server reports it): a prompt the server partly reused is refused.
 It prints {"prefill", "context", "prompt_tokens", "samples_ms" (the server's prompt_ms), "wall_samples_ms" (client wall: request sent to reply read), "n_batch", "n_ubatch", "corpus",
+"prompt_form", "request_spans_ns" (each timed request's send and reply on the host's CLOCK_MONOTONIC, so a trace can be cut to it),
 "engine"}. Real text, because an MoE routes random token ids to far more experts than real text and reads ~2x slow.
+
+--prompt-form chat sends the same corpus text as a chat request instead (/v1/chat/completions, one user message,
+max_tokens 1, the prompt cache off): what a chat client sends. The server wraps it in the model's chat template, and for a
+model it checkpoints it ends a batch where the user message starts (server-context.cpp, the user-start break), so a chat
+prompt's first batch is the template's head alone. The text is the corpus's first k tokens, k chosen (through /detokenize,
+/apply-template and /tokenize) so the templated prompt is `context` tokens (refused when it cannot be fitted); each
+request must report prompt_n equal to it and cache_n 0. The line also gives chat_head_tokens, the template's tokens before the text.
 """
 from __future__ import annotations
 
@@ -103,15 +111,85 @@ def flag_int(flags:list, name:str, default:int) -> int:
   return int(flags[flags.index(name) + 1]) if name in flags else default
 
 
-def prefill(base:str, ids:list[int]) -> tuple[float, float]:
-  """(the server's prompt_ms, the client's wall ms from the request sent to the reply read) for one cold prompt."""
-  t0 = time.perf_counter()
-  got = call(base, "/completion", {"prompt": ids, "n_predict": 1, "temperature": 0, "top_k": 1, "seed": 0, "cache_prompt": False})
-  wall = (time.perf_counter() - t0) * 1e3
+FORMS = ("ids", "chat")
+
+
+def templated(base:str, text:str) -> tuple[list[dict], int]:
+  """The chat messages for text, and how many tokens the server's chat template makes of them."""
+  messages = [{"role": "user", "content": text}]
+  prompt = call(base, "/apply-template", {"messages": messages})["prompt"]
+  return messages, len(call(base, "/tokenize", {"content": prompt, "add_special": True, "parse_special": True})["tokens"])
+
+
+def user_marker(candidate:str) -> str:
+  """The user message's start marker in the text a user message adds before its content, as llama.cpp reads it
+  (chat-diff-analyzer.cpp detect_user_start_marker): split into markers (<...>, [...]) and text, drop the leading end
+  or close markers and leading blank text, trim."""
+  import re
+  out, seen = [], False
+  for part in (x for x in re.split(r"(<[^<>]*>|\[[^\[\]]*\])", candidate) if x):
+    marker = bool(re.fullmatch(r"<[^<>]*>|\[[^\[\]]*\]", part))
+    if not seen and ((marker and ("end" in part.lower() or "close" in part.lower())) or (not marker and not part.strip())):
+      continue
+    seen |= marker
+    out.append(part)
+  return "".join(out).strip()
+
+
+def chat_head(base:str) -> int:
+  """Where the server ends a chat prompt's first batch: the start of the user message, its role header included. The
+  server finds the user message's marker by rendering the template without and with one user message (llama.cpp
+  common/chat-diff-analyzer.cpp, detect_user_start_marker; when the template refuses no messages, after a user and an
+  assistant turn): the marker is the text the user message adds before its content. The head is the tokens of a
+  one-message prompt before that marker."""
+  content = "\u2063BOLTBEAM\u2063"
+  render = lambda msgs: call(base, "/apply-template", {"messages": msgs, "add_generation_prompt": False})["prompt"]  # noqa: E731
+  user = {"role": "user", "content": content}
+  try:
+    before, after = render([]), render([user])
+  except OSError:  # urllib's HTTPError: the template needs a message
+    turn = [{"role": "user", "content": "\u2063BB2\u2063"}, {"role": "assistant", "content": "\u2063BB3\u2063"}]
+    before, after = render(turn), render([*turn, user])
+  n = 0
+  while n < min(len(before), len(after)) and before[n] == after[n]:
+    n += 1
+  marker = user_marker(after[n:after.index(content)])
+  pre = (one := render([user]))[:one.index(content)]
+  head = pre[:pre.rindex(marker)] if marker and marker in pre else pre
+  return len(call(base, "/tokenize", {"content": head, "add_special": True, "parse_special": True})["tokens"])
+
+
+def chat_prompt(base:str, ids:list[int], n:int) -> tuple[list[dict], int]:
+  """A user message of the corpus's first k tokens, k chosen so the templated prompt is n tokens (a few tries: a
+  detokenized cut can tokenize back a token longer or shorter). The messages and the templated count."""
+  empty, k, best = templated(base, "")[1], n, None
+  for _ in range(12):
+    messages, count = templated(base, call(base, "/detokenize", {"tokens": ids[:k]})["content"])
+    if best is None or abs(count - n) < abs(best[1] - n):
+      best = (messages, count)
+    if count == n:
+      break
+    step = round((n - count) * k / max(count - empty, 1))  # the text's tokens per id so far
+    k = max(1, k + (step or (1 if count < n else -1)))
+  if best[1] != n:  # a prompt of another length is another measurement: refused, as an ids prompt of another length is
+    raise SystemExit(f"could not fit the corpus text to a {n}-token chat prompt (closest {best[1]})")
+  return best
+
+
+def prefill(base:str, prompt:list[int] | list[dict], expect:int, form:str = "ids") -> tuple[float, float, list[int], int]:
+  """(the server's prompt_ms, the client's wall ms from the request sent to the reply read, [send, reply] on the
+  host's monotonic clock in ns, prompt_n) for one cold prompt: token ids to /completion, or chat messages to
+  /v1/chat/completions."""
+  path, body = (("/completion", {"prompt": prompt, "n_predict": 1}) if form == "ids" else
+                ("/v1/chat/completions", {"messages": prompt, "max_tokens": 1}))
+  m0, t0 = time.monotonic_ns(), time.perf_counter()
+  got = call(base, path, {**body, "temperature": 0, "top_k": 1, "seed": 0, "cache_prompt": False})
+  wall, m1 = (time.perf_counter() - t0) * 1e3, time.monotonic_ns()
   t = got.get("timings") or {}
-  if t.get("prompt_n") != len(ids) or t.get("cache_n", 0) != 0:
-    raise SystemExit(f"asked for a cold prompt of {len(ids)} tokens, the server read prompt_n {t.get('prompt_n')} with cache_n {t.get('cache_n')}")
-  return float(t["prompt_ms"]), wall
+  n = t.get("prompt_n")
+  if n != expect or t.get("cache_n", 0) != 0:
+    raise SystemExit(f"asked for a cold prompt of {expect} tokens ({form} form), the server read prompt_n {n} with cache_n {t.get('cache_n')}")
+  return float(t["prompt_ms"]), wall, [m0, m1], int(n)
 
 
 def main() -> int:
@@ -126,6 +204,7 @@ def main() -> int:
   ap.add_argument("--once", type=int, default=None)
   ap.add_argument("--prefill", action="store_true", help="time a cold prefill of the first --contexts value on real text")
   ap.add_argument("--corpus", default=None, help="--prefill: data/gate_corpus.json")
+  ap.add_argument("--prompt-form", default="ids", choices=FORMS, help="--prefill: token ids to /completion, or a chat request")
   ap.add_argument("--flags", default="[]", help="the engine flags, a JSON list")
   ap.add_argument("--log", default="llama-server.log")
   ap.add_argument("--ready-s", type=float, default=1800.0)
@@ -145,10 +224,15 @@ def main() -> int:
     if a.prefill:
       flags = json.loads(a.flags)
       ids, cycles = corpus_ids(s.base, a.corpus, contexts[0])
-      prefill(s.base, ids)  # load and warm
-      got = [prefill(s.base, ids) for _ in range(a.reps)]
+      prompt, expect = (ids, len(ids)) if a.prompt_form == "ids" else chat_prompt(s.base, ids, contexts[0])
+      prefill(s.base, prompt, expect, a.prompt_form)  # load and warm; the server must read the fitted length
+      got = [prefill(s.base, prompt, expect, a.prompt_form) for _ in range(a.reps)]
       samples, walls = [g[0] for g in got], [g[1] for g in got]
-      print(json.dumps({"prefill": True, "context": contexts[0], "prompt_tokens": len(ids), "samples_ms": samples, "wall_samples_ms": walls,
+      if got and {g[3] for g in got} != {expect}:  # --reps 0: the warm-up pass alone (a routing trace reads that one pass)
+        raise SystemExit(f"the {a.prompt_form} prompt's prompt_n moved between requests: {[g[3] for g in got]}")
+      print(json.dumps({"prefill": True, "context": contexts[0], "prompt_tokens": expect, "samples_ms": samples, "wall_samples_ms": walls,
+                        "prompt_form": a.prompt_form, "request_spans_ns": [g[2] for g in got],
+                        **({"chat_head_tokens": chat_head(s.base)} if a.prompt_form == "chat" else {}),
                         "n_batch": flag_int(flags, "-b", 2048), "n_ubatch": flag_int(flags, "-ub", 512),
                         "corpus": {"file": pathlib.Path(a.corpus).name, "repeats": cycles}, "engine": {"build": build, "server": "llama-server"}}), flush=True)
       return 0

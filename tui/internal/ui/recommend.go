@@ -121,7 +121,9 @@ func bestMtp(m map[string]seam.RecFig) (string, *seam.RecFig) {
 
 // recommendBody is Speed up's block when there is one (what was just started or just ended leads), then the
 // recommendation, then Measure MTP's measurement.
-func recommendBody(f Facts, width int) string { return speedBody(f, width) + recommendMain(f, width) }
+func recommendBody(f Facts, width int) string {
+	return speedBody(f, width) + recommendMain(f, width) + tuneBody(f, width)
+}
 
 func recommendMain(f Facts, width int) string {
 	r := f.Recommend
@@ -200,7 +202,10 @@ func recommendMain(f Facts, width int) string {
 	return b.String() + mtpBody(f)
 }
 
-func recommendActions(f Facts) []action {
+// recommendActions are the recommendation's rows, then Tuned for this machine's.
+func recommendActions(f Facts) []action { return append(recommendRows(f), tuneActions(f)...) }
+
+func recommendRows(f Facts) []action {
 	r := f.Recommend
 	if r == nil {
 		return append([]action{note("  nothing to copy yet")}, speedActions(f)...)

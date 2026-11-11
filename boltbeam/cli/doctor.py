@@ -237,7 +237,7 @@ def _host(gpu:dict[str, Any], *, measure:bool = False, remeasure:bool = False) -
     saved = host._load(host.host_file())
     ram = {"ram_gbs": saved["ram_gbs"], "remeasure_failed": str(exc)} if isinstance(saved.get("ram_gbs"), (int, float)) else {"error": str(exc)}
   try:
-    link = host.pcie_link(pci)
+    link = {"none": True} if not pci and _unified(gpu) else host.pcie_link(pci)
   except Refused as exc:
     link = {"error": str(exc)}
   why = "not measured yet"
@@ -252,8 +252,9 @@ def _host(gpu:dict[str, Any], *, measure:bool = False, remeasure:bool = False) -
   rows = {r["label"]: r["value"] for r in machine_rows(figures)}
   out = [row("RAM", True, rows["RAM"] + f" ({mem['source']})")]
   out.append(row("RAM reads", True, rows["RAM reads"] + (f"; saved figure kept, the remeasure failed: {ram['remeasure_failed']}" if ram.get("remeasure_failed") else "")) if "RAM reads" in rows else
-             row("RAM reads", True, ram.get("error") or "not measured yet", HOST_SCAN + "   (measures RAM reads and the copies to the GPU, a few seconds)"))
-  out.append(row("PCIe link", True, rows["PCIe link"]) if "PCIe link" in rows else row("PCIe link", None, link.get("error") or "no link read"))
+             row("RAM reads", True, ram.get("error") or "not measured yet", None if measure else HOST_SCAN + "   (measures RAM reads and the copies to the GPU, a few seconds)"))
+  out.append(row("PCIe link", True, rows["PCIe link"]) if "PCIe link" in rows else
+             row("PCIe link", True, "none: the GPU is part of the chip and shares the CPU's memory, so there is no link to read") if link.get("none") else row("PCIe link", None, link.get("error") or "no link read"))
   if "Copies to the card" in rows and (copies or {}).get("h2d_gbs"):
     out.append(row("copies to the GPU", True, rows["Copies to the card"] + ("" if why == "not measured yet" else f"; saved figure kept, the remeasure failed: {why}")))
   elif pci:
