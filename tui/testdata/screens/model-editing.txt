@@ -21,4 +21,4 @@
 │ ▸   /models/Q▏                                                               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit
+ enter keep · esc cancel · ctrl+c quit

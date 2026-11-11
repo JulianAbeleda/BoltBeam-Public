@@ -5,9 +5,10 @@ work and its provenance; the common report gate checks it before Run or Emit.
 """
 import json
 from pathlib import Path
+from boltbeam.collectors import replay_overhead
+from boltbeam.artifacts.run_io import DECODE_CAPTURE
 from boltbeam.workflow import tie_out
 
-TRACE = 'decode_capture.json'
 FORCING_WORDS = (" Every pass was forced to one production-graph generation's tokens (graphed and graphless passes had"
                  " taken different tokens), so labels and times are of the same steps; the untraced reference was not"
                  " forced, so the capture comparison includes the forcing.")
@@ -28,7 +29,7 @@ def _graph_trace(run:Path) -> str | None:
 
 
 def loss_block(run:Path, provider:str, token:dict | None) -> dict:
-  trace=json.loads((run/TRACE).read_text())
+  trace=json.loads((run/DECODE_CAPTURE).read_text())
   if trace.get('schema')!='boltbeam.decode_capture.v1' or trace.get('provider')!=provider:raise ValueError('decode capture schema or provider differs from this run')
   if token is None:raise ValueError('decode capture has no untraced token measurement')
   context=int(token['context'])
@@ -42,16 +43,16 @@ def loss_block(run:Path, provider:str, token:dict | None) -> dict:
   capture={**capture,**{key:capture[key]/count for key in ('wall_ms','profiled_wall_ms','busy_ms','gaps_ms') if key in capture},
            'rows':[{**row,**({'ceiling_range_ms':[v/count for v in row['ceiling_range_ms']]} if row.get('ceiling_range_ms') else {}),**{key:row[key]/count for key in fields if row.get(key) is not None}}
                    for row in capture['rows']]}
-  from boltbeam.workflow.repeat_bands import find
+  from boltbeam.collectors.capture_scope import find
   batch=(capture.get('engine') or {}).get('batch') or 1
   if batch!=(token.get('batch') or 1):
-    from boltbeam.workflow.run_folder import Refused
+    from boltbeam.core.refused import Refused
     raise Refused(f'the decode capture is of {batch} stream(s) and the untraced step of {token.get("batch") or 1}: '
                   'no report ties them out')
   band=capture.get('reference_band');host=capture.get('host_step_ms');comparison=None
   # the repeat-band record is the run's setup's (repeat_bands.scope holds the timed batches), so a B-stream run finds
   # its own; the band only says whether the difference is within repeat noise, it never qualifies the capture
-  capture={**capture,'end_to_end':tie_out.end_to_end({**capture,'measured_ms':host},token['ms'],what='decode step',
+  capture={**capture,'end_to_end':replay_overhead.end_to_end({**capture,'measured_ms':host},token['ms'],what='decode step',
     band=find(run,f'decode {context}'),reference_window=(band or {}).get('timing_window'))}
   if capture['end_to_end'].get('status')=='checked':  # only matched windows are compared; otherwise nothing is labelled overhead
     comparison={'title':'Capture versus untraced reference','columns':['comparison','ms/token'],'estimate':False,'token_ms':host,
@@ -82,7 +83,7 @@ def loss_block(run:Path, provider:str, token:dict | None) -> dict:
           **({'module_load':capture['module_load']} if capture.get('module_load') else {}),
           **({'speculation':{k:spec[k] for k in ('config','acceptance','tokens','steps','accounting','words','prompt')}} if spec else {}),
           'limit_ms':limit,'limit_tok_s':1000/limit,'limit_context':context,
-          'source':TRACE,'semantic_capture':True,'where_token_goes':table,
+          'source':DECODE_CAPTURE,'semantic_capture':True,'where_token_goes':table,
           'capture_comparison':comparison,
           'runtimes':[{'provider':provider,'ms':token['ms'],'tok_s':token['tok_s'],'lost_ms':token['ms']-limit,'per_role':False,
                        'note':f'Untraced at context {context}'+(f', {batch} streams' if batch>1 else '')+('; table sums to it, gaps as a bound.' if table.get('gaps_bound') else '; table uses captured time.')}],

@@ -1,0 +1,14 @@
+{
+  "schema": "boltbeam.tui.v1",
+  "kind": "speedup_plain",
+  "outcome": "refused",
+  "head": "No copy was made.",
+  "lines": [
+    "An earlier copy stopped half way."
+  ],
+  "fix": "Fix: Delete the half-written copy, then try again.",
+  "copy": null,
+  "name": null,
+  "speed_measured": null,
+  "said": "/models/m-boltbeam.partial is left by a run that crashed mid-copy: delete it and /models/m-boltbeam"
+}

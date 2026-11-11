@@ -40,7 +40,7 @@ PROVIDER_ID = "boltbeam/metal-native"
 # --- where measuring is possible ---------------------------------------------------------------------------
 
 def this_machine_target() -> str | None:
-  from boltbeam.workflow.autoscan import this_machine_target as here
+  from boltbeam.target.hardware import this_machine_target as here
   return here()
 
 
@@ -119,7 +119,7 @@ def build_timing_trace(manifest:dict[str, Any], request:dict[str, Any], evidence
 
 def collect_timing_trace(run:pathlib.Path, evidence:dict[str, Any], *, llama_bench:str = "llama-bench",
                          say:Callable[[str], None] = lambda _: None, batches=(1,)) -> dict[str, Any]:
-  from boltbeam.workflow import progress
+  from boltbeam.artifacts import progress
   facts = _run_facts(run, llama_bench=llama_bench)
   request = read_json(run / "trace_request.json")
   if request.get("workload") != "decode":
@@ -132,7 +132,7 @@ def collect_timing_trace(run:pathlib.Path, evidence:dict[str, Any], *, llama_ben
     say(f"decode at depth {ctx}: llama-bench")
     bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), cwd=run)
     progress.report(len(bench), parts)
-  from boltbeam.workflow.limit import run_bandwidth
+  from boltbeam.roofline.limit import run_bandwidth
   peak_gbs, peak_source = run_bandwidth(run, facts["target"])
   trace = build_timing_trace(facts["manifest"], request, evidence, bench, peak_gbs)
   trace["peak_source"] = peak_source

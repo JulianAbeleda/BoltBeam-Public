@@ -3,11 +3,11 @@ package ui
 // The detail view a row opens, and its actions.
 
 import (
+	"charm.land/bubbles/v2/viewport"
 	"fmt"
-	"github.com/charmbracelet/bubbles/viewport"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 func title(i int, f Facts) string {
@@ -25,8 +25,14 @@ func DetailActions(f Facts, i, row, width, maxRows int) string {
 	_, text := steps[i].line(f)
 	b.WriteString(text)
 	acts := []action{}
-	if steps[i].actions != nil {
+	if f.Form != "" { // a form takes the rows' place
+		b.WriteString("\n" + f.Form)
+	} else if steps[i].actions != nil {
+		f.cols = width - 6 // a row's room: the box, and the cursor's two columns
 		acts = steps[i].actions(f)
+	}
+	for _, a := range acts { // a row whose label wraps (a button's helper) takes its lines from the window
+		maxRows -= strings.Count(a.label, "\n")
 	}
 	start, end := 0, len(acts)
 	if maxRows > 2 && len(acts) > maxRows {
@@ -87,10 +93,13 @@ func DetailView(f Facts, i, row, width, height int, scroll *viewport.Model) stri
 	if picker(i) {
 		rows = listWindow(rows) // a picker is a scrolling list of ListRows
 	}
+	if i == pageWorkload || i == pageMeasurement { // the list carries each choice's explanation: it takes the room
+		rows = max(height-7, 6)
+	}
 	actions := DetailActions(f, i, row, width, rows)
-	scroll.Width, scroll.Height = width-4, max(height-lipgloss.Height(actions)-3, 1)
-	tableWidth = width - 4
-	f.logRoom = scroll.Height - 6 // the log fits under the bar, so the bar never scrolls away
+	scroll.SetWidth(width - 4)
+	scroll.SetHeight(max(height-lipgloss.Height(actions)-3, 1))
+	f.logRoom = scroll.Height() - 6 // the log fits under the bar, so the bar never scrolls away
 	scroll.SetContent(wrapText(steps[i].body(f, width-4), width-4))
 	return box(title(i, f), scroll.View(), width, false) + "\n" + actions
 }

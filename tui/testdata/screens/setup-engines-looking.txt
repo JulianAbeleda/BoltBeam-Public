@@ -1,24 +1,24 @@
 ⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Setup                                                                        │
-│ ▸ Model       Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K                    › │
-│   Chip        apple_m3_10c · this Mac · 97.2 GB/s                          › │
-│   Engine      looking for engines…                                         › │
-│   Recommended setup context, speed and engine flags for this model on yo…  › │
-│   Workload    decode                                                       › │
-│   Batch       1                                                            › │
-│   Measurement auto                                                         › │
+│ ▸ Machine            checking this Mac…                                    › │
 │                                                                              │
-│   [ Run ] needs an engine                                                    │
-│   [ Emit ] Run first                                                         │
+│   Model              Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K             › │
+│   Chip               apple_m3_10c · this Mac · 97.2 GB/s                   › │
+│   Engine             looking for engines…                                  › │
+│                                                                              │
+│   Recommended setup  context, speed and engine flags for this model on y…  › │
+│                                                                              │
+│   Workload           decode                                                › │
+│   Batch              1                                                     › │
+│   Measurement        auto                                                  › │
+│                                                                              │
+│   [ Run ]            Needs an engine: pick it above                          │
+│   [ Emit ]           No run yet: Run first                                   │
+│                                                                              │
 │   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 
 
-
-
-
-
-
- ↑↓ move · enter pick · q quit
+ ↑↓ move · enter pick · ? all keys · q quit

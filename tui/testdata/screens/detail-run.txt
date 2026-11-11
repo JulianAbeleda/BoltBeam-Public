@@ -8,14 +8,14 @@
 │ Tie-out, ms per token at context 128                                         │
 │   limit at context 128 (ideal)  48.304  derived                              │
 │ + kernels and gaps, not split   9.600   difference                           │
-│ = measured token                57.904  the untraced whole step at context … │
-│ Modeled roofline: 48.3 ms per token at context 128.                          │
-│ ○ llama.cpp: 17.3 tok/s · 57.9 ms per token · 9.6 ms above roofline.         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │
 │ 17.3 tokens per second · 83% of the limit                                    │
-│ ▸ [ Save run ]                                                               │
-│   Open the full report (report.html)                                         │
+│ ▸ Open the report (report.html)                                              │
+│   Run again with this setup                                                  │
+│   Saved runs (0)                                                           › │
+│   Compare with a saved run (saves this one first)                            │
+│   [ Save run ]                                                               │
 │   [ Back to setup ]                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯

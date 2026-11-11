@@ -1,0 +1,16 @@
+{
+  "schema": "boltbeam.tui.v1",
+  "kind": "speedup_plain",
+  "outcome": "kept",
+  "head": "Made m · BoltBeam.",
+  "lines": [
+    "Short prompt, 128 tokens: 100.0 to 112.0 tok/s (+12%)",
+    "Long prompt, 32768 tokens: 80.0 to 86.0 tok/s (+8%)",
+    "Scores the same on the answer check.",
+    "It shows in model lists as m · BoltBeam."
+  ],
+  "fix": null,
+  "copy": "/models/m-boltbeam",
+  "name": "m · BoltBeam",
+  "speed_measured": true
+}

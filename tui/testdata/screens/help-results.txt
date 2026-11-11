@@ -1,0 +1,30 @@
+⚡ BoltBeam                                                              (≧◡≦)⚡
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Keys on Run                                                                  │
+│                                                                              │
+│ ↑/k         up           enter pick     t Where the token goes    ? all keys │
+│ ↓/j         down         esc   setup    a All columns             q quit     │
+│ pgup/ctrl+u page up                     m How it was measured                │
+│ pgdn/ctrl+d page down                   e Machine and engine                 │
+│ home/g      first row                   w Words used here                    │
+│ end/G       last row                    f Full detail                        │
+│                                                                              │
+│ The wheel scrolls a list as ↑ and ↓ do. ? or esc closes this page.           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ?/esc close · q quit

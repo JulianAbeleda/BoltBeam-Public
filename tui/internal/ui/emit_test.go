@@ -5,11 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
@@ -23,36 +23,36 @@ func isolatedRun(t *testing.T) *seam.Run {
 
 // Setup shows [ Emit ] under [ Run ]: muted with "Run first" until the run on screen has a per-role table, then live.
 func TestSetupEmitRowFollowsTheRun(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	ready := program(s, nil, nil, nil, 80, 24)
 	acts := setupActions(facts(ready))
-	if !hasLabel(acts, "[ Emit ] Run first") {
+	if !hasLabel(acts, "[ Emit ]           No run yet: Run first") {
 		t.Fatalf("no run: Emit must say Run first: %+v", labels(acts))
 	}
+	button := func(acts []action, name string) int { // the row of a button, whatever its helper says
+		for i, a := range acts {
+			if strings.HasPrefix(plain(a.label), name+" ") {
+				return i
+			}
+		}
+		return -1
+	}
 	planned := program(s, &s.measured, nil, nil, 80, 24) // run-002 finished, but no per-role table
-	if !hasLabel(setupActions(facts(planned)), "[ Emit gap report ]") {
+	if button(setupActions(facts(planned)), "[ Emit gap report ]") < 0 {
 		t.Fatal("a measured work breakdown must offer an optimization plan")
 	}
 	with := program(s, isolatedRun(t), nil, nil, 80, 24)
 	acts = setupActions(facts(with))
-	run, emit := -1, -1
-	for i, a := range acts {
-		switch a.label {
-		case "[ Run ]":
-			run = i
-		case "[ Emit ]":
-			emit = i
-		}
-	}
-	if run < 0 || emit != run+1 || acts[emit].do != "emit" {
+	run, emit := button(acts, "[ Run ]"), button(acts, "[ Emit ]")
+	if run < 0 || emit != run+1 || acts[emit].do != "emit" || !strings.Contains(plain(acts[emit].label), "Writes the kernel gameplan from the last run") {
 		t.Fatalf("Emit must be the live row right under Run: %+v", labels(acts))
 	}
 	running := program(s, isolatedRun(t), s.job, s.tail, 80, 24)
-	if hasLabel(setupActions(facts(running)), "[ Emit ]") {
+	if i := button(setupActions(facts(running)), "[ Emit ]"); i >= 0 && setupActions(facts(running))[i].do == "emit" {
 		t.Fatal("while the run goes, Emit is not offered")
 	}
-	golden(t, "setup-emit-active.txt", with.View())
+	golden(t, "setup-emit-active.txt", frame(with))
 }
 
 func labels(acts []action) []string {
@@ -66,7 +66,7 @@ func labels(acts []action) []string {
 // Pressing Emit asks Python; its answer opens the Gameplan page with the markdown drawn (no # or ** left) and an action
 // that opens gameplan.md. The page is golden at 80 and 110 columns.
 func TestEmitPageShowsTheGameplan(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	var e seam.Emitted
 	load(t, "emit", &e)
@@ -93,7 +93,7 @@ func TestEmitPageShowsTheGameplan(t *testing.T) {
 		if page.cursor != pageEmit || page.f.Emitting || page.f.Plan == nil {
 			t.Fatalf("the answer must open the Gameplan page: cursor %d", page.cursor)
 		}
-		view := mm.View()
+		view := frame(mm)
 		for _, want := range []string{"Gameplan: Qwen3-8B on apple_m3_10c", "7 roles, worst first", "Open the gameplan (gameplan.md)", "[ Back to setup ]"} {
 			if !strings.Contains(view, want) {
 				t.Errorf("%d cols: missing %q in:\n%s", cols, want, view)
@@ -137,11 +137,11 @@ func TestSavedRunKeepsOriginOnReturnToSetup(t *testing.T) {
 }
 
 func TestSavedEmitNamesItsSource(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	m := program(s, isolatedRun(t), nil, nil, 80, 24).(Model)
 	m.f.ReadOnly = true
-	got := emitAction(facts(m))
+	got := emitAction(facts(m), 17)
 	if !strings.Contains(got.label, "saved run "+m.f.Run.ID) {
 		t.Fatalf("Emit must identify its saved source: %s", got.label)
 	}
@@ -154,17 +154,17 @@ func TestCapturedOperationEmitOffersOptimizationPlan(t *testing.T) {
 	run.Results.Loss.Roles = nil
 	run.Results.Loss.SemanticCapture = true
 	f := facts(program(s, run, nil, nil, 100, 24))
-	a := emitAction(f)
+	a := emitAction(f, 17)
 	if a.do != "emit" || !strings.Contains(plain(a.label), "Emit gap report") {
 		t.Fatalf("completed captured work must offer the shared optimization plan: %+v", a)
 	}
 }
 
 func TestMultilineFailureNoticeKeepsScreenWithinTerminal(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	m := program(loadSample(t), nil, nil, nil, 170, 55).(Model)
 	m.note = "FAILED: report does not reconcile with evidence\nattention has no finite ceiling; report limit refused"
-	rendered := m.View()
+	rendered := frame(m)
 	if lipgloss.Height(rendered) > m.height {
 		t.Fatalf("failure notice overflows terminal: %d > %d", lipgloss.Height(rendered), m.height)
 	}
@@ -182,7 +182,7 @@ func TestForcedReplayCanEmitItsCheckedReport(t *testing.T) {
 	run.Results.Loss.Roles = nil
 	run.Results.Loss.Replay = &seam.Replay{Forced: true}
 	f := facts(program(s, run, nil, nil, 100, 24))
-	a := emitAction(f)
+	a := emitAction(f, 17)
 	if a.do != "emit" || !strings.Contains(plain(a.label), "Emit replay report") {
 		t.Fatalf("forced replay report must be available: %+v", a)
 	}
@@ -209,7 +209,7 @@ func TestSharedOptimizationEmitAcrossWorkloads(t *testing.T) {
 		run.Results.Workload = workload
 		run.Results.Loss.Roles = nil
 		f := facts(program(loadSample(t), run, nil, nil, 100, 24))
-		if !f.canEmit() || emitAction(f).do != "emit" {
+		if !f.canEmit() || emitAction(f, 17).do != "emit" {
 			t.Fatalf("%s measured breakdown cannot emit", workload)
 		}
 		f.Plan = &seam.Emitted{Plan: seam.Gameplan{Kind: "gap_report"}, Markdown: "# Performance gaps\n\nMeasured gaps."}
@@ -221,10 +221,7 @@ func TestSharedOptimizationEmitAcrossWorkloads(t *testing.T) {
 }
 
 func TestOptimizationPlanUsesSharedBorderedTables(t *testing.T) {
-	old := tableWidth
-	defer func() { tableWidth = old }()
 	for _, width := range []int{76, 106} {
-		tableWidth = width
 		emitted := &seam.Emitted{Plan: seam.Gameplan{Kind: "gap_report"}, Markdown: "unused wide text table"}
 		emitted.Plan.Presentation.Summary = "# Performance gaps"
 		emitted.Plan.Presentation.Details = "## Gap summary\n\nUntested."

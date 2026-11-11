@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                             (˘ω˘) zz
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Fetch runs                                                                   │
+│ Fetch runs from another machine (a pod, a Linux box) over SSH, as boltbeam   │
+│ fetch does.                                                                  │
+│                                                                              │
+│ Each run lands in saved runs with its chip profile, every file checked by    │
+│ sha256. Nothing on the remote changes.                                       │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ ┃ Remote                                                                     │
+│ ┃ user@host, or an ssh Host alias                                            │
+│ ┃ > user@host                                                                │
+│                                                                              │
+│   Port                                                                       │
+│   the remote's SSH port; empty for ssh's own (a pod names one)               │
+│   > ssh's own                                                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ esc cancel · enter next · ctrl+c quit

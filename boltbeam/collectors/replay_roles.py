@@ -5,7 +5,7 @@ from pathlib import Path
 from boltbeam.collectors.vllm_semantic_work import prepare
 from boltbeam.collectors.prefill import vllm_formats
 from boltbeam.collectors.prefill_attribution import attribute_prefill
-from boltbeam.workflow.work_evidence import verify_launches
+from boltbeam.collectors.work_evidence import verify, verify_launches
 from boltbeam.math.numerics import ACCOUNTING_ATOL,ACCOUNTING_RTOL
 
 class Roles:
@@ -25,7 +25,6 @@ class Roles:
    if file.is_dir():continue
    with file.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
    if str(file) not in loaded or digest!=record['sha256']:raise ValueError('instruction library differs from loaded replay binary: '+file.name)
-  from boltbeam.workflow.work_evidence import verify
   verify(self.run,self.calibration,require_limits=True)
   self.attach=prepare(Path(model['model_path']),self.profile)
   self.auxiliary=prepare(Path(model['model_path']),self.profile,auxiliary=True) if source.get('auxiliary_memory') or source.get('counter_stream') else None

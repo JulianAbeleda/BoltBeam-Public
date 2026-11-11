@@ -33,6 +33,7 @@ from boltbeam.target import toolkits, vendors
 
 TELEMETRY = "telemetry.json"  # the GPU's clocks, power and temperature through one capture, beside it
 COMMAND = "command.json"  # the program's argv as run, before any profiler wraps it: what the capture is of
+COPIES = "copies.json"  # an nsys capture's memory copies (read_nsys_copies), beside it
 
 
 class NoCapture(RuntimeError):
@@ -59,6 +60,12 @@ def _nsys_read(tool:str, out:pathlib.Path) -> list[dict[str, Any]]:
   if proc.returncode != 0:
     raise RuntimeError(f"nsys stats exited {proc.returncode}: {proc.stderr.strip()[-300:]}")
   (out / "cuda_gpu_trace.csv").write_text(proc.stdout)  # the evidence the launches were read from
+  if (out / "capture.sqlite").is_file():  # the export stats just wrote: the copies beside the kernels, and their overlap
+    import sqlite3
+    try:
+      (out / COPIES).write_text(json.dumps(read_nsys_copies(out / "capture.sqlite"), indent=1))
+    except sqlite3.Error:
+      pass  # an export without the CUPTI tables: the kernels above are still the capture
   return read_nsys_csv(proc.stdout)
 
 
@@ -85,7 +92,8 @@ def busy_window(out:pathlib.Path, launches:list[dict[str, Any]]) -> list[float] 
 
 
 def read_nsys_csv(text:str, *, origin_ns:int = 0) -> list[dict[str, Any]]:
-  """Kernel launches from `nsys stats --report cuda_gpu_trace` CSV. Memory copies have no grid and are skipped."""
+  """Kernel launches from `nsys stats --report cuda_gpu_trace` CSV. Memory copies have no grid and are skipped here;
+  read_nsys_copies reads them from the capture's sqlite export."""
   body = text[text.find("Start"):] if "Start" in text else text
   out = []
   for row in csv.DictReader(io.StringIO(body)):
@@ -97,6 +105,62 @@ def read_nsys_csv(text:str, *, origin_ns:int = 0) -> list[dict[str, Any]]:
                 "wall_us": float(row["Duration (ns)"]) / 1000.0, "start_us": (int(row["Start (ns)"]) - origin_ns) / 1000.0,
                 **({"stream": row["Strm"]} if row.get("Strm") else {})})
   return out
+
+
+_COPY_KINDS = {1: "HtoD", 2: "DtoH", 8: "DtoD", 10: "PtoP"}  # ENUM_CUDA_MEMCPY_OPER ids, when the export lacks the table
+_MEM_KINDS = {0: "pageable", 1: "pinned", 2: "device"}  # ENUM_CUDA_MEM_KIND ids, likewise
+
+
+def _union(spans:list[tuple[int, int]]) -> list[list[int]]:
+  out: list[list[int]] = []
+  for a, b in sorted(spans):
+    if out and a <= out[-1][1]: out[-1][1] = max(out[-1][1], b)
+    else: out.append([a, b])
+  return out
+
+
+def _meet(u:list[list[int]], v:list[list[int]]) -> int:
+  i = j = t = 0
+  while i < len(u) and j < len(v):
+    t += max(0, min(u[i][1], v[j][1]) - max(u[i][0], v[j][0]))
+    if u[i][1] < v[j][1]: i += 1
+    else: j += 1
+  return t
+
+
+def read_nsys_copies(db:str | pathlib.Path) -> dict[str, Any]:
+  """The memory copies of an nsys capture (its sqlite export: CUPTI_ACTIVITY_KIND_MEMCPY), which read_nsys_csv skips,
+  and how they sit against the kernels: per kind (HtoD, DtoH, ...) and source memory (pinned, pageable) the rows, bytes,
+  busy ms (the union of their spans) and GB/s over it; the window from the first to the last event; kernel duty (the
+  kernels' union over the window); and the share of host-to-device copy time that overlaps kernel time."""
+  import sqlite3
+  with sqlite3.connect(db) as con:
+    names = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+    enum = lambda t, d: {i: n for i, _, n in con.execute(f"select * from {t}")} if t in names else d
+    oper, mem = enum("ENUM_CUDA_MEMCPY_OPER", _COPY_KINDS), enum("ENUM_CUDA_MEM_KIND", _MEM_KINDS)
+    short = {"Host-to-Device": "HtoD", "Device-to-Host": "DtoH", "Device-to-Device": "DtoD", "Peer-to-Peer": "PtoP"}
+    copies = [{"kind": short.get(oper.get(k), oper.get(k, str(k))), "memory": str(mem.get(src, src)).lower(), "bytes": b, "start_ns": a, "end_ns": e, "stream": st}
+              for a, e, b, k, src, st in con.execute("select start, end, bytes, copyKind, srcKind, streamId from CUPTI_ACTIVITY_KIND_MEMCPY")] \
+             if "CUPTI_ACTIVITY_KIND_MEMCPY" in names else []
+    kernels = list(con.execute("select start, end from CUPTI_ACTIVITY_KIND_KERNEL")) if "CUPTI_ACTIVITY_KIND_KERNEL" in names else []
+  spans = kernels + [(c["start_ns"], c["end_ns"]) for c in copies]
+  if not spans:
+    return {"window_ms": 0.0, "kernel_busy_ms": 0.0, "duty": None, "copies": [], "h2d_overlap": None}
+  window = max(e for _, e in spans) - min(a for a, _ in spans)
+  ku = _union(kernels)
+  groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+  for c in copies: groups.setdefault((c["kind"], c["memory"]), []).append(c)
+  rows = []
+  for (kind, memory), cs in sorted(groups.items()):
+    busy = sum(b - a for a, b in _union([(c["start_ns"], c["end_ns"]) for c in cs]))
+    total = sum(c["bytes"] for c in cs)
+    rows.append({"kind": kind, "memory": memory, "rows": len(cs), "bytes": total, "busy_ms": busy / 1e6, "gbs": total / busy if busy else None,
+                 "streams": sorted({c["stream"] for c in cs})})
+  hu = _union([(c["start_ns"], c["end_ns"]) for c in copies if c["kind"] == "HtoD"])
+  h2d_busy = sum(b - a for a, b in hu)
+  kbusy = sum(b - a for a, b in ku)
+  return {"window_ms": window / 1e6, "kernel_busy_ms": kbusy / 1e6, "duty": kbusy / window if window else None, "copies": rows,
+          "h2d_overlap": _meet(hu, ku) / h2d_busy if h2d_busy else None}
 
 
 def sequence(launches:list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:

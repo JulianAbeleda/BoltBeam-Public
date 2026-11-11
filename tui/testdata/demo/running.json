@@ -1,0 +1,8 @@
+{
+  "base": "demo.json",
+  "answers": {"runs": "runs-running.json"},
+  "jobs": {"qwen3-8b-apple_m3_10c-001": [
+    "=== 2026-10-08T10:00:00Z start python3 -m boltbeam.workflow.screen pipeline", "pipeline steps: 4",
+    "pipeline counted: 0,0,0,1,1,1,1", "stage load: start", "stage load: done", "stage autoscan: start",
+    "stage autoscan: done", "stage analyze: start", "stage analyze: done", "stage measure_timing: start"]}
+}

@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -29,6 +30,8 @@ type Client struct {
 	Work string
 	// Saved is the saved-runs folder: a run is exported there by Save.
 	Saved string
+	// Demo, when set, answers every call from recorded JSON and nothing is run (demo.go).
+	Demo *Demo
 }
 
 func (c Client) work() string {
@@ -39,11 +42,14 @@ func (c Client) work() string {
 }
 
 // Error is what the seam reports when Python exits non-zero. Message is Python's own `error` field when it
-// printed one, else the process error with its stderr.
+// printed one, else the process error with its stderr. Formats are the weight formats `inspect` has no block layout
+// for, when that is why it refused the model (cli/workflow.py cmd_inspect).
 type Error struct {
 	Message string
 	Stderr  string
 	Code    int
+	Formats []string
+	Needs   *ForkNeed // the fork that reads those formats, when one does (collectors/engine_families.fork_for)
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -61,6 +67,9 @@ func (c Client) module(module string, args ...string) *exec.Cmd {
 // call runs one module and returns the raw bytes it printed with its exit code; codes other than 0 and the
 // ones in `ok` are errors.
 func (c Client) call(module string, ok []int, args ...string) ([]byte, int, error) {
+	if c.Demo != nil {
+		return c.Demo.answer(args)
+	}
 	cmd := c.module(module, args...)
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
@@ -82,10 +91,12 @@ func (c Client) call(module string, ok []int, args ...string) ([]byte, int, erro
 		return bytes.TrimSpace(out.Bytes()), code, nil
 	}
 	var reported struct {
-		Error string `json:"error"`
+		Error   string    `json:"error"`
+		Formats []string  `json:"formats"`
+		Needs   *ForkNeed `json:"needs"`
 	}
 	if json.Unmarshal(out.Bytes(), &reported) == nil && reported.Error != "" {
-		return nil, code, &Error{Message: reported.Error, Stderr: stderr.String(), Code: code}
+		return nil, code, &Error{Message: reported.Error, Stderr: stderr.String(), Code: code, Formats: reported.Formats, Needs: reported.Needs}
 	}
 	return nil, code, &Error{Message: fmt.Sprintf("%s -m %s %s: %v", c.Python, module, strings.Join(args, " "), err),
 		Stderr: strings.TrimSpace(stderr.String()), Code: code}
@@ -193,6 +204,14 @@ func (c Client) Inspect(model string) (*Profile, []byte, error) {
 	var p Profile
 	raw, _, err := c.decode(&p, nil, "boltbeam.cli", "inspect", model)
 	return &p, raw, err
+}
+
+// Doctor is `boltbeam doctor --json`: what this machine has for BoltBeam, one row per check, each gap with its fix.
+// It reads the GPU and scans for engines (saving what it finds, as the engine scan does); nothing is measured.
+func (c Client) Doctor() (*Doctor, error) {
+	var d Doctor
+	_, _, err := c.decode(&d, nil, "boltbeam.cli", "doctor", "--json")
+	return &d, err
 }
 
 // Ceiling is the model's speed limit on the chip. here says the chip is this machine's: then the newest machine
@@ -316,30 +335,50 @@ func (c Client) Emit(id string) (*Emitted, []byte, error) {
 	return &e, raw, err
 }
 
-// Compared is `screen diff` (the engine-upgrade audit, or two replays turn by turn) or `screen replay-cross` (two
-// engines on one trace), as the lines the seam already words. The seam refuses, naming the field, two runs that
-// differ in workload, model, target or engine, or a run with no recorded build.
+// Compared is `screen head-to-head`: the two runs side by side (Head), and their parts when both are of one model, as
+// the lines the seam words (`diff`: the engine-upgrade audit or two replays turn by turn; `replay-cross`: two engines on
+// one trace). PartsNote says, in one line, why the parts are not compared; Head.Refused, why nothing is.
 type Compared struct {
-	Lines []string `json:"lines"`
+	Head      *HeadToHead `json:"head"`
+	Lines     []string    `json:"lines"`
+	PartsNote *string     `json:"parts_note"`
+	// Plain is the plain layer 1 of the two runs' parts (report/plain.compare); `replay-cross` has none.
+	Plain *PlainCompare `json:"plain"`
 }
 
-// CompareSaved compares two saved runs: replay-cross when both are replays from different engines, else diff.
-func (c Client) CompareSaved(before, after string, cross bool) (*Compared, error) {
-	for _, id := range []string{before, after} {
+// HeadToHead is two runs' headline figures in one row per kind, the better one marked (Better is that run's index;
+// nil when neither is), and the line that says what differs (report/plain.head_to_head).
+type HeadToHead struct {
+	Runs []struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	} `json:"runs"`
+	Differs *string         `json:"differs"`
+	Rows    []HeadToHeadRow `json:"rows"`
+	Refused *string         `json:"refused"`
+}
+
+// HeadToHeadRow is one kind of figure for both runs: "" where a run has none.
+type HeadToHeadRow struct {
+	Key    string   `json:"key"`
+	Label  string   `json:"label"`
+	Cells  []string `json:"cells"`
+	Better *int     `json:"better"`
+}
+
+// CompareSaved sets two saved runs head to head; Python picks how their parts compare, if they do.
+func (c Client) CompareSaved(first, second string) (*Compared, error) {
+	for _, id := range []string{first, second} {
 		if id == "" || id != filepath.Base(id) || strings.HasPrefix(id, ".") {
 			return nil, fmt.Errorf("saved run id must be a folder name: %q", id)
 		}
 	}
-	a, b := filepath.Join(c.Saved, before), filepath.Join(c.Saved, after)
-	args := []string{"diff", "--before", a, "--after", b}
-	if cross {
-		args = []string{"replay-cross", "--a", a, "--b", b}
-	} else {
-		for _, dir := range []string{a, b} { // a run started with --bands keeps them as repeat_bands.json
-			if bands := filepath.Join(dir, "repeat_bands.json"); fileExists(bands) {
-				args = append(args, "--bands", bands)
-				break
-			}
+	a, b := filepath.Join(c.Saved, first), filepath.Join(c.Saved, second)
+	args := []string{"head-to-head", "--a", a, "--b", b}
+	for _, dir := range []string{a, b} { // a run started with --bands keeps them as repeat_bands.json
+		if bands := filepath.Join(dir, "repeat_bands.json"); fileExists(bands) {
+			args = append(args, "--bands", bands)
+			break
 		}
 	}
 	var out Compared
@@ -763,6 +802,46 @@ func (p Progress) one(inStage float64) float64 {
 		return 0
 	}
 	return min(done/sum, 0.99)
+}
+
+// Left is the seconds still to go by the last run's own step times ("pipeline expect:" with no "source: default"):
+// what is left of the current step, the steps after it, and the repeated runs after this one. ok is false when there
+// is no such basis: a first run (its times are the default table), or an old log with none.
+func (p Progress) Left(inStage float64) (seconds float64, ok bool) {
+	if p.Finished || p.Failed != "" || p.Estimate || p.Total <= 0 || len(p.Expect) != p.Total {
+		return 0, false
+	}
+	all := 0.0
+	for _, x := range p.Expect {
+		all += x
+	}
+	if !p.stepsDone {
+		for i := p.Done; i < len(p.Expect); i++ {
+			seconds += p.Expect[i]
+		}
+		if p.Current != "" && !p.Setup && p.Done < len(p.Expect) {
+			seconds -= min(max(inStage, 0), p.Expect[p.Done]) // the current step's time spent, never past its own
+		}
+	}
+	if p.Repeats > 1 && p.Repeat > 0 {
+		seconds += float64(p.Repeats-p.Repeat) * all
+	}
+	return seconds, seconds > 0
+}
+
+// DoneStages are the stages this pipeline finished, in order, once each.
+func (p Progress) DoneStages() []string {
+	out := []string{}
+	for _, line := range p.Lines {
+		rest, ok := strings.CutPrefix(line, "stage ")
+		if !ok {
+			continue
+		}
+		if key, event, ok := strings.Cut(rest, ": "); ok && event == "done" && !slices.Contains(out, key) {
+			out = append(out, key)
+		}
+	}
+	return out
 }
 
 // Over says the current step has run longer than the last run's time for it. False on a first run: a default

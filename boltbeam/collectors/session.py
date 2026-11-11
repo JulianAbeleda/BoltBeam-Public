@@ -40,8 +40,9 @@ from typing import Any, Callable
 
 from boltbeam.collectors import gpu_telemetry
 from boltbeam.collectors import prefill as pf
+from boltbeam.collectors.llama_bench_decode import fork_fact
 from boltbeam.artifacts.run_io import load_manifest, read_json
-from boltbeam.target.gpu import run_gpu
+from boltbeam.target.gpu import one_gpu, run_gpu
 
 TURN = 512        # fresh tokens a turn appends
 SUMMARY = 2048    # tokens a compaction's summary is re-prefilled as
@@ -160,7 +161,6 @@ def llama_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) 
   """llama-bench at the depth: the TURN-token prompt after `depth` tokens it filled untimed, LLAMA_REPS times (its depth
   is filled once and restored for each repetition), and DECODE generated tokens at that depth, its own row."""
   bench = pf._bench(run)
-  from boltbeam.workflow.layout import one_gpu
   pin, env = one_gpu(run, "llama.cpp")
   cmd = pf.llama_argv(bench, model, TURN, pf.LLAMA_REPS, depth=depth, gen=DECODE, extra=pin)
   with gpu_telemetry.run_telemetry(run, 0) as tele:
@@ -183,7 +183,7 @@ def llama_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) 
           "source": (f"llama-bench -p {TURN} -n {DECODE} -d {depth}: the prompt after {depth} tokens it filled untimed "
                      f"(its own random ids, fixed seed), {len(samples)} repetitions after its warm-up, untraced"),
           "engine": {"timing_window": pf.timing_window(TURN, depth) if qualified is not None else None, "build": row.get("build_commit"), "build_number": row.get("build_number"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
-                     "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd}}
+                     "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd, **fork_fact(cmd[0])}}
 
 
 def _fork_session(run, model, depth, target, root, mode, extra:list[str]) -> dict[str, Any]:

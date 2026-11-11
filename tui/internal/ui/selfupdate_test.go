@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
@@ -28,10 +28,10 @@ func booted(t *testing.T, store jobs.Store) tea.Model {
 	return m
 }
 
-func hit(m tea.Model, ks ...tea.KeyType) (tea.Model, tea.Cmd) {
+func hit(m tea.Model, ks ...rune) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	for _, k := range ks {
-		m, cmd = m.Update(tea.KeyMsg{Type: k})
+		m, cmd = m.Update(tea.KeyPressMsg{Code: k})
 	}
 	return m, cmd
 }
@@ -40,7 +40,7 @@ func hit(m tea.Model, ks ...tea.KeyType) (tea.Model, tea.Cmd) {
 func TestSelfUpdatePromptsForANewerRelease(t *testing.T) {
 	m := booted(t, jobs.Store{})
 	m, _ = m.Update(selfUpdateMsg{newer([][]string{{"brew", "update"}, {"brew", "upgrade", "boltbeam"}}, "brew update && brew upgrade boltbeam"), nil})
-	view := m.View()
+	view := frame(m)
 	for _, want := range []string{"BoltBeam 0.3.14 is available (you have 0.3.13).", "Upgrade now runs: brew update && brew upgrade boltbeam",
 		"▸ Upgrade now", "Skip this version"} {
 		if !strings.Contains(plain(view), want) {
@@ -49,8 +49,8 @@ func TestSelfUpdatePromptsForANewerRelease(t *testing.T) {
 	}
 	golden(t, "update-prompt.txt", view)
 	m, cmd := hit(m, tea.KeyDown, tea.KeyEnter) // Skip
-	if cmd != nil || m.(Model).upd.shown || strings.Contains(m.View(), "is available") {
-		t.Fatalf("Skip dismisses the prompt and records nothing:\n%s", m.View())
+	if cmd != nil || m.(Model).upd.shown || strings.Contains(frame(m), "is available") {
+		t.Fatalf("Skip dismisses the prompt and records nothing:\n%s", frame(m))
 	}
 }
 
@@ -71,8 +71,8 @@ func TestSelfUpdateQuietWithoutANewerRelease(t *testing.T) {
 		{&seam.SelfUpdate{Status: "unknown", Installed: &have}, nil}, {&seam.SelfUpdate{Status: "current", Installed: &have, Latest: &have}, nil},
 		{&seam.SelfUpdate{Status: "skipped", Installed: &have, Latest: &have}, nil}} {
 		m, _ := booted(t, jobs.Store{}).Update(msg)
-		if m.(Model).upd.shown || strings.Contains(m.View(), "is available") {
-			t.Fatalf("%+v must not prompt:\n%s", msg, m.View())
+		if m.(Model).upd.shown || strings.Contains(frame(m), "is available") {
+			t.Fatalf("%+v must not prompt:\n%s", msg, frame(m))
 		}
 	}
 }
@@ -83,7 +83,7 @@ func TestSelfUpdateCheckoutShowsTheInstruction(t *testing.T) {
 	u := newer(nil, "a git checkout: pull it yourself (git -C /src/BoltBeam pull); BoltBeam runs no git for you")
 	u.Install = "checkout"
 	m, _ = m.Update(selfUpdateMsg{u, nil})
-	view := plain(m.View())
+	view := plain(frame(m))
 	if strings.Contains(view, "Upgrade now") || !strings.Contains(view, "This copy is a git checkout: pull it yourself") {
 		t.Fatalf("a checkout shows the instruction, not Upgrade now:\n%s", view)
 	}
@@ -105,7 +105,7 @@ func TestSelfUpdateFollowsTheUpgradeLog(t *testing.T) {
 	if cmd != nil || got.running || !strings.HasPrefix(got.ended, "updated: BoltBeam 0.3.14") || len(got.lines) != 3 {
 		t.Fatalf("the ended upgrade: %+v", got)
 	}
-	view := plain(m.View())
+	view := plain(frame(m))
 	if !strings.Contains(view, "==> Upgrading boltbeam") || !strings.Contains(view, "▸ Continue") {
 		t.Fatalf("the log and Continue:\n%s", view)
 	}

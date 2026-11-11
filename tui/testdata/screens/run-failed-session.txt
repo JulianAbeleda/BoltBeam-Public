@@ -21,4 +21,4 @@
 │ ▸ [ Back to setup ]                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · enter pick · l details · esc setup · q quit
+ ↑↓ move · enter pick · l details · esc setup · ? all keys · q quit

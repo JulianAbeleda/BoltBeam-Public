@@ -113,8 +113,13 @@ class RoleClass(str, Enum):
   SSM_CONV = "ssm_conv"
   SSM_STATE = "ssm_state"
   SSM_SCAN = "ssm_scan"
-  HYPER_CONNECTION = "hyper_connection"    # a hyper-connection mixer (`hc_attn_*`, `hc_ffn_*`, `output_hc_*`): it mixes
-                                           # the residual streams before the token mixer and the FFN; no FFN or attention
+  # a hyper-connection mixer's matrices: they mix the residual streams, no FFN or attention (llama.cpp
+  # models/qwen4exp.cpp build_hc_mix). Its low-rank down and up before each layer's token mixer (`hc_attn_*`), before
+  # its FFN (`hc_ffn_*`) and before the head (`output_hc_*`); its inject (`hc_*_inject`, 4 rows), no limit role
+  HYPER_CONNECTION_ATTN = "hyper_connection_attn"
+  HYPER_CONNECTION_FFN = "hyper_connection_ffn"
+  HYPER_CONNECTION_INJECT = "hyper_connection_inject"
+  HYPER_CONNECTION_HEAD = "hyper_connection_head"
   ATTENTION_INDEXER = "attention_indexer"  # a sparse attention's indexer (`indexer.q_proj`, `indexer.k_proj`): it scores
                                            # which cached blocks attention reads; not attention's own q or k
   OTHER = "other"
@@ -145,7 +150,10 @@ class RoleGroup(str, Enum):
   SSM_CONV = "ssm_conv"
   SSM_STATE = "ssm_state"
   SSM_SCAN = "ssm_scan"
-  HYPER_CONNECTION = "hyper_connection"
+  HYPER_CONNECTION_ATTN = "hyper_connection_attn"  # a group per stage: a profile row is one (group, shape, format)
+  HYPER_CONNECTION_FFN = "hyper_connection_ffn"
+  HYPER_CONNECTION_INJECT = "hyper_connection_inject"
+  HYPER_CONNECTION_HEAD = "hyper_connection_head"
   ATTN_INDEXER = "attn_indexer"
   OTHER = "other"
 
@@ -182,7 +190,10 @@ ROLE_GROUP_OF: dict[str, str] = {
   RoleClass.SSM_CONV.value: RoleGroup.SSM_CONV.value,
   RoleClass.SSM_STATE.value: RoleGroup.SSM_STATE.value,
   RoleClass.SSM_SCAN.value: RoleGroup.SSM_SCAN.value,
-  RoleClass.HYPER_CONNECTION.value: RoleGroup.HYPER_CONNECTION.value,
+  RoleClass.HYPER_CONNECTION_ATTN.value: RoleGroup.HYPER_CONNECTION_ATTN.value,
+  RoleClass.HYPER_CONNECTION_FFN.value: RoleGroup.HYPER_CONNECTION_FFN.value,
+  RoleClass.HYPER_CONNECTION_INJECT.value: RoleGroup.HYPER_CONNECTION_INJECT.value,
+  RoleClass.HYPER_CONNECTION_HEAD.value: RoleGroup.HYPER_CONNECTION_HEAD.value,
   RoleClass.ATTENTION_INDEXER.value: RoleGroup.ATTN_INDEXER.value,
   RoleClass.OTHER.value: RoleGroup.OTHER.value,
 }
@@ -198,12 +209,18 @@ ROLE_GROUP_OF: dict[str, str] = {
 #   launches it once per layer: one launch reads k experts' bytes (llama.cpp mul_mat_id).
 #   ssm: an ssm matrix of known shape that no pattern names is a GEMV role named after its tensor (`ssm_dt`):
 #   is_weight_gemv_role. Conv, state and scan tensors, and an ssm tensor of unknown shape, are not GEMV roles.
+#   A hyper-connection mixer's down and up and a sparse attention's indexer projections are read once per token each,
+#   as their own matrix-vector launches (Flash-Next's H200 llama.cpp capture). The mixer's inject (4 rows) is read too,
+#   but is vector-like and under 1 MiB: the ledger's small_vector exclusion, as the shared expert's gate vector, so no
+#   limit role (its 4-block launch is floor-bound, where the walk's M = 1 bytes order does not hold).
 WEIGHT_GEMV_ROLES: tuple[str, ...] = (
   RoleGroup.ATTN_QO.value, RoleGroup.ATTN_KV.value, RoleGroup.ATTN_QKV.value, RoleGroup.ATTN_GATE.value,
   RoleGroup.FFN_GATE_UP.value, RoleGroup.FFN_DOWN.value, RoleGroup.LM_HEAD.value,
   RoleGroup.SSM_IN.value, RoleGroup.SSM_OUT.value, RoleGroup.SSM_ALPHA_BETA.value,
   RoleGroup.MOE_ROUTER.value, RoleGroup.MOE_EXPERT_GATE_UP.value, RoleGroup.MOE_EXPERT_DOWN.value,
   RoleGroup.MOE_SHARED_EXPERT_GATE_UP.value, RoleGroup.MOE_SHARED_EXPERT_DOWN.value,
+  RoleGroup.HYPER_CONNECTION_ATTN.value, RoleGroup.HYPER_CONNECTION_FFN.value, RoleGroup.HYPER_CONNECTION_HEAD.value,
+  RoleGroup.ATTN_INDEXER.value,
 )
 _ROLE_GROUPS = frozenset(g.value for g in RoleGroup)
 
@@ -220,20 +237,26 @@ def is_weight_gemv_role(role:str) -> bool:
 # side (an engine computes it when it needs it); the output projection and the FFN run after, in this order; the head
 # runs once per call, after the last layer. Keyed by the fine RoleClass. A coarse group whose classes sit at
 # different stages (attn_qo: q reads the input, o writes the output) holds one launch per class per layer.
+# A hyper-connection mixer runs before the token mixer (mix_in, the layer's input side), before the FFN (mix_out, after
+# the out projection) and before the head (on the tail). A sparse attention's indexer reads the layer's input before
+# attention reads the cache (in).
 STAGE: dict[str, str] = {
+  "hyper_connection_attn": "mix_in",
   "attention_q": "in", "attention_k": "in", "attention_v": "in", "attention_qkv": "in",
-  "attention_kv_a": "in", "attention_kv_b": "in",
+  "attention_kv_a": "in", "attention_kv_b": "in", "attention_indexer": "in",
   "ssm_in": "in", "ssm_alpha": "in", "ssm_beta": "in", "ssm_projection": "in",
   "attention_gate": "gate",
   "attention_o": "out", "ssm_out": "out",
+  "hyper_connection_ffn": "mix_out",
   "ffn_gate": "ffn_in", "ffn_up": "ffn_in", "moe_router": "ffn_in", "moe_expert_gate": "ffn_in", "moe_expert_up": "ffn_in",
   "moe_shared_expert_gate": "ffn_in", "moe_shared_expert_up": "ffn_in",
   "ffn_down": "ffn_out", "moe_expert_down": "ffn_out", "moe_shared_expert_down": "ffn_out",
-  "lm_head": "head",
+  "lm_head": "head", "hyper_connection_head": "head",
 }
-STAGE_SIDE: dict[str, str | None] = {"in": "input", "gate": None, "out": "output", "ffn_in": "output", "ffn_out": "output",
-                                     "head": "tail"}  # None: either side of the block
-OUTPUT_ORDER: tuple[str, ...] = ("gate", "out", "ffn_in", "ffn_out")  # the output side's data flow
+STAGES: tuple[str, ...] = ("mix_in", "in", "gate", "out", "mix_out", "ffn_in", "ffn_out", "head")  # in a layer's order
+STAGE_SIDE: dict[str, str | None] = {"mix_in": "input", "in": "input", "gate": None, "out": "output", "mix_out": "output",
+                                     "ffn_in": "output", "ffn_out": "output", "head": "tail"}  # None: either side of the block
+OUTPUT_ORDER: tuple[str, ...] = ("gate", "out", "mix_out", "ffn_in", "ffn_out")  # the output side's data flow
 # a shared expert is an FFN beside the routed one (either may run first): the FFN stages keep their order within each
 FFN_BRANCH: dict[str, str] = {c: "shared_expert" for c in ("moe_shared_expert_gate", "moe_shared_expert_up", "moe_shared_expert_down")}
 
@@ -470,6 +493,7 @@ SCHEMA_PRIMITIVE_PROFILE = "boltbeam.primitive_profile.v1"
 SCHEMA_TRACE_REQUEST = "boltbeam.trace_request.v1"
 SCHEMA_TRACE_EXECUTION_PROFILE = "boltbeam.trace_execution_profile.v1"
 SCHEMA_TIMING_TRACE = "boltbeam.timing_trace.v1"
+SCHEMA_TUI = "boltbeam.tui.v1"  # every document the screen seam prints (python -m boltbeam.workflow.screen)
 SCHEMA_TIMING_PROFILE = "boltbeam.timing_profile.v1"
 SCHEMA_HW_TRACE = "boltbeam.hw_trace.v1"
 # SCHEMA_PROFILER_CAPABILITIES / SCHEMA_COUNTER_REGISTRY are owned by profiler/ (capabilities.py,

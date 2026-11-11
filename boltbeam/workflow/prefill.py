@@ -18,6 +18,7 @@ import pathlib
 from typing import Any
 
 from boltbeam.workflow import tie_out as tie
+from boltbeam.collectors import replay_overhead
 from boltbeam.collectors.kernel_kind import kind_of
 from boltbeam.collectors.prefill import timing_reference
 
@@ -50,8 +51,8 @@ def tables(run:pathlib.Path) -> dict[int, dict[str, Any]]:
   out = {}
   for length, attr in (trace.get("lengths") or {}).items():
     t = truth.get(int(length)) or {}
-    from boltbeam.workflow.repeat_bands import find
-    attr = {**attr, "end_to_end": tie.end_to_end(attr, t.get("qualification_ms") or t.get("prefill_ms"), band=find(run, f"prefill {length}"),
+    from boltbeam.collectors.capture_scope import find
+    attr = {**attr, "end_to_end": replay_overhead.end_to_end(attr, t.get("qualification_ms") or t.get("prefill_ms"), band=find(run, f"prefill {length}"),
                                                reference=timing_reference((t.get("engine") or {}).get("timing_window")), reference_window=(t.get("engine") or {}).get("timing_window"))}
     w = tie.where_prefill_goes(attr, untraced_ms=t.get("prefill_ms"), length=int(length))
     if w:
@@ -61,11 +62,11 @@ def tables(run:pathlib.Path) -> dict[int, dict[str, Any]]:
 
 def captured_whole(attr:dict[str, Any] | None, row:dict[str, Any], what:str, untraced:float | None, band:dict | None) -> dict[str, Any] | None:
   """An unnamed capture's whole prefill or turn (collectors/prefill.llama_capture): the engine's timer under the capture
-  against the untraced one over identical recorded windows (tie_out.end_to_end), GPU busy beside it; None without one."""
+  against the untraced one over identical recorded windows (replay_overhead.end_to_end), GPU busy beside it; None without one."""
   if not (cap := (attr or {}).get("captured")):
     return None
   ms, busy, window = float(cap["token_ms"]), float(cap["busy_ms"]), (row.get("engine") or {}).get("timing_window")
-  e2e = tie.end_to_end({"measured_ms": ms, "wall_ms": ms, "busy_ms": busy, "gaps_ms": ms - busy, "timing_window": cap.get("timing_window")},
+  e2e = replay_overhead.end_to_end({"measured_ms": ms, "wall_ms": ms, "busy_ms": busy, "gaps_ms": ms - busy, "timing_window": cap.get("timing_window")},
                        untraced, what, band=band, reference=timing_reference(window), reference_window=window)
   return {**cap, "untraced_ms": untraced, "end_to_end": e2e, "words": f"Whole {what} captured by {cap['method']}, not split by role: captured "
           f"{ms:.2f} ms vs untraced " + (f"{untraced:.2f} ms" if untraced else "not measured") + f", GPU busy {busy:.2f} ms (the mean of "
@@ -112,7 +113,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], base:dict[str, Any]) -
                                 + (f"; {tie_words(head)}" if head.get("throttled") or (head.get("telemetry") or {}).get("state") else "")}])
   if not w:  # the capture's own refusal when it said one (prefill.role_time not_captured)
     from boltbeam.collectors.prefill import TRACE
-    from boltbeam.workflow.repeat_bands import find
+    from boltbeam.collectors.capture_scope import find
     got = (_read(run / TRACE).get("lengths") or {}).get(str(first)) or {}
     out["captured_token"] = cw = captured_whole(got, head, "prefill", head.get("qualification_ms") or head["prefill_ms"], find(run, f"prefill {first}"))
     out["missing"] = ". ".join(filter(None, (got.get("not_captured") or "no prefill captured in the model: step 5 (role time) has not run for this run", (cw or {}).get("words")))).rstrip(".")
@@ -156,7 +157,9 @@ def scaled_mfu(where:dict[int, dict[str, Any]], length:int, untraced_ms:float, p
 def curve(run:pathlib.Path, manifest:dict[str, Any]) -> dict[str, Any] | None:
   """Prefill against prompt length for this run's engine: every length of this run and of its sibling prefill runs
   (same model, chip and engine, same runs folder). Per length: prefill ms, tokens/s, MFU, and per row ms and MFU."""
-  from boltbeam.workflow.run_folder import is_run, load_manifest, run_provider
+  from boltbeam.artifacts.run_io import load_manifest
+  from boltbeam.collectors.providers import run_provider
+  from boltbeam.workflow.run_folder import is_run
   provider = run_provider(run)
   runs = [run] + sorted(p for p in run.parent.iterdir() if p != run and is_run(p)) if run.parent.is_dir() else [run]
   points: dict[int, dict[str, Any]] = {}

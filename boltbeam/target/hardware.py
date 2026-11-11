@@ -1,0 +1,445 @@
+"""The machine's GPUs as the vendors' driver tools report them: the hardware profile (hardware_profile.json's facts),
+each GPU's vendor row in the scan's shape, and the registry target this machine is.
+
+Every vendor's probe runs at once and answers in its runtime's device order (target/vendors.py names each vendor's
+probe here); the first device is the GPU a one-GPU run uses (target/gpu.py). A read-only scan: no GPU work. Below
+workflow and collectors: autoscan, chips and the screens read it, and so does every collector's "can this machine
+measure" check (this_machine_target).
+"""
+from __future__ import annotations
+
+import csv
+import json
+import io
+import os
+import pathlib
+import platform
+import re
+import shutil
+import subprocess
+import threading
+import time
+from typing import Any, Mapping
+
+from boltbeam.target import toolkits, vendors
+from boltbeam.target.targets import TARGETS, family_target, is_local, match_target, target_kind
+from boltbeam.target.vendors import NoVendorRow
+from boltbeam.vocab import SCHEMA_HARDWARE_PROFILE
+
+_NVIDIA_QUERY = (
+  "name,uuid,pci.bus_id,memory.total,compute_cap,driver_version"
+)
+
+_APPLE_SOC = re.compile(r"\bApple\s+(M\d+(?:\s+(?:Pro|Max|Ultra))?)\b", re.IGNORECASE)
+
+
+def run_tool(argv:tuple[str, ...]) -> tuple[int, str, str]:
+  try:
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False)
+    return proc.returncode, proc.stdout, proc.stderr
+  except (OSError, subprocess.TimeoutExpired) as exc:
+    return 127, "", str(exc)
+
+
+def _tool_path(name:str, resolver) -> str | None:
+  return toolkits.tool(name, resolver)
+
+
+def _as_int(value:str) -> int | None:
+  try:
+    return int(float(value.strip()))
+  except (TypeError, ValueError):
+    return None
+
+
+def _nvidia_arch(compute_capability:str) -> tuple[str | None, str | None]:
+  parts = compute_capability.strip().split(".", 1)
+  if len(parts) != 2 or not all(p.isdigit() for p in parts):
+    return None, None
+  suffix = f"{int(parts[0])}{int(parts[1])}"
+  return f"sm_{suffix}", f"nvidia_sm{suffix}"
+
+
+def _gib(nbytes:int | None) -> int | None:
+  return round(nbytes / (1 << 30)) if nbytes else None
+
+
+def _slug(text:str) -> str:
+  return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
+
+def match_facts(device:dict[str, Any]) -> dict[str, Any]:
+  """What a chip profile matches on, read off the scan: the exact name, the architecture, the memory size in GiB,
+  and the core count where the driver tool reports one (Apple GPU cores; nvidia-smi has no SM count). A registry
+  row may claim a device on fewer keys; a profile made here always uses all of them."""
+  keys = vendor_row(device.get("vendor"), "match_keys")
+  return {"gpu_name": device.get("name"), "architecture": device.get("architecture"),
+          "memory_gib": _gib(device.get("memory_bytes") or device.get("unified_memory_bytes")),
+          **{k: device.get(k) for k in keys}}
+
+
+def chip_profile_id(device:dict[str, Any]) -> str | None:
+  """The id a profile made for this device gets, derived from the hardware: nvidia_<name>_<GiB>g,
+  amd_<name>_<GiB>g or apple_<soc>_<cores>c_<GiB>g. None when the scan lacks a fact the id needs."""
+  gib = _gib(device.get("memory_bytes") or device.get("unified_memory_bytes"))
+  if device.get("vendor") == "nvidia" and device.get("name") and gib:
+    name = re.sub(r"^NVIDIA\s+", "", device["name"])
+    return f"nvidia_{_slug(name)}_{gib}g"
+  if device.get("vendor") == "amd" and device.get("name") and gib:
+    name = re.sub(r"^AMD\s+", "", device["name"])
+    return f"amd_{_slug(name)}_{gib}g"
+  if device.get("vendor") == "apple" and device.get("apple_soc") and device.get("gpu_cores") and gib:
+    return f"apple_{_slug(device['apple_soc'])}_{device['gpu_cores']}c_{gib}g"
+  return None
+
+
+def _profile(device:dict[str, Any], matched:str | None) -> dict[str, Any]:
+  """Which profile the device uses: a registry row, one made on this machine, or none yet (new)."""
+  if matched:
+    return {"status": "known", "source": "generated" if is_local(matched) else "registry", "id": matched}
+  return {"status": "new", "source": None, "id": chip_profile_id(device)}
+
+
+def _known(value:Any) -> Any:
+  """amd-smi writes "N/A" for a fact the driver does not expose; that is unknown, not a value."""
+  return None if value in (None, "", "N/A") else value
+
+
+# amd-smi's size units in bytes. Its "MB" counts MiB: 32624 "MB" is the 34,208,743,424 bytes the kernel's
+# mem_info_vram_total reports for the same card. A unit not listed leaves the size unknown.
+_AMD_SMI_UNITS = {"B": 1, "KB": 1 << 10, "MB": 1 << 20, "GB": 1 << 30}
+
+
+def _probe_amd(amd_smi:str, run_command) -> tuple[list[dict[str, Any]], str | None]:
+  """Every AMD GPU from one `amd-smi static` call: name, gfx target, compute units, VRAM, PCI address, driver.
+  The gfx target the driver reports is the architecture; nothing is inferred from the name."""
+  argv = (amd_smi, "static", "--asic", "--vram", "--bus", "--driver", "--json")
+  code, stdout, stderr = run_command(argv)
+  if code != 0:
+    return [], (stderr.strip() or f"amd-smi exited with status {code}")
+  try:
+    data = json.loads(stdout)
+  except json.JSONDecodeError as exc:
+    return [], f"amd-smi returned output that is not JSON: {exc}"
+  rows = data.get("gpu_data", []) if isinstance(data, dict) else data
+  devices = []
+  for row in rows if isinstance(rows, list) else []:
+    asic, vram, bus, driver = (row.get(k) or {} for k in ("asic", "vram", "bus", "driver"))
+    size = vram.get("size") or {}
+    scale, value = _AMD_SMI_UNITS.get(size.get("unit")), _as_int(str(size.get("value")))
+    memory_bytes = value * scale if scale and value is not None else None
+    arch = _known(asic.get("target_graphics_version"))
+    device = {"vendor": "amd", "name": _known(asic.get("market_name")), "architecture": arch,
+              "compute_units": asic.get("num_compute_units") if isinstance(asic.get("num_compute_units"), int) else None,
+              "memory_bytes": memory_bytes}
+    matched = match_target(match_facts(device))
+    target_id = matched or (f"amd_{arch}" if arch else None)
+    devices.append({
+      **device,
+      "uuid": _known(asic.get("asic_serial")),
+      "pci_bus_id": _known(bus.get("bdf")),
+      "memory_type": _known(vram.get("type")),
+      "memory_bus_bits": vram.get("bit_width") if isinstance(vram.get("bit_width"), int) else None,
+      "target_id": target_id,
+      "target_registered": target_id in TARGETS if target_id else False,
+      "driver_version": _known(driver.get("version")),
+      "match": match_facts(device),
+      "profile": _profile(device, matched),
+    })
+  return devices, None if devices else "amd-smi returned no GPU rows"
+
+
+def _probe_nvidia(nvidia_smi:str, run_command) -> tuple[list[dict[str, Any]], str | None]:
+  argv = (nvidia_smi, f"--query-gpu={_NVIDIA_QUERY}", "--format=csv,noheader,nounits")
+  code, stdout, stderr = run_command(argv)
+  if code != 0:
+    return [], (stderr.strip() or f"nvidia-smi exited with status {code}")
+  devices = []
+  for row in csv.reader(io.StringIO(stdout)):
+    if not row or all(not value.strip() for value in row):
+      continue
+    if len(row) != 6:
+      return [], f"nvidia-smi returned {len(row)} columns; expected 6"
+    name, uuid, pci_bus_id, memory_mib_raw, compute_capability, driver_version = (v.strip() for v in row)
+    memory_mib = _as_int(memory_mib_raw)
+    architecture, by_convention = _nvidia_arch(compute_capability)
+    device = {"vendor": "nvidia", "name": name, "architecture": architecture, "compute_capability": compute_capability or None,
+              "memory_bytes": memory_mib * 1024 * 1024 if memory_mib is not None else None}
+    # A row may claim this device outright; otherwise the vendor's own architecture name is the id.
+    matched = match_target(match_facts(device))
+    target_id = matched or by_convention
+    devices.append({
+      "vendor": "nvidia",
+      "name": name,
+      "uuid": uuid,
+      "pci_bus_id": pci_bus_id,
+      "memory_bytes": memory_mib * 1024 * 1024 if memory_mib is not None else None,
+      "compute_capability": compute_capability or None,
+      "architecture": architecture,
+      "target_id": target_id,
+      "target_registered": target_id in TARGETS if target_id else False,
+      "driver_version": driver_version or None,
+      "match": match_facts(device),
+      "profile": _profile(device, matched),
+    })
+  return devices, None if devices else "nvidia-smi returned no GPU rows"
+
+
+def _apple_gpu_cores(row:dict[str, Any]) -> int | None:
+  """Read the display-report spelling used by supported macOS releases without guessing a value."""
+  for key in ("spdisplays_cores", "sppci_cores", "gpu_cores", "cores"):
+    value = row.get(key)
+    if value is None: continue
+    match = re.search(r"\d+", str(value))
+    if match: return int(match.group())
+  return None
+
+
+def _apple_soc(name:str) -> str | None:
+  """The SoC the display report names ("M3", "M4 Pro"), or None when the report does not say it."""
+  match = _APPLE_SOC.search(name)
+  return re.sub(r"\s+", " ", match.group(1)).title() if match else None
+
+
+def _probe_apple_metal(system_profiler:str, run_command) -> tuple[list[dict[str, Any]], str | None]:
+  code, stdout, stderr = run_command((system_profiler, "SPDisplaysDataType", "-json"))
+  if code != 0:
+    return [], (stderr.strip() or f"system_profiler exited with status {code}")
+  try:
+    report = json.loads(stdout)
+  except json.JSONDecodeError as exc:
+    return [], f"system_profiler returned invalid JSON: {exc.msg}"
+  rows = report.get("SPDisplaysDataType")
+  if not isinstance(rows, list):
+    return [], "system_profiler report omitted SPDisplaysDataType"
+  devices = []
+  for row in rows:
+    if not isinstance(row, dict): continue
+    name = next((str(row[key]).strip() for key in ("sppci_model", "_name", "spdisplays_vendor")
+                 if row.get(key)), "")
+    if not name or "apple" not in name.lower(): continue
+    gpu_cores = _apple_gpu_cores(row)
+    soc = _apple_soc(name)
+    # The Mac's memory, which the GPU shares; never reported as GPU memory (memory_bytes).
+    device = {"vendor": "apple", "name": name, "apple_soc": soc, "gpu_cores": gpu_cores, "architecture": soc,
+              "unified_memory_bytes": _unified_memory_bytes()}
+    from boltbeam.runtime import metal_device  # the GPU's own memory figure: what Metal lets one process keep resident
+    working = metal_device.working_set_bytes()
+    # The registry says which row a device is; the scan only reports what the machine said.
+    matched = match_target(match_facts(device))
+    target_id = matched or family_target("Metal")
+    devices.append({
+      "vendor": "apple",
+      "name": name,
+      "apple_soc": soc,
+      "architecture": soc,
+      "gpu_cores": gpu_cores,
+      "unified_memory_bytes": device["unified_memory_bytes"],
+      **({"working_set_bytes": working, "working_set_from": "Metal's recommendedMaxWorkingSetSize: what Metal lets "
+          "one process keep resident of the unified memory the CPU shares"} if working else {}),
+      "match": match_facts(device),
+      "profile": _profile(device, matched),
+      "metal_support": row.get("spdisplays_metal"),
+      "metal_gpu_family_support": row.get("spdisplays_mtlgpufamilysupport"),
+      "target_id": target_id,
+      "target_registered": target_id in TARGETS,
+      "target_kind": target_kind(target_id),
+      "fact_status": {
+        "apple_soc": "hardware_scan" if soc else "unknown",
+        "gpu_cores": "hardware_scan" if gpu_cores is not None else "unknown",
+        "metal_family": "unavailable_from_system_profiler",
+        "recommended_max_working_set_size": "metal_device" if working else "requires_provider_probe",
+        "max_threads_per_threadgroup": "requires_provider_probe",
+        "max_threadgroup_memory_length": "requires_provider_probe",
+      },
+    })
+  return devices, None if devices else "system_profiler returned no Apple GPU rows"
+
+
+def _unified_memory_bytes() -> int | None:
+  """The Mac's memory, which its GPU shares (unified memory)."""
+  try:
+    return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+  except (ValueError, OSError, AttributeError):
+    return None
+
+
+def _meminfo() -> dict[str, int]:
+  path = pathlib.Path("/proc/meminfo")
+  if not path.exists():
+    return {}
+  out: dict[str, int] = {}
+  for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+    if ":" not in line:
+      continue
+    key, rest = line.split(":", 1)
+    parts = rest.strip().split()
+    if parts and parts[0].isdigit():
+      out[key] = int(parts[0]) * 1024
+  return out
+
+
+# The HIP runtime numbers AMD GPUs in the order of the kernel's KFD topology nodes, which differs from amd-smi's
+# (on a two-R9700 machine amd-smi lists 0000:13:00.0 first and HIP's device 0 is 0000:f3:00.0). Each GPU node's
+# properties name its PCI address: domain, and location_id = bus << 8 | device << 3 | function.
+KFD_NODES = "/sys/class/kfd/kfd/topology/nodes"
+
+
+def kfd_order(nodes:str | pathlib.Path | None = None) -> list[str]:
+  """The PCI addresses of the GPU nodes (simd_count > 0) in KFD node order, the HIP runtime's device order."""
+  out = []
+  dirs = [d for d in pathlib.Path(nodes or KFD_NODES).iterdir() if d.name.isdigit()]
+  for d in sorted(dirs, key=lambda d: int(d.name)):
+    props = dict(line.split()[:2] for line in (d / "properties").read_text().splitlines() if len(line.split()) >= 2)
+    if int(props.get("simd_count", 0)) > 0:
+      loc = int(props["location_id"])
+      out.append(f"{int(props.get('domain', 0)):04x}:{loc >> 8:02x}:{(loc >> 3) & 0x1f:02x}.{loc & 7}")
+  return out
+
+
+def _probe_amd_hip_order(amd_smi:str, run_command) -> tuple[list[dict[str, Any]], str | None]:
+  """amd-smi's GPUs in the HIP runtime's order, so the first is the device a HIP engine pinned to 0 runs on. More
+  than one GPU and no readable order fails closed: no device is better than the wrong one."""
+  devices, error = _probe_amd(amd_smi, run_command)
+  if len(devices) < 2:
+    return devices, error
+  try:
+    order = kfd_order()
+  except (OSError, KeyError, ValueError) as exc:
+    return [], f"the HIP device order is not readable from {KFD_NODES} ({exc}), so no AMD GPU can be named"
+  where = {d.get("pci_bus_id"): d for d in devices}
+  if sorted(where, key=str) != sorted(order):
+    return [], f"amd-smi's GPUs {sorted(where, key=str)} are not the KFD topology's {order}: the HIP order is unknown"
+  return [where[a] for a in order], None
+
+
+PROBE_TIMEOUT_S = 30.0  # one probe's whole answer; a probe still running then is timed_out and the others stand
+# which GPU is primary when more than one vendor answered; a one-GPU run still refuses to choose (gpu.first_gpu)
+PRIMARY_RULE = "the first device of the first vendor with devices, in target/vendors.py row order (vendor_rows)"
+
+
+def shown(found:list[dict[str, Any]], names:tuple[str, ...], env:Mapping[str, str]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+  """The devices the runtime shows, in its order: each visibility variable that is set (the vendor row's `visible`,
+  outermost first) keeps the devices it lists, by index or by UUID, of those the one before it left. Also the
+  variables set. An entry that names no device is refused: the engine would run on a card the scan cannot name."""
+  used = {}
+  for name in names:
+    if (value := env.get(name)) is None:
+      continue
+    used[name] = value
+    by_uuid = {str(d.get("uuid")).lower(): d for d in found if d.get("uuid")}
+    picks = [x.strip() for x in value.split(",") if x.strip()]
+    if bad := [x for x in picks if not (x.isdigit() and int(x) < len(found)) and x.lower() not in by_uuid]:
+      raise ValueError(f"{name}={value}: {', '.join(bad)} names none of the {len(found)} GPUs the scan sees")
+    found = [found[int(x)] if x.isdigit() else by_uuid[x.lower()] for x in picks]
+  return found, used
+
+
+def scan_gpus(tool_paths:dict[str, str | None], run_command, system:str,
+              timeout_s:float = PROBE_TIMEOUT_S) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+  """Every vendor's probe at once (vendor_rows(): a vendor is a row there, with its scan_tool, platform and probe,
+  (tool path, run_command) -> (devices, error) in its runtime's device order), each in its own thread with its own
+  deadline: the devices of every probe that answered, in row order, and one record per probe (vendor, tool, status, reason, what it asked). Status is
+  detected, no_devices (its tool answered and listed none), failed, timed_out or absent (no tool, or another OS)."""
+  rows = [{"vendor": v, **row} for v, row in vendor_rows().items()]
+  started = []
+  records = {}
+  for row in rows:
+    path = tool_paths.get(row["scan_tool"])
+    base = {"vendor": row["vendor"], "tool": row["scan_tool"], "order": row["order"]}
+    if not path or (row["platform"] and row["platform"] != system):
+      why = f"{row['scan_tool']} is not here" if not path else f"{row['scan_tool']} answers on {row['platform']} only, not {system}"
+      records[row["vendor"]] = {**base, "status": "absent", "reason": why, "asked": []}
+      continue
+    box:dict[str, Any] = {"asked": []}
+
+    def work(row=row, path=path, box=box):
+      def ask(argv):
+        got = run_command(argv)
+        box["asked"].append({"argv": list(argv), "exit": got[0]})
+        return got
+      try:
+        box["got"] = row["probe"](path, ask)
+      except Exception as exc:  # noqa: BLE001  a probe that raised is that probe's failure, not the scan's
+        box["got"] = ([], f"{row['scan_tool']} probe raised {type(exc).__name__}: {exc}")
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    started.append((row, base, box, thread))
+  deadline = time.monotonic() + timeout_s
+  devices = {}
+  for row, base, box, thread in started:
+    thread.join(max(0.0, deadline - time.monotonic()))
+    asked = list(box["asked"])
+    if "got" not in box:
+      records[row["vendor"]] = {**base, "status": "timed_out", "asked": asked,
+                                "reason": f"{row['scan_tool']} did not answer within {timeout_s:g} s"}
+      continue
+    found, error = box["got"]
+    found, shown_by = shown(found, row["visible"], os.environ)
+    answered = all(a["exit"] == 0 for a in asked) and re.search(r"returned no .*rows$", error or "")
+    status = "detected" if found else ("no_devices" if answered else "failed")
+    records[row["vendor"]] = {**base, "status": status, "reason": None if found else error, "asked": asked,
+                              **({"visible": shown_by} if shown_by else {})}
+    devices[row["vendor"]] = found
+  return [d for row in rows for d in devices.get(row["vendor"]) or []], [records[row["vendor"]] for row in rows]
+
+
+def hardware_profile(*, run_command=run_tool, tool_resolver=None,
+                      system_name:str | None = None) -> dict[str, Any]:
+  mem = _meminfo()
+  resolver = tool_resolver or shutil.which
+  tool_paths = {name: _tool_path(name, resolver)
+                for name in ("nvidia-smi", "amd-smi", "rocm-smi", "rocminfo", "rocprofv3", "hipcc", "nvcc",
+                             "system_profiler")}
+  gpu: dict[str, Any] = {
+    "tools_present": {name: path is not None for name, path in tool_paths.items()},
+    "tool_paths": tool_paths,
+  }
+  devices, probes = scan_gpus(tool_paths, run_command, system_name or platform.system())
+  vendors = [p["vendor"] for p in probes if p["status"] == "detected"]
+  if devices:
+    gpu = {**gpu, "status": "detected", **devices[0], "devices": devices, "notes": list(vendor_row(vendors[0], "notes"))}
+    if len(vendors) > 1:  # stated, never by which tool answered first; a one-GPU run still refuses (gpu.first_gpu)
+      gpu.update(primary_rule=PRIMARY_RULE, notes=[f"GPUs from {len(vendors)} vendors ({', '.join(vendors)}): the primary "
+                                                    f"GPU is {PRIMARY_RULE}", *gpu["notes"]])
+  else:
+    tried = sorted(probes, key=lambda p: p["status"] == "absent")
+    gpu = {**gpu, "status": "probe_failed", "notes": [f"{p['tool']}: {p['reason']}" for p in tried]}
+  gpu["probes"] = probes
+  return {
+    "schema": SCHEMA_HARDWARE_PROFILE,
+    "cpu": {
+      "machine": platform.machine(),
+      "processor": platform.processor(),
+      "logical_count": os.cpu_count(),
+    },
+    "system": {
+      "platform": platform.platform(),
+      "python": platform.python_version(),
+      "memory_bytes": mem.get("MemTotal"),
+    },
+    "gpu": gpu,
+  }
+
+
+def this_machine_target() -> str | None:
+  """The registry target this machine's GPU is, read live by the probe above, or None. Every collector's
+  "can this machine measure" check asks here."""
+  return hardware_profile()["gpu"].get("target_id")
+
+
+# What BoltBeam knows per GPU vendor is one row each in target/vendors.py; vendor_rows() is that registry in the scan's
+# shape: the driver tool (scan_tool), the OS it answers on (platform, None for any), the probe, (tool path,
+# run_command) -> (devices, error) in the vendor runtime's device order, the facts a chip profile matches on
+# (match_keys), the primary GPU's note and, for a discrete GPU, the measured profile's facts. A vendor is a row there,
+# not a branch in the scan or in profile_row.
+def vendor_rows() -> dict[str, dict[str, Any]]:
+  return {name: v.scan_facts(KFD_NODES=KFD_NODES) for name, v in vendors.VENDORS.items()}
+
+
+def vendor_row(vendor:str | None, key:str | None = None) -> Any:
+  """One vendor's row, or one fact of it; NoVendorRow, with the vendor and the fact, when there is none."""
+  row = vendor_rows().get(str(vendor))
+  if row is None or (key is not None and key not in row):
+    raise NoVendorRow(f"no {key + ' ' if key else ''}row for {vendor!r} GPUs in target/hardware.vendor_rows() (target/vendors.py)")
+  return row if key is None else row[key]

@@ -8,8 +8,9 @@ the name PATTERNS live here.
 A pattern matches whole components of the tensor's dotted name, never a substring of one: `ffn_up` is the
 component `ffn_up` (`blk.0.ffn_up.weight`), not `hc_ffn_up`, and `q_proj` is `self_attn.q_proj.qweight`'s, not
 `qkv_proj`. A per-head norm (`attn_q_norm`) is its own component and falls through to `norm`. Two families are named
-by their own component before any pattern: a hyper-connection mixer's tensors (`hc_*`, `output_hc_*`) and a sparse
-attention indexer's (`indexer.*`, `indexer_*`); their norms stay `norm`. (Flash-Next's `hc_ffn_up`/`hc_ffn_down` were
+by their own component before any pattern: a hyper-connection mixer's tensors (`hc_attn_*` before the token mixer,
+`hc_ffn_*` before the FFN, `output_hc_*` before the head, each layer's two `hc_*_inject`) and a sparse attention
+indexer's (`indexer.*`, `indexer_*`); their norms stay `norm`. (Flash-Next's `hc_ffn_up`/`hc_ffn_down` were
 the FFN's up and down and its `indexer.q_proj`/`k_proj` attention's q and k while the patterns were substrings.)
 
 Every weight a decode reads once per token is named by what it is, never left as `other`: a fused `attn_qkv`
@@ -47,12 +48,18 @@ def _component_role(parts:list[str], table:dict[str, RoleClass]) -> RoleClass | 
   return None
 
 
+_FAMILIES: tuple[tuple[str, RoleClass], ...] = (  # a component's prefix -> its family's class (where the model runs it)
+  ("indexer", R.ATTENTION_INDEXER), ("hc_attn_inject", R.HYPER_CONNECTION_INJECT), ("hc_ffn_inject", R.HYPER_CONNECTION_INJECT),
+  ("hc_attn_", R.HYPER_CONNECTION_ATTN), ("hc_ffn_", R.HYPER_CONNECTION_FFN), ("output_hc_", R.HYPER_CONNECTION_HEAD),
+  ("hc_head_", R.HYPER_CONNECTION_HEAD))
+
+
 def _family(parts:list[str]) -> RoleClass | None:
-  """A tensor of a family named by its own component: a hyper-connection mixer or a sparse attention indexer."""
-  own = [p for p in parts if p.startswith(("hc_", "output_hc_", "indexer"))]
-  if not own or any(p.endswith("_norm") for p in parts):  # its norms are norms
+  """A tensor of a family named by its own component: a hyper-connection mixer (the one before the token mixer, the
+  FFN or the head) or a sparse attention indexer."""
+  if any(p.endswith("_norm") for p in parts):  # its norms are norms
     return None
-  return RoleClass.ATTENTION_INDEXER if own[0].startswith("indexer") else RoleClass.HYPER_CONNECTION
+  return next((rc for p in parts for prefix, rc in _FAMILIES if p.startswith(prefix)), None)
 
 
 def _ssm_role(name:str, dims:tuple[int, ...] | None = None) -> RoleClass | None:
@@ -138,3 +145,36 @@ def role_from_tensor_name(name:str, dims:tuple[int, ...] | None = None) -> str:
 def is_expert_role(role_class_or_group:str) -> bool:
   """True for a per-expert weight role/group (excludes the router). Used by MoE search semantics (A5)."""
   return "expert" in role_class_or_group
+
+
+def _part_word(name:str) -> str:
+  """A tensor's own word within its family: `blk.0.hc_attn_down.weight` -> down, `blk.3.indexer.q_proj.weight` -> q."""
+  last = ([p for p in name.lower().split(".") if p not in ("weight", "bias") and not p.isdigit()] or [""])[-1]
+  last = next((last[len(prefix):] for prefix, _ in _FAMILIES if last.startswith(prefix) and len(last) > len(prefix)), last)
+  return last.removesuffix("_proj")
+
+
+def shape_parts(rows:list[dict]) -> dict[tuple, str]:
+  """The part of each shape of a role and format the model holds at two or more shapes (model_profile.json's roles),
+  keyed by role_key: the fine RoleClass when the shapes' classes differ (attn_qo's attention_q and attention_o), else
+  the tensor's own word (a hyper-connection mixer's down and up, a sparse attention indexer's q and k), else its n x k.
+  A role and format at one shape is named by its fine class when the profile records the classes of its tensors (a
+  hybrid's layer_kinds, a mixed-format role's per_layer) and they are one of the several classes the role groups (an attn_qo
+  whose format holds only the query weights is attention_q); else it keeps the role's name. role_class alone names only the
+  row's first tensor, so it never names a one-shape row."""
+  from boltbeam.role_key import role_key
+  from boltbeam.vocab import ROLE_GROUP_OF
+  shaped = {role_key(r): r for r in rows if len(role_key(r)) > 2}  # one row per (role, quant, n, k)
+  held: dict[tuple, set | None] = {}  # the fine classes of a key's tensors; None when a row does not record them
+  for r in rows:
+    got = {c for d in (r.get("layer_kinds") or {}, r.get("per_layer") or {}) for v in d.values() for c in v} or None
+    held[role_key(r)] = None if got is None or held.get(role_key(r), set()) is None else held.get(role_key(r), set()) | got
+  out: dict[tuple, str] = {k: c for k in shaped if sum(o[:2] == k[:2] for o in shaped) == 1 and held.get(k) and len(held[k]) == 1
+                           and (c := next(iter(held[k]))) != k[0] and sum(g == ROLE_GROUP_OF.get(c) == k[0] for g in ROLE_GROUP_OF.values()) > 1}
+  for at in ({k: r for k, r in shaped.items() if k[:2] == rq} for rq in {k[:2] for k in shaped}):
+    for name in (lambda k, r: r.get("role_class"), lambda k, r: _part_word(r.get("tensor_name") or ""), lambda k, r: f"{k[2]}x{k[3]}"):
+      parts = {k: name(k, r) for k, r in at.items()}
+      if len(at) > 1 and all(parts.values()) and len(set(parts.values())) == len(at):
+        out.update(parts)
+        break
+  return out

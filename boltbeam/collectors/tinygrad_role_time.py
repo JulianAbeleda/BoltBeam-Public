@@ -20,6 +20,7 @@ from typing import Any
 
 from boltbeam.artifacts.tinygrad_profile_events import decode_profile_events, load_profile_events
 from boltbeam.target import vendors
+from boltbeam.collectors.capture_scope import end_to_end_width, width
 from boltbeam.target.gpu import run_gpu
 
 DRIVER = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "tinygrad_decode_profile.py"
@@ -180,7 +181,7 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
     if summary.get(key) != settings.get(key):
       raise ValueError(f"tinygrad captured {key} differs from the untraced run")
   # the peak is the run's one read bandwidth (workflow/screen.py run_bandwidth): the limit's number, one source
-  from boltbeam.workflow.limit import run_bandwidth
+  from boltbeam.roofline.limit import run_bandwidth
   peak_gbs, peak_source = run_bandwidth(run, target)
   peak = {"peak_gbs": peak_gbs} if peak_gbs else {}
   trace = decode_profile_events(load_profile_events(events, tinygrad_root=root), model_id=model_id,
@@ -209,7 +210,6 @@ AT_LIMIT_NOISE = "at the limit (within measured repeat spread and floor uncertai
 
 def noise_band(band:dict | None) -> dict[str, Any]:
   """Only a scoped repeat calibration supplies an uncertainty band."""
-  from boltbeam.workflow.repeat_bands import end_to_end_width
   measured = band if isinstance(band, dict) else None
   return {"calibration": measured, "width_ms": end_to_end_width(measured),
           "words": "per-row measured repeat spread" if measured else "not checked: no repeat band for this setup"}
@@ -277,7 +277,6 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
       got = actual.get((c["role"], c["quant"]))  # a trace without shapes keys by role and quant
     if got is None or role_key(c) in joint_keys | incomplete_keys: continue
     ms = got["us"] / tokens / 1000.0
-    from boltbeam.workflow.repeat_bands import width
     from boltbeam.role_key import role_label
     delta = width(chip["calibration"], role_label(c["role"], c["quant"], shape_nk(c)),
                   work={"calls": got["calls"] / tokens, "limit_ms": c["floor_ms"]})

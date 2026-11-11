@@ -21,7 +21,7 @@ export BOLTBEAM_RUNS=/path/to/runs              # the folder that holds runs (de
 `boltbeam tui` (boltbeam/cli/tui.py) is the way in. It finds the checkout (`$BOLTBEAM_REPO`, else walking up from the
 working folder), builds `boltbeam-tui` into `~/.cache/boltbeam/` (`$BOLTBEAM_TUI_DIR`) when it is missing or the Go
 source changed (a hash of the sources sits beside the binary), then runs it with `--repo` and `--python` set and
-every flag passed through: `boltbeam tui --json chips`. It needs Go at the version `tui/go.mod` names (`go 1.26.5`);
+every flag passed through: `boltbeam tui --json chips`. It needs Go at the version `tui/go.mod` names (`go 1.26.7`);
 without it the one install line is printed and it exits 2. Nothing is downloaded (`GOTOOLCHAIN=local`).
 
 By hand, the same thing is `cd tui && go build -o boltbeam-tui . && ./boltbeam-tui`.
@@ -35,29 +35,60 @@ the fork next to the checkout, venvs; collectors/engine_scan.py) and remembers t
 Engine line says `looking for engines…` until it answers. Opening Engine never starts a scan; `[ Scan again ]` in the
 picker does. An env var always wins over what was found.
 
-Keys: `↑` `↓` (or `j` `k`) move, `enter` picks, `esc` goes back to Setup, `x` stops the run started here, `l` shows
-the log while a run goes, `d` (twice) deletes a saved run, `q` quits.
+Keys: `↑` `↓` (or `j` `k`) move, `enter` picks, `esc` goes back to Setup, `l` shows the log while a run goes, `d`
+(twice) deletes a saved run, `q` quits, `?` opens a page of every key the screen takes. The footer and that page are
+Bubbles `help` drawn from the key bindings themselves (internal/ui/keymap.go): each screen names only the keys that do
+something there. In a form the footer is the form's own keys, `esc` leaves it keeping nothing, `ctrl+c` quits.
+
+**Speed up.** On Recommended setup, under Measure MTP: *Makes a faster copy. The original stays.* It is a button only when the
+model's format has a writer (`data/speed_up.json`); otherwise a muted row says why ("This model's format has no faster copy
+yet."). Enter opens a confirm step (what happens, the disk space, the time, the GPU) that opens on Not now. The job is
+`boltbeam derive lighter-head MODEL --json --progress`; its stages show in plain words with the time left (an estimate), and
+its end is worded by `screen speedup-plain`: the copy kept with its speeds, NOT KEPT (slower or failed the answer check, and
+that the copy was deleted), a refusal with its one fix, or SPEED NOT MEASURED. What next offers Measure MTP on the copy and
+Compare with the original; a copy offers Check this copy (`screen speedup-verify`). A copy is `<model> · BoltBeam` in model lists.
 
 ## The three screens
 
 **Setup.** The choices and a button.
 
 ```text
-Model       model.gguf · 18 layers · F32/Q8_0              ›
-Chip        apple_m3_10c · this Mac · 97.2 GB/s            ›
-Engine      llama.cpp                                      ›
-Workload    decode                                         ›
-Batch       1                                              ›
-Measurement generic (kernel timer)                         ›
+Machine            ready to run on this Mac                     ›
 
-[ Run ]
-[ Emit ] Run first
-Saved runs (2)                                           ›
+Model              model.gguf · 18 layers · F32/Q8_0            ›
+Chip               apple_m3_10c · this Mac · 97.2 GB/s          ›
+Engine             llama.cpp                                    ›
+
+Recommended setup  context, speed and engine flags …            ›
+
+Workload           decode                                       ›
+Batch              1                                            ›
+Measurement        generic (kernel timer)                       ›
+
+[ Run ]            Measures decode speed: model, this Mac, llama.cpp
+[ Emit ]           No run yet: Run first
+
+Saved runs (2)                                                  ›
 ```
+
+The lines come in groups, a blank line between; the cursor skips the blank lines. Run and Emit each say what pressing
+them does with this setup, or why they are off.
+
+Machine is `boltbeam doctor --json` (cli/doctor.py), read after the engine scan and again after Scan again: "ready to
+run on this Mac", or the things to set up before a run (Python marks those rows `blocks`). Its page opens on that
+verdict, then the checks by their `group`: This GPU, Engines you can run here (each family with the forks found; the
+forks not found in one dimmed line, never a gap), Measuring tools, Not on this Mac (the n/a checks, one dimmed line
+each) and BoltBeam itself; under a gap, its one fix. `[ Check again ]` asks once more. It never greys Run.
 
 Model searches beside the current model and recursively under `~/models`, or takes a typed path. Checkpoint folders appear once, with the model name and format/quantization label; weight shards are not separate choices. Chip is this
 machine, detected (autoscan: a known profile is used, a new GPU is measured into `~/.boltbeam/chips/<id>.json`,
-`BOLTBEAM_CHIPS_DIR` moves that folder). Engine is one of llama.cpp, tinygrad, vLLM, Ollama and TensorRT-LLM; an
+`BOLTBEAM_CHIPS_DIR` moves that folder). A model BoltBeam cannot read keeps its line, with why under it (a weight
+format with no block layout is named, from `inspect`'s `formats`); when only a fork reads that format (`needs`), Run
+and Recommended setup name the fork, and the engine is never switched for you. Engine is one row per family
+(`screen providers` `families`, data/engine_families.json): llama.cpp, vLLM, TensorRT-LLM and tinygrad. ↑↓ moves
+between families, ←→ between a family's root and its forks (llama.cpp: upstream, PrismML, Ollama, Strata; tinygrad:
+upstream and its own fork), each with its state under the row: found, or not found with its one fix. The root is the
+default; enter picks the fork in brackets when it runs here, and Setup then says it ("llama.cpp · Ollama fork"). An
 engine this machine lacks or that cannot read the selected format is unavailable. On a machine with more than one GPU the
 Engine picker also shows the layout, how the engine uses the GPUs (`screen providers` `layouts`, workflow/layout.py):
 one GPU, split by layer, split by rows, each with the GPUs it would use and what it does to decode speed (split by layer
@@ -68,9 +99,12 @@ then reads `Engine  vllm · split by rows (2 GPUs)`. On one GPU nothing about la
 (a capture of the real token) or generic (the engine's kernels timed alone). `[ Run ]` is greyed until model, chip
 and engine are set. Setup does not show the speed limit; Run does.
 
-Settings, under Engine, is what the run asks the engine for: the settings that engine takes (`screen providers`
+Recommended setup, under Engine, proposes the context, speed and engine flags; Settings, under it, is what the run
+asks the engine for: the settings that engine takes (`screen providers`
 `settings`, capture_settings.offered: chunk size, attention backend, matrix backends, MTP draft tokens and prompt on
-vLLM; chunk size on llama.cpp), each typed or stepped through its fixed values, passed as the pipeline's own flags.
+vLLM; chunk size on llama.cpp), one field each in a Huh form (internal/ui/forms.go): a fixed set is chosen with `←`
+`→`, a whole number is typed and refused under its field unless it is above 0, and nothing is kept until the last
+field's `enter`. They are passed as the pipeline's own flags.
 The MTP settings appear only when the recommendation says the checkpoint has a draft head. Repeats is 1 run, or the n
 Python offers (`repeat_runs`, repeat_bands.PIN_RUNS): Run then measures the same setup n times (`pipeline --repeats`),
 the bar giving each run an equal share, and keeps their band in the first run, where the Run page shows its median,
@@ -116,18 +150,42 @@ session table. Progress says "Time the real run", then "Capture and attribute ke
 If attribution fails, Run says the report is incomplete and measurements and capture logs are kept. Details
 remain behind `l`; Save and Open report are unavailable, and Setup disables Emit with "run failed; see Run for details".
 
-The bottom box holds `[ Save run ]`, "Open the full report (report.html)" and `[ Back to setup ]`. A run is
+**Results** of a finished run are the plain block (`screen plain`, report/plain.py): layer 1 first (how fast, how close
+to the limit, what holds it back, under the labels of `screen words`, led by the headline figures in tok/s, ms and %
+(each bold, with its short label); the three parts that lose the most time as bars as
+long as their share of the lost time, each with its gain as a figure; the weight reads no part took, as one caveat; a
+batch sweep's curve of tok/s per stream count; the one trust line), then layer 2 as sections that open and close: `t` the table (four columns, `a` all of them),
+`m` How it was measured, `e` Machine and engine, `w` the words used, `f` Full detail (the page described above). No
+sentence on it is written in Go. While a run runs, the stage names are the words' own, the stages done are listed,
+and "about N min left" shows only when the last run's step times are logged.
+
+What next, after a run: Open the report (report.html), Run again with this setup (the run's own job command, else its
+recorded model, chip, workload, engine, batch sizes, layout and measurement), Saved runs, Compare with a saved run (an
+unsaved run is saved first), then `[ Save run ]` and `[ Back to setup ]`. A run is
 temporary (`<runs>/.work`) until saved; Save exports the run, `results.json`, `report.html` and `summary.txt` to
 `<runs>/saved`. The report has the same numbers as the screen; it is written by the same seam.
 
 **Saved runs.** Every saved run, newest first, in the top box: model, chip, engine and workload, date, and the share
-of the limit reached (a replay: of its roofline). Enter opens one to read. `d` twice deletes one.
+of the limit reached (a replay: of its roofline). Enter opens one to read. `d` twice deletes one. `c` (or Compare two
+saved runs) picks two to compare.
 
-**Compare.** On a saved run, "Compare with another saved run" makes it the before run; Saved runs then picks the
-after run. Two runs of one model, chip, engine and workload give the engine-upgrade audit row by row
-(`screen diff`, [docs/engine-upgrade-audit.md](../docs/engine-upgrade-audit.md)); when the before run carries
-`repeat_bands.json` its bands are used. Two replays of one trace on different engines give `screen replay-cross`,
-turn by turn. Runs that differ in model, target or engine are refused, and the page names the field.
+**Fetch runs**, on Saved runs, is `boltbeam fetch --json` ([docs/pods.md](../docs/pods.md#bring-results-home)):
+a Huh form takes the remote (`user@host` or an ssh Host alias; anything else is refused under the field) and a port for
+a pod (1 to 65535, or empty for ssh's own); its `enter` lists the remote's runs (one ssh call: id, here or not, model,
+chip, date, size). A second form picks some (`x`, or `ctrl+a` for all, which fetches with `--all`) and whether the raw
+traces come too (left behind unless picked). The fetch
+runs as a job (`fetch` in the state folder, beside a Run: it copies files only), the page shows how long it has run and
+offers Stop; when it ends the page says what was fetched, checked by sha256 and where (`lines`, cli/fetch.fetched_words),
+and Saved runs lists it. A refused ssh, an empty runs folder or a run that differs is said in Python's words.
+
+**Compare.** Any two saved runs, head to head (`screen head-to-head`, report/plain.head_to_head): from Saved runs (`c`
+picks the first, then the one beside it) or a run's own "Compare with a saved run" (it is the first). The page names
+each run (A, B) and says what differs between them (model, GPU, engine, build, weights, settings, workload, streams), then
+their headline figures side by side, the better one marked. Two runs of one model also compare part by part: two runs
+of one chip, engine and workload give the engine-upgrade audit row by row (`screen diff`,
+[docs/engine-upgrade-audit.md](../docs/engine-upgrade-audit.md); a run's `repeat_bands.json` bands are used), two replays
+of one trace on different engines give `screen replay-cross`, turn by turn. Otherwise one line says why the parts are not
+compared. A run with no measured result is the one refusal.
 
 **Gameplan.** Gap reports use the same bordered tables and cumulative decode accounting as Run. Unknown savings
 and timing qualifications stay explicit. Kernel-specific gameplans show the search evidence described below.
@@ -216,6 +274,10 @@ colour (`go test ./internal/ui -update` rewrites them). The live Go test skips w
 
 Go tests live beside the code (`_test.go`) because Go's toolchain treats them as part of the package; they
 travel with the product on `main`. The Python tests follow the branch rule and live on `dev`.
+
+[`tapes/`](tapes/README.md) holds a VHS tape per main flow (`vhs tapes/setup.tape` from `tui/`): a visual check, and
+the source of the release GIFs. They draw the screens from the same recorded data through `BOLTBEAM_TUI_DEMO`, a
+demo file under `testdata/demo/` (left out of the usage: it is for the tapes), so they need no GPU, network or Python.
 
 ### Scripted vLLM replay audits
 

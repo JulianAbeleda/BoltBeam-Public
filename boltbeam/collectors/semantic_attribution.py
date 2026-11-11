@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 from boltbeam.collectors.prefill_attribution import attribute_prefill
-from boltbeam.workflow.work_evidence import verify
+from boltbeam.collectors.work_evidence import verify
 
 
 def bind_cache_rate(run:Path, raw:Path, capture:dict, cache:dict | None) -> None:

@@ -21,4 +21,4 @@
 │     [ Measure again ] refresh this machine's profile                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit
+ ↑↓ move · enter pick · esc setup · ? all keys · q quit

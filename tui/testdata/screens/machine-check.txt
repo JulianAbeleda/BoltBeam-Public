@@ -1,0 +1,60 @@
+⚡ BoltBeam                                                                                    (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ This machine                                                                                     │
+│ Ready to run on this Mac · 1 optional.                                                           │
+│                                                                                                  │
+│ What this Mac has for measuring, read without changing anything. A check that is missing says    │
+│ what will not work, and how to fix it.                                                           │
+│                                                                                                  │
+│ This GPU                                                                                         │
+│ ✓ GPU · Apple M5                                                                                 │
+│ ✓ chip profile · apple_m5_10c_16g (measured on this machine)                                     │
+│                                                                                                  │
+│ Engines you can run here                                                                         │
+│ ✓ llama.cpp · upstream: /opt/homebrew/bin/llama-bench (path); per-role time: metal-system-       │
+│   trace · PrismML: /opt/llama.cpp-prism/build/bin/llama-bench (BoltBeam cannot run it yet)       │
+│   forks not found: Ollama, Strata                                                                │
+│ ✓ tinygrad · own fork: /opt/tinygrad (scan: /opt); per-role time: metal-system-trace             │
+│   forks not found: upstream                                                                      │
+│                                                                                                  │
+│ Measuring tools                                                                                  │
+│ ✓ kernel source · llama.cpp's shipped kernels can be timed alone here                            │
+│ ✓ capture tool · metal-system-trace:                                                             │
+│   /Applications/Xcode.app/Contents/Developer/usr/bin/xctrace                                     │
+│                                                                                                  │
+│ Not on this Mac                                                                                  │
+│ ◇ GPU health · no memory-fault read for this GPU's vendor                                        │
+│ ◇ vLLM · BoltBeam runs vLLM on CUDA or AMD GPUs; apple_m5_10c_16g is Metal                       │
+│ ◇ TensorRT-LLM · TensorRT-LLM runs on NVIDIA GPUs only; apple_m5_10c_16g is Metal                │
+│ ◇ GPU counters · no counter permission to read for this GPU's vendor                             │
+│                                                                                                  │
+│ BoltBeam itself                                                                                  │
+│ ✓ python · 3.13.13 (/opt/boltbeam/.venv/bin/python)                                              │
+│ ✓ Go · go1.27.3 at /opt/homebrew/bin/go                                                          │
+│ ✗ boltbeam-tui · not found · ~/.cache/boltbeam/boltbeam-tui was built from older Go source       │
+│     → boltbeam tui   (rebuilds it)                                                               │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                                        │
+│ ▸ [ Check again ]                                                                                │
+│   [ Back to setup ]                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · enter pick · esc setup · ? all keys · q quit

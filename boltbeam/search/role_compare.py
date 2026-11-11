@@ -93,7 +93,7 @@ def compare_run(run:pathlib.Path, *, root:pathlib.Path | None = None, say:Callab
   # the provider's device against BoltBeam's own reading of this machine's GPU
   measured_band = None
   if checker is None:
-    from boltbeam.workflow.repeat_bands import for_decode
+    from boltbeam.collectors.capture_scope import for_decode
     measured_band = for_decode(run)
     if measured_band is None:
       raise ProviderRefused("not checked: no matching repeat evidence for this setup")

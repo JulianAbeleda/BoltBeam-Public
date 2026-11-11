@@ -1,0 +1,10 @@
+{"root": "runs/saved", "runs": [
+  {"id": "qwen3-8-27b-w4a16-awq-nvidia_sm120-001", "model_id": "Qwen3.8-27B-W4A16-AWQ", "target_id": "nvidia_sm120",
+   "provider": "vllm", "saved_at": "2026-11-09T20:30:00", "tok_s": 87.5, "pct_of_limit": 79.7},
+  {"id": "qwen3-14b-q4-k-m-nvidia_geforce_rtx_4090_24g-001", "model_id": "Qwen3-14B-Q4_K_M",
+   "target_id": "nvidia_geforce_rtx_4090_24g", "provider": "llama.cpp", "saved_at": "2026-11-09T20:00:00", "tok_s": 94.4,
+   "pct_of_limit": 84.9},
+  {"id": "qwen3-8b-apple_m3_10c-002", "model_id": "Qwen3-8B", "target_id": "apple_m3_10c", "provider": "tinygrad",
+   "saved_at": "2026-10-09T12:10:00", "tok_s": 12.6, "pct_of_limit": 60.4},
+  {"id": "qwen3-8b-apple_m3_10c-001", "model_id": "Qwen3-8B", "target_id": "apple_m3_10c", "provider": "llama.cpp",
+   "saved_at": "2026-10-09T11:20:00", "tok_s": 17.0, "pct_of_limit": 81.7}]}

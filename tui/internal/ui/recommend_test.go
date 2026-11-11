@@ -102,7 +102,7 @@ func TestRecommendedLineFollowsThePickedLayout(t *testing.T) {
 		t.Fatalf("no layout picked: one GPU's verdict and the recommendation: %q", got)
 	}
 	f.Layout = "layer"
-	if got := plain(recommendValue(f)); got != "up to context 22,798 · f16 KV · 1 seqs" {
+	if got := plain(recommendValue(f)); got != "up to context 22,798 · f16 KV · 1 sequence" {
 		t.Fatalf("split by layer picked: its own context: %q", got)
 	}
 	if body := plain(recommendBody(f, 120)); !strings.Contains(body, "does not fit: each GPU's share is more than one GPU holds") {

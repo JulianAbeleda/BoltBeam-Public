@@ -15,14 +15,14 @@ from boltbeam.profile.decode_roles import GGML_BLOCK_LAYOUTS
 from boltbeam.profile.gguf import GGML_TYPE_IDS
 
 # Formats supported by this reference; the identities and layouts come from their owners.
-GGML_TYPES = {q: GGML_TYPE_IDS[q] for q in ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K", "Q3_K", "IQ4_NL", "IQ4_XS", "IQ3_S")}
+GGML_TYPES = {q: GGML_TYPE_IDS[q] for q in ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K", "Q3_K", "IQ4_NL", "IQ4_XS", "IQ3_S", "PTQ1_0")}
 BLOCK_BYTES = {q: GGML_BLOCK_LAYOUTS[t][1] for q, t in GGML_TYPES.items()}
 BLOCK_ELEMS = {q: GGML_BLOCK_LAYOUTS[t][0] for q, t in GGML_TYPES.items()}
 METADATA_BYTES = {"Q4_K": 16, "Q6_K": 18, "Q8_0": 2, "Q5_0": 6, "Q4_0": 2, "Q5_K": 48,  # Q4_K: d, dmin, 12 scale bytes. Q6_K: 16 int8 scales, d.
-                  "Q3_K": 46, "IQ4_NL": 2, "IQ4_XS": 8, "IQ3_S": 46}
+                  "Q3_K": 46, "IQ4_NL": 2, "IQ4_XS": 8, "IQ3_S": 46, "PTQ1_0": 2}
 # Q8_0, Q4_0: d. Q5_0: d and the 4 bytes of fifth bits. Q5_K: d, dmin, 12 scale bytes, 32 bytes of fifth bits. Q3_K: 32 bytes
 # of high bits, 12 scale bytes, d. IQ4_NL: d. IQ4_XS: d, 2 + 4 scale bytes. IQ3_S: d, 8 bytes of ninth bits, 32 of signs, 4
-# of scales. The rest of a block is its codes (code_bytes).
+# of scales. PTQ1_0: d (after its 26 code bytes). The rest of a block is its codes (code_bytes).
 KVALUES_IQ4NL = (-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113)  # ggml-common.h kvalues_iq4nl
 CHECK_ROWS = 9
 
@@ -71,6 +71,14 @@ def dequant_q6_k_block(blk:bytes) -> list[float]:
 def dequant_q8_0_block(blk:bytes) -> list[float]:
   d = _half(blk, 0)  # block_q8_0: half d, 32 int8 (ggml-common.h)
   return [d * q for q in struct.unpack_from("<32b", blk, 2)]
+
+
+def dequant_ptq1_0_block(blk:bytes) -> list[float]:
+  """block_ptq1_0 (the PrismML fork): 24 qs bytes of five base-3 trits, 2 qh bytes of four, half d. Trit n of byte b
+  is ((b * 3^n mod 256) * 3 >> 8) - 1; qs[0:16] hold elements n*16 + m, qs[16:24] 80 + n*8 + m, qh 120 + n*2 + h
+  (the fork's dequantize_row_ptq1_0)."""
+  d, trit = _half(blk, 26), lambda b, n: (((b * 3 ** n) & 0xFF) * 3 >> 8) - 1  # noqa: E731
+  return [d * trit(blk[o + m], n) for o, w, k in ((0, 16, 5), (16, 8, 5), (24, 2, 4)) for n in range(k) for m in range(w)]
 
 
 def dequant_q4_0_block(blk:bytes) -> list[float]:
@@ -166,7 +174,8 @@ def code_bytes(quant:str) -> int:
 DEQUANT: dict[str, Callable[[bytes], list[float]]] = {"Q4_K": dequant_q4_k_block, "Q6_K": dequant_q6_k_block, "Q8_0": dequant_q8_0_block,
                                                       "Q5_0": dequant_q5_0_block, "Q4_0": dequant_q4_0_block, "Q5_K": dequant_q5_k_block,
                                                       "Q3_K": dequant_q3_k_block, "IQ4_NL": dequant_iq4_nl_block,
-                                                      "IQ4_XS": dequant_iq4_xs_block, "IQ3_S": dequant_iq3_s_block}
+                                                      "IQ4_XS": dequant_iq4_xs_block, "IQ3_S": dequant_iq3_s_block,
+                                                      "PTQ1_0": dequant_ptq1_0_block}
 
 
 def reference_row(weights:bytes, quant:str, row:int, cols:int, x:list[float]) -> float:

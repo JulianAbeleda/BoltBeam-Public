@@ -1,5 +1,5 @@
 """A run folder as facts: where a run id is looked up, its stages and what it still needs, the engine it was
-measured with, and the files every reader opens. Nothing here computes a number; the limit is workflow/limit.py and
+measured with, and the files every reader opens. Nothing here computes a number; the limit is roofline/limit.py and
 the results are workflow/results.py. The seam that prints these is `python -m boltbeam.workflow.screen`."""
 from __future__ import annotations
 
@@ -7,29 +7,20 @@ import pathlib
 import shutil
 from typing import Any
 
-from boltbeam.collectors import providers
+from boltbeam.core.refused import Refused
 from boltbeam.report.html import STAGES, stage_state
 from boltbeam.workflow import fetch
-from boltbeam.artifacts.run_io import load_manifest, read_json
+from boltbeam.artifacts.run_io import MEASURE_STATUS, load_manifest, optional
+from boltbeam.vocab import SCHEMA_TUI as SCHEMA
 from boltbeam.workflow.layout import LAYOUTS
 
-SCHEMA = "boltbeam.tui.v1"
 # what a run still needs, read off measurement_plan.json: (plan block, the evidence it asks for, its request file)
 NEEDS = (("primitive_profile", "probe_evidence", "probe_request.json"),
          ("timing_profile", "timing_trace", "trace_request.json"))
 
 
-MEASURE_STATUS = "measure_status.json"
 SCHEMA_MEASURE_STATUS = "boltbeam.measure_status.v1"
 
-
-class Refused(Exception):
-  """A command that cannot answer: an unknown target, a folder that is not a run, a chip with no ceiling."""
-
-
-def optional(run:pathlib.Path, name:str) -> dict[str, Any]:
-  p = run / name
-  return read_json(p) if p.exists() else {}
 
 # --- run folders -----------------------------------------------------------------------------------------------
 
@@ -120,18 +111,6 @@ def runs(root:pathlib.Path, saved:pathlib.Path | None = None, *, all_places:bool
     if folder.is_dir():
       rows += [{**summary(p), "where": where, "dir": str(p)} for p in sorted(folder.iterdir()) if is_run(p)]
   return {"schema": SCHEMA, "kind": "runs", "root": str(root), "runs": rows}
-
-def run_provider(run:pathlib.Path) -> str:
-  """Resolve the measured engine, including imported whole-step traces.
-
-  Only legacy runs without either declaration default to llama-bench. Conflicting
-  declarations are evidence of a mixed run, not a reason to pick one silently.
-  """
-  status = optional(run, MEASURE_STATUS).get("provider")
-  trace = optional(run, "timing_trace.json").get("provider")
-  if status and trace and status != trace:
-    raise ValueError(f"measurement provider {status!r} differs from timing trace {trace!r}")
-  return providers.check(trace or status or providers.DEFAULT)
 
 def not_measured(run:pathlib.Path) -> str:
   """Why a run holds no speed, from its measure status: "not measured: <reason>"."""

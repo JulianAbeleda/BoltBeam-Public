@@ -4,9 +4,10 @@ package ui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
@@ -36,15 +37,31 @@ func runningBody(f Facts, width int) string {
 			now += fmt.Sprintf(" (%d of %d)", min(p.Sub+1, p.SubOf), p.SubOf)
 		}
 	}
-	took := elapsed(f.Job)
-	if !f.stageAt.IsZero() && p.Over(clock().Sub(f.stageAt).Seconds()) {
+	took, inStage := elapsed(f.Job), 0.0
+	if !f.stageAt.IsZero() {
+		inStage = clock().Sub(f.stageAt).Seconds()
+	}
+	if !f.stageAt.IsZero() && p.Over(inStage) {
 		took += " (longer than last time)"
 	}
+	if left, ok := p.Left(inStage); ok && !f.stageAt.IsZero() { // only from the last run's own step times
+		took += fmt.Sprintf(" · about %d min left", int(math.Ceil(left/60)))
+	}
 	fmt.Fprintf(&b, "  %s…   %s\n", now, stMuted.Render(took))
+	doneLines := 0
+	if done := p.DoneStages(); len(done) > 0 { // what is done, by the words' own stage names
+		names := make([]string, len(done))
+		for i, k := range done {
+			names[i] = stageWord(k)
+		}
+		line := hang(glyphPass+" "+strings.Join(names, " · "), 2, width)
+		doneLines = strings.Count(line, "\n") + 1
+		b.WriteString(paint(stMuted, line) + "\n")
+	}
 	if f.ShowLog {
 		tail, room := p.Lines, 20
 		if f.logRoom > 0 {
-			room = max(min(room, f.logRoom), 3)
+			room = max(min(room, f.logRoom-doneLines), 3) // the bar and what is done stay on screen
 		}
 		if len(tail) > room {
 			tail = tail[len(tail)-room:]

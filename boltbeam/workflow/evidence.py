@@ -11,15 +11,15 @@ import pathlib
 import re
 from typing import Any
 
+from boltbeam.artifacts.run_io import MACHINE, MEASURE_STATUS as MEASURE
+
 # Stated thresholds for the item verdicts. Each is a rule with its number, not a fit.
 LAUNCH_HEAVY = 500  # kernel launches per token above this: launch_heavy on the gaps line
 KV_SHARE = 0.25  # KV cache read above this share of the ideal token: kv_dominated
 THROTTLE_SHARE = 0.05  # cold read above sustained by more than this: throttled
 COMPARE = "kernel_compare/compare.json"
-MACHINE = "machine_facts.json"
-MEASURE = "measure_status.json"
 PROFILE = "model_profile.json"
-STEP4 = "timing_trace.json"  # step 4's whole step: THE measured token (tie_out.measured_step)
+STEP4 = "timing_trace.json"  # step 4's whole step: THE measured token (capture_settings.measured_step)
 
 LEVERS = {
   "launch_heavy": "Launch fewer kernels: run the token as one graph or fuse kernels.",
@@ -79,8 +79,8 @@ class Facts:
     self.trace4 = _read(run, STEP4)
 
   def step4_row(self, provider:str | None = None) -> tuple[int, dict[str, Any]] | None:
-    """THE measured token's row in step 4's trace, with its index: the same pick as tie_out.measured_step."""
-    from boltbeam.workflow.tie_out import measured_step
+    """THE measured token's row in step 4's trace, with its index: the same pick as capture_settings.measured_step."""
+    from boltbeam.collectors.capture_settings import measured_step
     prov = provider or (self.measure.get("provider") or "llama.cpp")
     token = measured_step(self.trace4, prov)
     return (token["index"], self.trace4["rows"][token["index"]]) if token else None
@@ -125,9 +125,12 @@ class Facts:
             if r.get("scope") == "whole_step"][:1]
 
   def others(self, taken:set[tuple[Any, ...]]) -> list[dict[str, Any]]:
-    from boltbeam.role_key import role_key
+    """The kernel rows no timed role took. A row with a shape is taken by its own key (or a shapeless one); a trace
+    stored before the pair rows carried shapes (attribution.attribute) has none: any key of its role and format takes it."""
+    from boltbeam.role_key import role_key, shape_nk
+    named = {k[:2] for k in taken}
     return [_ptr(self.trace_file, f"rows[{i}]") for i, r in enumerate(self.trace.get("rows") or [])
-            if r.get("scope") == "kernel" and role_key(r) not in taken and role_key(r)[:2] not in taken]
+            if r.get("scope") == "kernel" and role_key(r) not in taken and role_key(r)[:2] not in (taken if shape_nk(r) else named)]
 
   def launches_per_token(self) -> float | None:
     w = next((r for r in self.trace.get("rows") or [] if r.get("scope") == "whole_step"), {})

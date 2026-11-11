@@ -31,11 +31,13 @@ It answers, per role and per kernel:
 - **Did an engine upgrade change anything?** The engine-upgrade audit compares two builds row by row and names what
   moved beyond run-to-run noise ([docs/engine-upgrade-audit.md](docs/engine-upgrade-audit.md)).
 
-Engines: llama.cpp, vLLM, Ollama, TensorRT-LLM and a tinygrad fork. Chips: Apple Metal and NVIDIA CUDA, measured
-the same way. BoltBeam says where the time goes. Why a kernel is slow is the engine developer's question. On Metal,
-llama.cpp names no kernels in its capture. Qualified there: its whole decode token, its whole prefill at 512 tokens,
-and its session turn at depth 512. The prefill and turn qualify only with the GPU idled 60 s before each arm,
-because the M4's clock steps down under sustained load. Per-role time is the kernel timer's estimate.
+Engines, by family (each a root and its forks, data/engine_families.json): llama.cpp (forks: Ollama, PrismML, master;
+Strata, its own engine on llama.cpp's ggml, listed in the family, not run yet), vLLM, TensorRT-LLM and tinygrad (run
+through its fork). Chips: Apple Metal and NVIDIA CUDA, measured the same way. BoltBeam says where the time goes. Why a
+kernel is slow is the engine developer's question. On Metal, llama.cpp names no kernels in its capture. Qualified
+there: its whole decode token, its whole prefill at 512 tokens, and its session turn at depth 512. The prefill and turn
+qualify only with the GPU idled 60 s before each arm, because the M4's clock steps down under sustained load. Per-role
+time is the kernel timer's estimate.
 
 ## Install
 
@@ -110,7 +112,7 @@ python -m boltbeam.workflow.screen pipeline model.gguf --run runs/first --target
   --provider llama.cpp --workload decode --analyze --no-search
 ```
 
-This one took 11 seconds. It writes `runs/first/summary.md` and `runs/first/report.html`.
+This one took 11 seconds. It writes `runs/first/report.html` (the report) and `runs/first/summary.md` (the same, as text).
 
 **3. Read the result.** The top of the page, from the M3 run:
 

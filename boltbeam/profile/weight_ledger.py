@@ -51,7 +51,11 @@ EXCLUSIONS = {
 
 
 class WeightLedgerError(ValueError):
-  """The limit's bytes and the file's bytes do not add up: the profile is refused."""
+  """The limit's bytes and the file's bytes do not add up: the profile is refused. formats names the weight formats
+  BoltBeam has no block layout for, when that is why (a screen says it in a line); empty otherwise."""
+  def __init__(self, message:str, formats:Iterable[str] = ()):
+    super().__init__(message)
+    self.formats = tuple(formats)
 
 
 def name_pattern(name:str) -> str:
@@ -195,7 +199,8 @@ def check(ledger:Mapping[str, Any], roles:Iterable[Any]) -> None:
   Raises WeightLedgerError naming the difference."""
   if ledger.get("unsized"):
     raise WeightLedgerError("weight ledger incomplete: tensors have unknown block layouts: " +
-                            ", ".join(r["tensor_name"] for r in ledger["unsized"]))
+                            ", ".join(r["tensor_name"] for r in ledger["unsized"]),
+                            sorted({GGML_TYPE_NAMES.get(r["ggml_type"], f"GGML type {r['ggml_type']}") for r in ledger["unsized"]}))
   from_roles = 0
   for r in roles:
     role = r if isinstance(r, Mapping) else r.to_json()

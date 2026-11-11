@@ -72,7 +72,7 @@ func TestBesideRunThatNeverMeasuredSaysWhy(t *testing.T) {
 		Missing: sp("no per-role time yet"),
 		Others: []seam.OtherLoss{{Provider: "llama.cpp", Run: sp("qwen3-8b-q4-k-m-nvidia_sm120-001"), Missing: &why},
 			{Provider: "llama.cpp", Run: sp("qwen3-8b-q4-k-m-nvidia_sm120-003"), TokS: fp(301.25)}}}
-	body := plain(lossBody(l))
+	body := plain(lossBody(l, wide))
 	if strings.Contains(body, "0.0 tokens per second") {
 		t.Fatalf("0.0 printed for absent data:\n%s", body)
 	}
@@ -105,15 +105,12 @@ func TestEngineIsRememberedFromTheNewestRun(t *testing.T) {
 
 // At 110 columns the role table keeps µs/CALL and WHY in one table: the share bar and IDEAL go first.
 func TestRoleTableKeepsWhyAt110(t *testing.T) {
-	old := tableWidth
-	defer func() { tableWidth = old }()
 	roles := []seam.RoleLoss{{Role: "ffn_up", Quant: "Q4_K", IdealMs: 21.19, ActualMs: 25.08, LostMs: 3.89, Share: 0.29,
 		PctPeak: fp(84.5), UsPerCall: fp(348.4), Reason: "too small to fill memory"},
 		{Role: "output", Quant: "Q6_K", IdealMs: 5.30, ActualMs: 7.04, LostMs: 1.74, Share: 0.13, PctPeak: fp(75.3),
 			UsPerCall: fp(7042.6), Reason: "slow kernel"}}
 	for _, w := range []int{106, 76} {
-		tableWidth = w
-		got := plain(roleTable(roles, fp(1.2)))
+		got := plain(roleTable(roles, fp(1.2), w))
 		head := strings.SplitN(got, "\n", 2)[0]
 		if !strings.Contains(got, "WHY") || !strings.Contains(got, "µs/CALL") || !strings.Contains(got, "too small to fill memory") {
 			t.Errorf("width %d lost a column:\n%s", w, got)

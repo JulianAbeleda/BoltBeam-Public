@@ -5,36 +5,58 @@ package ui
 import (
 	"cmp"
 	"fmt"
-	"github.com/charmbracelet/x/ansi"
 	"strings"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
 
 // emitAction is the Setup row under Run. Emit turns the run on screen into a gameplan (what kernel to emit per role,
 // worst first); it needs a finished run with a per-role table, so before one the row is muted with "Run first".
-func emitAction(f Facts) action {
+// Each state says, after the button, what it does or why it cannot (w is Setup's label column).
+func emitAction(f Facts, w int) action {
+	off := func(why string) action { return action{button(f, w, "[ Emit ]", why, false), "", ""} }
 	switch {
 	case f.Emitting:
-		return action{stMuted.Render("[ Emit ] writing the gameplan…"), "", ""}
+		return off("Writing the gameplan…")
 	case f.failedStage() != "":
-		return action{stMuted.Render("[ Emit ] run failed; see Run for details"), "", ""}
+		return off("The last run failed: see Run for why")
 	case f.canEmit():
-		label := "[ Emit ]"
+		label, does := "[ Emit ]", "Writes the kernel gameplan from the last run"
 		if f.Run.Results.Loss.Replay != nil && f.Run.Results.Loss.Replay.Forced {
-			label = "[ Emit replay report ]"
+			label, does = "[ Emit replay report ]", "Writes the replay's report from the last run"
 		} else if len(f.Run.Results.Loss.Roles) == 0 && f.hasOptimizationTables() {
-			label = "[ Emit gap report ]"
+			label, does = "[ Emit gap report ]", "Writes the gap report from the last run"
 		}
 		if f.ReadOnly {
-			label += " saved run " + f.Run.ID
+			does = strings.Replace(does, "the last run", "saved run "+f.Run.ID, 1)
 		}
-		return action{stAccent.Render(label), "emit", ""}
+		return action{button(f, w, label, does, true), "emit", ""}
 	}
 	if f.Run != nil && f.outputDone() {
-		return action{stMuted.Render("[ Emit ] no measured work breakdown; see report for " + f.Run.ID), "", ""}
+		return off("The last run has no per-role breakdown to plan from: its report has what it measured")
 	}
-	return action{stMuted.Render("[ Emit ] Run first"), "", ""}
+	return off("No run yet: Run first")
+}
+
+// button is a Setup button and, in the value column, what pressing it does (or why it is off), muted.
+func button(f Facts, w int, label, help string, on bool) string {
+	text := stMuted.Render(label)
+	if on {
+		text = stAccent.Render(label)
+	}
+	pad := max(w-ansi.StringWidth(label), 0)
+	room := 1 << 10 // outside a frame (a test of the rows): one line
+	if f.cols > 0 {
+		room = max(f.cols-w-2, 20)
+	}
+	lines := strings.Split(ansi.Wordwrap(help, room, " "), "\n") // whole, in the value column
+	for i, l := range lines {
+		lines[i] = stMuted.Render(l)
+	}
+	return text + strings.Repeat(" ", pad+2) + strings.Join(lines, "\n"+strings.Repeat(" ", w+4))
 }
 
 // canEmit requires a completed run with kernel-specific evidence, a measured breakdown, or a forced replay report.
@@ -91,7 +113,7 @@ func emitBody(f Facts, width int) string {
 		var b strings.Builder
 		b.WriteString(renderMarkdown(f.Plan.Plan.Presentation.Summary) + "\n")
 		for _, table := range f.Plan.Plan.Tables {
-			b.WriteString(whereBody(&table))
+			b.WriteString(whereBody(&table, width))
 		}
 		b.WriteString(renderMarkdown(strings.TrimRight(f.Plan.Plan.Presentation.Details, "\n")))
 		return timingScopeLine(f.Plan.Plan.TimingScope, width) + b.String()
@@ -148,38 +170,47 @@ func resultsBody(f Facts, width int) string {
 	if f.failedStage() != "" {
 		return failedBody(f, width)
 	}
-	var b strings.Builder
-	b.WriteString(timingScopeLine(f.Run.Results.Loss.TimingScope, width))
-	if f.Run.Measure != nil && f.Run.Measure.Status != "measured" {
-		b.WriteString(measureBody(f, width) + "\n\n")
+	if f.plainShown() { // layer 1, then layer 2's sections (render_plain.go)
+		return plainBody(f, width)
 	}
-	if f.Run.Results.Loss.Layout != nil {
-		b.WriteString(layoutBody(*f.Run.Results.Loss.Layout) + "\n")
-	}
-	b.WriteString(resultBody(f, width))
-	return b.String()
+	return fullDetail(f, width) // the plain block not in (yet): the page as it always was
 }
 
+// runActions is What next. After a finished run, in this order: the report, Run again with this setup, Saved runs,
+// Compare with a saved run; then Save (or where it was saved), and back to Setup.
 func runActions(f Facts) []action {
-	out := []action{}
 	switch {
 	case f.alive():
 		return []action{{"Stop the run", "stop", ""}, {"Back to setup", "page", fmt.Sprint(pageSetup)},
 			{stMuted.Render("The run keeps going after you leave this screen."), "note", ""}}
 	case f.failedStage() != "":
 		return []action{{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)}}
-	case f.ReadOnly:
-		out = append(out, action{"Back to saved runs", "page", fmt.Sprint(pageSaved)},
-			action{"Compare with another saved run (this one is before)", "comparefrom", f.Run.ID})
-	case f.Run != nil && f.outputDone():
-		if dir, ok := f.savedAs(f.Run.ID); ok {
-			out = append(out, action{mark("pass") + " Saved to " + dir, "", ""})
-		} else {
-			out = append(out, action{stAccent.Render("[ Save run ]"), "save", ""})
-		}
 	}
-	if f.Run != nil && f.Run.Report != nil && !f.alive() {
-		out = append(out, action{"Open the full report (" + *f.Run.Report + ")", "report", ""})
+	out := []action{}
+	if f.Run != nil && f.Run.Report != nil {
+		out = append(out, action{"Open the report (" + *f.Run.Report + ")", "report", ""})
+	}
+	if f.Run == nil || !(f.outputDone() || f.ReadOnly) {
+		return append(out, action{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)})
+	}
+	dir, saved := f.savedAs(f.Run.ID)
+	n := 0
+	if f.Saved != nil {
+		n = len(f.Saved.Runs)
+	}
+	out = append(out, action{"Run again with this setup", "rerun", ""}, action{fmt.Sprintf("Saved runs (%d)\t›", n), "page", fmt.Sprint(pageSaved)})
+	switch { // Compare opens Saved runs' picker with this run already chosen
+	case f.ReadOnly || saved:
+		out = append(out, action{"Compare with a saved run", "comparefrom", f.Run.ID})
+	default: // only saved runs compare: Compare saves this one first
+		out = append(out, action{"Compare with a saved run (saves this one first)", "savecompare", ""})
+	}
+	switch {
+	case f.ReadOnly:
+	case saved:
+		out = append(out, action{mark("pass") + " Saved to " + dir, "", ""})
+	default:
+		out = append(out, action{stAccent.Render("[ Save run ]"), "save", ""})
 	}
 	return append(out, action{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)})
 }
@@ -199,8 +230,8 @@ func savedLine(f Facts) (string, string) {
 
 func savedBody(f Facts, width int) string {
 	var b strings.Builder
-	b.WriteString("A run is temporary until you save it. Saving keeps the run, its report, results.json and summary.txt.\n")
-	b.WriteString("Enter opens a saved run. Press d twice to delete one.\n")
+	b.WriteString("A run is temporary until you save it.\nSaving keeps its report and its measurements.\n\n")
+	b.WriteString("Enter opens a run. c compares two side by side.\nd twice deletes one.\n")
 	return b.String()
 }
 
@@ -213,46 +244,116 @@ func compareLine(f Facts) (string, string) {
 	case f.Compared.Err != "":
 		return "fail", "not compared"
 	}
-	return "pass", f.Compared.Before + " (before) and " + f.Compared.After + " (after)"
+	return "pass", f.Compared.Before + " and " + f.Compared.After + ", head to head"
 }
 
+// compareRunsBody is two runs head to head: which is A and which B, what differs, their headline figures side by side
+// with the better one marked; then their parts, or the one line that says why the parts are not compared.
 func compareRunsBody(f Facts, width int) string {
 	c := f.Compared
 	switch {
 	case c == nil:
 		return stMuted.Render("Comparing…")
 	case c.Err != "":
-		return stWarn.Render(glyphWarn+" Not compared: "+c.Err+".") + "\n" +
-			stMuted.Render("Compare two runs of the same model, chip, engine and workload; two replays of one trace may differ in engine.")
+		return stWarn.Render(glyphWarn + " Not compared: " + c.Err + ".")
 	}
-	return strings.Join(c.Lines, "\n")
+	var b strings.Builder
+	if h := c.Head; h != nil {
+		b.WriteString(headToHead(*h, width))
+		if h.Refused != nil {
+			return strings.TrimRight(b.String(), "\n")
+		}
+		if c.PartsNote != nil {
+			return b.String() + "\n" + paint(stMuted, hang(*c.PartsNote, 0, width))
+		}
+		b.WriteString("\n")
+	}
+	if c.Plain == nil {
+		return b.String() + strings.Join(c.Lines, "\n")
+	}
+	b.WriteString(partsBody(c, width))
+	return b.String()
+}
+
+// headToHead is the two runs' figures in three columns: the row's label, run A's figure, run B's; the better one in
+// the OK colour with a mark after it. A run's title names it once, above.
+func headToHead(h seam.HeadToHead, width int) string {
+	var b strings.Builder
+	for i, r := range h.Runs {
+		b.WriteString(stHeader.Render(string(rune('A'+i))) + "  " + strings.TrimLeft(hang(r.ID, 3, width), " ") + "\n")
+		b.WriteString(paint(stMuted, hang(r.Title, 3, width)) + "\n")
+	}
+	if h.Refused != nil {
+		return b.String() + "\n" + paint(stWarn, hang(glyphWarn+" "+*h.Refused, 0, width)) + "\n"
+	}
+	if h.Differs != nil {
+		b.WriteString("\n" + hang(*h.Differs, 0, width) + "\n")
+	}
+	mark := " " + glyphPass
+	lw, cw := 0, 0
+	for _, r := range h.Rows {
+		lw = max(lw, lipgloss.Width(r.Label))
+		for _, c := range r.Cells {
+			cw = max(cw, lipgloss.Width(c)+lipgloss.Width(mark))
+		}
+	}
+	lw = min(lw, max(width-2*(cw+2)-2, 12))
+	b.WriteString(stHeader.Render("\n  "+strings.Repeat(" ", lw)+strings.TrimRight(fmt.Sprintf("  %-*s  %-*s", cw, "A", cw, "B"), " ")) + "\n")
+	for _, r := range h.Rows {
+		label := truncate(r.Label, lw)
+		line := "  " + stMuted.Render(label) + strings.Repeat(" ", lw-lipgloss.Width(label))
+		for i, cell := range r.Cells {
+			text := cell
+			if text == "" {
+				text = "–"
+			}
+			if r.Better != nil && *r.Better == i {
+				line += "  " + stOK.Bold(true).Render(text+mark) + strings.Repeat(" ", cw-lipgloss.Width(text+mark))
+				continue
+			}
+			line += "  " + stFigure.Render(text) + strings.Repeat(" ", cw-lipgloss.Width(text))
+		}
+		b.WriteString(strings.TrimRight(line, " ") + "\n")
+	}
+	return b.String()
+}
+
+// partsBody is the parts of two runs of one model compared (report/plain.compare): what changed, the parts that moved
+// most, the trust line; then the seam's lines in full, under Full detail as the Results screen has it.
+func partsBody(c *Compared, width int) string {
+	l := c.Plain.Layer1
+	var b strings.Builder
+	b.WriteString(paint(stHeader, hang(l.Fast, 0, width)) + "\n")
+	for _, line := range l.Lines {
+		b.WriteString(hang(line, 0, width) + "\n")
+	}
+	for _, p := range l.Top {
+		b.WriteString(paint(stAccent, hang(p.Text, 2, width)) + "\n")
+	}
+	if tr := l.Trust; tr != nil {
+		style := stWarn
+		if tr.Checked {
+			style = stOK
+		}
+		b.WriteString(paint(style, hang(tr.Text, 0, width)) + "\n")
+	}
+	return b.String() + "\n" + stHeader.Render(titleFull) + "\n" + strings.Join(c.Lines, "\n")
 }
 
 func compareActions(f Facts) []action {
 	return []action{{"Back to saved runs", "page", fmt.Sprint(pageSaved)}, {"[ Back to setup ]", "page", fmt.Sprint(pageSetup)}}
 }
 
-// crossEngines says the two saved runs are replays from different engines: replay-cross, not diff.
-func (f Facts) crossEngines(a, b string) bool {
-	if f.Saved == nil {
-		return false
-	}
-	engine := map[string]string{}
-	for _, r := range f.Saved.Runs {
-		if r.Workload != nil && *r.Workload == "replay" {
-			engine[r.ID] = r.Provider
-		}
-	}
-	ea, oka := engine[a]
-	eb, okb := engine[b]
-	return oka && okb && ea != eb
-}
-
+// savedActions is Saved runs: each run opens; Compare two saved runs picks one, then the one to set beside it.
 func savedActions(f Facts) []action {
 	out := []action{}
-	if f.CompareFrom != "" {
-		out = append(out, action{stInfo.Render("Pick the after run to compare with " + f.CompareFrom + ". The same model, chip and " +
-			"engine compare row by row; two replays of one trace may differ in engine."), "note", ""})
+	picking := f.ComparePick || f.CompareFrom != ""
+	switch {
+	case f.CompareFrom != "":
+		out = append(out, action{stInfo.Render("Pick the run to set beside " + f.CompareFrom + ". Any two measured runs compare " +
+			"head to head; two runs of one model compare part by part too."), "note", ""})
+	case f.ComparePick:
+		out = append(out, action{stInfo.Render("Pick the first of the two runs to compare."), "note", ""})
 	}
 	if f.Saved != nil {
 		for _, r := range f.Saved.Runs {
@@ -285,18 +386,26 @@ func savedActions(f Facts) []action {
 			if f.Confirm == r.ID {
 				label = stBad.Render("Press d again to delete saved run " + r.ID + " · any other key keeps it")
 			}
-			if f.CompareFrom != "" {
+			switch {
+			case f.CompareFrom != "":
 				if r.ID != f.CompareFrom {
 					out = append(out, action{label, "compare", r.ID})
 				}
-				continue
+			case f.ComparePick:
+				out = append(out, action{label, "comparefrom", r.ID})
+			default:
+				out = append(out, action{label, "opensaved", r.ID})
 			}
-			out = append(out, action{label, "opensaved", r.ID})
 		}
 	}
-	if f.CompareFrom != "" {
+	if picking {
 		return append(out, action{"[ Cancel compare ]", "comparecancel", ""})
 	}
+	out = append(out, head(""))
+	if f.Saved != nil && len(f.Saved.Runs) > 1 {
+		out = append(out, action{"Compare two saved runs\t›", "comparepick", ""})
+	}
+	out = append(out, action{"Fetch runs from another machine\t›", "page", fmt.Sprint(pageFetch)})
 	out = append(out, cleanAction(f)...)
 	return append(out, action{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)})
 }
@@ -372,8 +481,8 @@ func shortRun(id string) string {
 // --- 5 Result ----------------------------------------------------------------------------------------------
 
 func resultLine(f Facts) (string, string) {
-	if f.alive() || f.failedStage() != "" {
-		return "", "" // the box above holds the bar, or what failed
+	if f.alive() || f.failedStage() != "" || f.plainShown() {
+		return "", "" // the box above holds the bar, what failed, or layer 1's answers
 	}
 	if !f.outputDone() {
 		return "open", "not run yet"

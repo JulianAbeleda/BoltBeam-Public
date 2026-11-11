@@ -4,10 +4,9 @@ import pathlib
 from typing import Any
 
 from boltbeam.report.html import next_step, render_run_html
+from boltbeam.report.plain import markdown as plain_markdown, plain_results
 from boltbeam.vocab import SCHEMA_OUTPUT_MANIFEST
-from boltbeam.artifacts.run_io import load_manifest, read_json, run_dir, update_manifest, write_json
-
-OUTPUT_ARTIFACTS = ("output_manifest.json", "summary.md", "rollback.md", "provider_plan.json", "report.html")
+from boltbeam.artifacts.run_io import OUTPUT_ARTIFACTS, load_manifest, read_json, run_dir, update_manifest, write_json
 
 
 def _load_optional(run:pathlib.Path, name:str) -> dict[str, Any]:
@@ -80,12 +79,16 @@ def semantic_roles(loss:dict[str, Any]) -> list[str]:
 
 def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str, Any],
                 plan:dict[str, Any], primitive:dict[str, Any], timing:dict[str, Any],
-                runner:dict[str, Any], res:dict[str, Any] | None = None, measure:dict[str, Any] | None = None) -> str:
+                runner:dict[str, Any], res:dict[str, Any] | None = None, measure:dict[str, Any] | None = None,
+                block:dict[str, Any] | None = None) -> str:
+  """summary.md: the plain-results block's layers as Markdown (report/plain.py), the same ones report.html shows, then
+  the full detail as before."""
   from boltbeam.workflow.text_report import summary_text
   res, measure = res or {}, measure or {}
+  layers = [*plain_markdown(block), "", "## Full detail", ""] if block else []
   if replay:=(res.get('loss') or {}).get('replay'):
     if replay.get('forced'):
-      return '\n'.join([f"# BoltBeam Replay Summary: {manifest.get('model_id', 'unknown')}", '',
+      return '\n'.join([f"# BoltBeam Replay Summary: {manifest.get('model_id', 'unknown')}", '', *layers,
                         *replay['headline_lines'], '', replay['words'], '', replay['next_step'], ''])
   probe = res.get("probe")
   measured = measured_line(report, res, measure)
@@ -93,6 +96,7 @@ def _summary_md(manifest:dict[str, Any], profile:dict[str, Any], report:dict[str
   lines = [
     f"# BoltBeam Run Summary: {manifest.get('model_id', profile.get('model_id', 'unknown'))}",
     "",
+    *layers,
     f"- Latest stage: `{manifest.get('latest_stage')}`",
     f"- Model format: `{manifest.get('model_format', 'unknown')}`",
     f"- Target: `{manifest.get('target_id', 'unknown')}`",
@@ -242,16 +246,17 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
     raise
   write_json(out / 'report_validation.json', res['validation'])
   import time
-  from boltbeam.collectors.providers import latest_llama, run_build
-  from boltbeam.workflow.run_folder import run_provider
+  from boltbeam.collectors.providers import latest_llama, run_build, run_fork
+  from boltbeam.collectors.providers import run_provider
   update = (_load_optional(out, "output_manifest.json").get("engine_update") or {})
   if run_provider(out) == "llama.cpp" and (update.get("build") != run_build(out) or
       str(update.get("checked_at", ""))[:10] != time.strftime("%Y-%m-%d", time.gmtime())):
-    update = latest_llama(run_build(out))
+    update = latest_llama(run_build(out), fork=run_fork(out))
   res["engine_update"] = output_manifest["engine_update"] = update if run_provider(out) == "llama.cpp" else {}
   write_json(out / "output_manifest.json", output_manifest)
   measure = _load_optional(out, "measure_status.json")
-  (out / "summary.md").write_text(_summary_md(manifest, profile, report, plan, primitive, timing, runner, res, measure),
+  block = plain_results(res, out)  # the one plain-results block: summary.md and report.html both read it
+  (out / "summary.md").write_text(_summary_md(manifest, profile, report, plan, primitive, timing, runner, res, measure, block),
                                   encoding="utf-8")
   (out / "rollback.md").write_text(_rollback_md(policy), encoding="utf-8")
   final = update_manifest(out, stage="output", artifacts=list(OUTPUT_ARTIFACTS))
@@ -259,10 +264,11 @@ def output_run(run:str | pathlib.Path) -> dict[str, Any]:
   # It renders from `final`, not the pre-update manifest, so the pipeline rail shows the output stage as run and
   # a second `boltbeam output` over an unchanged run reproduces the file byte for byte.
   # The headline reads the speed limit and measured tokens/s from results.results: the same function the TUI reads,
-  # so the page and the TUI cannot disagree. Imported here because screen imports this module.
+  # so the page and the TUI cannot disagree. Imported here because screen imports this module. The page names the run
+  # by its folder's name only: a page gets shared, and the folder's full path holds the user's home and name.
   (out / "report.html").write_text(
     render_run_html(manifest=final, profile=profile, report=report, plan=plan, policy=policy,
                     providers=providers, primitive=primitive, timing=timing, runner=runner,
-                    source_run=out.name if (res.get('loss',{}).get('replay') or {}).get('forced') else str(out), results=screen_results(out) | {"engine_update": res["engine_update"]}, measure=measure,
-                    gameplan=gameplan.MD_FILE if (out / gameplan.MD_FILE).is_file() else None), encoding="utf-8")
+                    source_run=out.name, results=screen_results(out) | {"engine_update": res["engine_update"]}, measure=measure,
+                    gameplan=gameplan.MD_FILE if (out / gameplan.MD_FILE).is_file() else None, plain_block=block), encoding="utf-8")
   return final

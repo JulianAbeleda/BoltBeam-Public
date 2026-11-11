@@ -1,24 +1,24 @@
 ⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Workload                                                                     │
-│ Workload is what the Run measures. Decode times one token at a time. Prefill │
-│ times the prompt read at once, from 512 tokens up to the model's own cap.    │
-│ Session times a 512-token turn appended to a cache already holding 1K, then  │
-│ 4 times more, up to the context that fits before compaction. Replay plays a  │
-│ recorded session, as token counts, through your own llama-server command and │
-│ shows each turn against its roofline.                                        │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
+│ Pick what the Run measures. Each type says what it times below.              │
 │                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Choose                                                                       │
-│ ▸ ● decode   one token at a time, after the prompt                           │
-│     prefill  the prompt read at once, at lengths up to the model's cap       │
-│     session  a turn appended at depths up to the context that fits           │
-│     replay   a recorded session replayed on your server's flags              │
+│ ▸ ● decode                                                                   │
+│       How fast the model writes its answer, one token at a time after        │
+│       the prompt. The usual first run, and the one to pick for chat.         │
+│                                                                              │
+│     prefill                                                                  │
+│       How fast the model reads a prompt, at lengths from 512 tokens up       │
+│       to the longest it takes. Pick it when long prompts or documents        │
+│       matter.                                                                │
+│                                                                              │
+│     session                                                                  │
+│       How speed holds up as a conversation grows: a 512-token turn added     │
+│       to 1K tokens already read, then 4 times more, up to what fits in       │
+│   ↓ 6 more                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit
+ ↑↓ move · enter pick · esc setup · ? all keys · q quit

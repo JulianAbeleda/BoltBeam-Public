@@ -28,7 +28,7 @@ from boltbeam.adapters.tinygrad_decode import validate_decode_authority
 from boltbeam.vocab import (SCHEMA_MATCHED_CONTROL_PROTOCOL, SCHEMA_MATCHED_CONTROL_ROW,
                             SCHEMA_MATCHED_CONTROL_SUMMARY, SCHEMA_RUNTIME_OUTPUT_IDENTITY,
                             SCHEMA_TINYGRAD_GRAPH_ADMISSION_CENSUS)
-from boltbeam.workflow.autoscan import _hardware_profile
+from boltbeam.target.hardware import hardware_profile
 from boltbeam.artifacts.run_io import read_json, write_json
 
 CommandRunner = Callable[[Sequence[str], pathlib.Path | None, Mapping[str, str] | None, float], tuple[int, str, str]]
@@ -122,7 +122,7 @@ def _toolchain_identity(run_command:CommandRunner) -> dict[str, Any]:
 def _apple_hardware(run_command:CommandRunner) -> dict[str, Any]:
   def adapter(argv:tuple[str, ...]) -> tuple[int, str, str]:
     return run_command(argv, None, None, 30.0)
-  return _hardware_profile(run_command=adapter, system_name="Darwin")
+  return hardware_profile(run_command=adapter, system_name="Darwin")
 
 
 def build_environment_identity(*, model:str | pathlib.Path,

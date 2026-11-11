@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // scanEngines looks for every engine in the usual folders and saves what was found (Python: screen engines). It
@@ -83,8 +83,11 @@ func (m Model) autoscan(remeasure bool) tea.Cmd {
 	return func() tea.Msg { s, _, err := m.client.Autoscan(remeasure); return scanMsg{s, err} }
 }
 
-// findFiles discovers models in the shared store and beside the current selection.
+// findFiles discovers models in the shared store and beside the current selection; a demo lists none.
 func (m Model) findFiles() tea.Cmd {
+	if m.client.Demo != nil {
+		return nil
+	}
 	roots := []string{}
 	if m.f.Path != "" {
 		roots = append(roots, filepath.Dir(m.f.Path))
@@ -168,7 +171,7 @@ func (m Model) loadSaved() tea.Cmd {
 }
 
 func (m Model) readModel() (Model, tea.Cmd) {
-	m.f.Reading, m.f.Profile, m.f.ModelErr, m.f.Ceiling, m.f.CeilErr = true, nil, "", nil, ""
+	m.f.Reading, m.f.Profile, m.f.ModelErr, m.f.ModelNeeds, m.f.Ceiling, m.f.CeilErr = true, nil, "", nil, nil, ""
 	m.input.SetValue(m.f.Path)
 	return m, tea.Batch(m.inspect(), m.follow())
 }

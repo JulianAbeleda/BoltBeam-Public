@@ -4,6 +4,7 @@ import json
 import pathlib
 
 from boltbeam.cli._common import _write, _fail, _load_json, _profile, _add_common
+from boltbeam.roofline.limit import resolve_peak_flops
 
 def _register_roofline(sub) -> None:
   p = sub.add_parser("roofline", help="ingest a per-kernel roofline trace -> whole-model %%-of-HBM-peak + attribute the gap (gemv_codegen_capped/elementwise_dilution/latency_bound) with reclaimable us + fix")
@@ -134,61 +135,6 @@ def _register_roofline_theoretical(sub) -> None:
                  help="optional memory_hierarchy_profile from ingest-mem-sweep; replaces modeled tier bandwidths")
   p.set_defaults(fn=cmd_roofline_theoretical)
 
-
-
-def peak_flops_fact(target, dtype:str) -> tuple[float | None, str | None]:
-  """The registry's compute figure in TFLOP/s and the fact_status key that says where it came from.
-
-  The one place the precedence lives: the matrix unit's measured rate for the dtype, then the ALU rate for the dtype,
-  then fp16, then the largest. A screen reads the key to say where the ceiling's compute came from.
-  """
-  measured = target.matrix_tflops_for(dtype)
-  if measured:
-    return measured, "matrix_tflops"
-  peaks = target.peak_tflops or {}
-  for key in (dtype, "fp16"):
-    if peaks.get(key):
-      return float(peaks[key]), key
-  if peaks:
-    key = max(peaks, key=lambda k: peaks[k])
-    return float(peaks[key]), key
-  return None, None
-
-
-def peak_flops_status(target, dtype:str) -> str:
-  """fact_status of the compute figure peak_flops_fact picks: the row's own word for it, or unknown."""
-  _, key = peak_flops_fact(target, dtype)
-  status = ((target.capabilities or {}).get("fact_status") or {})
-  if key is None: return "unknown"
-  if key == "matrix_tflops": return status.get("matrix_tflops", "unknown")
-  # rows name an ALU rate either by dtype (fp16_tflops) or as one peak_tflops entry
-  return status.get(f"{key}_tflops") or status.get("peak_tflops") or "unknown"
-
-
-def resolve_peak_flops(target, dtype:str, override_tflops:float | None) -> float:
-  """Compute ceiling in FLOP/s, or a stated refusal.
-
-  A target whose registry row carries no `peak_tflops` has no compute ceiling to place a
-  model against. Descriptor-only rows are exactly that case, and the registry already says
-  so via `backend_status`. Reporting the absence beats both crashing on an empty `max()`
-  and inventing a vendor figure — "a capability a backend lacks is stated explicitly,
-  never faked".
-
-  Precedence: what the caller measured, then what the row measured on its matrix unit, then the
-  row's ALU rates. A measured figure outranks a sheet figure for the same silicon.
-  """
-  if override_tflops is not None:
-    if override_tflops <= 0: raise SystemExit("--peak-tflops must be positive")
-    return override_tflops * 1e12
-  value, _ = peak_flops_fact(target, dtype)
-  if value:
-    return value * 1e12
-  raise SystemExit(
-    f"target {target.target_id!r} carries no peak_tflops, so there is no compute ceiling to "
-    f"place this model against (backend_status={target.backend_status!r}).\n"
-    f"On the machine with this GPU, `python -m boltbeam.workflow.screen autoscan` measures its bandwidth and compute "
-    f"peak once and saves a chip profile. Or supply a measured ceiling with --peak-tflops <TFLOP/s>, or add one to "
-    f"boltbeam/data/targets.json once it has been measured on the hardware.")
 
 
 def cmd_roofline_theoretical(args) -> int:

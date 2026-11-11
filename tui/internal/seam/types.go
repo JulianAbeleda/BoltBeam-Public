@@ -374,6 +374,39 @@ type Providers struct {
 	Note      *string       `json:"note"` // the default choice when the model fits one GPU (layout.recommend)
 	// RepeatRuns is the n Setup's Repeats offers (repeat_bands.PIN_RUNS); 0 from an older Python: no Repeats line.
 	RepeatRuns int `json:"repeat_runs"`
+	// Families are the engines as the Engine picker shows them: one per family, its root and forks
+	// (collectors/engine_families.py); nil from an older Python, which lists Providers one per row.
+	Families []Family `json:"families"`
+}
+
+// Family is a root engine and its forks, in the table's order (data/engine_families.json).
+type Family struct {
+	Family string `json:"family"`
+	Label  string `json:"label"`
+	Forks  []Fork `json:"forks"`
+}
+
+// ForkNeed is the fork a model needs: the one that reads its weight format when no root does.
+type ForkNeed struct {
+	Family      string `json:"engine_family"`
+	FamilyLabel string `json:"family_label"`
+	Fork        string `json:"fork"`
+	Label       string `json:"label"`
+}
+
+// Fork is one build of a family. State is available (it runs here), found (here, BoltBeam cannot run it yet),
+// not_here (Fix says how to get it) or not_compatible. Provider is the engine a pick of it runs; nil for a fork
+// BoltBeam has no adapter for.
+type Fork struct {
+	Fork     string  `json:"fork"`
+	Label    string  `json:"label"`
+	Repo     string  `json:"repo"`
+	Provider *string `json:"provider"`
+	Runs     bool    `json:"runs"`
+	State    string  `json:"state"`
+	Path     *string `json:"path"`
+	Reason   *string `json:"reason"`
+	Fix      *string `json:"fix"`
 }
 
 // OtherLoss is another provider's per-role table for the same run, shown beside the chosen one, labelled.
@@ -1269,4 +1302,75 @@ type MtpK struct {
 	Speedup      float64  `json:"speedup"`
 	AcceptLength *float64 `json:"accept_length"`
 	AcceptRate   *float64 `json:"accept_rate"`
+}
+
+// Doctor is `boltbeam doctor --json` (cli/doctor.py): what this machine has for BoltBeam, one row per check.
+type Doctor struct {
+	Rows  []DoctorRow `json:"rows"`
+	Gaps  int         `json:"gaps"` // the rows that say not found; n/a is no gap
+	Ready bool        `json:"ready"`
+}
+
+// DoctorRow is one check: Found is true (found), false (not found) or nil (n/a: it never runs on this GPU type); Fix
+// is its one command or env var, for a gap. Group is what the check is about (gpu, engines, tools, boltbeam); Blocks
+// says a gap stops every run here, where any other gap costs one engine or one per-role split.
+type DoctorRow struct {
+	Item   string  `json:"item"`
+	Found  *bool   `json:"found"`
+	Detail string  `json:"detail"`
+	Fix    *string `json:"fix"`
+	Group  string  `json:"group"`
+	Blocks bool    `json:"blocks"`
+	// ForksMissing are an engine family's forks not on this machine: never a gap, said in one dimmed line
+	ForksMissing []string `json:"forks_missing"`
+}
+
+// Status is the row's word, as `boltbeam doctor` prints it (doctor.WORD).
+func (r DoctorRow) Status() string {
+	switch {
+	case r.Found == nil:
+		return "n/a"
+	case *r.Found:
+		return "found"
+	}
+	return "not found"
+}
+
+// RemoteRuns is `boltbeam fetch DEST --json`: the remote's runs root and its runs; with run ids or --all, what each
+// fetch did. Lines are the same answer in the CLI's words (cli/fetch.words).
+type RemoteRuns struct {
+	Kind       string         `json:"kind"`
+	Error      string         `json:"error"` // kind "error": why nothing was listed or fetched
+	Dest       string         `json:"dest"`
+	RemoteRoot string         `json:"remote_root"`
+	Tried      []string       `json:"tried"`
+	Saved      string         `json:"saved"`
+	Runs       []RemoteRun    `json:"runs"`
+	Fetched    []FetchOutcome `json:"fetched"`
+	Lines      []string       `json:"lines"`
+}
+
+// RemoteRun is one run the remote holds; State is new (not here), here (the same files here) or conflict (a
+// different run here under the id).
+type RemoteRun struct {
+	ID              string  `json:"id"`
+	Where           string  `json:"where"`
+	ModelID         *string `json:"model_id"`
+	TargetID        *string `json:"target_id"`
+	GPU             *string `json:"gpu"`
+	Date            string  `json:"date"`
+	Bytes           int64   `json:"bytes"`
+	LeftBehindBytes int64   `json:"left_behind_bytes"`
+	State           string  `json:"state"`
+}
+
+// FetchOutcome is one run's fetch: fetched (every file checked by sha256, now in Dir), skipped (already here) or
+// refused (Why).
+type FetchOutcome struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+	Dir    string `json:"dir"`
+	Why    string `json:"why"`
+	Files  int    `json:"files"`
+	Bytes  int64  `json:"bytes"`
 }

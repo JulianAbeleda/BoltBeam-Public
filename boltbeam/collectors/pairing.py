@@ -43,7 +43,7 @@ from boltbeam.collectors import llama_mmq
 from boltbeam.collectors.instruction_path import template
 from boltbeam.core.policy import value
 from boltbeam.profile.gguf import GGML_TYPE_NAMES
-from boltbeam.vocab import FFN_BRANCH, LAYER_CLASSES, OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE
+from boltbeam.vocab import FFN_BRANCH, LAYER_CLASSES, OUTPUT_ORDER, ROLE_GROUP_OF, STAGE, STAGE_SIDE, STAGES
 from boltbeam.collectors.kernel_kind import UNATTRIBUTED, kind_of
 
 # the pairing's limits are stated choices in data/policy.json (core.policy.value), read once here
@@ -77,7 +77,7 @@ SEQUENCE_RULE = ("; the layers run in the profile's recorded sequence: a layer w
                  "runs in the gap after the block layer before it, as a kind of that layer's own (recurrent/moe), its rows "
                  "after that layer's")  # added to RULE when the walk followed a sequence (pair)
 PRUNED = "pruned"  # the side and kind of a pruned last layer's launches (`prune`)
-_RANK = {s: i for i, s in enumerate(("in", "gate", "out", "ffn_in", "ffn_out", "head"))}
+_RANK = {s: i for i, s in enumerate(STAGES)}
 
 
 def projection_candidate(name:str) -> bool:

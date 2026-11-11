@@ -1,0 +1,1885 @@
+{
+  "artifacts": [
+    "run_manifest.json",
+    "model_profile.json",
+    "weight_inventory.json",
+    "workload_profile.json",
+    "hardware_profile.json",
+    "runtime_profile.json",
+    "provider_capabilities.json",
+    "scan_evidence.json",
+    "search_space.json",
+    "route_policy.json",
+    "fixture_manifest.json",
+    "measurement_plan.json",
+    "analysis_report.json",
+    "probe_request.json",
+    "trace_request.json",
+    "measure_status.json",
+    "primitive_profile.json",
+    "timing_trace.json",
+    "timing_profile.json",
+    "output_manifest.json",
+    "summary.md",
+    "rollback.md",
+    "provider_plan.json",
+    "report.html"
+  ],
+  "blocked": [],
+  "dir": "",
+  "fetched": null,
+  "id": "qwen3-14b-q4-k-m-nvidia_geforce_rtx_4090_24g-001",
+  "kind": "run",
+  "latest_stage": "output",
+  "measure": {
+    "batches": [
+      1
+    ],
+    "capture": {
+      "cross_check": "boltbeam-kernel-timer-isolated",
+      "measurement": {
+        "choice": "in_model",
+        "chosen": "in_model",
+        "fallback": null,
+        "label": "in-model",
+        "reason": null
+      },
+      "method": "nsys",
+      "reason": null
+    },
+    "collector": "llama-bench-decode",
+    "command": null,
+    "details": null,
+    "gpus": 1,
+    "layout": "one",
+    "probe": "measured",
+    "probe_reason": null,
+    "provider": "llama.cpp",
+    "reason": null,
+    "schema": "boltbeam.measure_status.v1",
+    "status": "measured",
+    "weight_format": "GGUF Q4_K+Q6_K"
+  },
+  "measured": {
+    "probe": true,
+    "timing": true
+  },
+  "model": {
+    "architecture": "qwen3",
+    "architecture_class": "dense_decoder",
+    "ffn_size": 17408,
+    "hidden_size": 5120,
+    "layer_count": 40,
+    "quant_types": [
+      "F32",
+      "Q4_K",
+      "Q6_K"
+    ],
+    "role_count": 7,
+    "vocab_size": 151936
+  },
+  "model_format": "gguf",
+  "model_id": "Qwen3-14B-Q4_K_M",
+  "model_path": "/models/Qwen3-14B-Q4_K_M.gguf",
+  "next_step": "The building-block probe ran: 7 roles timed with BoltBeam's own kernel (reference). Not reported by this GPU: the CUDA bridge does not read cuFuncGetAttribute(LOCAL_SIZE_BYTES); the CUDA bridge does not read cuFuncGetAttribute(NUM_REGS); the CUDA bridge reads no per-dispatch hardware counters (that is Nsight Compute's); the compiled load width is not visible; the source loads are in kernel.source; the cubin's SASS is not disassembled by BoltBeam.",
+  "report": "report.html",
+  "results": {
+    "batches": [
+      {
+        "batch": 1,
+        "context": 128,
+        "limit": {
+          "batch": 1,
+          "bound": "memory",
+          "compute_ms": 0.16052748043602985,
+          "context": 128.0,
+          "memory_ms": 8.92498148856549,
+          "step_ms": 8.92498148856549,
+          "tok_s_stream": 112.04505032096485,
+          "tok_s_total": 112.04505032096485
+        },
+        "pct_of_limit": 84.22420083572443,
+        "source": "llama-bench",
+        "step_ms": 10.596694774193548,
+        "tok_s_stream": 94.36904820881793,
+        "tok_s_total": 94.36904820881793
+      },
+      {
+        "batch": 1,
+        "context": 512,
+        "limit": {
+          "batch": 1,
+          "bound": "memory",
+          "compute_ms": 0.16052748043602985,
+          "context": 512.0,
+          "memory_ms": 8.99038123908524,
+          "step_ms": 8.99038123908524,
+          "tok_s_stream": 111.22998829599675,
+          "tok_s_total": 111.22998829599675
+        },
+        "pct_of_limit": 84.87126453432009,
+        "source": "llama-bench",
+        "step_ms": 10.592962516129031,
+        "tok_s_stream": 94.40229760818869,
+        "tok_s_total": 94.40229760818869
+      }
+    ],
+    "blocked": [],
+    "ceiling": {
+      "bandwidth_source": "measured on this GPU (native CUDA read probe, 2026-11-09)",
+      "bytes_moved": 8651695872.0,
+      "context": 530,
+      "floor_ms": 8.993446852390852,
+      "peak_bandwidth_gbs": 962.0,
+      "status": "modeled",
+      "tok_s": 111.19207311867932,
+      "uncertainty": 0.0009
+    },
+    "engine": {
+      "build": {
+        "build": "097cf33d9",
+        "build_number": 11571,
+        "builds_from_pin": 0,
+        "installed": "2026-11-09",
+        "latest": {
+          "checked_at": "2026-11-09T19:32:37Z",
+          "is_latest": null,
+          "latest": null,
+          "words": "build 097cf33d9; latest not checked (the last check failed: HTTPError: HTTP Error 403: rate limit exceeded)"
+        },
+        "matches": true,
+        "pin": {
+          "audit": "docs/engine-upgrade-llama-b11571-rtx5090-20261012.md",
+          "history": [
+            {
+              "date": "2026-10-11",
+              "doc": "docs/prefill-audit-27b-rtx5090-20261011.md",
+              "sha": "ac4cddeb0dbd778f650bf568f6f08344a06abe3a",
+              "tag": "b9592"
+            },
+            {
+              "date": "2026-10-12",
+              "doc": "docs/engine-upgrade-llama-b11571-rtx5090-20261012.md",
+              "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
+              "tag": "b11571"
+            },
+            {
+              "date": "2026-10-12",
+              "doc": "docs/accuracy-battery-rtx5090-20261012.md",
+              "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
+              "tag": "b11571"
+            },
+            {
+              "date": "2026-10-12",
+              "doc": "docs/accuracy-fixes-20261012.md",
+              "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
+              "tag": "b11571"
+            }
+          ],
+          "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
+          "tag": "b11571"
+        },
+        "provider": "llama.cpp",
+        "words": "llama.cpp build 11571 (097cf33d9), installed 2026-11-09 · the pin b11571 (097cf33d9), set 2026-10-12"
+      },
+      "build_lines": [
+        "Upstream: build 097cf33d9; latest not checked (the last check failed: HTTPError: HTTP Error 403: rate limit exceeded)."
+      ],
+      "comparison": null,
+      "provider": "llama.cpp",
+      "settings_words": [],
+      "speculation_words": [],
+      "toolchain": {
+        "recorded_at": "2026-11-09T19:39:32.100454+00:00",
+        "runtime": {
+          "cuda": "unknown"
+        },
+        "versions": {
+          "cuda": "13.0",
+          "driver": "595.58.03",
+          "nsight_compute": "2025.3.1",
+          "nsight_systems": "2026.5.2",
+          "torch": "unknown"
+        }
+      },
+      "weight_format": "GGUF Q4_K+Q6_K"
+    },
+    "id": "qwen3-14b-q4-k-m-nvidia_geforce_rtx_4090_24g-001",
+    "kind": "results",
+    "loss": {
+      "ambiguous": null,
+      "attribution": null,
+      "band": {
+        "calibration": null,
+        "width_ms": null,
+        "words": "not checked: no repeat band for this setup"
+      },
+      "capture": {
+        "method": "nsys",
+        "reason": null
+      },
+      "ceiling_refused": [],
+      "check_status": "not checked",
+      "cross_check": {
+        "columns_words": "µs/call is the measured time, floor included; less floor, GB/s and % of peak are less the 9.2 µs dispatch floor per launch. Empty-launch subtraction is an estimate, not a measured additive correction",
+        "method": "boltbeam-kernel-timer-isolated",
+        "not_measured": [],
+        "reason": null,
+        "rows": [
+          {
+            "evidence": [
+              {
+                "file": "isolated_timing_trace.json",
+                "path": "rows[1]"
+              }
+            ],
+            "gbs": 962.0,
+            "pct_peak": 100.0,
+            "quant": "Q4_K",
+            "role": "attn_kv",
+            "us_per_call": 11.264000087976456,
+            "us_per_call_less_floor": 3.0656133056133057
+          },
+          {
+            "evidence": [
+              {
+                "file": "isolated_timing_trace.json",
+                "path": "rows[2]"
+              }
+            ],
+            "gbs": 962.0,
+            "pct_peak": 100.0,
+            "quant": "Q6_K",
+            "role": "attn_kv",
+            "us_per_call": 12.28800043463707,
+            "us_per_call_less_floor": 4.470686070686071
+          },
+          {
+            "evidence": [
+              {
+                "file": "isolated_timing_trace.json",
+                "path": "rows[3]"
+              }
+            ],
+            "gbs": 962.0,
+            "pct_peak": 100.0,
+            "quant": "Q4_K",
+            "role": "attn_qo",
+            "us_per_call": 23.552000522613525,
+            "us_per_call_less_floor": 15.328066528066529
+          },
+          {
+            "evidence": [
+              {
+                "file": "isolated_timing_trace.json",
+                "path": "rows[4]"
+              }
+            ],
+            "gbs": 962.0,
+            "pct_peak": 100.0,
+            "quant": "Q4_K",
+            "role": "ffn_down",
+            "us_per_call": 60.416001826524734,
+            "us_per_call_less_floor": 52.115426195426195
+          },
+          {
+            "evidence": [
+              {
+                "file": "isolated_timing_trace.json",
+                "path": "rows[5]"
+              }
+            ],
+            "gbs": 961.9999999999999,
+            "pct_peak": 99.99999999999999,
+            "quant": "Q6_K",
+            "role": "ffn_down",
+            "us_per_call": 84.04799923300743,
+            "us_per_call_less_floor": 76.0016632016632
+          },
+          {
+            "evidence": [
+              {
+                "file": "isolated_timing_trace.json",
+                "path": "rows[6]"
+              }
+            ],
+            "gbs": 962.0,
+            "pct_peak": 100.0,
+            "quant": "Q4_K",
+            "role": "ffn_gate_up",
+            "us_per_call": 60.36800146102905,
+            "us_per_call_less_floor": 52.115426195426195
+          },
+          {
+            "evidence": [
+              {
+                "file": "isolated_timing_trace.json",
+                "path": "rows[7]"
+              }
+            ],
+            "gbs": 955.7898377160476,
+            "pct_peak": 99.35445298503613,
+            "quant": "Q6_K",
+            "role": "lm_head",
+            "us_per_call": 676.8640279769897,
+            "us_per_call_less_floor": 667.648027651012
+          }
+        ],
+        "words": "isolated, timed by BoltBeam's kernel timer"
+      },
+      "estimate": null,
+      "evidence": {
+        "common": [
+          {
+            "file": "machine_facts.json",
+            "path": "gpus[0]"
+          },
+          {
+            "file": "measure_status.json"
+          }
+        ],
+        "other_kernels": [
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[1]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[2]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[3]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[4]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[5]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[6]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[7]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[8]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[9]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[10]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[11]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[12]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[13]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[14]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[15]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[16]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[17]"
+          },
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[18]"
+          }
+        ],
+        "whole_step": [
+          {
+            "file": "llama_timing_trace.json",
+            "path": "rows[0]"
+          }
+        ]
+      },
+      "findings": [
+        {
+          "do": "Launch fewer kernels: run the token as one graph or fuse kernels.",
+          "evidence": [
+            {
+              "file": "llama_timing_trace.json",
+              "path": "rows[0]"
+            }
+          ],
+          "ms": 1.3489231290338641,
+          "rule": "launches per token above 500",
+          "share": 0.11417942427805214,
+          "verdict": "launch_heavy",
+          "what": "Launch heavy: 766 kernel launches per token"
+        }
+      ],
+      "joint_role_groups": [],
+      "latency": {
+        "evidence": [
+          {
+            "file": "probe_evidence.json",
+            "path": "dispatch_floor_us"
+          }
+        ],
+        "source": "the dispatch floor the probe measured on this GPU",
+        "us": 8.208000101149082
+      },
+      "layout": {
+        "formula": "weight bytes / the GPU's read bandwidth",
+        "gpus": 1,
+        "inputs": [
+          {
+            "source": "measured on this GPU with BoltBeam's native CUDA read probe, 2026-11-09 (chip profile nvidia_geforce_rtx_4090_24g)",
+            "unit": "GB/s",
+            "value": 962.0,
+            "what": "GPU 0 NVIDIA GeForce RTX 4090 read bandwidth"
+          },
+          {
+            "source": "the model's roofline (decode, context 1)",
+            "unit": "bytes",
+            "value": 8564860672.0,
+            "what": "weight bytes per token"
+          }
+        ],
+        "label": "one GPU",
+        "layout": "one",
+        "ms": 8.903181571725572,
+        "reason": null,
+        "tok_s": 112.31939862664002
+      },
+      "limit_context": 530,
+      "limit_ms": 8.993446852390852,
+      "limit_tok_s": 111.19207311867932,
+      "machine": {
+        "gpus": [
+          {
+            "index": 0,
+            "name": "NVIDIA GeForce RTX 4090",
+            "read_gbs": 962.0,
+            "read_source": "measured on this GPU with BoltBeam's native CUDA read probe, 2026-11-09 (chip profile nvidia_geforce_rtx_4090_24g)",
+            "target_id": "nvidia_geforce_rtx_4090_24g"
+          }
+        ],
+        "measured_at": "2026-11-09",
+        "pairs": [],
+        "support": null
+      },
+      "missing": null,
+      "not_attributed_ms": 1.0323954354824068,
+      "not_timed": [],
+      "others": [],
+      "provider": "llama.cpp",
+      "provider_missing": null,
+      "refused": null,
+      "role_rule": "At the limit: 85% of peak or more. Too small to fill memory: a call moves under 79.0 MB, which is 10 x the 7.90 MB that must be in flight (962 GB/s x 8.2 µs latency, the dispatch floor the probe measured on this GPU, Little's law). Compute bound: the roofline regime is compute. Slow kernel: below the limit, the call big enough, not compute bound, the chip not throttled. Anything else: unexplained.",
+      "role_source": "in_model",
+      "role_source_words": "in-model (nsys)",
+      "roles": [
+        {
+          "actual_ms": 1.3671536451613937,
+          "band_ms": null,
+          "best_found": null,
+          "calls_per_token": 80.0,
+          "check_status": "not checked",
+          "evidence": [
+            {
+              "file": "llama_timing_trace.json",
+              "path": "rows[1]"
+            },
+            {
+              "file": "llama_timing_trace.json",
+              "path": "rows[2]"
+            },
+            {
+              "file": "model_profile.json",
+              "path": "roles[2]"
+            },
+            {
+              "file": "machine_facts.json",
+              "path": "gpus[0]"
+            },
+            {
+              "file": "measure_status.json"
+            }
+          ],
+          "floor_uncertainty": 0.0009,
+          "gbs": 864.0480198994371,
+          "ideal_ms": 1.2279484407484407,
+          "label": null,
+          "less_floor_ms": null,
+          "lost_ms": 0.13920520441295303,
+          "mb_per_call": 14.76608,
+          "noisy": false,
+          "pct_peak": 89.8,
+          "quant": "Q4_K",
+          "reason": "at the limit",
+          "reason_word": "at the limit",
+          "role": "attn_qo",
+          "shape": [
+            5120,
+            5120
+          ],
+          "share": 0.26286719414089854,
+          "spread_pct": null,
+          "us_per_call": 17.08942056451742,
+          "us_per_call_less_floor": null,
+          "verdict": "not_searched",
+          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "within_noise": false
+        },
+        {
+          "actual_ms": 4.31097754838723,
+          "band_ms": null,
+          "best_found": null,
+          "calls_per_token": 40.0,
+          "check_status": "not checked",
+          "evidence": [
+            {
+              "file": "llama_timing_trace.json",
+              "path": "rows[3]"
+            },
+            {
+              "file": "model_profile.json",
+              "path": "roles[5]"
+            },
+            {
+              "file": "machine_facts.json",
+              "path": "gpus[0]"
+            },
+            {
+              "file": "measure_status.json"
+            }
+          ],
+          "floor_uncertainty": 0.0009,
+          "gbs": 931.2058889060605,
+          "ideal_ms": 4.172980956340957,
+          "label": null,
+          "less_floor_ms": null,
+          "lost_ms": 0.13799659204627357,
+          "mb_per_call": 100.36019200000001,
+          "noisy": false,
+          "pct_peak": 96.8,
+          "quant": "Q4_K",
+          "reason": "at the limit",
+          "reason_word": "at the limit",
+          "role": "ffn_gate_up",
+          "shape": [
+            17408,
+            5120
+          ],
+          "share": 0.26058491925776595,
+          "spread_pct": null,
+          "us_per_call": 107.77443870968075,
+          "us_per_call_less_floor": null,
+          "verdict": "not_searched",
+          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "within_noise": false
+        },
+        {
+          "actual_ms": 0.28521874193561775,
+          "band_ms": null,
+          "best_found": null,
+          "calls_per_token": 60.0,
+          "check_status": "not checked",
+          "evidence": [
+            {
+              "file": "llama_timing_trace.json",
+              "path": "rows[6]"
+            },
+            {
+              "file": "model_profile.json",
+              "path": "roles[0]"
+            },
+            {
+              "file": "machine_facts.json",
+              "path": "gpus[0]"
+            },
+            {
+              "file": "measure_status.json"
+            }
+          ],
+          "floor_uncertainty": 0.0009,
+          "gbs": 622.9761718818204,
+          "ideal_ms": 0.18470320166320167,
+          "label": null,
+          "less_floor_ms": null,
+          "lost_ms": 0.10051554027241608,
+          "mb_per_call": 2.961408,
+          "noisy": false,
+          "pct_peak": 64.8,
+          "quant": "Q4_K",
+          "reason": "too small to fill memory",
+          "reason_word": "too small to fill memory",
+          "role": "attn_kv",
+          "shape": [
+            1024,
+            5120
+          ],
+          "share": 0.18980783190106013,
+          "spread_pct": null,
+          "us_per_call": 4.753645698926962,
+          "us_per_call_less_floor": null,
+          "verdict": "not_searched",
+          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "within_noise": false
+        },
+        {
+          "actual_ms": 1.5861310645158364,
+          "band_ms": null,
+          "best_found": null,
+          "calls_per_token": 20.0,
+          "check_status": "not checked",
+          "evidence": [
+            {
+              "file": "llama_timing_trace.json",
+              "path": "rows[4]"
+            },
+            {
+              "file": "model_profile.json",
+              "path": "roles[4]"
+            },
+            {
+              "file": "machine_facts.json",
+              "path": "gpus[0]"
+            },
+            {
+              "file": "measure_status.json"
+            }
+          ],
+          "floor_uncertainty": 0.0009,
+          "gbs": 922.4793289365597,
+          "ideal_ms": 1.520969979209979,
+          "label": null,
+          "less_floor_ms": null,
+          "lost_ms": 0.06516108530585751,
+          "mb_per_call": 73.15865599999998,
+          "noisy": false,
+          "pct_peak": 95.9,
+          "quant": "Q6_K",
+          "reason": "at the limit",
+          "reason_word": "at the limit",
+          "role": "ffn_down",
+          "shape": [
+            5120,
+            17408
+          ],
+          "share": 0.12304648905736368,
+          "spread_pct": null,
+          "us_per_call": 79.30655322579182,
+          "us_per_call_less_floor": null,
+          "verdict": "not_searched",
+          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "within_noise": false
+        },
+        {
+          "actual_ms": 1.087785306451562,
+          "band_ms": null,
+          "best_found": null,
+          "calls_per_token": 20.0,
+          "check_status": "not checked",
+          "evidence": [
+            {
+              "file": "llama_timing_trace.json",
+              "path": "rows[5]"
+            },
+            {
+              "file": "model_profile.json",
+              "path": "roles[3]"
+            },
+            {
+              "file": "machine_facts.json",
+              "path": "gpus[0]"
+            },
+            {
+              "file": "measure_status.json"
+            }
+          ],
+          "floor_uncertainty": 0.0009,
+          "gbs": 922.6102927183542,
+          "ideal_ms": 1.0432452390852391,
+          "label": null,
+          "less_floor_ms": null,
+          "lost_ms": 0.044540067366322766,
+          "mb_per_call": 50.180096000000006,
+          "noisy": false,
+          "pct_peak": 95.9,
+          "quant": "Q4_K",
+          "reason": "at the limit",
+          "reason_word": "at the limit",
+          "role": "ffn_down",
+          "shape": [
+            5120,
+            17408
+          ],
+          "share": 0.08410693109360808,
+          "spread_pct": null,
+          "us_per_call": 54.38926532257809,
+          "us_per_call_less_floor": null,
+          "verdict": "not_searched",
+          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "within_noise": false
+        },
+        {
+          "actual_ms": 0.12452241935467652,
+          "band_ms": null,
+          "best_found": null,
+          "calls_per_token": 20.0,
+          "check_status": "not checked",
+          "evidence": [
+            {
+              "file": "llama_timing_trace.json",
+              "path": "rows[7]"
+            },
+            {
+              "file": "model_profile.json",
+              "path": "roles[1]"
+            },
+            {
+              "file": "machine_facts.json",
+              "path": "gpus[0]"
+            },
+            {
+              "file": "measure_status.json"
+            }
+          ],
+          "floor_uncertainty": 0.0009,
+          "gbs": 692.7407967741224,
+          "ideal_ms": 0.0896691891891892,
+          "label": null,
+          "less_floor_ms": null,
+          "lost_ms": 0.03485323016548732,
+          "mb_per_call": 4.313088,
+          "noisy": false,
+          "pct_peak": 72.0,
+          "quant": "Q6_K",
+          "reason": "too small to fill memory",
+          "reason_word": "too small to fill memory",
+          "role": "attn_kv",
+          "shape": [
+            1024,
+            5120
+          ],
+          "share": 0.06581485842418744,
+          "spread_pct": null,
+          "us_per_call": 6.226120967733825,
+          "us_per_call_less_floor": null,
+          "verdict": "not_searched",
+          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "within_noise": false
+        },
+        {
+          "actual_ms": 0.6709576129032179,
+          "band_ms": null,
+          "best_found": null,
+          "calls_per_token": 1.0,
+          "check_status": "not checked",
+          "evidence": [
+            {
+              "file": "llama_timing_trace.json",
+              "path": "rows[8]"
+            },
+            {
+              "file": "model_profile.json",
+              "path": "roles[6]"
+            },
+            {
+              "file": "machine_facts.json",
+              "path": "gpus[0]"
+            },
+            {
+              "file": "measure_status.json"
+            }
+          ],
+          "floor_uncertainty": 0.0009,
+          "gbs": 951.5434354153343,
+          "ideal_ms": 0.6636645654885654,
+          "label": null,
+          "less_floor_ms": null,
+          "lost_ms": 0.0072930474146524205,
+          "mb_per_call": 638.445312,
+          "noisy": false,
+          "pct_peak": 98.9,
+          "quant": "Q6_K",
+          "reason": "at the limit",
+          "reason_word": "at the limit",
+          "role": "lm_head",
+          "shape": [
+            151936,
+            5120
+          ],
+          "share": 0.013771776125116124,
+          "spread_pct": null,
+          "us_per_call": 670.9576129032179,
+          "us_per_call_less_floor": null,
+          "verdict": "not_searched",
+          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "within_noise": false
+        }
+      ],
+      "roles_provider": "llama.cpp",
+      "runtimes": [
+        {
+          "lost_ms": 1.5995156637381793,
+          "ms": 10.592962516129031,
+          "note": "whole step, measured untraced, at context 530",
+          "per_role": false,
+          "provider": "llama.cpp",
+          "tok_s": 94.40229760818869
+        },
+        {
+          "capture": "nsys",
+          "lost_ms": 1.47169492180109,
+          "ms": 10.465141774191942,
+          "note": "GPU kernel time per token, captured with nsys",
+          "per_role": true,
+          "provider": "llama.cpp",
+          "tok_s": 95.5553227636244
+        }
+      ],
+      "search": {
+        "next": null,
+        "reason": "skipped with --no-search",
+        "seconds": null,
+        "status": "skipped"
+      },
+      "source": "measured in llama.cpp, captured with nsys",
+      "status": "modeled",
+      "step": {
+        "also": [
+          {
+            "context": 146,
+            "ms": 10.596694774193548,
+            "tok_s": 94.36904820881793
+          }
+        ],
+        "context": 530,
+        "evidence": [
+          {
+            "file": "timing_trace.json",
+            "path": "rows[1]"
+          }
+        ],
+        "graph_error": null,
+        "graph_failed": false,
+        "ms": 10.592962516129031,
+        "requested_context": 512,
+        "rule": "nearest the context the per-role capture attended",
+        "source": "llama-bench",
+        "tok_s": 94.40229760818869
+      },
+      "tie_out": {
+        "band": "not checked: no repeat band for this setup",
+        "batch": 1,
+        "busy_ms": 10.465141774191942,
+        "check_status": "not checked",
+        "context": 530,
+        "end_to_end": {
+          "band_ms": null,
+          "band_pct": null,
+          "captured_ms": 11.814064903225805,
+          "confirms": false,
+          "diff_ms": 1.2211023870967743,
+          "diff_pct": 11.52748709567793,
+          "gap_growth_ms": 1.2211023870967743,
+          "gaps_ms": 1.3489231290338637,
+          "kernel_span_ms": null,
+          "reference": "untraced reference",
+          "status": "checked",
+          "untraced_ms": 10.592962516129031,
+          "words": "capture +11.53% over native, above the 5% capture-overhead ceiling (the captured engine timer for token took 11.8 ms against the 10.6 ms untraced reference, +11.5%; within repeat noise: no engine-elapsed repeat band); its gaps are 1.3 ms, 1.2 ms more than the untraced token leaves room for. The rows stand, but this capture does not qualify the token end to end"
+        },
+        "gaps_bound": {
+          "busy_ms": 10.465141774191942,
+          "captured_ms": 1.3489231290338637,
+          "ms": 0.12782074193708937,
+          "untraced_ms": 10.592962516129031
+        },
+        "isolated": false,
+        "kv_ms": 0.09026528066528067,
+        "kv_source": "KV cache read at context 530: 2.0 bytes per element, llama_timing_trace.json: resolved engine KV cache dtype f16",
+        "launch_cost": {
+          "launches_per_token": 766.0,
+          "short_share": 0.7898172323759791,
+          "short_us": 10.0,
+          "us_per_launch": 1.594128442685084,
+          "words": "the capture adds 1.2 ms a token over the engine's 766 launches a token, 1.6 us each, and 79% of those launches take under 10 us: a cost per launch weighs on an engine that splits its token into many short kernels."
+        },
+        "limit_ms": 8.993446852390852,
+        "limit_ms_ctx1": 8.903181571725572,
+        "lines": [
+          {
+            "how": "derived",
+            "label": "limit at context 530 (ideal)",
+            "ms": 8.993446852390852
+          },
+          {
+            "how": "measured",
+            "label": "weight kernels above their ideal",
+            "ms": 0.5295647669839627
+          },
+          {
+            "busy_ms": 1.0323954354824068,
+            "how": "measured",
+            "ideal_ms": 0.09026528066527995,
+            "label": "other kernels above their ideal",
+            "ms": 0.9421301548171268,
+            "parts": [
+              {
+                "kind": "norm",
+                "ms": 0.42517679032381495
+              },
+              {
+                "kind": "attention",
+                "ms": 0.2950636451618207
+              },
+              {
+                "kind": "quantize",
+                "ms": 0.26207774193219807
+              },
+              {
+                "kind": "KV cache write",
+                "ms": 0.04638690322585171
+              },
+              {
+                "kind": "copy",
+                "ms": 0.0025383548387194863
+              },
+              {
+                "kind": "elementwise",
+                "ms": 0.0011520000000018627
+              }
+            ]
+          },
+          {
+            "how": "difference",
+            "label": "gaps between kernels",
+            "ms": 1.3489231290338641
+          }
+        ],
+        "missing": null,
+        "provider": "llama.cpp",
+        "refused": null,
+        "replication": {
+          "captures": 3,
+          "qualifies": true,
+          "rows": 13,
+          "tolerance_pct": 1.0,
+          "words": "Kernel rows qualified by replication: 3 captures agree, worst row 0.2% apart (norm) over 13 rows (tolerance 1% for a row of 3% of kernel time or more, 2.5% for any).",
+          "worst_pct": 0.21714947926104283,
+          "worst_row": "norm"
+        },
+        "show_both": true,
+        "timing_match": {
+          "captured_window": {
+            "context_end": 545,
+            "context_start": 515,
+            "discarded_setup_tokens": 2,
+            "estimand": "steady_decode_after_initial_setup",
+            "independent_pairs": 3,
+            "long_tokens": 33,
+            "method": "long_minus_short",
+            "process": "fresh_per_sample",
+            "repetitions": 1,
+            "selection": "median_step_ms_then_index",
+            "short_tokens": 2,
+            "warmup": false
+          },
+          "matches": true,
+          "native_window": {
+            "context_end": 545,
+            "context_start": 515,
+            "discarded_setup_tokens": 2,
+            "estimand": "steady_decode_after_initial_setup",
+            "independent_pairs": 3,
+            "long_tokens": 33,
+            "method": "long_minus_short",
+            "process": "fresh_per_sample",
+            "repetitions": 1,
+            "selection": "median_step_ms_then_index",
+            "short_tokens": 2,
+            "warmup": false
+          },
+          "words": "same differential decode window and fresh-process lifecycle"
+        },
+        "token_ms": 11.814064903225805,
+        "token_source": "the captured long-minus-short elapsed estimate per token",
+        "untraced_context": 530,
+        "untraced_ms": 10.592962516129031
+      },
+      "unpaired_launches": [],
+      "unpaired_roles": [],
+      "where_token_goes": {
+        "base_ms": 10.592962516129031,
+        "baseline_cells": [
+          "measured throughput",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "94.4",
+          "94.4",
+          ""
+        ],
+        "best_ms": 8.993446852390852,
+        "columns": [
+          "row",
+          "ms now",
+          "ms at limit",
+          "ms at chip best",
+          "ms above limit",
+          "share",
+          "+ Tok/S if roofline",
+          "cumulative tok/s",
+          "% of peak"
+        ],
+        "estimate": false,
+        "limit_ms": 8.993446852390852,
+        "lost_ms": 1.5995156637381782,
+        "measured_tok_s": 94.40229760818869,
+        "no_limit": "no model",
+        "qualification": "Kernel rows qualified by replication: 3 captures agree, worst row 0.2% apart (norm) over 13 rows (tolerance 1% for a row of 3% of kernel time or more, 2.5% for any). Gaps shown as a bound: at most 0.13 ms (untraced token − kernels); the capture showed 1.35 ms, added by recording.",
+        "roofline_tok_s": 111.19207311867932,
+        "rows": [
+          {
+            "best_ms": 0.09026528066528067,
+            "cells": [
+              "0.30",
+              "0.09",
+              "0.09",
+              "0.20",
+              "13%",
+              "+2.2",
+              "96.6",
+              ""
+            ],
+            "cumulative_tok_s": 96.6,
+            "limit_ms": 0.09026528066528067,
+            "lost_ms": 0.20479836449654004,
+            "name": "attention",
+            "now_ms": 0.2950636451618207,
+            "pct_peak": null,
+            "section": "Model operations",
+            "share": 0.12803773613439468,
+            "tok_s_gain": 2.149724846567921,
+            "tok_s_if_fixed": 96.26339990428923,
+            "what": "kernels"
+          },
+          {
+            "best_ms": 1.2279484407484407,
+            "cells": [
+              "1.37",
+              "1.23",
+              "1.23",
+              "0.14",
+              "9%",
+              "+1.4",
+              "98.0",
+              "89.8%"
+            ],
+            "cumulative_tok_s": 98.0,
+            "limit_ms": 1.2279484407484407,
+            "lost_ms": 0.13920520441295303,
+            "name": "attn_qo Q4_K",
+            "now_ms": 1.3671536451613937,
+            "pct_peak": 89.8,
+            "section": "Model operations",
+            "share": 0.08702959750179681,
+            "tok_s_gain": 1.4612074048235246,
+            "tok_s_if_fixed": 95.6593854421364,
+            "what": "role"
+          },
+          {
+            "best_ms": 4.172980956340957,
+            "cells": [
+              "4.31",
+              "4.17",
+              "4.17",
+              "0.14",
+              "9%",
+              "+1.5",
+              "99.5",
+              "96.8%"
+            ],
+            "cumulative_tok_s": 99.5,
+            "limit_ms": 4.172980956340957,
+            "lost_ms": 0.13799659204627357,
+            "name": "ffn_gate_up Q4_K",
+            "now_ms": 4.31097754838723,
+            "pct_peak": 96.8,
+            "section": "Model operations",
+            "share": 0.08627398604135332,
+            "tok_s_gain": 1.4485208580295241,
+            "tok_s_if_fixed": 95.64832704968694,
+            "what": "role"
+          },
+          {
+            "best_ms": 0.18470320166320167,
+            "cells": [
+              "0.29",
+              "0.18",
+              "0.18",
+              "0.10",
+              "6%",
+              "+1.0",
+              "100.5",
+              "64.8%"
+            ],
+            "cumulative_tok_s": 100.5,
+            "limit_ms": 0.18470320166320167,
+            "lost_ms": 0.10051554027241608,
+            "name": "attn_kv Q4_K",
+            "now_ms": 0.28521874193561775,
+            "pct_peak": 64.8,
+            "section": "Model operations",
+            "share": 0.06284123535089638,
+            "tok_s_gain": 1.0550902343434578,
+            "tok_s_if_fixed": 95.30665270942282,
+            "what": "role"
+          },
+          {
+            "best_ms": 1.520969979209979,
+            "cells": [
+              "1.59",
+              "1.52",
+              "1.52",
+              "0.07",
+              "4%",
+              "+0.7",
+              "101.2",
+              "95.9%"
+            ],
+            "cumulative_tok_s": 101.2,
+            "limit_ms": 1.520969979209979,
+            "lost_ms": 0.06516108530585751,
+            "name": "ffn_down Q6_K",
+            "now_ms": 1.5861310645158364,
+            "pct_peak": 95.9,
+            "section": "Model operations",
+            "share": 0.04073801012587246,
+            "tok_s_gain": 0.6839820447574927,
+            "tok_s_if_fixed": 94.9865939788921,
+            "what": "role"
+          },
+          {
+            "best_ms": 1.0432452390852391,
+            "cells": [
+              "1.09",
+              "1.04",
+              "1.04",
+              "0.04",
+              "3%",
+              "+0.5",
+              "101.7",
+              "95.9%"
+            ],
+            "cumulative_tok_s": 101.7,
+            "limit_ms": 1.0432452390852391,
+            "lost_ms": 0.044540067366322766,
+            "name": "ffn_down Q4_K",
+            "now_ms": 1.087785306451562,
+            "pct_peak": 95.9,
+            "section": "Model operations",
+            "share": 0.02784597136249955,
+            "tok_s_gain": 0.46752760804791826,
+            "tok_s_if_fixed": 94.80090552472105,
+            "what": "role"
+          },
+          {
+            "best_ms": 0.0896691891891892,
+            "cells": [
+              "0.12",
+              "0.09",
+              "0.09",
+              "0.03",
+              "2%",
+              "+0.3",
+              "102.0",
+              "72.0%"
+            ],
+            "cumulative_tok_s": 102.0,
+            "limit_ms": 0.0896691891891892,
+            "lost_ms": 0.03485323016548732,
+            "name": "attn_kv Q6_K",
+            "now_ms": 0.12452241935467652,
+            "pct_peak": 72.0,
+            "section": "Model operations",
+            "share": 0.021789864866989122,
+            "tok_s_gain": 0.3658469395206741,
+            "tok_s_if_fixed": 94.71392774172624,
+            "what": "role"
+          },
+          {
+            "best_ms": 0.6636645654885654,
+            "cells": [
+              "0.67",
+              "0.66",
+              "0.66",
+              "0.01",
+              "0%",
+              "+0.1",
+              "102.1",
+              "98.9%"
+            ],
+            "cumulative_tok_s": 102.1,
+            "limit_ms": 0.6636645654885654,
+            "lost_ms": 0.0072930474146524205,
+            "name": "lm_head Q6_K",
+            "now_ms": 0.6709576129032179,
+            "pct_peak": 98.9,
+            "section": "Model operations",
+            "share": 0.004559534851698836,
+            "tok_s_gain": 0.07655356659228164,
+            "tok_s_if_fixed": 94.46733652089453,
+            "what": "role"
+          },
+          {
+            "best_ms": null,
+            "cells": [
+              "0.43",
+              "no model",
+              "no model",
+              "0.43",
+              "27%",
+              "+4.5",
+              "106.6",
+              ""
+            ],
+            "cumulative_tok_s": 106.6,
+            "limit_ms": null,
+            "lost_ms": 0.42517679032381495,
+            "name": "norm",
+            "now_ms": 0.42517679032381495,
+            "pct_peak": null,
+            "section": "Supporting kernels — no model",
+            "share": 0.2658159591448748,
+            "tok_s_gain": 4.462990281148197,
+            "tok_s_if_fixed": 98.3498302351181,
+            "what": "kernels"
+          },
+          {
+            "best_ms": null,
+            "cells": [
+              "0.26",
+              "no model",
+              "no model",
+              "0.26",
+              "16%",
+              "+2.7",
+              "109.3",
+              ""
+            ],
+            "cumulative_tok_s": 109.3,
+            "limit_ms": null,
+            "lost_ms": 0.26207774193219807,
+            "name": "quantize",
+            "now_ms": 0.26207774193219807,
+            "pct_peak": null,
+            "section": "Supporting kernels — no model",
+            "share": 0.1638481872191888,
+            "tok_s_gain": 2.75097428121102,
+            "tok_s_if_fixed": 96.79713033850427,
+            "what": "kernels"
+          },
+          {
+            "best_ms": null,
+            "cells": [
+              "0.05",
+              "no model",
+              "no model",
+              "0.05",
+              "3%",
+              "+0.5",
+              "109.8",
+              ""
+            ],
+            "cumulative_tok_s": 109.8,
+            "limit_ms": null,
+            "lost_ms": 0.04638690322585171,
+            "name": "KV cache write",
+            "now_ms": 0.04638690322585171,
+            "pct_peak": null,
+            "section": "Supporting kernels — no model",
+            "share": 0.029000593290497905,
+            "tok_s_gain": 0.48691345101850053,
+            "tok_s_if_fixed": 94.81750633604264,
+            "what": "kernels"
+          },
+          {
+            "best_ms": null,
+            "cells": [
+              "0.00",
+              "no model",
+              "no model",
+              "0.00",
+              "0%",
+              "+0.0",
+              "109.8",
+              ""
+            ],
+            "cumulative_tok_s": 109.8,
+            "limit_ms": null,
+            "lost_ms": 0.0025383548387194863,
+            "name": "copy",
+            "now_ms": 0.0025383548387194863,
+            "pct_peak": null,
+            "section": "Supporting kernels — no model",
+            "share": 0.0015869521607479455,
+            "tok_s_gain": 0.026644570524846044,
+            "tok_s_if_fixed": 94.42492432504822,
+            "what": "kernels"
+          },
+          {
+            "best_ms": null,
+            "cells": [
+              "0.00",
+              "no model",
+              "no model",
+              "0.00",
+              "0%",
+              "+0.1",
+              "109.9",
+              ""
+            ],
+            "cumulative_tok_s": 109.9,
+            "limit_ms": null,
+            "lost_ms": 0.0011520000000018627,
+            "name": "elementwise",
+            "now_ms": 0.0011520000000018627,
+            "pct_peak": null,
+            "section": "Supporting kernels — no model",
+            "share": 0.0007202180173150411,
+            "tok_s_gain": 0.012092298829330193,
+            "tok_s_if_fixed": 94.41256511124486,
+            "what": "kernels"
+          },
+          {
+            "best_ms": 0.0,
+            "cells": [
+              "0.13",
+              "0.00",
+              "0.00",
+              "0.13",
+              "8%",
+              "+1.3",
+              "111.2",
+              ""
+            ],
+            "cumulative_tok_s": 111.2,
+            "limit_ms": 0.0,
+            "lost_ms": 0.12782074193708937,
+            "name": "kernel gaps, at most",
+            "now_ms": 0.12782074193708937,
+            "pct_peak": null,
+            "section": "Timing adjustments",
+            "share": 0.07991215393187429,
+            "tok_s_gain": 1.3417071250759403,
+            "tok_s_if_fixed": 95.55532276362442,
+            "what": "gaps"
+          }
+        ],
+        "sum_cells": [
+          "= total at roofline",
+          "10.59",
+          "8.99",
+          "8.99",
+          "1.60",
+          "100%",
+          "111.2",
+          "111.2",
+          ""
+        ],
+        "title": "Where the token goes",
+        "token_ms": 10.592962516129031,
+        "words": "Context 530 · 10.59 ms/token. No model = measured time, unknown savings. Roofline is an upper bound. Captured 11.8 ms; untraced 10.6 ms. Difference: +1.2 ms; the capture adds 1.2 ms a token over the engine's 766 launches a token, 1.6 us each, and 79% of those launches take under 10 us: a cost per launch weighs on an engine that splits its token into many short kernels. capture +11.53% over native, above the 5% capture-overhead ceiling. +tok/s allocates headroom by time difference; cumulative reconciles the roofline. These are accounting shares, not predicted speedups."
+      }
+    },
+    "measured": true,
+    "measurement": {
+      "choice": "in_model",
+      "chosen": "in_model",
+      "fallback": null,
+      "label": "in-model",
+      "reason": null
+    },
+    "model_id": "qwen3-14b-q4-k-m-nvidia_geforce_rtx_4090_24g-001",
+    "probe": {
+      "absent": {
+        "isa.instruction_histogram": "the cubin's SASS is not disassembled by BoltBeam",
+        "isa.vector_load_bits": "the compiled load width is not visible; the source loads are in kernel.source",
+        "latency_concurrency.active_waves": "the CUDA bridge reads no per-dispatch hardware counters (that is Nsight Compute's)",
+        "latency_concurrency.in_flight_groups": "the CUDA bridge reads no per-dispatch hardware counters (that is Nsight Compute's)",
+        "latency_concurrency.memory_latency_ns": "the CUDA bridge reads no per-dispatch hardware counters (that is Nsight Compute's)",
+        "latency_concurrency.occupancy_pct": "the CUDA bridge reads no per-dispatch hardware counters (that is Nsight Compute's)",
+        "resources.registers": "the CUDA bridge does not read cuFuncGetAttribute(NUM_REGS)",
+        "resources.scratch_bytes": "the CUDA bridge does not read cuFuncGetAttribute(LOCAL_SIZE_BYTES)"
+      },
+      "dispatch_floor_us": 8.208000101149082,
+      "label": "BoltBeam's own kernel (reference), not the engine's",
+      "reason": null,
+      "rows": [
+        {
+          "evidence": [
+            {
+              "file": "probe_evidence.json",
+              "path": "probes[0]"
+            }
+          ],
+          "gbs": 207.42856858343563,
+          "pct_peak": 21.5622212664694,
+          "quant": "Q4_K",
+          "role": "attn_kv",
+          "shape": [
+            1024,
+            5120
+          ],
+          "us_per_call": 14.336000196635723
+        },
+        {
+          "evidence": [
+            {
+              "file": "probe_evidence.json",
+              "path": "probes[1]"
+            }
+          ],
+          "gbs": 281.6000071138145,
+          "pct_peak": 29.27235001183103,
+          "quant": "Q6_K",
+          "role": "attn_kv",
+          "shape": [
+            1024,
+            5120
+          ],
+          "us_per_call": 15.359999611973763
+        },
+        {
+          "evidence": [
+            {
+              "file": "probe_evidence.json",
+              "path": "probes[2]"
+            }
+          ],
+          "gbs": 603.2375885115648,
+          "pct_peak": 62.706610032387196,
+          "quant": "Q4_K",
+          "role": "attn_qo",
+          "shape": [
+            5120,
+            5120
+          ],
+          "us_per_call": 24.512000381946564
+        },
+        {
+          "evidence": [
+            {
+              "file": "probe_evidence.json",
+              "path": "probes[3]"
+            }
+          ],
+          "gbs": 690.8168799234053,
+          "pct_peak": 71.81048647852445,
+          "quant": "Q4_K",
+          "role": "ffn_down",
+          "shape": [
+            5120,
+            17408
+          ],
+          "us_per_call": 72.7040022611618
+        },
+        {
+          "evidence": [
+            {
+              "file": "probe_evidence.json",
+              "path": "probes[4]"
+            }
+          ],
+          "gbs": 680.9394316878272,
+          "pct_peak": 70.78372470767434,
+          "quant": "Q6_K",
+          "role": "ffn_down",
+          "shape": [
+            5120,
+            17408
+          ],
+          "us_per_call": 107.5039990246296
+        },
+        {
+          "evidence": [
+            {
+              "file": "probe_evidence.json",
+              "path": "probes[5]"
+            }
+          ],
+          "gbs": 804.0655892875305,
+          "pct_peak": 83.5827015891404,
+          "quant": "Q4_K",
+          "role": "ffn_gate_up",
+          "shape": [
+            17408,
+            5120
+          ],
+          "us_per_call": 62.463998794555664
+        },
+        {
+          "evidence": [
+            {
+              "file": "probe_evidence.json",
+              "path": "probes[6]"
+            }
+          ],
+          "gbs": 873.5960018106435,
+          "pct_peak": 90.81039519861159,
+          "quant": "Q6_K",
+          "role": "lm_head",
+          "shape": [
+            151936,
+            5120
+          ],
+          "us_per_call": 731.1840057373047
+        }
+      ],
+      "status": "measured"
+    },
+    "regimes": [
+      {
+        "classification": "inconclusive",
+        "next_action": "rerun the external probe with timing, bytes, latency/concurrency, and ISA/resource rows",
+        "quant": "Q4_K",
+        "role": "attn_kv",
+        "shape": [
+          1024,
+          5120
+        ],
+        "visible_bottleneck": "missing_evidence"
+      },
+      {
+        "classification": "inconclusive",
+        "next_action": "rerun the external probe with timing, bytes, latency/concurrency, and ISA/resource rows",
+        "quant": "Q6_K",
+        "role": "attn_kv",
+        "shape": [
+          1024,
+          5120
+        ],
+        "visible_bottleneck": "missing_evidence"
+      },
+      {
+        "classification": "inconclusive",
+        "next_action": "rerun the external probe with timing, bytes, latency/concurrency, and ISA/resource rows",
+        "quant": "Q4_K",
+        "role": "attn_qo",
+        "shape": [
+          5120,
+          5120
+        ],
+        "visible_bottleneck": "missing_evidence"
+      },
+      {
+        "classification": "inconclusive",
+        "next_action": "rerun the external probe with timing, bytes, latency/concurrency, and ISA/resource rows",
+        "quant": "Q4_K",
+        "role": "ffn_down",
+        "shape": [
+          5120,
+          17408
+        ],
+        "visible_bottleneck": "missing_evidence"
+      },
+      {
+        "classification": "inconclusive",
+        "next_action": "rerun the external probe with timing, bytes, latency/concurrency, and ISA/resource rows",
+        "quant": "Q6_K",
+        "role": "ffn_down",
+        "shape": [
+          5120,
+          17408
+        ],
+        "visible_bottleneck": "missing_evidence"
+      },
+      {
+        "classification": "inconclusive",
+        "next_action": "rerun the external probe with timing, bytes, latency/concurrency, and ISA/resource rows",
+        "quant": "Q4_K",
+        "role": "ffn_gate_up",
+        "shape": [
+          17408,
+          5120
+        ],
+        "visible_bottleneck": "missing_evidence"
+      },
+      {
+        "classification": "inconclusive",
+        "next_action": "rerun the external probe with timing, bytes, latency/concurrency, and ISA/resource rows",
+        "quant": "Q6_K",
+        "role": "lm_head",
+        "shape": [
+          151936,
+          5120
+        ],
+        "visible_bottleneck": "missing_evidence"
+      }
+    ],
+    "report": "report.html",
+    "routes": [
+      {
+        "candidates": [
+          "lanemap_gemv"
+        ],
+        "compare": null,
+        "evidence_refs": [],
+        "quant": "Q4_K",
+        "role": "attn_kv",
+        "selected_route": null,
+        "shape": [
+          1024,
+          5120
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "q6k_route"
+        ],
+        "compare": null,
+        "evidence_refs": [],
+        "quant": "Q6_K",
+        "role": "attn_kv",
+        "selected_route": null,
+        "shape": [
+          1024,
+          5120
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "lanemap_gemv"
+        ],
+        "compare": null,
+        "evidence_refs": [],
+        "quant": "Q4_K",
+        "role": "attn_qo",
+        "selected_route": null,
+        "shape": [
+          5120,
+          5120
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "lanemap_gemv"
+        ],
+        "compare": null,
+        "evidence_refs": [],
+        "quant": "Q4_K",
+        "role": "ffn_down",
+        "selected_route": null,
+        "shape": [
+          5120,
+          17408
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "q6k_route"
+        ],
+        "compare": null,
+        "evidence_refs": [],
+        "quant": "Q6_K",
+        "role": "ffn_down",
+        "selected_route": null,
+        "shape": [
+          5120,
+          17408
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "lanemap_gemv"
+        ],
+        "compare": null,
+        "evidence_refs": [],
+        "quant": "Q4_K",
+        "role": "ffn_gate_up",
+        "selected_route": null,
+        "shape": [
+          17408,
+          5120
+        ],
+        "status": "unmeasured"
+      },
+      {
+        "candidates": [
+          "q6k_route"
+        ],
+        "compare": null,
+        "evidence_refs": [],
+        "quant": "Q6_K",
+        "role": "lm_head",
+        "selected_route": null,
+        "shape": [
+          151936,
+          5120
+        ],
+        "status": "unmeasured"
+      }
+    ],
+    "schema": "boltbeam.tui.v1",
+    "target_id": "nvidia_geforce_rtx_4090_24g",
+    "timing": {
+      "also": [
+        {
+          "context": 146,
+          "tok_s": 94.36904820881793
+        }
+      ],
+      "context": 512,
+      "dominant_bucket": "timing_inconclusive",
+      "kernels": [],
+      "next_actions": [
+        "rerun the external trace with whole_step and kernel timing rows"
+      ],
+      "roles": [],
+      "status": "classified",
+      "tok_s": 94.40229760818869,
+      "total_us": 10592.96251612903
+    },
+    "validation": {
+      "checks": 116,
+      "failures": [],
+      "status": "passed",
+      "unresolved": []
+    },
+    "workload": "decode"
+  },
+  "schema": "boltbeam.tui.v1",
+  "stages": [
+    {
+      "artifacts": [
+        "run_manifest.json",
+        "model_profile.json",
+        "weight_inventory.json",
+        "workload_profile.json"
+      ],
+      "counted": false,
+      "done": true,
+      "key": "load",
+      "label": "load",
+      "note": "model / weight / workload facts",
+      "state": "done",
+      "state_note": null
+    },
+    {
+      "artifacts": [
+        "hardware_profile.json",
+        "runtime_profile.json",
+        "provider_capabilities.json",
+        "scan_evidence.json"
+      ],
+      "counted": false,
+      "done": true,
+      "key": "autoscan",
+      "label": "autoscan",
+      "note": "machine + provider capabilities",
+      "state": "done",
+      "state_note": null
+    },
+    {
+      "artifacts": [
+        "search_space.json",
+        "route_policy.json",
+        "fixture_manifest.json",
+        "measurement_plan.json",
+        "analysis_report.json",
+        "probe_request.json",
+        "trace_request.json"
+      ],
+      "counted": false,
+      "done": true,
+      "key": "analyze",
+      "label": "analyze",
+      "note": "search space + measurement plan",
+      "state": "done",
+      "state_note": null
+    },
+    {
+      "artifacts": [],
+      "counted": false,
+      "done": false,
+      "key": "runner_plan",
+      "label": "runner-plan",
+      "note": "audit-tracer handoff bundle",
+      "state": "not_needed",
+      "state_note": "not needed: measured on this machine"
+    },
+    {
+      "artifacts": [
+        "primitive_profile.json"
+      ],
+      "counted": true,
+      "done": true,
+      "key": "ingest_probe",
+      "label": "probe",
+      "note": "primitive evidence classified",
+      "state": "done",
+      "state_note": null
+    },
+    {
+      "artifacts": [
+        "timing_trace.json",
+        "timing_profile.json"
+      ],
+      "counted": true,
+      "done": true,
+      "key": "ingest_timing",
+      "label": "timing",
+      "note": "timing trace classified",
+      "state": "done",
+      "state_note": null
+    },
+    {
+      "artifacts": [
+        "output_manifest.json",
+        "summary.md",
+        "rollback.md",
+        "provider_plan.json",
+        "report.html"
+      ],
+      "counted": true,
+      "done": true,
+      "key": "output",
+      "label": "output",
+      "note": "policy / report / provider plan",
+      "state": "done",
+      "state_note": null
+    }
+  ],
+  "status": "needs_measurement",
+  "target_id": "nvidia_geforce_rtx_4090_24g",
+  "workload": "decode"
+}

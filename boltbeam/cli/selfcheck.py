@@ -67,7 +67,7 @@ def check_file(path:pathlib.Path) -> str | None:
   except ValueError as exc:
     return f"{path.name} is not JSON: {exc}"
   if path.name.startswith("screen_"):  # the screen seam answers its own schema id with a kind
-    from boltbeam.workflow.run_folder import SCHEMA as SCREEN_SCHEMA
+    from boltbeam.vocab import SCHEMA_TUI as SCREEN_SCHEMA
     kind = path.stem.removeprefix("screen_")
     if doc.get("schema") != SCREEN_SCHEMA or doc.get("kind") != kind:
       return f"{path.name}: expected {SCREEN_SCHEMA} kind {kind}, got {doc.get('schema')} kind {doc.get('kind')}"

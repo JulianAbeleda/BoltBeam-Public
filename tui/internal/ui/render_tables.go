@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
@@ -16,7 +16,7 @@ import (
 func roleRows(roles []seam.CeilingRole) string {
 	rows := [][]string{{"ROLE", "QUANT", "SHARE", "FLOOR ms"}}
 	for _, r := range roles {
-		rows = append(rows, []string{named(plainRole, r.Role), r.Quant, bar(r.Share, 10) + fmt.Sprintf(" %2.0f%%", r.Share*100),
+		rows = append(rows, []string{namedRole(r.Role), r.Quant, bar(r.Share, 10) + fmt.Sprintf(" %2.0f%%", r.Share*100),
 			fmt.Sprintf("%.2f", r.FloorMs)})
 	}
 	return table(rows)
@@ -25,9 +25,9 @@ func roleRows(roles []seam.CeilingRole) string {
 // roleTable is one provider's per-role table: the time, the share of peak, the time per call and why. The reason
 // word is the most useful column, so when the page is narrow the share bar goes first, then IDEAL; only when the
 // table still does not fit do the time per call and the reason move to a second table, so no row is cut.
-func roleTable(roles []seam.RoleLoss, notAttributed *float64) string {
+func roleTable(roles []seam.RoleLoss, notAttributed *float64, width int) string {
 	for _, drop := range [][]string{nil, {"SHARE OF LOSS"}, {"SHARE OF LOSS", "IDEAL ms"}} {
-		if t := roleTableWithout(roles, notAttributed, drop); maxWidth(t) <= tableWidth {
+		if t := roleTableWithout(roles, notAttributed, drop); maxWidth(t) <= width {
 			return t
 		}
 	}
@@ -46,7 +46,7 @@ func roleTableWithout(roles []seam.RoleLoss, notAttributed *float64, drop []stri
 			us = fmt.Sprintf("%.1f", *r.UsPerCall)
 		}
 		best, verdict := found(r)
-		rows = append(rows, []string{word(plainRole, r.Role), r.Quant, fmt.Sprintf("%.2f", r.IdealMs),
+		rows = append(rows, []string{roleWord(r.Role), r.Quant, fmt.Sprintf("%.2f", r.IdealMs),
 			fmt.Sprintf("%.2f", r.ActualMs), fmt.Sprintf("%.2f", r.LostMs), bar(r.Share, 5) + fmt.Sprintf(" %.0f%%", r.Share*100), pct, us, r.Reason, best, verdict})
 	}
 	if notAttributed != nil {
@@ -83,7 +83,7 @@ func roleTableNarrow(roles []seam.RoleLoss, notAttributed *float64) string {
 		if r.UsPerCall != nil {
 			us = fmt.Sprintf("%.1f", *r.UsPerCall)
 		}
-		name := word(plainRole, r.Role)
+		name := roleWord(r.Role)
 		main = append(main, []string{name, r.Quant, fmt.Sprintf("%.2f", r.IdealMs), fmt.Sprintf("%.2f", r.ActualMs),
 			fmt.Sprintf("%.2f", r.LostMs), pct})
 		why = append(why, []string{name, r.Quant, us, r.Reason})
@@ -102,10 +102,10 @@ func roleTableNarrow(roles []seam.RoleLoss, notAttributed *float64) string {
 
 // replayTable is the per-turn table. When it is wider than the page, the FLAGS column leaves the table and becomes
 // one line per flag naming its turns, so no flag is cut off at the page edge.
-func replayTable(rows [][]string) string {
+func replayTable(rows [][]string, width int) string {
 	t := table(rows)
 	last := len(rows[0]) - 1
-	if maxWidth(t) <= tableWidth || last < 1 || rows[0][last] != "FLAGS" {
+	if maxWidth(t) <= width || last < 1 || rows[0][last] != "FLAGS" {
 		return t
 	}
 	turns, order := map[string][]string{}, []string{}
@@ -130,7 +130,7 @@ func replayTable(rows [][]string) string {
 	return b.String()
 }
 
-func whereTable(w *seam.Where, drop []string) string {
+func whereTable(w *seam.Where, drop []string, width int) string {
 	head := []string{}
 	for _, c := range w.Columns {
 		head = append(head, strings.ToUpper(c))
@@ -167,11 +167,11 @@ func whereTable(w *seam.Where, drop []string) string {
 		}
 		rows[j] = cut
 	}
-	return rooflineGrid(rows, len(w.BaselineCells) > 0)
+	return rooflineGrid(rows, len(w.BaselineCells) > 0, width)
 }
 
 // rooflineGrid reserves numeric columns, wraps headers and centers values inside a bordered table.
-func rooflineGrid(rows [][]string, baseline bool) string {
+func rooflineGrid(rows [][]string, baseline bool, pageWidth int) string {
 	if len(rows) == 0 {
 		return ""
 	}
@@ -196,7 +196,7 @@ func rooflineGrid(rows [][]string, baseline bool) string {
 	for _, width := range widths[1:] {
 		other += width
 	}
-	widths[0] = max(tableWidth-other, 14)
+	widths[0] = max(pageWidth-other, 14)
 	// Do not fill a wide terminal with needless name padding.
 	nameWidth := 0
 	for _, row := range rows {
@@ -278,7 +278,7 @@ func rooflineGrid(rows [][]string, baseline bool) string {
 // peak) and the estimated split of the token. When the rows carry a dispatch floor (lessFloor) the measured µs
 // column is labelled so and the time less the floor stands beside it; GB/s and % PEAK are on that time, as the
 // seam's columns_words says once. At a narrow page BYTES/CALL goes first, then IDEAL.
-func isoRoleTable(roles []seam.RoleLoss, lessFloor bool) string {
+func isoRoleTable(roles []seam.RoleLoss, lessFloor bool, width int) string {
 	head := []string{"ROLE", "QUANT", "BYTES/CALL", "µs/CALL", "GB/s", "% PEAK", "IDEAL", "EST. ms IN TOKEN", "EST. LOST", "WHY"}
 	if lessFloor {
 		head = []string{"ROLE", "QUANT", "BYTES/CALL", "µs/CALL MEASURED", "LESS FLOOR", "GB/s", "% PEAK", "IDEAL", "EST. ms IN TOKEN", "EST. LOST", "WHY"}
@@ -291,7 +291,7 @@ func isoRoleTable(roles []seam.RoleLoss, lessFloor bool) string {
 	}
 	all := [][]string{head}
 	for _, r := range roles {
-		row := []string{word(plainRole, r.Role), r.Quant, f(r.MbPerCall, "%.1f MB"), f(r.UsPerCall, "%.1f")}
+		row := []string{roleWord(r.Role), r.Quant, f(r.MbPerCall, "%.1f MB"), f(r.UsPerCall, "%.1f")}
 		if lessFloor {
 			row = append(row, f(r.UsPerCallLessFloor, "%.1f"))
 		}
@@ -315,7 +315,7 @@ func isoRoleTable(roles []seam.RoleLoss, lessFloor bool) string {
 		return slices.DeleteFunc(slices.Clone(head), func(h string) bool { return slices.Contains(drop, h) })
 	}
 	for _, drop := range [][]string{nil, {"BYTES/CALL"}, {"BYTES/CALL", "IDEAL"}} {
-		if t := only(without(drop...)...); maxWidth(t) <= tableWidth {
+		if t := only(without(drop...)...); maxWidth(t) <= width {
 			return t
 		}
 	}
@@ -342,7 +342,7 @@ func rateTable(rows []seam.RateRow) string {
 		if r.PctPeak != nil {
 			pct = fmt.Sprintf("%.0f%%", *r.PctPeak)
 		}
-		row := []string{word(plainRole, r.Role), r.Quant, us(r.UsPerCall)}
+		row := []string{roleWord(r.Role), r.Quant, us(r.UsPerCall)}
 		if lessFloor {
 			row = append(row, us(r.UsPerCallLessFloor))
 		}

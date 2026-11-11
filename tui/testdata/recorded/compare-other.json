@@ -1,0 +1,52 @@
+{
+  "head": {
+    "differs": "These differ: model (Qwen3.8-27B-UD-Q4_K_M / Qwen3-14B-AWQ); engine (llama.cpp / vLLM); engine build (097cf33d9 / 0.31.0); weights (GGUF IQ4_XS+Q5_K / awq INT4_G128_ZP+BF16); streams at once (16 / 1).",
+    "kind": "head_to_head",
+    "refused": null,
+    "rows": [
+      {
+        "better": 1,
+        "cells": [
+          "37.3 tok/s",
+          "156.2 tok/s"
+        ],
+        "key": "speed",
+        "label": "speed (each stream)"
+      },
+      {
+        "better": null,
+        "cells": [
+          "596.0 tok/s",
+          ""
+        ],
+        "key": "total",
+        "label": "total across streams"
+      },
+      {
+        "better": 1,
+        "cells": [
+          "46%",
+          "77%"
+        ],
+        "key": "pct",
+        "label": "of its GPU's limit"
+      }
+    ],
+    "runs": [
+      {
+        "id": "rtx5090-27b-llama-batch",
+        "title": "Qwen3.8-27B-UD-Q4_K_M on NVIDIA GeForce RTX 5090 with llama.cpp"
+      },
+      {
+        "id": "rtx5090-14b-vllm-batch",
+        "title": "Qwen3-14B-AWQ on NVIDIA GeForce RTX 5090 with vLLM"
+      }
+    ],
+    "schema": "boltbeam.plain_head_to_head.v1"
+  },
+  "kind": "head_to_head",
+  "lines": [],
+  "parts_note": "The parts line up only between two runs of the same model, so only the headline figures are side by side.",
+  "plain": null,
+  "schema": "boltbeam.tui.v1"
+}

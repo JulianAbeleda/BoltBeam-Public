@@ -58,6 +58,7 @@ class TargetProfile:
                                                 # rate above and belongs in its own field so the two are never
                                                 # read for each other (bringing-up-a-new-target, phase 0: "R").
   capabilities: dict[str, Any] | None = None
+  name: str | None = None                       # the chip's plain name (targets.json `name`; a made profile's scanned name)
 
   def dot_vocabulary_backlog(self) -> tuple[str, ...]:
     """Hardware dot primitives that have no generated lowering yet — the substrate work to complete the vocab."""

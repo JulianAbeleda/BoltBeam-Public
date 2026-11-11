@@ -4,6 +4,11 @@ The point of the page is to show where the token loses time against the roofline
 reads `workflow.results.results(run)`, the same seam the TUI reads (loss, tie_out, roles), and computes nothing
 new: every number on the page is a measured or derived number from that seam, or a share of two of them.
 
+The page is the main report. On top, layer 1 of the plain-results block (report/plain.py): how fast, how close to the
+limit, what holds it back, the three parts that lose the most time as bars with their gains, and one trust line. Then
+layer 2, sections that open and close: the where table at four columns (all columns one click down), How it was
+measured, Machine and engine, the words used. Under "Full detail", the numbered sections:
+
 Sections, in order (a measured run):
   1. The answer: model, chip, engine, batch, weight format; measured speed against the limit; ms per token lost.
   2. Where the time goes: the tie-out from the limit to the measured token; then Where the token goes, the same
@@ -22,6 +27,8 @@ import html
 import re
 from typing import Any
 
+from boltbeam.report import plain
+
 # canonical pipeline order. The keys are the `stage=` values workflow/*.py pass to update_manifest; the label
 # is the stage's short id. A stage absent from run_manifest["stages"] renders as not-run, never hidden.
 STAGES: tuple[tuple[str, str, str], ...] = (
@@ -34,11 +41,11 @@ STAGES: tuple[tuple[str, str, str], ...] = (
   ("output",        "output",      "policy / report / provider plan"),
 )
 
-# Plain words, the same ones boltbeam-tui prints (tui/internal/ui/render.go: plainStage, plainRoute). The page shows the plain word first and the record's id small beside it.
-# tests/test_report_html.py checks these tables against render.go, so the two screens cannot drift apart.
-PLAIN_STAGE = {"load": "Read the model", "autoscan": "Check the machine", "analyze": "Plan what to try",
-               "runner_plan": "Prepare the handoff", "ingest_probe": "Test the building blocks",
-               "ingest_timing": "Time the real run", "output": "Package the result"}
+# Plain words, the same ones boltbeam-tui prints: it reads the stage and role names through `screen words`, and the
+# route words are render.go's plainRoute. The page shows the plain word first and the record's id small beside it.
+# tests/test_report_html.py checks PLAIN_ROUTE against render.go, so the two screens cannot drift apart.
+# The words themselves are data/plain_words.json (report/plain.py), the one authority for plain words.
+PLAIN_STAGE = {k: plain.stage_names()[k] for k, _, _ in STAGES}
 PLAIN_ROUTE = {"promoted": "kept", "refuted": "ruled out", "blocked": "undecided", "unmeasured": "default kernel, none compared yet",
                "candidate": "to try"}
 
@@ -54,10 +61,7 @@ SEVERITY = {
   "timing_loss": "bad", "correctness_failed": "bad", "refuted": "bad",
   # timing_hot / timing_observed say how big a role is, not whether it is healthy: no colour.
 }
-PLAIN_ROLE = {"attn_kv": "attention keys and values", "attn_qo": "attention query and output", "ffn_gate_up": "feed-forward in",
-              "ffn_down": "feed-forward out", "lm_head": "vocabulary output", "embed": "token embedding",
-              "attn_qkv": "attention query, keys and values, fused", "attn_gate": "attention output gate",
-              "ssm_out": "state-space output", "ssm_alpha_beta": "state-space decay and update gates"}
+PLAIN_ROLE = {k: plain.words()["roles"][k] for k in plain.words()["report_roles"]}  # Full detail's names, as before
 
 _CSS = """
 /* Glass over a gradient. Cards keep an opaque enough fill that text reads without backdrop-filter (print, old
@@ -187,6 +191,7 @@ body{padding:16px 16px 40px}.card{padding:18px 16px}dl{grid-template-columns:1fr
 .rdet{grid-template-columns:repeat(2,minmax(0,1fr))}
 td.how{display:none}.eq math{font-size:13px}.eq mtext.lab{font-size:10px}.stack span{font-size:10px}
 .next li{padding-left:48px}.next li::before{left:12px}
+.tscroll td:first-child,td.wrap{white-space:normal;min-width:0}
 }
 .card .card{box-shadow:none;border-radius:12px;margin-top:16px;padding:0;overflow:hidden}
 .card-hd{display:flex;flex-wrap:wrap;gap:8px;align-items:baseline;padding:10px 14px;border-bottom:1px solid var(--edge)}
@@ -195,6 +200,28 @@ td.how{display:none}.eq math{font-size:13px}.eq mtext.lab{font-size:10px}.stack 
 .tscroll{overflow-x:auto}.tscroll table{margin:0}.tscroll td{white-space:nowrap}td.wrap{white-space:normal;min-width:220px}
 .tag{font-size:11px;padding:1px 8px;border-radius:10px;border:1px solid var(--edge)}
 .empty{color:var(--tx-3);font-size:12.5px;padding:10px 14px;margin:0}
+.answers{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:12px}
+.answers li{font-size:16px;color:var(--tx)}
+.answers b{display:block;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--tx-3)}
+.bars{display:flex;flex-direction:column;gap:12px;margin-top:20px}
+.bars h3{margin:0;font-size:13px;color:var(--tx)}
+.bar .lbl{display:flex;justify-content:space-between;gap:4px 12px;flex-wrap:wrap;font-size:13.5px;color:var(--tx)}
+.bar .lbl span{color:var(--tx-2);font-variant-numeric:tabular-nums}
+.bar .trk{height:12px;border-radius:6px;background:var(--track);overflow:hidden;margin-top:4px}
+.bar .trk i{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,var(--g1),var(--g2))}
+.bar .lbl span b{color:var(--tx);font-size:15px}
+.trust{margin:18px 0 0;font-weight:700}.trust.ok{color:var(--ok)}.trust.warn{color:var(--excess)}
+.figs{display:flex;flex-wrap:wrap;align-items:flex-end;gap:16px 40px;margin:6px 0 24px}
+.fig{display:flex;flex-direction:column;gap:6px;min-width:0}
+.fig .big{font-size:clamp(36px,7vw,72px);white-space:nowrap}.fig .big small{font-size:.42em;letter-spacing:0;margin-left:.15em}
+.fig .big.dim{font-size:clamp(28px,5vw,48px)}
+.fig>span:last-child{font-size:13px;color:var(--tx-2);max-width:24ch}
+.l1 .caveat{color:var(--tx-2);font-size:13px;margin:0}
+details.l2{background:var(--glass);border:1px solid var(--edge);border-radius:16px;box-shadow:var(--shadow);padding:16px 24px;min-width:0}
+details.l2>summary{cursor:pointer;font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--tx-3)}
+details.l2 ul{margin:12px 0 0;padding-left:18px;color:var(--tx-2)}details.l2 li{margin:0 0 6px}
+details.l2.full{background:transparent;border:0;box-shadow:none;padding:0}
+details.l2.full>.inner{display:flex;flex-direction:column;gap:20px;margin-top:14px}
 @media print{:root,:root[data-theme]{--bg:#fff;--bg-a:#fff;--bg-b:#fff;--glass:#fff;--tx:#1d2250;--tx-2:#3f4677;--tx-3:#666c96;
 --edge:rgba(60,70,140,.25)}body{background:#fff}.card{box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}.toggle{display:none}}
 """
@@ -292,7 +319,7 @@ def next_step(report:dict[str, Any], plan:dict[str, Any], probe:dict[str, Any] |
 
 def roofline_kernels(timing:dict[str, Any], context:Any = None) -> tuple[list[dict[str, Any]], Any]:
   """Hottest per-kernel rows at one context, plus that context: the measured token's context when given
-  (tie_out.measured_step picks it), else the widest summary. Deterministic tie-break."""
+  (capture_settings.measured_step picks it), else the widest summary. Deterministic tie-break."""
   summaries = [s for s in timing.get("context_summaries", []) or [] if isinstance(s, dict)]
   if not summaries: return [], context
   at = [s for s in summaries if context is not None and s.get("context") == context]
@@ -406,8 +433,9 @@ def _pct(part:float, whole:float) -> float:
   return max(0.0, min(100.0, 100.0 * part / whole)) if whole else 0.0
 
 
-def _role_name(role:Any, quant:Any) -> str:
-  return f'{_e(PLAIN_ROLE.get(str(role), role))}<span class="q">{_e(quant)}</span>'
+def _role_name(role:Any, quant:Any, label:str | None = None) -> str:
+  """label: a role row's part (tie_out.role_label), named as the where table names it; else Full detail's role name."""
+  return f'{_e(plain.role_words(label) if label else PLAIN_ROLE.get(str(role), role))}<span class="q">{_e(quant)}</span>'
 
 
 def _other_label(line:dict[str, Any] | None) -> str:
@@ -573,7 +601,10 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
       (f'<p class="note">{_e(replay["headline_lines"][0])}</p>' if replay.get('overhead_acceptance') else f'<p class="note">Timing qualification: {_e(qualification.upper())}.</p>' if qualification else '')+
       '<p class="note">Session time is the sum of the included turns. Decode throughput and limits are listed separately below.</p>')
   limit_tok, limit_ms = loss.get("limit_tok_s"), loss.get("limit_ms")
-  if limit_tok is None and (results.get("ceiling") or {}).get("status") == "modeled":
+  if offloaded := results.get("offload"):  # experts in RAM: the all-in-GPU-memory limit does not apply (workflow/offload.run_block)
+    limit_tok = limit_ms = None
+    who += f'<p class="note">{_e(plain.offload_close(offloaded, [])["close"])}</p>'
+  if limit_tok is None and not offloaded and (results.get("ceiling") or {}).get("status") == "modeled":
     limit_tok = results["ceiling"].get("tok_s")
   lim = f'<span class="lim">limit {_f(limit_tok, "{:.1f}")} <small>tok/s</small></span>' if limit_tok else ""
   m = _measured(loss)
@@ -596,7 +627,7 @@ def _answer(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, A
                   f'<div class="hero"><span class="big">{m["tok_s"]:.1f}</span><span class="big-u">tok/s measured</span>{lim}</div>'
                   + gauge +
                   f'<p class="note">{m["tok_s"]:.1f} tok/s = {m["ms"]:.1f} ms {per}.</p>'
-                  + (f'<p class="note"><span class="lost">{m["lost_ms"]:.1f} ms {per} lost</span> against the limit: '
+                  + ("" if offloaded else f'<p class="note"><span class="lost">{m["lost_ms"]:.1f} ms {per} lost</span> against the limit: '
                      f'{m["ms"]:.1f} ms measured, {_ideal_words(loss, limit_ms)}. <span class="muted">{_e(m.get("note") or "")}</span></p>'
                      if m.get("lost_ms") is not None else
                      f'<p class="note">No limit yet: {_e(loss.get("missing") or "")}. <span class="muted">{_e(m.get("note") or "")}</span></p>')
@@ -851,6 +882,7 @@ def _replay(loss:dict[str, Any]) -> str:
 def _per_role(loss:dict[str, Any]) -> str:
   if loss.get("refused"):
     return _section(3, "Per role", f'<p class="note">Per role: not shown. {_e(loss["refused"])}</p>')
+  from boltbeam.workflow.tie_out import role_label  # the where table's name for a role row's part
   est = loss.get("estimate")
   lost = (lambda r: r["est_lost_ms"]) if est else (lambda r: r["lost_ms"])
   roles = sorted(loss.get("roles") or [], key=lambda r: (-lost(r), str(r["role"]), str(r["quant"])))
@@ -881,7 +913,7 @@ def _per_role(loss:dict[str, Any]) -> str:
     tag = (f'<span class="why {VERDICT_CLASS.get(str(r.get("verdict")), "")}">'
            f'{_e(PLAIN_VERDICT.get(str(r.get("verdict")), ""))}{" · " + _e(found) if found else ""}</span>') if r.get("verdict") else ""
     items.append(
-      f'<details class="role"><summary><span class="rname">{_role_name(r["role"], r["quant"])}</span>'
+      f'<details class="role"><summary><span class="rname">{_role_name(r["role"], r["quant"], role_label(r) if r.get("part") else None)}</span>'
       f'<span class="rbar" title="{_f(r.get("pct_peak"), "{:.1f}%")} of the roofline"><i style="width:{_pct(r.get("pct_peak") or 0.0, 100.0):.1f}%;background:{REASON_COLOR.get(word, "var(--ideal)")}"></i></span>'
       f'<span class="rnum"><b>{lost(r):.2f} ms{" est." if est else ""}</b><span>{_f(r.get("pct_peak"), "{:.1f}%")} of peak{rate if est else ""}</span>'
       f'<span class="rtags"><span class="why {REASON_CLASS.get(word, "")}">{_e(why)}</span>{tag}</span></span></summary><div class="rdet">{det}</div></details>')
@@ -1110,14 +1142,74 @@ def _facts(manifest:dict[str, Any], results:dict[str, Any], measure:dict[str, An
   return _section(5, "Facts", f"<dl>{dl}</dl>")
 
 
+def _layer1(block:dict[str, Any]) -> str:
+  """Layer 1 of the plain-results block (report/plain.py): the three answers, the three parts that lose the most time
+  as bars with their gains, the trust line. The words are the block's; the bar is each part's share of the lost time."""
+  l1, label = block["layer1"], plain.words()["labels"]
+  figs = "".join(f'<div class="fig"><span class="big{"" if i == 0 else " dim"}">{_e(f["value"])}<small>{_e(f["unit"])}</small></span>'
+                 f'<span>{_e(f["label"])}</span></div>' for i, f in enumerate(l1.get("figures") or []))
+  figs = f'<div class="figs">{figs}</div>' if figs else ""
+  items = "".join(f'<li><b>{_e(label[k])}</b>{_e(l1[k])}</li>' for k in ("fast", "close", "holds") if l1.get(k))
+  upgrade = "".join(f'<p class="note">{_e(x)}</p>' for x in l1.get("upgrade") or [])
+
+  def said(p:dict[str, Any]) -> str:  # the gain's figure in bold, the rest of the line as the words have it
+    text, fig = _e(plain.top_words(p)), p["gain"].get("figure")
+    return text.replace(_e(fig), f"<b>{_e(fig)}</b>", 1) if fig and p["gain"].get("text") else text
+  bars = "".join(f'<div class="bar"><div class="lbl">{_e(p["part"])}<span>{said(p)}</span></div>'
+                 f'<div class="trk"><i style="width:{_pct(p.get("share") or 0.0, 1.0):.1f}%"></i></div></div>' for p in l1["top"])
+  note = "".join(f'<p class="caveat">{_e(l1[k])}</p>' for k in ("gains_note", "unassigned") if l1.get(k))
+  bars = f'<div class="bars"><h3>{_e(label["top"])}</h3>{bars}{note}</div>' if bars else ""
+  t = l1["trust"]
+  return (f'<section class="card l1"><h2>The answer</h2><p class="who"><b>{_e(l1["title"])}</b></p>{figs}<ul class="answers">{items}</ul>'
+          f'{upgrade}{bars}<p class="trust {"ok" if t["checked"] else "warn"}">{_e(t["text"])}</p></section>')
+
+
+def _details(title:str, body:str, *, cls:str = "l2", open_:bool = False) -> str:
+  return f'<details class="{cls}"{" open" if open_ else ""}><summary>{_e(title)}</summary>{body}</details>'
+
+
+def _layer2(block:dict[str, Any]) -> str:
+  """Layer 2: the where table at four columns (all columns one click down), How it was measured, Machine and engine,
+  and the words used, each a section that opens and closes."""
+  l2, out = block["layer2"], ""
+  if tab := l2["table"]:
+    head = "".join(f"<th>{_e(c)}</th>" for c in tab["columns"])
+    rows, section = [], None
+    for r in tab["rows"]:
+      if r.get("section") and r["section"] != section:
+        section = r["section"]
+        rows.append(f'<tr class="sum"><td colspan="{len(tab["columns"])}">{_e(section)}</td></tr>')
+      rows.append("<tr>" + "".join(f"<td>{_e(c)}</td>" for c in r["cells"]) + "</tr>")
+    a = tab["all_columns"]
+    full = [*a["rows"], *([a["baseline"]] if a.get("baseline") else []), *([a["sum"]] if a.get("sum") else [])]
+    all_cols = ('<div class="tscroll"><table class="tie where"><thead><tr>' + "".join(f"<th>{_e(c)}</th>" for c in a["columns"])
+                + "</tr></thead><tbody>" + "".join("<tr>" + "".join(f"<td>{_e(c)}</td>" for c in r) + "</tr>" for r in full)
+                + f'</tbody></table></div><p class="muted">{_e(a.get("words") or "")}</p>')
+    out += _details(tab["title"], f'<div class="tscroll"><table class="tie where"><thead><tr>{head}</tr></thead>'
+                    f'<tbody>{"".join(rows)}</tbody></table></div>'
+                    + (f'<p class="muted">{_e(tab["note"])}</p>' if tab.get("note") else "")
+                    + _details(plain.words()["labels"]["all_columns"], all_cols, cls="rules"), open_=True)
+  for s in l2["sections"]:
+    if s["lines"]:
+      out += _details(s["title"], "<ul>" + "".join(f"<li>{_e(x)}</li>" for x in s["lines"]) + "</ul>")
+  if l2["glossary"]:
+    out += _details("Words used here", "<dl>" + "".join(f"<dt>{_e(g['term'])}</dt><dd>{_e(g['plain'])}</dd>"
+                                                         for g in l2["glossary"]) + "</dl>")
+  return out
+
+
 def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:dict[str, Any],
                     plan:dict[str, Any], policy:dict[str, Any], providers:dict[str, Any],
                     primitive:dict[str, Any], timing:dict[str, Any], runner:dict[str, Any],
                     source_run:str = "", results:dict[str, Any] | None = None,
-                    measure:dict[str, Any] | None = None, gameplan:str | None = None) -> str:
+                    measure:dict[str, Any] | None = None, gameplan:str | None = None,
+                    plain_block:dict[str, Any] | None = None) -> str:
   """Render one run as a standalone HTML document from `results` (workflow.results). The other arguments
   are the run's artifacts, `{}` when absent; the page reads only the manifest and the policy from them. gameplan is
-  the gameplan file's name when Emit wrote one into the run; the Facts link it."""
+  the gameplan file's name when Emit wrote one into the run; the Facts link it. plain_block (report/plain.py) puts
+  layer 1 on top and layer 2 below it, and the numbered sections under "Full detail". source_run is the run's name:
+  the masthead shows only the last part of whatever is passed, never a folder path (the page gets shared)."""
+  source_run = source_run.rstrip("/").rsplit("/", 1)[-1]
   results = results or {}
   loss = results.get("loss") or {}
   model_id = manifest.get("model_id") or profile.get("model_id") or "unknown"
@@ -1127,6 +1219,9 @@ def render_run_html(*, manifest:dict[str, Any], profile:dict[str, Any], report:d
     sections += _where(loss) + _session(loss) + _replay(loss) + _where_token(loss) + _prefill_curve(loss, _clock_mhz(manifest)) + _prefill_audit(loss) + _per_role(loss) + _next(loss, policy)
   sections += _probe(results) + _facts(manifest, results, measure, gameplan)
   sections = _number(sections)
+  if plain_block:
+    sections = (_layer1(plain_block) + _layer2(plain_block)
+                + f'<details class="l2 full"><summary>Full detail</summary><div class="inner">{sections}</div></details>')
   return (
     "<!doctype html>\n"
     '<html lang="en"><head><meta charset="utf-8">'

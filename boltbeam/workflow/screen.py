@@ -24,6 +24,16 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
                                                brought home by `boltbeam fetch` says from where and when (fetched)
     clean-work --work DIR --before ISO         remove temporary runs started before ISO (never --keep ones)
     results  --run DIR | --run ID --root DIR   what won per role, the timing against the ceiling, the regimes
+    plain    --run DIR | --run ID --root DIR   the plain-results block (report/plain.py), the words every screen shows:
+                                               layer 1 (how fast, how close, what holds it back, the top three parts
+                                               with their gains, the trust line) and layer 2 (the four-column table,
+                                               How it was measured, Machine and engine, the glossary)
+    words                                      the plain words (data/plain_words.json): stage names, glossary, templates
+    speedup-offer MODEL                        Speed up for this model: enabled or why not, the copy's size, the stages' expected seconds
+    speedup-plain LOG                          a Speed up job's log as layer 1: kept, not kept, refused or crashed, in plain words
+    speedup-verify COPY                        a copy against its record (derive lighter-head --verify), pass or the plain reason
+    head-to-head --a DIR --b DIR [--bands F]   two runs side by side (compare_runs): their headline figures, the better
+                                               one marked, what differs; their parts too when both are of one model
     emit     --run DIR | --run ID --root DIR   Emit: write <run>/gameplan.json and gameplan.md (workflow/gameplan.py), the
                                                run's measured work turned into investigations, or per-role kernel instructions when supported,
                                                from the run's own files only; prints where, the plan and its markdown.
@@ -87,20 +97,25 @@ import sys
 from typing import Any
 
 from boltbeam.cli import self_update
-from boltbeam.collectors import capture_settings, engine_builds, engine_scan, providers, tinygrad_role_time, vllm_mtp
+from boltbeam.collectors import capture_settings, engine_builds, engine_families, engine_scan, providers, tinygrad_role_time, vllm_mtp
 from boltbeam.collectors import replay as rp
 from boltbeam.core.canonical import pretty_json
 from boltbeam.profile.loaders import profile_from_model
+from boltbeam.quantization import speed_up
+from boltbeam.report import plain, speed_up_plain
 from boltbeam.search import tinygrad_fork
 from boltbeam.target.targets import adopt_run_chip, get_target
+from boltbeam.target import gpu as tgpu
 from boltbeam.trace import replay_trace as rt
 from boltbeam.vocab import Workload
-from boltbeam.workflow import chips, engine_update, fetch, gameplan, layout as lay, limit, output_run, pipeline, recommend as rec
+from boltbeam.roofline import limit
+from boltbeam.workflow import chips, engine_update, fetch, gameplan, layout as lay, output_run, pipeline, recommend as rec
 from boltbeam.workflow import repeat_bands as rb, replay as rw, results as rs, run_folder as rf
-from boltbeam.workflow.autoscan import _hardware_profile
-from boltbeam.artifacts.run_io import load_manifest, read_json
-from boltbeam.workflow.repeat_bands import PIN_RUNS
-from boltbeam.workflow.run_folder import SCHEMA, Refused, optional
+from boltbeam.target.hardware import hardware_profile
+from boltbeam.artifacts.run_io import load_manifest, optional, read_json
+from boltbeam.collectors.capture_scope import PIN_RUNS
+from boltbeam.core.refused import Refused
+from boltbeam.vocab import SCHEMA_TUI as SCHEMA
 from boltbeam.workflow.text_report import summary_text, why_no_roles
 
 def compare_ready(run:pathlib.Path, root:pathlib.Path | None = None) -> dict[str, Any]:
@@ -121,6 +136,33 @@ def compare_ready(run:pathlib.Path, root:pathlib.Path | None = None) -> dict[str
                                              "(boltbeam/data/search_runtime.json)."}
   return out | ready | {"applies": True, "compare_message": None}
 
+def compare_runs(a:pathlib.Path, b:pathlib.Path, bands:dict[str, Any] | None = None) -> dict[str, Any]:
+  """Two runs head to head (report/plain.head_to_head): their headline figures side by side and what differs, for any
+  two measured runs. The parts are compared too when both runs are of the same model (plain.model_name): the replay
+  diff or the engine-upgrade audit (diff), or replay-cross for two replays from different engines; a refusal there is
+  one plain line (plain.parts_note), never a refusal of the whole compare."""
+  from boltbeam.workflow.diff import DiffRefused
+  ra, rb = rs.results(a), rs.results(b)
+  head = plain.head_to_head({"id": a.name, "res": ra, "run": a}, {"id": b.name, "res": rb, "run": b})
+  out = {"schema": SCHEMA, "kind": "head_to_head", "head": head, "lines": [], "plain": None, "parts_note": None}
+  if head["refused"]:
+    return out
+  same = plain.model_name(ra, a) == plain.model_name(rb, b)
+  refused = None
+  if same:
+    try:
+      if ra.get("workload") == rb.get("workload") == "replay" and providers.run_provider(a) != providers.run_provider(b):
+        c = rw.cross(a, b)
+        out["lines"] = rw.cross_lines(c)
+      else:
+        d = rw.diff(a, b, bands=bands)
+        out.update(lines=rw.diff_lines(d), plain=plain.compare(d))
+    except DiffRefused as exc:
+      refused = exc
+  out["parts_note"] = plain.parts_note(same, refused)
+  return out
+
+
 def replay_command(args) -> dict[str, Any]:
   """The replay's seam commands: write a shape's trace, list the shapes, find running servers, compare two runs."""
   if args.command == "replay-shapes":
@@ -132,10 +174,13 @@ def replay_command(args) -> dict[str, Any]:
   if args.command == "replay-cross":
     c = rw.cross(pathlib.Path(args.a).expanduser(), pathlib.Path(args.b).expanduser())
     return {**c, "lines": rw.cross_lines(c)}
+  if args.command == "head-to-head":
+    return compare_runs(pathlib.Path(args.a).expanduser(), pathlib.Path(args.b).expanduser(),
+                        bands=read_json(args.bands) if getattr(args, "bands", None) else None)
   if args.command in ("replay-diff", "diff"):
     d = rw.diff(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser(),
                 bands=read_json(args.bands) if getattr(args, "bands", None) else None)
-    return {**d, "lines": rw.diff_lines(d)}
+    return {**d, "lines": rw.diff_lines(d), "plain": plain.compare(d)}
   if args.command=='replay-review':
     from boltbeam.collectors.forced_replay import publish
     publish(pathlib.Path(args.run),read_json(args.inputs))
@@ -153,14 +198,14 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
   can run on this machine (one GPU unless more are found). With the model's profile and this machine's facts, each
   layout carries its predicted decode limit (layout.limit), the highest marked recommended, and a note when the model
   fits one GPU; a layout whose limit cannot be derived keeps its words."""
-  devs = lay.devices(_hardware_profile()["gpu"])
+  devs = tgpu.devices(hardware_profile()["gpu"])
   n = gpu_count if gpu_count is not None else len(devs)
   rows = [{**p, "layouts": lay.layouts(n, p["provider"], target.backend), "settings": capture_settings.offered(p["provider"])}
           for p in providers.available(target, tinygrad_root=root, cached=True)]
   note = None
   if n > 1 and profile and facts:
     try:
-      model_bytes = limit.ceiling(profile, target, read=lay.read_bandwidth(facts))["decode"]["bytes_moved"]
+      model_bytes = limit.ceiling(profile, target, read=limit.read_bandwidth(facts))["decode"]["bytes_moved"]
     except (Refused, SystemExit):
       model_bytes = None
     if model_bytes:
@@ -169,16 +214,17 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
                                    hidden_size=profile.get("hidden_size"), layers=profile.get("layer_count"))
       note = lay.recommend([l for r in rows for l in r["layouts"]], model_bytes, devs)
   return {"schema": SCHEMA, "kind": "providers", "target_id": target.target_id, "default": providers.DEFAULT,
-          "gpu_count": n, "providers": rows, "note": note, "repeat_runs": PIN_RUNS}  # Setup's Repeats offers this n
+          "gpu_count": n, "providers": rows, "families": engine_families.rows(rows), "note": note,
+          "repeat_runs": PIN_RUNS}  # Setup's Repeats offers this n; the Engine picker shows families (engine_families)
 
 
 def recommended(profile:dict[str, Any], target, *, engine:str = "vllm", gpus:int | None = None, facts:dict[str, Any] | None = None,
-                seqs:int = 1, context:int | None = None, check_in:list[pathlib.Path] | None = None) -> dict[str, Any]:
+                seqs:int = 1, context:int | None = None, check_in:list[pathlib.Path] | None = None, **offload) -> dict[str, Any]:
   """The engine settings for this model on this machine's GPUs (workflow/recommend.py): derived, nothing runs.
   check_in (run folders): also start the engine once with the recommended flags, read its own KV figures, cache its
   overhead in the newest machine facts there and add predicted against measured as `check`."""
-  devs = lay.devices(_hardware_profile()["gpu"])[:gpus or None]
-  args = dict(target=target, seqs=seqs, context=context or rec.CONTEXT)
+  devs = tgpu.devices(hardware_profile()["gpu"])[:gpus or None]
+  args = dict(target=target, seqs=seqs, context=context or rec.CONTEXT, **offload)
   out = {"schema": SCHEMA, "kind": "recommend", "target_id": target.target_id, **rec.setup(profile, facts, engine, devs, **args)}
   if check_in is None:
     return out
@@ -217,7 +263,8 @@ def save(run:pathlib.Path, to_root:pathlib.Path) -> dict[str, Any]:
   # Copying an older report/validation file can otherwise contradict results.json.
   output_run(dest)
   (dest / "results.json").write_text(pretty_json(res))
-  (dest / "summary.txt").write_text(summary_text(res, why_no_roles(dest, res)))
+  (dest / "summary.txt").write_text("\n".join(plain.layer1_lines(plain.plain_results(res, dest))) + "\n\n"
+                                    + summary_text(res, why_no_roles(dest, res)))
   record = {"saved_at": datetime.datetime.now().isoformat(timespec="seconds"), "from": str(run)}
   (dest / rf.SAVE_RECORD).write_text(json.dumps(record, indent=2) + "\n")
   return {"schema": SCHEMA, "kind": "saved_run", "id": run.name, "dir": str(dest),
@@ -239,7 +286,7 @@ def saved(root:pathlib.Path) -> dict[str, Any]:
         timing = {"tok_s": loss["runtimes"][0].get("tok_s")}
       pct = (100.0 * timing["tok_s"] / ceil["tok_s"]) if timing.get("tok_s") and ceil.get("tok_s") else None
       rows.append({"id": d.name, "dir": str(d), "model_id": manifest.get("model_id"), "target_id": manifest.get("target_id"),
-                   "provider": rf.run_provider(d), "saved_at": rec.get("saved_at"), "tok_s": timing.get("tok_s"),
+                   "provider": providers.run_provider(d), "saved_at": rec.get("saved_at"), "tok_s": timing.get("tok_s"),
                    "pct_of_limit": pct, "workload": manifest.get("workload"), "measured": bool(res.get("measured")),
                    "validation_failed": validation.get("status") == "failed", "layout": rf.layout_words(d),
                    "fetched": fetch.provenance(d),
@@ -289,6 +336,22 @@ def _run_arg(args) -> pathlib.Path:
   adopt_run_chip(run)
   return run
 
+def _offload_args(p) -> None:
+  p.add_argument("--offload", action="store_true", help="state the offload setup and speed limit (experts in RAM, a cache on the card) even when the model fits")
+  p.add_argument("--experts", type=int, help="with --offload: re-size the experts to N per layer (a file not on disk; the result is an estimate)")
+  p.add_argument("--bits-per-weight", type=float, help="with --experts: the experts' bits per weight")
+  p.add_argument("--draft", help="a draft model's file (an MTP head kept apart): its weights and KV count against the fit")
+
+
+def _offload_kw(args) -> dict[str, Any]:
+  if (args.experts is None) != (args.bits_per_weight is None):
+    raise Refused("--experts and --bits-per-weight go together: an estimate needs both")
+  if args.experts is not None and not args.offload:
+    raise Refused("--experts is an estimate for --offload")
+  return {"offload": args.offload, "moe_estimate": {"experts": args.experts, "bits_per_weight": args.bits_per_weight} if args.experts is not None else None,
+          "draft": args.draft}
+
+
 def main(argv:list[str] | None = None) -> int:
   parser = argparse.ArgumentParser(prog="python -m boltbeam.workflow.screen", description=__doc__,
                                    formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -299,6 +362,7 @@ def main(argv:list[str] | None = None) -> int:
   p = sub.add_parser("autoscan")
   p.add_argument("--remeasure", action="store_true", help="measure a profile made on this machine again")
   sub.add_parser("detect")
+  sub.add_parser("words", help="the plain words: stage names, glossary, layer-1 templates (data/plain_words.json)")
   p = sub.add_parser("ceiling")
   p.add_argument("model", nargs="?")
   p.add_argument("--profile", help="a model_profile.json instead of the model file")
@@ -310,6 +374,8 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--peak-tflops", type=float, default=None)
   p.add_argument("--facts-root", action="append", default=[],
                  help="a runs folder: the newest machine facts there for this chip set the memory speed (one GPU)")
+  p.add_argument("--engine", default="llama.cpp", choices=list(providers.NAMES), help="with --offload: the engine whose flags are given")
+  _offload_args(p)
   p = sub.add_parser("ceilings")
   p.add_argument("model", nargs="?")
   p.add_argument("--profile", help="a model_profile.json instead of the model file")
@@ -318,7 +384,7 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--root", required=True)
   p.add_argument("--saved", default=None, help="the saved-runs folder (default ROOT/saved)")
   p.add_argument("--all", action="store_true", help="also list ROOT/.work and the saved runs, each marked where")
-  for name in ("run", "results", "emit"):
+  for name in ("run", "results", "emit", "plain"):
     p = sub.add_parser(name)
     p.add_argument("--run", required=True, help="a run folder, or a run id with --root")
     p.add_argument("--root", default=None, help="look the id up in ROOT, ROOT/.work, then the saved runs")
@@ -395,6 +461,11 @@ def main(argv:list[str] | None = None) -> int:
   p = sub.add_parser("replay-cross", help="two engines' replays of one trace: the same work per turn, each against its roofline")
   p.add_argument("--a", required=True)
   p.add_argument("--b", required=True)
+  p = sub.add_parser("head-to-head", help="two runs head to head: their headline figures side by side, what differs, and their "
+                                     "parts when both are of the same model")
+  p.add_argument("--a", required=True)
+  p.add_argument("--b", required=True)
+  p.add_argument("--bands", help="repeat_bands.json containing calibrations for both setups")
   for name, about in (("replay-diff", "two replay runs of one trace, turn by turn"),
                       ("diff", "two runs of one model and target: replays turn by turn, prefill or decode audits row by row "
                                "(the engine-upgrade audit, docs/engine-upgrade-audit.md)")):
@@ -421,6 +492,7 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--seqs", type=int, default=1, help="sequences served together (1: one user)")
   p.add_argument("--context", type=int, default=None, help="the context the sequence count and the speed are stated at")
   p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts there")
+  _offload_args(p)
   p.add_argument("--check", action="store_true", help="start the engine once with these flags (a free GPU, a minute or two), "
                  "read its KV cache figures, cache its overhead in the facts and show predicted against measured")
   p = sub.add_parser("mtp", help="vLLM's multi-token prediction per draft count on natural prompts (collectors/vllm_mtp)")
@@ -432,6 +504,12 @@ def main(argv:list[str] | None = None) -> int:
   p.add_argument("--long-tokens", type=int, default=2048, help="the long depth's natural continuation; 0: short only")
   p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the measurement is cached in the newest "
                  "machine facts there, where the recommended setup reads it")
+  p = sub.add_parser("speedup-offer", help="Speed up for this model: enabled or why not, the copy's size and time, no GPU (quantization/speed_up.offer)")
+  p.add_argument("model")
+  p = sub.add_parser("speedup-plain", help="a Speed up job's log as layer 1: kept, not kept, refused or crashed, in plain words (report/speed_up_plain)")
+  p.add_argument("log")
+  p = sub.add_parser("speedup-verify", help="check a Speed up copy against its record, in plain words (derive lighter-head --verify)")
+  p.add_argument("copy")
   sub.add_parser("update", help="is a newer BoltBeam released (cli/self_update.py)").add_argument("--skip", help="skip this version")
   p = sub.add_parser("engines", help="look for every engine on this machine now and save what was found")
   p.add_argument("--cached", action="store_true", help="reuse saved discovery when settings and paths still match")
@@ -479,7 +557,7 @@ def main(argv:list[str] | None = None) -> int:
     elif args.command == "autoscan":
       out = {"schema": SCHEMA, **chips.autoscan(remeasure=args.remeasure)}
     elif args.command == "detect":
-      out = limit.detect()
+      out = chips.detect()
     elif args.command == "providers":
       target = _target_arg(args.target)
       model = _profile_arg(args) if args.model or args.profile else None
@@ -489,9 +567,9 @@ def main(argv:list[str] | None = None) -> int:
       target = _target_arg(args.target)
       roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
       out = recommended(_profile_arg(args), target, engine=args.engine, gpus=args.gpus, seqs=args.seqs, context=args.context,
-                        facts=lay.newest_facts(roots, target.target_id), check_in=roots if args.check else None)
+                        facts=lay.newest_facts(roots, target.target_id), check_in=roots if args.check else None, **_offload_kw(args))
     elif args.command == "engines" and args.update:
-      target = _target_arg(args.target or limit.detect().get("target_id") or "")
+      target = _target_arg(args.target or chips.detect().get("target_id") or "")
       out = {"schema": SCHEMA, "kind": "engines-update", "file": str(engine_builds.state_file()),
              "engines": engine_update.update(args.engine or list(engine_builds.rows()), backend=target.backend,
                                              root=pathlib.Path(args.into) if args.into else None,
@@ -526,13 +604,28 @@ def main(argv:list[str] | None = None) -> int:
       read = None
       if args.facts_root:
         roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
-        read = lay.read_bandwidth(lay.newest_facts(roots, target.target_id))
+        read = limit.read_bandwidth(lay.newest_facts(roots, target.target_id))
+      kw = _offload_kw(args)
       out = limit.ceiling(_profile_arg(args), target, context=args.context, dtype=args.dtype,
                     peak_gbs=args.peak_gbs, peak_tflops=args.peak_tflops, read=read)
+      if args.offload:  # the offload limit beside the all-in-VRAM one: the band and its arithmetic (workflow/offload.py)
+        got = recommended(_profile_arg(args), target, engine=args.engine, facts=lay.newest_facts([pathlib.Path(r).expanduser() for r in args.facts_root], target.target_id), **kw)
+        out = {**out, "offload": got["offload"], "offload_command": got["command"]}
     elif args.command == "ceilings":
       out = limit.ceilings(_profile_arg(args))
     elif args.command == "runs":
       out = rf.runs(pathlib.Path(args.root).expanduser(), _saved_arg(args), all_places=args.all)
+    elif args.command == "plain":
+      run = _run_arg(args)
+      out = plain.plain_results(rs.results(run), run)
+    elif args.command == "speedup-offer":
+      out = {"schema": SCHEMA, "kind": "speedup_offer", **speed_up.offer(args.model)}
+    elif args.command == "speedup-plain":
+      out = {"schema": SCHEMA, **speed_up_plain.log_result(args.log)}
+    elif args.command == "speedup-verify":
+      out = {"schema": SCHEMA, **speed_up_plain.verify(args.copy)}
+    elif args.command == "words":
+      out = {"schema": SCHEMA, "kind": "words", **plain.words()}
     elif args.command == "run":
       out = rs.show(_run_arg(args))
     elif args.command == "emit":
@@ -544,7 +637,7 @@ def main(argv:list[str] | None = None) -> int:
                           pipeline.tinygrad_root(args))
     elif args.command == "machine":
       run = pathlib.Path(args.run).expanduser()
-      out = pipeline.machine(run, remeasure=args.remeasure, provider=rf.run_provider(run),
+      out = pipeline.machine(run, remeasure=args.remeasure, provider=providers.run_provider(run),
                     root=pipeline.tinygrad_root(args))
     elif args.command == "save":
       out = save(pathlib.Path(args.run).expanduser(), pathlib.Path(args.to))
@@ -554,7 +647,7 @@ def main(argv:list[str] | None = None) -> int:
       out = clean_work(pathlib.Path(args.work).expanduser(), before=args.before, keep=args.keep)
     elif args.command == "delete":
       out = rf.delete(pathlib.Path(args.root).expanduser(), pathlib.Path(args.run).expanduser())
-    elif args.command.startswith("replay-") or args.command == "diff":
+    elif args.command.startswith("replay-") or args.command in ("diff", "head-to-head"):
       out = replay_command(args)
     else:
       out = rs.results(_run_arg(args))

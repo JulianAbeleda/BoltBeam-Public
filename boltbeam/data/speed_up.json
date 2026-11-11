@@ -1,0 +1,22 @@
+{
+  "schema": "boltbeam.speed_up_table.v1",
+  "about": "The one table behind Speed up (quantization/speed_up.py reads it): one row per engine. The core is engine-neutral; a row names the module in quantization/head_writers/ that holds that engine's parts, and the names of its functions: stock (is this engine stock), plan (the output layer and whether the target is lighter), write (the copy), accuracy (original against copy), and optionally speed (decode rows at given contexts and batches) with device (target id, name, backend, memory_bytes and budget_bytes the engine may use of the GPU in this machine; speed results are a list in the copy's record, one entry per GPU); a row without speed is kept on accuracy alone. formats are checkpoint formats (head_writers.detect), never model names. runs says whether the engine is built; why says why not. Adding an engine is a row and a writer module, no core edit.",
+  "threshold": {"metric": "top1_agreement", "min": 0.95, "min_positions": 2000, "min_documents": 8, "corpus": "gate_corpus.json", "corpus_sha256": "e4fb186ec66f5d301ef92884a6d7b8b6aac977538198b007653ecbf70c31d72d",
+    "about": "the copy must give the original's most likely next token at least this share of the time (point estimate) pooled over the documents of data/gate_corpus.json (8 Project Gutenberg excerpts of natural prose the original did not write, hashed here; a different hash refuses). Set by the owner 2026-11-10 after the review found the original's own continuation too easy a text; the threshold did not move. The interval is clustered by document. Fewer scored positions than min_positions and the gate refuses to decide"},
+  "expect": {"about": "Seconds each stage is expected to take: floor + per_gib x the checkpoint's GiB. NOT MEASURED: set by hand 2026-11-10 from the order of magnitude of the first runs, so a screen shows them as an estimate (about) until a run's own step times replace them.",
+    "floor": {"speed_write": 20, "speed_check": 120, "speed_measure": 300},
+    "per_gib": {"speed_write": 4, "speed_check": 15, "speed_measure": 30}},
+  "engines": [
+    {"engine": "vllm", "label": "vLLM", "formats": ["compressed-tensors/pack-quantized"], "writer": "vllm_ct", "find": "find",
+     "stock": "stock", "plan": "plan", "write": "write", "accuracy": "accuracy", "speed": "speed", "device": "device", "env": "BOLTBEAM_VLLM_PYTHON",
+     "target": "int4 group 128", "runs": true},
+    {"engine": "vllm", "label": "vLLM", "formats": ["awq"], "writer": "vllm_awq", "find": "find",
+     "stock": "stock", "plan": "plan", "write": "write", "accuracy": "accuracy", "speed": "speed", "device": "device", "env": "BOLTBEAM_VLLM_PYTHON",
+     "target": "int4 group 128", "runs": true},
+    {"engine": "llama.cpp", "label": "llama.cpp", "formats": ["gguf"], "writer": "gguf_quantize", "find": "find",
+     "stock": "stock", "plan": "plan", "write": "write", "accuracy": "accuracy", "env": "BOLTBEAM_LLAMA_BENCH",
+     "target": "Q4_K", "runs": true},
+    {"engine": "tensorrt-llm", "label": "TensorRT-LLM", "formats": ["tensorrt-llm-engine"], "writer": null, "env": "BOLTBEAM_TRTLLM_PYTHON",
+     "runs": false, "why": "not built yet: TensorRT-LLM compiles engines, so a copy needs a rebuild"}
+  ]
+}

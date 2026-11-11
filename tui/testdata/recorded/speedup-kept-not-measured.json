@@ -1,0 +1,15 @@
+{
+  "schema": "boltbeam.tui.v1",
+  "kind": "speedup_plain",
+  "outcome": "kept",
+  "head": "Made m · BoltBeam.",
+  "lines": [
+    "SPEED NOT MEASURED: the speed was not measured, so this copy is not known to be faster.",
+    "Scores the same on the answer check.",
+    "It shows in model lists as m · BoltBeam."
+  ],
+  "fix": null,
+  "copy": "/models/m-boltbeam",
+  "name": "m · BoltBeam",
+  "speed_measured": false
+}

@@ -1,24 +1,24 @@
 ⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Setup                                                                        │
-│ ▸ Model       Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K                    › │
-│   Chip        apple_m3_10c · this Mac · 97.2 GB/s                          › │
-│   Engine      llama.cpp                                                    › │
-│   Recommended setup context, speed and engine flags for this model on yo…  › │
-│   Workload    decode                                                       › │
-│   Batch       1                                                            › │
-│   Measurement generic (kernel timer)                                       › │
+│ ▸ Machine            checking this Mac…                                    › │
+│                                                                              │
+│   Model              Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K             › │
+│   Chip               apple_m3_10c · this Mac · 97.2 GB/s                   › │
+│   Engine             llama.cpp                                             › │
+│                                                                              │
+│   Recommended setup  context, speed and engine flags for this model on y…  › │
+│                                                                              │
+│   Workload           decode                                                › │
+│   Batch              1                                                     › │
+│   Measurement        generic (kernel timer)                                › │
 │     (in-model not available here: needs Xcode's Metal System Trace)          │
 │                                                                              │
-│   [ Run ]                                                                    │
-│   [ Emit ] Run first                                                         │
+│   [ Run ]            Measures decode speed: Qwen3-8B, this Mac, llama.cpp    │
+│   [ Emit ]           No run yet: Run first                                   │
+│                                                                              │
 │   Saved runs (0)                                                           › │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 
-
-
-
-
-
- ↑↓ move · enter pick · q quit
+ ↑↓ move · enter pick · ? all keys · q quit

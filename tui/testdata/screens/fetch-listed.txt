@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                             (˘ω˘) zz
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Fetch runs                                                                   │
+│ Fetch runs from another machine (a pod, a Linux box) over SSH, as boltbeam   │
+│ fetch does.                                                                  │
+│                                                                              │
+│ Each run lands in saved runs with its chip profile, every file checked by    │
+│ sha256. Nothing on the remote changes.                                       │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ 2 runs on root@203.0.113.7 in /root/boltbeam/runs                            │
+│ ┃ Runs to fetch                                                              │
+│ ┃   [ ] h100-in-model · not here · Qwen3-8B on nvidia_sm90 · 2026-11-09 ·…   │
+│ ┃ ▸ [x] h100-generic · not here · Qwen3-8B on nvidia_sm90 · 2026-11-09 · …   │
+│                                                                              │
+│   Raw traces                                                                 │
+│   they stay behind unless picked here                                        │
+│   leave them behind                                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ esc cancel · x toggle · ↑ up · ↓ down · enter confirm · ctrl+a select all …

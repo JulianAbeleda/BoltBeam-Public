@@ -1,0 +1,11 @@
+{
+  "schema": "boltbeam.tui.v1",
+  "kind": "speedup_plain",
+  "outcome": "crashed",
+  "head": "The run stopped without an answer.",
+  "lines": [],
+  "fix": "Fix: Read the log, delete any half-written copy, and try again.",
+  "copy": null,
+  "name": null,
+  "speed_measured": null
+}

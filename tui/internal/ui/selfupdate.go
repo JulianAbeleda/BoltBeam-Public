@@ -4,9 +4,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
@@ -67,7 +67,7 @@ func (m Model) selfUpdateStep(msg tea.Msg) (Model, tea.Cmd, bool) {
 			return m, selfUpdateTick(), true
 		}
 		return m, nil, true
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if !m.upd.shown {
 			return m, nil, false
 		}

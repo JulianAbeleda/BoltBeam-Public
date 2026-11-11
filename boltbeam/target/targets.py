@@ -23,7 +23,8 @@ def _from_row(d:dict) -> TargetProfile:
                        peak_tflops=dict(d.get("peak_tflops", {})),
                        matrix_tflops=dict(d.get("matrix_tflops", {})),
                        backend_status=d.get("backend_status", "complete"),
-                       capabilities=dict(d.get("capabilities", {})))
+                       capabilities=dict(d.get("capabilities", {})),
+                       name=d.get("name") or ((d.get("capabilities") or {}).get("match") or {}).get("gpu_name"))
 
 
 def load_target_registry(path:str | pathlib.Path | None = None) -> dict[str, TargetProfile]:

@@ -95,6 +95,13 @@
       "pending_routes": []
     },
     {
+      "name": "PTQ1_0",
+      "dequant_family": "legacy_scale",
+      "route_families": [],
+      "refuted_routes": [],
+      "pending_routes": []
+    },
+    {
       "name": "F16",
       "packed_word_bits": 16,
       "dequant_family": "float_passthrough",

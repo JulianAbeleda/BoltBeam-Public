@@ -39,7 +39,7 @@ from boltbeam.collectors import prefill as pf
 from boltbeam.collectors.replay_overhead import ORDER, PAIRS
 from boltbeam.trace import replay_trace as rt
 from boltbeam.artifacts.run_io import load_manifest, read_json
-from boltbeam.target.gpu import run_gpu
+from boltbeam.target.gpu import devices, run_gpu
 
 SERVER = "replay_server.json"  # the user's server command as given, and what the run read back from it
 SERVER_LOG = "replay_server.log"
@@ -290,7 +290,6 @@ def server_gpus(run:pathlib.Path, provider:str, argv:list[str]) -> dict[str, Any
   """Which of the machine's GPUs the user's server may run on, read from its own flags: BoltBeam never pins the
   user's command. The run's telemetry samples GPU 0 alone, so it stands for the server only when that is the one GPU
   the server uses; otherwise its clock scales no turn's peaks, and `why` says so."""
-  from boltbeam.workflow.layout import devices
   hw = run / "hardware_profile.json"
   n = len(devices(json.loads(hw.read_text()).get("gpu") or {})) if hw.is_file() else 1
   used = engine(provider)["gpus"](argv)
@@ -494,6 +493,9 @@ def _arm(run:pathlib.Path, provider:str, server:dict[str, Any], trace:dict[str, 
       rows.append(prev)
       if evidence is not None:
         evidence.append({"turn":t["i"],**got["response"]})
+  if not profiled and server.get("command"):  # the server is stopped: its exit statistics are in the log
+    from boltbeam.collectors import engine_args
+    engine_args.record(run, server["command"][1:], engine=provider, log=log.read_text(errors="replace"), env=env)
   if profiled:  # the server is stopped: the profiler has written its report; the timing stands without the kernels, said
     try: server["profiled_kernels"] = len(read(plan["tool"], profiled))
     except Exception as exc: server["profiled_kernels_failed"] = str(exc)[-300:]  # noqa: BLE001
@@ -620,7 +622,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   """The picked turns captured with llama-bench at their depth with the server's flags, attributed, and tied out
   to the server's prompt_ms; one decode capture at the deepest turn: replay_capture.json."""
   if (run/'forced_replay_request.json').exists():
-    from boltbeam.workflow.forced_replay import checked
+    from boltbeam.collectors.forced_replay import checked
     data=checked(run)
     return {'method':'nsys','pairing':data['pairing'],'timing_qualification':data['timing_qualification']}
   from boltbeam.collectors import llama_bench_decode as lbd

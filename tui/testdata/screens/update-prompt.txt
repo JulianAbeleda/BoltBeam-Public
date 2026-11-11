@@ -21,4 +21,4 @@
 
 
 
- ↑↓ move · enter pick · q quit
+ ↑/k up · ↓/j down · enter pick · esc not now · q quit

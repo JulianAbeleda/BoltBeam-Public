@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
@@ -61,25 +61,25 @@ func TestListsScrollByPageEndsAndWheel(t *testing.T) {
 	}
 	var m tea.Model = Model{f: Facts{Files: files, Path: files[0]}, cursor: pageModel}
 	row := func() int { return m.(Model).row }
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	if row() != PageRows {
 		t.Fatalf("PgDn: row %d, want %d", row(), PageRows)
 	}
-	m, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	m, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	if row() != PageRows+1 {
 		t.Fatalf("wheel down: row %d, want %d", row(), PageRows+1)
 	}
-	m, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if row() != 0 {
 		t.Fatalf("wheel up then PgUp: row %d, want 0", row())
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnd})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
 	last := len(m.(Model).actions()) - 1
 	if row() != last {
 		t.Fatalf("End: row %d, want the last row %d", row(), last)
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyHome})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyHome})
 	if row() != 0 {
 		t.Fatalf("Home: row %d, want 0", row())
 	}

@@ -354,3 +354,35 @@ rows), the reverse of an FFN's in-then-out, so the data flow's order puts ffn_do
 ffn_gate_up: the next sublayer's hc_attn_down, of the same shape, format and kernel, and about as long. No grid
 tells those two apart; the times attributed are the same, the launch is not. The fix is the classifier (an mHC class of
 its own), not the walk.
+
+## The hyper-connection mixers and the indexer have stages (2026-11-10)
+
+The section above ends on the classifier: 0.3.17 gave Flash-Next's mHC tensors and its QSA indexer roles of their own
+(`hyper_connection`, `attn_indexer`), with no stage and outside the limit roles, so on a capture their launches were
+weight kernels no role took. Where the model runs them (llama.cpp `models/qwen4exp.cpp`): `build_hc_mix` reads a
+low-rank down and up before each layer's token mixer (`hc_attn_*`), again before its FFN (`hc_ffn_*`) and once before
+the head (`output_hc_*`); the indexer's k and q projections read the layer's input before attention reads the cache.
+
+- **Data, in vocab.** The mixer is four fine classes, each its own group, since a profile row is one group, shape and
+  format and so holds one stage: `hyper_connection_attn` at `mix_in` (a new input-side stage), `hyper_connection_ffn`
+  at `mix_out` (output side, after the out projection, before the FFN: `OUTPUT_ORDER` is gate, out, mix_out, ffn_in,
+  ffn_out), `hyper_connection_head` at `head` (the tail), `hyper_connection_inject` with no stage;
+  `attention_indexer` at `in`. `vocab.STAGES` is the stage order the walk reads. No rule in the walk changed.
+- **The limit.** The mixers' down and up and the indexer's projections are read once per token, each its own
+  matrix-vector launch, so they are limit roles: their bytes leave the ledger's unclassified rows for the roles and
+  the limit's total is the same. The inject (4 x 10240 F32, 160 KB a layer pair) stays the ledger's small_vector
+  exclusion, as the shared expert's gate vector: its launch is four blocks wide and floor-bound, slower than the
+  router's 5 MB launch, so the M = 1 bytes order holds it no slot of its own (as a role it took one launch for two
+  calls). Its launches (grid 4, about 0.3 ms a token) stay unattributed. A profile written by 0.3.17 holds the
+  mixers both as rows and as unclassified: `limit_roles` counts them once.
+
+On the stored H200 capture (its profile rebuilt with each tree's classifier), 946de221 against this: 15 pair rows to
+23, nothing unpaired, no tie, not attributed 4.682 to 3.682 ms/token. Each mixer's down launches grid 320, its up
+(10240 rows, K 320: small_k, four rows a block) grid 2560; the token mixer's before the input projections, the FFN's
+between the out projection and the router, the head's on the tail; the indexer on BF16 grid 128 and 512. The twelve
+other stored captures re-attribute to byte-identical traces (`tests/fixtures/pairing/h200-flash-next-decode-4-mixers`).
+
+What the report still cannot show: the llama.cpp trace's kernel rows carry no shape, so `tinygrad_role_time.loss`
+cannot time a (role, format) the ceiling holds at two shapes (the mixers' down and up, the indexer's q and k, and
+attn_qo's q and o here and on the 27B): their launches read as weight kernels no role took in the report although
+the trace pairs them.

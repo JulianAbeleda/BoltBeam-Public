@@ -2,7 +2,9 @@
 
 BoltBeam measures a model in an engine and shows where the engine's time goes against the roofline. Five engines
 have adapters today: llama.cpp, vLLM, Ollama, TensorRT-LLM and the tinygrad fork. This guide says what a new
-adapter must return, and points at the code that does each part for the existing five.
+adapter must return, and points at the code that does each part for the existing five. Every engine is also a row of
+[data/engine_families.json](../boltbeam/data/engine_families.json): a family's root or one of its forks (Ollama is a
+llama.cpp fork); an adapter is that row's `provider`, and Setup's Engine picker moves between a family's forks with ←→.
 
 The rule behind the layout is **modularize execution, centralize authority** ([coding-principles.md](coding-principles.md)).
 An adapter knows only its own engine: how to find it, which weights it reads, how to run N decode tokens, and how

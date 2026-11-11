@@ -1,0 +1,52 @@
+{
+  "head": {
+    "differs": "These differ: GPU (NVIDIA H100 80GB HBM3 / NVIDIA GeForce RTX 5090).",
+    "kind": "head_to_head",
+    "refused": null,
+    "rows": [
+      {
+        "better": 0,
+        "cells": [
+          "83.6 tok/s",
+          "81.9 tok/s"
+        ],
+        "key": "speed",
+        "label": "speed (each stream)"
+      },
+      {
+        "better": 1,
+        "cells": [
+          "41%",
+          "75%"
+        ],
+        "key": "pct",
+        "label": "of its GPU's limit"
+      },
+      {
+        "better": null,
+        "cells": [
+          "+13.9 tok/s",
+          "+4.0 tok/s"
+        ],
+        "key": "gain",
+        "label": "biggest gain on offer"
+      }
+    ],
+    "runs": [
+      {
+        "id": "h100-qwen3.8-27b-q4km-llama",
+        "title": "Qwen3.8-27B-UD-Q4_K_M on NVIDIA H100 80GB HBM3 with llama.cpp"
+      },
+      {
+        "id": "rtx5090-qwen3.8-27b-q4km-llama",
+        "title": "Qwen3.8-27B-UD-Q4_K_M on NVIDIA GeForce RTX 5090 with llama.cpp"
+      }
+    ],
+    "schema": "boltbeam.plain_head_to_head.v1"
+  },
+  "kind": "head_to_head",
+  "lines": [],
+  "parts_note": "The parts line up only between two runs of the same model on the same GPU, engine and work; these differ in GPU, so only the headline figures are side by side.",
+  "plain": null,
+  "schema": "boltbeam.tui.v1"
+}

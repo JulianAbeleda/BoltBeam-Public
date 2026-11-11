@@ -16,6 +16,7 @@ role, write the report.
 python -m boltbeam.workflow.screen pipeline MODEL --run runs/a --target TARGET --provider ENGINE \
   --workload decode|prefill|session|replay --analyze --no-search [--bands bands.json]
 python -m boltbeam.workflow.screen results --run runs/a          # the same facts the screen shows, as JSON
+python -m boltbeam.workflow.screen plain --run runs/a            # the same results in plain words: layer 1 and 2, as JSON
 python -m boltbeam.workflow.screen repeat-bands --runs runs/a runs/b runs/c runs/d --out bands.json
 python -m boltbeam.workflow.screen diff --before runs/a --after runs/b          # the engine-upgrade audit
 python -m boltbeam.workflow.screen replay-cross --a runs/a --b runs/b           # two engines, one replay trace
@@ -23,7 +24,10 @@ python -m boltbeam.workflow.screen autoscan                       # measure this
 python -m boltbeam.workflow.screen recommend MODEL --target TARGET --engine ENGINE [--check]   # context, speed and flags per GPU layout
 ```
 
-`--provider` is `llama.cpp` (default), `tinygrad`, `vllm`, `ollama` or `tensorrt-llm`. `--role-time` picks
+`--provider` is `llama.cpp` (default), `tinygrad`, `vllm`, `ollama` or `tensorrt-llm`. Engines come in families, a root
+and its forks ([data/engine_families.json](../boltbeam/data/engine_families.json)): `ollama` is llama.cpp's Ollama fork,
+`tinygrad` runs tinygrad's own fork; PrismML is a llama.cpp fork BoltBeam runs through `BOLTBEAM_LLAMA_BENCH`; Strata (its own engine built on llama.cpp's ggml library and MMQ kernels, listed in the llama.cpp family) is not run yet. A run
+records its `engine_family` and `fork` in measure_status.json. `--role-time` picks
 `in-model` (a capture of the real token), `generic` (the engine's kernels timed alone) or `auto`. `python -m
 boltbeam.workflow.screen --help` lists every subcommand; the screen (`boltbeam tui`) reads the same ones.
 
@@ -292,7 +296,7 @@ Every command writes JSON with a `schema` field, and the schemas are in `schemas
 | `machine_facts.json` | this GPU's measured read bandwidth |
 | `repeat_bands.json` | the repeat bands the run was given (`--bands`) |
 | `search_space.json`, `route_policy.json`, `measurement_plan.json` | the search space, the route policy, what to measure next |
-| `summary.md`, `report.html` | the human-readable report |
+| `report.html`, `summary.md` | the report: the answer on top, the detail below it; summary.md is its plain-text copy |
  A number
 carries its status where one exists: `hardware` when a chip reported it, `measurement` when
 someone measured it, `modeled` when it was derived. When you see `modeled`, it is arithmetic,

@@ -4,6 +4,7 @@
 import io
 import json
 
+from boltbeam.collectors import capture_scope
 from boltbeam.collectors import capture_settings as cs, vllm_mtp
 from boltbeam.workflow import recommend as rec, repeat_bands as rb, screen
 from boltbeam.workflow import pipeline as pp
@@ -34,12 +35,12 @@ def test_repeats_run_the_setup_n_times_then_save_the_band(monkeypatch, tmp_path)
   runs, saved = [], {}
   monkeypatch.setattr(pp, "pipeline_current", lambda args, out: runs.append((args.run, args.update_engines, args.hold_machine)) or 0)
   monkeypatch.setattr(pp, "output_run", lambda run: None)
-  monkeypatch.setattr(rb, "save", lambda paths, out, fixed: saved.update(paths=paths, out=out, fixed=fixed) or rb.strength(len(paths)))
+  monkeypatch.setattr(rb, "save", lambda paths, out, fixed: saved.update(paths=paths, out=out, fixed=fixed) or capture_scope.strength(len(paths)))
   r = tmp_path / "q-001"
   assert screen.main(["pipeline", "m", "--run", str(r), "--target", "nvidia_sm120", "--repeats", "3", "--update-engines"]) == 0
   # the repeats hold run 1's machine facts: a re-read between them moved the limit and the band refused (5090, 2026-11-09)
   assert runs == [(str(r), True, None), (str(tmp_path / "q-001-repeat-2"), False, r), (str(tmp_path / "q-001-repeat-3"), False, r)]
-  assert saved["out"] == r / rb.ARTIFACT and saved["fixed"]["n"] == 3 and json.loads((r / rb.PLAN).read_text())["n"] == 3
+  assert saved["out"] == r / capture_scope.ARTIFACT and saved["fixed"]["n"] == 3 and json.loads((r / rb.PLAN).read_text())["n"] == 3
   lines = said.getvalue().splitlines()
   assert lines[0] == "repeat 1/3: q-001" and lines[-1] == "repeat band: done: n = 3, a row reads moved by chance 50% of the time"
   monkeypatch.setattr(rb, "save", lambda *a: (_ for _ in ()).throw(ValueError("repeat work differs")))
@@ -54,7 +55,7 @@ def test_repeat_summary_words_the_band_of_this_setup(tmp_path):
   a = repeat(tmp_path, "a")
   b = repeat(tmp_path, "b", {"big": {"ms": 100.1}, "small": {"ms": 0.012}}, date="2026-10-13")
   assert rb.summary(a) is None
-  rb.save([a, b], a / rb.ARTIFACT)
+  rb.save([a, b], a / capture_scope.ARTIFACT)
   got = rb.summary(a)
   assert got["n"] == 2 and got["weak"] and "needs at least 4" in got["pin"]
   assert got["lines"] == ["prefill 512: median 100.561 ms, 100.510 to 100.612 ms over 2 runs (spread 0.1%)"]
@@ -77,20 +78,20 @@ def test_providers_carry_each_engines_settings_and_the_repeat_n(monkeypatch):
   from boltbeam.collectors import providers
   from boltbeam.target.targets import get_target
   monkeypatch.setattr(providers, "available", lambda *a, **k: [{"provider": "vllm"}, {"provider": "tinygrad"}])
-  monkeypatch.setattr(screen, "_hardware_profile", lambda: {"gpu": {"name": "x", "devices": [{"name": "x", "memory_bytes": 1}]}})
+  monkeypatch.setattr(screen, "hardware_profile", lambda: {"gpu": {"name": "x", "devices": [{"name": "x", "memory_bytes": 1}]}})
   got = screen.provider_list(get_target("nvidia_sm120"))
-  assert got["repeat_runs"] == rb.PIN_RUNS
+  assert got["repeat_runs"] == capture_scope.PIN_RUNS
   assert [r["settings"] for r in got["providers"]] == [cs.offered("vllm"), []]
 
 
 def test_a_held_repeat_takes_the_first_runs_machine_facts_as_they_are(tmp_path):
   """llama.cpp's 27B on the 5090: repeat 2 read the GPU again (1709.3 GB/s against 1710.0), every limit moved by a
   fraction of a percent, and the band refused 'repeat work differs' (2026-11-09)."""
-  from boltbeam.workflow import layout as lay
+  from boltbeam.artifacts.run_io import MACHINE
   first, second = tmp_path / "r-001", tmp_path / "r-001-repeat-2"
   first.mkdir(); second.mkdir()
   facts = {"driver": "595.99.02", "gpus": [{"index": 0, "read_gbs": 1710.0, "read_from": "probe", "uncertainty": 0.0023}]}
-  (first / lay.MACHINE).write_text(json.dumps(facts))
+  (first / MACHINE).write_text(json.dumps(facts))
   got = pp.machine(second, hold=first)
   assert got["reused"] and got["reused_because"] == "held fixed for the repeat band: the facts of r-001"
-  assert json.loads((second / lay.MACHINE).read_text()) == facts
+  assert json.loads((second / MACHINE).read_text()) == facts

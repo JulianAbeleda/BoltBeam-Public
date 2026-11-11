@@ -8,9 +8,10 @@ import pathlib
 from collections.abc import Mapping
 from typing import Any
 
+from boltbeam.artifacts.run_io import optional
 from boltbeam.role_key import role_key
 from boltbeam.search import provider_check, role_space, tinygrad_fork
-from boltbeam.workflow.repeat_bands import for_decode
+from boltbeam.collectors.capture_scope import for_decode
 
 DEFAULT_KIND = role_space.HEURISTIC
 
@@ -83,8 +84,8 @@ def time_roles(run:pathlib.Path, *, root:pathlib.Path | None = None) -> dict[str
   trace = tinygrad_role_time.collect(run, root=root, python=tinygrad_fork.fork_python(root), model=model,
                                      model_id=str(manifest.get("model_id")), target=get_target(manifest.get("target_id")), context=selected_context(run),
                                      tokens=decode_tokens(run, selected_context(run)))
-  from boltbeam.workflow import limit, run_folder
-  ceil = limit.measured_vs_ceiling(manifest, run_folder.optional(run, "model_profile.json"))
+  from boltbeam.roofline import limit
+  ceil = limit.measured_vs_ceiling(manifest, optional(run, "model_profile.json"))
   table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), for_decode(run, trace))
   if table and table["status"] != "measured":  # say it where the job ends, not only on the next screen
     raise RuntimeError(table["reason"])
@@ -95,11 +96,11 @@ def role_losses(run:pathlib.Path) -> dict[tuple[Any, ...], dict[str, Any]]:
   """The per-role loss rows of a run, by role_key (role, quant, rows, k); empty before the roles were timed."""
   from boltbeam.collectors import tinygrad_role_time
   from boltbeam.artifacts.run_io import read_json
-  from boltbeam.workflow import limit, run_folder
+  from boltbeam.roofline import limit
   from boltbeam.artifacts.run_io import load_manifest
   path = run / tinygrad_role_time.TRACE
   if not path.is_file(): return {}
-  ceil = limit.measured_vs_ceiling(load_manifest(run), run_folder.optional(run, "model_profile.json"))
+  ceil = limit.measured_vs_ceiling(load_manifest(run), optional(run, "model_profile.json"))
   table = tinygrad_role_time.loss(ceil.get("_roles") or [], read_json(path), ceil.get("floor_ms"), for_decode(run, read_json(path))) or {"roles": []}
   return {role_key(r): r for r in table["roles"]}  # an incomplete table has no roles
 

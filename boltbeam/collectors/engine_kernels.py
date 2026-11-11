@@ -47,7 +47,7 @@ import re
 import struct
 from typing import Any, Callable
 
-from boltbeam.collectors import kernel_timer
+from boltbeam.collectors import capture_settings, kernel_timer
 from boltbeam.collectors.kernel_timer import Check, KernelSpec
 
 CLOCK_INTERVAL_S = 0.005  # fine enough that each kernel's timed window holds samples of the clock it ran at
@@ -195,8 +195,8 @@ def ggml_source(path:str | pathlib.Path) -> str:
 
 
 def ggml_type_name(quant:str) -> str:
-  """ggml's type name for a GGUF quant: Q4_K -> q4_K, Q6_K -> q6_K, Q8_0 -> q8_0 (ggml_type_name)."""
-  return quant[0].lower() + quant[1:]
+  """ggml's type name for a GGUF quant: Q4_K -> q4_K, Q8_0 -> q8_0, PTQ1_0 -> ptq1_0 (ggml_type_name)."""
+  return quant.lower().replace("_k", "_K")
 
 
 def ggml_kernel(text:str, quant:str) -> str | None:
@@ -263,6 +263,7 @@ def ggml_metal_spec(text:str, quant:str, rows:int, cols:int, weights:bytes, x:li
 
 _MMVQ_CANDIDATES = ("~/env/llama.cpp/ggml/src/ggml-cuda", "~/llama.cpp/ggml/src/ggml-cuda", "/usr/local/src/llama.cpp/ggml/src/ggml-cuda")
 from boltbeam.collectors.gemv_reference import GGML_TYPES as GGML_TYPE  # noqa: E402  the one ggml.h type table (gemv_reference)
+from boltbeam.profile.gguf import GGML_FORK_TYPES  # noqa: E402
 from boltbeam.artifacts.run_io import load_manifest, read_json
 Q8_1_BLOCK, Q8_1_BYTES = 32, 36  # block_q8_1: half d, half s, 32 int8 (ggml-common.h)
 MATRIX_ROW_PADDING = 512  # ggml-cuda common.cuh: the quantized vector is padded to this many columns
@@ -598,7 +599,7 @@ def mmvq_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:bytes
 # --- the adapters, one row per (engine, backend) --------------------------------------------------------------------------
 
 # the formats whose mul_mv METAL_RULE mirrors; ggml's Metal IQ kernels also take threadgroup memory it does not set
-METAL_FORMATS = ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K")
+METAL_FORMATS = ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K", "PTQ1_0")  # PTQ1_0: the PrismML fork only
 
 
 def _metal_setup(bench:str | None) -> dict[str, Any]:
@@ -615,7 +616,7 @@ def _mmvq_setup(bench:str | None) -> dict[str, Any]:
   return {"source": src, "engine": "llama.cpp (ggml-cuda mmvq)", "macros": {},
           "spec": lambda s, quant, rows, cols, w, x: mmvq_spec(pathlib.Path(s["source"]["dir"]), quant, rows, cols, w, x,
                                                                cc=s.get("cc"), warp=s.get("warp") or 32, macros=s["macros"]),
-          "kernel": lambda s, quant: f"mul_mat_vec_q<(ggml_type){GGML_TYPE[quant]}, 1, ...>" if quant in GGML_TYPE else None,
+          "kernel": lambda s, quant: f"mul_mat_vec_q<(ggml_type){GGML_TYPE[quant]}, 1, ...>" if quant in GGML_TYPE and GGML_TYPE[quant] not in GGML_FORK_TYPES else None,  # mmvq reads upstream's rules
           "device": lambda bridge: {"cc": bridge.ggml_cc(), "warp": bridge.facts().get("warp_size"),
                                     "macros": dict(bridge.GGML_MACROS), "engine": f"llama.cpp (ggml {bridge.API} backend)"},
           "bridge": {"includes": mmvq_includes(pathlib.Path(src["dir"]))}}
@@ -655,8 +656,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
   (boltbeam.timing_trace.v1) to run/out. The token the kernels tie out against is step 4's measured whole step."""
   from boltbeam.collectors import boltbeam_gemv, llama_bench_decode, gemv_reference, providers
   from boltbeam.profile.gguf import read_gguf_split, read_tensor
-  from boltbeam.workflow import tie_out
-  from boltbeam.workflow.limit import run_bandwidth
+  from boltbeam.roofline.limit import run_bandwidth
   from boltbeam.target.targets import get_target
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
   manifest = load_manifest(run)
@@ -672,7 +672,7 @@ def collect(run:pathlib.Path, provider:str, *, say:Callable[[str], None] = lambd
   roles = role_rows(profile)
   peak_gbs, peak_source = run_bandwidth(run, target)
   step4 = read_json(run / "timing_trace.json") if (run / "timing_trace.json").exists() else {}
-  token = tie_out.measured_step(step4, provider)
+  token = capture_settings.measured_step(step4, provider)
   own_bridge = bridge is None
   try:
     bridge = bridge or kernel_timer.bridge_for(backend, **setup["bridge"])

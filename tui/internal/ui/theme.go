@@ -2,24 +2,38 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
+	"math"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/progress"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	colorful "github.com/lucasb-eyer/go-colorful"
 )
 
-// The palette is a set of tokens, not colours sprinkled through the views. lipgloss degrades them to the
+// The palette is a set of tokens, not colours sprinkled through the views. Bubble Tea degrades them to the
 // terminal's profile and strips them under NO_COLOR, so the plain golden screens are the same text.
 var (
-	pink   = lipgloss.AdaptiveColor{Light: "#C2408F", Dark: "#F5A3D7"}
-	purple = lipgloss.AdaptiveColor{Light: "#6E56CF", Dark: "#A89CFF"}
-	cyan   = lipgloss.AdaptiveColor{Light: "#0E8FA6", Dark: "#8BE0EF"}
-	mint   = lipgloss.AdaptiveColor{Light: "#2F9E6F", Dark: "#9FE5B3"}
-	butter = lipgloss.AdaptiveColor{Light: "#B7791F", Dark: "#F6D37A"}
-	coral  = lipgloss.AdaptiveColor{Light: "#D1443E", Dark: "#FF9A8B"}
-	muted  = lipgloss.AdaptiveColor{Light: "#8A8798", Dark: "#8C889C"}
+	pink   = adaptive{Light: "#C2408F", Dark: "#F5A3D7"}
+	purple = adaptive{Light: "#6E56CF", Dark: "#A89CFF"}
+	cyan   = adaptive{Light: "#0E8FA6", Dark: "#8BE0EF"}
+	mint   = adaptive{Light: "#2F9E6F", Dark: "#9FE5B3"}
+	butter = adaptive{Light: "#B7791F", Dark: "#F6D37A"}
+	coral  = adaptive{Light: "#D1443E", Dark: "#FF9A8B"}
+	muted  = adaptive{Light: "#8A8798", Dark: "#8C889C"}
 )
+
+// darkBackground is the terminal's answer to Bubble Tea's background query (tea.BackgroundColorMsg); until it
+// comes, or when none does, dark, as Lip Gloss v1 assumed.
+var darkBackground = true
+
+// adaptive is a colour with a light and a dark variant, picked by darkBackground when it is drawn.
+type adaptive struct{ Light, Dark string }
+
+func (c adaptive) RGBA() (r, g, b, a uint32) { return lipgloss.Color(pair(c)).RGBA() }
+
+var _ color.Color = adaptive{}
 
 var (
 	stMuted  = lipgloss.NewStyle().Foreground(muted)
@@ -85,8 +99,8 @@ func hexBlend(from, to string, t float64) string {
 		int(float64(f[1])+(float64(g[1])-float64(f[1]))*t), int(float64(f[2])+(float64(g[2])-float64(f[2]))*t))
 }
 
-func pair(c lipgloss.AdaptiveColor) string {
-	if lipgloss.HasDarkBackground() {
+func pair(c adaptive) string {
+	if darkBackground {
 		return c.Dark
 	}
 	return c.Light
@@ -114,8 +128,19 @@ func bar(ratio float64, width int) string {
 	if ratio > 1 {
 		ratio = 1
 	}
-	p := progress.New(progress.WithGradient(pair(pink), pair(purple)), progress.WithoutPercentage(), progress.WithWidth(width),
-		progress.WithColorProfile(lipgloss.ColorProfile()))
+	// v1's ramp, kept: full blocks, cell i of the bar blended in Luv at i/(width-1), a single cell at the middle
+	from, _ := colorful.Hex(pair(pink))
+	to, _ := colorful.Hex(pair(purple))
+	single := int(math.Round(float64(width)*ratio)) == 1
+	ramp := func(_, current float64) color.Color { // current is i/width
+		t := 0.5
+		if !single {
+			t = math.Round(current*float64(width)) / float64(width-1)
+		}
+		return lipgloss.Color(from.BlendLuv(to, t).Hex())
+	}
+	p := progress.New(progress.WithColorFunc(ramp), progress.WithoutPercentage(), progress.WithWidth(width),
+		progress.WithFillCharacters(progress.DefaultFullCharFullBlock, progress.DefaultEmptyCharBlock))
 	return p.ViewAs(ratio)
 }
 
@@ -134,7 +159,7 @@ func box(title, body string, width int, dim bool) string {
 		lines[i] = truncate(line, inner)
 	}
 	content := gradient(title) + "\n" + strings.Join(lines, "\n")
-	return style.Width(width - 2).Render(content)
+	return style.Width(width).Render(content) // Lip Gloss v2 counts the border in the width
 }
 
 // truncate cuts a styled line to width cells with "…"; the screen never wraps.

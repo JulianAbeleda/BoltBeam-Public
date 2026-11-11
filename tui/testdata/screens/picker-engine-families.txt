@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Engine                                                                       │
+│ The engine is the runtime that runs the model. Each row is a family: its     │
+│ root (upstream) and its forks. ↑↓ moves between families, ←→ between a       │
+│ family's forks; enter picks the one in brackets.                             │
+│                                                                              │
+│ Only a fork found on this Mac that BoltBeam can run is picked. Engines are   │
+│ looked for at start; an env var (BOLTBEAM_LLAMA_BENCH, …) overrides what was │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Choose                                                                       │
+│ llama.cpp · roles not timed here                                             │
+│ ▸ ● llama.cpp     ‹ upstream · [PrismML] · Ollama · Strata ›                 │
+│         PrismML · found at /opt/llama.cpp-prism/build/bin/llama-bench ·      │
+│         BoltBeam can't run it yet: a run with it is not wired yet            │
+│     vLLM          not on this GPU type: BoltBeam runs vLLM on CUDA or AMD G… │
+│     tinygrad      ‹ [upstream] · own fork ›                                  │
+│         upstream · not found → get it from https://github.com/tinygrad/      │
+│         tinygrad, then export BOLTBEAM_TINYGRAD_UPSTREAM=<its path>          │
+│     [ Scan again ] look for engines in the usual folders                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · ←→ fork · enter pick · esc setup · ? all keys · q quit

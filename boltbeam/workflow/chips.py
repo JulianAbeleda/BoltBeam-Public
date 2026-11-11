@@ -6,9 +6,9 @@
             figures are derived on the GPU in front of it, not taken from another machine
 
 The match rule is the exact GPU name, the architecture, the memory size in GiB, and the core count where the driver
-tool reports one (autoscan.match_facts). A profile is a registry row in the registry's own shape, saved in this
+tool reports one (hardware.match_facts). A profile is a registry row in the registry's own shape, saved in this
 machine's store (targets.chips_dir: $BOLTBEAM_CHIPS_DIR or ~/.boltbeam/chips), never in the repo. Its id comes from
-the hardware (autoscan.chip_profile_id). Every number in it says its source and date. "Measure again" refreshes it.
+the hardware (hardware.chip_profile_id). Every number in it says its source and date. "Measure again" refreshes it.
 
 chip_list sorts every chip for Setup: this machine, measured chips (what-if limits), chips not measured yet, and
 families (not a run target). Python decides the groups; the screen draws them.
@@ -24,10 +24,12 @@ from boltbeam.collectors import path_rates
 from boltbeam.target import targets as reg
 from boltbeam.target import vendors
 from boltbeam.target.targets import fact_uncertainty
-from boltbeam.target.vendors import NoVendorRow  # noqa: F401  (re-exported: chips.NoVendorRow)
 from boltbeam.workflow import layout as lay
-from boltbeam.workflow.autoscan import _hardware_profile, chip_profile_id
 from boltbeam.target.gpu import first_gpu
+from boltbeam.target.hardware import chip_profile_id, hardware_profile, vendor_rows
+from boltbeam.roofline import limit
+from boltbeam.target import gpu as tgpu
+from boltbeam.vocab import SCHEMA_TUI as SCHEMA
 
 Measure = Callable[[], dict[str, Any]]
 _SMI_FACTS = "driver_version,clocks.max.sm,clocks.max.memory,power.limit"
@@ -88,24 +90,6 @@ def _probes(vendor:str, device:dict[str, Any] | None = None) -> tuple[Measure, M
   return _bridge_probes(row, (device or {}).get("pci_bus_id"))
 
 
-# What BoltBeam knows per GPU vendor is one row each in target/vendors.py; _vendors() is that registry in the scan's
-# shape: the driver tool (scan_tool), the OS it answers on (platform, None for any), the probe, (tool path,
-# run_command) -> (devices, error) in the vendor runtime's device order, the facts a chip profile matches on
-# (match_keys), the primary GPU's note and, for a discrete GPU, the measured profile's facts. A vendor is a row there,
-# not a branch in the scan or in profile_row.
-def _vendors() -> dict[str, dict[str, Any]]:
-  from boltbeam.workflow import autoscan as scan
-  return {name: v.scan_facts(KFD_NODES=scan.KFD_NODES) for name, v in vendors.VENDORS.items()}
-
-
-def vendor_row(vendor:str | None, key:str | None = None) -> Any:
-  """One vendor's row, or one fact of it; NoVendorRow, with the vendor and the fact, when there is none."""
-  row = _vendors().get(str(vendor))
-  if row is None or (key is not None and key not in row):
-    raise NoVendorRow(f"no {key + ' ' if key else ''}row for {vendor!r} GPUs in workflow.chips._vendors() (target/vendors.py)")
-  return row if key is None else row[key]
-
-
 def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any], driver:dict[str, Any],
                 *, today:str) -> dict[str, Any]:
   """A registry-shaped row for one GPU from what was measured on it. Pure: the probes ran before."""
@@ -113,7 +97,7 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
   if not pid:
     raise RuntimeError(f"the scan of {device.get('name')!r} lacks the name, memory or core count a profile id needs")
   apple = device.get("vendor") == "apple"
-  v = {} if apple else _vendors().get(device.get("vendor"))
+  v = {} if apple else vendor_rows().get(device.get("vendor"))
   if v is None or not (apple or "backend" in v):
     raise RuntimeError(f"no profile shape for {device.get('vendor')!r} GPUs")
   version = driver.get("driver_version") or device.get("driver_version") or (
@@ -156,7 +140,7 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
   if matrix.get("path_scan"):  # the matrix paths the installed compiler offered this target, kept to be read again
     caps["matrix_path_scan"] = matrix["path_scan"]
   return {
-    "target_id": pid, "backend": vendors.vendor(device.get("vendor")).backend,
+    "target_id": pid, "name": device.get("name"), "backend": vendors.vendor(device.get("vendor")).backend,
     "wave_size": matrix.get("warp_size") or 32, "subgroup_size": matrix.get("warp_size") or 32,
     "lds_bytes_per_cu": None if apple else matrix.get(v["lds_key"]),
     "vram_bytes": None if apple else device.get("memory_bytes"), "vector_load_bits": 128,
@@ -236,7 +220,7 @@ def autoscan(*, remeasure:bool = False, hardware:dict[str, Any] | None = None,
   too: the row is never rewritten, and the profile made here comes before it from then on (targets.match_target).
   remeasure refreshes a profile made here. A GPU with a reference (that row, or the profile being refreshed) is
   measured once per figure first, and again only where it disagrees with the reference (_measure)."""
-  device = first_gpu(hardware or _hardware_profile())
+  device = first_gpu(hardware or hardware_profile())
   if device is None:
     return {"kind": "chip_autoscan", "status": "no_gpu", "action": "none", "name": None, "target_id": None,
             "source": None, "match": None, "path": None}
@@ -275,7 +259,7 @@ def _here_words(t, facts_roots:list | None) -> str:
   """This machine's memory speed as the ceiling uses it: the newest measured read in the runs, else the profile's
   own figure (a profile made here, or the registry's), with its source."""
   from boltbeam.workflow import layout as lay
-  read = lay.read_bandwidth(lay.newest_facts(facts_roots, t.target_id)) if facts_roots else None
+  read = limit.read_bandwidth(lay.newest_facts(facts_roots, t.target_id)) if facts_roots else None
   if read and read.get("gbs"):
     return f"{read['gbs']:.1f} GB/s · {read['short']}"
   return _measured_words(t).replace(", ", " · ", 1)
@@ -292,8 +276,7 @@ def chip_list(detected:dict[str, Any] | None = None, facts_roots:list | None = N
   """Every chip in the four groups Setup shows, in order. `detected` is this machine's first GPU from the scan.
   facts_roots are the run folders the ceiling reads this machine's measured read from: the chip's words use the
   same number, so the picker and the speed limit never disagree."""
-  from boltbeam.workflow.limit import target_facts
-  device = detected if detected is not None else (first_gpu(_hardware_profile()) or {})
+  device = detected if detected is not None else (first_gpu(hardware_profile()) or {})
   profile = device.get("profile") or {}
   here = profile.get("id") if profile.get("status") == "known" else None
   this = {"name": device.get("name"), "target_id": here, "status": profile.get("status") or "no_gpu",
@@ -305,7 +288,7 @@ def chip_list(detected:dict[str, Any] | None = None, facts_roots:list | None = N
   else:
     this["words"] = "no GPU found"
   rows = list(reg.TARGETS.values())
-  facts = [target_facts(t) for t in rows]
+  facts = [limit.target_facts(t) for t in rows]
   groups = {"this": [], "measured": [], "not_measured": [], "families": []}
   words = {}
   for t, f in zip(rows, facts):
@@ -326,3 +309,20 @@ def chip_list(detected:dict[str, Any] | None = None, facts_roots:list | None = N
   return {"kind": "chips", "targets": facts, "this_machine": this,
           "groups": [{"key": k, "title": titles[k], "selectable": k in ("this", "measured"), "folded": k == "families",
                       "chips": [{"id": tid, "words": words[tid]} for tid in ids]} for k, ids in groups.items()]}
+
+
+def detect(profile:dict[str, Any] | None = None) -> dict[str, Any]:
+  """The chip this machine is: autoscan's own GPU probe, cut to what a screen shows. No probe, no guess: null."""
+  gpu = (profile or hardware_profile())["gpu"]
+  target_id = gpu.get("target_id")
+  devs = tgpu.devices(gpu)
+  return {"schema": SCHEMA, "kind": "detect", "status": gpu.get("status"), "name": gpu.get("name"),
+          # every GPU the probe found; more than one is limited support (workflow/layout.py)
+          "gpus": [{"index": d["index"], "name": d["name"], "target_id": d["target_id"]} for d in devs],
+          "gpu_count": len(devs), "multi_gpu": lay.summary(devs),
+          "target_id": target_id, "target_kind": gpu.get("target_kind"),
+          # read live from nvidia-smi on every call; the registry's driver is the one its facts were measured on
+          "driver_version": gpu.get("driver_version"),
+          # known: a registry row or a profile made here fits; new: autoscan would measure one (workflow/chips.py)
+          "profile": gpu.get("profile"),
+          "registered": bool(target_id) and target_id in {t["id"] for t in limit.targets()["targets"]}}

@@ -17,11 +17,8 @@ import (
 func TestIsolatedLossSaysHowItWasMeasured(t *testing.T) {
 	var res seam.Results
 	load(t, "results-isolated", &res)
-	old := tableWidth
-	defer func() { tableWidth = old }()
 	for _, cols := range []int{80, 110} {
-		tableWidth = cols - 4
-		got := ansi.Strip(wrapText(lossBody(res.Loss), cols-4))
+		got := ansi.Strip(wrapText(lossBody(res.Loss, cols-4), cols-4))
 		for _, want := range []string{
 			"Each kernel timed alone by BoltBeam's kernel timer, cold (the cache swept by a read",
 			"Sum alone: 54.3 ms, less the 1.9 µs dispatch floor per launch: 53.8 ms (the estimate uses this); the real token: 66.0 ms.",
@@ -63,7 +60,7 @@ func TestInModelOvercountStillRefused(t *testing.T) {
 	why := "profiled kernels do not fit the real token: they sum to 63.699 ms, more than the 55.124 ms token"
 	tie.Refused, tie.Estimate, tie.Isolated, l.Estimate = &why, nil, false, nil
 	l.TieOut = &tie
-	if got := ansi.Strip(lossBody(l)); !strings.Contains(got, "Not tied out. "+why) {
+	if got := ansi.Strip(lossBody(l, wide)); !strings.Contains(got, "Not tied out. "+why) {
 		t.Errorf("in-model overcount not refused:\n%s", got)
 	}
 }
@@ -73,8 +70,6 @@ func TestInModelOvercountStillRefused(t *testing.T) {
 // isolated table as the seam sends it, with no second rule here. The isolated table with a floor shows the measured
 // µs and the µs less the floor side by side, labelled.
 func TestNoisyReasonShowsInEveryRoleTable(t *testing.T) {
-	old := tableWidth
-	defer func() { tableWidth = old }()
 	noisy := "too small to fill memory; noisy: ±13.2%, 4.1 µs floor under a 8.0 µs kernel"
 	roles := []seam.RoleLoss{
 		{Role: "attn_kv", Quant: "Q6_K", IdealMs: 0.04, ActualMs: 0.14, LostMs: 0.10, Share: 0.6, CallsPerToken: 18, PctPeak: fp(51.9),
@@ -86,13 +81,11 @@ func TestNoisyReasonShowsInEveryRoleTable(t *testing.T) {
 	}
 	var b strings.Builder
 	for _, w := range []int{200, 76} {
-		tableWidth = w
 		b.WriteString(fmt.Sprintf("-- role table at %d --\n", w))
-		b.WriteString(plain(roleTable(roles, nil)))
+		b.WriteString(plain(roleTable(roles, nil, w)))
 	}
-	tableWidth = 200
 	b.WriteString("-- isolated table --\n")
-	b.WriteString(plain(isoRoleTable(roles, true)))
+	b.WriteString(plain(isoRoleTable(roles, true, wide)))
 	got := b.String()
 	if strings.Count(got, noisy) != 3 || !strings.Contains(got, "at the limit") {
 		t.Fatalf("the noisy suffix must show in all three tables:\n%s", got)

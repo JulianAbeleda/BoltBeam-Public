@@ -31,8 +31,9 @@ import re
 import subprocess
 from typing import Any, Callable
 
-LIMITED = ("limited support: measured on two R9700s (vLLM split by rows, llama.cpp split by layer); not timing-qualified, "
-           "and a vLLM split by rows is not split by role")
+from boltbeam.artifacts.run_io import MACHINE
+from boltbeam.target.gpu import LIMITED
+
 LAYOUTS = {"one": "one GPU", "layer": "split by layer", "row": "split by rows"}
 DEFAULT = "one"
 ENGINE_LAYOUTS = {"llama.cpp": ("one", "layer", "row"), "tinygrad": ("one",), "vllm": ("one", "row")}
@@ -45,7 +46,6 @@ VENDOR_REFUSALS = {("llama.cpp", "row"): "ggml_row_split"}
 SPEED = {"one": "one GPU reads every weight",
          "layer": "holds a bigger model; the GPUs take turns, so no decode speedup",
          "row": "the GPUs read their shares at once; joins cost per layer"}
-MACHINE = "machine_facts.json"
 FITS = 0.9  # the share of one GPU's memory the weights may take for the model to count as fitting it
 ACTIVATION_BYTES = 4  # float32 activations cross the GPU boundary (llama.cpp keeps hidden states in f32)
 ROW_TRANSFERS_PER_LAYER = 2  # row split joins partial results after attention and after the feed-forward
@@ -57,14 +57,6 @@ PROBE = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "gpu_probe.py"
 
 
 # --- the GPUs and their links ----------------------------------------------------------------------------------
-
-def devices(gpu:dict[str, Any]) -> list[dict[str, Any]]:
-  """Every GPU the probe found, in the driver's order, with its index. One Apple GPU on a Mac."""
-  rows = gpu.get("devices") or ([gpu] if gpu.get("name") else [])
-  return [{"index": i, "name": d.get("name"), "target_id": d.get("target_id"), "uuid": d.get("uuid"), "pci_bus_id": d.get("pci_bus_id"),
-           "memory_bytes": d.get("memory_bytes") or d.get("unified_memory_bytes"), "working_set_bytes": d.get("working_set_bytes"), "registered": bool(d.get("target_registered", d.get("target_id")))}
-          for i, d in enumerate(rows)]
-
 
 def summary(devs:list[dict[str, Any]]) -> str | None:
   """'4 x NVIDIA GeForce RTX 5090' or the mixed list, with the support label; None for one GPU."""
@@ -152,66 +144,6 @@ def recommend(rows:list[dict[str, Any]], model_bytes:float, devs:list[dict[str, 
     return None
   return ("The model fits on one GPU: one GPU, or one replica per GPU, is the default unless batch-1 latency "
           "matters; split by rows wins batch-1 on several GPUs.")
-
-
-def used_gpus(layout:str, devs:list[dict[str, Any]], n:int | None = None) -> list[dict[str, Any]]:
-  return devs[:1] if layout == "one" else devs[:n or None]
-
-
-# GPU 0 in each runtime's order, the order the scan lists them in (chips._vendors() "order"): CUDA numbers GPUs
-# fastest first unless told to follow PCI addresses, as nvidia-smi does, so the pinned card is the profiled card
-PIN = {"CUDA_VISIBLE_DEVICES": "0", "CUDA_DEVICE_ORDER": "PCI_BUS_ID", "HIP_VISIBLE_DEVICES": "0"}
-
-
-def pin() -> dict[str, str]:
-  """PIN, keeping the first GPU of a visibility list the caller already set: the scan lists that GPU first
-  (autoscan.shown), so it is the run's GPU."""
-  from boltbeam.target.vendors import VENDORS
-  shown = {name for v in VENDORS.values() for name in v.visible}
-  return {k: os.environ[k].split(",")[0].strip() if k in shown and os.environ.get(k) else v for k, v in PIN.items()}
-
-
-# llama.cpp's split by rows, newest first: "tensor" is its tensor-parallel split; "row" needs ggml's split buffers,
-# which a CUDA build at 50569eb87 refused on 2 x RTX 3090 ("device CUDA0 does not support split buffers", 2026-11-09)
-LLAMA_ROW_MODES = ("tensor", "row")
-_SPLIT_MODES:dict[tuple[str, int], tuple[str, ...] | None] = {}
-
-
-def llama_split_modes(bench:str | None) -> tuple[str, ...] | None:
-  """The split modes this llama-bench offers, from its own --help (--split-mode <none|layer|row|tensor>); None when
-  it cannot be read. Cached per binary and its modification time."""
-  if not bench or not os.path.isfile(bench):
-    return None
-  key = (bench, os.stat(bench).st_mtime_ns)
-  if key not in _SPLIT_MODES:
-    try:
-      text = subprocess.run([bench, "--help"], capture_output=True, text=True, timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
-      text = ""
-    m = re.search(r"--split-mode\s+<([a-z|]+)>", text)
-    _SPLIT_MODES[key] = tuple(m.group(1).split("|")) if m else None
-  return _SPLIT_MODES[key]
-
-
-def engine_args(layout:str, provider:str, bench:str | None = None) -> tuple[list[str], dict[str, str]]:
-  """Extra command arguments and environment that make the engine use this layout. llama.cpp's split by rows takes
-  the newest mode the build at `bench` offers (LLAMA_ROW_MODES); with no build to ask, "row"."""
-  if provider == "llama.cpp":
-    if layout == "one":
-      return ["-sm", "none", "-mg", "0"], pin()
-    if layout == "row":
-      offered = llama_split_modes(bench)
-      return ["-sm", next((m for m in LLAMA_ROW_MODES if offered and m in offered), "row")], {}
-    return ["-sm", layout], {}
-  return [], pin()  # tinygrad: one GPU only
-
-
-def one_gpu(run:pathlib.Path, provider:str) -> tuple[list[str], dict[str, str]]:
-  """A one-GPU engine run's arguments and environment: pinned to GPU 0, the run's GPU (gpu.run_gpu), when the
-  run's machine has more than one; nothing on one GPU, as the decode collector does (llama_bench_decode)."""
-  hw = pathlib.Path(run) / "hardware_profile.json"
-  devs = devices(json.loads(hw.read_text()).get("gpu") or {}) if hw.is_file() else []
-  return engine_args("one", provider) if len(devs) > 1 else ([], {})
 
 
 # --- measuring the machine -----------------------------------------------------------------------------------------
@@ -467,42 +399,10 @@ def limit(layout:str, *, bytes_per_token:float, facts:dict[str, Any], hidden_siz
           "support": LIMITED}
 
 
-# --- the one read bandwidth a single-GPU limit uses -----------------------------------------------------------------
-
-def short_source(source:str | None, measured_at:str | None = None) -> str:
-  """The read bandwidth's source in a few words for a screen line: which probe, and when; or that it is the
-  registry's figure. The full source stays in the limit's inputs."""
-  from boltbeam.target import vendors
-  s = source or ""
-  when = f", {measured_at}" if measured_at else ""
-  probes = [(t, t.removeprefix("BoltBeam's ")) for v in vendors.VENDORS.values() if (t := v.term("native_read_probe"))]
-  for needle, words in (*probes, ("tinygrad read-sum", "tinygrad read-sum, a lower bound")):
-    if needle in s:
-      return f"measured on this GPU ({words}{when})"
-  if s.startswith("registry figure"):
-    return "registry figure, not measured on this GPU"
-  return s or "unknown"
-
-
 def _ceiling_facts(got:dict[str, Any]) -> dict[str, Any]:
   """A probe's cold, sustained, regime and measured uncertainty, as a machine-facts row keeps them."""
   return {k: got[k] for k in ("regime", "cold_gbs", "sustained_gbs", "shape_spread", "drift", "uncertainty", "run_values")
           if got.get(k) is not None}
-
-
-def read_bandwidth(facts:dict[str, Any] | None, layout:str = "one") -> dict[str, Any] | None:
-  """The read bandwidth the one-GPU limit uses (the layout's first GPU), with its source in full and in short;
-  None for no facts, a multi-GPU layout or a GPU with no read bandwidth. Measured or registry, it is the one number
-  the speed limit, the tie-out and the per-role rule all use."""
-  if not facts or not facts.get("gpus") or (layout != "one" and len(facts["gpus"]) > 1):
-    return None
-  g = facts["gpus"][0]
-  if not g.get("read_gbs"):
-    return None
-  return {"gbs": g["read_gbs"], "source": g.get("read_source"), "target_id": g.get("target_id"),
-          **{k: g[k] for k in ("shape_spread", "drift", "uncertainty") if g.get(k) is not None},
-          "measured": str(g.get("read_source") or "").startswith("measured"),
-          "short": short_source(g.get("read_source"), facts.get("measured_at"))}
 
 
 def newest_facts_file(folders:list[pathlib.Path], target_id:str) -> tuple[pathlib.Path, dict[str, Any]] | None:

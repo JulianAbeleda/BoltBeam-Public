@@ -106,7 +106,9 @@ shows the path each engine was found at and how.
 |---|---|---|
 | tinygrad fork | `tinygrad-arkey-exp` next to the BoltBeam checkout, `~/tinygrad-arkey*`, `~/env/tinygrad*`, `~/storage/*/tinygrad*`, with a `.venv` inside it that has numpy | `BOLTBEAM_TINYGRAD_ROOT`, `BOLTBEAM_TINYGRAD_VENV` |
 | vLLM | a venv under `~/env`, `~/storage`, `~/venvs`, `~/.venvs` or `~/storage/*` whose python imports `vllm` | `BOLTBEAM_VLLM_PYTHON` |
-| Ollama | `ollama` on PATH, `/usr/local/bin`, `~/.ollama`, `~/storage/*/ollama/bin` | `BOLTBEAM_OLLAMA` |
+| Ollama (a llama.cpp fork) | `ollama` on PATH, `/usr/local/bin`, `~/.ollama`, `~/storage/*/ollama/bin` | `BOLTBEAM_OLLAMA` |
+| PrismML (a llama.cpp fork; listed, not run yet) | `~/env/llama.cpp-prism/build/bin/llama-bench` | `BOLTBEAM_LLAMA_PRISM` |
+| Strata (own engine on llama.cpp's ggml and MMQ kernels; listed, not run yet) | `strata` on PATH | `BOLTBEAM_STRATA` |
 | TensorRT-LLM | a venv as for vLLM whose python imports `tensorrt_llm` | `BOLTBEAM_TRTLLM_PYTHON` |
 
 The tinygrad fork:

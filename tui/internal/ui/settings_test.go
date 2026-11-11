@@ -8,9 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
@@ -50,31 +49,37 @@ func keys(m Model, ks ...string) Model {
 // checkpoint has one. Enter types a whole number (a bad one is refused), steps a fixed set, and Run passes each value
 // with its flag. Another engine drops them.
 func TestEngineSettingsPageAndRun(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	m := vllmProgram(t)
-	if got := rows(setupActions(m.f)); !slices.Contains(got, "page|Settings    engine defaults\t›") {
+	if got := rows(setupActions(m.f)); !slices.Contains(got, "page|Settings           engine defaults\t›") {
 		t.Fatalf("setup:\n%s", strings.Join(got, "\n"))
 	}
-	if got := rows(settingsActions(m.f)); slices.ContainsFunc(got, func(r string) bool { return strings.Contains(r, "MTP") }) {
-		t.Fatalf("no recommendation yet, so no draft head is known: %v", got)
+	offered := func(f Facts) (names []string) {
+		for _, s := range f.settingsOffered() {
+			names = append(names, s.Name)
+		}
+		return names
+	}
+	if slices.Contains(offered(m.f), "mtp") {
+		t.Fatalf("no recommendation yet, so no draft head is known: %v", offered(m.f))
 	}
 	m.f.RecKey, m.f.Recommend = m.f.recommendKey(), sampleRecommend()
 	m.f.Recommend.Weights.Mtp = 1e9
-	if got := rows(settingsActions(m.f)); !slices.Contains(got, "setting|MTP draft tokens   not set") {
-		t.Fatalf("a draft head offers MTP: %v", got)
+	if !slices.Contains(offered(m.f), "mtp") {
+		t.Fatalf("a draft head offers MTP: %v", offered(m.f))
 	}
-	m.cursor = pageSettings
-	m, _ = m.do(action{do: "setting", arg: "chunk_size"})
-	if m = keys(m, "x", "enter"); m.f.SettingEdit != "chunk_size" || !strings.Contains(m.note, "whole number") {
-		t.Fatalf("a chunk size is a whole number: %q %q", m.f.SettingEdit, m.note)
+	m = settle(m.do(action{"", "page", fmt.Sprint(pageSettings)}))
+	if m.form == nil || m.form.kind != "settings" {
+		t.Fatal("Settings opens its form")
 	}
-	m.input.SetValue("")
-	if m = keys(m, "5", "1", "2", "enter"); m.f.SettingEdit != "" || m.f.Settings["chunk_size"] != "512" {
-		t.Fatalf("typed: %+v", m.f.Settings)
+	if m = typeKeys(m, "x", "enter"); !strings.Contains(frame(m), "a whole number above 0, or nothing to unset it") {
+		t.Fatalf("a chunk size is a whole number:\n%s", frame(m))
 	}
-	m, _ = m.do(action{do: "setting", arg: "gemm_backends"})
-	m, _ = m.do(action{do: "setting", arg: "gemm_backends"})
-	golden(t, "picker-settings.txt", m.View())
+	m = typeKeys(m, "backspace", "512", "enter", "right", "right", "enter")
+	golden(t, "picker-settings.txt", frame(m))
+	if m = typeKeys(m, "enter"); m.form != nil || m.cursor != pageSetup || m.f.Settings["chunk_size"] != "512" {
+		t.Fatalf("kept: %+v", m.f.Settings)
+	}
 	if got := settingsValue(m.f); got != "chunk size 512 · matrix backends TRITON" {
 		t.Fatalf("the Setup value: %q", got)
 	}
@@ -93,16 +98,16 @@ func TestEngineSettingsPageAndRun(t *testing.T) {
 
 // Repeats offers one run or Python's n; Run asks for that many, and the Run page shows the band Python worded.
 func TestRepeatsPickerRunAndBand(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	m := vllmProgram(t)
-	if got := rows(setupActions(m.f)); !slices.Contains(got, "page|Repeats     1 run\t›") {
+	if got := rows(setupActions(m.f)); !slices.Contains(got, "page|Repeats            1 run\t›") {
 		t.Fatalf("setup:\n%s", strings.Join(got, "\n"))
 	}
 	if got := rows(repeatsActions(m.f)); !slices.Equal(got, []string{"repeats|● 1 run", "repeats|4 runs, then their repeat band"}) {
 		t.Fatalf("picker: %v", got)
 	}
 	m.cursor = pageRepeats
-	golden(t, "picker-repeats.txt", m.View())
+	golden(t, "picker-repeats.txt", frame(m))
 	m, _ = m.do(action{do: "repeats", arg: "4"})
 	if m.cursor != pageSetup || m.f.repeats() != 4 || setupActions(m.f)[m.row].arg != fmt.Sprint(pageRepeats) {
 		t.Fatalf("picked 4: cursor %d row %d repeats %d", m.cursor, m.row, m.f.repeats())
@@ -126,7 +131,7 @@ func TestRepeatsPickerRunAndBand(t *testing.T) {
 // Measure MTP is offered when Python says so (vLLM, a draft head), muted with its reason when blocked; the kept
 // measurement shows per k; the job's end reads the recommendation again.
 func TestMeasureMtp(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	f := Facts{Recommend: sampleRecommend()}
 	if got := rows(recommendActions(f)); len(got) != 3 {
 		t.Fatalf("no offer, no row: %v", got)
@@ -160,5 +165,18 @@ func TestMeasureMtp(t *testing.T) {
 	m, _ = m.update(mtpJobMsg{&jobs.Job{ID: "q-mtp", LogPath: "/s/q-mtp.log"}, false})
 	if m.f.RecKey != "" || m.note != "Measure MTP ended. Its log: /s/q-mtp.log" {
 		t.Fatalf("ended: %q %q", m.f.RecKey, m.note)
+	}
+}
+
+// Recommended setup sits above Settings: the recommendation proposes the context, speed and engine flags, and
+// Settings, under it, changes them.
+func TestRecommendedSetupAboveSettings(t *testing.T) {
+	setProfile(colorprofile.NoTTY)
+	got := rows(setupActions(vllmProgram(t).f))
+	want := []string{"page|Machine            checking this Mac…\t›", "head|", "page|Model              Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K\t›", "page|Chip               apple_m3_10c · this Mac · 97.2 GB/s\t›",
+		"page|Engine             vllm\t›", "head|", "page|Recommended setup  context, speed and engine flags for this model on your GPUs\t›",
+		"page|Settings           engine defaults\t›", "head|", "page|Workload           decode\t›"}
+	if strings.Join(got[:len(want)], "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
 }

@@ -2,12 +2,10 @@ package ui
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/atotto/clipboard"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/muesli/termenv"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
@@ -41,7 +39,7 @@ func (m *Model) loadRecommend() tea.Cmd {
 		return nil
 	}
 	m.f.RecKey, m.f.Recommend, m.f.RecErr = key, nil, ""
-	return tea.Batch(m.askRecommend(key, false), m.loadMtp())
+	return tea.Batch(m.askRecommend(key, false), m.loadMtp(), m.loadSpeed())
 }
 
 func (m Model) askRecommend(key string, check bool) tea.Cmd {
@@ -58,7 +56,9 @@ func recommendValue(f Facts) string {
 	switch {
 	case f.RecChecking:
 		return strings.TrimSpace(f.Spin + " checking with one engine start…")
-	case r == nil || len(r.Layouts) == 0:
+	case f.ModelNeeds != nil && needsFork(f) != "": // the fork this model needs, proposed; the engine stays
+		return "use the " + f.ModelNeeds.Label + " fork of " + f.ModelNeeds.FamilyLabel + " (Engine, →)"
+	case r == nil || len(r.Layouts) == 0 || f.recommendKey() != f.RecKey: // none yet, or for another model
 		return stMuted.Render(recommendHint)
 	}
 	one := r.Layouts[0] // the layout picked under Engine; one GPU until a layout is picked
@@ -72,12 +72,20 @@ func recommendValue(f Facts) string {
 		if c.Kind == "upper bound" {
 			bound = "up to "
 		}
-		return fmt.Sprintf("%scontext %s · %s KV · %d seqs", bound, commas(*c.Value), r.KVDtype, r.Seqs)
+		return fmt.Sprintf("%scontext %s · %s KV · %s", bound, commas(*c.Value), r.KVDtype, sequences(r.Seqs))
 	}
 	if r.Recommended.ID != nil && *r.Recommended.ID != one.ID {
 		return fmt.Sprintf("does not fit %s; use %s", one.Label, *r.Recommended.ID)
 	}
 	return "does not fit " + one.Label
+}
+
+// sequences is "1 sequence" or "n sequences".
+func sequences(n int) string {
+	if n == 1 {
+		return "1 sequence"
+	}
+	return fmt.Sprintf("%d sequences", n)
 }
 
 func commas(v float64) string {
@@ -111,7 +119,11 @@ func bestMtp(m map[string]seam.RecFig) (string, *seam.RecFig) {
 	return k, best
 }
 
-func recommendBody(f Facts, width int) string {
+// recommendBody is Speed up's block when there is one (what was just started or just ended leads), then the
+// recommendation, then Measure MTP's measurement.
+func recommendBody(f Facts, width int) string { return speedBody(f, width) + recommendMain(f, width) }
+
+func recommendMain(f Facts, width int) string {
 	r := f.Recommend
 	switch {
 	case f.RecErr != "":
@@ -191,10 +203,10 @@ func recommendBody(f Facts, width int) string {
 func recommendActions(f Facts) []action {
 	r := f.Recommend
 	if r == nil {
-		return []action{note("  nothing to copy yet")}
+		return append([]action{note("  nothing to copy yet")}, speedActions(f)...)
 	}
 	if r.Command == nil {
-		return append([]action{note("  nothing to copy yet")}, mtpAction(f)...)
+		return append(append([]action{note("  nothing to copy yet")}, mtpAction(f)...), speedActions(f)...)
 	}
 	check := action{"[ Check ] start the engine once with these flags and compare", "reccheck", ""}
 	if f.RecChecking {
@@ -204,14 +216,14 @@ func recommendActions(f Facts) []action {
 		{"[ Copy engine command line ]", "reccopy", "command"},
 		{"[ Copy Arkey vllm_args ]", "reccopy", "arkey"},
 		check,
-	}, mtpAction(f)...)
+	}, append(mtpAction(f), speedActions(f)...)...)
 }
 
 // copyText puts text on the clipboard: the system's where there is one, and the terminal's own (OSC 52) always,
-// which also reaches a local clipboard over ssh.
-func copyText(text string) {
+// which also reaches a local clipboard over ssh: Bubble Tea writes the OSC 52 in step with its frames.
+func copyText(text string) tea.Cmd {
 	_ = clipboard.WriteAll(text)
-	termenv.NewOutput(os.Stdout).Copy(text)
+	return tea.SetClipboard(text)
 }
 
 func (f Facts) copyOf(what string) string {

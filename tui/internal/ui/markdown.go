@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // renderMarkdown draws the markdown Python writes (gameplan.md) in the screen's styles, line by line, so the page

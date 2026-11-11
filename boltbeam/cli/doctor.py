@@ -1,7 +1,7 @@
 """`boltbeam doctor`: what this machine has for BoltBeam, one row each, and the one thing to do for each gap.
 
 It is a report, so it exits 0 either way. It probes nothing of its own: the GPU is read the way autoscan reads it
-(workflow/autoscan._hardware_profile, once), the engines are looked for by the engine scan and listed the way
+(target/hardware.hardware_profile, once), the engines are looked for by the engine scan and listed the way
 Setup lists them (collectors/engine_scan, collectors/providers.available), the capture tool by the vendor table
 (collectors/vendor_capture.plan), the GPU's health and counters by the vendor table too (target/vendors.py), each
 Triton engine's Python.h (engine_common.missing_headers), the tinygrad fork by tinygrad_fork.readiness, and the Go
@@ -9,6 +9,10 @@ toolchain and the screen binary by cli/tui. --json prints the same rows as one o
 
     row      found / not found / n/a, a detail, and for a gap the fix: one command or one env var
     gap      a row that says not found; n/a rows (an engine that never runs on this GPU type) are not gaps
+    blocks   a gap no run gets past: Python too old, no GPU, no chip profile, a GPU that needs a reset, or no
+             engine at all; any other gap costs one engine or one per-role split
+    group    what the row is about, for a screen that groups them: gpu, engines, tools (what splits a step by
+             role) or boltbeam (its own Python, Go and screen)
 """
 from __future__ import annotations
 
@@ -18,34 +22,34 @@ import sys
 from typing import Any
 
 from boltbeam.cli import tui
-from boltbeam.collectors import engine_common as ec, engine_scan, providers, tinygrad_role_time, vendor_capture
+from boltbeam.collectors import engine_common as ec, engine_families, engine_scan, providers, tinygrad_role_time, vendor_capture
 from boltbeam.search import tinygrad_fork
 from boltbeam.target import targets as reg
 from boltbeam.vocab import SCHEMA_DOCTOR as SCHEMA
-from boltbeam.workflow import autoscan
+from boltbeam.target import gpu as tgpu, hardware
 
 FLOOR = (3, 10)
 WORD = {True: "found", False: "not found", None: "n/a"}
 AUTOSCAN = "python -m boltbeam.workflow.screen autoscan"
 
 
-def row(item:str, found:bool | None, detail:str, fix:str | None = None) -> dict[str, Any]:
-  return {"item": item, "found": found, "detail": detail, "fix": fix}
+def row(item:str, found:bool | None, detail:str, fix:str | None = None, *, blocks:bool = False) -> dict[str, Any]:
+  return {"item": item, "found": found, "detail": detail, "fix": fix, "blocks": blocks}
 
 
 def _python() -> dict[str, Any]:
   ok = sys.version_info[:2] >= FLOOR
   return row("python", ok, f"{platform.python_version()} ({sys.executable})",
-             None if ok else f"install Python {FLOOR[0]}.{FLOOR[1]} or newer and install BoltBeam with it: python3.12 -m pip install .")
+             None if ok else f"install Python {FLOOR[0]}.{FLOOR[1]} or newer and install BoltBeam with it: python3.12 -m pip install .", blocks=not ok)
 
 
 def _gpu(gpu:dict[str, Any]) -> list[dict[str, Any]]:
   from boltbeam.workflow import layout as lay
   if gpu.get("status") != "detected":
     why = (gpu.get("notes") or [gpu.get("status") or "no GPU"])[0]
-    return [row("GPU", False, why, "install the GPU's driver tool (nvidia-smi for NVIDIA, amd-smi for AMD): BoltBeam reads the GPU from it"),
+    return [row("GPU", False, why, "install the GPU's driver tool (nvidia-smi for NVIDIA, amd-smi for AMD): BoltBeam reads the GPU from it", blocks=True),
             row("chip profile", None, "no GPU")]
-  devs = lay.devices(gpu)
+  devs = tgpu.devices(gpu)
   name = lay.summary(devs) or gpu.get("name") or "GPU"
   profile = gpu.get("profile") or {}
   out = [row("GPU", True, name + (f", driver {gpu['driver_version']}" if gpu.get("driver_version") else ""))]
@@ -62,7 +66,7 @@ def _gpu(gpu:dict[str, Any]) -> list[dict[str, Any]]:
     out.append(row("chip profile", False, f"none yet for {gpu.get('name')}. A run does not measure the chip by itself, "
                    f"and without its measured bandwidth and compute peak every ceiling is refused. autoscan saves the "
                    f"profile as {profile.get('id')}",
-                   f"{AUTOSCAN}   (measures this GPU once, about a minute, and saves the profile)"))
+                   f"{AUTOSCAN}   (measures this GPU once, about a minute, and saves the profile)", blocks=True))
   return out
 
 
@@ -70,23 +74,37 @@ def _engines(target, scanned:dict[str, Any], root) -> list[dict[str, Any]]:
   if target is None:
     return [row("engines", None, "not checked: no chip profile to measure on")]
   found = scanned.get("found") or {}
+  avail = providers.available(target, tinygrad_root=root)
+  by = {e["provider"]: e for e in avail}
   out = []
-  for e in providers.available(target, tinygrad_root=root):
+  for fam in engine_families.rows(avail):  # one row per family: the forks here; a fork not here is never a gap
+    here = [f for f in fam["forks"] if f["state"] in ("available", "found")]
+    missing = [f["label"] for f in fam["forks"] if f["state"] == "not_here"]
+    if here:
+      parts = []
+      for f in here:
+        if f["state"] == "available":
+          hit = found.get(engine_scan.PRIMARY[f["provider"]]) or {}
+          where = f"{hit['path']} ({hit['how']}); " if hit else ""
+          parts.append(f"{f['label']}: {where}per-role time: {by[f['provider']]['capture']['method'] or 'whole step only'}")
+        else:
+          parts.append(f"{f['label']}: {f['path'] or 'found'} (BoltBeam cannot run it yet)")
+      out.append({**row(fam["label"], True, " · ".join(parts)), "forks_missing": missing})
+      continue
+    runs = [f for f in fam["forks"] if f["provider"] in by]
+    if not runs:  # no adapter of this family answered for this machine
+      continue
+    e = by[runs[0]["provider"]]  # the family's first fork BoltBeam runs
     name = e["provider"]
-    hit = found.get(engine_scan.PRIMARY[name]) or {}
-    if e["available"]:
-      how = e["capture"]["method"] or "whole step only"
-      where = f"{hit['path']} ({hit['how']}); " if hit else ""
-      out.append(row(name, True, f"{where}per-role time: {how}"))
-    elif e["state"] == "not_compatible":
-      out.append(row(name, None, e["reason"]))
+    if e["state"] == "not_compatible":
+      out.append(row(fam["label"], None, e["reason"]))
     elif name == tinygrad_role_time.PROVIDER:
       ready = tinygrad_fork.readiness(root)
-      out.append(row(name, False, ready["message"] or e["reason"], ready["fix"]))
+      out.append(row(fam["label"], False, ready["message"] or e["reason"], ready["fix"]))
     elif getattr(providers.ENGINES[name], "python", lambda: None)():
-      out.append(row(name, False, e["reason"], "its python is found but it does not run here: the sentence above says why"))
+      out.append(row(fam["label"], False, e["reason"], "its python is found but it does not run here: the sentence above says why"))
     else:
-      out.append(row(name, False, e["reason"], f"install it, or export {engine_scan.PRIMARY[name]}=<its path>; the next scan finds the usual places"))
+      out.append(row(fam["label"], False, e["reason"], f"install it, or export {engine_scan.PRIMARY[name]}=<its path>; the next scan finds the usual places"))
   return out
 
 
@@ -107,7 +125,7 @@ def _health(target) -> dict[str, Any]:
   if got["healthy"]:
     return row("GPU health", True, "no remaps pending or failed, no uncorrectable DRAM errors since boot, every GPU opens a context")
   return row("GPU health", False, "; ".join(got["problems"]),
-             "reset the GPU (reboot), or on a rented machine delete it and rent another: its numbers would not be its own")
+             "reset the GPU (reboot), or on a rented machine delete it and rent another: its numbers would not be its own", blocks=True)
 
 
 def _headers(target) -> list[dict[str, Any]]:
@@ -184,12 +202,17 @@ def _screen(facts:dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def report(root=None) -> dict[str, Any]:
-  """Every row, then the count of gaps. One GPU read, one engine scan, nothing measured."""
+  """Every row with its group, then the count of gaps. One GPU read, one engine scan, nothing measured."""
   scanned = engine_scan.scan_and_save()
-  gpu = autoscan._hardware_profile()["gpu"]
+  gpu = hardware.hardware_profile()["gpu"]
   target = reg.TARGETS.get(gpu.get("target_id") or "")
-  rows = [_python(), *_gpu(gpu), _health(target), *_engines(target, scanned, root), *_headers(target),
-          _kernel_source(target), _capture(target), _counters(target), *_screen(tui.facts())]
+  engines = _engines(target, scanned, root)
+  if not any(r["found"] for r in engines):  # no engine at all: every engine gap stops the run
+    engines = [{**r, "blocks": r["found"] is False} for r in engines]
+  grouped = (("boltbeam", [_python()]), ("gpu", [*_gpu(gpu), _health(target)]), ("engines", [*engines, *_headers(target)]),
+             ("tools", [_kernel_source(target), _capture(target)]), ("gpu", [_counters(target)]),
+             ("boltbeam", _screen(tui.facts())))
+  rows = [{**r, "group": group} for group, some in grouped for r in some]
   gaps = sum(1 for r in rows if r["found"] is False)
   return {"schema": SCHEMA, "rows": rows, "gaps": gaps, "ready": gaps == 0, "engines_file": scanned["file"],
           "engines": engine_scan.rows(scanned)}

@@ -89,9 +89,14 @@ def saved(env_var:str) -> str | None:
 
 
 def save(result:dict[str, Any]) -> pathlib.Path:
+  """The engines file's one writer: `boltbeam doctor`, the screen's scan and a stale cache all come here through
+  scan_and_save. Sorted keys, so one scan is one byte string; written beside the file and renamed over it, so another
+  process reading it (the screen's engine rows while doctor scans) never sees half a file."""
   path = engines_file()
   path.parent.mkdir(parents=True, exist_ok=True)
-  path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+  part = path.with_name(f".{path.name}.{os.getpid()}")
+  part.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+  os.replace(part, path)
   return path
 
 
@@ -175,13 +180,12 @@ def llama_checkouts(home:pathlib.Path) -> list[pathlib.Path]:
 
 
 def backend_tag(env:Mapping[str, str] | None = None) -> str | None:
-  """The ggml backend this machine's GPU runs, from its vendor's row (chips._vendors() ggml_backend: cuda, hip, metal),
+  """The ggml backend this machine's GPU runs, from its vendor's row (hardware.vendor_rows() ggml_backend: cuda, hip, metal),
   the scan finding the tools on env's PATH; None when the scan found no GPU, or GPUs of more than one vendor."""
-  from boltbeam.workflow.autoscan import _hardware_profile
-  from boltbeam.workflow.chips import NoVendorRow, vendor_row
+  from boltbeam.target.hardware import NoVendorRow, hardware_profile, vendor_row
   env = os.environ if env is None else env
   try:
-    device = first_gpu(_hardware_profile(tool_resolver=lambda name: shutil.which(name, path=env.get("PATH"))))
+    device = first_gpu(hardware_profile(tool_resolver=lambda name: shutil.which(name, path=env.get("PATH"))))
     return vendor_row(device["vendor"], "ggml_backend") if device else None
   except (NoVendorRow, RuntimeError):
     return None

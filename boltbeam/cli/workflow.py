@@ -35,7 +35,19 @@ def _register_inspect(sub) -> None:
 
 
 def cmd_inspect(args) -> int:
-  profile, _target = _profile(args, need_target=False)
+  from boltbeam.profile.weight_ledger import WeightLedgerError
+  try:
+    profile, _target = _profile(args, need_target=False)
+  except WeightLedgerError as exc:
+    if not exc.formats:
+      raise
+    # a format with no block layout: one JSON line a screen reads (formats, and the fork that reads them), the long
+    # message on stderr
+    from boltbeam.collectors import engine_families
+    sys.stdout.write(json.dumps({"error": f"no block layout for {', '.join(exc.formats)}", "formats": list(exc.formats),
+                                 "needs": engine_families.fork_for(exc.formats)}) + "\n")
+    sys.stderr.write(str(exc) + "\n")
+    return 1
   _write(profile.to_json(), args.out)
   if ledger := profile.metadata.get("weights"):  # what the limit counts and what it leaves out, said every time
     from boltbeam.profile import weight_ledger
@@ -245,6 +257,9 @@ def _register_output(sub) -> None:
 
 def cmd_output(args) -> int:
   manifest = output_run(args.run)
+  from boltbeam.workflow.output import OUTPUT_ARTIFACTS
+  for name in OUTPUT_ARTIFACTS[:2]:  # the main report first, then its plain-text copy; stdout stays the manifest JSON
+    print(f"{name}: {pathlib.Path(args.run) / name}", file=sys.stderr)
   _write(manifest, args.out)
   return 0
 

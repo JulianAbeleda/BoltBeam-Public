@@ -1,0 +1,119 @@
+Qwen3-14B-Q4_K_M on NVIDIA GeForce RTX 4090 with llama.cpp
+
+  94.4 tok/s  speed
+         85%  of this GPU's limit (111.2 tok/s)
+  +4.5 tok/s  biggest gain on offer
+
+How fast                The model writes 94.4 tok/s (tokens a second).
+How close to the limit  85% of the fastest this GPU allows for this model
+                        (111.2 tok/s).
+What holds it back      normalizing, 27% of the lost time.
+
+The three parts that lose the most time
+normalizing                     ████████░░░░░░░░░░░░░░░░░░░░░░   27%
+  +4.5 tok/s if this ran at full speed
+converting numbers to a small…  █████░░░░░░░░░░░░░░░░░░░░░░░░░   16%
+  +2.7 tok/s if this ran at full speed
+attention                       ████░░░░░░░░░░░░░░░░░░░░░░░░░░   13%
+  +2.2 tok/s if this ran at full speed
+
+Checked ✓: the parts add up to the measured time; 3 recordings agree within
+0.2%.
+
+▾ Where the token goes                                                     t
+  part                        time (per token)  share of the lost  gain
+                                                             time
+  ─────────────────────────────────────────────────────────────────────
+  attention                            0.30 ms                13%  +2.2
+  attention query and output           1.37 ms                 9%  +1.4
+  (Q4_K)
+  feed-forward in (Q4_K)               4.31 ms                 9%  +1.5
+  attention keys and values            0.29 ms                 6%  +1.0
+  (Q4_K)
+  feed-forward out (Q6_K)              1.59 ms                 4%  +0.7
+  feed-forward out (Q4_K)              1.09 ms                 3%  +0.5
+  attention keys and values            0.12 ms                 2%  +0.3
+  (Q6_K)
+  vocabulary output (Q6_K)             0.67 ms                 0%  +0.1
+  normalizing                          0.43 ms                27%  +4.5
+  converting numbers to a              0.26 ms                16%  +2.7
+  smaller format
+  saving to the memory of              0.05 ms                 3%  +0.5
+  earlier tokens
+  copying                              0.00 ms                 0%  +0.0
+  small per-number steps               0.00 ms                 0%  +0.1
+  idle time between GPU                0.13 ms                 8%  +1.3
+  steps, at most
+  ▸ All columns                                                            a
+▾ How it was measured                                                      m
+  • The speed is the engine running on its own, with nothing recording it,
+    at a context of 530 tokens.
+  • Each part was timed inside the real run, recorded with nsys.
+  • The recording was repeated 3 times; the parts agree within 0.2% (the
+    rule allows 1%).
+  • Recording slowed the run by 11.5% (the limit is 5%).
+  • The part times still stand, because the repeated recordings agree; the
+    idle time is shown as at most what the unrecorded run leaves.
+  • The limit is the time to read every byte this step needs once, at this
+    GPU's measured memory speed (962.0 GB/s); no real run can be faster.
+  • The gains share out the lost time by how long each part takes; they add
+    up to the limit, but they are not promised speed-ups.
+  • A part with no limit of its own counts all of its time as lost.
+  • No repeat runs of this exact setup yet, so how much these numbers vary
+    from run to run is not known.
+▾ Machine and engine                                                       e
+  • GPU: NVIDIA GeForce RTX 4090, 962.0 GB/s memory speed (measured on this
+    GPU (native CUDA read probe, 2026-11-09)).
+  • Engine: llama.cpp build 11571 (097cf33d9), installed 2026-11-09 · the
+    pin b11571 (097cf33d9), set 2026-10-12.
+  • Upstream: build 097cf33d9; latest not checked (the last check failed:
+    HTTPError: HTTP Error 403: rate limit exceeded).
+  • Weights: GGUF Q4_K+Q6_K.
+  • Toolchain: CUDA 13.0, GPU driver 595.58.03, Nsight Compute 2025.3.1,
+    Nsight Systems 2026.5.2, PyTorch unknown.
+  • How parts were timed: in-model.
+▾ Words used here                                                          w
+  • tok/s: Tokens a second: how many words (or pieces of words) the model
+    writes each second. Higher is faster.
+  • limit: The fastest this GPU allows for this model: the time to move
+    every byte the step needs once at the GPU's memory speed (or, for heavy
+    maths, at its top compute speed). A real run is always slower.
+  • ms: Milliseconds: thousandths of a second.
+  • context: How many tokens of conversation the model already holds when it
+    writes the next one. More context means more to read.
+  • part: One piece of the model's work in each step, such as the feed-
+    forward or attention layers, or the time between GPU steps.
+  • time: How long this part takes now, in each token (or each step of
+    several streams, or each prompt).
+  • share: This part's share of the lost time: of all the time the run takes
+    beyond the limit, how much is in this part.
+  • gain: What this part would give back if it ran at its own limit: its
+    share of the distance from the measured speed to the limit.
+  • cumulative: The speed with this part and every part above it fixed.
+  • time lost: A part's time now, less its time at the limit.
+  • chip best: The fastest this kind of work can run on this GPU by any
+    method, not only the engine's.
+  • % of peak: How much of the GPU's top memory speed a part reaches while
+    it runs.
+  • GB/s: Gigabytes a second: how fast memory is read.
+  • idle time: Time between GPU kernels, when the GPU waits for the next
+    piece of work.
+  • recording: A tool that watches the GPU and notes when every kernel
+    starts and ends. Watching slows the run a little.
+  • untraced: The run with no recording tool attached: the speed the engine
+    really has.
+  • repeat runs: The same setup run several times, so a later change can be
+    told apart from normal variation.
+  • quant: How the model's numbers are stored: fewer bits per number means
+    less to read and a faster step, at some cost in accuracy.
+  • KV cache: What the model keeps about earlier tokens (keys and values),
+    read again for every new token.
+  • attention: The part of the model that looks back at earlier tokens.
+  • feed-forward: The largest part of each layer: two big matrix steps on
+    every token.
+  • engine: The program that runs the model (llama.cpp, vLLM, TensorRT-LLM
+    or tinygrad).
+  • build: The engine's version. The pin is the version BoltBeam was last
+    checked against; upstream is the newest release.
+  • toolchain: The GPU driver and libraries the engine was built with.
+▸ Full detail                                                              f

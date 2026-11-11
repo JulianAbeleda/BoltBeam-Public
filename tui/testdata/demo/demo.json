@@ -1,0 +1,28 @@
+{
+  "model": "/models/Qwen3-8B.gguf",
+  "answers": {
+    "chips": "../expected/targets.json",
+    "detect": {"status": "ok", "target_id": "apple_m3_10c", "registered": true, "gpu_count": 1,
+               "profile": {"status": "known", "id": "apple_m3_10c"}},
+    "engines": {"file": "engines.json", "scanned_at": "2026-10-09T10:00:00", "seconds": 0.4, "engines": []},
+    "engines --latest": {"engines": [{"engine": "llama.cpp", "state": "up_to_date", "words": "up to date"},
+                                     {"engine": "tinygrad", "state": "up_to_date", "words": "up to date"}]},
+    "update": {"status": "off", "prompt": false, "install": "checkout", "words": ""},
+    "doctor": "doctor.json",
+    "inspect": "../expected/inspect.json",
+    "ceiling": "../expected/ceiling.json",
+    "runs": "../expected/runs.json",
+    "run qwen3-8b-apple_m3_10c-001": "../expected/run-001.json",
+    "run qwen3-8b-apple_m3_10c-002": "../expected/run-002.json",
+    "words": "../expected/words.json",
+    "plain qwen3-8b-apple_m3_10c-002": "../expected/plain-002.json",
+    "run qwen3-14b-q4-k-m-nvidia_geforce_rtx_4090_24g-001": "../recorded/run-decode.json",
+    "plain qwen3-14b-q4-k-m-nvidia_geforce_rtx_4090_24g-001": "../recorded/plain-decode.json",
+    "run qwen3-8-27b-w4a16-awq-nvidia_sm120-001": "../recorded/run-batch.json",
+    "plain qwen3-8-27b-w4a16-awq-nvidia_sm120-001": "../recorded/plain-batch.json",
+    "saved": "saved.json",
+    "providers": "providers.json",
+    "fetch": {"kind": "error",
+              "error": "ssh to nobody@127.0.0.1 failed (exit 255): ssh: connect to host 127.0.0.1 port 1: Connection refused"}
+  }
+}

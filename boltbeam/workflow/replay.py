@@ -26,6 +26,7 @@ import pathlib
 import statistics
 from typing import Any
 
+from boltbeam.collectors import replay_overhead
 from boltbeam.roofline.mamba2 import FormulaRefused
 from boltbeam.workflow import tie_out as tie
 from boltbeam.workflow.diff import DiffRefused, refuse_unless_same, row_changes  # the one authority for comparing runs
@@ -58,8 +59,8 @@ def standard(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   from boltbeam.roofline.prefill_work import kv_bytes_per_token, recurrent_state_bytes
   from boltbeam.target.targets import get_target
   from boltbeam.artifacts.run_io import load_manifest
-  from boltbeam.workflow import limit
-  from boltbeam.workflow.limit import run_bandwidth
+  from boltbeam.roofline import limit
+  from boltbeam.roofline.limit import run_bandwidth
   manifest = load_manifest(run)
   profile = _read(run / "model_profile.json")
   server = next((r for r in trace.get("rows") or [] if r.get("scope") == "server"), None)
@@ -263,12 +264,12 @@ def wheres(run:pathlib.Path, trace:dict[str, Any]) -> list[dict[str, Any]]:
     if not attr or not attr.get("rows"):
       out.append({"title": head, "status": "unmeasured", "words": f"{head}: no attributed benchmark rows."})
       continue
-    from boltbeam.workflow.repeat_bands import find
+    from boltbeam.collectors.capture_scope import find
     band = find(run, f"turn {t['i']}")
     pair = paired.get(t["i"]) or {"refused": "not checked: no profiled server arm covers this turn (timing_trace_profiled.json)"}
     native = pair.get("native_ms") or t["server_ms"]
     if "window" in pair:  # the llama-bench rows attribute; only the server's own two arms qualify
-      confirmation = tie.end_to_end({**attr, "measured_ms": pair["profiled_ms"], "timing_window": pair["window"]}, native, "server turn prompt",
+      confirmation = replay_overhead.end_to_end({**attr, "measured_ms": pair["profiled_ms"], "timing_window": pair["window"]}, native, "server turn prompt",
                                     band=band, reference="native server prompt_ms", reference_window=pair["window"])
       confirmation["pairs"] = pair["pairs"]
     else:
@@ -310,19 +311,21 @@ def decode_where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | Non
   from boltbeam.collectors import replay as rp
   from boltbeam.collectors.tinygrad_role_time import loss
   from boltbeam.artifacts.run_io import load_manifest
-  from boltbeam.workflow import limit
+  from boltbeam.roofline import limit
   d = _read(run / rp.CAPTURE).get("decode")
   if not d:
     return None
   if d.get("failed"):
     return {"status": "failed", "words": f"Decode at {d['context']:,}: not captured: {d['failed'][-200:]}"}
+  profile = _read(run / "model_profile.json")
+  if refused := limit.decode_refused(profile, run):  # the decode report's rule: no formula limit for a Mamba2 hybrid
+    return {"status": "refused", "words": f"Decode at {d['context']:,}: no limit: {refused}"}
   s = standard(run, trace)
-  manifest = load_manifest(run)
-  ceil = limit.measured_vs_ceiling({**manifest, "workload": "decode"}, _read(run / "model_profile.json"), run)
   if not s:
     return None
+  ceil = limit.measured_vs_ceiling({**load_manifest(run), "workload": "decode"}, profile, run)
   limit = decode_ms_per_token(s, d["context"])
-  from boltbeam.workflow.repeat_bands import for_decode
+  from boltbeam.collectors.capture_scope import for_decode
   capture = _read(run / d["file"])
   got = loss(ceil.get("_roles") or [], capture, limit, for_decode(run, capture))
   if not got or got.get("status") != "measured":

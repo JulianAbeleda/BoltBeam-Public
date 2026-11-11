@@ -28,11 +28,13 @@ import subprocess
 import time
 from typing import Any, Callable
 
-from boltbeam.collectors import gpu_telemetry
+from boltbeam.collectors import gpu_telemetry, replay_overhead, tinygrad_role_time
+from boltbeam.collectors.llama_bench_decode import fork_fact
 from boltbeam.core.policy import value
 from boltbeam.roofline.prefill_work import peaks_at
-from boltbeam.target.gpu import run_gpu
-from boltbeam.artifacts.run_io import load_manifest, read_json
+from boltbeam.roofline import limit
+from boltbeam.target.gpu import one_gpu, run_gpu
+from boltbeam.artifacts.run_io import load_manifest, optional, read_json
 
 TRACE = "prefill_trace.json"
 RAW = "kernel_compare/prefill_capture"
@@ -146,7 +148,6 @@ def retain_native(run:pathlib.Path, name:str, cmd:list[str], stdout:str) -> None
 def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> dict[str, Any]:
   bench = _bench(run)
   from boltbeam.collectors.capture_settings import llama_flags
-  from boltbeam.workflow.layout import one_gpu
   pin, env = one_gpu(run, "llama.cpp")
   cmd = llama_argv(bench, model, length, LLAMA_REPS, extra=[*pin, *llama_flags(run, length)])
   with gpu_telemetry.run_telemetry(run, device) as tele:
@@ -166,7 +167,7 @@ def llama_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> d
           "telemetry_samples": gpu_telemetry.compact(tele.samples),
           "source": f"llama-bench -p {length} -n 0, {len(samples)} repetitions after its warm-up, untraced",
           "engine": {"timing_window": timing_window(length) if qualified is not None else None, "build": row.get("build_commit"), "build_number": row.get("build_number"), "flash_attn": row.get("flash_attn"), "n_ubatch": ub, "n_batch": b,
-                     "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd,
+                     "type_k": row.get("type_k"), "type_v": row.get("type_v"), "command": cmd, **fork_fact(cmd[0]),
                      "n_ctx": int(row.get("n_prompt") or length) + int(row.get("n_gen") or 0),
                      "n_ctx_source": "llama-bench sizes its context to n_prompt + n_gen + n_depth",
                      "prompt": PROMPT_WORDS["llama.cpp"]}}
@@ -220,7 +221,6 @@ def llama_capture(run:pathlib.Path, model:str, length:int, target, depth:int = 0
   raw = raw or run / RAW / (f"{length}-at-{depth}" if depth else str(length))
   from boltbeam.collectors.capture_settings import llama_flags
   settings = llama_flags(run, length, capture=True) if not depth else []
-  from boltbeam.workflow.layout import one_gpu
   pin, env = one_gpu(run, "llama.cpp")
   argv = llama_argv(bench, model, length, LLAMA_REPS, depth=depth, extra=[*pin, *settings, *(extra or [])])
   launches = vendor_capture.capture(target.backend, argv, raw, env=env, device=run_gpu(run))
@@ -314,7 +314,7 @@ def library_paths(libraries:list[pathlib.Path], launches:list[dict[str, Any]] | 
     return rocm_isa.table(dbs, jit_caches=jit_caches, libraries=libraries)
   vendor = (device or {}).get("vendor") or "nvidia"
   if vendor not in INSTRUCTIONS:
-    from boltbeam.workflow.chips import NoVendorRow
+    from boltbeam.target.vendors import NoVendorRow
     raise NoVendorRow(f"no instruction reader for {vendor} GPUs: their kernels' matrix paths cannot be read")
   return INSTRUCTIONS[vendor](libraries, launches, tools=tools, jit_caches=jit_caches, device=device or {})
 
@@ -491,7 +491,7 @@ def fork_capture(raw:pathlib.Path, got:dict[str, Any]) -> dict[str, Any]:
           if binary is None and info.get("role") not in (None, "mixed") and info.get("shape")}
   widths = [w for w in data["chunks"] if isinstance(w, int)]
   return {"launches": data["launches"], "chunk": widths, "outputs": len(widths), "warmup": False,
-          "method": "tinygrad-profile-events", "captured_ms": got["wall_s"] * 1e3, "program_roles": meta, "own_timing": True,
+          "method": tinygrad_role_time.OWN_TIMING, "captured_ms": got["wall_s"] * 1e3, "program_roles": meta, "own_timing": True,
           "paths": {"kernels": kernels, "libraries": [], "how": "each program's own source, as the fork's JIT captured it"}}
 
 
@@ -779,14 +779,11 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   first (gpu_telemetry.settle), as the untraced arm did; False where that arm did not (a replay's server turns)."""
   from boltbeam.collectors.prefill_attribution import UnnamedCapture, attribute_prefill
   from boltbeam.target.targets import get_target
-  from boltbeam.workflow import tie_out
-  from boltbeam.workflow import limit, run_folder
-  from boltbeam.workflow.limit import run_bandwidth
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
-  profile = run_folder.optional(run, "model_profile.json")
+  profile = optional(run, "model_profile.json")
   ceil = limit.measured_vs_ceiling({**manifest, "workload": "decode"}, profile, run)
-  bw, bw_source = run_bandwidth(run, target)
+  bw, bw_source = limit.run_bandwidth(run, target)
   roles = prefill_roles(profile, ceil.get("_roles") or [])
   # the engine's own timing slows its run (one command buffer per kernel): its idle is profiling, not the engine's,
   # so its gaps are the untraced prefill less the busy time, as the decode tie-out treats its own timing
@@ -845,12 +842,12 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
                              observed=cap["paths"].get("observed"), observed_by=cap["paths"].get("observed_by"), prune=cap.get("prune"), unc=out["uncertainty"],
                              measured_ms=cap.get("measured_ms"), repetition_index=cap.get("selected_repetition_index"),
                              head_count_bounds=cap.get("output_head_count_bounds"))
-    from boltbeam.workflow.repeat_bands import find
     attr["measured_ms"] = cap.get("measured_ms")
     attr["timing_window"] = cap.get("timing_window")
     attr.update({k: cap[k] for k in ("selected_repetition_index", "host_samples_ms", "output_head_count_bounds",
                                    "benchmark_avg_ms", "benchmark_median_ms") if k in cap})
-    attr["end_to_end"] = tie_out.end_to_end(attr, truth_ms.get(int(length)), band=find(run, f"prefill {length}"))
+    # no reference window here, so no band is read: workflow/prefill.py checks it against the untraced run's window
+    attr["end_to_end"] = replay_overhead.end_to_end(attr, truth_ms.get(int(length)))
     per_chunk = len(cap["launches"]) / cap.get("copies", 2 if cap["warmup"] else 1) / max(len(cap["chunk"]), 1)
     out["lengths"][str(length)] = {"formats": (cap.get("formats") or {}).get("words") or "fp16 activations in and out (the adapter names none)",
                                    "work_evidence":cap.get('work_evidence'),

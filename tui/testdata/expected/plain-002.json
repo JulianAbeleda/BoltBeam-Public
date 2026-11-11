@@ -1,0 +1,213 @@
+{
+  "id": "qwen3-8b-apple_m3_10c-002",
+  "kind": "plain",
+  "layer1": {
+    "close": "83% of the fastest this GPU allows for this model (20.7 tok/s).",
+    "fast": "The model writes 17.3 tok/s (tokens a second).",
+    "figures": [
+      {
+        "figure": "17.3 tok/s",
+        "key": "speed",
+        "label": "speed",
+        "unit": "tok/s",
+        "value": "17.3"
+      },
+      {
+        "figure": "83%",
+        "key": "pct",
+        "label": "of this GPU's limit (20.7 tok/s)",
+        "unit": "%",
+        "value": "83"
+      }
+    ],
+    "gains_note": null,
+    "holds": "Not known yet: the time is not split into parts (How it was measured says why).",
+    "numbers": {
+      "batch": 1,
+      "limit_ms": 48.304279176954736,
+      "limit_tok_s": 20.702099628413155,
+      "ms": 57.903879559930516,
+      "pct": 83.42149013860082,
+      "tok_s": 17.27
+    },
+    "run_type": "decode",
+    "title": "Qwen3-8B on Apple M3 with llama.cpp",
+    "top": [],
+    "trust": {
+      "checked": false,
+      "key": "whole_only",
+      "text": "Only the speed is measured, so there is nothing yet to check it against."
+    },
+    "unassigned": null
+  },
+  "layer2": {
+    "glossary": [
+      {
+        "plain": "Tokens a second: how many words (or pieces of words) the model writes each second. Higher is faster.",
+        "term": "tok/s"
+      },
+      {
+        "plain": "The fastest this GPU allows for this model: the time to move every byte the step needs once at the GPU's memory speed (or, for heavy maths, at its top compute speed). A real run is always slower.",
+        "term": "limit"
+      },
+      {
+        "plain": "Milliseconds: thousandths of a second.",
+        "term": "ms"
+      },
+      {
+        "plain": "How many tokens of conversation the model already holds when it writes the next one. More context means more to read.",
+        "term": "context"
+      },
+      {
+        "plain": "One piece of the model's work in each step, such as the feed-forward or attention layers, or the time between GPU steps.",
+        "term": "part"
+      },
+      {
+        "plain": "How long this part takes now, in each token (or each step of several streams, or each prompt).",
+        "term": "time"
+      },
+      {
+        "plain": "This part's share of the lost time: of all the time the run takes beyond the limit, how much is in this part.",
+        "term": "share"
+      },
+      {
+        "plain": "What this part would give back if it ran at its own limit: its share of the distance from the measured speed to the limit.",
+        "term": "gain"
+      },
+      {
+        "plain": "A part's time now, less its time at the limit.",
+        "term": "time lost"
+      },
+      {
+        "plain": "The fastest this kind of work can run on this GPU by any method, not only the engine's.",
+        "term": "chip best"
+      },
+      {
+        "plain": "How much of the GPU's top memory speed a part reaches while it runs.",
+        "term": "% of peak"
+      },
+      {
+        "plain": "Gigabytes a second: how fast memory is read.",
+        "term": "GB/s"
+      },
+      {
+        "plain": "Time between GPU kernels, when the GPU waits for the next piece of work.",
+        "term": "idle time"
+      },
+      {
+        "plain": "A tool that watches the GPU and notes when every kernel starts and ends. Watching slows the run a little.",
+        "term": "recording"
+      },
+      {
+        "plain": "The run with no recording tool attached: the speed the engine really has.",
+        "term": "untraced"
+      },
+      {
+        "plain": "How the model's numbers are stored: fewer bits per number means less to read and a faster step, at some cost in accuracy.",
+        "term": "quant"
+      },
+      {
+        "plain": "The program that runs the model (llama.cpp, vLLM, TensorRT-LLM or tinygrad).",
+        "term": "engine"
+      }
+    ],
+    "sections": [
+      {
+        "lines": [
+          "The speed is the engine running on its own, with nothing recording it, at a context of 128 tokens.",
+          "The time is not split into parts yet: timing each part has not run for this run.",
+          "The limit is the time to read every byte this step needs once, at this GPU's measured memory speed (97.2 GB/s); no real run can be faster."
+        ],
+        "title": "How it was measured"
+      },
+      {
+        "lines": [
+          "GPU: Apple M3, 97.2 GB/s memory speed (the chip registry).",
+          "Engine: llama.cpp.",
+          "Weights: GGUF Q4_K+Q6_K."
+        ],
+        "title": "Machine and engine"
+      }
+    ],
+    "table": {
+      "all_columns": {
+        "baseline": [
+          "measured throughput",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "17.3",
+          ""
+        ],
+        "columns": [
+          "row",
+          "ms now",
+          "ms at limit",
+          "ms at chip best",
+          "ms above limit",
+          "share",
+          "+ Tok/S if roofline",
+          "% of peak"
+        ],
+        "rows": [
+          [
+            "all GPU work and idle time, not split",
+            "57.90",
+            "48.30",
+            "48.30",
+            "9.60",
+            "100%",
+            "",
+            ""
+          ]
+        ],
+        "sum": [
+          "= total at roofline",
+          "57.90",
+          "48.30",
+          "48.30",
+          "9.60",
+          "100%",
+          "20.7",
+          ""
+        ],
+        "words": "Context 128 \u00b7 57.90 ms/token. No model = measured time, unknown savings. Roofline is an upper bound. Native throughput allocation unavailable: capture timing is unqualified."
+      },
+      "columns": [
+        "part",
+        "time (per token)",
+        "share of the lost time"
+      ],
+      "note": null,
+      "rows": [
+        {
+          "cells": [
+            "all GPU work and idle time, not split",
+            "57.90 ms",
+            "100%"
+          ],
+          "gain": {
+            "cell": "",
+            "figure": "",
+            "text": null,
+            "unit": "tok_s",
+            "value": null
+          },
+          "lost_ms": 9.59960038297578,
+          "ms": 57.903879559930516,
+          "name": "kernels and gaps, not split",
+          "part": "all GPU work and idle time, not split",
+          "section": "Model operations",
+          "share": 1.0,
+          "share_cell": "100%",
+          "time": "57.90 ms",
+          "what": "rest"
+        }
+      ],
+      "title": "Where the token goes"
+    }
+  },
+  "schema": "boltbeam.plain_results.v1"
+}

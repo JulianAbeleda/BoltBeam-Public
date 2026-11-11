@@ -1,0 +1,85 @@
+Qwen3-14B-Q4_K_M on NVIDIA GeForce RTX 4090 with llama.cpp
+
+  94.4 tok/s  speed
+         85%  of this GPU's limit (111.2 tok/s)
+  +4.5 tok/s  biggest gain on offer
+
+How fast                The model writes 94.4 tok/s (tokens a second).
+How close to the limit  85% of the fastest this GPU allows for this model
+                        (111.2 tok/s).
+What holds it back      normalizing, 27% of the lost time.
+
+The three parts that lose the most time
+normalizing                     ████████░░░░░░░░░░░░░░░░░░░░░░   27%
+  +4.5 tok/s if this ran at full speed
+converting numbers to a small…  █████░░░░░░░░░░░░░░░░░░░░░░░░░   16%
+  +2.7 tok/s if this ran at full speed
+attention                       ████░░░░░░░░░░░░░░░░░░░░░░░░░░   13%
+  +2.2 tok/s if this ran at full speed
+
+Checked ✓: the parts add up to the measured time; 3 recordings agree within
+0.2%.
+
+▾ Where the token goes                                                     t
+  row             ms ms at ms at    ms share  + Tok/S cumulative  % of
+                 now limit  chip above             if      tok/s  peak
+                            best limit       roofline
+  ────────────────────────────────────────────────────────────────────
+  attention     0.30  0.09  0.09  0.20   13%     +2.2       96.6
+  attention     1.37  1.23  1.23  0.14    9%     +1.4       98.0 89.8%
+  query and
+  output
+  (Q4_K)
+  feed-forward  4.31  4.17  4.17  0.14    9%     +1.5       99.5 96.8%
+  in (Q4_K)
+  attention     0.29  0.18  0.18  0.10    6%     +1.0      100.5 64.8%
+  keys and
+  values
+  (Q4_K)
+  feed-forward  1.59  1.52  1.52  0.07    4%     +0.7      101.2 95.9%
+  out (Q6_K)
+  feed-forward  1.09  1.04  1.04  0.04    3%     +0.5      101.7 95.9%
+  out (Q4_K)
+  attention     0.12  0.09  0.09  0.03    2%     +0.3      102.0 72.0%
+  keys and
+  values
+  (Q6_K)
+  vocabulary    0.67  0.66  0.66  0.01    0%     +0.1      102.1 98.9%
+  output
+  (Q6_K)
+  normalizing   0.43    no    no  0.43   27%     +4.5      106.6
+                     model model
+  converting    0.26    no    no  0.26   16%     +2.7      109.3
+  numbers to a       model model
+  smaller
+  format
+  saving to     0.05    no    no  0.05    3%     +0.5      109.8
+  the memory         model model
+  of earlier
+  tokens
+  copying       0.00    no    no  0.00    0%     +0.0      109.8
+                     model model
+  small per-    0.00    no    no  0.00    0%     +0.1      109.9
+  number steps       model model
+  idle time     0.13  0.00  0.00  0.13    8%     +1.3      111.2
+  between GPU
+  steps, at
+  most
+  measured                                       94.4       94.4
+  throughput
+  = total at   10.59  8.99  8.99  1.60  100%    111.2      111.2
+  roofline
+  ▾ All columns                                                            a
+  Context 530 · 10.59 ms/token. No model = measured time, unknown savings.
+  Roofline is an upper bound. Captured 11.8 ms; untraced 10.6 ms.
+  Difference: +1.2 ms; the capture adds 1.2 ms a token over the engine's 766
+  launches a token, 1.6 us each, and 79% of those launches take under 10 us:
+  a cost per launch weighs on an engine that splits its token into many
+  short kernels. capture +11.53% over native, above the 5% capture-overhead
+  ceiling. +tok/s allocates headroom by time difference; cumulative
+  reconciles the roofline. These are accounting shares, not predicted
+  speedups.
+▸ How it was measured                                                      m
+▸ Machine and engine                                                       e
+▸ Words used here                                                          w
+▸ Full detail                                                              f

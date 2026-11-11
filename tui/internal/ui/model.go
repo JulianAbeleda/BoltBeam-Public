@@ -8,30 +8,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
-)
-
-// Five keys. Everything else is a row inside a step's full view.
-var (
-	keyUp    = key.NewBinding(key.WithKeys("up", "k"))
-	keyDown  = key.NewBinding(key.WithKeys("down", "j"))
-	keyPgUp  = key.NewBinding(key.WithKeys("pgup", "ctrl+u"))
-	keyPgDn  = key.NewBinding(key.WithKeys("pgdown", "ctrl+d"))
-	keyHome  = key.NewBinding(key.WithKeys("home", "g"))
-	keyEnd   = key.NewBinding(key.WithKeys("end", "G"))
-	keyEnter = key.NewBinding(key.WithKeys("enter"))
-	keyBack  = key.NewBinding(key.WithKeys("esc"))
-	keyDel   = key.NewBinding(key.WithKeys("d"))
-	keyLog   = key.NewBinding(key.WithKeys("l"))
-	keyQuit  = key.NewBinding(key.WithKeys("q", "ctrl+c"))
 )
 
 // Model is the checklist: seam facts, the step cursor, and whether that step's full view is open.
@@ -61,6 +47,12 @@ type Model struct {
 	view      viewport.Model
 	spin      spinner.Model
 	upd       selfUpdate // a newer BoltBeam: the boot prompt (selfupdate.go)
+	showHelp  bool       // the ? page: every key this screen takes
+	form      *formState // the open form (Fetch runs, Engine settings): it takes the keys
+	// plainAsked is the run state the plain block was last asked for (loadPlain); afterSave opens Compare once the
+	// run on screen is saved (What next's Compare on an unsaved run).
+	plainAsked string
+	afterSave  bool
 }
 
 type targetsMsg struct {
@@ -177,18 +169,23 @@ func New(client seam.Client, store jobs.Store, modelPath, target string, context
 	in.Prompt = ""
 	in.SetValue(modelPath)
 	return Model{client: client, store: store, f: Facts{Path: modelPath, Reading: modelPath != "", ByFlag: target != "", EngineScan: true}, context: context,
-		wantChip: target, chipSet: target != "", open: true, input: in, started: time.Now().Format("2006-01-02T15:04:05"), width: 80, height: 24, view: viewport.New(80, 21),
+		wantChip: target, chipSet: target != "", open: true, input: in, started: time.Now().Format("2006-01-02T15:04:05"), width: 80, height: 24, view: viewport.New(viewport.WithWidth(80), viewport.WithHeight(21)),
 		spin: spinner.New(spinner.WithSpinner(spinner.MiniDot), spinner.WithStyle(stAccent))}
 }
 
 // Start runs the program on the terminal.
 func Start(client seam.Client, store jobs.Store, modelPath, target string, context int) error {
-	_, err := tea.NewProgram(New(client, store, modelPath, target, context), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
+	opts := []tea.ProgramOption{}
+	if colorprofile.Detect(os.Stdout, os.Environ()) == colorprofile.Ascii { // NO_COLOR, a dumb terminal: no bold either, as v1
+		opts = append(opts, tea.WithColorProfile(colorprofile.NoTTY))
+	}
+	_, err := tea.NewProgram(New(client, store, modelPath, target, context), opts...).Run()
 	return err
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.scanEngines(true), m.loadRuns(), m.findFiles(), m.loadSaved(), m.checkSelfUpdate(), m.spin.Tick}
+	cmds := []tea.Cmd{m.loadTargets(), m.detect(), m.scanEngines(true), m.loadRuns(), m.findFiles(), m.loadSaved(), m.checkSelfUpdate(), m.spin.Tick,
+		tea.RequestBackgroundColor, m.loadWords()}
 	if m.f.Path != "" {
 		cmds = append(cmds, m.inspect())
 	}
@@ -313,6 +310,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if c := next.loadRecommend(); c != nil {
 		cmd = tea.Batch(cmd, c)
 	}
+	if c := next.loadPlain(); c != nil { // a finished run on screen: its plain block, once per state
+		cmd = tea.Batch(cmd, c)
+	}
 	return next, cmd
 }
 
@@ -320,6 +320,17 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		if m.form != nil {
+			m.form.f = m.form.f.WithWidth(m.width - 4)
+		}
+	case tea.BackgroundColorMsg:
+		darkBackground = msg.IsDark()
+	case wordsMsg: // an older Python with no words: stages and roles show their keys
+		if msg.err == nil {
+			vocab = msg.words
+		}
+	case plainMsg:
+		return m.plainAnswer(msg), nil
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
@@ -364,7 +375,7 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case profileMsg:
 		m.f.Reading = false
 		if msg.err != nil {
-			m.f.Profile, m.f.ModelErr = nil, msg.err.Error()
+			m.f.Profile, m.f.ModelErr, m.f.ModelNeeds = nil, modelErrWords(msg.err), forkNeeded(msg.err) // the choice stays; Setup says why Run is off
 			return m, nil
 		}
 		m.f.Profile, m.f.ModelErr = msg.profile, ""
@@ -418,10 +429,30 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		if msg.err != nil { // the Engine line shows what was found; only a failure needs words
 			m.note = "The engine scan failed: " + msg.err.Error() + " (env vars still work)"
 		}
+		check := m.checkMachine() // after the scan: the machine check reads what it saved
 		if t := m.f.target(); t != nil {
-			return m, tea.Batch(m.loadProviders(t.ID), m.loadLatest())
+			return m, tea.Batch(m.loadProviders(t.ID), m.loadLatest(), check)
 		}
-		return m, m.loadLatest()
+		return m, tea.Batch(m.loadLatest(), check)
+	case remoteMsg:
+		m.f.Fetch.Listing, m.f.Fetch.List, m.f.Fetch.Err = false, msg.list, ""
+		if msg.err != nil {
+			m.f.Fetch.List, m.f.Fetch.Err = nil, "Could not list the runs: "+msg.err.Error()
+		}
+		switch l := m.f.Fetch.List; {
+		case m.cursor != pageFetch || m.form != nil:
+		case l != nil && len(l.Runs) > 0: // which runs come home
+			return m, m.openPick()
+		default: // refused, or nothing there: the remote again
+			return m, m.openRemote()
+		}
+	case fetchJobMsg:
+		return m.fetchAnswer(msg)
+	case doctorMsg:
+		m.f.DoctorBusy, m.f.Doctor, m.f.DoctorErr = false, msg.doctor, ""
+		if msg.err != nil {
+			m.f.Doctor, m.f.DoctorErr = nil, msg.err.Error()
+		}
 	case latestMsg:
 		switch {
 		case msg.upgraded != "" && msg.err == nil && len(msg.rows) == 1:
@@ -477,6 +508,9 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			m.ticking = true
 			return m, tick()
 		}
+	case speedOfferMsg, speedStartedMsg, speedJobMsg, speedResultMsg, speedVerifyMsg:
+		next, cmd, _ := m.speedMsg(msg)
+		return next, cmd
 	case mtpJobMsg:
 		was := m.f.measuringMtp()
 		m.f.MJob = msg.job
@@ -545,11 +579,15 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		m.countOldWork()
 	case savedMsg:
 		if msg.err != nil {
-			m.note = "Save failed: " + msg.err.Error()
+			m.note, m.afterSave = "Save failed: "+msg.err.Error(), false
 			return m, nil
 		}
 		m.f.SavedID, m.f.SavedDir = msg.id, msg.dir
 		m.note = "Saved to " + msg.dir + "."
+		if m.afterSave { // Compare on an unsaved run: saved, it is the before; Saved runs picks the after
+			m.afterSave = false
+			m.f.CompareFrom, m.cursor, m.row = msg.id, pageSaved, 0
+		}
 		return m, m.loadSaved()
 	case savedRunMsg:
 		if msg.err != nil {
@@ -605,28 +643,39 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case tickMsg:
 		m.f.advance(clock())
 		id := m.runID()
-		if m.f.alive() {
-			return m, tea.Batch(m.loadJob(id), m.loadRuns(), m.loadRun(id), tick())
+		var fetch tea.Cmd // a fetch goes on beside a run: it copies files only
+		if m.f.fetching() {
+			fetch = m.loadFetch()
 		}
-		if m.f.comparing() {
-			return m, tea.Batch(m.loadCompare(id), m.loadRun(id), tick())
-		}
-		if m.f.measuringMtp() {
-			return m, tea.Batch(m.loadMtp(), tick())
+		switch {
+		case m.f.alive():
+			return m, tea.Batch(m.loadJob(id), m.loadRuns(), m.loadRun(id), fetch, tick())
+		case m.f.comparing():
+			return m, tea.Batch(m.loadCompare(id), m.loadRun(id), fetch, tick())
+		case m.f.measuringMtp():
+			return m, tea.Batch(m.loadMtp(), fetch, tick())
+		case m.f.speeding():
+			return m, tea.Batch(m.readSpeed(), fetch, tick())
+		case fetch != nil:
+			return m, tea.Batch(fetch, tick())
 		}
 		m.ticking = false
 		if id == "" { // nothing on screen to read again (Measure MTP ended with no run for this model and chip)
 			return m, m.loadRuns()
 		}
 		return m, tea.Batch(m.loadRuns(), m.loadRun(id))
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.key(msg)
-	case tea.MouseMsg: // the wheel scrolls a list the way the arrow keys do
+	case tea.MouseWheelMsg: // the wheel scrolls a list the way the arrow keys do
 		switch msg.Button {
-		case tea.MouseButtonWheelDown:
+		case tea.MouseWheelDown:
 			m.moveDown(1)
-		case tea.MouseButtonWheelUp:
+		case tea.MouseWheelUp:
 			m.moveUp(1)
+		}
+	default: // the open form's own messages: focus, the cursor's blink, a paste
+		if m.form != nil {
+			return m.formStep(msg)
 		}
 	}
 	return m, nil
@@ -643,7 +692,7 @@ func (m *Model) moveDown(n int) {
 			m.row++
 			m.skipHeads(1)
 		} else {
-			m.view.LineDown(1)
+			m.view.ScrollDown(1)
 		}
 	}
 }
@@ -651,8 +700,8 @@ func (m *Model) moveDown(n int) {
 // moveUp is moveDown's mirror: the page above scrolls back first, then the cursor climbs the rows.
 func (m *Model) moveUp(n int) {
 	for ; n > 0; n-- {
-		if m.view.YOffset > 0 {
-			m.view.LineUp(1)
+		if m.view.YOffset() > 0 {
+			m.view.ScrollUp(1)
 		} else if m.row > 0 {
 			m.row--
 			m.skipHeads(-1)
@@ -733,16 +782,19 @@ func (m Model) isSaved(id string) bool {
 	return false
 }
 
-func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
+func (m Model) key(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 	onClean := key.Matches(msg, keyEnter) && m.row < len(m.actions()) && m.actions()[m.row].do == "clean"
 	if !key.Matches(msg, keyDel) && !onClean {
 		m.f.Confirm = "" // any other key cancels a pending delete (enter on the clean row is its second press)
 	}
-	if m.f.SettingEdit != "" {
-		return m.typeSetting(msg)
+	if m.form != nil {
+		return m.formKey(msg)
 	}
 	if m.f.Editing {
-		switch msg.Type {
+		if key.Matches(msg, keyAbort) {
+			return m, tea.Quit
+		}
+		switch msg.Code {
 		case tea.KeyEnter:
 			m.f.Editing, m.f.Path = false, strings.TrimSpace(m.input.Value())
 			m.input.Blur()
@@ -759,6 +811,20 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.f.Input = m.input.Value()
 		return m, cmd
 	}
+	if m.showHelp { // the ? page: ? or esc closes it, q quits
+		m.showHelp = !key.Matches(msg, keyHelp, keyBack)
+		if key.Matches(msg, keyQuit) {
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+	if key.Matches(msg, keyHelp) {
+		m.showHelp = true
+		return m, nil
+	}
+	if next, ok := m.toggleSection(msg); ok { // the Results screen: a section opens or closes
+		return next, nil
+	}
 	DetailView(m.f, m.cursor, m.row, m.width, m.detailHeight(), &m.view) // size the scroll before keys move it
 	if key.Matches(msg, keyDel) {
 		if id := m.runRow(); id != "" {
@@ -766,16 +832,23 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if key.Matches(msg, keyCompare) && m.canPickCompare() {
+		return m.do(action{"", "comparepick", ""})
+	}
 	switch {
-	case m.cursor == pageBatch && len(msg.Runes) == 1 && msg.Runes[0] >= '0' && msg.Runes[0] <= '9' && len(m.f.BatchTyped) < 3:
-		m.f.BatchTyped += string(msg.Runes)
+	case m.cursor == pageBatch && key.Matches(msg, keyDigit) && len(m.f.BatchTyped) < 3:
+		m.f.BatchTyped += msg.Text
 		m.row = len(m.actions()) - 1
-	case m.cursor == pageBatch && msg.Type == tea.KeyBackspace && m.f.BatchTyped != "":
+	case m.cursor == pageBatch && key.Matches(msg, keyErase) && m.f.BatchTyped != "":
 		m.f.BatchTyped = m.f.BatchTyped[:len(m.f.BatchTyped)-1]
 	case key.Matches(msg, keyQuit):
 		return m, tea.Quit
 	case key.Matches(msg, keyLog) && m.cursor == pageRun && (m.f.alive() || m.f.failedStage() != ""):
 		m.f.ShowLog = !m.f.ShowLog // the log while it runs; the details behind a failure's sentence after
+	case m.cursor == pageEngine && key.Matches(msg, keyFork):
+		if acts := m.actions(); m.row < len(acts) && acts[m.row].do == "fork" {
+			m.f.moveFork(acts[m.row].arg, map[bool]int{true: -1, false: 1}[msg.String() == "left"])
+		}
 	case key.Matches(msg, keyBack):
 		if m.cursor != pageSetup {
 			m.backToSetup()
@@ -802,46 +875,17 @@ func (m Model) key(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// typeSetting is a key while a setting's value is typed: enter keeps it (a whole number where the setting takes one;
-// empty unsets it), esc leaves it as it was.
-func (m Model) typeSetting(msg tea.KeyMsg) (Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEnter:
-		s := m.f.setting(m.f.SettingEdit)
-		v, ok := "", s != nil
-		if ok {
-			v, ok = settingTyped(*s, m.input.Value())
-		}
-		if !ok {
-			m.note = "Type a whole number above 0, or nothing to unset it."
-			return m, nil
-		}
-		m.f.setSetting(s.Name, v)
-		m.note = ""
-		fallthrough
-	case tea.KeyEsc:
-		m.f.SettingEdit, m.f.Input = "", ""
-		m.input.Blur()
-		m.input.SetValue(m.f.Path)
-		return m, nil
-	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	m.f.Input = m.input.Value()
-	return m, cmd
-}
-
 // backToSetup shows Setup again; from a picker the cursor rests on that picker's line.
 func (m *Model) backToSetup() {
 	m.row = 0
-	if picker(m.cursor) || m.cursor == pageRecommend { // the cursor rests on the Setup line that opened the page
+	if picker(m.cursor) || m.cursor == pageRecommend || m.cursor == pageDoctor { // the cursor rests on the Setup line that opened the page
 		for i, a := range setupActions(m.f) {
 			if a.do == "page" && a.arg == fmt.Sprint(m.cursor) {
 				m.row = i
 			}
 		}
 	}
-	m.f.SettingEdit = ""
+	m.form = nil
 	m.cursor = pageSetup // keep the displayed run's saved origin until a new run replaces it
 	m.skipHeads(1)
 	m.view.GotoTop()
@@ -857,18 +901,26 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m, nil
 	case "save":
 		return m, m.saveRun()
+	case "savecompare": // only saved runs compare: save this one, then pick the after run
+		m.afterSave = true
+		return m, m.saveRun()
+	case "rerun":
+		return m, m.rerun()
 	case "opensaved":
 		m.note = "Reading saved run " + a.arg + "…"
 		return m, m.openSaved(a.arg)
+	case "comparepick": // Saved runs' Compare: pick the first run, then the one beside it
+		m.f.ComparePick, m.f.CompareFrom, m.cursor, m.row = true, "", pageSaved, 0
+		return m, m.loadSaved()
 	case "comparefrom":
-		m.f.CompareFrom, m.cursor, m.row = a.arg, pageSaved, 0
+		m.f.ComparePick, m.f.CompareFrom, m.cursor, m.row = false, a.arg, pageSaved, 0
 		return m, m.loadSaved()
 	case "comparecancel":
-		m.f.CompareFrom, m.row = "", 0
+		m.f.ComparePick, m.f.CompareFrom, m.row = false, "", 0
 		return m, nil
 	case "compare":
 		before := m.f.CompareFrom
-		m.f.CompareFrom, m.f.Compared, m.cursor, m.row = "", nil, pageCompare, 0
+		m.f.ComparePick, m.f.CompareFrom, m.f.Compared, m.cursor, m.row = false, "", nil, pageCompare, 0
 		m.view.GotoTop()
 		return m, m.compareSaved(before, a.arg)
 	case "deletesaved":
@@ -909,10 +961,23 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 			m.row = m.chosenRow(m.row)
 		}
 		m.view.GotoTop()
-		if m.cursor == pageSaved {
+		switch m.cursor {
+		case pageSaved:
 			return m, m.loadSaved()
+		case pageFetch: // the remote, unless a fetch started in an earlier session is still copying (fetchAnswer)
+			return m, tea.Batch(m.loadFetch(), m.openRemote())
+		case pageSettings:
+			return m, m.openSettings()
+		case pageRecommend:
+			return m, m.loadSpeed()
 		}
 		return m, nil
+	case "fork": // a family row: the fork in brackets, when it runs here; else the line under the row says why
+		engine, why := m.f.pickedFork(a.arg)
+		if engine == "" {
+			return m, func() tea.Msg { return noteMsg(why) }
+		}
+		return m.do(action{"", "engine", engine})
 	case "engine":
 		m.f.Engine, m.f.Layout, m.engineSet = a.arg, "", true
 		m.f.Measurement, m.f.Settings = "", nil
@@ -944,24 +1009,18 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		m.f.Measurement = a.arg
 		m.backToSetup()
 		return m, nil
-	case "setting": // a fixed set steps to its next value; anything else is typed
-		s := m.f.setting(a.arg)
-		if s == nil {
-			return m, nil
-		}
-		if len(s.Choices) == 0 {
-			m.f.SettingEdit, m.f.Input = s.Name, m.f.Settings[s.Name]
-			m.input.SetValue(m.f.Input)
-			return m, m.input.Focus()
-		}
-		m.f.setSetting(s.Name, nextChoice(s.Choices, m.f.Settings[s.Name]))
-		return m, nil
 	case "repeats":
 		m.f.Repeats, _ = strconv.Atoi(a.arg)
 		m.backToSetup()
 		return m, nil
 	case "mtp":
 		return m, m.startMtp()
+	case "speedup", "speedstop", "speedcheck", "speedmtp":
+		return m.doSpeed(a)
+	case "doctor":
+		return m, m.checkMachine()
+	case "fetchgo", "fetchstop":
+		return m.doFetch(a)
 	case "enginelayout": // an engine and how it uses this machine's GPUs, picked on one row
 		engine, layout, _ := strings.Cut(a.arg, "|")
 		if engine != m.f.Engine {
@@ -971,9 +1030,8 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		m.backToSetup()
 		return m, nil
 	case "reccopy":
-		copyText(m.f.copyOf(a.arg))
 		m.note = "Copied " + map[string]string{"command": "the engine command line", "arkey": "the Arkey vllm_args"}[a.arg] + "."
-		return m, nil
+		return m, copyText(m.f.copyOf(a.arg))
 	case "reccheck":
 		if m.f.RecChecking || m.f.recommendKey() == "" {
 			return m, nil
@@ -1052,41 +1110,37 @@ func (m Model) mood() string {
 	return faceIdle
 }
 
-func footer(back, onRun, running, failed bool) string {
-	pairs := [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"q", "quit"}}
-	switch {
-	case running:
-		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"l", "log"}, {"esc", "setup"}, {"q", "quit"}}
-	case failed:
-		pairs = [][2]string{{"↑↓", "move"}, {"enter", "pick"}, {"l", "details"}, {"esc", "setup"}, {"q", "quit"}}
-	case onRun:
-		pairs = [][2]string{{"↑↓", "move"}, {"pgup/pgdn", "page"}, {"enter", "open run"}, {"d", "delete run"}, {"esc", "setup"}, {"q", "quit"}}
-	case back:
-		pairs = [][2]string{{"↑↓", "move"}, {"pgup/pgdn", "page"}, {"enter", "pick"}, {"esc", "setup"}, {"q", "quit"}}
-	}
-	parts := []string{}
-	for _, p := range pairs {
-		parts = append(parts, stAccent.Render(p[0])+" "+stMuted.Render(p[1]))
-	}
-	return " " + strings.Join(parts, stMuted.Render(" · "))
-}
-
 func (m Model) detailHeight() int {
 	return m.height - 2 - lipgloss.Height(truncate(m.note, m.width))
 }
 
-func (m Model) View() string {
+// View is the screen in the alternate buffer with the mouse wheel reported (cell motion), as v1's program options set.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.screen())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+// screen is the frame as text: the header, the open step, the note, the footer.
+func (m Model) screen() string {
 	left := stAccent.Render(glyphBolt) + " " + gradient("BoltBeam")
 	right := stAccent.Render(m.mood())
-	if m.f.Reading || m.f.CeilBusy || m.f.alive() || m.f.comparing() {
+	if m.f.Reading || m.f.CeilBusy || m.f.alive() || m.f.comparing() || m.f.fetching() || m.f.speeding() {
 		right = m.spin.View() + " " + right
 	}
 	header := left + strings.Repeat(" ", max(m.width-lipgloss.Width(left)-lipgloss.Width(right), 1)) + right
 	room := m.detailHeight()
-	view := m.view
-	body := DetailView(m.f, m.cursor, m.row, m.width, room, &view)
-	if m.upd.shown {
-		body = selfUpdateView(m.upd, m.width, room)
+	view, f := m.view, m.f
+	if m.form != nil {
+		f.Form = m.form.f.View()
 	}
-	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + footer(m.cursor != pageSetup, m.runRow() != "", m.cursor == pageRun && m.f.alive(), m.cursor == pageRun && m.f.failedStage() != "")
+	body := DetailView(f, m.cursor, m.row, m.width, room, &view)
+	switch {
+	case m.upd.shown:
+		body = selfUpdateView(m.upd, m.width, room)
+	case m.showHelp:
+		body = m.helpPage(room)
+	}
+	return header + "\n" + body + "\n" + truncate(m.note, m.width) + "\n" + m.footer()
 }

@@ -15,11 +15,8 @@ import (
 func TestPrefillWhereTable(t *testing.T) {
 	var res seam.Results
 	load(t, "results-prefill", &res)
-	old := tableWidth
-	defer func() { tableWidth = old }()
 	for _, cols := range []int{80, 110} {
-		tableWidth = cols - 4
-		got := ansi.Strip(wrapText(lossBody(res.Loss), cols-4))
+		got := ansi.Strip(wrapText(lossBody(res.Loss, cols-4), cols-4))
 		for _, want := range []string{"Where the prefill time goes", "CEILING", "= prefill", "no ceiling",
 			"ffn_down + ffn_gate_up Q4_K", "attention", "lm_head Q6_K"} {
 			if !strings.Contains(got, want) {

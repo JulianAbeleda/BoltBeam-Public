@@ -15,6 +15,12 @@ from boltbeam.vocab import SCHEMA_RUN_MANIFEST
 from boltbeam.core.canonical import pretty_json
 
 RUN_MANIFEST = "run_manifest.json"
+MEASURE_STATUS = "measure_status.json"
+MACHINE = "machine_facts.json"  # the run's GPUs as measured (workflow/layout.py)
+DECODE_CAPTURE = "decode_capture.json"  # a labeled decode capture (collectors/vllm_semantic_decode.py)
+# what the output stage writes, and what a fresh forced replay removes before it publishes (collectors/forced_replay.py)
+# report.html is the main report, so it comes first; summary.md is its plain-text copy (the same layers)
+OUTPUT_ARTIFACTS = ("report.html", "summary.md", "output_manifest.json", "rollback.md", "provider_plan.json")
 
 
 def run_dir(path:str | pathlib.Path) -> pathlib.Path:
@@ -34,6 +40,11 @@ def write_json(path:str | pathlib.Path, obj:Any) -> None:
   p = pathlib.Path(path)
   p.parent.mkdir(parents=True, exist_ok=True)
   p.write_text(pretty_json(obj), encoding="utf-8")
+
+
+def optional(run:pathlib.Path, name:str) -> dict[str, Any]:
+  p = run / name
+  return read_json(p) if p.exists() else {}
 
 
 def manifest_path(run:pathlib.Path) -> pathlib.Path:

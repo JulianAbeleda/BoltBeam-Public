@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
@@ -26,15 +26,23 @@ func found(r seam.RoleLoss) (string, string) {
 	return best, verdict
 }
 
-// stageWord is the plain word for any pipeline stage key.
-func stageWord(key string) string {
-	if plain, ok := plainMeasureStage[key]; ok {
-		if strings.Contains(plain, "%s") {
-			return fmt.Sprintf(plain, here())
-		}
-		return plain
+// vocab is the plain vocabulary (`screen words`, data/plain_words.json), read once when the screen starts: stage, role
+// and part names, layer 1's labels, the glossary. Until it answers, a stage or role shows its own key. Like
+// darkBackground, there is one per program.
+var vocab *seam.Words
+
+// stageWord is the plain name of any pipeline stage key, the report's and the measuring ones.
+func stageWord(key string) string { return vocab.Stage(key, here()) }
+
+// roleWord is the plain name of a role key.
+func roleWord(key string) string { return vocab.Role(key) }
+
+// namedRole is the role's plain name with its key beside it, muted: the detail views' wording.
+func namedRole(key string) string {
+	if plain := vocab.Role(key); plain != key {
+		return plain + "  " + stMuted.Render(key)
 	}
-	return word(plainStage, key)
+	return key
 }
 
 // word is the plain word for a record key, or the key itself when no plain word exists.

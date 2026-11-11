@@ -5,8 +5,8 @@
 │                                                                              │
 │   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    2%     │
 │   Starting…   01:20                                                          │
-│                                                                              │
-│                                                                              │
+│   ✓ Read the model · Check the machine · Plan what to try · Measure this     │
+│   machine's GPUs                                                             │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -21,4 +21,4 @@
 │   The run keeps going after you leave this screen.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · enter pick · l log · esc setup · q quit
+ ↑↓ move · enter pick · l log · esc setup · ? all keys · q quit

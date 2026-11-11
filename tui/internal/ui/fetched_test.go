@@ -34,10 +34,10 @@ func TestFetchedWordsAndRunHeader(t *testing.T) {
 	}
 	var run seam.Run
 	if err := json.Unmarshal([]byte(`{"kind":"run","id":"h100-generic","model_id":"Qwen3-8B","target_id":"nvidia_sm90",
-	 "fetched":{"host":"linuxbox","chip":"nvidia_sm90","gpu":null,"fetched_at":"2026-11-09T09:58:12Z"}}`), &run); err != nil {
+	 "fetched":{"host":"gpu-box","chip":"nvidia_sm90","gpu":null,"fetched_at":"2026-11-09T09:58:12Z"}}`), &run); err != nil {
 		t.Fatal(err)
 	}
-	if got := title(pageRun, Facts{Run: &run}); got != "Run · h100-generic · from linuxbox, fetched 2026-11-09" {
+	if got := title(pageRun, Facts{Run: &run}); got != "Run · h100-generic · from gpu-box, fetched 2026-11-09" {
 		t.Fatalf("run header: %q", got)
 	}
 	run.Fetched = nil

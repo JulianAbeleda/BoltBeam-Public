@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                            ⠋ (•̀ᴗ•́)⚡
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Run · qwen3-8b-apple_m3_10c-001                                              │
+│ Qwen3-8B on apple_m3_10c with llama.cpp                                      │
+│                                                                              │
+│   ███████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   12%  1 of 4   │
+│   Time the real run…   01:20 (longer than last time) · about 8 min left      │
+│   ✓ Read the model · Check the machine · Plan what to try                    │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ ▸ Stop the run                                                               │
+│   Back to setup                                                              │
+│   The run keeps going after you leave this screen.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · enter pick · l log · esc setup · ? all keys · q quit

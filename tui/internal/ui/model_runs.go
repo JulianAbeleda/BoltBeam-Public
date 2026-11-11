@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"strconv"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
@@ -75,7 +75,7 @@ func (m Model) startRun(provider string) tea.Cmd {
 		batch = strconv.Itoa(b) // batch 1 is always timed beside it
 	}
 	return func() tea.Msg {
-		if live := store.Alive(); len(live) > 0 { // two measurements on one GPU would both be wrong
+		if live := gpuJobs(store); len(live) > 0 { // two measurements on one GPU would both be wrong
 			return noteMsg("Run " + live[0].ID + " is still going. Stop it or wait, then press Run.")
 		}
 		if path == "" || target == "" {
@@ -107,7 +107,7 @@ func (m Model) startMtp() tea.Cmd {
 	}
 	id := m.f.mtpID()
 	return func() tea.Msg {
-		if live := store.Alive(); len(live) > 0 { // two measurements on one GPU would both be wrong
+		if live := gpuJobs(store); len(live) > 0 { // two measurements on one GPU would both be wrong
 			return noteMsg(live[0].ID + " is still going. Stop it or wait, then measure MTP.")
 		}
 		dir, err := m.client.RunDir(id)
@@ -162,15 +162,14 @@ func (m Model) openSaved(id string) tea.Cmd {
 	return func() tea.Msg { r, err := m.client.ShowSaved(id); return savedRunMsg{r, err} }
 }
 
-// compareSaved asks the seam to compare two saved runs; Python decides and words the result.
+// compareSaved sets two saved runs head to head; Python decides how far they compare and words the result.
 func (m Model) compareSaved(before, after string) tea.Cmd {
-	cross := m.f.crossEngines(before, after)
 	return func() tea.Msg {
-		c, err := m.client.CompareSaved(before, after, cross)
+		c, err := m.client.CompareSaved(before, after)
 		if err != nil {
 			return comparedMsg{Before: before, After: after, Err: err.Error()}
 		}
-		return comparedMsg{Before: before, After: after, Lines: c.Lines}
+		return comparedMsg{Before: before, After: after, Head: c.Head, Lines: c.Lines, Plain: c.Plain, PartsNote: c.PartsNote}
 	}
 }
 

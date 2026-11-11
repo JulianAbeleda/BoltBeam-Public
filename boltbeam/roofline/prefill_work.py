@@ -384,9 +384,24 @@ def ceiling(flops:float, nbytes:float, peak_tflops:float | None, bandwidth_gbs:f
   return {"ms": max(compute, memory or 0.0), "compute_ms": compute, "memory_ms": memory, "bound": bound}
 
 
+def experts_reached(w:int, n_expert:int, top_k:int, layers:int, routing:list[dict[str, Any]] | None = None) -> list[float]:
+  """The expected distinct experts a chunk of w tokens reaches, one figure per layer: the sum over experts of
+  1 - (1 - q)^w, q the share of tokens that select the expert, tokens independent. routing: one measured record per
+  layer in roofline/moe's form ({"shape": [tokens, top_k], "expert_counts": {expert: count}}, q = count / tokens);
+  None is uniform routing, q = top_k / n_expert, so n_expert x (1 - (1 - top_k / n_expert)^w): all experts for a large chunk."""
+  if routing is None:
+    return [n_expert * (1 - (1 - top_k / n_expert) ** w)] * layers
+  from boltbeam.roofline.moe import selected_experts
+  if len(routing) != layers:
+    raise ValueError(f"routing profile has {len(routing)} layers, the role has {layers}")
+  for route in routing:
+    selected_experts(route, tokens=route["shape"][0], top_k=top_k, experts=n_expert)
+  return [sum(1 - (1 - c / route["shape"][0]) ** w for c in route["expert_counts"].values()) for route in routing]
+
+
 def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int, depth:int, *, ubatch:int, batch:int,
                  formats:dict[str, Any], weight_path:Callable[[str], str | None], attention_paths:dict[str, int],
-                 peaks:dict[str, float], bandwidth_gbs:float) -> dict[str, Any]:
+                 peaks:dict[str, float], bandwidth_gbs:float, offload:dict[str, Any] | None = None) -> dict[str, Any]:
   """The ceiling of `length` tokens appended after `depth` in the cache, from the profile alone (no capture): per
   weight role, per chunk, a GEMM at its path's peak or the bandwidth (a role once per model runs once per output call
   over one token: the output head); attention at the depth with its operations split over its paths by instruction
@@ -394,7 +409,12 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
   prefill.prefill_roles; formats: the engine's (activations, attention_activations, kv); weight_path: a weight quant's
   matrix path in this engine; ubatch, batch: the engine's chunk and the tokens per output call. Each row and the total
   also carry best_ms, the same work at the chip-best path for the row's data (chip_best). A Mamba2 hybrid is refused
-  (FormulaRefused): its work comes from a capture's verified stages, never this formula (roofline/mamba2)."""
+  (FormulaRefused): its work comes from a capture's verified stages, never this formula (roofline/mamba2).
+  A routed-expert role (n_expert, routed) does w x routed products per chunk and reads the experts it reaches
+  (experts_reached: a measured per-layer routing profile, else uniform routing, which the result marks `estimated`).
+  offload {hit_rate, cpu_share, pcie_gbs, ram_gbs, estimated, h2d_gbs, memory, routing}: hit_rate of those bytes is in
+  VRAM (default 0, a cold cache), the rest uploaded per chunk (llama.cpp copy_experts) or CPU-computed (offload.py terms);
+  ms = max(GPU rows, PCIe, CPU), no_overlap_ms their sum."""
   if formula_cannot_limit(profile):
     raise FormulaRefused(FORMULA_REFUSED)
   if length <= 0:
@@ -405,13 +425,18 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
   chunks = [min(ubatch, length - i) for i in range(0, length, ubatch)]
   outputs = -(-length // batch)
   acts = formats.get("activations")
-  rows, unmodelled = [], []
+  rows, unmodelled, moved = [], [], 0.0
+  offload = dict(offload or {})
+  routing = offload.pop("routing", None)
   for r in roles:
     path = weight_path(r["quant"])
     once = r["count"] == 1
     role_acts = (formats.get("activations_by_quant") or {}).get(r["quant"], acts)
-    work_rows = [gemm(1, r["n"], r["k"], r["weight_bytes"], role_acts)] * outputs if once else \
-                [gemm(w, r["n"], r["k"], r["weight_bytes"], role_acts) for w in chunks for _ in range(r["count"])]
+    ex = r.get("routed") and not once  # (m, weight bytes) per chunk and layer: an expert stack's are the products and the experts reached
+    reach = [(w * r["routed"], e * r["weight_bytes"] / r["routed"]) for w in chunks for e in experts_reached(w, r["n_expert"], r["routed"], r["count"], routing)] if ex else \
+            [(w, r["weight_bytes"]) for w in chunks for _ in range(r["count"])]
+    work_rows = [gemm(1, r["n"], r["k"], r["weight_bytes"], role_acts)] * outputs if once else [gemm(m, r["n"], r["k"], b, role_acts) for m, b in reach]
+    moved += sum(b for _, b in reach) if ex else 0.0
     flops, nbytes = sum(x["flops"] for x in work_rows), sum(x["bytes"] for x in work_rows)
     peak = peaks.get(path) if path and not once else None
     if path and not once and peak is None:
@@ -430,8 +455,17 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
     row = {"name": "recurrent", "flops": rec["flops"], "bytes": rec["bytes"],
            **ceiling(rec["flops"], rec["bytes"], peaks.get(rec["path"]), bandwidth_gbs)}
     rows.append({**row, "best_ms": row["ms"]})  # its state's format is not a weight's: its own path
-  return {"ms": sum(r["ms"] or 0.0 for r in rows), "best_ms": sum(r["best_ms"] or 0.0 for r in rows), "rows": rows, "unmodelled": unmodelled, "chunks": len(chunks),
-          "outputs": outputs}
+  out = {"ms": sum(r["ms"] or 0.0 for r in rows), "best_ms": sum(r["best_ms"] or 0.0 for r in rows), "rows": rows, "unmodelled": unmodelled, "chunks": len(chunks),
+         "outputs": outputs}
+  if offload and moved:
+    from boltbeam.roofline.offload import offload_limit
+    # The hit rate is an input, 0 by default: a cold cache. llama.cpp's MoE cache is only read by a large batch, never
+    # filled by one (src/llama-moe-cache.cpp:693-695 get_slot_map returns null for n_tokens > 32; :737; master 7592b61d3),
+    # so a prefill's hits are what decode or small batches put there before it.
+    o = offload_limit(dense_bytes=0, expert_bytes=moved, vram_gbs=bandwidth_gbs, **{"hit_rate": 0.0, **offload})
+    if routing is None: o.update(estimated=True, notes=[*o["notes"], "routing assumed uniform: no measured routing profile"])
+    out.update(offload=o, no_overlap_ms=out["ms"] + o["ms"]["cpu"] + o["ms"]["pcie"], ms=max(out["ms"], o["ms"]["cpu"], o["ms"]["pcie"]))
+  return out
 
 
 def mfu(flops:float, ms:float, peak_tflops:float | None) -> float | None:

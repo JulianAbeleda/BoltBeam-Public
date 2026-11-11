@@ -6,9 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
@@ -21,7 +20,7 @@ func ip(v int) *int         { return &v }
 func plain(s string) string { return ansi.Strip(s) }
 func hasLabel(acts []action, label string) bool {
 	for _, a := range acts {
-		if a.label == label {
+		if drawn(a.label) == drawn(label) {
 			return true
 		}
 	}
@@ -112,7 +111,7 @@ func TestLossBodyNamesProviderAndCapture(t *testing.T) {
 		Roles: []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 10.58, LostMs: 2.30, Share: 1}},
 		Others: []seam.OtherLoss{{Provider: "tinygrad", Capture: seam.Capture{Method: sp("tinygrad-profile-events")},
 			Roles: []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 9.0, LostMs: 0.73, Share: 1}}}}}
-	body := plain(lossBody(l))
+	body := plain(lossBody(l, wide))
 	for _, want := range []string{"Measured with llama.cpp · captured with nsys", "Where llama.cpp loses time, measured in llama.cpp, captured with nsys",
 		"Beside it, tinygrad · tinygrad's own timing: not measured.", "9.00"} {
 		if !strings.Contains(body, want) {
@@ -154,7 +153,7 @@ func TestLossBody(t *testing.T) {
 			{Provider: "tinygrad", TokS: 15.2, Ms: 65.9, LostMs: 13.8, PerRole: true}},
 		Roles:           []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 10.58, LostMs: 2.30, Share: 0.25, CallsPerToken: 18}},
 		NotAttributedMs: fp(4.46), Source: sp("measured in tinygrad's Metal runtime")}
-	body := plain(lossBody(l))
+	body := plain(lossBody(l, wide))
 	for _, want := range []string{"Modeled roofline: 52.0 ms per token at context 1.", "llama.cpp: 17.9 tok/s · 55.8 ms per token · 3.8 ms above roofline.",
 		"needs Instruments", "tinygrad per role: 65.9 ms of GPU time per token · 13.8 ms above roofline.", "Measured with llama.cpp · roles not timed", "measured in tinygrad's Metal runtime",
 		"feed-forward out", "8.27", "10.58", "2.30", "25%", "not attributed", "4.46"} {
@@ -163,7 +162,7 @@ func TestLossBody(t *testing.T) {
 		}
 	}
 	l.Roles, l.Missing = nil, sp("apple_m3_10c names no tinygrad device")
-	if !strings.Contains(plain(lossBody(l)), "Per role: apple_m3_10c names no tinygrad device") {
+	if !strings.Contains(plain(lossBody(l, wide)), "Per role: apple_m3_10c names no tinygrad device") {
 		t.Error("a missing per-role time must say why")
 	}
 }
@@ -172,7 +171,7 @@ func TestLossBody(t *testing.T) {
 func TestLossRefusedShowsTheReasonOnly(t *testing.T) {
 	l := seam.Loss{Status: "modeled", LimitTokS: fp(362), LimitMs: fp(2.76),
 		Refused: sp("incomplete measurement: 1.40 ms of GPU time per token is below the limit's floor of 2.76 ms")}
-	body := plain(lossBody(l))
+	body := plain(lossBody(l, wide))
 	for _, want := range []string{"Per role: not shown.", "incomplete measurement", "below the limit's floor"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)
@@ -286,14 +285,14 @@ func TestChipIsDetectedAndChangeableFromTheList(t *testing.T) {
 // More than one GPU: the engine picker shows each engine's layouts here (Python's rows: which can run, the GPUs each
 // uses, why the others cannot, what each does to speed), and an engine is picked with its layout.
 func TestMultiGpuLayoutsAreAnEngineChoice(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	m := program(s, nil, nil, nil, 80, 40)
 	m, _ = m.Update(detectMsg{id: "apple_m3_10c", count: 2, multi: "2 x AMD Radeon AI PRO R9700 (limited support: one real multi-GPU run so far (vLLM split by rows on two R9700s))"})
 	m, _ = m.Update(ceilingMsg{&s.ceiling, nil}) // detect asks again for the chip it found: the same answer
 	m, _ = m.Update(providersMsg{"apple_m3_10c", twoGpuEngines(t)})
 	picker := page(m, pageEngine)
-	golden(t, "picker-engine-2gpu.txt", picker.View())
+	golden(t, "picker-engine-2gpu.txt", frame(picker))
 	labels := ""
 	for _, a := range engineActions(facts(picker)) {
 		labels += plain(a.label) + "\n"
@@ -314,7 +313,7 @@ func TestMultiGpuLayoutsAreAnEngineChoice(t *testing.T) {
 	if v := plain(engineValue(f)); v != "vllm · split by rows (2 GPUs)" {
 		t.Fatalf("setup engine value: %q", v)
 	}
-	golden(t, "setup-2gpu.txt", got.View())
+	golden(t, "setup-2gpu.txt", frame(got))
 	// the picker opens again on the chosen layout's row, and the run's header names the layout it ran with
 	again, _ := got.do(action{"", "page", fmt.Sprint(pageEngine)})
 	if acts := again.actions(); acts[again.row].do != "enginelayout" || acts[again.row].arg != "vllm|row" {
@@ -382,17 +381,14 @@ func TestKernelSearchInTheRoleTable(t *testing.T) {
 			Verdict: sp("not_searched"), VerdictReason: sp("the search measured no kernel")},
 	}
 	for _, w := range []int{200, 60} {
-		old := tableWidth
-		tableWidth = w
-		body := plain(roleTable(roles, nil))
-		tableWidth = old
+		body := plain(roleTable(roles, nil, w))
 		for _, want := range []string{"BEST FOUND", "VERDICT", "LOCAL 32 · 1.4x faster", "found, not applied", "not searched"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("width %d: missing %q in:\n%s", w, want, body)
 			}
 		}
 	}
-	if body := plain(roleTable([]seam.RoleLoss{{Role: "lm_head", Quant: "Q6_K"}}, nil)); strings.Contains(body, "VERDICT") {
+	if body := plain(roleTable([]seam.RoleLoss{{Role: "lm_head", Quant: "Q6_K"}}, nil, wide)); strings.Contains(body, "VERDICT") {
 		t.Errorf("a result without a search keeps the old table:\n%s", body)
 	}
 	next := plain(searchBody(&seam.Search{Status: "searched", Next: &seam.SearchNext{
@@ -432,7 +428,7 @@ func TestLossBodyRefusesOneRowNotTheTable(t *testing.T) {
 		Roles: []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 10.58, LostMs: 2.30, Share: 1}},
 		CeilingRefused: []seam.CeilingRefusedRole{{Role: "lm_head", Quant: "Q6_K", IdealMs: 0.6164, ActualMs: 0.6143,
 			Reason: "ceiling refused: 0.002100 ms below its floor"}}}
-	body := plain(lossBody(l))
+	body := plain(lossBody(l, wide))
 	for _, want := range []string{"10.58", "0.614 ms against a 0.616 ms floor: ceiling refused", "Totals exclude 1 row(s) whose ceiling is refused"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)

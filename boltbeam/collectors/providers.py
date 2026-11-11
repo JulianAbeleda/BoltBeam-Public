@@ -25,13 +25,14 @@ import re
 import subprocess
 import sys
 import time
-from boltbeam.workflow.repeat_bands import for_decode
+from boltbeam.collectors.capture_scope import for_decode
 from typing import Any, Callable
 
 from boltbeam.collectors import (llama_bench_decode, ollama_decode, tinygrad_role_time, trtllm_decode, vendor_capture,
-                                 vllm_decode)
+                                 vllm_decode, work_evidence)
+from boltbeam.roofline import limit
 from boltbeam.target import vendors
-from boltbeam.artifacts.run_io import load_manifest, read_json, write_json, write_manifest
+from boltbeam.artifacts.run_io import MEASURE_STATUS, load_manifest, optional, read_json, write_json, write_manifest
 
 # name -> adapter module; the order is the order Setup lists them
 ENGINES = {m.PROVIDER: m for m in (llama_bench_decode, tinygrad_role_time, vllm_decode, ollama_decode, trtllm_decode)}
@@ -349,8 +350,7 @@ def measure_tinygrad(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pa
                  "decode_tokens": got["tokens"], "source": f"tinygrad decode on {got['device']}, JIT with {got['jit']}, no profiling",
                  # the engine's own account of its graph state: a reader shows it, never infers it (TH: hidden failure)
                  "jit": got["jit"], "graph_error": got.get("graph_error"), "engine": got.get("engine", {})})
-  from boltbeam.workflow.limit import run_bandwidth
-  peak_gbs, peak_source = run_bandwidth(run, target)
+  peak_gbs, peak_source = limit.run_bandwidth(run, target)
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
            "workload": manifest["workload"], "provider_id": tinygrad_role_time.PROVIDER, "collector_id": "tinygrad-decode",
            "timing_source": "tinygrad whole step", "contexts": [r["context"] for r in rows], "rows": rows,
@@ -415,9 +415,8 @@ def measure_engine(run:pathlib.Path, provider:str, *, batches:list[int] | tuple[
   points = m.whole_step(model, contexts, sorted({1, *batches}), tokens=tokens,
                         log=run / "kernel_compare" / f"{provider}_whole_step.log", **options)
   profile = read_json(run / "model_profile.json") if (run / "model_profile.json").exists() else {}
-  from boltbeam.workflow.limit import run_bandwidth
   trace = engine_trace(manifest, provider=provider, provider_id=m.PROVIDER_ID, collector_id=collector(provider, target.backend),
-                       points=points, weights=weight_format(profile), peak_gbs=run_bandwidth(run, target)[0])
+                       points=points, weights=weight_format(profile), peak_gbs=limit.run_bandwidth(run, target)[0])
   out = run / "timing_trace.json"
   out.write_text(pretty_json(trace))
   return out
@@ -453,10 +452,22 @@ def _captured(run:pathlib.Path, provider:str, *, target, root, model:str, model_
                                       context=context, batch=batch, tokens=tokens)
 
 
+def run_provider(run:pathlib.Path) -> str:
+  """Resolve the measured engine, including imported whole-step traces.
+
+  Only legacy runs without either declaration default to llama-bench. Conflicting
+  declarations are evidence of a mixed run, not a reason to pick one silently.
+  """
+  status = optional(run, MEASURE_STATUS).get("provider")
+  trace = optional(run, "timing_trace.json").get("provider")
+  if status and trace and status != trace:
+    raise ValueError(f"measurement provider {status!r} differs from timing trace {trace!r}")
+  return check(trace or status or DEFAULT)
+
+
 def _fell_back(run:pathlib.Path, why:str) -> None:
   """measure_status.json says the roles were timed generically after the in-model capture could not split them."""
   from boltbeam.collectors import engine_kernels
-  from boltbeam.workflow.run_folder import MEASURE_STATUS
   status = run / MEASURE_STATUS
   m = json.loads(status.read_text()) if status.exists() else {}
   cap = m.setdefault("capture", {})
@@ -514,15 +525,13 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
       engine_kernels.collect(run, provider, say=say, step=step, out=CROSS_CHECK)
     except Exception as exc:  # the cross-check is extra evidence: its failure is recorded, never the run's
       (run / CROSS_CHECK).write_text(json.dumps({"capture": {"method": engine_kernels.METHOD, "reason": f"failed: {exc}"}, "rows": []}))
-  from boltbeam.workflow import limit, run_folder
   if trace.get('schema')=='boltbeam.decode_capture.v1':
     # This ledger already carries per-operation work and verified provenance.
     # The legacy weight-only loss calculator cannot represent recurrent stages.
-    from boltbeam.workflow.work_evidence import verify
     for capture in trace['contexts'].values():
-      verify(run,capture)
+      work_evidence.verify(run,capture)
     return trace
-  ceil = limit.measured_vs_ceiling(manifest, run_folder.optional(run, "model_profile.json"))
+  ceil = limit.measured_vs_ceiling(manifest, optional(run, "model_profile.json"))
   table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), for_decode(run, trace))
   if table and table["status"] != "measured":
     raise RuntimeError(table["reason"])
@@ -593,6 +602,11 @@ def run_build_installed(run:pathlib.Path) -> str | None:
   return _trace_field(run, "build_installed")
 
 
+def run_fork(run:pathlib.Path) -> dict[str, Any] | None:
+  """The fork a run's engine build was ({family, fork}, llama_bench_decode.fork_of); None for upstream and older runs."""
+  return _trace_field(run, "fork")
+
+
 def _pin_number(pin:dict[str, Any] | None) -> int | None:
   tag = str((pin or {}).get("tag") or "")
   return int(tag[1:]) if tag[:1] == "b" and tag[1:].isdigit() else None
@@ -605,13 +619,18 @@ def _pin_date(pin:dict[str, Any] | None) -> str | None:
   return min(same) if same else None
 
 
-def pin_check(provider:str, build:str | None, number:int | None = None, installed:str | None = None) -> dict[str, Any]:
+def pin_check(provider:str, build:str | None, number:int | None = None, installed:str | None = None,
+              fork:dict[str, Any] | None = None) -> dict[str, Any]:
   """A build beside its engine's pin. A llama.cpp build_commit matches when the pinned sha starts with it; a vLLM
   version when equal. The words state both as facts, the build that ran (with its build number and the day it was
   installed, when known) and the pin with the day it was set, so a reader sees the two versions side by side."""
   pin = engine_pin(provider)
   if build is None or build == "unknown":
     return {"pin": pin, "build": None, "matches": None, "words": f"{provider}: the run recorded no engine build"}
+  if fork:  # a fork's build numbers count its own commits and upstream's pin is not its line: no pin beside it
+    return {"pin": None, "build": build, "build_number": number, "installed": installed, "builds_from_pin": None,
+            "matches": None, **fork, "commit": build,
+            "words": f"{fork['label']} ({fork['engine_family']} fork) commit {build}, not upstream {provider} · no pin"}
   ok = None if not pin or pin.get("version") == "unknown" else (str(pin.get("sha", "")).startswith(build) if pin.get("sha") else str(pin.get("version")) == build)
   pinned = _pin_number(pin)
   gap = number - pinned if number is not None and pinned is not None else None
@@ -627,8 +646,8 @@ def pin_check(provider:str, build:str | None, number:int | None = None, installe
 def record_build(run:pathlib.Path, provider:str) -> dict[str, Any]:
   """The run's engine build and its pin check, written into the run's manifest (engine)."""
   from boltbeam.collectors import engine_builds
-  got = {"provider": provider, **pin_check(provider, run_build(run), run_build_number(run), run_build_installed(run))}
-  got["latest"] = engine_builds.currency(provider, engine_builds.run_version(provider, run))  # newest upstream then?
+  got = {"provider": provider, **pin_check(provider, run_build(run), run_build_number(run), run_build_installed(run), run_fork(run))}
+  got["latest"] = None if got.get("fork") else engine_builds.currency(provider, engine_builds.run_version(provider, run))  # newest upstream then?
   manifest = load_manifest(run)
   manifest["engine"] = got
   write_manifest(run, manifest)
@@ -652,13 +671,16 @@ def upstream_errors() -> tuple[type[BaseException], ...]:
   return (OSError, ValueError, KeyError, TypeError, http.client.HTTPException)  # a cut-off read is IncompleteRead
 
 
-def latest_llama(build:str | None, read:Callable[[str], Any] = upstream) -> dict[str, Any]:
+def latest_llama(build:str | None, read:Callable[[str], Any] = upstream, fork:dict[str, Any] | None = None) -> dict[str, Any]:
   """Snapshot upstream at report creation; a mismatch suggests a rerun, never changes the pin."""
   import datetime
   out = {"build": build, "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
          "source": "https://api.github.com/repos/ggml-org/llama.cpp/commits/master"}
   if not build or not re.fullmatch(r"[0-9a-f]{7,40}", build):
     return out | {"words": "llama.cpp latest-version check unavailable: the run has no comparable commit."}
+  if fork:  # upstream master is not the fork's line: no check, no reminder
+    return out | {**fork, "source": None, "words": f"No latest-version check: the run used {fork['label']}, a "
+                  f"{fork['engine_family']} fork, at commit {build}, not upstream llama.cpp."}
   try:
     sha = read(out["source"])["sha"]
     if not re.fullmatch(r"[0-9a-f]{40}", sha):

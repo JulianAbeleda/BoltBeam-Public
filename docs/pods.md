@@ -205,7 +205,7 @@ the wheels). Built (2026-11-09, no new image needed):
    compiles unless `LLAMA_PREBUILT_SHA256` is given. Without a compile the pod needs no `nvcc` for step 4.
    Expected: the llama.cpp part of step 4 from minutes (most of the 3090's 21) to the archive's download and checks.
 
-The archive (`tools/build-llama-prebuilt.sh`; for pin 097cf33d9, b11571, the engine pin: 797 MB, sha256 `2b5e75859f32f4f88e09139038e75d8e7196a160039ea5657653ec7ca7547f8e`, CUDA 12.8.93, built 2026-11-09 on linuxbox; until then pods ran 50569eb87, b11433, older than the pin) holds `bin/`: `llama-bench`,
+The archive (`tools/build-llama-prebuilt.sh`; for pin 097cf33d9, b11571, the engine pin: 797 MB, sha256 `2b5e75859f32f4f88e09139038e75d8e7196a160039ea5657653ec7ca7547f8e`, CUDA 12.8.93, built 2026-11-09 on an RTX 5090 machine; until then pods ran 50569eb87, b11433, older than the pin) holds `bin/`: `llama-bench`,
 `llama-batched-bench`, `llama-server`, llama.cpp's shared libraries, and the CUDA runtime, cuBLAS and cuBLASLt it was
 built with, plus libgomp; every ELF has RUNPATH `$ORIGIN`, so it runs from any folder. `libcuda` is the pod's
 driver. It is built with CUDA 12.8 for `CMAKE_CUDA_ARCHITECTURES` 80;86;89;90;100;120 (A100, 3090, 4090, H100/H200,
@@ -315,7 +315,8 @@ boltbeam fetch root@HOST -p PORT h100-generic    # fetch one (or several, or --a
 It reads the runs folder `pod-setup.sh` writes (`/root/boltbeam/runs`, then `/workspace/boltbeam/runs`, then
 `~/boltbeam-runs`; `--root` picks another) and says which it used. Each run lands in your saved runs
 (`$BOLTBEAM_RUNS/saved`, or `--into DIR`), where the screen's Saved runs page lists it as "from HOST, fetched DATE".
-Raw traces (`*.nsys-rep`, `*.sqlite`, `cuda_gpu_trace.csv`) stay on the pod unless `--with-traces`. Every file is
+The screen does the same from Saved runs, Fetch runs: the remote and port typed, its runs listed, some or all
+picked, fetched as a job. Raw traces (`*.nsys-rep`, `*.sqlite`, `cuda_gpu_trace.csv`) stay on the pod unless `--with-traces`. Every file is
 checked by size and sha256 against the pod's copy; a run that differs is not kept. A run already here is skipped,
 and a different run under the same id is refused, never overwritten. Each fetched run carries `fetched.json`: the
 host, port and path it came from, when, its GPU, and the BoltBeam version that fetched it.

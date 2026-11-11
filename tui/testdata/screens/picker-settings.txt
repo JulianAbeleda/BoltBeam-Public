@@ -2,23 +2,23 @@
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Engine settings                                                              │
 │ Settings are what the run asks the engine for. Each one changes what is      │
-│ measured, so the Run page says it. A setting left unset keeps the engine's   │
-│ own choice.                                                                  │
+│ measured, so the Run page says it.                                           │
 │                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
+│ A setting left unset keeps the engine's own choice.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Choose                                                                       │
-│ ▸   chunk size         512                                                   │
-│       requested engine chunk size                                            │
-│     matrix backends    TRITON                                                │
-│       the compiler's matrix backends                                         │
-│     MTP draft tokens   not set                                               │
-│       draft tokens per step                                                  │
+│   chunk size                                                                 │
+│   requested engine chunk size                                                │
+│   > 512                                                                      │
+│                                                                              │
+│   matrix backends                                                            │
+│   the compiler's matrix backends                                             │
+│   TRITON                                                                     │
+│                                                                              │
+│ ┃ MTP draft tokens                                                           │
+│ ┃ draft tokens per step                                                      │
+│ ┃ > not set                                                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit
+ esc cancel · shift+tab back · enter submit · ctrl+c quit

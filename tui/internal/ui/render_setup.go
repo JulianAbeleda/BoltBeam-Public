@@ -54,7 +54,7 @@ func modelBody(f Facts, width int) string {
 	}
 	rows := [][]string{{"ROLE", "SHAPE", "QUANT", "TENSORS"}}
 	for _, r := range p.Roles {
-		rows = append(rows, []string{named(plainRole, r.Role), fmt.Sprintf("%dx%d", r.Rows, r.Cols), r.Quant, fmt.Sprint(r.Count)})
+		rows = append(rows, []string{namedRole(r.Role), fmt.Sprintf("%dx%d", r.Rows, r.Cols), r.Quant, fmt.Sprint(r.Count)})
 	}
 	b.WriteString(table(rows))
 	b.WriteString(stMuted.Render(fmt.Sprintf("%s · %s · %s", deref(p.Architecture), p.ArchitectureClass, p.Source)))
@@ -227,7 +227,7 @@ func measureBody(f Facts, width int) string {
 			}
 			state, detail := stageState(st, events, f.alive(), r.Blocked)
 			n++
-			fmt.Fprintf(&b, "%s %d. %-26s %s\n", mark(state), n, plainStage[st.Key], stMuted.Render(detail))
+			fmt.Fprintf(&b, "%s %d. %-26s %s\n", mark(state), n, stageWord(st.Key), stMuted.Render(detail))
 			if st.Key == "analyze" {
 				for _, row := range measureRows(r.Measure, events, f.alive()) {
 					n++

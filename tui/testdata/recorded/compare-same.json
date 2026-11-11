@@ -1,0 +1,75 @@
+{
+  "head": {
+    "differs": "Same model, GPU, engine, build, weights and settings.",
+    "kind": "head_to_head",
+    "refused": null,
+    "rows": [
+      {
+        "better": 0,
+        "cells": [
+          "81.5 tok/s",
+          "81.1 tok/s"
+        ],
+        "key": "speed",
+        "label": "speed (each stream)"
+      },
+      {
+        "better": 0,
+        "cells": [
+          "40%",
+          "39%"
+        ],
+        "key": "pct",
+        "label": "of its GPU's limit"
+      },
+      {
+        "better": null,
+        "cells": [
+          "+11.3 tok/s",
+          ""
+        ],
+        "key": "gain",
+        "label": "biggest gain on offer"
+      }
+    ],
+    "runs": [
+      {
+        "id": "h100-generic",
+        "title": "Qwen3.8-27B-UD-Q4_K_M on NVIDIA H100 80GB HBM3 with llama.cpp"
+      },
+      {
+        "id": "h100-in-model",
+        "title": "Qwen3.8-27B-UD-Q4_K_M on NVIDIA H100 80GB HBM3 with llama.cpp"
+      }
+    ],
+    "schema": "boltbeam.plain_head_to_head.v1"
+  },
+  "kind": "head_to_head",
+  "lines": [
+    "Engine upgrade audit: h100-in-model (50569eb87) against h100-generic (50569eb87), decode; band the range of n before runs per row (a row moved when the after value lies outside the range of n independent before runs of its exact setup; with no change, that happens with probability 2/(n+1) per row (exchangeable runs)), or not checked, end to end capture overhead against the 5% ceiling, or not checked.",
+    "  pinned: b11571 (097cf33d9). Before: llama.cpp build 11433 (50569eb87), installed 2026-11-09 · pin b11571 (097cf33d9), set 2026-10-12. After: llama.cpp build 11433 (50569eb87), installed 2026-11-09 · pin b11571 (097cf33d9), set 2026-10-12.",
+    "  pin change: NOT justified: ",
+    "  driver: 580.126.20 -> 580.126.20 (unchanged; pin 595.99.02)",
+    "  cuda: 13.0 -> 13.0 (unchanged; pin 13.2)",
+    "  torch: unknown -> unknown (unknown; pin 2.13.0+cu130)",
+    "  nsight_systems: 2026.5.2 -> 2026.5.2 (unchanged; pin 2026.1.3)",
+    "  nsight_compute: 2025.3.1 -> 2025.3.1 (unchanged; pin 2026.2.1)",
+    "  cuda_runtime: unknown -> unknown (unknown; pin None)"
+  ],
+  "parts_note": null,
+  "plain": {
+    "kind": "plain_compare",
+    "layer1": {
+      "fast": "h100-in-model against h100-generic: llama.cpp 50569eb87 against 50569eb87, decode.",
+      "lines": [],
+      "run_type": "compare",
+      "top": [],
+      "trust": {
+        "checked": false,
+        "text": "Not checked: a part's time broke one of the report's rules, so the parts are not shown (Full detail says which)."
+      }
+    },
+    "schema": "boltbeam.plain_compare.v1"
+  },
+  "schema": "boltbeam.tui.v1"
+}

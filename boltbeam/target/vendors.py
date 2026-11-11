@@ -134,7 +134,7 @@ class Vendor:
     return self.terms[key]
 
   def scan_facts(self, **where:str) -> dict[str, Any]:
-    """The scan's facts and, for a discrete GPU, the measured profile's (workflow/chips._vendors()), references
+    """The scan's facts and, for a discrete GPU, the measured profile's (target/hardware.vendor_rows()), references
     resolved; `where` fills the placeholders in `order`."""
     row = {"scan_tool": self.scan_tools[0], "platform": self.platform, "probe": resolve(self.probe),
            "match_keys": self.match_keys, "order": self.order.format(**where), "notes": self.notes,
@@ -172,7 +172,7 @@ _ROWS = (
     # the GPU's compute capability as CMake spells it (12.0 -> 120), as tools/pod-setup.sh step 4 builds it
     ggml_cmake=("-DGGML_CUDA=ON", "-DCMAKE_CUDA_ARCHITECTURES={arch}"),
     ggml_arch=(("nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"), r"(\d+)\.(\d+)"),
-    scan_tools=("nvidia-smi",), other_tools=("cuobjdump", "nvdisasm", "ncu"), probe="boltbeam.workflow.autoscan:_probe_nvidia", match_keys=("compute_capability",),
+    scan_tools=("nvidia-smi",), other_tools=("cuobjdump", "nvdisasm", "ncu"), probe="boltbeam.target.hardware:_probe_nvidia", match_keys=("compute_capability",),
     order="nvidia-smi's, by PCI address (CUDA's own order is the same under CUDA_DEVICE_ORDER=PCI_BUS_ID)",
     notes=("Primary GPU is the first device returned by nvidia-smi.",), unrecorded_order=None,
     # telemetry: NVML, opened by the card's PCI address; the clock policy nvidia-smi allows on that card
@@ -227,7 +227,7 @@ _ROWS = (
     vllm_mtp_context=(2500, "vLLM 0.31 runs an MTP verify (k+1 query tokens) on TRITON_ATTN's 2D kernel, one workgroup per KV "
                       "head: TP=2 k=2 84 to 51 tok/s over 2,900 tokens, below one-token decode's flat 56 past ~2,500; a split-KV "
                       "verify (the 3D kernel for a query of up to 8 tokens) holds ~90 (R9700, 2026-10-27)"),
-    scan_tools=("amd-smi", "rocm-smi"), other_tools=(), probe="boltbeam.workflow.autoscan:_probe_amd_hip_order",
+    scan_tools=("amd-smi", "rocm-smi"), other_tools=(), probe="boltbeam.target.hardware:_probe_amd_hip_order",
     match_keys=("compute_units",), order="the HIP runtime's: amd-smi's devices in KFD topology node order ({KFD_NODES})",
     notes=("Primary GPU is HIP's device 0: amd-smi's devices in the KFD topology's order.",),
     # before 62bf26b the scan listed amd-smi's own order, which is not HIP's: such a list names the wrong card
@@ -276,7 +276,7 @@ _ROWS = (
                    "(llama.cpp 7182ef7, 2 x R9700)"),
   Vendor(
     vendor="apple", backend="Metal", tinygrad_device="METAL", tinygrad_per_gpu=False, platform="Darwin",
-    scan_tools=("system_profiler",), other_tools=(), probe="boltbeam.workflow.autoscan:_probe_apple_metal",
+    scan_tools=("system_profiler",), other_tools=(), probe="boltbeam.target.hardware:_probe_apple_metal",
     match_keys=("apple_soc", "gpu_cores"), order="system_profiler's",
     notes=("Primary GPU is the first Apple device returned by system_profiler.",
            "Dynamic Metal limits require the tinygrad provider fact adapter."),

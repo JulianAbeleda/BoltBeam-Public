@@ -1,0 +1,164 @@
+{
+ "target_id": "apple_m3_10c",
+ "providers": [
+  {
+   "provider": "llama.cpp",
+   "available": true,
+   "state": "available",
+   "capture": {
+    "reason": "metal-system-trace is not installed"
+   },
+   "reason": null
+  },
+  {
+   "provider": "tinygrad",
+   "available": true,
+   "state": "available",
+   "capture": {
+    "method": "tinygrad-profile-events"
+   },
+   "reason": null
+  },
+  {
+   "provider": "vllm",
+   "available": false,
+   "state": "not_compatible",
+   "reason": "BoltBeam runs vLLM on CUDA or AMD GPUs; apple_m3_10c is Metal",
+   "capture": {
+    "method": null
+   }
+  },
+  {
+   "provider": "ollama",
+   "available": false,
+   "state": "not_here",
+   "reason": "ollama was not found in $BOLTBEAM_OLLAMA or on PATH",
+   "capture": {
+    "method": null
+   }
+  },
+  {
+   "provider": "tensorrt-llm",
+   "available": false,
+   "state": "not_compatible",
+   "reason": "TensorRT-LLM runs on NVIDIA GPUs only; apple_m3_10c is Metal",
+   "capture": {
+    "method": null
+   }
+  }
+ ],
+ "families": [
+  {
+   "family": "llama.cpp",
+   "label": "llama.cpp",
+   "forks": [
+    {
+     "fork": "upstream",
+     "label": "upstream",
+     "repo": "https://github.com/ggml-org/llama.cpp",
+     "provider": "llama.cpp",
+     "runs": true,
+     "state": "available",
+     "path": null,
+     "reason": null,
+     "fix": null
+    },
+    {
+     "fork": "prismml",
+     "label": "PrismML",
+     "repo": "https://github.com/PrismML-Eng/llama.cpp",
+     "provider": null,
+     "runs": false,
+     "state": "not_here",
+     "path": null,
+     "reason": null,
+     "fix": "get it from https://github.com/PrismML-Eng/llama.cpp (branch prism), then export BOLTBEAM_LLAMA_PRISM=<its path>"
+    },
+    {
+     "fork": "ollama",
+     "label": "Ollama",
+     "repo": "https://github.com/ollama/ollama",
+     "provider": "ollama",
+     "runs": true,
+     "state": "not_here",
+     "path": null,
+     "reason": "ollama was not found in $BOLTBEAM_OLLAMA or on PATH",
+     "fix": "get it from https://github.com/ollama/ollama, then export BOLTBEAM_OLLAMA=<its path>"
+    },
+    {
+     "fork": "strata",
+     "label": "Strata",
+     "repo": "https://github.com/Niko1221/Strata",
+     "provider": null,
+     "runs": false,
+     "state": "not_here",
+     "path": null,
+     "reason": null,
+     "fix": "get it from https://github.com/Niko1221/Strata, then export BOLTBEAM_STRATA=<its path>"
+    }
+   ]
+  },
+  {
+   "family": "vllm",
+   "label": "vLLM",
+   "forks": [
+    {
+     "fork": "upstream",
+     "label": "upstream",
+     "repo": "https://github.com/vllm-project/vllm",
+     "provider": "vllm",
+     "runs": true,
+     "state": "not_compatible",
+     "path": null,
+     "reason": "BoltBeam runs vLLM on CUDA or AMD GPUs; apple_m3_10c is Metal",
+     "fix": null
+    }
+   ]
+  },
+  {
+   "family": "tensorrt-llm",
+   "label": "TensorRT-LLM",
+   "forks": [
+    {
+     "fork": "upstream",
+     "label": "upstream",
+     "repo": "https://github.com/NVIDIA/TensorRT-LLM",
+     "provider": "tensorrt-llm",
+     "runs": true,
+     "state": "not_compatible",
+     "path": null,
+     "reason": "TensorRT-LLM runs on NVIDIA GPUs only; apple_m3_10c is Metal",
+     "fix": null
+    }
+   ]
+  },
+  {
+   "family": "tinygrad",
+   "label": "tinygrad",
+   "forks": [
+    {
+     "fork": "upstream",
+     "label": "upstream",
+     "repo": "https://github.com/tinygrad/tinygrad",
+     "provider": null,
+     "runs": false,
+     "state": "not_here",
+     "path": null,
+     "reason": null,
+     "fix": "get it from https://github.com/tinygrad/tinygrad, then export BOLTBEAM_TINYGRAD_UPSTREAM=<its path>"
+    },
+    {
+     "fork": "own",
+     "label": "own fork",
+     "repo": "https://example.invalid/tinygrad-fork",
+     "provider": "tinygrad",
+     "runs": true,
+     "state": "available",
+     "path": null,
+     "reason": null,
+     "fix": null
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,36 @@
+{
+  "schema": "boltbeam.fetched.v1",
+  "kind": "fetch",
+  "dest": "root@203.0.113.7",
+  "remote_root": "/root/boltbeam/runs",
+  "tried": [
+    "/root/boltbeam/runs"
+  ],
+  "saved": "/home/u/runs/saved",
+  "runs": [
+    {
+      "id": "h100-in-model",
+      "where": "h100-in-model",
+      "model_id": "Qwen3-8B",
+      "target_id": "nvidia_sm90",
+      "gpu": "NVIDIA H100 80GB HBM3",
+      "date": "2026-11-09T09:58:12Z",
+      "bytes": 232,
+      "left_behind_bytes": 4107,
+      "state": "new"
+    },
+    {
+      "id": "h100-generic",
+      "where": ".work/h100-generic",
+      "model_id": "Qwen3-8B",
+      "target_id": "nvidia_sm90",
+      "gpu": "NVIDIA H100 80GB HBM3",
+      "date": "2026-11-09T09:58:12Z",
+      "bytes": 232,
+      "left_behind_bytes": 4107,
+      "state": "new"
+    }
+  ],
+  "fetched": [],
+  "lines": []
+}

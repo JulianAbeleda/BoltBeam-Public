@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -144,6 +145,10 @@ func TestLiveSeamMatchesPinnedContract(t *testing.T) {
 		"runs":    func() ([]byte, error) { _, raw, err := c.List(); return raw, err },
 		"run-001": func() ([]byte, error) { _, raw, err := c.Show("qwen3-8b-apple_m3_10c-001"); return raw, err },
 		"run-002": func() ([]byte, error) { _, raw, err := c.Show("qwen3-8b-apple_m3_10c-002"); return raw, err },
+		"plain-002": func() ([]byte, error) {
+			return c.Call("plain", "--run", filepath.Join(c.Root, "qwen3-8b-apple_m3_10c-002"))
+		},
+		"words": func() ([]byte, error) { return c.Call("words") },
 		"results-002": func() ([]byte, error) {
 			_, raw, code, err := c.Results("qwen3-8b-apple_m3_10c-002")
 			if code != 0 {
@@ -227,5 +232,17 @@ func TestPipelineArgvSearchFlag(t *testing.T) {
 	}
 	if a := c.PipelineArgv(Pipeline{Model: "m", RunDir: "r", Target: "t", NoSearch: true}); has(a, "--no-search") {
 		t.Errorf("--no-search without --analyze: %v", a)
+	}
+}
+
+// Speed up's job is the derive command with its JSON and progress lines; a demo plays its own command instead.
+func TestSpeedArgv(t *testing.T) {
+	c := Client{Python: "py"}
+	if got := strings.Join(c.SpeedArgv("/m/x"), " "); got != "py -m boltbeam.cli derive lighter-head /m/x --json --progress" {
+		t.Fatalf("argv: %q", got)
+	}
+	c.Demo = &Demo{Argv: map[string][]string{"speedup": {"sh", "-c", "true"}}}
+	if got := strings.Join(c.SpeedArgv("/m/x"), " "); got != "sh -c true" {
+		t.Fatalf("a demo's job: %q", got)
 	}
 }

@@ -88,7 +88,23 @@ func discoverModels(roots []string) []string {
 	return out
 }
 
+// copyLabel is a Speed up copy as model lists show it, "<model> · BoltBeam" (Python: quantization/speed_up.display_name):
+// a folder with speed_up.json in it, or a file with <file>.speed_up.json beside it, in the copy's name without its -boltbeam.
+func copyLabel(path string) (string, bool) {
+	name, record := filepath.Base(path), filepath.Join(path, "speed_up.json")
+	if st, err := os.Stat(path); err == nil && !st.IsDir() {
+		name, record = strings.TrimSuffix(name, filepath.Ext(name)), path+".speed_up.json"
+	}
+	if _, err := os.Stat(record); err != nil {
+		return "", false
+	}
+	return strings.TrimSuffix(name, "-boltbeam") + " · BoltBeam", true
+}
+
 func modelLabel(path string) string {
+	if label, ok := copyLabel(path); ok {
+		return label
+	}
 	name := filepath.Base(path)
 	if filepath.Base(filepath.Dir(path)) == "snapshots" {
 		repo := filepath.Base(filepath.Dir(filepath.Dir(path)))

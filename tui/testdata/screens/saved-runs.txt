@@ -4,21 +4,21 @@
 │ 2 saved runs in /home/u/runs/saved                                           │
 │ ▸ Qwen3-8B · apple_m3_10c · tinygrad · 2026-10-09 12:10 · 60% of limit       │
 │   Qwen3-8B · apple_m3_10c · llama.cpp · 2026-10-09 11:20 · 82% of limit      │
+│                                                                              │
+│   Compare two saved runs                                                   › │
+│   Fetch runs from another machine                                          › │
 │   [ Back to setup ]                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 
 
-
-
-
-
-
-
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │
-│ A run is temporary until you save it. Saving keeps the run, its report, res… │
-│ Enter opens a saved run. Press d twice to delete one.                        │
+│ A run is temporary until you save it.                                        │
+│ Saving keeps its report and its measurements.                                │
+│                                                                              │
+│ Enter opens a run. c compares two side by side.                              │
+│ d twice deletes one.                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · pgup/pgdn page · enter open run · d delete run · esc setup · q quit
+ ↑↓ move · enter open · d delete · c compare · esc setup · ? all keys · q quit

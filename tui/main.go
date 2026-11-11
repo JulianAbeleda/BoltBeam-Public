@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
@@ -116,6 +117,9 @@ func run(args []string, out, errOut io.Writer) int {
 	saved := fs.String("saved", os.Getenv("BOLTBEAM_SAVED"), "the saved-runs folder (default RUNS/saved)")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if path := os.Getenv("BOLTBEAM_TUI_DEMO"); path != "" && !*jsonMode && fs.NArg() == 0 {
+		return demo(path, errOut)
 	}
 	if *repo == "" {
 		cwd, _ := os.Getwd()
@@ -375,4 +379,46 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 	}
 	fmt.Fprintln(errOut, usage)
 	return 2
+}
+
+// demo draws the screens from a demo file (BOLTBEAM_TUI_DEMO, not in the usage: the VHS tapes in tui/tapes use it).
+// Every seam call is answered from recorded JSON (seam/demo.go) and nothing BoltBeam runs: the interpreter is a name
+// no command has. Each of the demo's jobs is a `sleep` in a state folder in the system temp dir, its log the recorded
+// lines, so a run's progress is drawn from them and Stop ends it; the sleeps and the folder go when the screen ends.
+func demo(path string, errOut io.Writer) int {
+	d, err := seam.LoadDemo(path)
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+		return 2
+	}
+	state, err := os.MkdirTemp("", "boltbeam-demo-")
+	if err != nil {
+		fmt.Fprintln(errOut, err)
+		return 1
+	}
+	defer os.RemoveAll(state)
+	store := jobs.Store{Dir: state}
+	for id, lines := range d.Jobs {
+		job, err := store.Start(id, "", []string{"sleep", "86400"})
+		if err != nil {
+			fmt.Fprintln(errOut, "the demo's job "+id+" did not start: "+err.Error())
+			return 1
+		}
+		defer store.Stop(id)
+		log, err := os.OpenFile(job.LogPath, os.O_WRONLY|os.O_APPEND, 0o644)
+		if err == nil {
+			_, err = log.WriteString(strings.Join(lines, "\n") + "\n")
+			log.Close()
+		}
+		if err != nil {
+			fmt.Fprintln(errOut, "the demo's log could not be written: "+err.Error())
+			return 1
+		}
+	}
+	client := seam.Client{Python: "boltbeam-demo-runs-nothing", Root: "runs", Work: "runs/.work", Saved: "runs/saved", Demo: d}
+	if err := ui.Start(client, store, d.Model, d.Target, 512); err != nil {
+		fmt.Fprintln(errOut, err)
+		return 1
+	}
+	return 0
 }

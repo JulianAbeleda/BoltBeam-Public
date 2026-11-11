@@ -7,7 +7,7 @@ decode) both refuse on the same rule and diff rows the same way.
   rows          two where tables by row name: each row's time change, against the row's measured repeat spread; missing repeat data is not checked; its work (calls, operations, bytes, ceiling) equal or
                 not; rows only before or only after
   tie-out       each side's own: kernels plus gaps against the captured wall, and the captured wall against the
-                untraced time (tie_out.end_to_end, its own band)
+                untraced time (replay_overhead.end_to_end, its own band)
 
 The engine-upgrade audit is the check to run before any engine upgrade (docs/engine-upgrade-audit.md).
 """
@@ -17,7 +17,7 @@ import json
 import pathlib
 from typing import Any
 
-from boltbeam.workflow import tie_out as tie
+from boltbeam.collectors import replay_overhead
 
 AUDIT_SCHEMA = "boltbeam.engine_diff.v1"
 WORK = ("calls", "flops", "bytes", "limit_ms")  # what a row did; equal on both sides when only the engine's speed changed
@@ -25,16 +25,20 @@ TIE_RESIDUAL_MS = 1e-3  # kernels plus gaps equal the captured wall within this
 
 
 class DiffRefused(ValueError):
-  """Two runs that cannot be compared: the field that differs."""
+  """Two runs that cannot be compared: the field that differs (field, when one does; None for any other refusal)."""
+
+  def __init__(self, message:str, field:str | None = None):
+    super().__init__(message)
+    self.field = field
 
 
 def refuse_unless_same(fields:list[tuple[str, Any, Any]]) -> None:
   """Raise DiffRefused naming the first field the runs differ in (or that one of them lacks)."""
   for name, x, y in fields:
     if x is None and y is None:
-      raise DiffRefused(f"neither run recorded its {name}")
+      raise DiffRefused(f"neither run recorded its {name}", field=name)
     if x != y or x is None:
-      raise DiffRefused(f"the runs differ in {name}: {x!r} and {y!r}")
+      raise DiffRefused(f"the runs differ in {name}: {x!r} and {y!r}", field=name)
 
 
 def row_changes(rows_a:dict[Any, dict[str, Any]], rows_b:dict[Any, dict[str, Any]], *, band:bool = False,
@@ -42,7 +46,7 @@ def row_changes(rows_a:dict[Any, dict[str, Any]], rows_b:dict[Any, dict[str, Any
   """Rows keyed alike on both sides, after less before: now_ms and lost_ms, or only_in. With band: each row's before
   and after time, its before band (the range of n before runs, repeat_bands.RULE), whether the after time lies outside
   it (None without a band), n and the false-move rate, and the work fields that changed."""
-  from boltbeam.workflow.repeat_bands import strength
+  from boltbeam.collectors.capture_scope import strength
   out = []
   for k in sorted(set(rows_a) | set(rows_b), key=lambda k: tuple(str(x) for x in (k if isinstance(k, tuple) else (k,)))):
     a, b = rows_a.get(k), rows_b.get(k)
@@ -82,10 +86,10 @@ def _prefill_sides(run:pathlib.Path, record:dict | None = None) -> dict[str, dic
     if not attr.get("rows"):
       continue
     rows = {r["name"]: {"now_ms": r["ms"], **{f: r.get(f) for f in ("calls", "flops", "bytes")}} for r in attr["rows"]}
-    from boltbeam.workflow.repeat_bands import find
+    from boltbeam.collectors.capture_scope import find
     row = native.get(int(length)) or {}
     truth = row.get("qualification_ms") or row.get("prefill_ms")
-    e2e = tie.end_to_end(attr, truth, band=find(run, f"prefill {length}", record=record),
+    e2e = replay_overhead.end_to_end(attr, truth, band=find(run, f"prefill {length}", record=record),
                        reference=timing_reference((row.get("engine") or {}).get("timing_window")), reference_window=(row.get("engine") or {}).get("timing_window"))
     out[f"prefill {length}"] = {"rows": rows, "tie": {
       "captured_ms": attr.get("profiled_wall_ms"), "engine_elapsed_ms": attr.get("measured_ms"), "busy_ms": attr.get("busy_ms"), "gaps_ms": attr.get("gaps_ms"),
@@ -130,8 +134,8 @@ def _decode_side(run:pathlib.Path, record:dict | None = None) -> dict[str, dict[
   attr = {"measured_ms": token, "wall_ms": token, "busy_ms": busy, "gaps_ms": (token - busy) if token and busy else None}
   match = t.get("timing_match") or {}
   attr["timing_window"] = match.get("captured_window")
-  from boltbeam.workflow.repeat_bands import find
-  e2e = tie.end_to_end(attr, untraced, "token", band=find(run, f"decode {t.get('context')}", record=record),
+  from boltbeam.collectors.capture_scope import find
+  e2e = replay_overhead.end_to_end(attr, untraced, "token", band=find(run, f"decode {t.get('context')}", record=record),
                      reference="untraced reference", reference_window=match.get("native_window")) if token and busy is not None else {"confirms": None, "words": "no captured token"}
   if match and not match["matches"]:
     e2e = {"confirms": None, "words": match["words"], "timing_match": match}
@@ -146,7 +150,7 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
   is unknown. Names both pins (data/engine_pins.json) and says plainly when a build is not its pin."""
   from boltbeam.collectors import providers
   from boltbeam.artifacts.run_io import load_manifest
-  from boltbeam.workflow.run_folder import run_provider
+  from boltbeam.collectors.providers import run_provider
   from boltbeam.collectors.toolchain import changes
   ma, mb = load_manifest(a), load_manifest(b)
   refuse_unless_same([("workload", ma.get("workload"), mb.get("workload")), ("model", _model(a, ma), _model(b, mb)),
@@ -155,19 +159,21 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
   for run, got in zip((a, b), builds):
     if got is None:
       raise DiffRefused(f"{run.name} recorded no engine build: an audit of an unknown build is not compared")
-  pins = [providers.pin_check(run_provider(r), x, providers.run_build_number(r), providers.run_build_installed(r)) for r, x in zip((a, b), builds)]
+  pins = [providers.pin_check(run_provider(r), x, providers.run_build_number(r), providers.run_build_installed(r), providers.run_fork(r))
+          for r, x in zip((a, b), builds)]
   side = _prefill_sides if ma.get("workload") == "prefill" else _decode_side
   A, B = side(a, bands), side(b, bands)
   if not (A and B):
     raise DiffRefused("a run holds no captured where table")
   parts = []
+  from boltbeam.collectors import capture_scope
   from boltbeam.workflow import repeat_bands as rb
   for key in sorted(set(A) & set(B), key=lambda k: (k.split()[0], float(k.split()[1]))):
-    ba = rb.find(a, key, record=bands)  # the before build's band: the after value is judged against its n runs
+    ba = capture_scope.find(a, key, record=bands)  # the before build's band: the after value is judged against its n runs
     if ba and _timing_sha(b) in {s.get("timing_sha256") for s in ba["sources"]}:
       raise DiffRefused(f"{b.name} is one of its own band's runs: a holdout is never judged by a band it made")
     n = (ba or {}).get("n")
-    widths = {name: (ba["rows"][name] if rb.width(ba, name, work=row) is not None else None)
+    widths = {name: (ba["rows"][name] if capture_scope.width(ba, name, work=row) is not None else None)
               for name, row in A[key]["rows"].items()}
     rows = row_changes(A[key]["rows"], B[key]["rows"], band=True, widths=widths, n=n)
     ta, tb = A[key]["tie"], B[key]["tie"]
@@ -183,7 +189,7 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
                   "captured_ms": wall, "reconciles": wall is not None and abs(wall - kernels - gaps["now_ms"]) <= TIE_RESIDUAL_MS,
                   "untraced_ms": (tb["untraced_ms"] - ta["untraced_ms"]) if ta["untraced_ms"] and tb["untraced_ms"] else None,
                   "unchanged": held if checked else None, "status": "checked" if checked else "not checked",
-                  **(rb.strength(n) if n else {}), "pin_refused": rb.pin_words(ba)})
+                  **(capture_scope.strength(n) if n else {}), "pin_refused": rb.pin_words(ba)})
   from boltbeam.workflow.results import setting_words
   settings = [setting_words(a), setting_words(b)]
   return {"schema": AUDIT_SCHEMA, "before": a.name, "after": b.name, "builds": builds, "provider": run_provider(a), "pins": pins,
@@ -191,7 +197,7 @@ def audit(a:pathlib.Path, b:pathlib.Path, *, bands:dict | None = None) -> dict[s
           "model": _model(a, ma), "target": ma.get("target_id"), "workload": ma.get("workload"), "parts": parts,
           "band": f"the range of n before runs per row ({rb.RULE}), or not checked",
           "justifies_pin": bool(parts) and not any(p["pin_refused"] for p in parts),
-          "end_to_end_band": f"capture overhead against the {tie.CEILING_PCT:g}% ceiling, or not checked"}
+          "end_to_end_band": f"capture overhead against the {replay_overhead.CEILING_PCT:g}% ceiling, or not checked"}
 
 
 def _timing_sha(run:pathlib.Path) -> str:

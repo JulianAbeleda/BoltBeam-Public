@@ -73,7 +73,7 @@ def validate(run:Path, res:dict) -> dict:
   trace = json.loads(trace_path.read_text()) if trace_path.exists() else {}
   captures = list((trace.get('contexts' if res.get('workload') == 'decode' else 'lengths') or {}).values())
   verified_work = bool(captures)
-  from boltbeam.workflow.work_evidence import verify
+  from boltbeam.collectors.work_evidence import verify
   for cap in captures:
     if not cap.get('work_evidence'):
       verified_work = False
@@ -140,8 +140,8 @@ def validate(run:Path, res:dict) -> dict:
       if r.get('pct_peak') is not None and r.get('limit_ms') is not None and r.get('now_ms'):
         actual = r['now_ms']
         if w.get('estimate'):
-          measured = [s for s in loss.get('roles', [])
-                      if f"{s['role']} {s['quant']}" == r['name']]
+          from boltbeam.workflow.tie_out import role_name  # the row's own name: a role at two shapes names its part
+          measured = [s for s in loss.get('roles', []) if role_name(s) == r['name']]
           if len(measured) > 1:  # one role and quant in two shapes (a 27B's two attention layer kinds): its own times
             measured = [s for s in measured if abs((s.get('ideal_ms') or 0) - r['limit_ms']) < 1e-9
                         and abs((s.get('est_ms') if s.get('est_ms') is not None else s.get('actual_ms', 0)) - r['now_ms']) < 1e-9]
@@ -179,7 +179,8 @@ def validate(run:Path, res:dict) -> dict:
   if tie.get('lines') and tie.get('token_ms') is not None and not tie.get('refused'):
     equal('loss.tie_out.token_ms = sum(lines.ms)', tie['token_ms'], sum(r['ms'] for r in tie['lines']))
   where(loss.get('where_token_goes'), 'loss.where_token_goes')
-  from boltbeam.workflow.tie_out import check_end_to_end, overhead_words, replication, rows_stand, GAPS_BOUND_ROW
+  from boltbeam.collectors.replay_overhead import overhead_words
+  from boltbeam.workflow.tie_out import check_end_to_end, replication, rows_stand, GAPS_BOUND_ROW
   w, e, b = loss.get('where_token_goes') or {}, tie.get('end_to_end') or {}, tie.get('gaps_bound')
   if b:  # over the ceiling: the gaps are the untraced token less the kernels, and the table sums to the untraced token
     from boltbeam.collectors.providers import TRACES
@@ -196,7 +197,8 @@ def validate(run:Path, res:dict) -> dict:
   if e.get('confirms') is False and not w.get('estimate') and not rows_stand(tie) and any(r.get('tok_s_gain') is not None for r in w.get('rows') or []):
     failures.append('loss.where_token_goes: throughput gains on a capture above the ceiling whose kernel rows no replication qualifies')
   if loss.get('semantic_capture') and w.get('rows'):  # the same rule on a semantic capture's table, from the capture's own repeats
-    from boltbeam.workflow.tie_out import end_to_end, over_ceiling, qualification_words
+    from boltbeam.collectors.replay_overhead import end_to_end
+    from boltbeam.workflow.tie_out import over_ceiling, qualification_words
     capture = (json.loads((run / loss['source']).read_text()).get('contexts') or {}).get(str(w.get('context'))) or {}
     steps = len((capture.get('engine') or {}).get('decode_steps') or [1])
     count = (capture.get('speculation') or {}).get('tokens') or steps
@@ -225,7 +227,7 @@ def validate(run:Path, res:dict) -> dict:
   for path,ct,e in (('loss.tie_out.captured_token',tie.get('captured_token'),tie.get('end_to_end')),('loss.captured_token',loss.get('captured_token'),(loss.get('captured_token') or {}).get('end_to_end'))):
    if ct:  # the whole-token (prefill, turn) line says exactly what its verdict says, with the verdict's numbers
     e=e or {};checks+=1;nums=f"captured {e['captured_ms']:.2f} ms vs untraced {e['untraced_ms']:.2f} ms" if e.get('captured_ms') and e.get('untraced_ms') else ''
-    if ct.get('token_ms')!=e.get('captured_ms',ct.get('token_ms')) or ct.get('untraced_ms')!=e.get('untraced_ms',ct.get('untraced_ms')) or not all(w in str(ct.get('words')) for w in (nums,str(e.get('words')).split(' (',1)[0])):failures.append(f'{path}: its token, untraced time or words disagree with tie_out.end_to_end')
+    if ct.get('token_ms')!=e.get('captured_ms',ct.get('token_ms')) or ct.get('untraced_ms')!=e.get('untraced_ms',ct.get('untraced_ms')) or not all(w in str(ct.get('words')) for w in (nums,str(e.get('words')).split(' (',1)[0])):failures.append(f'{path}: its token, untraced time or words disagree with replay_overhead.end_to_end')
   failures.extend(unmatched_window_failures(loss, captures))
   if comparison:=loss.get('capture_comparison'):
     rows=comparison.get('rows') or []

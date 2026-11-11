@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Recommended setup                                                            │
+│ Speed up                                                                     │
+│   ✓ Made m · BoltBeam.                                                       │
+│     SPEED NOT MEASURED: the speed was not measured, so this copy is not      │
+│     known to be faster.                                                      │
+│     Scores the same on the answer check.                                     │
+│     It shows in model lists as m · BoltBeam.                                 │
+│                                                                              │
+│ context, speed and engine flags for this model on your GPUs · derived from   │
+│ the checkpoint and this machine's measured facts; nothing runs until Check   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ ▸ [ Copy engine command line ]                                               │
+│   [ Copy Arkey vllm_args ]                                                   │
+│   [ Check ] start the engine once with these flags and compare               │
+│   [ Speed up ] Makes a faster copy. The original stays.                      │
+│   [ Measure MTP on the copy ]                                                │
+│   [ Compare with the original ]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · enter pick · esc setup · ? all keys · q quit

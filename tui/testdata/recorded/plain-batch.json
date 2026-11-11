@@ -1,0 +1,1646 @@
+{
+  "id": "qwen3-8-27b-w4a16-awq-nvidia_sm120-001",
+  "kind": "plain",
+  "layer1": {
+    "close": "80% of the fastest this GPU allows for this model (109.7 tok/s).",
+    "fast": "The model writes 87.5 tok/s (tokens a second).",
+    "figures": [
+      {
+        "figure": "87.5 tok/s",
+        "key": "speed",
+        "label": "speed",
+        "unit": "tok/s",
+        "value": "87.5"
+      },
+      {
+        "figure": "80%",
+        "key": "pct",
+        "label": "of this GPU's limit (109.7 tok/s)",
+        "unit": "%",
+        "value": "80"
+      },
+      {
+        "figure": "+3.5 tok/s",
+        "key": "gain",
+        "label": "biggest gain on offer",
+        "unit": "tok/s",
+        "value": "+3.5"
+      }
+    ],
+    "gains_note": null,
+    "holds": "feed-forward in (INT4_G128_ZP), 16% of the lost time.",
+    "numbers": {
+      "batch": 1,
+      "best_batch": 16,
+      "best_context": 128,
+      "best_tok_s_total": 1160.0806939133322,
+      "limit_ms": 9.113525758054143,
+      "limit_tok_s": 109.72701746261515,
+      "ms": 11.428919380589846,
+      "pct": 79.74092260666374,
+      "tok_s": 87.49733607346437
+    },
+    "run_type": "batch_sweep",
+    "title": "Qwen3.8-27B-W4A16-AWQ on NVIDIA GeForce RTX 5090 with vLLM",
+    "top": [
+      {
+        "gain": {
+          "cell": "+3.5",
+          "figure": "+3.5 tok/s",
+          "text": "+3.5 tok/s if this ran at full speed",
+          "unit": "tok_s",
+          "value": 3.4896815313019425
+        },
+        "lost_ms": 0.37977892638717803,
+        "ms": 3.8482859999999945,
+        "name": "ffn_gate_up INT4_G128_ZP",
+        "part": "feed-forward in (INT4_G128_ZP)",
+        "share": 0.15698297560868707,
+        "share_cell": "16%",
+        "time": "3.85 ms",
+        "what": "role"
+      },
+      {
+        "gain": {
+          "cell": "+3.2",
+          "figure": "+3.2 tok/s",
+          "text": "+3.2 tok/s if this ran at full speed",
+          "unit": "tok_s",
+          "value": 3.263301070191798
+        },
+        "lost_ms": 0.35514214285714363,
+        "ms": 0.35514214285714363,
+        "name": "triton_red_fused__to_copy_add_fused_add…",
+        "part": "other GPU work (copying)",
+        "share": 0.1467992731458785,
+        "share_cell": "15%",
+        "time": "0.36 ms",
+        "what": "kernels"
+      },
+      {
+        "gain": {
+          "cell": "+1.9",
+          "figure": "+1.9 tok/s",
+          "text": "+1.9 tok/s if this ran at full speed",
+          "unit": "tok_s",
+          "value": 1.9280911825188412
+        },
+        "lost_ms": 0.20983244250382938,
+        "ms": 1.9442775714285794,
+        "name": "ffn_down INT4_G128_ZP",
+        "part": "feed-forward out (INT4_G128_ZP)",
+        "share": 0.08673498952890292,
+        "share_cell": "9%",
+        "time": "1.94 ms",
+        "what": "role"
+      }
+    ],
+    "trust": {
+      "checked": true,
+      "key": "checked",
+      "text": "Checked ✓: the parts add up to the measured time."
+    },
+    "unassigned": null
+  },
+  "layer2": {
+    "glossary": [
+      {
+        "plain": "Tokens a second: how many words (or pieces of words) the model writes each second. Higher is faster.",
+        "term": "tok/s"
+      },
+      {
+        "plain": "The fastest this GPU allows for this model: the time to move every byte the step needs once at the GPU's memory speed (or, for heavy maths, at its top compute speed). A real run is always slower.",
+        "term": "limit"
+      },
+      {
+        "plain": "Milliseconds: thousandths of a second.",
+        "term": "ms"
+      },
+      {
+        "plain": "How many tokens of conversation the model already holds when it writes the next one. More context means more to read.",
+        "term": "context"
+      },
+      {
+        "plain": "One conversation. A GPU can serve several at once (a batch); each gets its own tokens.",
+        "term": "stream"
+      },
+      {
+        "plain": "One piece of the model's work in each step, such as the feed-forward or attention layers, or the time between GPU steps.",
+        "term": "part"
+      },
+      {
+        "plain": "How long this part takes now, in each token (or each step of several streams, or each prompt).",
+        "term": "time"
+      },
+      {
+        "plain": "This part's share of the lost time: of all the time the run takes beyond the limit, how much is in this part.",
+        "term": "share"
+      },
+      {
+        "plain": "What this part would give back if it ran at its own limit: its share of the distance from the measured speed to the limit.",
+        "term": "gain"
+      },
+      {
+        "plain": "The speed with this part and every part above it fixed.",
+        "term": "cumulative"
+      },
+      {
+        "plain": "A part's time now, less its time at the limit.",
+        "term": "time lost"
+      },
+      {
+        "plain": "The fastest this kind of work can run on this GPU by any method, not only the engine's.",
+        "term": "chip best"
+      },
+      {
+        "plain": "How much of the GPU's top memory speed a part reaches while it runs.",
+        "term": "% of peak"
+      },
+      {
+        "plain": "Gigabytes a second: how fast memory is read.",
+        "term": "GB/s"
+      },
+      {
+        "plain": "Time between GPU kernels, when the GPU waits for the next piece of work.",
+        "term": "idle time"
+      },
+      {
+        "plain": "A tool that watches the GPU and notes when every kernel starts and ends. Watching slows the run a little.",
+        "term": "recording"
+      },
+      {
+        "plain": "The run with no recording tool attached: the speed the engine really has.",
+        "term": "untraced"
+      },
+      {
+        "plain": "How the model's numbers are stored: fewer bits per number means less to read and a faster step, at some cost in accuracy.",
+        "term": "quant"
+      },
+      {
+        "plain": "The part of the model that looks back at earlier tokens.",
+        "term": "attention"
+      },
+      {
+        "plain": "The largest part of each layer: two big matrix steps on every token.",
+        "term": "feed-forward"
+      },
+      {
+        "plain": "Layers that carry a running summary of the conversation instead of looking back at every token.",
+        "term": "state-space"
+      },
+      {
+        "plain": "The program that runs the model (llama.cpp, vLLM, TensorRT-LLM or tinygrad).",
+        "term": "engine"
+      },
+      {
+        "plain": "The engine's version. The pin is the version BoltBeam was last checked against; upstream is the newest release.",
+        "term": "build"
+      },
+      {
+        "plain": "The GPU driver and libraries the engine was built with.",
+        "term": "toolchain"
+      }
+    ],
+    "sections": [
+      {
+        "lines": [
+          "The speed is the engine running on its own, with nothing recording it, at a context of 512 tokens.",
+          "The batch sweep's best was 1160.1 tok/s in all, with 16 streams at a context of 128 tokens; the figures above are the run the parts were timed on.",
+          "Each part was timed inside the real run, split by the engine's own labels.",
+          "Without recording a step took 11.429 ms; recording changed it by +0.023 ms.",
+          "The limit is the sum of each recorded part's own fastest time on this GPU.",
+          "The gains share out the lost time by how long each part takes; they add up to the limit, but they are not promised speed-ups.",
+          "A part with no limit of its own counts all of its time as lost."
+        ],
+        "title": "How it was measured"
+      },
+      {
+        "lines": [
+          "GPU: NVIDIA GeForce RTX 5090, 1710.3 GB/s memory speed (measured on this GPU (native CUDA read probe, 2026-11-09)).",
+          "Engine: vllm build 0.31.0 · the pin version 0.31.0, set 2026-10-11.",
+          "Upstream: build 0.31.0; latest was 0.33.0, checked 2026-11-09T04:28:38Z.",
+          "Weights: safetensors INT4_G128_ZP+BF16.",
+          "Toolchain: CUDA 13.2, GPU driver 595.99.02, Nsight Compute 2026.2.1, Nsight Systems 2026.1.3, PyTorch 2.13.0+cu130.",
+          "How parts were timed: in-model."
+        ],
+        "title": "Machine and engine"
+      }
+    ],
+    "table": {
+      "all_columns": {
+        "baseline": [
+          "measured throughput",
+          "",
+          "",
+          "",
+          "",
+          "",
+          "87.5",
+          "87.5",
+          ""
+        ],
+        "columns": [
+          "row",
+          "ms now",
+          "ms at limit",
+          "ms at chip best",
+          "ms above limit",
+          "share",
+          "+ Tok/S if roofline",
+          "cumulative tok/s",
+          "% of peak"
+        ],
+        "rows": [
+          [
+            "feed-forward in (INT4_G128_ZP)",
+            "3.85",
+            "3.47",
+            "3.47",
+            "0.38",
+            "16%",
+            "+3.5",
+            "91.0",
+            "90.1%"
+          ],
+          [
+            "feed-forward out (INT4_G128_ZP)",
+            "1.94",
+            "1.73",
+            "1.73",
+            "0.21",
+            "9%",
+            "+1.9",
+            "92.9",
+            "89.2%"
+          ],
+          [
+            "attention output gate + attention query, keys and values, fused (INT4_G128_ZP)",
+            "1.39",
+            "1.22",
+            "1.22",
+            "0.17",
+            "7%",
+            "+1.6",
+            "94.5",
+            "87.9%"
+          ],
+          [
+            "recurrent state update",
+            "0.34",
+            "0.18",
+            "0.18",
+            "0.16",
+            "7%",
+            "+1.4",
+            "95.9",
+            "52.9%"
+          ],
+          [
+            "state-space output (INT4_G128_ZP)",
+            "0.62",
+            "0.46",
+            "0.46",
+            "0.16",
+            "7%",
+            "+1.5",
+            "97.4",
+            "74.2%"
+          ],
+          [
+            "state-space decay and update gates (BF16)",
+            "0.19",
+            "0.03",
+            "0.03",
+            "0.16",
+            "7%",
+            "+1.5",
+            "98.9",
+            "14.9%"
+          ],
+          [
+            "vocabulary output (BF16)",
+            "1.63",
+            "1.49",
+            "1.49",
+            "0.14",
+            "6%",
+            "+1.2",
+            "100.1",
+            "91.5%"
+          ],
+          [
+            "attention",
+            "0.11",
+            "0.02",
+            "0.02",
+            "0.09",
+            "4%",
+            "+0.8",
+            "100.9",
+            "19.6%"
+          ],
+          [
+            "attention keys and values + attention query and output (INT4_G128_ZP)",
+            "0.43",
+            "0.36",
+            "0.36",
+            "0.07",
+            "3%",
+            "+0.7",
+            "101.6",
+            "83.4%"
+          ],
+          [
+            "attention query and output (INT4_G128_ZP)",
+            "0.21",
+            "0.15",
+            "0.15",
+            "0.05",
+            "2%",
+            "+0.5",
+            "102.1",
+            "74.5%"
+          ],
+          [
+            "other GPU work (copying)",
+            "0.36",
+            "no model",
+            "no model",
+            "0.36",
+            "15%",
+            "+3.2",
+            "105.3",
+            ""
+          ],
+          [
+            "other GPU work (attention)",
+            "0.06",
+            "no model",
+            "no model",
+            "0.06",
+            "2%",
+            "+0.6",
+            "105.9",
+            ""
+          ],
+          [
+            "other GPU work (normalizing)",
+            "0.05",
+            "no model",
+            "no model",
+            "0.05",
+            "2%",
+            "+0.4",
+            "106.3",
+            ""
+          ],
+          [
+            "other GPU work (normalizing)",
+            "0.03",
+            "no model",
+            "no model",
+            "0.03",
+            "1%",
+            "+0.3",
+            "106.6",
+            ""
+          ],
+          [
+            "other GPU work (small per-number steps)",
+            "0.03",
+            "no model",
+            "no model",
+            "0.03",
+            "1%",
+            "+0.3",
+            "106.9",
+            ""
+          ],
+          [
+            "other GPU work (attention)",
+            "0.02",
+            "no model",
+            "no model",
+            "0.02",
+            "1%",
+            "+0.2",
+            "107.1",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.02",
+            "no model",
+            "no model",
+            "0.02",
+            "1%",
+            "+0.2",
+            "107.3",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.01",
+            "no model",
+            "no model",
+            "0.01",
+            "1%",
+            "+0.1",
+            "107.4",
+            ""
+          ],
+          [
+            "other GPU work (small per-number steps)",
+            "0.01",
+            "no model",
+            "no model",
+            "0.01",
+            "0%",
+            "+0.1",
+            "107.5",
+            ""
+          ],
+          [
+            "other GPU work (small per-number steps)",
+            "0.01",
+            "no model",
+            "no model",
+            "0.01",
+            "0%",
+            "+0.1",
+            "107.6",
+            ""
+          ],
+          [
+            "other GPU work (small per-number steps)",
+            "0.01",
+            "no model",
+            "no model",
+            "0.01",
+            "0%",
+            "+0.1",
+            "107.7",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.01",
+            "no model",
+            "no model",
+            "0.01",
+            "0%",
+            "+0.0",
+            "107.7",
+            ""
+          ],
+          [
+            "other GPU work (copying)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.1",
+            "107.8",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "107.8",
+            ""
+          ],
+          [
+            "other GPU work (summing steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "107.8",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "107.8",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.1",
+            "107.9",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "107.9",
+            ""
+          ],
+          [
+            "other GPU work (small per-number steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "107.9",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "107.9",
+            ""
+          ],
+          [
+            "other GPU work (position encoding)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "107.9",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.1",
+            "108.0",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "108.0",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "108.0",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "108.0",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "108.0",
+            ""
+          ],
+          [
+            "other GPU work (small per-number steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "108.0",
+            ""
+          ],
+          [
+            "other GPU work (small supporting steps)",
+            "0.00",
+            "no model",
+            "no model",
+            "0.00",
+            "0%",
+            "+0.0",
+            "108.0",
+            ""
+          ],
+          [
+            "idle time between GPU steps",
+            "0.19",
+            "0.00",
+            "0.00",
+            "0.19",
+            "8%",
+            "+1.7",
+            "109.7",
+            "0.0%"
+          ]
+        ],
+        "sum": [
+          "= total at roofline",
+          "11.53",
+          "9.11",
+          "9.11",
+          "2.42",
+          "100%",
+          "109.7",
+          "109.7",
+          ""
+        ],
+        "words": "Context 512 · captured 11.533 ms/token. Untraced 11.429 ms. capture +0.20% over native, within the 5% capture-overhead ceiling. No model = measured time, unknown savings. Roofline is an upper bound.  +tok/s allocates headroom by time difference; cumulative reconciles the roofline. These are accounting shares, not predicted speedups. Mean of 63 decode steps, including gaps."
+      },
+      "columns": [
+        "part",
+        "time (per token)",
+        "share of the lost time",
+        "gain"
+      ],
+      "note": null,
+      "rows": [
+        {
+          "cells": [
+            "feed-forward in (INT4_G128_ZP)",
+            "3.85 ms",
+            "16%",
+            "+3.5"
+          ],
+          "gain": {
+            "cell": "+3.5",
+            "figure": "+3.5 tok/s",
+            "text": "+3.5 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 3.4896815313019425
+          },
+          "lost_ms": 0.37977892638717803,
+          "ms": 3.8482859999999945,
+          "name": "ffn_gate_up INT4_G128_ZP",
+          "part": "feed-forward in (INT4_G128_ZP)",
+          "section": "Model operations",
+          "share": 0.15698297560868707,
+          "share_cell": "16%",
+          "time": "3.85 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "feed-forward out (INT4_G128_ZP)",
+            "1.94 ms",
+            "9%",
+            "+1.9"
+          ],
+          "gain": {
+            "cell": "+1.9",
+            "figure": "+1.9 tok/s",
+            "text": "+1.9 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 1.9280911825188412
+          },
+          "lost_ms": 0.20983244250382938,
+          "ms": 1.9442775714285794,
+          "name": "ffn_down INT4_G128_ZP",
+          "part": "feed-forward out (INT4_G128_ZP)",
+          "section": "Model operations",
+          "share": 0.08673498952890292,
+          "share_cell": "9%",
+          "time": "1.94 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention output gate + attention query, keys and values, fused (INT4_G128_ZP)",
+            "1.39 ms",
+            "7%",
+            "+1.6"
+          ],
+          "gain": {
+            "cell": "+1.6",
+            "figure": "+1.6 tok/s",
+            "text": "+1.6 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 1.5459751203445404
+          },
+          "lost_ms": 0.16824709250952474,
+          "ms": 1.392578206349202,
+          "name": "attn_gate + attn_qkv INT4_G128_ZP",
+          "part": "attention output gate + attention query, keys and values, fused (INT4_G128_ZP)",
+          "section": "Model operations",
+          "share": 0.0695455365860104,
+          "share_cell": "7%",
+          "time": "1.39 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "recurrent state update",
+            "0.34 ms",
+            "7%",
+            "+1.4"
+          ],
+          "gain": {
+            "cell": "+1.4",
+            "figure": "+1.4 tok/s",
+            "text": "+1.4 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 1.4796827480072219
+          },
+          "lost_ms": 0.16103255279634554,
+          "ms": 0.3417530158729988,
+          "name": "recurrent",
+          "part": "recurrent state update",
+          "section": "Model operations",
+          "share": 0.0665633808287231,
+          "share_cell": "7%",
+          "time": "0.34 ms",
+          "what": "recurrent"
+        },
+        {
+          "cells": [
+            "state-space output (INT4_G128_ZP)",
+            "0.62 ms",
+            "7%",
+            "+1.5"
+          ],
+          "gain": {
+            "cell": "+1.5",
+            "figure": "+1.5 tok/s",
+            "text": "+1.5 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 1.467986632791656
+          },
+          "lost_ms": 0.15975967501663274,
+          "ms": 0.6190634603174572,
+          "name": "ssm_out INT4_G128_ZP",
+          "part": "state-space output (INT4_G128_ZP)",
+          "section": "Model operations",
+          "share": 0.06603723225237533,
+          "share_cell": "7%",
+          "time": "0.62 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "state-space decay and update gates (BF16)",
+            "0.19 ms",
+            "7%",
+            "+1.5"
+          ],
+          "gain": {
+            "cell": "+1.5",
+            "figure": "+1.5 tok/s",
+            "text": "+1.5 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 1.464100803194056
+          },
+          "lost_ms": 0.15933678364976656,
+          "ms": 0.18721882539682846,
+          "name": "ssm_alpha_beta BF16",
+          "part": "state-space decay and update gates (BF16)",
+          "section": "Model operations",
+          "share": 0.06586242859551787,
+          "share_cell": "7%",
+          "time": "0.19 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "vocabulary output (BF16)",
+            "1.63 ms",
+            "6%",
+            "+1.2"
+          ],
+          "gain": {
+            "cell": "+1.2",
+            "figure": "+1.2 tok/s",
+            "text": "+1.2 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 1.2684809511764639
+          },
+          "lost_ms": 0.13804764975234107,
+          "ms": 1.6250988571428575,
+          "name": "lm_head BF16",
+          "part": "vocabulary output (BF16)",
+          "section": "Model operations",
+          "share": 0.05706248906453275,
+          "share_cell": "6%",
+          "time": "1.63 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention",
+            "0.11 ms",
+            "4%",
+            "+0.8"
+          ],
+          "gain": {
+            "cell": "+0.8",
+            "figure": "+0.8 tok/s",
+            "text": "+0.8 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.7924137072821884
+          },
+          "lost_ms": 0.08623767650621017,
+          "ms": 0.10731280952380942,
+          "name": "attention",
+          "part": "attention",
+          "section": "Model operations",
+          "share": 0.03564665158309136,
+          "share_cell": "4%",
+          "time": "0.11 ms",
+          "what": "attention"
+        },
+        {
+          "cells": [
+            "attention keys and values + attention query and output (INT4_G128_ZP)",
+            "0.43 ms",
+            "3%",
+            "+0.7"
+          ],
+          "gain": {
+            "cell": "+0.7",
+            "figure": "+0.7 tok/s",
+            "text": "+0.7 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.6533457783565338
+          },
+          "lost_ms": 0.07110303792428518,
+          "ms": 0.4282115873015874,
+          "name": "attn_kv + attn_qo INT4_G128_ZP",
+          "part": "attention keys and values + attention query and output (INT4_G128_ZP)",
+          "section": "Model operations",
+          "share": 0.029390694671647424,
+          "share_cell": "3%",
+          "time": "0.43 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "attention query and output (INT4_G128_ZP)",
+            "0.21 ms",
+            "2%",
+            "+0.5"
+          ],
+          "gain": {
+            "cell": "+0.5",
+            "figure": "+0.5 tok/s",
+            "text": "+0.5 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.48051490352756243
+          },
+          "lost_ms": 0.052294008074327714,
+          "ms": 0.20539526984126918,
+          "name": "attn_qo INT4_G128_ZP",
+          "part": "attention query and output (INT4_G128_ZP)",
+          "section": "Model operations",
+          "share": 0.02161591500641472,
+          "share_cell": "2%",
+          "time": "0.21 ms",
+          "what": "role"
+        },
+        {
+          "cells": [
+            "other GPU work (copying)",
+            "0.36 ms",
+            "15%",
+            "+3.2"
+          ],
+          "gain": {
+            "cell": "+3.2",
+            "figure": "+3.2 tok/s",
+            "text": "+3.2 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 3.263301070191798
+          },
+          "lost_ms": 0.35514214285714363,
+          "ms": 0.35514214285714363,
+          "name": "triton_red_fused__to_copy_add_fused_add…",
+          "part": "other GPU work (copying)",
+          "section": "Supporting kernels — no model",
+          "share": 0.1467992731458785,
+          "share_cell": "15%",
+          "time": "0.36 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (attention)",
+            "0.06 ms",
+            "2%",
+            "+0.6"
+          ],
+          "gain": {
+            "cell": "+0.6",
+            "figure": "+0.6 tok/s",
+            "text": "+0.6 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.5529690391306367
+          },
+          "lost_ms": 0.06017912698412708,
+          "ms": 0.06017912698412708,
+          "name": "flash::flash_fwd_splitkv_combine_kernel",
+          "part": "other GPU work (attention)",
+          "section": "Supporting kernels — no model",
+          "share": 0.02487525706960936,
+          "share_cell": "2%",
+          "time": "0.06 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (normalizing)",
+            "0.05 ms",
+            "2%",
+            "+0.4"
+          ],
+          "gain": {
+            "cell": "+0.4",
+            "figure": "+0.4 tok/s",
+            "text": "+0.4 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.4291510614412947
+          },
+          "lost_ms": 0.04670412698412818,
+          "ms": 0.04670412698412818,
+          "name": "layer_norm_fwd_kernel",
+          "part": "other GPU work (normalizing)",
+          "section": "Supporting kernels — no model",
+          "share": 0.019305317693430475,
+          "share_cell": "2%",
+          "time": "0.05 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (normalizing)",
+            "0.03 ms",
+            "1%",
+            "+0.3"
+          ],
+          "gain": {
+            "cell": "+0.3",
+            "figure": "+0.3 tok/s",
+            "text": "+0.3 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.3159511581116059
+          },
+          "lost_ms": 0.034384682539682736,
+          "ms": 0.034384682539682736,
+          "name": "_fused_qk_rmsnorm_rope_gate_kernel",
+          "part": "other GPU work (normalizing)",
+          "section": "Supporting kernels — no model",
+          "share": 0.01421303133322487,
+          "share_cell": "1%",
+          "time": "0.03 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small per-number steps)",
+            "0.03 ms",
+            "1%",
+            "+0.3"
+          ],
+          "gain": {
+            "cell": "+0.3",
+            "figure": "+0.3 tok/s",
+            "text": "+0.3 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.2873869337047329
+          },
+          "lost_ms": 0.03127606349206511,
+          "ms": 0.03127606349206511,
+          "name": "triton_poi_fused_mul_silu_slice_1",
+          "part": "other GPU work (small per-number steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.012928072547409172,
+          "share_cell": "1%",
+          "time": "0.03 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (attention)",
+            "0.02 ms",
+            "1%",
+            "+0.2"
+          ],
+          "gain": {
+            "cell": "+0.2",
+            "figure": "+0.2 tok/s",
+            "text": "+0.2 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.21103043572907304
+          },
+          "lost_ms": 0.02296625396825394,
+          "ms": 0.02296625396825394,
+          "name": "vllm::reshape_and_cache_flash_kernel",
+          "part": "other GPU work (attention)",
+          "section": "Supporting kernels — no model",
+          "share": 0.00949318310212339,
+          "share_cell": "1%",
+          "time": "0.02 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.02 ms",
+            "1%",
+            "+0.2"
+          ],
+          "gain": {
+            "cell": "+0.2",
+            "figure": "+0.2 tok/s",
+            "text": "+0.2 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.1408862405171857
+          },
+          "lost_ms": 0.015332523809523808,
+          "ms": 0.015332523809523808,
+          "name": "_gumbel_sample_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0063377534770221846,
+          "share_cell": "1%",
+          "time": "0.02 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.01 ms",
+            "1%",
+            "+0.1"
+          ],
+          "gain": {
+            "cell": "+0.1",
+            "figure": "+0.1 tok/s",
+            "text": "+0.1 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.11752647692590991
+          },
+          "lost_ms": 0.012790301587301945,
+          "ms": 0.012790301587301945,
+          "name": "triton_poi_fused_zeros_3",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.005286916841879201,
+          "share_cell": "1%",
+          "time": "0.01 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small per-number steps)",
+            "0.01 ms",
+            "0%",
+            "+0.1"
+          ],
+          "gain": {
+            "cell": "+0.1",
+            "figure": "+0.1 tok/s",
+            "text": "+0.1 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.09659880660313731
+          },
+          "lost_ms": 0.010512761904761872,
+          "ms": 0.010512761904761872,
+          "name": "triton_poi_fused_mul_sigmoid_view_0",
+          "part": "other GPU work (small per-number steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.004345487679831635,
+          "share_cell": "0%",
+          "time": "0.01 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small per-number steps)",
+            "0.01 ms",
+            "0%",
+            "+0.1"
+          ],
+          "gain": {
+            "cell": "+0.1",
+            "figure": "+0.1 tok/s",
+            "text": "+0.1 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.0949693405764022
+          },
+          "lost_ms": 0.010335428571428454,
+          "ms": 0.010335428571428454,
+          "name": "triton_poi_fused_mul_silu_slice_2",
+          "part": "other GPU work (small per-number steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.004272186313149413,
+          "share_cell": "0%",
+          "time": "0.01 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small per-number steps)",
+            "0.01 ms",
+            "0%",
+            "+0.1"
+          ],
+          "gain": {
+            "cell": "+0.1",
+            "figure": "+0.1 tok/s",
+            "text": "+0.1 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.08454277077214652
+          },
+          "lost_ms": 0.00920071428571429,
+          "ms": 0.00920071428571429,
+          "name": "at::native::index_elementwise_kernel",
+          "part": "other GPU work (small per-number steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0038031481104991317,
+          "share_cell": "0%",
+          "time": "0.01 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.01 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.05534919209517799
+          },
+          "lost_ms": 0.006023603174603155,
+          "ms": 0.006023603174603155,
+          "name": "triton_poi_fused_zeros_4",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0024898778856178843,
+          "share_cell": "0%",
+          "time": "0.01 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (copying)",
+            "0.00 ms",
+            "0%",
+            "+0.1"
+          ],
+          "gain": {
+            "cell": "+0.1",
+            "figure": "+0.1 tok/s",
+            "text": "+0.1 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.04558056368427965
+          },
+          "lost_ms": 0.004960492063492065,
+          "ms": 0.004960492063492065,
+          "name": "triton_red_fused__to_copy_add_embedding…",
+          "part": "other GPU work (copying)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0020504371109216746,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.032582319606537374
+          },
+          "lost_ms": 0.0035459047619047636,
+          "ms": 0.0035459047619047636,
+          "name": "_bias_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0014657123975892522,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (summing steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.025824090299809664
+          },
+          "lost_ms": 0.0028104126984126996,
+          "ms": 0.0028104126984126996,
+          "name": "at::native::reduce_kernel",
+          "part": "other GPU work (summing steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0011616941263230672,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.02412038526415949
+          },
+          "lost_ms": 0.0026250000000000006,
+          "ms": 0.0026250000000000006,
+          "name": "_gather_block_tables_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.001085053125229742,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.1"
+          ],
+          "gain": {
+            "cell": "+0.1",
+            "figure": "+0.1 tok/s",
+            "text": "+0.1 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.022365485941418035
+          },
+          "lost_ms": 0.0024340158730158726,
+          "ms": 0.0024340158730158726,
+          "name": "_post_update_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0010061091542379699,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.020340029916242626
+          },
+          "lost_ms": 0.002213587301587301,
+          "ms": 0.002213587301587301,
+          "name": "_compute_slot_mappings_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0009149942169737798,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small per-number steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.01899570585891983
+          },
+          "lost_ms": 0.002067285714285714,
+          "ms": 0.002067285714285714,
+          "name": "at::native::unrolled_elementwise_kernel",
+          "part": "other GPU work (small per-number steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0008545199333441955,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.017432311091593905
+          },
+          "lost_ms": 0.0018971428571428574,
+          "ms": 0.0018971428571428574,
+          "name": "_combine_sampled_and_draft_tokens_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0007841907756762434,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (position encoding)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.016974917119177244
+          },
+          "lost_ms": 0.0018473650793650789,
+          "ms": 0.0018473650793650789,
+          "name": "_prepare_rope_positions_kernel",
+          "part": "other GPU work (position encoding)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0007636149534496643,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.1"
+          ],
+          "gain": {
+            "cell": "+0.1",
+            "figure": "+0.1 tok/s",
+            "text": "+0.1 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.016802227558162797
+          },
+          "lost_ms": 0.0018285714285714285,
+          "ms": 0.0018285714285714285,
+          "name": "_get_num_sampled_and_rejected_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0007558465307722827,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.01637735873110609
+          },
+          "lost_ms": 0.001782333333333329,
+          "ms": 0.001782333333333329,
+          "name": "at::native::vectorized_elementwise_kern…",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.000736733848965513,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.012970386217815117
+          },
+          "lost_ms": 0.0014115555555555559,
+          "ms": 0.0014115555555555559,
+          "name": "at::native::_scatter_gather_elementwise…",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0005834715302822706,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.007962388948396034
+          },
+          "lost_ms": 0.0008665396825396823,
+          "ms": 0.0008665396825396823,
+          "name": "_prepare_pos_seq_lens_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.0003581872726381983,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.007589006113770198
+          },
+          "lost_ms": 0.000825904761904762,
+          "ms": 0.000825904761904762,
+          "name": "_scatter_num_accepted_kernel",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.00034139068306548103,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small per-number steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.004536601440703958
+          },
+          "lost_ms": 0.000493714285714286,
+          "ms": 0.000493714285714286,
+          "name": "<unnamed>::elementwise_kernel_with_index",
+          "part": "other GPU work (small per-number steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.00020407856330851646,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "other GPU work (small supporting steps)",
+            "0.00 ms",
+            "0%",
+            "+0.0"
+          ],
+          "gain": {
+            "cell": "+0.0",
+            "figure": "+0.0 tok/s",
+            "text": "+0.0 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 0.00353765650541006
+          },
+          "lost_ms": 0.0003850000000000002,
+          "ms": 0.0003850000000000002,
+          "name": "triton_poi_fused_zeros_1",
+          "part": "other GPU work (small supporting steps)",
+          "section": "Supporting kernels — no model",
+          "share": 0.00015914112503369554,
+          "share_cell": "0%",
+          "time": "0.00 ms",
+          "what": "kernels"
+        },
+        {
+          "cells": [
+            "idle time between GPU steps",
+            "0.19 ms",
+            "8%",
+            "+1.7"
+          ],
+          "gain": {
+            "cell": "+1.7",
+            "figure": "+1.7 tok/s",
+            "text": "+1.7 tok/s if this ran at full speed",
+            "unit": "tok_s",
+            "value": 1.7157540705531735
+          },
+          "lost_ms": 0.18672398412700167,
+          "ms": 0.18672398412700167,
+          "name": "kernel gaps",
+          "part": "idle time between GPU steps",
+          "section": "Timing adjustments",
+          "share": 0.07718302572661023,
+          "share_cell": "8%",
+          "time": "0.19 ms",
+          "what": "gaps"
+        }
+      ],
+      "title": "Where the token goes"
+    }
+  },
+  "schema": "boltbeam.plain_results.v1"
+}

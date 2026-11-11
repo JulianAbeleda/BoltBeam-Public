@@ -5,41 +5,46 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
 
-func init() { // every golden reads the same time: 1m 20s after the sample job started
+// freezeClock makes the screen read one time, 1m 20s after the sample job started, until the test ends; the
+// tests after it read the real clock again.
+func freezeClock(t *testing.T) {
+	t.Helper()
+	was := clock
 	clock = func() time.Time { return time.Date(2026, 10, 8, 10, 1, 20, 0, time.UTC) }
+	t.Cleanup(func() { clock = was })
 }
 
 // While a job runs the top box is the bar only; l adds the log; a failed run shows the step, the reason and the log.
 func TestRunningScreens(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	freezeClock(t)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	running := page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun)
-	golden(t, "run-running.txt", running.View())
+	golden(t, "run-running.txt", frame(running))
 	withLog := press(running, "l")
-	golden(t, "run-running-log.txt", withLog.View())
-	if !strings.Contains(withLog.View(), "stage autoscan: done") || strings.Contains(running.View(), "stage autoscan: done") {
+	golden(t, "run-running-log.txt", frame(withLog))
+	if !strings.Contains(frame(withLog), "stage autoscan: done") || strings.Contains(frame(running), "stage autoscan: done") {
 		t.Fatal("l must show the log, and only then")
 	}
 	dead := *s.job
 	dead.Alive = false
 	failed := page(program(s, &s.planned, &dead, append(append([]string{}, s.tail...), "stage measure_timing: failed: llama-bench exited 1"), 80, 24), pageRun)
-	golden(t, "run-failed.txt", failed.View())
+	golden(t, "run-failed.txt", frame(failed))
 	for _, want := range []string{"failed", "llama-bench exited 1", "Back to setup", "Show details: l"} {
-		if !strings.Contains(failed.View(), want) {
+		if !strings.Contains(frame(failed), want) {
 			t.Fatalf("the failed screen lacks %q", want)
 		}
 	}
 }
 
 func TestSessionAttributionFailureExplainsReportAndDisablesEmit(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	dead := *s.job
 	dead.Alive = false
@@ -47,13 +52,13 @@ func TestSessionAttributionFailureExplainsReportAndDisablesEmit(t *testing.T) {
 		"stage role_time: start", "stage role_time: failed: repeated turn boundary is ambiguous"}
 	m := page(program(s, isolatedRun(t), &dead, tail, 80, 24), pageRun)
 	f := facts(m)
-	view := m.View()
+	view := frame(m)
 	for _, want := range []string{"Capture and attribute kernels failed", "Report incomplete", "capture logs are kept", "Show details: l"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("missing %q:\n%s", want, view)
 		}
 	}
-	if f.canEmit() || emitAction(f).do != "" || !strings.Contains(emitAction(f).label, "run failed") {
+	if f.canEmit() || emitAction(f, 17).do != "" || !strings.Contains(emitAction(f, 17).label, "The last run failed") {
 		t.Fatal("failed attribution must disable Emit even when an older work breakdown exists")
 	}
 	golden(t, "run-failed-session.txt", view)
@@ -67,7 +72,7 @@ func TestSessionAttributionFailureExplainsReportAndDisablesEmit(t *testing.T) {
 // An engine's own error is one sentence in the box: what it said and where inside the engine it was raised. The
 // traceback behind it (the pipeline's "detail:" lines) and the log wait behind l, "Show details".
 func TestFailedScreenKeepsTheTracebackBehindDetails(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	dead := *s.job
 	dead.Alive = false
@@ -78,8 +83,8 @@ func TestFailedScreenKeepsTheTracebackBehindDetails(t *testing.T) {
 		"stage measure_timing: detail:     raise ValueError(f\"{self.kind} epilogue requires rows=4096, got rows={rows}\")",
 		"stage measure_timing: detail: ValueError: ffn_down_resadd epilogue requires rows=4096, got rows=5120")
 	failed := page(program(s, &s.planned, &dead, tail, 80, 24), pageRun)
-	golden(t, "run-failed-engine.txt", failed.View())
-	v := failed.View()
+	golden(t, "run-failed-engine.txt", frame(failed))
+	v := frame(failed)
 	if !strings.Contains(v, "rows=5120") || !strings.Contains(v, "inside the tinygrad fork at") || strings.Contains(v, "Traceback") || strings.Contains(v, "stage load: done") {
 		t.Fatal("the box shows the sentence only; the traceback and the log wait behind l")
 	}
@@ -87,9 +92,9 @@ func TestFailedScreenKeepsTheTracebackBehindDetails(t *testing.T) {
 		t.Fatal("the footer offers l for the details")
 	}
 	shown := press(failed, "l")
-	golden(t, "run-failed-engine-details.txt", shown.View())
+	golden(t, "run-failed-engine-details.txt", frame(shown))
 	body := failedBody(shown.(Model).f, 76)
-	if !strings.Contains(shown.View(), "Traceback (most recent call last)") || !strings.Contains(body, "Last lines of the log") {
+	if !strings.Contains(frame(shown), "Traceback (most recent call last)") || !strings.Contains(body, "Last lines of the log") {
 		t.Fatal("l shows the traceback and the log")
 	}
 }
@@ -97,7 +102,8 @@ func TestFailedScreenKeepsTheTracebackBehindDetails(t *testing.T) {
 // The quick setup stages are not steps: while they run the step line says Starting, the count is hidden
 // (never "0 of N") and the bar holds at 2% at most. Step 1 is the first counted stage.
 func TestSetupStagesAreNotCounted(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	freezeClock(t)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	setup := []string{s.tail[0], "pipeline steps: 6", "pipeline counted: 0,0,0,0,0,1,1,1,1,1,1",
 		"stage load: start", "stage load: done", "stage autoscan: start", "stage autoscan: done", "stage analyze: start",
@@ -113,8 +119,8 @@ func TestSetupStagesAreNotCounted(t *testing.T) {
 		t.Fatalf("setup fraction %v", got)
 	}
 	starting := page(program(s, &s.planned, s.job, setup, 80, 24), pageRun)
-	golden(t, "run-starting.txt", starting.View())
-	if v := starting.View(); !strings.Contains(v, "Starting…") || strings.Contains(v, " of 6") {
+	golden(t, "run-starting.txt", frame(starting))
+	if v := frame(starting); !strings.Contains(v, "Starting…") || strings.Contains(v, " of 6") {
 		t.Fatalf("setup must read Starting with no count:\n%s", v)
 	}
 	step1 := append(append([]string{}, setup...), "stage measure_probe: done", "stage measure_timing: start", "stage measure_timing: progress 1/4")
@@ -122,7 +128,7 @@ func TestSetupStagesAreNotCounted(t *testing.T) {
 	if p.Setup || p.Done != 0 || p.Current != "measure_timing" {
 		t.Fatalf("%+v", p)
 	}
-	v := page(program(s, &s.planned, s.job, step1, 80, 24), pageRun).View()
+	v := frame(page(program(s, &s.planned, s.job, step1, 80, 24), pageRun))
 	if !strings.Contains(v, "1 of 6") || !strings.Contains(v, "Time the real run") {
 		t.Fatalf("step 1 must read 1 of 6:\n%s", v)
 	}
@@ -165,7 +171,7 @@ func TestProgressFraction(t *testing.T) {
 
 // A measured run lists only the steps it ran: no handoff row, no next sentence.
 func TestMeasuredStagesHideHandoff(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	r := s.measured
 	r.Stages = append([]seam.Stage{}, r.Stages...)
@@ -182,17 +188,17 @@ func TestMeasuredStagesHideHandoff(t *testing.T) {
 	}
 }
 
-// Batch is the fifth Setup line. Its picker takes 1, 8, 32 or a typed number; an engine that decodes one stream
+// Batch is the seventh Setup line. Its picker takes 1, 8, 32 or a typed number; an engine that decodes one stream
 // shows the others as not supported; the choice reaches the pipeline as --batch.
 func TestBatchPicker(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
-	m := press(press(press(press(press(press(program(s, nil, nil, nil, 80, 24), "j"), "j"), "j"), "j"), "j"), "enter")
+	m := press(keys(program(s, nil, nil, nil, 80, 24).(Model), "j", "j", "j", "j", "j", "j"), "enter")
 	if m.(Model).cursor != pageBatch {
 		t.Fatalf("enter on Batch opens its picker: %d", m.(Model).cursor)
 	}
 	m = press(press(press(m, "j"), "j"), "enter") // 32
-	if got := m.(Model).f.batch(); got != 32 || m.(Model).cursor != pageSetup || m.(Model).row != 5 {
+	if got := m.(Model).f.batch(); got != 32 || m.(Model).cursor != pageSetup || m.(Model).row != 9 {
 		t.Fatalf("batch %d, page %d, row %d", got, m.(Model).cursor, m.(Model).row)
 	}
 	typed := press(press(press(page(m, pageBatch), "1"), "6"), "enter")
@@ -207,7 +213,7 @@ func TestBatchPicker(t *testing.T) {
 	if tg.f.batch() != 1 {
 		t.Fatal("tinygrad runs batch 1")
 	}
-	golden(t, "picker-batch-tinygrad.txt", page(tg, pageBatch).View())
+	golden(t, "picker-batch-tinygrad.txt", frame(page(tg, pageBatch)))
 	argv := seam.Client{Python: "py"}.PipelineArgv(seam.Pipeline{Model: "m", RunDir: "r", Target: "t", Batch: "16"})
 	if !strings.Contains(strings.Join(argv, " "), "--batch 16") {
 		t.Fatalf("argv %v", argv)
@@ -216,7 +222,7 @@ func TestBatchPicker(t *testing.T) {
 
 // A batch run says so, and shows per stream and total beside the batch limit.
 func TestBatchResults(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	r := s.measured
 	pct := 61.0
@@ -286,7 +292,7 @@ func TestProgressIgnoresTheLastJob(t *testing.T) {
 // A step that runs past the last run's time holds at its weight, the total stays at 99% at most,
 // and the step line says so.
 func TestProgressLongerThanLastTime(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	tail := twelveSteps("0.1,0.1,0.1,0.1,1.3,22.6,0.1,0.1,0.1,0.1,0.1,0.1")
 	p := seam.ReadProgress(tail)
 	if got := p.Fraction(500); got > 0.99 || false {

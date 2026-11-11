@@ -25,12 +25,11 @@ import math
 import pathlib
 from typing import Any
 
-from boltbeam.collectors.capture_settings import window_context
+from boltbeam.collectors.capture_settings import attended_context, measured_step, step4_token, window_context
 from boltbeam.collectors.kernel_kind import UNATTRIBUTED, kind_of
-from boltbeam.collectors.replay_overhead import MAX_OVERHEAD
+from boltbeam.collectors.replay_overhead import CEILING_PCT, end_to_end, overhead_words, within_ceiling
 from boltbeam.math.numerics import ACCOUNTING_ATOL, ACCOUNTING_RTOL
 
-TINYGRAD_WARM = 3  # warm tokens before the measured window (runtime/tinygrad_decode_profile.py --warm)
 SHOW_BOTH_SHARE = 0.01  # show the limit at context 1 beside context N when the KV read changes it by 1% or more
 
 # One rule for the reason word per role. Little's law: to keep memory busy at bandwidth B with round-trip latency
@@ -43,7 +42,7 @@ ROLE_RULE = {
 }
 LATENCY_ASSUMED = "assumed"
 LATENCY_MEASURED = "the dispatch floor the probe measured on this GPU"
-OWN_TIMING = "tinygrad-profile-events"  # the engine's own profiling, not an outside capture
+from boltbeam.collectors.tinygrad_role_time import OWN_TIMING  # the engine's own profiling, not an outside capture
 from boltbeam.collectors.engine_kernels import METHOD as ISOLATED  # the engine's kernels timed alone by BoltBeam's kernel timer
 # each engine's own decode timing window, recorded alike by its untraced run and its outside capture (another engine's never matches)
 WINDOWS = {"llama.cpp": ("long_minus_short", "differential decode window"), "tinygrad": ("engine_decode_loop", "decode-loop window")}
@@ -119,26 +118,6 @@ def state_ms(profile:dict[str, Any], provider:str, run:pathlib.Path | None, band
   return 2 * b / (bandwidth_gbs * 1e9) * 1e3, f"recurrent state read and written, {b / 1e6:.1f} MB each way per stream: {how}"
 
 
-
-
-def attended_context(trace:dict[str, Any], provider:str) -> float | None:
-  """The mean context the measured tokens attended to. Captures subtract a 1-token run from an N-token run at the
-  same depth, so the window is tokens 2..N; tinygrad's own timing measures tokens 1..N after its warm tokens."""
-  whole = next((r for r in trace.get("rows", []) if r.get("scope") == "whole_step"), None)
-  if not whole or whole.get("context") is None:
-    return None
-  if (explicit := window_context(whole)) is not None:
-    return explicit
-  method = (trace.get("capture") or {}).get("method")
-  if method == ISOLATED:  # the kernels ran alone: the context is step 4's, as the row carries it
-    return float(whole["context"])
-  n = whole.get("decode_tokens") or 1
-  engine = whole.get("engine") or {}
-  if provider == "tinygrad" and method == OWN_TIMING and all(engine.get(k) is not None for k in ("context_start", "context_end")):
-    return (engine["context_start"] + engine["context_end"]) / 2
-  base = float(whole["context"]) + (TINYGRAD_WARM if provider == "tinygrad" else 0)
-  captured = method not in (None, OWN_TIMING)
-  return base + ((n + 3) / 2 if captured else (n + 1) / 2)
 
 
 def step_limit_ms(weight_ms:float, batch:int, kv_ms_stream:float, state_ms_stream:float, shards:int = 1) -> float:
@@ -232,45 +211,6 @@ def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tu
   return out, rule
 
 
-def measured_step(trace:dict[str, Any] | None, provider:str, near:float | None = None) -> dict[str, Any] | None:
-  """THE measured token of step 4: one whole-step row, picked by one rule for every reader (the headline, the Run
-  line, the tie-out, summary.txt, results.json). Rows of another provider never count: one engine's kernels never
-  tie out against another's token. With a per-role capture, the row nearest the context that capture attended
-  (near); without one, the row at the smallest context, the token closest to the context-1 limit. The other rows
-  are "also measured", labelled, never the headline."""
-  if not trace:
-    return None
-  measured_by = trace.get("provider") or ("tinygrad" if str(trace.get("provider_id", "")).startswith("tinygrad")
-                                          else "llama.cpp")
-  if measured_by != provider:
-    return None
-  rows = [r for r in trace.get("rows", []) if r.get("scope") == "whole_step" and r.get("tok_s")]
-  if not rows:
-    return None
-  def context(r):
-    explicit = window_context(r)
-    return explicit if explicit is not None else r.get("context")
-  key = (lambda r: abs(float(context(r) or 0) - near)) if near is not None else (lambda r: float(context(r) or 0))
-  row = min(rows, key=key)
-  index = trace["rows"].index(row)
-  return {"context": context(row), "requested_context": row.get("context"), "tok_s": row["tok_s"], "ms": 1000.0 / row["tok_s"], "wall_us": row.get("wall_us"),
-          "source": row.get("source"),
-          "timing_window": (row.get("engine") or {}).get("timing_window"),
-          "graph_error": row.get("graph_error"), "index": index, "decode_tokens": row.get("decode_tokens"),
-          "rule": "nearest the context the per-role capture attended" if near is not None else "the smallest context",
-          "also": [{"context": context(r), "tok_s": r["tok_s"], "ms": 1000.0 / r["tok_s"]} for r in rows if r is not row]}
-
-
-def _step4(run:pathlib.Path, context:float | None, provider:str) -> tuple[float | None, int | None]:
-  """The untraced whole-step ms per token from step 4, at the context nearest the measured one, only when step 4
-  measured the same provider: one provider's kernels never tie out against another's token."""
-  p = run / "timing_trace.json"
-  if not p.exists():
-    return None, None
-  token = measured_step(json.loads(p.read_text()), provider, near=context)
-  return (token["ms"], token["context"]) if token else (None, None)
-
-
 def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trace:dict[str, Any] | None,
             limit_ms:float, profile:dict[str, Any], bandwidth_gbs:float, missing:str | None = None) -> dict[str, Any]:
   """The tie-out for one provider's measurement. `table` is loss()'s measured table (or None: no kernels here).
@@ -279,7 +219,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
   element, element_source = kv_element(provider, run)
   context = attended_context(trace or {}, provider) if trace else None
   batch = int(next((r.get("batch") or 1 for r in (trace or {}).get("rows", []) if r.get("scope") == "whole_step"), 1))
-  untraced, untraced_ctx = _step4(run, context, provider) if batch == 1 else (None, None)
+  untraced, untraced_ctx = step4_token(run, context, provider) if batch == 1 else (None, None)
   if context is None:
     context = float(untraced_ctx or 1)
   kv_stream = kv_ms(profile, context, element, bandwidth_gbs)
@@ -468,6 +408,20 @@ WHERE_COLUMNS = ("row", "ms now", "ms at limit", "ms at chip best", "ms lost", "
                  "% of peak")  # share: of all the ms lost
 
 
+def role_name(r:dict[str, Any]) -> str:
+  """A role row's name in the where table: role and format. A role and format the model holds at two shapes names the
+  row's part (profile/roles.shape_parts): its fine class alone ("attention_q Q5_K"), else the role and the tensor's own
+  word ("hyper_connection_attn.down Q8_0"). report/plain.part_name reads it back."""
+  return f"{role_label(r)} {r['quant']}"
+
+
+def role_label(r:dict[str, Any]) -> str:
+  """role_name without its format: the role, its fine class, or role.part. The summary's role list writes it."""
+  from boltbeam.vocab import ROLE_GROUP_OF
+  part = r.get("part")
+  return r["role"] if not part else part if part in ROLE_GROUP_OF else r["role"] + "." + part
+
+
 def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> dict[str, Any] | None:
   """The tie-out as one table of what each part costs the token, worst first. A row is a weight role, a kind of
   other kernel, the weight kernels no role took, or the gaps (and LIMIT_ROW when the limit holds roles the capture
@@ -493,11 +447,11 @@ def where_token_goes(tie:dict[str, Any] | None, roles:list[dict[str, Any]]) -> d
   other = next((l for l in lines if l.get("parts") is not None), None)
   if est and roles and est.get("weight_ms") is not None:  # kernels timed alone: the estimate's split, labelled
     for r in roles:
-      add(f"{r['role']} {r['quant']}", "role", r["est_ms"], r["ideal_ms"], lost_ms=r["est_lost_ms"], pct_peak=r.get("pct_peak"))
+      add(role_name(r), "role", r["est_ms"], r["ideal_ms"], lost_ms=r["est_lost_ms"], pct_peak=r.get("pct_peak"))
     add(ESTIMATE_REST_ROW, "rest", est["other_ms"], limit - sum(r["ideal_ms"] for r in roles))
   elif other is not None and roles:  # in the model: every role, every kind of other kernel, the gaps
     for r in roles:
-      add(f"{r['role']} {r['quant']}", "role", r["actual_ms"], r["ideal_ms"], lost_ms=r["lost_ms"], pct_peak=r.get("pct_peak"))
+      add(role_name(r), "role", r["actual_ms"], r["ideal_ms"], lost_ms=r["lost_ms"], pct_peak=r.get("pct_peak"))
     for l in lines:
       if l.get("kernels"):
         add(l["label"], "kernels", l["ms"], None)
@@ -596,21 +550,6 @@ NO_CEILING = "no model"  # a kernel with no operations or bytes the model knows 
 
 
 
-CEILING_PCT = 100 * MAX_OVERHEAD  # the user's 5% ceiling, from the one authority (collectors/replay_overhead.py)
-
-
-within_ceiling = lambda pct: abs(pct) <= CEILING_PCT + 1e-9  # noqa: E731  # a capture far faster than native is not comparable
-
-
-def overhead_words(pct:float, reference:str = "native") -> str:
-  """THE disclosure of a measured capture overhead: signed, against its reference, against the ceiling. A capture
-  faster than its reference qualifies within the same ceiling; beyond it the arms differ in more than the capture
-  (first-use costs, environment) and are not comparable. Nothing is subtracted from any number."""
-  shown = f"{pct:+.4f}" if not within_ceiling(pct) and f"{abs(pct):.2f}" == f"{CEILING_PCT:.2f}" else f"{pct:+.2f}"  # never round an excess into the ceiling
-  return (f"capture {shown}% {'over' if pct >= 0 else 'under'} {reference}, {'within' if within_ceiling(pct) else 'above' if pct >= 0 else 'beyond'} "
-          f"the {CEILING_PCT:g}% capture-overhead ceiling" + ("" if pct >= 0 or within_ceiling(pct) else " below it: the arms are not comparable"))
-
-
 def verdict_words(e2e:dict[str, Any]) -> str:
   """An end-to-end verdict as every table says it: its words before the parenthesised numbers."""
   return e2e["words"].split(" (", 1)[0]
@@ -664,13 +603,6 @@ REPLICA_TOL = (value("replica_large_row_share"), value("replica_large_row_pct"),
 
 
 REPLICA_FLOOR = REPLICA_TOL[0] * REPLICA_TOL[1] / 100  # of the kernel time: what the rule allows its smallest large row
-
-
-def capture_over_ceiling(run:pathlib.Path, context:float | None, provider:str, captured_ms:float | None) -> bool:
-  """Whether a capture's own token is over the ceiling against the run's untraced one: when its collector takes the
-  repeats over_ceiling needs (engine_common.captured_role_time)."""
-  untraced, _ = _step4(run, context, provider)
-  return bool(untraced and captured_ms) and not within_ceiling(100 * (captured_ms / untraced - 1))
 
 
 def replication(replicas:list[dict[str, float]] | None, of:str | None = None) -> dict[str, Any] | None:
@@ -729,41 +661,6 @@ def qualification_words(rule:dict[str, Any]) -> str | None:
      if bound['ms'] >= 0 else
      f"Gaps ≈ 0: the kernels sum {100 * -bound['ms'] / bound['untraced_ms']:.2f}% above the untraced token (recording slowed them that "
      f"much, within the rows' {REPLICA_TOL[1]:g}%); a gaps row of {bound['ms']:.2f} ms reconciles the table to it.")])
-
-
-def end_to_end(attr:dict[str, Any], untraced_ms:float | None, what:str = "prefill", *, band:dict | None = None,
-               reference:str = "untraced median", reference_window:dict | None = None) -> dict[str, Any]:
-  """Qualify a capture by its measured overhead against the untraced run, from full engine elapsed timers with
-  identical recorded measurement windows. diff_pct = 100 * (captured - untraced) / untraced; `confirms` is True when
-  it is at most the 5% ceiling (negative qualifies), False above it, None ("not checked") when the windows differ or
-  are unrecorded. The repeat band no longer gates: it is only said, as "within repeat noise". The GPU kernel span and
-  its gaps reconcile separately; neither substitutes for the complete host interval. gap_growth_ms is its own figure:
-  the capture's idle beyond what the untraced prefill leaves room for (the gaps less the untraced time over the
-  kernels' busy time; zero when the gaps fit in it). An engine's own timing sums to the untraced prefill already, so
-  there is nothing to check."""
-  captured, gaps, busy = attr.get("measured_ms"), float(attr.get("gaps_ms") or 0.0), float(attr.get("busy_ms") or 0.0)
-  if untraced_ms is None or not captured or not (math.isfinite(captured) and math.isfinite(untraced_ms) and captured > 0 and untraced_ms > 0):
-    return {"confirms": None, "words": "no matching captured engine elapsed timer and untraced time: the GPU kernel span alone cannot confirm end-to-end timing"}
-  if abs(float(attr["wall_ms"]) - float(untraced_ms)) < 1e-9 and abs(float(attr["wall_ms"]) - captured) > 1e-9:
-    return {"confirms": None, "words": "the rows sum to the untraced prefill (the engine's own timing): no capture to check"}
-  diff = captured - float(untraced_ms)
-  share = diff / float(untraced_ms)
-  growth = max(gaps - max(float(untraced_ms) - busy, 0.0), 0.0)
-  from boltbeam.workflow.repeat_bands import end_to_end_width
-  matched = bool(reference_window) and attr.get("timing_window") == reference_window
-  width = end_to_end_width(band, captured_key="engine_elapsed_ms") if matched else None
-  ok = within_ceiling(100 * share) if matched else None
-  noise = "no engine-elapsed repeat band" if width is None else f"{'yes' if abs(diff) <= width else 'no'}, band ±{width:.3f} ms"
-  verdict = (overhead_words(100 * share, "native" if reference.startswith("untraced") else reference) if matched else
-             "not checked: native and captured timing windows differ or are unrecorded")
-  return {"confirms": ok, "captured_ms": captured, "kernel_span_ms": attr.get("profiled_wall_ms"), "untraced_ms": float(untraced_ms), "diff_ms": diff, "diff_pct": 100 * share,
-          "reference": reference,
-          "band_pct": 100 * width / float(untraced_ms) if width is not None else None, "band_ms": width,
-          "status": "checked" if ok is not None else "not checked", "gaps_ms": gaps, "gap_growth_ms": growth,
-          "words": (f"{verdict} (the captured engine timer for {what} took {captured:.1f} ms against the {float(untraced_ms):.1f} ms {reference}, {100 * share:+.1f}%; "
-                    f"within repeat noise: {noise}); its gaps are {gaps:.1f} ms, "
-                    f"{growth:.1f} ms more than the untraced {what} leaves room for"
-                    + ("" if ok is not False else f". The rows stand, but this capture does not qualify the {what} end to end"))}
 
 
 def capture_rows(attr:dict[str, Any]) -> list[dict[str, Any]]:
@@ -836,11 +733,14 @@ def where_decode_capture_goes(attr:dict[str, Any], *, untraced_ms:float | None,
   return decode_progress(result, allocate=comparable or rows_stand(rule))
 
 
+GAIN_COLUMN = "+ Tok/S if roofline"  # a decode row's share of the headroom to the limit (report/plain.py reads this cell)
+
+
 def decode_progress(result:dict[str, Any], *, allocate:bool = True) -> dict[str, Any]:
   """Engine-neutral additive allocation and cumulative decode throughput, in displayed order."""
   rows=result['rows']
   limit=result['limit_ms'];base=result['base_ms'];total=result['lost_ms']
-  result['columns']=[('ms above limit' if column=='ms lost' else '+ Tok/S if roofline' if column=='tok/s if fixed' else column) for column in result['columns']]
+  result['columns']=[('ms above limit' if column=='ms lost' else GAIN_COLUMN if column=='tok/s if fixed' else column) for column in result['columns']]
   result['roofline_tok_s']=1000/limit if limit>0 else None
   result['sum_cells'][0]='= total at roofline'
   result['sum_cells'][6]=f"{1000/limit:.1f}" if limit>0 else ''

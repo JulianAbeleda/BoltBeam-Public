@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Keys on Setup                                                                │
+│                                                                              │
+│ ↑/k         up           enter pick    ? all keys                            │
+│ ↓/j         down                       q quit                                │
+│ pgup/ctrl+u page up                                                          │
+│ pgdn/ctrl+d page down                                                        │
+│ home/g      first row                                                        │
+│ end/G       last row                                                         │
+│                                                                              │
+│ The wheel scrolls a list as ↑ and ↓ do. ? or esc closes this page.           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+ ?/esc close · q quit

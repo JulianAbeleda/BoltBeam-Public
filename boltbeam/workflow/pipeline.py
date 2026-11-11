@@ -15,19 +15,23 @@ from typing import Any
 from boltbeam.cli._common import _parse_ctxs
 from boltbeam.collectors import (boltbeam_gemv, capture_settings, engine_builds, gpu_telemetry, llama_bench_decode, metal_native,
                                  multi_gpu, providers, tinygrad_role_time, vendor_capture)
-from boltbeam.collectors import prefill as pf, replay as rp, session as ss
+from boltbeam.collectors import capture_scope, engine_families, prefill as pf, replay as rp, session as ss
 from boltbeam.collectors.attribution import NotSplitByRole
 from boltbeam.collectors.llama_bench_decode import CannotMeasure
 from boltbeam.collectors.toolchain import driver_version, record
 from boltbeam.search import role_compare, search_stage, tinygrad_fork
-from boltbeam.target import vendors
+from boltbeam.target import gpu as tgpu, vendors
 from boltbeam.target.targets import get_target, keep_run_chip
 from boltbeam.vocab import Workload
 from boltbeam.workflow import analyze_run, autoscan_run, ingest_probe_run, ingest_timing_run, load_run, output_run
-from boltbeam.workflow import chips, engine_update, layout as lay, limit, progress, repeat_bands as rb, replay as rw
-from boltbeam.workflow.autoscan import _hardware_profile, this_machine_target
-from boltbeam.artifacts.run_io import load_manifest, read_json, run_dir, update_manifest, write_json
-from boltbeam.workflow.run_folder import MEASURE_STATUS, SCHEMA, SCHEMA_MEASURE_STATUS, optional, run_provider
+from boltbeam.artifacts import progress
+from boltbeam.roofline import limit
+from boltbeam.workflow import chips, engine_update, layout as lay, repeat_bands as rb, replay as rw
+from boltbeam.target.hardware import hardware_profile, this_machine_target
+from boltbeam.artifacts.run_io import MACHINE, MEASURE_STATUS, load_manifest, optional, read_json, run_dir, update_manifest, write_json
+from boltbeam.collectors.providers import run_provider
+from boltbeam.vocab import SCHEMA_TUI as SCHEMA
+from boltbeam.workflow.run_folder import SCHEMA_MEASURE_STATUS
 
 # --- the pipeline --------------------------------------------------------------------------------------------
 
@@ -37,17 +41,27 @@ def _write_measure_status(run:str | pathlib.Path, status:str, *, collector:str |
                           batches:list[int] | None = None, capture:dict[str, Any] | None = None,
                           details:str | None = None) -> None:
   """probe says whether this collector takes the building-block tests: "measured" or "absent" (with probe_reason).
-  Every run is labelled with its engine (provider) and its weight format, read off the run's model profile, and
-  with the per-role capture the measuring machine had (capture: providers.capture_method), a fact of the run.
+  Every run is labelled with its engine (provider), the family and fork it is (engine_families.fork_of), its weight
+  format, read off the run's model profile, and with the per-role capture the measuring machine had (capture:
+  providers.capture_method), a fact of the run.
   A failed status keeps reason to one sentence; details is what stands behind it (an engine's traceback)."""
   out = run_dir(run)
   profile = optional(out, "model_profile.json")
   write_json(out / MEASURE_STATUS, {"schema": SCHEMA_MEASURE_STATUS, "status": status, "collector": collector,
                                     "reason": reason, "command": command, "probe": probe, "probe_reason": probe_reason,
                                     "provider": provider or providers.DEFAULT, "layout": layout, "gpus": gpus,
+                                    **engine_families.fork_of(provider or providers.DEFAULT), **_bench_fork(provider),
                                     "weight_format": providers.weight_format(profile) if profile else None,
                                     "batches": sorted({1, *(batches or [])}), "capture": capture, "details": details})
   update_manifest(out, stage="measure", artifacts=[MEASURE_STATUS])
+
+
+def _bench_fork(provider:str | None) -> dict[str, Any]:
+  """The fork a llama.cpp run's llama-bench is the build of ($BOLTBEAM_LLAMA_BENCH at a fork's build), over the
+  adapter's root; {} otherwise."""
+  bench = llama_bench_decode.find() if (provider or providers.DEFAULT) == llama_bench_decode.PROVIDER else None
+  got = llama_bench_decode.fork_of(bench) if bench else None
+  return {"engine_family": got["engine_family"], "fork": got["fork"]} if got else {}
 
 
 def _not_this_machine(here:str | None, target_id:str, run:str, provider:str) -> dict[str, Any]:
@@ -73,7 +87,7 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
   except SystemExit as exc:
     return {"collector": None, "provider": provider, "reason": str(exc), "command": None}
   cid = providers.collector(provider, target.backend)
-  devs = devs if devs is not None else lay.devices(_hardware_profile()["gpu"])
+  devs = devs if devs is not None else tgpu.devices(hardware_profile()["gpu"])
   out = {"collector": cid, "provider": provider, "reason": None, "command": None, "layout": layout, "gpus": max(len(devs), 1),
          # the per-role capture this machine has for the engine: recorded in the run (measure_status.json)
          # with the Setup choice of measurement (in-model, generic, or auto), resolved here and recorded with it
@@ -107,7 +121,7 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
       _collectors()[cid].preflight(target_id, model, run=run)
     except CannotMeasure as exc:
       return out | {"reason": exc.reason, "command": exc.command}
-  used = lay.used_gpus(layout, devs)
+  used = tgpu.used_gpus(layout, devs)
   uuids = {d["uuid"] for d in used if d.get("uuid")} if len(devs) > 1 else None
   check = gpu or providers.gpu_free
   free = check(target.backend, uuids=uuids) if uuids else check(target.backend)
@@ -218,7 +232,7 @@ def _engine_settings(args) -> dict | None:
   settings = {k: getattr(args, k, None) for k in capture_settings.ASKED}
   if getattr(args, "provider", None) == "vllm" and getattr(args, "layout", None) == "row":
     settings["tensor_parallel_size"] = multi_gpu.split_size(pathlib.Path(args.model).expanduser(),
-                                                            len(lay.devices(_hardware_profile()["gpu"])))
+                                                            len(tgpu.devices(hardware_profile()["gpu"])))
   return {k: v for k, v in settings.items() if v is not None} or None
 
 def _load(args) -> dict[str, Any]:
@@ -239,9 +253,9 @@ def _load(args) -> dict[str, Any]:
   keep_run_chip(pathlib.Path(args.run), args.target)
   if getattr(args, "bands", None):
     evidence = read_json(args.bands)
-    if evidence.get("schema") != rb.SCHEMA:
+    if evidence.get("schema") != capture_scope.SCHEMA:
       raise ValueError("unsupported repeat band schema")
-    write_json(pathlib.Path(args.run) / rb.ARTIFACT, evidence)
+    write_json(pathlib.Path(args.run) / capture_scope.ARTIFACT, evidence)
   return result
 
 
@@ -327,6 +341,8 @@ def pipeline(args, out=sys.stdout) -> int:
   run_path = pathlib.Path(args.run)
   if (code := _run_stages(steps, ids, run_path, get_target(args.target).backend, where, plan, say)) != 0:
     return code
+  if (report := run_path / "report.html").is_file():  # the main report, said before the run is done
+    say(f"pipeline report: {report}")
   say(f"pipeline done: {args.run}")
   return 0
 
@@ -414,7 +430,7 @@ def pipeline_repeated(args, out=sys.stdout) -> int:
     if (code := pipeline_current(one, out)) != 0:
       return code
   try:
-    got = rb.save(runs, run / rb.ARTIFACT, fixed)
+    got = rb.save(runs, run / capture_scope.ARTIFACT, fixed)
   except ValueError as exc:
     say(f"repeat band: failed: {exc}")
     return 1
@@ -440,7 +456,7 @@ def _run_stages(steps, ids, run_path:pathlib.Path, backend:str, where:str, plan,
         step()
     except NotSplitByRole as exc:  # the run stands whole: recorded, said, and the report still written
       not_split = str(exc)
-      _not_split(run_path, not_split)
+      _not_split(run_path, not_split, exc.key)
       say(f"stage {key}: skipped: {exc}")
     except Exception as exc:  # application boundary: the stage's own message is the fact the reader needs
       for line in failure_lines(key, exc):
@@ -455,12 +471,13 @@ def _run_stages(steps, ids, run_path:pathlib.Path, backend:str, where:str, plan,
   return 0
 
 
-def _not_split(run:pathlib.Path, why:str) -> None:
+def _not_split(run:pathlib.Path, why:str, key:str = "not_split") -> None:
   """measure_status.json says the run was not split by role, and why: the report shows it beside the whole step."""
   status = run / MEASURE_STATUS
   m = json.loads(status.read_text()) if status.exists() else {}
   m.setdefault("capture", {})["reason"] = f"not split by role: {why}"
   m["not_split_by_role"] = why  # its own field: the capture's method is still recorded, so _missing must not need it absent
+  m["not_split_key"] = key  # the reason's key (attribution.NotSplitByRole.key): its plain sentence is data/plain_words.json's
   write_json(status, m)
 
 
@@ -533,11 +550,11 @@ def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | Non
   cached in the run and reused from the newest run of the same GPUs unless remeasure. An engine that splits by rows
   with its own all-reduce has that join measured under its python (collectors/multi_gpu.join)."""
   if hold is not None:  # a repeat band holds the setup fixed: its runs share the first run's facts, never re-read
-    facts = {**json.loads((hold / lay.MACHINE).read_text()), "reused": True,
+    facts = {**json.loads((hold / MACHINE).read_text()), "reused": True,
              "reused_because": f"held fixed for the repeat band: the facts of {hold.name}"}
-    write_json(run / lay.MACHINE, {k: v for k, v in facts.items() if k not in ("reused", "reused_because")})
+    write_json(run / MACHINE, {k: v for k, v in facts.items() if k not in ("reused", "reused_because")})
     return {"schema": SCHEMA, "kind": "machine", **facts}
-  devs = lay.devices(_hardware_profile()["gpu"])
+  devs = tgpu.devices(hardware_profile()["gpu"])
   target = get_target(load_manifest(run).get("target_id"))
   row = vendors.BY_BACKEND.get(target.backend)
   native_read = None
@@ -570,5 +587,5 @@ def machine(run:pathlib.Path, *, remeasure:bool = False, root:pathlib.Path | Non
                                 join=(lambda used: multi_gpu.join(joins, used)) if joins else None,
                                 read_runs=chips.READ_RUNS)
     facts.update(reused=False, driver=driver, measured_because=stale or ("asked to remeasure" if remeasure else "no cached facts for these GPUs"))
-  write_json(run / lay.MACHINE, {k: v for k, v in facts.items() if k not in ("reused", "reused_because")})
+  write_json(run / MACHINE, {k: v for k, v in facts.items() if k not in ("reused", "reused_because")})
   return {"schema": SCHEMA, "kind": "machine", **facts}

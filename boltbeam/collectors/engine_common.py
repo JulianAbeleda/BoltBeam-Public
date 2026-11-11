@@ -158,7 +158,7 @@ def captured_role_time(run:pathlib.Path, *, provider:str, trace:str, argv_for:Ca
   A batch-1 capture over the capture-overhead ceiling is repeated: REPLICAS fresh pairs in all, each attributed
   alike, are the repeats its kernel rows stand by (tie_out.over_ceiling). Within the ceiling, one pair."""
   from boltbeam.collectors import attribution, vendor_capture
-  from boltbeam.workflow.tie_out import capture_over_ceiling
+  from boltbeam.collectors.replay_overhead import capture_over_ceiling
   raw = run / "kernel_compare" / f"{provider.replace('.', '_').replace('-', '_')}_capture"
   if warm:
     run_driver(argv_for(1), env=env, log=raw / "warm.log", cwd=cwd)

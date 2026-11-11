@@ -316,7 +316,7 @@ def collect_probe_evidence(run:pathlib.Path, say:Callable[[str], None] = lambda 
   from boltbeam.profile.gguf import read_gguf_split, read_tensor
   from boltbeam.target.targets import get_target
   from boltbeam.vocab import SCHEMA_PROBE_EVIDENCE
-  from boltbeam.workflow.limit import run_bandwidth
+  from boltbeam.roofline.limit import run_bandwidth
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
   backend, model = target.backend, model_file(manifest.get("model_path") or "")

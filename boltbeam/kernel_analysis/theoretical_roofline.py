@@ -181,7 +181,11 @@ def limit_roles(profile: Mapping[str, Any]) -> list[Mapping[str, Any]]:
       r = {**r, "count": reads_per_token(r), "calls_per_token": int(r.get("count") or 1),
            "note": f"{k} of {n} experts read per token; one launch per layer reads the {k}"}
     named.append(r)
-  return named + list((((profile.get("metadata") or {}).get("weights")) or {}).get("unclassified") or [])
+  # a ledger written while a role was no limit role (0.3.17's hyper_connection, attn_indexer) holds the profile's own
+  # rows of it as unclassified: they count once, as the role
+  own = {(r["role"], int(r.get("rows") or 0), int(r.get("cols") or 0), r.get("quant")) for r in named}
+  return named + [u for u in (((profile.get("metadata") or {}).get("weights")) or {}).get("unclassified") or []
+                  if (u.get("classifier_role"), int(u.get("rows") or 0), int(u.get("cols") or 0), u.get("quant")) not in own]
 
 
 def model_roofline(profile: Mapping[str, Any], *, peak_flops: float, peak_bw_bytes_s: float,

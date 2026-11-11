@@ -1,6 +1,7 @@
 """Capture and untraced measurement answer the same persisted request."""
 from __future__ import annotations
 
+import json
 import pathlib
 from typing import Any
 
@@ -27,6 +28,7 @@ ASKED = {
           "decoding); decode runs on natural text (data/mtp_prompts.json) at one context; recorded with the run"),
   "mtp_prompt": (str, "MTP prompt", "vLLM with --mtp: the prompt id (data/mtp_prompts.json) the context is built from "
                  "(default: the set's first)")}
+TINYGRAD_WARM = 3  # warm tokens before the measured window (runtime/tinygrad_decode_profile.py --warm)
 ACCEPTED = {"vllm": VLLM_SETTINGS, "llama.cpp": tuple(LLAMA_FLAGS)}  # per engine (collectors/providers.ENGINES)
 
 
@@ -46,6 +48,67 @@ def window_context(row:dict[str, Any]) -> float | None:
   if vllm:return None  # a vLLM capture is keyed by the requested context, which stays the headline
   mean = (window["context_start"] + window["context_end"]) / 2
   return int(mean) if mean.is_integer() else mean
+
+
+def attended_context(trace:dict[str, Any], provider:str) -> float | None:
+  """The mean context the measured tokens attended to. Captures subtract a 1-token run from an N-token run at the
+  same depth, so the window is tokens 2..N; tinygrad's own timing measures tokens 1..N after its warm tokens."""
+  from boltbeam.collectors.engine_kernels import METHOD as ISOLATED  # the engine's kernels timed alone
+  from boltbeam.collectors.tinygrad_role_time import OWN_TIMING
+  whole = next((r for r in trace.get("rows", []) if r.get("scope") == "whole_step"), None)
+  if not whole or whole.get("context") is None:
+    return None
+  if (explicit := window_context(whole)) is not None:
+    return explicit
+  method = (trace.get("capture") or {}).get("method")
+  if method == ISOLATED:  # the kernels ran alone: the context is step 4's, as the row carries it
+    return float(whole["context"])
+  n = whole.get("decode_tokens") or 1
+  engine = whole.get("engine") or {}
+  if provider == "tinygrad" and method == OWN_TIMING and all(engine.get(k) is not None for k in ("context_start", "context_end")):
+    return (engine["context_start"] + engine["context_end"]) / 2
+  base = float(whole["context"]) + (TINYGRAD_WARM if provider == "tinygrad" else 0)
+  captured = method not in (None, OWN_TIMING)
+  return base + ((n + 3) / 2 if captured else (n + 1) / 2)
+
+
+def measured_step(trace:dict[str, Any] | None, provider:str, near:float | None = None) -> dict[str, Any] | None:
+  """THE measured token of step 4: one whole-step row, picked by one rule for every reader (the headline, the Run
+  line, the tie-out, summary.txt, results.json). Rows of another provider never count: one engine's kernels never
+  tie out against another's token. With a per-role capture, the row nearest the context that capture attended
+  (near); without one, the row at the smallest context, the token closest to the context-1 limit. The other rows
+  are "also measured", labelled, never the headline."""
+  if not trace:
+    return None
+  measured_by = trace.get("provider") or ("tinygrad" if str(trace.get("provider_id", "")).startswith("tinygrad")
+                                          else "llama.cpp")
+  if measured_by != provider:
+    return None
+  rows = [r for r in trace.get("rows", []) if r.get("scope") == "whole_step" and r.get("tok_s")]
+  if not rows:
+    return None
+  def context(r):
+    explicit = window_context(r)
+    return explicit if explicit is not None else r.get("context")
+  key = (lambda r: abs(float(context(r) or 0) - near)) if near is not None else (lambda r: float(context(r) or 0))
+  row = min(rows, key=key)
+  index = trace["rows"].index(row)
+  return {"context": context(row), "requested_context": row.get("context"), "tok_s": row["tok_s"], "ms": 1000.0 / row["tok_s"], "wall_us": row.get("wall_us"),
+          "source": row.get("source"),
+          "timing_window": (row.get("engine") or {}).get("timing_window"),
+          "graph_error": row.get("graph_error"), "index": index, "decode_tokens": row.get("decode_tokens"),
+          "rule": "nearest the context the per-role capture attended" if near is not None else "the smallest context",
+          "also": [{"context": context(r), "tok_s": r["tok_s"], "ms": 1000.0 / r["tok_s"]} for r in rows if r is not row]}
+
+
+def step4_token(run:pathlib.Path, context:float | None, provider:str) -> tuple[float | None, int | None]:
+  """The untraced whole-step ms per token from step 4, at the context nearest the measured one, only when step 4
+  measured the same provider: one provider's kernels never tie out against another's token."""
+  p = run / "timing_trace.json"
+  if not p.exists():
+    return None, None
+  token = measured_step(json.loads(p.read_text()), provider, near=context)
+  return (token["ms"], token["context"]) if token else (None, None)
 
 
 def offered(provider:str) -> list[dict[str, Any]]:
@@ -73,11 +136,14 @@ def selected_context(run:pathlib.Path, context:int | None = None) -> int:
   return chosen
 
 
+RECORDED = ("engine", "engine_args", "moe_cache_hit_rate", "moe_cache_trace")  # what the engine ran with (collectors/engine_args), not what was asked
+
+
 def requested(run:pathlib.Path) -> dict[str, Any]:
   settings = read_json(run / "trace_request.json").get("engine_settings") or {}
   if not isinstance(settings, dict):
     raise ValueError("engine_settings must be an object")
-  return settings
+  return {k: v for k, v in settings.items() if k not in RECORDED}
 
 
 def setting_words(settings:dict[str, Any]) -> list[str]:

@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Recommended setup                                                            │
+│ Speed up                                                                     │
+│   ✓ Made m · BoltBeam.                                                       │
+│     Short prompt, 128 tokens: 100.0 to 112.0 tok/s (+12%)                    │
+│     Long prompt, 32768 tokens: 80.0 to 86.0 tok/s (+8%)                      │
+│     Scores the same on the answer check.                                     │
+│     It shows in model lists as m · BoltBeam.                                 │
+│                                                                              │
+│ context, speed and engine flags for this model on your GPUs · derived from   │
+│ the checkpoint and this machine's measured facts; nothing runs until Check   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ ▸ [ Copy engine command line ]                                               │
+│   [ Copy Arkey vllm_args ]                                                   │
+│   [ Check ] start the engine once with these flags and compare               │
+│   [ Speed up ] Makes a faster copy. The original stays.                      │
+│   [ Measure MTP on the copy ]                                                │
+│   [ Compare with the original ]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · enter pick · esc setup · ? all keys · q quit

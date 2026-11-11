@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 // The engine scan runs at boot, not when Engine is opened. Until it answers, the Setup Engine line says it is
@@ -19,7 +19,7 @@ func TestEnginesAreLookedForAtBootThenListed(t *testing.T) {
 		ceilingMsg{&s.ceiling, nil}, runsMsg{&s.runs, nil}, tea.WindowSizeMsg{Width: 80, Height: 24}} {
 		m, _ = m.Update(msg)
 	}
-	looking := m.View()
+	looking := frame(m)
 	if !strings.Contains(looking, "looking for engines…") {
 		t.Fatalf("the Engine line must say it is looking while the scan runs:\n%s", looking)
 	}
@@ -37,7 +37,7 @@ func TestEnginesAreLookedForAtBootThenListed(t *testing.T) {
 		t.Fatal("EngineScan must clear when the scan answers")
 	}
 	m, _ = m.Update(providersMsg{"apple_m3_10c", engines()})
-	listed := m.View()
+	listed := frame(m)
 	if !strings.Contains(listed, "llama.cpp") || strings.Contains(listed, "looking for engines") {
 		t.Fatalf("after the scan the Engine line names the engine:\n%s", listed)
 	}
@@ -45,7 +45,7 @@ func TestEnginesAreLookedForAtBootThenListed(t *testing.T) {
 	if acts[len(acts)-1] != "engines-scan|[ Scan again ] look for engines in the usual folders" {
 		t.Fatalf("the picker ends with [ Scan again ]: %v", acts)
 	}
-	golden(t, "picker-engine-scan.txt", page(m, pageEngine).View())
+	golden(t, "picker-engine-scan.txt", frame(page(m, pageEngine)))
 	// Scan again: the looking state returns and the providers are dropped until the scan answers
 	again, cmd := m.(Model).do(action{"", "engines-scan", ""})
 	if cmd == nil || !again.f.EngineScan || again.f.Providers != nil {

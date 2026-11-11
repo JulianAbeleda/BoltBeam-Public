@@ -215,16 +215,13 @@ func TestPairingBodyNamesTheAmbiguityKind(t *testing.T) {
 
 // A replay table wider than the page lost its flags at the edge ("THROTT…"); the flags now leave the table.
 func TestReplayFlagsLeaveATableWiderThanThePage(t *testing.T) {
-	defer func(w int) { tableWidth = w }(tableWidth)
-	tableWidth = 30
 	rows := [][]string{{"TURN", "CEILING MS", "CHIP BEST MS", "FLAGS"}, {"1", "8994", "8986", "cold THROTTLED"},
 		{"2", "7792", "7785", "THROTTLED"}, {"3", "3327", "3321", ""}}
-	got := plain(replayTable(rows))
+	got := plain(replayTable(rows, 30))
 	if strings.Contains(got, "FLAGS") || !strings.Contains(got, "cold: 1 turns (1)") || !strings.Contains(got, "THROTTLED: 2 turns (1, 2)") {
 		t.Fatalf("flags:\n%s", got)
 	}
-	tableWidth = 200
-	if got := plain(replayTable(rows)); !strings.Contains(got, "FLAGS") {
+	if got := plain(replayTable(rows, 200)); !strings.Contains(got, "FLAGS") {
 		t.Fatalf("a table that fits keeps its flags:\n%s", got)
 	}
 }
@@ -247,27 +244,33 @@ func TestSavedRowsNameWorkloadAndReplayShare(t *testing.T) {
 	}
 }
 
-// Compare: a saved run is "before"; Saved runs then offers every other run as "after", and two replays from
-// different engines go to replay-cross.
-func TestCompareFlowPicksAfterAndCross(t *testing.T) {
+// Compare is always there in Saved runs: Compare two saved runs picks the first run, then every other run is offered
+// beside it, whatever its model, chip or engine (Python decides how far two runs compare). A run's own Compare starts
+// with it picked.
+func TestCompareFlowPicksAnyTwoRuns(t *testing.T) {
 	var s seam.Saved
 	raw := `{"root":"/s","runs":[{"id":"a","provider":"llama.cpp","workload":"replay"},{"id":"b","provider":"vllm","workload":"replay"},
 	  {"id":"c","provider":"llama.cpp","workload":"decode"}]}`
 	if err := json.Unmarshal([]byte(raw), &s); err != nil {
 		t.Fatal(err)
 	}
-	f := Facts{Saved: &s, CompareFrom: "a"}
-	dos := []string{}
-	for _, a := range savedActions(f) {
-		dos = append(dos, a.do+":"+a.arg)
+	dos := func(f Facts) string {
+		out := []string{}
+		for _, a := range savedActions(f) {
+			out = append(out, a.do+":"+a.arg)
+		}
+		return strings.Join(out, " ")
 	}
-	if strings.Join(dos, " ") != "note: compare:b compare:c comparecancel:" {
-		t.Errorf("compare rows: %v", dos)
+	if got := dos(Facts{Saved: &s}); !strings.HasPrefix(got, "opensaved:a opensaved:b opensaved:c head: comparepick: ") {
+		t.Errorf("Saved runs must offer Compare under the runs: %v", got)
 	}
-	if !f.crossEngines("a", "b") || f.crossEngines("a", "c") {
-		t.Error("replay-cross only for two replays from different engines")
+	if got := dos(Facts{Saved: &s, ComparePick: true}); got != "note: comparefrom:a comparefrom:b comparefrom:c comparecancel:" {
+		t.Errorf("first pick: %v", got)
 	}
-	if got := plain(compareRunsBody(Facts{Compared: &Compared{Err: "the runs differ in model"}}, 80)); !strings.Contains(got, "Not compared: the runs differ in model.") {
+	if got := dos(Facts{Saved: &s, CompareFrom: "a"}); got != "note: compare:b compare:c comparecancel:" {
+		t.Errorf("second pick: %v", got)
+	}
+	if got := plain(compareRunsBody(Facts{Compared: &Compared{Err: "a run folder is missing"}}, 80)); !strings.Contains(got, "Not compared: a run folder is missing.") {
 		t.Errorf("refusal: %q", got)
 	}
 	if got := compareRunsBody(Facts{Compared: &Compared{Lines: []string{"Engine upgrade audit: b against a", "  row"}}}, 80); got != "Engine upgrade audit: b against a\n  row" {

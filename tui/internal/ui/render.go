@@ -3,13 +3,8 @@
 package ui
 
 // BoltBeam's own plain vocabulary (gui/README.md and gui/run-graph.html). Main lines use the plain word only;
-// detail views show the plain word with the record's own name beside it, muted.
-var plainStage = map[string]string{
-	"load": "Read the model", "autoscan": "Check the machine", "analyze": "Plan what to try",
-	"runner_plan": "Prepare the handoff", "ingest_probe": "Test the building blocks", "ingest_timing": "Time the real run",
-	"output": "Package the result",
-}
-
+// detail views show the plain word with the record's own name beside it, muted. Stage and role names are not here:
+// they come from the seam's one vocabulary (`screen words`, vocab in render_text.go).
 var plainStatus = map[string]string{
 	"not_analyzed": "not planned yet", "needs_measurement": "needs measuring", "policy_seeded": "plan ready",
 }
@@ -32,22 +27,7 @@ var plainRegime = map[string]string{
 	"latency_bound": "waiting on memory", "compute_bound": "limited by the sums", "inconclusive": "not clear yet",
 }
 
-var plainRole = map[string]string{
-	"attn_kv": "attention keys and values", "attn_qo": "attention query and output", "ffn_gate_up": "feed-forward in",
-	"ffn_down": "feed-forward out", "lm_head": "vocabulary output", "embed": "token embedding",
-	"attn_qkv": "attention query, keys and values, fused", "attn_gate": "attention output gate",
-	"ssm_out": "state-space output", "ssm_alpha_beta": "state-space decay and update gates",
-}
-
 var plainLimit = map[string]string{"memory": "reading weights", "compute": "doing sums"}
-
-// plainMeasureStage words the pipeline's measuring stages. They are not report stages (report/html.py STAGES), so
-// they live apart from plainStage, which tests/test_report_html.py pins to the report's own table.
-var plainMeasureStage = map[string]string{
-	"measure": "Can %s measure", "measure_probe": "Test blocks on the GPU",
-	"measure_timing": "Time the real run",
-	"role_time":      "Capture and attribute kernels", "search": "Search faster kernels",
-}
 
 // plainVerdict words a role's kernel search verdict; report/html.py PLAIN_VERDICT says the same.
 var plainVerdict = map[string]string{"applied": "applied", "found_not_applied": "found, not applied",
@@ -64,9 +44,6 @@ var captureWords = map[string]string{
 	// collectors/engine_kernels.py METHOD and WORDS: the engine's own kernels, timed alone by BoltBeam's kernel timer
 	"boltbeam-kernel-timer-isolated": "isolated, timed by BoltBeam's kernel timer",
 }
-
-// tableWidth is the page width roleTable fits; resultBody sets it from the screen before drawing.
-var tableWidth = 200
 
 // notChecked is a check with no repeat band for its setup; notCheckedHow, said once per page, is how to get one, so
 // "not checked" never reads as a fault.

@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/x/ansi"
-
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
 
@@ -57,32 +55,14 @@ func settingsValue(f Facts) string {
 }
 
 func settingsBody(f Facts, width int) string {
-	return "Settings are what the run asks the engine for. Each one changes what is measured, so the Run page says it. " +
+	return "Settings are what the run asks the engine for. Each one changes what is measured, so the Run page says it.\n\n" +
 		"A setting left unset keeps the engine's own choice."
 }
 
-// settingsActions are the engine's settings, one row each, with its help under it: enter types a value, or steps
-// through a fixed set of values and back to unset.
+// settingsActions is the page's row when the engine takes no settings; otherwise the form takes the rows' place
+// (forms.go openSettings).
 func settingsActions(f Facts) []action {
-	offered := f.settingsOffered()
-	if len(offered) == 0 {
-		return []action{note("  This engine takes no settings here.")}
-	}
-	out := []action{}
-	for _, s := range offered {
-		v := f.Settings[s.Name]
-		switch {
-		case f.SettingEdit == s.Name:
-			v = f.Input + "▏"
-		case v == "":
-			v = stMuted.Render("not set")
-		}
-		out = append(out, action{fmt.Sprintf("  %-18s %s", s.Label, v), "setting", s.Name})
-		for _, l := range strings.Split(ansi.Wordwrap(s.About, 66, " "), "\n") { // fits an 80-column screen
-			out = append(out, note("    "+l))
-		}
-	}
-	return out
+	return []action{note("  This engine takes no settings here.")}
 }
 
 // setting is the offered setting by name, or nil.
@@ -111,14 +91,6 @@ func (f *Facts) setSetting(name, v string) {
 		f.Settings = map[string]string{}
 	}
 	f.Settings[name] = v
-}
-
-// nextChoice is the value after v in a fixed set; after the last, unset again.
-func nextChoice(choices []string, v string) string {
-	if i := slices.Index(choices, v); i+1 < len(choices) {
-		return choices[i+1]
-	}
-	return ""
 }
 
 // --- Repeats --------------------------------------------------------------------------------------------------

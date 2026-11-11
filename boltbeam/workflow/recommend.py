@@ -32,11 +32,14 @@ import time
 from typing import Any, NamedTuple
 
 from boltbeam.collectors import engine_common as ec, vllm_mtp
+from boltbeam.core.refused import Refused
 from boltbeam.profile import loaders
 from boltbeam.roofline import prefill_work as pw
-from boltbeam.target import vendors
-from boltbeam.workflow import layout as lay
+from boltbeam.target import gpu as tgpu, vendors
+from boltbeam.workflow import layout as lay, offload as off
 
+MTP_TIE = 0.05  # two draft counts within this share are one speed; derivation (run-to-run noise of one k) below, set from data
+MTP_BELOW = 0.5  # a stated context under this share of the shallowest measured depth is outside the measurement too
 TIE = 0.05  # limits within this share of the best are one prediction (docs/multi-gpu-recommendation-checks.md)
 UTILIZATION = 0.90  # vLLM --gpu-memory-utilization, Arkey's value
 CONTEXT = 4096  # the context the sequence count and the speed are stated at
@@ -84,7 +87,7 @@ def tensor_bytes(source:str | pathlib.Path) -> dict[str, Any]:
   vision tower's, the draft head's, and the one-dimensional tensors' (a row split keeps these whole on every GPU).
   A GGUF reads its tensor table (gguf_tensor_bytes); one it cannot read counts its file bytes."""
   path = pathlib.Path(source).expanduser()
-  out = {"total": 0, "vision": 0, "mtp": 0, "head": 0, "one_dim": 0, "host": 0, "files": 0, "source": "safetensors headers"}
+  out = {"total": 0, "vision": 0, "mtp": 0, "mtp_layers": 0, "head": 0, "one_dim": 0, "host": 0, "files": 0, "source": "safetensors headers"}
   for f in (f for f in loaders._safetensors_files(path) if f.suffix == ".safetensors"):
     out["files"] += 1
     for name, t in loaders._read_safetensors_header(f).items():
@@ -96,39 +99,70 @@ def tensor_bytes(source:str | pathlib.Path) -> dict[str, Any]:
       out["mtp"] += n if "mtp" in name else 0
       out["head"] += n if "lm_head" in name else 0
       out["one_dim"] += n if len(t.get("shape") or []) == 1 else 0
+  out["mtp_layers"] = 1 if out["mtp"] else 0  # a safetensors draft head is one layer
   if not out["files"]:
-    files = [path] if path.is_file() else sorted(path.glob("*.gguf"))
+    files = _gguf_files(path)
+    split = len(files) > 1 or bool(re.search(r"-\d+-of-\d+\.gguf$", path.name))
     try:
+      kv = None
       for f in files:
-        gguf_tensor_bytes(f, out)
+        kv = gguf_tensor_bytes(f, out, kv)
       out.update(files=len(files), source="GGUF tensor tables")
-    except (ValueError, EOFError, OSError, struct.error):
+    except (ValueError, EOFError, OSError, struct.error) as exc:
+      if split:  # a split model with a shard unread is a fit that silently misses that shard's bytes
+        raise Refused(f"{path.name} is a split GGUF and a shard could not be read ({exc}); the fit needs every shard") from exc
       out = {**out, "total": 0}
     if not out["total"]:
-      out.update(total=sum(f.stat().st_size for f in files), vision=0, mtp=0, head=0, one_dim=0, host=0, files=len(files), source="file sizes")
+      out.update(total=sum(f.stat().st_size for f in files), vision=0, mtp=0, mtp_layers=0, head=0, one_dim=0, host=0, files=len(files), source="file sizes")
   return out
 
 
-def gguf_tensor_bytes(f:pathlib.Path, out:dict[str, Any]) -> None:
-  """Adds one GGUF's tensor bytes to out, each the gap to the next tensor's offset (the last runs to the file end).
-  llama.cpp keeps the input embedding (token_embd) on the host and does not load the draft blocks (the last
-  nextn_predict_layers): on the 27B Q4_K_M the GPU holds 14,674 MiB of the 15,691 (682 embedding, 335 draft); a
-  projector file (mmproj) is the vision tower."""
+SHARD = re.compile(r"(.+)-(\d+)-of-(\d+)\.gguf")
+HOST_ONLY = ("token_embd", "per_layer_token_embd")  # tensor roles llama.cpp keeps in host RAM and reads one row of per token, in whichever shard they sit
+
+
+def _gguf_files(path:pathlib.Path) -> list[pathlib.Path]:
+  """The model's GGUF files, a split model's every shard (<stem>-00001-of-0000N.gguf ...) after its first. Refused: a shard
+  that is missing, or a later shard named alone (the first holds the metadata the others lack)."""
+  out: list[pathlib.Path] = []
+  for f in [path] if path.is_file() else sorted(path.glob("*.gguf")):
+    m = SHARD.fullmatch(f.name)
+    if m and int(m.group(2)) > 1:
+      if path.is_file():
+        raise Refused(f"{f.name} is shard {int(m.group(2))} of a split GGUF; name its first shard, {m.group(1)}-{1:0{len(m.group(2))}d}-of-{m.group(3)}.gguf")
+      continue  # reached through its first shard
+    shards = [f.with_name(f"{m.group(1)}-{i:0{len(m.group(2))}d}-of-{m.group(3)}.gguf") for i in range(1, int(m.group(3)) + 1)] if m else [f]
+    if gone := [s.name for s in shards if not s.is_file()]:
+      raise Refused(f"{f.name} is split in {len(shards)} files and {', '.join(gone)} is missing; the fit needs every shard")
+    out += shards
+  return out
+
+
+def gguf_tensor_bytes(f:pathlib.Path, out:dict[str, Any], first_kv:dict[str, Any] | None = None) -> dict[str, Any]:
+  """Adds one GGUF's tensor bytes to out, each the gap to the next tensor's offset (the last runs to the file end), and
+  returns its metadata. llama.cpp keeps the input embeddings (HOST_ONLY roles: token_embd, per_layer_token_embd) on the host
+  and does not load the draft blocks (the last nextn_predict_layers): on the 27B Q4_K_M the GPU holds 14,674 MiB of the
+  15,691 (682 embedding, 335 draft); a projector file (mmproj) is the vision tower. first_kv: a split model's first shard
+  metadata, which the later shards (tensors only) lack."""
   from boltbeam.profile import gguf
   kv, ts, start = gguf.read_gguf_layout(f)
-  arch = kv.get("general.architecture")
-  draft = int(kv.get(f"{arch}.nextn_predict_layers") or 0)
-  first_draft = int(kv.get(f"{arch}.block_count") or 0) - draft if draft else None
+  meta = first_kv or kv
+  arch = meta.get("general.architecture")
+  draft = int(meta.get(f"{arch}.nextn_predict_layers") or 0)
+  first_draft = int(meta.get(f"{arch}.block_count") or 0) - draft if draft else None
   vision = kv.get("general.type") == "mmproj"
   offs = sorted((o, name, dims) for name, dims, _, o in ts)
   for (o, name, dims), nxt in zip(offs, [o for o, *_ in offs[1:]] + [f.stat().st_size - start]):
     n = nxt - o
     out["total"] += n
     out["vision"] += n if vision else 0
-    out["host"] += n if name == "token_embd.weight" else 0
+    out["host"] += n if name.split(".")[0] in HOST_ONLY else 0
     out["head"] += n if name == "output.weight" else 0
-    out["mtp"] += n if first_draft is not None and name.startswith("blk.") and int(name.split(".")[1]) >= first_draft else 0
+    is_draft = first_draft is not None and name.startswith("blk.") and int(name.split(".")[1]) >= first_draft
+    out["mtp"] += n if is_draft else 0
     out["one_dim"] += n if len(dims) == 1 else 0
+  out["mtp_layers"] = draft
+  return meta
 
 
 def weights_resident(tb:dict[str, Any], *, text_only:bool, mtp:bool = False) -> int:
@@ -225,18 +259,34 @@ def mtp_of(facts:dict[str, Any] | None, engine:str, path:str | None) -> dict[str
 
 def best_k(speeds:dict[int, dict[str, Any]]) -> int | None:
   """The draft count to recommend, from the smallest up: a larger k replaces the pick only when it beats it by more
-  than TIE. Measured figures carry their prompts (per_prompt), and then the win is the median of the per-prompt
+  than MTP_TIE. Measured figures carry their prompts (per_prompt), and then the win is the median of the per-prompt
   ratios: every k ran the same prompts, and their spread is the text's (a story drafts worse than a derivation at
   every k), not noise, so it cancels in the pair. Spread across prompts as the margin picked k=1 on the 27B AWQ,
-  whose k=2 beat k=1 on all eight prompts (RTX 5090, 2026-11-08)."""
+  whose k=2 beat k=1 on all eight prompts (RTX 5090, 2026-11-08).
+  Measured at several depths (by_depth), the pair is judged at every depth, so the pick does not flip with the
+  prompt's length: the larger k replaces the pick when it is nowhere slower by more than MTP_TIE and somewhere faster by
+  more than MTP_TIE (the 27B AWQ's k=3 against k=2: 1.003 at 73 tokens, 1.129 at 2,121, so k=3 at any context); a tie at
+  every depth keeps the smaller k (less verify work, a narrower spread). Only a real trade-off, faster at one depth
+  and slower at another by more than MTP_TIE, is decided at the depth nearest the stated context (the figure's own)."""
   ks = sorted(k for k, f in speeds.items() if f.get("value"))
   if not ks:
     return None
   pick = ks[0]
   for k in ks[1:]:
-    if win(speeds[k], speeds[pick]) > 1 + TIE:
-      pick = k
+    wins = depth_wins(speeds[k], speeds[pick])
+    if wins and min(wins) >= 1 - MTP_TIE:
+      replace = max(wins) > 1 + MTP_TIE
+    else:
+      replace = win(speeds[k], speeds[pick]) > 1 + MTP_TIE
+    pick = k if replace else pick
   return pick
+
+
+def depth_wins(new:dict[str, Any], old:dict[str, Any]) -> list[float]:
+  """win at each depth both were measured at (by_depth: per_prompt per depth); [] with fewer than two such depths."""
+  a, b = new.get("by_depth") or {}, old.get("by_depth") or {}
+  common = [d for d in a if d in b and a[d] and set(a[d]) == set(b[d])]
+  return [win({"per_prompt": a[d]}, {"per_prompt": b[d]}) for d in common] if len(common) > 1 else []
 
 
 def win(new:dict[str, Any], old:dict[str, Any]) -> float:
@@ -344,7 +394,7 @@ def vllm_settings(profile:dict[str, Any], tb:dict[str, Any], *, kv:str, seqs:int
     (f"--max-num-seqs {seqs}", True, "the sequences the engine batches; capacity is in the layout row", "serving several users" if seqs > 1 else "one user"),
     ("--no-enable-prefix-caching", False, "'align' mode costs cache tokens on a hybrid model", "no shared prompts (not known here)"),
     (mtp_flag(mtp[0]) if mtp else "--speculative-config mtp", bool(mtp), f"MTP k={mtp[0]}: {mtp[1]['value']:.0f} tok/s, {mtp[1]['formula']}" if mtp else
-     mtp_held[0] if mtp_held else f"MTP: {MTP_NOTE}", "batch 1, the largest k that beats the next smaller one by more than the tie, prompt by prompt, and beats one-token decode" if mtp else
+     mtp_held[0] if mtp_held else f"MTP: {MTP_NOTE}", "batch 1, the largest k that beats the next smaller one by more than the tie, prompt by prompt, and is slower at no measured depth by more than it; and beats one-token decode" + (f". {mtp[1]['envelope']}" if mtp[1].get("envelope") else "") if mtp else
      mtp_held[1] if mtp_held else "batch 1 and the checkpoint has an MTP head; accept lengths or the fixed cost are not measured for this model and chip"),
     (None, False, "4-bit lm_head checkpoint: -1.9 GB read per token and per MTP draft on the 27B; +1.8 GiB for KV. 2 x R9700 TP=2: "
      "56 to 61 tok/s, MTP k=2 92 to 116 (with a split-KV verify), 98.0% top-1 agreement, perplexity 1.228 to 1.242; vLLM 0.31's "
@@ -403,9 +453,9 @@ def llama_settings(profile:dict[str, Any], tb:dict[str, Any], *, kv:str, seqs:in
           ("-fa on", True, "flash attention: required for a quantized V cache, less attention memory", "always"),
           ("-ngl 99", True, "every layer on the GPU", "the model fits"), (f"-np {seqs}", True, "parallel sequences (the context is shared)", "serving")]
   if layout in ("row", "layer"):
-    rows.append((" ".join(lay.engine_args(layout, "llama.cpp", _llama_bench())[0]), True, "how the GPUs share the weights", "chosen layout"))
+    rows.append((" ".join(tgpu.engine_args(layout, "llama.cpp", _llama_bench())[0]), True, "how the GPUs share the weights", "chosen layout"))
   elif machine_gpus > 1:
-    rows.append((" ".join(lay.engine_args("one", "llama.cpp")[0]), True, "one GPU: llama.cpp splits by layer over every GPU unless told", "chosen layout"))
+    rows.append((" ".join(tgpu.engine_args("one", "llama.cpp")[0]), True, "one GPU: llama.cpp splits by layer over every GPU unless told", "chosen layout"))
   return [{"flag": f, "recommended": bool(r), "changes": c, "when": w} for f, r, c, w in rows]
 
 
@@ -415,8 +465,8 @@ def llama_flags(profile:dict[str, Any], *, kv:str, seqs:int, layout:str, gpus:in
   out = ["-c", str(context // 256 * 256), "-np", str(seqs), "-ngl", "99", "-fa", "on"]  # it rounds -c up to 256 cells
   if kv == "q8_0":
     out += ["-ctk", "q8_0", "-ctv", "q8_0"]
-  return out + (lay.engine_args(layout, "llama.cpp", _llama_bench())[0] if layout in ("row", "layer") else
-                lay.engine_args("one", "llama.cpp")[0] if machine_gpus > 1 else [])
+  return out + (tgpu.engine_args(layout, "llama.cpp", _llama_bench())[0] if layout in ("row", "layer") else
+                tgpu.engine_args("one", "llama.cpp")[0] if machine_gpus > 1 else [])
 
 
 def _llama_bench() -> str | None:
@@ -522,10 +572,15 @@ def pick(rows:list[dict[str, Any]], *, seqs:int, fits_one:bool) -> dict[str, Any
 # --- the page ---------------------------------------------------------------------------------------------------------
 
 def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpus:list[dict[str, Any]], *, target,
-          seqs:int = 1, context:int = CONTEXT, text_only:bool = True) -> dict[str, Any]:
+          seqs:int = 1, context:int = CONTEXT, text_only:bool = True, host:dict[str, Any] | None = None,
+          moe_estimate:dict[str, Any] | None = None, offload:bool = False, draft:str | None = None) -> dict[str, Any]:
   """The recommended setup for this model on these GPUs with this engine: one row per layout, the settings, the
-  recommended layout and the command lines. facts: machine facts (read bandwidth, join, cached engine overhead)."""
-  from boltbeam.workflow import limit
+  recommended layout and the command lines. facts: machine facts (read bandwidth, join, cached engine overhead).
+  When no layout holds the weights (or offload=True), `offload` is the experts-in-RAM setup with its limit band, or the
+  reason there is none (workflow/offload.py); host: the host's RAM and PCIe (target/host.py) and moe_estimate (experts,
+  bits_per_weight) stand in for a probe or a header. draft: a draft model's file (an MTP head kept apart): its bytes and its KV
+  at the stated context count against the fit, as an MTP head the plan turns on does (draft_cost)."""
+  from boltbeam.roofline import limit
   tb = tensor_bytes(profile["source"])
   resident = weights_resident(tb, text_only=text_only)
   ws = [g.get("working_set_bytes") for g in gpus]  # Metal's measured per-process limit replaces the vendor's assumed share
@@ -541,8 +596,8 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   overhead, warm = measured["bytes"] if measured else None, cached(states)[1]
   by_key = _by_path(((facts or {}).get(OVERHEAD) or {}).get(provider))
   try:
-    base = limit.ceiling(profile, target, read=lay.read_bandwidth(facts))["decode"]["bytes_moved"]
-  except (screen.Refused, SystemExit):
+    base = limit.ceiling(profile, target, read=limit.read_bandwidth(facts))["decode"]["bytes_moved"]
+  except (Refused, SystemExit):
     base = None
   n = len(gpus)
   rows = lay.layouts(n, provider, target.backend)
@@ -608,20 +663,63 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
     started["mtp_note"] = f"not recommended past {past[0]} tokens of context (stated {context}; --context {past[0]} turns it on): {past[1]}"
   held = None if mtp or not best else (f"MTP k={best}: {speeds[best]['value']:.0f} tok/s at short context, {speeds[best]['formula']}",  # measured, held back
     started.get("mtp_note") or ("batch > 1 (MTP pays at batch 1)" if seqs != 1 else "no draft count beats one-token decode by more than the tie"))
+  dr = draft_cost(profile, tb, eng.kv[kv], context, mtp=bool(mtp), draft=draft)
+  if dr:  # the draft is loaded beside the model and holds KV of its own: the model alone fitting is not the plan fitting
+    per_gpu = started["weights_per_gpu"]["value"] + (dr["bytes"] + dr["kv_bytes"]) / max(started.get("gpus") or 1, 1)
+    started["draft"] = dr
+    if started["fits"]["value"] and per_gpu > usable:
+      started["fits"] = fig(False, "resident weights + the draft's weights and KV per GPU <= usable VRAM",
+                            [f"{started['weights_per_gpu']['value'] / 2**30:.2f} GiB weights", f"{dr['bytes'] / 2**30:.2f} GiB draft weights ({dr['what']})",
+                             f"{dr['kv_bytes'] / 2**30:.2f} GiB draft KV at {context} tokens", f"usable {usable / 2**30:.2f} GiB"])
   opts = dict(machine_gpus=n, attention=row.vllm_attention, mtp=mtp, mtp_held=held)
   argv = eng.flags(profile, kv=kv, seqs=seqs, layout=layout, gpus=gcount, text_only=text_only, tb=tb, context=fit or context, **opts) if eng.flags else None
+  moe = None
+  if offload or not any(r["fits"]["value"] for r in rows):  # nothing holds the weights: say what offloading the experts gives
+    kvb = ((pw.kv_bytes_per_token(profile, element_bytes=eng.kv[kv]) or 0.0) + extra.get(kv, 0.0)) * context
+    moe = off.for_setup(profile, provider, usable=usable - (dr["bytes"] if dr else 0), kv_bytes=kvb + (dr["kv_bytes"] if dr else 0), vram_gbs=(limit.read_bandwidth(facts) or {}).get("gbs") or target.memory_bandwidth_gbs,
+                        pci_bus_id=(gpus[0].get("pci_bus_id") if gpus else None), context=context, host=host, estimate=moe_estimate)
+    if moe["status"] == "recommended" and argv is not None:
+      argv = eng.flags(profile, kv=kv, seqs=seqs, layout="one", gpus=1, text_only=text_only, tb=tb, context=context, **opts) + moe["flags"]
   env = dict(row.vllm_env) if provider == "vllm" else {}
   key = (provider, (facts or {}).get("gpus", [{}])[0].get("target_id"), profile.get("hidden_size"), profile.get("layer_count"), profile.get("ffn_size"))
   return {"schema": "boltbeam.recommended_setup.v1", "model": profile.get("source"), "provider": provider, "gpu_count": n,
           "weights": {"resident": resident, "total": tb["total"], "vision": tb["vision"], "mtp": tb["mtp"], "source": tb["source"]},
           "overhead": measured, "overhead_states": states, "overhead_note": missing, "context_is_upper_bound": measured is None, "stated_context": context, "seqs": seqs,
           "layouts": rows, "recommended_layout": chosen, "flags_layout": {"id": layout, "gpus": gcount}, "kv_dtype": kv, "kv_formats": list(eng.kv), "engine_note": eng.note,
-          "settings": eng.settings(profile, tb, kv=kv, seqs=seqs, layout=layout, gpus=gcount, text_only=text_only, full_context=full_ctx, **opts) if eng.settings else [],
+          "offload": moe, "draft": dr,
+          "settings": (eng.settings(profile, tb, kv=kv, seqs=seqs, layout=layout, gpus=gcount, text_only=text_only, full_context=full_ctx, **opts) if eng.settings else [])
+                      + (off.settings(moe) if moe and moe["status"] == "recommended" else []),
           "flags": argv, "env": env, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), eng.command(shlex.quote(profile["source"]), [shlex.quote(a) for a in argv])]) if argv else None,
           "arkey_vllm_args": arkey_args(argv) if argv and provider == "vllm" else None, "usable_bytes": usable, "reserve_bytes": eng.reserve, "scratch_per_token": extra,
           "measured_only": MEASURED.get(key) or "not measured here (MTP, throughput, prefill share)",
           # Measure MTP: what it runs here (collectors/vllm_mtp.offer), and this checkpoint's measurement kept in the facts
           "mtp_measure": vllm_mtp.offer(provider, tb["mtp"], facts=bool(facts)), "mtp_measured": mtp_of(facts, provider, profile.get("source"))}
+
+
+def draft_cost(profile:dict[str, Any], tb:dict[str, Any], element_bytes:float, context:int, *, mtp:bool, draft:str | None) -> dict[str, Any] | None:
+  """What a draft costs the card: its weights and its KV at `context`. The MTP head the plan turns on (tb['mtp'], in the
+  checkpoint, so not in the resident weights) or a draft file (`draft`, counted whole). The KV is the draft file's own attention
+  (its header) else one attended layer of this model's per MTP layer: an MTP layer attends, so it holds KV like any layer.
+  None: no draft. Refused: a draft whose KV cannot be sized (an unknown draft is not a free one)."""
+  if not (mtp and tb["mtp"]) and not draft:
+    return None
+  per_layer = (pw.kv_bytes_per_token(profile, element_bytes=element_bytes) or 0.0) / max(pw.attention_layer_count(profile) or 1, 1)
+  if not draft:
+    return {"bytes": tb["mtp"], "kv_bytes": per_layer * max(tb["mtp_layers"], 1) * context, "what": "the MTP head, in the checkpoint",
+            "kv_source": "one attended layer of this model per MTP layer"}
+  db = tensor_bytes(draft)
+  if db["source"] == "file sizes":
+    raise Refused(f"the draft {draft} cannot be read as a model (no tensor table), so its bytes are the file's and its KV cannot be sized")
+  try:
+    from boltbeam.profile.loaders import profile_from_model
+    own = pw.kv_bytes_per_token(profile_from_model(draft).to_json(), element_bytes=element_bytes)
+  except (ValueError, OSError, KeyError, Refused):
+    own = None
+  per = own or per_layer * max(db["mtp_layers"], 1)
+  if not per:
+    raise Refused(f"the draft {draft} has no attention shape and neither has the model, so its KV cannot be sized")
+  return {"bytes": db["total"] - db["host"], "kv_bytes": per * context, "what": f"the draft {pathlib.Path(draft).name}",
+          "kv_source": "the draft's own header" if own else "one attended layer of this model per draft layer"}
 
 
 def mtp_speed(profile:dict[str, Any], tb:dict[str, Any], provider:str, chip:str | None, r:dict[str, Any], eff:float,
@@ -653,6 +751,18 @@ def mtp_speed(profile:dict[str, Any], tb:dict[str, Any], provider:str, chip:str 
   return out
 
 
+def mtp_envelope(contexts:dict[str, float], context:int | None) -> str | None:
+  """Where MTP was measured, said in words when the stated context lies outside it (beyond the deepest measured depth,
+  or under MTP_BELOW of the shallowest): a safeguard's operating envelope is part of what it claims. None inside it or with
+  no context stated. The one place this is computed; the figure carries it and the settings row and the setup read it."""
+  if not contexts or not context:
+    return None
+  lo, hi = min(contexts.values()), max(contexts.values())
+  if context > hi or context < lo * MTP_BELOW:
+    return f"measured at {lo:,.0f} to {hi:,.0f} tokens of context; not measured at the stated {context:,}"
+  return None
+
+
 def _measured_mtp(m:dict[str, Any], context:int | None = None) -> dict[int, dict[str, Any]]:
   """An in-repo measurement's figures per k > 0 at the measured depth nearest the stated context (the short depth
   with none stated): the median over the prompts, each prompt's speed, their spread and the acceptance. Acceptance
@@ -665,9 +775,13 @@ def _measured_mtp(m:dict[str, Any], context:int | None = None) -> dict[int, dict
   depth = min(depths, key=lambda d: abs(at(d) - context)) if context else ("short" if "short" in depths else next(iter(depths)))
   where = (f"{len(m['prompts']['ids'])} natural prompts (set v{m['prompts']['version']}, sha256 {m['prompts']['sha256'][:12]}), "
            f"{m['tokens']} tokens each at a {at(depth):.0f}-token context, vLLM {', '.join(m['vllm']) or 'unknown'}, {m['measured_at'][:10]}")
+  contexts = {d: at(d) for d in depths}
+  note = mtp_envelope(contexts, context)
   return {int(k): {**fig(v["median_tok_s"], "measured: median over the prompts", [where], "measured"),
                    "per_prompt": v["per_prompt"], "spread": v["spread"], "range": [v["min_tok_s"], v["max_tok_s"]],
-                   "accept_length": v.get("accept_length"), "speedup": v["speedup"], "depth": depth, "context": at(depth)}
+                   "accept_length": v.get("accept_length"), "speedup": v["speedup"], "depth": depth, "context": at(depth), "contexts": contexts,
+                   "envelope": f"MTP k={int(k)} {note}" if note else None,
+                   "by_depth": {d: ks[k]["per_prompt"] for d, ks in depths.items() if k in ks and ks[k].get("per_prompt")}}
           for k, v in depths[depth].items() if int(k) > 0}
 
 

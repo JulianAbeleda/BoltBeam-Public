@@ -28,8 +28,8 @@ func TestStoppingANewRunGivesBackTheFinishedOne(t *testing.T) {
 	if note := m.(Model).note; !strings.Contains(note, "Back to "+shortRun(done.ID)) {
 		t.Fatalf("the note says which run is back: %q", note)
 	}
-	if strings.Contains(plain(emitAction(f).label), "Run first") {
-		t.Fatalf("Emit must read the finished run again, not ask for a run: %q", emitAction(f).label)
+	if strings.Contains(plain(emitAction(f, 17).label), "Run first") {
+		t.Fatalf("Emit must read the finished run again, not ask for a run: %q", emitAction(f, 17).label)
 	}
 	// a stop with no finished run before it leaves the stopped run on screen
 	m, _ = m.Update(startedMsg("qwen3-8b-apple_m3_10c-004"))

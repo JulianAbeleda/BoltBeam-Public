@@ -1,0 +1,14 @@
+{
+  "schema": "boltbeam.tui.v1",
+  "kind": "speedup_plain",
+  "outcome": "not_kept",
+  "head": "NOT KEPT: the faster copy was deleted.",
+  "lines": [
+    "It was not faster than the original with a 32768-token prompt: 80.0 to 79.0 tok/s.",
+    "The original is untouched."
+  ],
+  "fix": null,
+  "copy": null,
+  "name": "m · BoltBeam",
+  "speed_measured": true
+}

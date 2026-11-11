@@ -6,6 +6,11 @@
       "tag": "b11571",
       "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
       "audit": "docs/engine-upgrade-llama-b11571-rtx5090-20261012.md",
+      "features": {
+        "--moe-cache-mib": {"since": 11480, "release": "v0.7.0", "commit": "d6cf9acb2", "pr": "ggml-org/llama.cpp#29887"},
+        "--moe-cache-cpu-share": {"since": 12191, "release": null, "commit": "e95426f16", "pr": "ggml-org/llama.cpp#30966",
+                                  "why": "first build number found with git tag --contains in a llama.cpp master checkout, 2026-11-10; v0.9.0 does not have it"}
+      },
       "history": [
         {
           "date": "2026-10-11",

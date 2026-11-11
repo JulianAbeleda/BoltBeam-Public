@@ -40,6 +40,27 @@ def delta(after:dict, before:dict) -> dict:
   return {**{k: after[k] - before[k] for k in COUNTERS.values()}, "accepted_per_position": per}
 
 
+def identity(model:str, tok, ids:dict) -> dict:
+  """What a continuation file is keyed to: the model's config without its quantization (an original and its Speed up copy
+  share it), the tokenizer (vocabulary and chat template) and the prompt token ids. Reuse is allowed for that pairing only."""
+  cfg = Path(model) / "config.json"
+  c = {k: v for k, v in (json.loads(cfg.read_text()) if cfg.is_file() else {"model": model}).items() if k != "quantization_config"}
+  h = lambda x: hashlib.sha256(json.dumps(x, sort_keys=True).encode()).hexdigest()  # noqa: E731
+  return {"model": h(c), "tokenizer": h([sorted(tok.get_vocab().items()), getattr(tok, "chat_template", None)]), "prompt_ids": h(ids)}
+
+
+def reuse(path:Path, ident:dict, long_tokens:int, ids:dict) -> dict:
+  """The saved continuations, or SystemExit saying what differs: another model, tokenizer, prompts or length."""
+  if not path.is_file():
+    raise SystemExit(f"{path} is missing: the k=0 run writes the continuations every other k reads")
+  saved = json.loads(path.read_text())
+  bad = [k for k in ident if saved.get("identity", {}).get(k) != ident[k]]
+  if bad or saved["long_tokens"] != long_tokens or set(saved["continuations"]) != set(ids):
+    raise SystemExit(f"{path} was written for another {', '.join(bad) or 'length or prompt set'}; reuse is only for the same source model and tokenizer "
+                     "(an original and its Speed up copy). Delete it, or give this run its own folder")
+  return saved
+
+
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
   ap.add_argument("--model", required=True)
@@ -68,16 +89,15 @@ def main() -> int:
   for p in prompts:
     got = tok.apply_chat_template([{"role": "user", "content": p["text"]}], tokenize=True, add_generation_prompt=True)
     ids[p["id"]] = list(got["input_ids"] if isinstance(got, dict) or hasattr(got, "input_ids") else got)
-  long_ids = {}
+  long_ids, wrote = {}, False
   if a.long_tokens:
-    path = Path(a.continuations)
-    if a.k == 0:
+    path, ident = Path(a.continuations), identity(a.model, tok, ids)
+    wrote = a.k == 0 and not path.is_file()  # an existing file is another run's: reuse() refuses it unless it is this model's or its copy's
+    if wrote:
       cont = {pid: list(llm.generate([TokensPrompt(prompt_token_ids=x)], greedy(a.long_tokens), use_tqdm=False)[0]
                         .outputs[0].token_ids) for pid, x in ids.items()}
-      path.write_text(json.dumps({"long_tokens": a.long_tokens, "continuations": cont}))
-    saved = json.loads(path.read_text())
-    if saved["long_tokens"] != a.long_tokens or set(saved["continuations"]) != set(ids):
-      raise SystemExit(f"{path} holds other continuations than this run asks for")
+      path.write_text(json.dumps({"long_tokens": a.long_tokens, "identity": ident, "written_by": a.model, "continuations": cont}))
+    saved = reuse(path, ident, a.long_tokens, ids)
     long_ids = {pid: ids[pid] + saved["continuations"][pid] for pid in ids}
   for depth, source in (("short", ids), ("long", long_ids)):
     for pid, prompt in source.items():
@@ -94,7 +114,8 @@ def main() -> int:
                         "token_ids_sha": hashlib.sha256(json.dumps(list(out.outputs[0].token_ids)).encode()).hexdigest()}),
             flush=True)
   print(json.dumps({"engine": {"vllm": __version__, "k": a.k, "max_model_len": a.max_model_len,
-                               "speculative_config": {"method": "mtp", "num_speculative_tokens": a.k} if a.k else None}}),
+                               "speculative_config": {"method": "mtp", "num_speculative_tokens": a.k} if a.k else None,
+                               "continuations": None if not a.long_tokens else "written" if wrote else "reused from " + saved["written_by"]}}),
         flush=True)
   return 0
 

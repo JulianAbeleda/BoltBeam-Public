@@ -5,33 +5,32 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
 
-// Workload is the fourth Setup line: decode or prefill, picked; session is shown muted until it is built. The pick
+// Workload is the sixth Setup line: decode, prefill or session, picked. The pick
 // reaches the pipeline as --workload, and a prefill takes no --batch.
 func TestWorkloadPicker(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
-	m := press(press(press(press(press(program(s, nil, nil, nil, 80, 24), "j"), "j"), "j"), "j"), "enter")
+	m := press(keys(program(s, nil, nil, nil, 80, 24).(Model), "j", "j", "j", "j", "j"), "enter")
 	if m.(Model).cursor != pageWorkload {
 		t.Fatalf("enter on Workload opens its picker: %d", m.(Model).cursor)
 	}
 	if got := m.(Model).f.workload(); got != "decode" {
 		t.Fatalf("decode until another is picked: %q", got)
 	}
-	golden(t, "picker-workload.txt", m.View())
+	golden(t, "picker-workload.txt", frame(m))
 	m = press(press(m, "j"), "enter") // prefill
 	if got := m.(Model).f.workload(); got != "prefill" || m.(Model).cursor != pageSetup {
 		t.Fatalf("workload %q, page %d", got, m.(Model).cursor)
 	}
-	if !strings.Contains(m.View(), "prefill") {
+	if !strings.Contains(frame(m), "prefill") {
 		t.Fatal("Setup shows the picked workload")
 	}
-	golden(t, "setup-prefill.txt", m.View())
+	golden(t, "setup-prefill.txt", frame(m))
 	argv := strings.Join(seam.Client{Python: "py"}.PipelineArgv(seam.Pipeline{Model: "m", RunDir: "r", Target: "t", Workload: m.(Model).f.workload()}), " ")
 	if !strings.Contains(argv, "--workload prefill") {
 		t.Fatalf("argv %v", argv)
@@ -42,7 +41,7 @@ func TestWorkloadPicker(t *testing.T) {
 // the user confirmed, the pick reaches the pipeline as --replay-trace and --server-argv, and the results print the
 // table's own lines and cells.
 func TestReplayWorkload(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	f := Facts{Workload: "replay", Replay: &seam.ReplayChoices{Default: "agent-60",
 		Shapes:  []seam.ReplayShape{{Name: "agent-60", Label: "agent-60, 60 turns to 131K"}, {Name: "chat-300", Label: "chat-300, 300 turns to 105K"}},
 		Servers: [][]string{{"/bin/llama-server", "--model", "m.gguf", "--port", "8080"}}}}
@@ -76,13 +75,13 @@ func TestReplayWorkload(t *testing.T) {
 	}
 	body := replayBody(&seam.Replay{Title: "The replay", HeadlineLines: []string{"Session at 61.0% of its roofline."},
 		Columns: []string{"turn", "prefix"}, Rows: []seam.SessionRow{{Cells: []string{"1", "3,200"}}}, Total: []string{"warm", ""},
-		Wheres: []seam.ReplayWhere{{Status: "unmeasured", Where: seam.Where{Words: "Turn 2 (early): unmeasured."}}}})
+		Wheres: []seam.ReplayWhere{{Status: "unmeasured", Where: seam.Where{Words: "Turn 2 (early): unmeasured."}}}}, wide)
 	for _, want := range []string{"Session at 61.0% of its roofline.", "3,200", "TURN", "Turn 2 (early): unmeasured."} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body lacks %q:\n%s", want, body)
 		}
 	}
-	if replayBody(nil) != "" {
+	if replayBody(nil, wide) != "" {
 		t.Fatal("no replay, no body")
 	}
 }

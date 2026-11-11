@@ -11,7 +11,9 @@ import functools, json, os, pathlib, subprocess
 from collections.abc import Mapping
 from typing import Any
 
-FORK_URL = "https://github.com/JulianAbeleda/tinygrad-arkey"
+from boltbeam.collectors import engine_families
+
+FORK_URL = engine_families.repo("tinygrad", "own")  # the fork's repo is a row of data/engine_families.json
 PROVIDER = "extra/llm_research/search_provider.py"
 PROTOCOL = "tinygrad.search_provider.v1"
 RUNTIME_TABLE = pathlib.Path(__file__).resolve().parents[1] / "data" / "search_runtime.json"

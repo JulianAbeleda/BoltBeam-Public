@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                              ⠋ (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Recommended setup                                                            │
+│ Speed up                                                                     │
+│   ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    7%  2 of 3     │
+│   Check the answers…   01:20 · about 17 min left (an estimate)               │
+│   ✓ Write the faster copy                                                    │
+│                                                                              │
+│ context, speed and engine flags for this model on your GPUs · derived from   │
+│ the checkpoint and this machine's measured facts; nothing runs until Check   │
+│                                                                              │
+│ Contexts are upper bounds: this engine's own overhead is not measured here   │
+│ yet. Check measures it.                                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ ▸ [ Copy engine command line ]                                               │
+│   [ Copy Arkey vllm_args ]                                                   │
+│   [ Check ] start the engine once with these flags and compare               │
+│      Making the faster copy: Check the answers…                              │
+│   [ Stop ] Ends it. A half-written copy may be left to delete.               │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ↑↓ move · enter pick · esc setup · ? all keys · q quit

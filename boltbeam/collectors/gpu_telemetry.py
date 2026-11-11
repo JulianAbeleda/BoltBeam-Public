@@ -28,6 +28,7 @@ import time
 from typing import Any
 from boltbeam.artifacts.run_io import read_json, write_json
 from boltbeam.target.gpu import run_gpu
+from boltbeam.target.hardware import NoVendorRow, vendor_row
 
 INTERVAL_S = 0.05
 LIBRARY = "libnvidia-ml.so.1"
@@ -480,13 +481,12 @@ class Unsampled:
 
 
 def source_for(device:dict[str, Any] | None):
-  """The telemetry source for one hardware-profile GPU, from its vendor's row (chips._vendors() "telemetry"), found
+  """The telemetry source for one hardware-profile GPU, from its vendor's row (hardware.vendor_rows() "telemetry"), found
   by its PCI address: NVML for an NVIDIA card, the amdgpu sysfs for an AMD one. A vendor with no source, or a card not found, is Unsampled with the reason. No
   device (a run with no hardware profile) is None, as before the profile named the GPU."""
   if not device:
     return None
   from boltbeam.target.vendors import vendor
-  from boltbeam.workflow.chips import NoVendorRow, vendor_row
   try:
     source = vendor_row(device.get("vendor"), "telemetry")(device)
     source.clock_term = vendor(device.get("vendor")).term("core_clock")
@@ -507,9 +507,8 @@ def run_telemetry(run:pathlib.Path, *args, make=None):
 
 
 def run_clock_policy(run:pathlib.Path) -> dict[str, Any]:
-  """The clock policy the run's GPU holds, decided by its vendor's row (chips._vendors() "clock_policy"); unknown,
+  """The clock policy the run's GPU holds, decided by its vendor's row (hardware.vendor_rows() "clock_policy"); unknown,
   with the reason, for a vendor with none. A run with no hardware profile asks nvidia-smi, as before."""
-  from boltbeam.workflow.chips import NoVendorRow, vendor_row
   if (device := run_gpu(run)) is None:
     return clock_policy(0)
   try:

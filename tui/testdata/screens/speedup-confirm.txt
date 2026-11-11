@@ -1,0 +1,24 @@
+⚡ BoltBeam                                                                (•ᴗ•)
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Recommended setup                                                            │
+│ context, speed and engine flags for this model on your GPUs · derived from   │
+│ the checkpoint and this machine's measured facts; nothing runs until Check   │
+│                                                                              │
+│ Contexts are upper bounds: this engine's own overhead is not measured here   │
+│ yet. Check measures it.                                                      │
+│                                                                              │
+│ Layout                                                                       │
+│   use one: one GPU                                                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ What next                                                                    │
+│ ┃ Make a faster copy of m?                                                   │
+│ ┃ Makes a faster copy. The original stays.                                   │
+│ ┃ Needs up to 12.1 GB of free disk space for the copy.                       │
+│ ┃ Takes about 18 minutes (an estimate).                                      │
+│ ┃ Uses the GPU the whole time.                                               │
+│ ┃                                                                            │
+│ ┃              Make the copy     Not now                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ esc cancel · ←/→ toggle · enter submit · y Make the copy · n Not now …

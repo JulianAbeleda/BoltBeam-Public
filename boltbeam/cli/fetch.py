@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 
 from boltbeam.workflow import fetch as fx
@@ -28,6 +29,15 @@ def words(r:dict) -> list[str]:
     left = f", {_size(x['left_behind_bytes'])} of raw traces left behind" if x["left_behind_bytes"] else ""
     lines.append(f"  {x['id']}  {x['model_id'] or '?'} on {x['target_id'] or '?'} ({x['gpu'] or 'GPU not recorded'})  "
                  f"{x['date'][:10]}  {_size(x['bytes'])}{left}  {STATE_WORDS[x['state']]}")
+  if not r["fetched"] and r["runs"]:
+    lines.append("fetch one with `boltbeam fetch DEST RUN_ID`, or all with --all")
+  return lines + fetched_words(r)
+
+
+def fetched_words(r:dict) -> list[str]:
+  """What each fetch did: where it landed and how it was checked, or why it was skipped or refused (the screen shows
+  these, --json's `lines`)."""
+  lines = []
   for f in r["fetched"]:
     if f["status"] == "fetched":
       lines.append(f"fetched {f['id']}: {f['files']} files, {_size(f['bytes'])}, checked by sha256 ({f['transport']}) -> {f['dir']}")
@@ -44,9 +54,7 @@ def words(r:dict) -> list[str]:
       lines.append(f"skipped {f['id']}: {f['why']} ({f['dir']})")
     else:
       lines.append(f"refused {f['id']}: {f['why']}")
-  if not r["fetched"] and r["runs"]:
-    lines.append("fetch one with `boltbeam fetch DEST RUN_ID`, or all with --all")
-  elif any(f["status"] == "fetched" for f in r["fetched"]):
+  if any(f["status"] == "fetched" for f in r["fetched"]):
     lines.append("results are home: pause the remote machine now if nothing else needs it")
   return lines
 
@@ -56,13 +64,15 @@ def cmd_fetch(args, out=sys.stdout, ssh:fx.Ssh | None = None) -> int:
     if args.all and args.run_ids:
       raise fx.Refused("give run ids or --all, not both")
     here, saved = fx.local_roots(args.into)
+    if getattr(args, "saved", None):  # the screen's own saved-runs folder (its --saved), wherever that is
+      saved = pathlib.Path(args.saved).expanduser().resolve()
     r = fx.fetch(ssh or fx.Ssh(args.dest, args.port), args.run_ids, saved, root=args.root, every=args.all,
                  with_traces=args.with_traces, here=here)
   except fx.Refused as exc:
     print(json.dumps({"schema": fx.SCHEMA_FETCHED, "kind": "error", "error": str(exc)}) if args.json
           else f"fetch refused: {exc}", file=out)
     return 1
-  print(json.dumps(r, indent=2) if args.json else "\n".join(words(r)), file=out)
+  print(json.dumps({**r, "lines": fetched_words(r)}, indent=2) if args.json else "\n".join(words(r)), file=out)
   return 1 if any(f["status"] == "refused" for f in r["fetched"]) else 0
 
 
@@ -76,5 +86,6 @@ def register(sub) -> None:
   p.add_argument("--all", action="store_true", help="fetch every run the remote holds")
   p.add_argument("--with-traces", action="store_true", help="also copy raw traces (%s)" % ", ".join(fx.RAW_TRACES))
   p.add_argument("--into", help="the local runs folder (default: BOLTBEAM_RUNS, else the checkout's runs/); runs land in its saved/")
-  p.add_argument("--json", action="store_true", help="print the answer as JSON")
+  p.add_argument("--saved", help="the saved-runs folder runs land in (default: <runs folder>/saved, or BOLTBEAM_SAVED)")
+  p.add_argument("--json", action="store_true", help="print the answer as JSON, with `lines`: what each fetch did, in words")
   p.set_defaults(fn=cmd_fetch)

@@ -7,23 +7,27 @@ from __future__ import annotations
 import pathlib
 from typing import Any
 
-from boltbeam.cli.roofline import resolve_peak_flops
 from boltbeam.collectors import capture_settings, engine_builds, engine_kernels, gpu_telemetry, providers, tinygrad_role_time
 from boltbeam.collectors.pairing import ambiguity_kind
 from boltbeam.collectors.vllm_speculation import measured_words
 from boltbeam.report.html import next_step, roofline_kernels
 from boltbeam.role_key import role_key
-from boltbeam.roofline.mamba2 import FORMULA_REFUSED, formula_cannot_limit
+from boltbeam.profile.roles import shape_parts
 from boltbeam.search import search_stage
-from boltbeam.target import vendors
+from boltbeam.target import gpu as tgpu, vendors
 from boltbeam.target.targets import get_target
-from boltbeam.workflow import captured_decode, evidence as ev, layout as lay, limit, tie_out as tie
+from boltbeam.roofline import limit
+from boltbeam.roofline.limit import resolve_peak_flops
+from boltbeam.workflow import captured_decode, evidence as ev, layout as lay, offload, tie_out as tie
 from boltbeam.workflow import prefill as pf, replay as rw, session as ss
-from boltbeam.artifacts.run_io import load_manifest
-from boltbeam.workflow.repeat_bands import for_decode, summary as repeat_summary
+from boltbeam.artifacts.run_io import DECODE_CAPTURE, MACHINE, MEASURE_STATUS, load_manifest, optional
+from boltbeam.collectors.capture_scope import for_decode
+from boltbeam.workflow.repeat_bands import summary as repeat_summary
 from boltbeam.workflow.report_validation import require
-from boltbeam.workflow.run_folder import (MEASURE_STATUS, SCHEMA, Refused, blocked, is_run, measurement_of, not_measured,
-                                          optional, run_provider, summary)
+from boltbeam.core.refused import Refused
+from boltbeam.vocab import SCHEMA_TUI as SCHEMA
+from boltbeam.collectors.providers import run_provider
+from boltbeam.workflow.run_folder import blocked, is_run, measurement_of, not_measured, summary
 
 def _provider_table(run:pathlib.Path, provider:str, ceil:dict[str, Any], limit_ms:float, *, repeat_evidence:bool = False) -> tuple[dict | None, dict]:
   """One provider's per-role table (or None) and the capture its trace names."""
@@ -48,7 +52,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   The floor rule (tinygrad_role_time.refusal) holds for every provider's table."""
   provider = run_provider(run)
   target = get_target(manifest.get("target_id"))
-  if manifest.get('workload') == 'decode' and (run/captured_decode.TRACE).is_file():
+  if manifest.get('workload') == 'decode' and (run/DECODE_CAPTURE).is_file():
     return captured_decode.loss_block(run,provider,token)
   # facts of the run only: what this machine could capture is `providers`, never part of the pinned results
   plan = None
@@ -59,9 +63,10 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   if ceil.get("status") != "modeled" or not ceil.get("floor_ms"):
     # no limit, but a measured speed stands: the headline says both (a Mamba2 hybrid with no capture, mamba2.FORMULA_REFUSED)
     trace = optional(run, providers.TRACES[provider]) if provider in providers.TRACES else {}  # its pairing, shown as on any run
-    missing = ("each role was timed, but a per-role table is held against the limit, which this run does not have" if trace.get("rows")
-               else _missing(provider, target, manifest, optional(run, MEASURE_STATUS)))
-    return {"status": "absent", "reason": ceil.get("reason"), "missing": missing, "roles": [], "provider": provider,
+    key, missing = (("no_limit", "each role was timed, but a per-role table is held against the limit, which this run does not have")
+                    if trace.get("rows") else missing_reason(provider, target, manifest, optional(run, MEASURE_STATUS)))
+    return {"status": "absent", "reason": ceil.get("reason"), **({"reason_key": ceil["reason_key"]} if ceil.get("reason_key") else {}),
+            "missing": missing, **_missing_key(key), "roles": [], "provider": provider,
             "ambiguous": _ambiguous(trace.get("ambiguous")), "unpaired_roles": trace.get("unpaired_roles") or [],
             "capture": plan, "others": [], "runtimes": [{"provider": provider, "tok_s": token["tok_s"], "ms": token["ms"], "lost_ms": None,
             "per_role": False, "note": f"whole step, measured untraced, at context {token['context']}; no limit"}] if token else []}
@@ -114,9 +119,10 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   order = [provider] + [n for n in providers.NAMES if n != provider]
   shown = next((name for name in order if tables[name][0] is not None), None)
   if tables[provider][0] is None:  # said beside the other provider's table, or alone when there is none
-    out["provider_missing"] = _missing(provider, target, manifest, measure)
+    key, out["provider_missing"] = missing_reason(provider, target, manifest, measure)
   if shown is None:
     out["missing"] = out["provider_missing"]
+    out.update(_missing_key(key))
     out["tie_out"] = tie.tie_out(run, provider=provider, table=None, trace=None, limit_ms=limit_ms, profile=profile,
                                  bandwidth_gbs=bw, missing=out["missing"])
     out["where_token_goes"] = tie.where_token_goes(out["tie_out"], [])
@@ -134,7 +140,9 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
   roles, rule = tie.role_why(table["roles"], bw, regimes=regimes, throttled=facts.throttle() is not None, latency_us=floor_us,
                              floor_us=table.get("floor_us"))
   out["cross_check"] = cross_check(run, bw)
-  roles = [{**r, "evidence": facts.role(r["role"], r["quant"], r.get("shape"))} for r in roles]
+  parts = shape_parts(profile.get("roles") or [])  # a role and format at two shapes: each row names its part
+  roles = [{**r, **({"part": parts[role_key(r)]} if role_key(r) in parts else {}), "evidence": facts.role(r["role"], r["quant"], r.get("shape"))}
+           for r in roles]
   if shown != provider:
     out["search"] = search_block(run, shown)
     state = out["search"].pop("state")
@@ -199,7 +207,7 @@ def search_block(run:pathlib.Path, provider:str) -> dict[str, Any]:
 def _layout_limit(run:pathlib.Path, profile:dict[str, Any], ceil:dict[str, Any]) -> tuple[dict | None, dict | None]:
   """The layout the run was measured with and its derived limit, and the machine facts behind it; None, None
   for a run without machine facts (single-GPU runs keep the registry limit either way)."""
-  facts = optional(run, lay.MACHINE)
+  facts = optional(run, MACHINE)
   if not facts:
     return None, None
   status = optional(run, MEASURE_STATUS)
@@ -209,7 +217,7 @@ def _layout_limit(run:pathlib.Path, profile:dict[str, Any], ceil:dict[str, Any])
                   gpus_used=status.get("gpus"), provider=status.get("provider"))
   shown = {"gpus": [{k: g.get(k) for k in ("index", "name", "target_id", "read_gbs", "read_source")} for g in facts["gpus"]],
            "pairs": facts.get("pairs", []), "measured_at": facts.get("measured_at"),
-           "support": lay.LIMITED if len(facts["gpus"]) > 1 else None}
+           "support": tgpu.LIMITED if len(facts["gpus"]) > 1 else None}
   return got, shown
 
 
@@ -313,17 +321,29 @@ MISSING_GENERIC = "no per-role time yet: Run with {provider} times each role"
 
 
 def _missing(provider:str, target, manifest:dict[str, Any], measure:dict[str, Any] | None = None) -> str:
-  """Why this run has no per-role table for its provider. The run's own record comes first: the capture the
+  return missing_reason(provider, target, manifest, measure)[1]
+
+
+MISSING_GENERIC_KEY = "not_run"  # the generic reason: its key is left out of the results (missing_key absent)
+
+
+def missing_reason(provider:str, target, manifest:dict[str, Any], measure:dict[str, Any] | None = None) -> tuple[str, str]:
+  """Why this run has no per-role table for its provider, as (key, words): the key names the reason for a plain screen
+  (data/plain_words.json not_split), the words are the report's. The run's own record comes first: the capture the
   measuring machine had (measure_status.json capture, written by the pipeline). Never the action just taken: a run
   that recorded "no capture here" is told what is missing, not to Run again."""
   if (measure or {}).get("not_split_by_role"):  # 2 x RTX 3090, vLLM split by rows read "Run with vllm times each role"
-    return f"not split by role: {measure['not_split_by_role']}"
+    return measure.get("not_split_key") or "not_split", f"not split by role: {measure['not_split_by_role']}"
   if provider == tinygrad_role_time.PROVIDER and not tinygrad_role_time.device_for(target):
-    return f"{manifest.get('target_id')} names no tinygrad device, so no per-role time can be taken here"
+    return "no_device", f"{manifest.get('target_id')} names no tinygrad device, so no per-role time can be taken here"
   cap = (measure or {}).get("capture") or {}
   if cap and cap.get("method") is None and cap.get("reason"):
-    return f"no per-role time on the measuring machine: {cap['reason']}"
-  return MISSING_GENERIC.format(provider=provider)
+    return "no_capture", f"no per-role time on the measuring machine: {cap['reason']}"
+  return MISSING_GENERIC_KEY, MISSING_GENERIC.format(provider=provider)
+
+
+def _missing_key(key:str) -> dict[str, str]:
+  return {} if key == MISSING_GENERIC_KEY else {"missing_key": key}
 
 def step_facts(token:dict[str, Any] | None) -> dict[str, Any] | None:
   """THE measured token's own facts for a screen: context, speed, how it was run (the trace row's source), the
@@ -411,11 +431,11 @@ def results(run:pathlib.Path, *, repeat_evidence:bool = False) -> dict[str, Any]
 
 
 def the_token(run:pathlib.Path) -> dict[str, Any] | None:
-  """THE measured token of this run: step 4's whole-step row that tie_out.measured_step picks for the run's
+  """THE measured token of this run: step 4's whole-step row that capture_settings.measured_step picks for the run's
   provider, near the context its per-role capture attended when it has one. Every headline reads this."""
   provider = run_provider(run)
   role_trace = optional(run, providers.TRACES[provider])
-  near = tie.attended_context(role_trace, provider) if role_trace else None
+  near = capture_settings.attended_context(role_trace, provider) if role_trace else None
   # a per-role capture of B streams ties out against step 4's step of B streams at its requested context
   whole = next((r for r in role_trace.get("rows", []) if r.get("scope") == "whole_step"), {}) if role_trace else {}
   batch, at = whole.get("batch") or 1, whole.get("context")
@@ -429,7 +449,7 @@ def the_token(run:pathlib.Path) -> dict[str, Any] | None:
       raise Refused(f"the per-role capture is of {batch} streams at context {int(at)}, and step 4 timed no step of "
                     f"{batch} streams there: time that batch (--batch 1,{batch}) before reading the capture")
     return step
-  return tie.measured_step(optional(run, "timing_trace.json"), provider, near=near)
+  return capture_settings.measured_step(optional(run, "timing_trace.json"), provider, near=near)
 
 
 def batch_step(trace:dict[str, Any], provider:str, context:int, batch:int) -> dict[str, Any] | None:
@@ -456,8 +476,8 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
   primitive = optional(run, "primitive_profile.json")
   timing = optional(run, "timing_profile.json")
   ceil = limit.measured_vs_ceiling(manifest, profile, run)
-  if formula_cannot_limit(profile) and manifest.get("workload") == "decode" and not (run / captured_decode.TRACE).is_file():
-    ceil = {"status": "absent", "reason": FORMULA_REFUSED}  # speed only, said: never the formula's limit for a Mamba2 hybrid
+  if manifest.get("workload") == "decode" and (refused := limit.decode_refused(profile, run)):
+    ceil = {"status": "absent", "reason": refused, "reason_key": "formula_refused"}  # speed only, said: never the formula's limit for a Mamba2 hybrid
   token = the_token(run)
   context = token["context"] if token else None
   kernels, context = roofline_kernels(timing, context) if timing else ([], context)
@@ -471,18 +491,21 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
     ceil = replay_ceiling(ceil, loss)
   elif manifest.get("workload") == "decode" and token and ceil.get("status") == "modeled":
     ceil = decode_ceiling(ceil, loss, token, profile, run_provider(run), run)
+  moe = offload.run_block(run, profile, token, ceil.get("peak_bandwidth_gbs")) if manifest.get("workload") == "decode" else None  # experts in RAM: its own limit
   engine_build = manifest.get("engine")
   if not (engine_build or {}).get("build"):
     recorded = providers.run_build(run)
     if recorded:
       engine_build = {"provider": run_provider(run), **providers.pin_check(
-        run_provider(run), recorded, providers.run_build_number(run))}
+        run_provider(run), recorded, providers.run_build_number(run), fork=providers.run_fork(run))}
   return {
     "schema": SCHEMA, "kind": "results", "id": run.name, "model_id": manifest.get("model_id"),
     "target_id": manifest.get("target_id"), "workload": manifest.get("workload"),
     "measured": bool(timing) or bool(primitive),
     "ceiling": {k: v for k, v in ceil.items() if not k.startswith("_")},
     "loss": loss,
+    **({"offload": moe} if moe else {}),
+    **({"placement": lost} if not moe and manifest.get("workload") == "decode" and (lost := offload.placement(run, profile)) else {}),
     "measurement": measurement_of(run),  # the Setup choice of how roles were timed, as the run recorded it
     "probe": probe_rows(run, ceil.get("peak_bandwidth_gbs")),
     "routes": [{"role": r.get("role"), "quant": r.get("quant"), "shape": r.get("shape"),
@@ -497,7 +520,7 @@ def results_core(run:pathlib.Path, beside:bool = False, *, repeat_evidence:bool 
                         *list(timing.get("next_actions", []) or [])[1:]]
                        if loss.get("semantic_capture") and timing.get("dominant_timing_bucket")=="timing_inconclusive"
                        else list(timing.get("next_actions", []) or [])),
-      # THE measured token (tie_out.measured_step): the same row the tie-out uses; also lists the other contexts
+      # THE measured token (capture_settings.measured_step): the same row the tie-out uses; also lists the other contexts
       "context": context, "total_us": (token.get("wall_us") or 1000.0 * token["ms"]) if token else chosen.get("total_us"),
       "tok_s": token["tok_s"] if token else None,
       "also": [{"context": a["context"], "tok_s": a["tok_s"]} for a in token["also"]] if token else [],

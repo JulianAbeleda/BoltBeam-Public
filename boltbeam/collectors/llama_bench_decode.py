@@ -31,7 +31,8 @@ from boltbeam.core.canonical import pretty_json
 from boltbeam.target.targets import get_target
 from boltbeam.vocab import SCHEMA_TIMING_TRACE
 from boltbeam.artifacts.run_io import load_manifest, read_json
-from boltbeam.target.gpu import run_gpu
+from boltbeam.artifacts import progress
+from boltbeam.target.gpu import LIMITED, engine_args, run_gpu
 
 COLLECTOR_ID = "llama-bench-decode"
 PROVIDER_ID = "llama.cpp/llama-bench-decode"
@@ -154,7 +155,6 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
   more than one decode capture."""
   tokens = tokens if tokens is not None else (GEN_TOKENS if batch == 1 else ROLE_TOKENS)
   from boltbeam.collectors import attribution, vendor_capture
-  from boltbeam.workflow import layout as lay
   from boltbeam.collectors.capture_settings import observed
   recorded = observed(run, context).get("timing_window") or {}
   short_tokens = recorded.get("short_tokens", SETUP_TOKENS) if batch == 1 else 1
@@ -166,11 +166,12 @@ def role_time(run:pathlib.Path, *, target, model:str, model_id:str, context:int,
     # not split by role, as vLLM's split by rows says it (pipeline._run_stages): the run stands whole and its report is
     # written; a plain refusal ended a measured 2 x RTX 3090 tensor split "failed" with no report (2026-11-09)
     raise attribution.NotSplitByRole("split by rows runs every weight kernel on every GPU at once; per-role "
-                                     f"attribution across devices is not built, so this run has the whole step only ({lay.LIMITED})")
+                                     f"attribution across devices is not built, so this run has the whole step only ({LIMITED})",
+                                     key="row_split")
   bench = find(llama_bench)
   if bench is None:
     raise CannotMeasure(available() or "llama-bench is missing", f"export {ENV}=/path/to/llama-bench")
-  extra, env = lay.engine_args(layout, PROVIDER, bench) if gpus > 1 else ([], {})
+  extra, env = engine_args(layout, PROVIDER, bench) if gpus > 1 else ([], {})
   from boltbeam.collectors.capture_settings import llama_flags
   extra = [*extra, *llama_flags(run, context, capture=True), *(flags or [])]
   raw = raw or run / RAW
@@ -307,9 +308,28 @@ def bench_decode(llama_bench:str, model:pathlib.Path, depth:int, layout_args:lis
   times = [p["step_ms"] for p in pairs]
   return {"tok_s": 1000.0 / times[selected], "stddev_tok_s": statistics.stdev([1000.0 / t for t in times]) if len(times) > 1 else 0.0,
           "command": decode_argv(llama_bench, model, depth, GEN_TOKENS, layout_args), "raw": str(raw), "samples": pairs, "selected_pair_index": selected,
-          "build": row.get("build_commit"), "build_number": row.get("build_number"), "build_installed": _installed(llama_bench), "backends": row.get("backends"), "gpu": row.get("gpu_info"),
+          "build": row.get("build_commit"), "build_number": row.get("build_number"), "build_installed": _installed(llama_bench),
+          **fork_fact(llama_bench, env), "backends": row.get("backends"), "gpu": row.get("gpu_info"),
           "decode_tokens": GEN_TOKENS - SETUP_TOKENS, "measurement_scope": "differential_decode_elapsed",
           "engine": {**pairs[0]["engine"], "timing_window": decode_window(depth, GEN_TOKENS)}}
+
+
+def fork_of(llama_bench:str, env:dict[str, str] | None = None, home:pathlib.Path | None = None) -> dict[str, str] | None:
+  """{engine_family, fork, label} when this llama-bench is the build of a llama.cpp fork the families table finds here
+  (engine_families.find: its env var, then its paths); None for upstream. The commit is the build's own."""
+  from boltbeam.collectors import engine_families
+  here = pathlib.Path(llama_bench).expanduser().resolve()
+  for fam in engine_families.families():
+    for f in fam["forks"] if fam["family"] == PROVIDER else ():
+      where = None if f.get("provider") else engine_families.find(f, {**os.environ, **(env or {})}, home)
+      if where and pathlib.Path(where).expanduser().resolve() == here:
+        return {"engine_family": fam["family"], "fork": f["fork"], "label": f["label"]}
+  return None
+
+
+def fork_fact(llama_bench:str, env:dict[str, str] | None = None) -> dict[str, Any]:
+  """The engine fact every llama-bench row carries for a fork build ({"fork": ...}); {} for upstream."""
+  return {"fork": got} if (got := fork_of(llama_bench, env)) else {}
 
 
 def _installed(llama_bench:str) -> str | None:
@@ -322,7 +342,7 @@ def _installed(llama_bench:str) -> str | None:
 
 
 def _here() -> str | None:
-  from boltbeam.workflow.autoscan import this_machine_target
+  from boltbeam.target.hardware import this_machine_target
   return this_machine_target()
 
 
@@ -354,7 +374,7 @@ def preflight(target_id:str, model:str | pathlib.Path, *, run:str | pathlib.Path
 
 
 # what bench_decode measured about the engine build, carried onto every whole-step row (providers.pin_check reads it)
-BUILD_FIELDS = ("build", "build_number", "build_installed")
+BUILD_FIELDS = ("build", "build_number", "build_installed", "fork")
 
 
 def build_facts(b:dict[str, Any]) -> dict[str, Any]:
@@ -387,7 +407,6 @@ def batch_points(bench:dict[int, dict[str, Any]], model:pathlib.Path, batches, *
                  cwd:pathlib.Path | None = None) -> list[dict[str, Any]]:
   """Every timed point: batch 1 from the llama-bench decodes, then each batch > 1 per depth from
   llama-batched-bench. Reports progress as the second half of the stage (the first half is the decodes)."""
-  from boltbeam.workflow import progress
   points = [{"context": ctx, "batch": 1, "step_ms": 1000.0 / b["tok_s"], "tok_s_stream": b["tok_s"],
              "tok_s_total": b["tok_s"], "tokens": b.get("decode_tokens", GEN_TOKENS), "source": "llama-bench"} for ctx, b in sorted(bench.items())]
   wide = sorted({int(b) for b in batches if int(b) > 1})
@@ -409,12 +428,10 @@ def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_be
             layout:str = "one", gpus:int = 1, batches:list[int] | tuple[int, ...] = (1,)) -> pathlib.Path:
   manifest = load_manifest(run)
   facts = preflight(manifest.get("target_id"), manifest.get("model_path") or "", run=run, llama_bench=llama_bench)
-  from boltbeam.workflow import layout as lay
-  layout_args, layout_env = lay.engine_args(layout, PROVIDER, find(llama_bench)) if gpus > 1 else ([], {})
+  layout_args, layout_env = engine_args(layout, PROVIDER, find(llama_bench)) if gpus > 1 else ([], {})
   request = read_json(run / "trace_request.json")
   if request.get("workload") != "decode":
     raise CannotMeasure("llama-bench-decode times decode only; this run is prefill", "plan the run with workload decode")
-  from boltbeam.workflow import progress
   bench = {}
   from boltbeam.collectors.capture_settings import contexts as requested_contexts, llama_flags
   contexts = requested_contexts(run)
@@ -424,7 +441,10 @@ def measure(run:pathlib.Path, *, timing_out:pathlib.Path | None = None, llama_be
     say(f"decode at depth {ctx}: llama-bench")
     bench[int(ctx)] = bench_decode(facts["llama_bench"], facts["model"], int(ctx), [*layout_args, *llama_flags(run, int(ctx))], layout_env, cwd=run)
     progress.report(len(bench), parts)
-  from boltbeam.workflow.limit import run_bandwidth
+  from boltbeam.collectors import engine_args
+  engine_args.record(run, decode_argv(facts["llama_bench"], facts["model"], max(contexts), GEN_TOKENS, [*layout_args, *llama_flags(run, max(contexts))])[1:],
+                     engine=PROVIDER, env=layout_env)  # what llama-bench was told: -ngl 99 and no offload flag is all on the GPU, said
+  from boltbeam.roofline.limit import run_bandwidth
   trace = build_timing_trace(manifest, bench, run_bandwidth(run, facts["target"])[0])
   trace["aux_sources"] = {"llama_bench": {str(k): v for k, v in bench.items()}}
   trace["provider"] = PROVIDER

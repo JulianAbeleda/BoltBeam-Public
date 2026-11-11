@@ -7,9 +7,11 @@ import sys
 from typing import Any
 
 from boltbeam.collectors import providers
+from boltbeam.report import plain
 from boltbeam.report.html import sectioned_cells
 from boltbeam.target.targets import get_target
 from boltbeam.workflow import prefill_audit
+from boltbeam.workflow.tie_out import role_label
 from boltbeam.artifacts.run_io import load_manifest
 from boltbeam.workflow.replay import lines as replay_lines
 from boltbeam.workflow.results import estimate_how, measurement_words
@@ -70,6 +72,8 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
     head += (f": a {h['warm_turns']}-turn replay at {h['e_pct']:.1f}% of its roofline, {(h['time_ms'] - h['roofline_ms']) / 1e3:.1f} s "
              f"of {h['time_ms'] / 1e3:.1f} s lost" if h.get("e_pct") is not None else
              f": a {h['warm_turns']}-turn replay in {h['time_ms'] / 1e3:.1f} s, no ceiling ({loss.get('reason') or 'see below'})")
+  elif m and res.get("offload"):  # experts in RAM: held against the offload limit, never the all-in-GPU-memory one
+    head += f": {m['tok_s']:.1f} tok/s measured, " + plain.offload_close(res["offload"], [])["close"]
   elif m and loss.get("limit_tok_s"):
     pct = 100.0 * loss["limit_ms"] / m["ms"] if m.get("ms") else 0.0
     each = f" per stream ({batch * m['tok_s']:.1f} in total)" if batch > 1 else ""  # tools/check_run_math.py HEAD
@@ -80,6 +84,8 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   else:
     head += ": not measured"
   lines = [head]
+  if res.get("placement"):  # no engine arguments were recorded: not assumed all on the GPU
+    lines.append(f"Placement not recorded: {res['placement']['says']}")
   if state := loss.get("state_words"):  # the limit counts each stream's recurrent state, or says why it does not
     lines.append(f"Limit: {state}.")
   if basis := loss.get("limit_basis"):  # a split whose copies were not measured: its limit is its weights alone
@@ -137,7 +143,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
   if t.get("band"):
     lines.append(f"Band: {t['band']}")
   roles = loss.get("roles") or []
-  w = max([12] + [len(str(r["role"])) for r in roles] + [len(str(n.get("role") or "")) for n in loss.get("not_timed") or []])  # the role column fits its longest name
+  w = max([12] + [len(role_label(r)) for r in roles] + [len(str(n.get("role") or "")) for n in loss.get("not_timed") or []])  # the role column fits its longest name
   if roles and est:
     lines.append("Per role, estimated from isolated kernel times:")
     lines.append(f"  {est['method']}")
@@ -153,7 +159,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
       less = (f" {r['us_per_call_less_floor']:10.1f}" if r.get("us_per_call_less_floor") is not None else f" {'':>10}") if floor else ""
       g = f"{r['gbs']:.1f}" if r.get("gbs") is not None else ""
       pct = f"{r['pct_peak']:.1f}%" if r.get("pct_peak") is not None else ""
-      lines.append(f"  {r['role']:<{w}} {r['quant']:<5} {mb:>8} {us:>8}{less} {g:>6} {pct:>7} {r['ideal_ms']:7.3f} "
+      lines.append(f"  {role_label(r):<{w}} {r['quant']:<5} {mb:>8} {us:>8}{less} {g:>6} {pct:>7} {r['ideal_ms']:7.3f} "
                    f"{r['est_ms']:16.3f} {r['est_lost_ms']:9.3f}  {r.get('reason') or ''}")
   elif roles:
     lines.append(f"Per role ({loss.get('source') or ''}):")
@@ -163,7 +169,7 @@ def summary_text(res:dict[str, Any], why_no_roles:str | None = None) -> str:
       us = f"{r['us_per_call']:.1f}" if r.get("us_per_call") is not None else ""
       found = (r.get("best_found") or {}).get("text")
       verdict = (r.get("verdict") or "").replace("_", " ") + (f" ({found})" if found else "")
-      lines.append(f"  {r['role']:<{w}} {r['quant']:<5} {r['ideal_ms']:7.3f} {r['actual_ms']:7.3f} {r['lost_ms']:6.3f} "
+      lines.append(f"  {role_label(r):<{w}} {r['quant']:<5} {r['ideal_ms']:7.3f} {r['actual_ms']:7.3f} {r['lost_ms']:6.3f} "
                    f"{pct:>7} {us:>8}  {r.get('reason') or ''}" + (f"; kernel search: {verdict}" if verdict else ""))
     if loss.get("not_attributed_ms") is not None:
       lines.append(f"  {'not attributed':<{w + 6}} {'':>7} {loss['not_attributed_ms']:7.3f}")

@@ -1,0 +1,16 @@
+A  rtx5090-27b-llama-batch
+   Qwen3.8-27B-UD-Q4_K_M on NVIDIA GeForce RTX 5090 with llama.cpp
+B  rtx5090-14b-vllm-batch
+   Qwen3-14B-AWQ on NVIDIA GeForce RTX 5090 with vLLM
+
+These differ: model (Qwen3.8-27B-UD-Q4_K_M / Qwen3-14B-AWQ); engine
+(llama.cpp / vLLM); engine build (097cf33d9 / 0.31.0); weights (GGUF
+IQ4_XS+Q5_K / awq INT4_G128_ZP+BF16); streams at once (16 / 1).
+                                        
+                        A              B
+  speed (each stream)   37.3 tok/s     156.2 tok/s ✓
+  total across streams  596.0 tok/s    –
+  of its GPU's limit    46%            77% ✓
+
+The parts line up only between two runs of the same model, so only the
+headline figures are side by side.

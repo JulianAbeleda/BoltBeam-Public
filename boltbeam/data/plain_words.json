@@ -1,0 +1,720 @@
+{
+ "schema": "boltbeam.plain_words.v1",
+ "note": "The one authority for BoltBeam's plain words, read only through report/plain.py. stages: the plain name of every pipeline stage key, the report's and the measuring ones ({here} is this machine's name); the TUI reads this table, and roles, through `screen words`. roles and parts: what a row of the where table is called in layer 1 and 2. role_parts: the word for one shape of a role the model holds at two shapes of one format when its fine role does not tell them apart (a mixer's down and up, an indexer's q and k). templates: layer 1 of each run type, as format strings over numbers the results already hold. figures: the labels under layer 1's headline figures (tok/s, ms, s and %, the units in `units`). not_parts: the where-table rows that are not a part of the model's work, by the row's `what` or its name (BoltBeam's own gaps: the balance of the limit, the rest not split, kernels no kind names); `unassigned` are the weight reads no part took, said once as a caveat with their time, never as a part. head_to_head: the compare view's rows, the line that says what differs, and why the parts are or are not compared. tools and engines: the toolchain's and the engines' own names, as their makers spell them. trust: the one trust line. measured: the sentences of 'How it was measured'. glossary: every term layer 2 cannot avoid, each explained once; a term's `match` words are what layer 2 is searched for. roles names every role of the role vocabulary (vocab.RoleClass and RoleGroup); report_roles are the ones report.html's Full detail names, kept apart so that page stays as it was. Every reason a run gives in its own words has a key; layer 1 and 'How it was measured' say the key's sentence here, and the run's own words stay in Full detail.",
+ "stages": {
+  "load": "Read the model",
+  "autoscan": "Check the machine",
+  "analyze": "Plan what to try",
+  "runner_plan": "Prepare the handoff",
+  "ingest_probe": "Test the building blocks",
+  "ingest_timing": "Time the real run",
+  "output": "Package the result",
+  "machine": "Measure this machine's GPUs",
+  "measure": "Can {here} measure",
+  "measure_probe": "Test blocks on the GPU",
+  "measure_timing": "Time the real run",
+  "role_time": "Capture and attribute kernels",
+  "search": "Search faster kernels",
+  "speed_write": "Write the faster copy",
+  "speed_check": "Check the answers",
+  "speed_measure": "Measure the speed"
+ },
+ "roles": {
+  "attn_kv": "attention keys and values",
+  "attn_qo": "attention query and output",
+  "ffn_gate_up": "feed-forward in",
+  "ffn_down": "feed-forward out",
+  "lm_head": "vocabulary output",
+  "embed": "token embedding",
+  "attn_qkv": "attention query, keys and values, fused",
+  "attn_gate": "attention output gate",
+  "ssm_out": "state-space output",
+  "ssm_alpha_beta": "state-space decay and update gates",
+  "attention_q": "attention query",
+  "attention_k": "attention keys",
+  "attention_v": "attention values",
+  "attention_o": "attention output",
+  "attention_qkv": "attention query, keys and values, fused",
+  "attention_gate": "attention output gate",
+  "attention_kv_a": "compressed attention keys and values",
+  "attention_kv_b": "attention keys and values, expanded",
+  "ffn_gate": "feed-forward gate",
+  "ffn_up": "feed-forward up",
+  "embedding": "token embedding",
+  "norm": "normalizing",
+  "moe_router": "expert router",
+  "moe_expert_gate": "expert feed-forward gate",
+  "moe_expert_up": "expert feed-forward up",
+  "moe_expert_down": "expert feed-forward out",
+  "moe_expert_gate_up": "expert feed-forward in",
+  "moe_shared_expert_gate": "shared expert feed-forward gate",
+  "moe_shared_expert_up": "shared expert feed-forward up",
+  "moe_shared_expert_down": "shared expert feed-forward out",
+  "moe_shared_expert_gate_up": "shared expert feed-forward in",
+  "ssm_projection": "state-space projection",
+  "ssm_in": "state-space input",
+  "ssm_alpha": "state-space decay gate",
+  "ssm_beta": "state-space update gate",
+  "ssm_conv": "state-space convolution",
+  "ssm_state": "state-space state",
+  "ssm_scan": "state-space scan",
+  "hyper_connection_attn": "layer mixing before attention",
+  "hyper_connection_ffn": "layer mixing before feed-forward",
+  "hyper_connection_inject": "layer mixing input",
+  "hyper_connection_head": "layer mixing before the output",
+  "attention_indexer": "attention indexer (picks the tokens to look at)",
+  "attn_indexer": "attention indexer (picks the tokens to look at)",
+  "other": "other weights"
+ },
+ "role_parts": {
+  "down": "narrowing step",
+  "up": "widening step",
+  "q": "query",
+  "k": "keys"
+ },
+ "parts": {
+  "attention": "attention",
+  "quantize": "converting numbers to a smaller format",
+  "norm": "normalizing",
+  "KV cache write": "saving to the memory of earlier tokens",
+  "copy": "copying",
+  "elementwise": "small per-number steps",
+  "rope": "position encoding",
+  "recurrent": "recurrent state update",
+  "gaps": "idle time between GPU steps",
+  "rest": "everything else, not split",
+  "other kernels, not named": "other GPU work, not named",
+  "weight kernels, unattributed": "weight reads not matched to a part",
+  "kernels and gaps, not split": "all GPU work and idle time, not split",
+  "limit of roles not split out": "the limit of parts not split out (balances the table)",
+  "rest, not timed": "everything else (attention, small steps, idle time), not timed alone",
+  "kernel gaps, at most": "idle time between GPU steps, at most",
+  "replay_prefill_above": "reading prompts slower than the GPU allows",
+  "replay_recompute": "redoing prompt work the cache could have kept",
+  "replay_decode_above": "writing replies slower than the GPU allows",
+  "replay_overhead": "time outside the GPU (server, template, sampling, streaming)",
+  "other": "other GPU work",
+  "reduce": "summing steps",
+  "transform": "reshaping data",
+  "weight kernel, unattributed": "weight reads not matched to a part",
+  "kernels_short": "other GPU work ({kind})",
+  "kernels_unknown": "other GPU work (small supporting steps)",
+  "kernels_role": "weight reads that look like {role}, not matched to it"
+ },
+ "labels": {
+  "fast": "How fast",
+  "close": "How close to the limit",
+  "holds": "What holds it back",
+  "top": "The three parts that lose the most time",
+  "all_columns": "All columns",
+  "share": "share of the lost time",
+  "top_line": "{time}, {share} of the lost time",
+  "figures": "In figures"
+ },
+ "offload": {
+  "close_band": "{pct}% of the fastest this GPU and this machine's memory allow with the experts kept in RAM ({limit} tok/s). The range is because it depends on how often the needed parts are already on the card, and this run did not report that.",
+  "close_one": "{pct}% of the fastest this GPU and this machine's memory allow with the experts kept in RAM ({limit} tok/s).",
+  "estimate": " This is an estimate: the model's shapes were not read from a header.",
+  "over": "Faster than the limit it was held against ({limit} tok/s), so that limit is wrong for this run; no percentage is shown.",
+  "none": "There is no limit for this run yet: it kept experts in RAM, so the limit for a model held in GPU memory does not apply, and {reason}.",
+  "figure": "of the offload limit ({limit} tok/s)",
+  "decode_tuned": "This setup is tuned for writing replies: with the experts in RAM a long prompt is read 5 to 18 times slower than with the whole model on the card (measured on an RTX 5090).",
+  "unrecorded": "Placement not recorded: this run did not say whether the experts were on the card or in RAM."
+ },
+ "units": {
+  "tok_s": "tok/s",
+  "ms": "ms",
+  "s": "s",
+  "pct": "%"
+ },
+ "templates": {
+  "decode": {
+   "fast": "The model writes {tok_s} tok/s (tokens a second).",
+   "fast_batch": "Serving {batch} streams at once, it writes {total} tok/s in all, {tok_s} tok/s for each.",
+   "close": "{pct}% of the fastest this GPU allows for this model ({limit} tok/s).",
+   "holds": "{part}, {share} of the lost time.",
+   "no_limit": "There is no limit for this run yet.",
+   "no_split": "Not known yet: the time is not split into parts (How it was measured says why).",
+   "not_measured": "Not measured yet."
+  },
+  "batch_sweep": {
+   "close": "{pct}% of the fastest this GPU allows for this model ({limit} tok/s).",
+   "holds": "{part}, {share} of the lost time."
+  },
+  "prefill": {
+   "fast": "It reads a {length}-token prompt at {tok_s} tok/s ({ms} ms).",
+   "close": "{pct}% of the fastest this GPU allows for this prompt ({limit_ms} ms).",
+   "holds": "{part}, {share} of the lost time."
+  },
+  "chat_turn": {
+   "fast": "A {length}-token turn after {depth} tokens of chat took {ms} ms ({tok_s} tok/s).",
+   "close": "{pct}% of the fastest this GPU allows for this turn ({limit_ms} ms).",
+   "holds": "{part}, {share} of the lost time."
+  },
+  "replay": {
+   "fast": "{turns} chat turns took {seconds} seconds.",
+   "fast_no_limit": "{turns} chat turns took {seconds} seconds.",
+   "close": "{pct}% of the fastest this GPU allows for these turns ({limit_s} seconds).",
+   "holds": "{part}, {lost_s} seconds of the lost time."
+  },
+  "mtp": {
+   "fast": "{tok_s} tok/s, with the model drafting tokens ahead and checking them.",
+   "close": "{pct}% of the fastest this GPU allows at the measured draft acceptance ({limit} tok/s).",
+   "holds": "{part}, {share} of the lost time."
+  },
+  "engine_upgrade": {
+   "upgrade": "This run used a new {engine} build; it was compared once with the previous one ({before})."
+  },
+  "compare": {
+   "audit": "{after} against {before}: {engine} {build_after} against {build_before}, {workload}.",
+   "audit_part": "{part}: {verdict}; untraced time {untraced} ms.",
+   "replay": "{after} against {before}, the same chat replayed.",
+   "replay_close": "{points} points of the fastest this GPU allows.",
+   "replay_time": "Time: {split}.",
+   "moved": "{row}: {change} ms",
+   "unchanged": "unchanged outside the parts that moved",
+   "changed": "changed",
+   "not_checked": "not checked: no repeat runs of the earlier build"
+  }
+ },
+ "gain": {
+  "tok_s": "{gain} tok/s if this ran at full speed",
+  "ms": "{gain} ms faster if this ran at full speed",
+  "s": "{gain} seconds lost here",
+  "none": "gain not known: {reason}",
+  "none_over": "Gains per part aren't shown: recording slowed the run by more than {ceiling}%, too much to share out the lost time fairly.",
+  "none_unqualified": "Gains per part aren't shown: the recording's timing was not checked against the run without it.",
+  "none_estimate": "Gains per part aren't shown: the parts were timed alone, not inside the run.",
+  "none_unmatched": "Gains per part aren't shown: the recording kept no timing that matches the run without it, so its per-part times can't be checked against the real speed.",
+  "unassigned": "{ms} ms of weight reads could not be matched to a part."
+ },
+ "trust": {
+  "checked": "Checked ✓",
+  "checked_how": "the parts add up to the measured time",
+  "replicated": "{captures} recordings agree within {worst}%",
+  "within_overhead": "recording slowed the run by {pct}%, under the {ceiling}% allowed",
+  "not_measured": "Not measured yet.",
+  "refused": "Not checked: a part's time broke one of the report's rules, so the parts are not shown (Full detail says which).",
+  "estimate": "The split by part is an estimate: each part was timed alone, outside the engine.",
+  "over_overhead": "Recording slowed the run by {pct}%, more than the {ceiling}% allowed, so gains per part aren't shown.",
+  "unqualified": "The recording's timing was not checked against the run without it, so gains per part aren't shown.",
+  "unpaired": "Some GPU work could not be matched to a part of the model.",
+  "left_out": "Some parts are left out of the totals: {parts}.",
+  "no_graph": "The engine's graph replay failed, so this run is slower than the engine usually is.",
+  "whole_only": "Only the speed is measured, so there is nothing yet to check it against.",
+  "unmatched": "The recording kept no timing that matches the run without it, so gains per part aren't shown."
+ },
+ "measured": {
+  "speed": "The speed is the engine running on its own, with nothing recording it, {how}.",
+  "in_model": "Each part was timed inside the real run, recorded with {tool}.",
+  "isolated": "Each part's GPU code was timed alone, outside the engine, then fitted to the real run's time.",
+  "captured": "Each part was timed inside the real run, split by the engine's own labels.",
+  "replicated": "The recording was repeated {captures} times; the parts agree within {worst}% (the rule allows {tolerance}%).",
+  "not_replicated": "The recording was repeated {captures} times and the parts disagree by up to {worst}% (the rule allows {tolerance}%).",
+  "overhead": "Recording slowed the run by {pct}% (the limit is {ceiling}%).",
+  "overhead_rows": "The part times still stand, because the repeated recordings agree; the idle time is shown as at most what the unrecorded run leaves.",
+  "overhead_ms": "Without recording a step took {untraced} ms; recording changed it by {diff} ms.",
+  "repeats": "No repeat runs of this exact setup yet, so how much these numbers vary from run to run is not known.",
+  "band": "This setup has repeat runs; how far apart they were is in Full detail.",
+  "module_load": "Where some of the engine's GPU code lives was found in one more run of the same program, outside the timed ones.",
+  "forced": "Every recorded pass was made to produce the same tokens, so the labels and the times are of the same steps.",
+  "graph": "The engine's graph replay failed on this run, so it ran without it.",
+  "clock": "The GPU's clock speed during the run was recorded (Full detail).",
+  "speculation": "The model drafted tokens ahead; how many drafts were accepted is in Full detail.",
+  "limit": "The limit is the time to read every byte this step needs once, at this GPU's measured memory speed ({gbs} GB/s); no real run can be faster.",
+  "limit_ops": "The limit is the sum of each recorded part's own fastest time on this GPU.",
+  "gains": "The gains share out the lost time by how long each part takes; they add up to the limit, but they are not promised speed-ups.",
+  "no_model": "A part with no limit of its own counts all of its time as lost.",
+  "upgrade": "This build was compared once with the previous one (Full detail).",
+  "sweep": "The batch sweep's best was {best} tok/s in all, with {best_batch} streams at a context of {best_context} tokens; the figures above are the run the parts were timed on."
+ },
+ "machine": {
+  "chip": "GPU: {chip}, {gbs} GB/s memory speed ({source}).",
+  "gpus": "GPUs used: {gpus}.",
+  "engine": "Engine: {words}.",
+  "upstream": "{line}",
+  "weights": "Weights: {format}.",
+  "settings": "Engine settings asked for: {words}.",
+  "toolchain": "Toolchain: {words}.",
+  "measurement": "How parts were timed: {label}."
+ },
+ "glossary": [
+  {
+   "term": "tok/s",
+   "match": [
+    "tok/s",
+    "tokens a second"
+   ],
+   "plain": "Tokens a second: how many words (or pieces of words) the model writes each second. Higher is faster."
+  },
+  {
+   "term": "limit",
+   "match": [
+    "limit",
+    "roofline",
+    "ceiling"
+   ],
+   "plain": "The fastest this GPU allows for this model: the time to move every byte the step needs once at the GPU's memory speed (or, for heavy maths, at its top compute speed). A real run is always slower."
+  },
+  {
+   "term": "ms",
+   "match": [
+    "ms"
+   ],
+   "plain": "Milliseconds: thousandths of a second."
+  },
+  {
+   "term": "context",
+   "match": [
+    "context",
+    "depth"
+   ],
+   "plain": "How many tokens of conversation the model already holds when it writes the next one. More context means more to read."
+  },
+  {
+   "term": "stream",
+   "match": [
+    "stream",
+    "streams",
+    "batch"
+   ],
+   "plain": "One conversation. A GPU can serve several at once (a batch); each gets its own tokens."
+  },
+  {
+   "term": "prompt",
+   "match": [
+    "prompt",
+    "prefill"
+   ],
+   "plain": "The text the model reads before it starts to reply. Reading it is called prefill."
+  },
+  {
+   "term": "part",
+   "match": [
+    "part",
+    "parts",
+    "role",
+    "row"
+   ],
+   "plain": "One piece of the model's work in each step, such as the feed-forward or attention layers, or the time between GPU steps."
+  },
+  {
+   "term": "time",
+   "match": [
+    "time (per"
+   ],
+   "plain": "How long this part takes now, in each token (or each step of several streams, or each prompt)."
+  },
+  {
+   "term": "share",
+   "match": [
+    "share"
+   ],
+   "plain": "This part's share of the lost time: of all the time the run takes beyond the limit, how much is in this part."
+  },
+  {
+   "term": "gain",
+   "match": [
+    "gain",
+    "gains",
+    "tok/s if roofline",
+    "+ tok/s"
+   ],
+   "plain": "What this part would give back if it ran at its own limit: its share of the distance from the measured speed to the limit."
+  },
+  {
+   "term": "cumulative",
+   "match": [
+    "cumulative"
+   ],
+   "plain": "The speed with this part and every part above it fixed."
+  },
+  {
+   "term": "time lost",
+   "match": [
+    "lost",
+    "above limit"
+   ],
+   "plain": "A part's time now, less its time at the limit."
+  },
+  {
+   "term": "chip best",
+   "match": [
+    "chip best"
+   ],
+   "plain": "The fastest this kind of work can run on this GPU by any method, not only the engine's."
+  },
+  {
+   "term": "% of peak",
+   "match": [
+    "% of peak",
+    "peak"
+   ],
+   "plain": "How much of the GPU's top memory speed a part reaches while it runs."
+  },
+  {
+   "term": "GB/s",
+   "match": [
+    "GB/s"
+   ],
+   "plain": "Gigabytes a second: how fast memory is read."
+  },
+  {
+   "term": "MFU",
+   "match": [
+    "MFU"
+   ],
+   "plain": "How much of the GPU's top maths speed a part uses."
+  },
+  {
+   "term": "kernel",
+   "match": [
+    "kernel",
+    "kernels",
+    "GPU code"
+   ],
+   "plain": "One piece of code the GPU runs. A step of the model is hundreds of them."
+  },
+  {
+   "term": "idle time",
+   "match": [
+    "idle time",
+    "gaps"
+   ],
+   "plain": "Time between GPU kernels, when the GPU waits for the next piece of work."
+  },
+  {
+   "term": "recording",
+   "match": [
+    "recording",
+    "recorded",
+    "capture",
+    "nsys",
+    "rocprofv3",
+    "Metal System Trace"
+   ],
+   "plain": "A tool that watches the GPU and notes when every kernel starts and ends. Watching slows the run a little."
+  },
+  {
+   "term": "untraced",
+   "match": [
+    "untraced",
+    "unrecorded",
+    "nothing recording"
+   ],
+   "plain": "The run with no recording tool attached: the speed the engine really has."
+  },
+  {
+   "term": "repeat runs",
+   "match": [
+    "repeat runs",
+    "repeated",
+    "repeat band"
+   ],
+   "plain": "The same setup run several times, so a later change can be told apart from normal variation."
+  },
+  {
+   "term": "quant",
+   "match": [
+    "Q4_K",
+    "Q5_K",
+    "Q6_K",
+    "Q8_0",
+    "INT4",
+    "BF16",
+    "FP8",
+    "NVFP4",
+    "weights"
+   ],
+   "plain": "How the model's numbers are stored: fewer bits per number means less to read and a faster step, at some cost in accuracy."
+  },
+  {
+   "term": "KV cache",
+   "match": [
+    "KV",
+    "memory of earlier tokens"
+   ],
+   "plain": "What the model keeps about earlier tokens (keys and values), read again for every new token."
+  },
+  {
+   "term": "attention",
+   "match": [
+    "attention"
+   ],
+   "plain": "The part of the model that looks back at earlier tokens."
+  },
+  {
+   "term": "feed-forward",
+   "match": [
+    "feed-forward"
+   ],
+   "plain": "The largest part of each layer: two big matrix steps on every token."
+  },
+  {
+   "term": "state-space",
+   "match": [
+    "state-space",
+    "recurrent"
+   ],
+   "plain": "Layers that carry a running summary of the conversation instead of looking back at every token."
+  },
+  {
+   "term": "graph replay",
+   "match": [
+    "graph"
+   ],
+   "plain": "The engine recording its GPU steps once and replaying them, which saves start-up time per step."
+  },
+  {
+   "term": "engine",
+   "match": [
+    "engine",
+    "llama.cpp",
+    "vllm",
+    "vLLM",
+    "tensorrt-llm",
+    "TensorRT-LLM",
+    "tinygrad"
+   ],
+   "plain": "The program that runs the model (llama.cpp, vLLM, TensorRT-LLM or tinygrad)."
+  },
+  {
+   "term": "build",
+   "match": [
+    "build",
+    "pin",
+    "upstream"
+   ],
+   "plain": "The engine's version. The pin is the version BoltBeam was last checked against; upstream is the newest release."
+  },
+  {
+   "term": "toolchain",
+   "match": [
+    "toolchain",
+    "driver",
+    "CUDA"
+   ],
+   "plain": "The GPU driver and libraries the engine was built with."
+  },
+  {
+   "term": "drafting ahead",
+   "match": [
+    "drafting",
+    "draft",
+    "acceptance",
+    "MTP"
+   ],
+   "plain": "Multi-token prediction: the model guesses a few tokens ahead and checks them in one step; acceptance is how many guesses were right."
+  },
+  {
+   "term": "estimate",
+   "match": [
+    "estimate",
+    "fitted",
+    "timed alone"
+   ],
+   "plain": "Parts timed one at a time outside the engine, then scaled so they add up to the real run's time."
+  }
+ ],
+ "report_roles": [
+  "attn_kv",
+  "attn_qo",
+  "ffn_gate_up",
+  "ffn_down",
+  "lm_head",
+  "embed",
+  "attn_qkv",
+  "attn_gate",
+  "ssm_out",
+  "ssm_alpha_beta"
+ ],
+ "no_limit": {
+  "formula_refused": "There is no limit for this run yet: BoltBeam cannot yet work out the fastest this GPU allows for a model with these state-space layers.",
+  "no_matrix_rate": "There is no limit for this run yet: this GPU's speed for one kind of math this model uses has not been measured yet."
+ },
+ "not_split": {
+  "not_run": "The time is not split into parts yet: timing each part has not run for this run.",
+  "not_split": "The time could not be split into parts on this run; only the whole step is measured.",
+  "no_matrix_rate": "The time is not split into parts: this GPU's speed for one kind of math this model uses has not been measured yet, so those parts have no limit.",
+  "tensor_parallel": "The time is not split into parts: that is not built yet for a model spread over several GPUs this way.",
+  "row_split": "The time is not split into parts: that is not built yet for a model whose weights are split over several GPUs by rows.",
+  "closed_kernels": "The time is not split into parts: some of the engine's GPU code could not be read, so what it does is not known.",
+  "no_device": "The time is not split into parts: timing each part does not run on this GPU with this engine.",
+  "no_capture": "The time is not split into parts: the machine that measured it had no tool to record the GPU.",
+  "no_limit": "Each part was timed, but there is no limit to hold the parts against."
+ },
+ "unsure": {
+  "tie": "The split between some parts is a best guess: some of their steps look alike to the recording.",
+  "search_limit": "The split between parts is a best guess: there were too many ways to match the recorded steps to parts to try them all.",
+  "no_fit": "The split between some parts is a best guess: some recorded steps fit no part.",
+  "other": "The split between some parts is a best guess."
+ },
+ "not_parts": {
+  "whats": [
+   "limit",
+   "rest"
+  ],
+  "names": [
+   "other",
+   "other kernels, not named"
+  ],
+  "unassigned": [
+   "weight kernels, unattributed",
+   "weight kernel, unattributed"
+  ]
+ },
+ "figures": {
+  "speed": "speed",
+  "speed_mtp": "speed, drafting tokens ahead",
+  "per_stream": "per stream",
+  "total": "total across {batch} streams",
+  "prompt": "reading a {length}-token prompt",
+  "prompt_ms": "for the whole prompt",
+  "turn_ms": "for a {length}-token turn",
+  "turn_tok_s": "speed in that turn",
+  "replay": "for {turns} chat turns",
+  "limit": "of this GPU's limit ({limit} tok/s)",
+  "limit_ms": "of this GPU's limit ({limit_ms} ms)",
+  "limit_s": "of this GPU's limit ({limit_s} s)",
+  "gain": "biggest gain on offer",
+  "gain_ms": "biggest saving on offer",
+  "gain_s": "the most time lost in one place"
+ },
+ "tools": {
+  "driver": "GPU driver",
+  "cuda": "CUDA",
+  "torch": "PyTorch",
+  "nsight_systems": "Nsight Systems",
+  "nsight_compute": "Nsight Compute",
+  "rocm": "ROCm",
+  "amdgpu": "AMD GPU driver",
+  "hip": "HIP",
+  "rocprofv3": "rocprofv3",
+  "xctrace": "Xcode trace tool"
+ },
+ "engines": {
+  "llama.cpp": "llama.cpp",
+  "vllm": "vLLM",
+  "tensorrt-llm": "TensorRT-LLM",
+  "tinygrad": "tinygrad"
+ },
+ "head_to_head": {
+  "rows": {
+   "speed": "speed (each stream)",
+   "total": "total across streams",
+   "pct": "of its GPU's limit",
+   "gain": "biggest gain on offer",
+   "ms": "time",
+   "time": "time"
+  },
+  "higher": [
+   "speed",
+   "total",
+   "pct"
+  ],
+  "lower": [
+   "ms",
+   "time"
+  ],
+  "fields": {
+   "model": "model",
+   "gpu": "GPU",
+   "engine": "engine",
+   "build": "engine build",
+   "weights": "weights",
+   "settings": "engine settings",
+   "workload": "what was timed",
+   "batch": "streams at once"
+  },
+  "field": "{name} ({a} / {b})",
+  "differs": "These differ: {fields}.",
+  "same": "Same model, GPU, engine, build, weights and settings.",
+  "none": "none",
+  "better": "better",
+  "not_measured": "Not compared: {run} has no measured result yet.",
+  "parts_other_model": "The parts line up only between two runs of the same model, so only the headline figures are side by side.",
+  "parts_differ": "The parts line up only between two runs of the same model on the same GPU, engine and work; these differ in {field}, so only the headline figures are side by side.",
+  "parts_refused": "The parts are not compared: {reason}.",
+  "diff_fields": {
+   "workload": "what was timed",
+   "model": "model",
+   "target": "GPU",
+   "provider": "engine",
+   "replay trace sha256": "the chat replayed"
+  }
+ },
+ "speed_up": {
+  "action": "Speed up",
+  "helper": "Makes a faster copy. The original stays.",
+  "no_writer": "This model's format has no faster copy yet.",
+  "already": "This model is already a faster copy.",
+  "missing": "This model was not found.",
+  "confirm": {
+   "title": "Make a faster copy of {model}?",
+   "space": "Needs up to {size} of free disk space for the copy.",
+   "time": "Takes about {minutes} minutes (an estimate).",
+   "gpu": "Uses the GPU the whole time.",
+   "yes": "Make the copy",
+   "no": "Not now"
+  },
+  "kept": {
+   "head": "Made {name}.",
+   "line": "{label}: {before} to {after} tok/s ({change})",
+   "short": "Short prompt, {context} tokens",
+   "long": "Long prompt, {context} tokens",
+   "answers": "Scores the same on the answer check.",
+   "listed": "It shows in model lists as {name}.",
+   "not_measured": "SPEED NOT MEASURED: {reason}",
+   "not_measured_why": "the speed was not measured, so this copy is not known to be faster.",
+   "not_measured_off": "the speed step was switched off."
+  },
+  "not_kept": {
+   "head": "NOT KEPT: the faster copy was deleted.",
+   "answers": "Its answers matched the original's {pct}% of the time; {need}% is needed.",
+   "slower": "It was not faster than the original with a {context}-token prompt: {before} to {after} tok/s.",
+   "original": "The original is untouched."
+  },
+  "refused": {
+   "head": "No copy was made.",
+   "fix": "Fix: {fix}",
+   "crashed": "The run stopped without an answer.",
+   "crashed_fix": "Read the log, delete any half-written copy, and try again.",
+   "rows": [
+    {"match": ["already quantized"], "reason": "This model's output stage is already small, so a copy would not be faster."},
+    {"match": ["already a lighter-head copy"], "reason": "This model is already a faster copy.", "fix": "Speed up the original instead."},
+    {"match": ["tie_word_embeddings", "tied to the embedding", "no lm_head.weight", "no output.weight"], "reason": "This model reads and writes words from one shared table, so there is nothing to lighten."},
+    {"match": ["no engine writes", "not built yet"], "reason": "This model's format has no faster copy yet."},
+    {"match": ["already exists"], "reason": "A copy with this name is already there.", "fix": "Delete or rename it, then try again."},
+    {"match": [".partial is left"], "reason": "An earlier copy stopped half way.", "fix": "Delete the half-written copy, then try again."},
+    {"match": ["is patched", "installed from VCS", "is a fork"], "reason": "The engine is not a stock build, so the speed would not mean much.", "fix": "Use a stock engine, then try again."},
+    {"match": ["was not found: pass --engine"], "reason": "The engine was not found.", "fix": "Install the engine, then try again."},
+    {"match": ["ran on engine build", "the accuracy check ran on"], "reason": "The engine changed while the copy was made.", "fix": "Try again."},
+    {"match": ["fewer than the", "did not score every document"], "reason": "The answer check did not have enough text to decide."},
+    {"match": ["tokenize the prompts differently", "gate's text", "gate text"], "reason": "The answer check's text did not match, so it cannot decide."},
+    {"match": ["only asymmetric int4", "only AutoAWQ", "does not divide into groups"], "reason": "This model's layout is not one the copy can use yet."},
+    {"match": ["no longer matches", "is missing"], "reason": "A file of this copy changed after it was made.", "fix": "Make the copy again from the original."},
+    {"match": ["the record was made on"], "reason": "This is not the engine the copy was checked on.", "fix": "Use that engine, or make the copy again."},
+    {"match": ["the speed was measured on"], "reason": "The speed of this copy was measured on another GPU."},
+    {"match": ["has no speed_up.json"], "reason": "This is not a BoltBeam copy."}
+   ]
+  },
+  "ui": {
+   "running": "Making the faster copy",
+   "left": "about {minutes} min left (an estimate)",
+   "next": "What next",
+   "next_mtp": "Measure MTP on the copy",
+   "next_compare": "Compare with the original",
+   "check": "Check this copy",
+   "check_helper": "Checks the copy's files and answers still match what was recorded.",
+   "checking": "Checking the copy",
+   "stop": "Stop",
+   "stop_helper": "Ends it. A half-written copy may be left to delete.",
+   "stopped": "Sent SIGTERM to Speed up. A half-written copy may be left; delete it before trying again."
+  },
+  "verify": {
+   "pass": "This copy is good: its files and its answer check still match what was recorded.",
+   "no_speed": "SPEED NOT MEASURED: its speed was never measured.",
+   "fail": "This copy does not match its record."
+  }
+ }
+}

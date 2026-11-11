@@ -1,0 +1,193 @@
+{
+  "schema": "boltbeam.doctor.v1",
+  "rows": [
+    {
+      "item": "python",
+      "found": true,
+      "detail": "3.13.13 (/opt/boltbeam/.venv/bin/python)",
+      "fix": null,
+      "blocks": false,
+      "group": "boltbeam"
+    },
+    {
+      "item": "GPU",
+      "found": true,
+      "detail": "Apple M5",
+      "fix": null,
+      "blocks": false,
+      "group": "gpu"
+    },
+    {
+      "item": "chip profile",
+      "found": true,
+      "detail": "apple_m5_10c_16g (measured on this machine)",
+      "fix": null,
+      "blocks": false,
+      "group": "gpu"
+    },
+    {
+      "item": "GPU health",
+      "found": null,
+      "detail": "no memory-fault read for this GPU's vendor",
+      "fix": null,
+      "blocks": false,
+      "group": "gpu"
+    },
+    {
+      "item": "llama.cpp",
+      "found": true,
+      "detail": "upstream: /opt/homebrew/bin/llama-bench (path); per-role time: metal-system-trace \u00b7 PrismML: /opt/llama.cpp-prism/build/bin/llama-bench (BoltBeam cannot run it yet)",
+      "fix": null,
+      "blocks": false,
+      "forks_missing": [
+        "Ollama",
+        "Strata"
+      ],
+      "group": "engines"
+    },
+    {
+      "item": "vLLM",
+      "found": null,
+      "detail": "BoltBeam runs vLLM on CUDA or AMD GPUs; apple_m5_10c_16g is Metal",
+      "fix": null,
+      "blocks": false,
+      "group": "engines"
+    },
+    {
+      "item": "TensorRT-LLM",
+      "found": null,
+      "detail": "TensorRT-LLM runs on NVIDIA GPUs only; apple_m5_10c_16g is Metal",
+      "fix": null,
+      "blocks": false,
+      "group": "engines"
+    },
+    {
+      "item": "tinygrad",
+      "found": true,
+      "detail": "own fork: /opt/tinygrad (scan: /opt); per-role time: metal-system-trace",
+      "fix": null,
+      "blocks": false,
+      "forks_missing": [
+        "upstream"
+      ],
+      "group": "engines"
+    },
+    {
+      "item": "kernel source",
+      "found": true,
+      "detail": "llama.cpp's shipped kernels can be timed alone here",
+      "fix": null,
+      "blocks": false,
+      "group": "tools"
+    },
+    {
+      "item": "capture tool",
+      "found": true,
+      "detail": "metal-system-trace: /Applications/Xcode.app/Contents/Developer/usr/bin/xctrace",
+      "fix": null,
+      "blocks": false,
+      "group": "tools"
+    },
+    {
+      "item": "GPU counters",
+      "found": null,
+      "detail": "no counter permission to read for this GPU's vendor",
+      "fix": null,
+      "blocks": false,
+      "group": "gpu"
+    },
+    {
+      "item": "Go",
+      "found": true,
+      "detail": "go1.27.3 at /opt/homebrew/bin/go",
+      "fix": null,
+      "blocks": false,
+      "group": "boltbeam"
+    },
+    {
+      "item": "boltbeam-tui",
+      "found": false,
+      "detail": "~/.cache/boltbeam/boltbeam-tui was built from older Go source",
+      "fix": "boltbeam tui   (rebuilds it)",
+      "blocks": false,
+      "group": "boltbeam"
+    }
+  ],
+  "gaps": 1,
+  "ready": false,
+  "engines_file": "~/.boltbeam/engines.json",
+  "engines": [
+    {
+      "item": "llama-bench",
+      "env": "BOLTBEAM_LLAMA_BENCH",
+      "engine": "llama.cpp",
+      "path": "/opt/homebrew/bin/llama-bench",
+      "how": "path",
+      "found_at": "2026-11-10T15:49:01Z",
+      "skipped": null
+    },
+    {
+      "item": "llama-batched-bench",
+      "env": "BOLTBEAM_LLAMA_BATCHED_BENCH",
+      "engine": "llama.cpp",
+      "path": "/opt/homebrew/bin/llama-batched-bench",
+      "how": "path",
+      "found_at": "2026-11-10T15:49:01Z",
+      "skipped": null
+    },
+    {
+      "item": "ggml Metal library",
+      "env": "BOLTBEAM_GGML_METAL",
+      "engine": "llama.cpp",
+      "path": "/opt/homebrew/opt/ggml/libexec/libggml-metal.so",
+      "how": "scan: /opt/homebrew/opt/ggml/libexec",
+      "found_at": "2026-11-10T15:49:01Z",
+      "skipped": null
+    },
+    {
+      "item": "ggml-cuda source",
+      "env": "BOLTBEAM_GGML_CUDA_SRC",
+      "engine": "llama.cpp",
+      "path": "/opt/llama.cpp/ggml/src/ggml-cuda",
+      "how": "scan: /opt/llama.cpp/ggml/src",
+      "found_at": "2026-11-10T15:49:01Z",
+      "skipped": null
+    },
+    {
+      "item": "tinygrad fork",
+      "env": "BOLTBEAM_TINYGRAD_ROOT",
+      "engine": "tinygrad",
+      "path": "/opt/tinygrad",
+      "how": "scan: /opt",
+      "found_at": "2026-11-10T15:49:01Z",
+      "skipped": null
+    },
+    {
+      "item": "vLLM python",
+      "env": "BOLTBEAM_VLLM_PYTHON",
+      "engine": "vllm",
+      "path": null,
+      "how": null,
+      "found_at": null,
+      "skipped": "NVIDIA machines only"
+    },
+    {
+      "item": "ollama",
+      "env": "BOLTBEAM_OLLAMA",
+      "engine": "ollama",
+      "path": null,
+      "how": null,
+      "found_at": null,
+      "skipped": null
+    },
+    {
+      "item": "TensorRT-LLM python",
+      "env": "BOLTBEAM_TRTLLM_PYTHON",
+      "engine": "tensorrt-llm",
+      "path": null,
+      "how": null,
+      "found_at": null,
+      "skipped": "NVIDIA machines only"
+    }
+  ]
+}

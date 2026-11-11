@@ -12,6 +12,7 @@ import pathlib
 from typing import Any
 
 from boltbeam.workflow import tie_out as tie
+from boltbeam.collectors import replay_overhead
 from boltbeam.collectors.prefill import timing_reference
 
 PER = "per turn"
@@ -127,8 +128,8 @@ def where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
               and r.get("turn_ms")), None)
   if not (attr and row):
     return None
-  from boltbeam.workflow.repeat_bands import find
-  attr = {**attr, "end_to_end": tie.end_to_end(attr, row.get("qualification_ms") or row["turn_ms"], "turn", band=find(run, f"prefill {trace['turn_tokens']}"),
+  from boltbeam.collectors.capture_scope import find
+  attr = {**attr, "end_to_end": replay_overhead.end_to_end(attr, row.get("qualification_ms") or row["turn_ms"], "turn", band=find(run, f"prefill {trace['turn_tokens']}"),
                                              reference=timing_reference((row.get("engine") or {}).get("timing_window")), reference_window=(row.get("engine") or {}).get("timing_window"))}
   return tie.where_prefill_goes(attr, untraced_ms=row["turn_ms"], length=int(trace["turn_tokens"]), depth=int(depth))
 
@@ -156,7 +157,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], base:dict[str, Any]) -
   if not w:
     from boltbeam.collectors.session import TRACE  # the capture's own refusal when it said one
     from boltbeam.workflow.prefill import captured_whole
-    from boltbeam.workflow.repeat_bands import find
+    from boltbeam.collectors.capture_scope import find
     got = next(iter((_read(run / TRACE).get("lengths") or {}).values()), None) or {}
     out["captured_token"] = cw = captured_whole(got, head, "turn", head.get("qualification_ms") or head["turn_ms"], find(run, f"prefill {n}"))
     out["missing"] = ". ".join(filter(None, (got.get("not_captured") or "no turn captured in the model: step 5 (role time) has not run for this run", (cw or {}).get("words")))).rstrip(".")

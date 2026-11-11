@@ -50,6 +50,22 @@ def test_q8_0_blocks_dequantize_as_d_times_q_and_the_layouts_agree_with_the_quan
   assert ek.GGML_TYPE is gemv_reference.GGML_TYPES and set(gemv_reference.BLOCK_BYTES) == set(gemv_reference.BLOCK_ELEMS) == set(gemv_reference.DEQUANT) == set(gemv_reference.METADATA_BYTES)
 
 
+def test_a_ptq1_0_block_dequantizes_in_the_forks_element_order():
+  """The PrismML fork's quantize_row_ptq1_0 packs five trits per qs byte (four per qh byte, shifted to the top), as
+  ceil(base-3 value x 256 / 243); its element order is n*16 + m, then 80 + n*8 + m, then 120 + n*2 + h."""
+  want = [((i * 7) % 3) - 1 for i in range(128)]
+  def pack(trits):  # the fork's quantizer for one byte
+    q = 0
+    for t in trits:
+      q = q * 3 + t + 1
+    q *= 3 ** (5 - len(trits))
+    return (q * 256 + 242) // 243
+  qs = [pack([want[n * 16 + m] for n in range(5)]) for m in range(16)] + [pack([want[80 + n * 8 + m] for n in range(5)]) for m in range(8)]
+  qh = [pack([want[120 + n * 2 + h] for n in range(4)]) for h in range(2)]
+  blk = bytes(qs + qh) + struct.pack("<e", 0.5)
+  assert gemv_reference.dequant_ptq1_0_block(blk) == [0.5 * t for t in want]
+
+
 def test_an_expert_role_binds_the_first_matrix_of_its_stacked_tensor():
   """DeepSeek-Coder-V2-Lite (cross-model check 2026-10-21): a layer's 64 experts are one GGUF tensor (2048, 1408, 64);
   the probe's 1408x2048 Q4_K role found no 2-D tensor of that shape and the decode run stopped before measuring."""

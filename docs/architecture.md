@@ -24,14 +24,15 @@ Package by package:
 ```text
 profile/        artifact readers (GGUF, safetensors, AWQ, GPTQ, ONNX, MLX), ProfileIR, the role taxonomy, the
                 architecture classifier (from tensor facts, not model names)
-target/         target capability data (data/targets.json), the vendor rows (target/vendors.py), the GPU a
-                run uses (target/gpu.py)
+target/         target capability data (data/targets.json), the vendor rows (target/vendors.py), the machine's
+                GPU scan (target/hardware.py), the GPU a run uses (target/gpu.py)
 artifacts/      artifact readers for outside evidence, and the run folder's own I/O: read_json, write_json,
                 the run manifest (artifacts/run_io.py)
 collectors/     one adapter per engine and per capture tool; the pairing walk; what a capture may claim
 workflow/       the stages in order (pipeline.py), the layout of a run on its GPUs, the tie-out, the run
                 folder's status, the repeat bands, the screen's text
-roofline/       the limits: memory (weights, KV, recurrent state), compute paths, MoE and prefill work
+roofline/       the limits: memory (weights, KV, recurrent state), compute paths, MoE and prefill work; a run's
+                ceiling and the one memory speed its numbers use (roofline/limit.py)
 report/         the HTML report and the Markdown summary
 runtime/        the drivers BoltBeam runs on a GPU: the vLLM, TensorRT-LLM and Ollama decode drivers, the
                 CUDA, HIP and Metal device bridges, the bounded build jobs
@@ -51,9 +52,9 @@ limit, a ceiling) is a row of `data/policy.json` with its reason, read through
 The two largest packages import one way: `workflow -> collectors`. A collector
 never imports `boltbeam.workflow`, at module level or inside a function.
 `policy/guards.py` scans for it (`collector_workflow_import_failures`) and is
-the one authority on the exceptions left from before the rule; its allowlist
-ends empty. Below both sit `profile/`, `target/`, `artifacts/`, `roofline/` and
-`core/`, which import neither.
+the one authority on exceptions; its allowlist is empty. Below both sit
+`profile/`, `target/`, `artifacts/`, `roofline/` and `core/`, which import
+neither.
 
 ## The older modules: search, policy, synth, eval, ledger
 

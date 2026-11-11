@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
@@ -141,7 +141,7 @@ func tieOutBody(t *seam.TieOut) string {
 // whereBody is "Where the token goes": what each part costs the token, worst first, read from the seam. On a
 // narrow page the peak column (% OF PEAK, MFU) goes first, then SHARE, so no row is cut.
 // auditBody is the prefill audit as Python wrote it: the pointers, then each entry's fields, worst first.
-func auditBody(a *seam.Audit) string {
+func auditBody(a *seam.Audit, width int) string {
 	if a == nil || len(a.Entries) == 0 {
 		return ""
 	}
@@ -154,7 +154,7 @@ func auditBody(a *seam.Audit) string {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, stHeader.Render(e.Name))
 		for _, f := range e.Fields { // the label, then its words wrapped under it: a field is a sentence, not a cell
 			b.WriteString("   " + stMuted.Render(f[0]) + "\n")
-			b.WriteString(lipgloss.NewStyle().PaddingLeft(5).Width(tableWidth).Render(f[1]) + "\n")
+			b.WriteString(lipgloss.NewStyle().PaddingLeft(5).Width(width).Render(f[1]) + "\n")
 		}
 	}
 	if a.Collapsed != nil {
@@ -163,7 +163,7 @@ func auditBody(a *seam.Audit) string {
 	return b.String()
 }
 
-func whereBody(w *seam.Where) string {
+func whereBody(w *seam.Where, width int) string {
 	if w == nil || len(w.Rows) == 0 {
 		return ""
 	}
@@ -180,7 +180,7 @@ func whereBody(w *seam.Where) string {
 	last := strings.ToUpper(w.Columns[len(w.Columns)-1]) // the peak column goes first, then the share
 	drops := [][]string{nil, {last}, {last, "SHARE"}, {last, "SHARE", "MS AT CHIP BEST"}, {last, "SHARE", "MS AT CHIP BEST", "MS ABOVE LIMIT", "MS LOST"}}
 	for index, drop := range drops {
-		if t := whereTable(w, drop); maxWidth(t) <= tableWidth || index == len(drops)-1 {
+		if t := whereTable(w, drop, width); maxWidth(t) <= width || index == len(drops)-1 {
 			b.WriteString(t)
 			break
 		}
@@ -221,7 +221,7 @@ func sessionBody(s *seam.Session) string {
 
 // replayBody is the replay (workflow/replay.py) when the run carries one: the headline, a row per turn, then the
 // captured turns' where tables (or their one line) and the deepest decode.
-func replayBody(r *seam.Replay) string {
+func replayBody(r *seam.Replay, width int) string {
 	if r == nil || len(r.Rows) == 0 {
 		return ""
 	}
@@ -244,7 +244,7 @@ func replayBody(r *seam.Replay) string {
 	for _, row := range r.Rows {
 		rows = append(rows, row.Cells)
 	}
-	b.WriteString(replayTable(append(rows, r.Total)))
+	b.WriteString(replayTable(append(rows, r.Total), width))
 	if len(r.Unmodelled) > 0 {
 		b.WriteString(stMuted.Render("Not in the ceiling: "+strings.Join(r.Unmodelled, "; ")+".") + "\n")
 	}
@@ -253,7 +253,7 @@ func replayBody(r *seam.Replay) string {
 			b.WriteString(stMuted.Render(strings.Join(strings.Fields(w.Words), " ")) + "\n")
 			continue
 		}
-		b.WriteString(whereBody(&w.Where))
+		b.WriteString(whereBody(&w.Where, width))
 		b.WriteString(stMuted.Render(w.ServerLine) + "\n")
 	}
 	if d := r.DecodeWhere; d != nil {
@@ -417,7 +417,7 @@ func pairingBody(l seam.Loss) string {
 		if u.Reason != nil {
 			why = ": " + *u.Reason
 		}
-		b.WriteString(stMuted.Render("Unpaired, so in not attributed: "+word(plainRole, u.Role)+" "+u.Quant+why+".") + "\n")
+		b.WriteString(stMuted.Render("Unpaired, so in not attributed: "+roleWord(u.Role)+" "+u.Quant+why+".") + "\n")
 	}
 	return b.String()
 }
@@ -467,12 +467,12 @@ func estimateHow(e *seam.Estimate) string {
 
 // lossBody is the end result for the run's provider: its speed against the limit and where it loses time.
 // Another provider's numbers for the same run are shown after it, each labelled with its provider.
-func lossBody(l seam.Loss) string { return lossBodyAt(l, 1) }
+func lossBody(l seam.Loss, width int) string { return lossBodyAt(l, 1, width) }
 
 // lossBodyAt is lossBody for a run that also timed batch > 1: its heading names the batch.
-func lossBodyAt(l seam.Loss, batch int) string {
+func lossBodyAt(l seam.Loss, batch, width int) string {
 	if l.Replay != nil && (l.Replay.Forced || l.Status != "modeled" || l.LimitMs == nil) {
-		return replayBody(l.Replay)
+		return replayBody(l.Replay, width)
 	}
 	if l.Status != "modeled" || l.LimitMs == nil {
 		return ""
@@ -530,10 +530,10 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		}
 	}
 	b.WriteString(sessionBody(l.Session))
-	b.WriteString(replayBody(l.Replay))
-	b.WriteString(whereBody(l.WhereTokenGoes))
-	b.WriteString(whereBody(l.CaptureComparison))
-	b.WriteString(auditBody(l.PrefillAudit))
+	b.WriteString(replayBody(l.Replay, width))
+	b.WriteString(whereBody(l.WhereTokenGoes, width))
+	b.WriteString(whereBody(l.CaptureComparison, width))
+	b.WriteString(auditBody(l.PrefillAudit, width))
 	if l.Refused != nil {
 		b.WriteString(stWarn.Render(glyphWarn+" Per role: not shown. ") + *l.Refused + "\n")
 		return b.String()
@@ -541,10 +541,10 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	if l.Missing != nil {
 		b.WriteString(stMuted.Render("Per role: "+*l.Missing) + "\n")
 		b.WriteString(findingsBody(nil, l.Findings)) // what the run's own facts say (a failed graph replay) stands without roles
-		return b.String() + othersBody(l.Others, provider)
+		return b.String() + othersBody(l.Others, provider, width)
 	}
 	if len(l.Roles) == 0 {
-		return b.String() + othersBody(l.Others, provider)
+		return b.String() + othersBody(l.Others, provider, width)
 	}
 	shown := provider
 	if l.RolesProvider != nil {
@@ -559,9 +559,9 @@ func lossBodyAt(l seam.Loss, batch int) string {
 		if e.ColumnsWords != nil {
 			b.WriteString(stMuted.Render(*e.ColumnsWords+".") + "\n")
 		}
-		b.WriteString(isoRoleTable(l.Roles, e.ColumnsWords != nil))
+		b.WriteString(isoRoleTable(l.Roles, e.ColumnsWords != nil, width))
 	} else {
-		b.WriteString("\nWhere " + shown + " loses time, " + deref(l.Source) + ":\n" + roleTable(l.Roles, l.NotAttributedMs))
+		b.WriteString("\nWhere " + shown + " loses time, " + deref(l.Source) + ":\n" + roleTable(l.Roles, l.NotAttributedMs, width))
 	}
 	if l.RoleRule != nil {
 		b.WriteString(stMuted.Render("Why: "+*l.RoleRule) + "\n")
@@ -571,10 +571,10 @@ func lossBodyAt(l seam.Loss, batch int) string {
 	b.WriteString(roleChecks(l.Roles))
 	b.WriteString(pairingBody(l))
 	for _, n := range l.NotTimed {
-		b.WriteString(stMuted.Render(fmt.Sprintf("%s %s: not timed: %s; left out of the floor rule and the sums.", word(plainRole, n.Role), n.Quant, deref(n.Reason))) + "\n")
+		b.WriteString(stMuted.Render(fmt.Sprintf("%s %s: not timed: %s; left out of the floor rule and the sums.", roleWord(n.Role), n.Quant, deref(n.Reason))) + "\n")
 	}
 	for _, n := range l.CeilingRefused {
-		b.WriteString(stWarn.Render(fmt.Sprintf("%s %s: %.3f ms against a %.3f ms floor: %s.", word(plainRole, n.Role), n.Quant, n.ActualMs, n.IdealMs, n.Reason)) + "\n")
+		b.WriteString(stWarn.Render(fmt.Sprintf("%s %s: %.3f ms against a %.3f ms floor: %s.", roleWord(n.Role), n.Quant, n.ActualMs, n.IdealMs, n.Reason)) + "\n")
 	}
 	if len(l.CeilingRefused) > 0 {
 		b.WriteString(stWarn.Render(fmt.Sprintf("Totals exclude %d row(s) whose ceiling is refused. The other rows keep their ceilings.", len(l.CeilingRefused))) + "\n")
@@ -592,12 +592,12 @@ func lossBodyAt(l seam.Loss, batch int) string {
 			fmt.Fprintf(&b, "%s %s: not measured: %s\n", r.Role, r.Quant, r.Reason)
 		}
 	}
-	b.WriteString(othersBody(l.Others, shown))
+	b.WriteString(othersBody(l.Others, shown, width))
 	return b.String()
 }
 
 // othersBody is the other provider's numbers, each labelled with its provider and, for another run, its run.
-func othersBody(others []seam.OtherLoss, shown string) string {
+func othersBody(others []seam.OtherLoss, shown string, width int) string {
 	var b strings.Builder
 	for _, o := range others {
 		if o.Provider == shown && o.Run == nil {
@@ -619,7 +619,7 @@ func othersBody(others []seam.OtherLoss, shown string) string {
 		}
 		fmt.Fprintf(&b, "\nBeside it, %s: %s.\n", title, speed)
 		if len(o.Roles) > 0 {
-			b.WriteString(roleTable(o.Roles, o.NotAttributedMs))
+			b.WriteString(roleTable(o.Roles, o.NotAttributedMs, width))
 		}
 	}
 	return b.String()
@@ -653,7 +653,7 @@ func compareBody(f Facts) string {
 			} else if key == p.Now {
 				state, m = compareDoing[p.Doing]+"…", "run"
 			}
-			rows = append(rows, []string{mark(m), word(plainRole, rt.Role), rt.Quant, state})
+			rows = append(rows, []string{mark(m), roleWord(rt.Role), rt.Quant, state})
 		}
 		return "\n" + table(rows) + stMuted.Render(compareNote(f)) + "\n"
 	}
@@ -701,10 +701,10 @@ func compareBody(f Facts) string {
 				whole = fmt.Sprintf("%.2f to %.2f (%+.1f%%)", *ab.BaselineTokS, *ab.CandidateTokS, *ab.DeltaPct)
 			}
 			if c.Reason != nil {
-				reasons = append(reasons, word(plainRole, rt.Role)+" "+rt.Quant+": "+*c.Reason)
+				reasons = append(reasons, roleWord(rt.Role)+" "+rt.Quant+": "+*c.Reason)
 			}
 		}
-		rows = append(rows, []string{mark(routeMark[rt.Status]), word(plainRole, rt.Role), rt.Quant, choice, kernel, whole})
+		rows = append(rows, []string{mark(routeMark[rt.Status]), roleWord(rt.Role), rt.Quant, choice, kernel, whole})
 	}
 	b.WriteString("\n" + table(rows))
 	b.WriteString(stMuted.Render("Kernel: the role's own kernel per call in the model, to the plan alone. Whole model: default to plan.") + "\n")
@@ -792,7 +792,7 @@ func resultBody(f Facts, width int) string {
 		b.WriteString(stMuted.Render(s) + "\n")
 	}
 	b.WriteString(runEngineBody(res.Engine) + repeatsResult(res))
-	b.WriteString(lossBodyAt(hereLoss(f, res.Loss), batch))
+	b.WriteString(lossBodyAt(hereLoss(f, res.Loss), batch, width))
 	b.WriteString(batchTable(res.Batches))
 	inconclusive := res.Timing.DominantBucket != nil && *res.Timing.DominantBucket == "timing_inconclusive"
 	if res.Timing.DominantBucket != nil && !(inconclusive && (res.Loss.WhereTokenGoes != nil || res.Loss.Replay != nil)) { // "not clear yet" under a where table is stale
@@ -833,7 +833,7 @@ func resultBody(f Facts, width int) string {
 	if clear {
 		rows := [][]string{{"ROLE", "QUANT", "WHAT THE TEST SAW"}}
 		for _, g := range res.Regimes {
-			rows = append(rows, []string{word(plainRole, g.Role), g.Quant, named(plainRegime, g.Classification)})
+			rows = append(rows, []string{roleWord(g.Role), g.Quant, named(plainRegime, g.Classification)})
 		}
 		b.WriteString("\n" + table(rows))
 	}

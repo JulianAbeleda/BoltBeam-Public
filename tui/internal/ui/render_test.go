@@ -4,22 +4,25 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/charmbracelet/bubbles/viewport"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/jobs"
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden screens under testdata/screens")
+
+// wide is a page wider than any table: the width a body is drawn at when a test is not about narrowing.
+const wide = 200
 
 func load(t *testing.T, name string, v any) {
 	t.Helper()
@@ -32,8 +35,27 @@ func load(t *testing.T, name string, v any) {
 	}
 }
 
+// profile is the terminal the tests draw for. Lip Gloss v2 always renders full colour and Bubble Tea brings it down
+// to the terminal's profile when it writes the frame; drawn does that here. NoTTY drops every style, as v1's Ascii
+// profile did: the plain goldens are the text NO_COLOR shows.
+var profile = colorprofile.NoTTY
+
+func setProfile(p colorprofile.Profile) { profile = p }
+
+// drawn is s as a terminal of the test's profile receives it.
+func drawn(s string) string {
+	var b strings.Builder
+	w := colorprofile.Writer{Forward: &b, Profile: profile}
+	_, _ = w.WriteString(s)
+	return b.String()
+}
+
+// frame is the model's frame as the terminal receives it.
+func frame(m tea.Model) string { return drawn(m.View().Content) }
+
 func golden(t *testing.T, name, got string) {
 	t.Helper()
+	got = drawn(got)
 	path := filepath.Join("..", "..", "testdata", "screens", name)
 	if *update {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -78,17 +100,24 @@ func loadSample(t *testing.T) sample {
 	return s
 }
 
+// press sends k: enter, esc, or text typed one key per character, as Bubble Tea v2 reads it.
 func press(m tea.Model, k string) tea.Model {
-	msg := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 	switch k {
 	case "enter":
-		msg = tea.KeyMsg{Type: tea.KeyEnter}
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		return m
 	case "esc":
-		msg = tea.KeyMsg{Type: tea.KeyEsc}
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		return m
 	}
-	next, _ := m.Update(msg)
-	return next
+	for _, r := range k {
+		m, _ = m.Update(char(r))
+	}
+	return m
 }
+
+// char is the key press of one printable character.
+func char(r rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: r, Text: string(r)} }
 
 // program feeds the model the seam's answers in the order they arrive on a real start, then sizes it.
 func program(s sample, run *seam.Run, job *jobs.Job, tail []string, width, height int) tea.Model {
@@ -133,9 +162,10 @@ func savedSample() *seam.Saved {
 	return &sv
 }
 
-// The plain goldens are what NO_COLOR shows: lipgloss strips every colour under the Ascii profile.
+// The plain goldens are what NO_COLOR shows: every style dropped, as the program draws for an Ascii terminal.
 func TestScreensPlain(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	freezeClock(t)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	empty := New(seam.Client{}, jobs.Store{}, "", "", 512)
 	emptyM, _ := empty.Update(targetsMsg{&s.targets, nil})
@@ -151,26 +181,26 @@ func TestScreensPlain(t *testing.T) {
 	editing := press(press(page(emptyM, pageModel), "enter"), "/models/Q")
 	grouped, _ := program(s, nil, nil, nil, 80, 24).Update(targetsMsg{chipsJSON(t, madeHere), nil})
 	grouped, _ = grouped.Update(detectMsg{id: "apple_m3_10c_16g", count: 1})
-	chipShut := press(press(grouped, "j"), "enter")
+	chipShut := press(keys(grouped.(Model), "j", "j"), "enter")
 	engineGreyed := page(greyed, pageEngine)
 	old := page(program(s, nil, nil, nil, 80, 24), pageSaved)
 	old, _ = old.Update(savedListMsg{savedSample(), nil})
 	oldM := old.(Model)
 	oldM.f.OldWork = 1
 	for name, got := range map[string]string{
-		"setup-empty.txt":        emptyM.View(),
-		"setup-greyed.txt":       greyed.View(),
-		"setup-ready.txt":        ready.View(),
-		"run-progress.txt":       running.View(),
-		"run-results.txt":        measured.View(),
-		"saved-runs.txt":         saved.View(),
-		"model-editing.txt":      editing.View(),
-		"picker-model.txt":       page(ready, pageModel).View(),
-		"picker-engine.txt":      page(ready, pageEngine).View(),
-		"picker-chip.txt":        chipShut.View(),
-		"picker-engine-none.txt": engineGreyed.View(),
-		"picker-batch.txt":       page(ready, pageBatch).View(),
-		"saved-runs-clean.txt":   oldM.View(),
+		"setup-empty.txt":        frame(emptyM),
+		"setup-greyed.txt":       frame(greyed),
+		"setup-ready.txt":        frame(ready),
+		"run-progress.txt":       frame(running),
+		"run-results.txt":        frame(measured),
+		"saved-runs.txt":         frame(saved),
+		"model-editing.txt":      frame(editing),
+		"picker-model.txt":       frame(page(ready, pageModel)),
+		"picker-engine.txt":      frame(page(ready, pageEngine)),
+		"picker-chip.txt":        frame(chipShut),
+		"picker-engine-none.txt": frame(engineGreyed),
+		"picker-batch.txt":       frame(page(ready, pageBatch)),
+		"saved-runs-clean.txt":   frame(oldM),
 		"detail-run.txt":         detail(facts(measured), pageRun),
 		"detail-setup.txt":       detail(facts(ready), pageSetup),
 	} {
@@ -180,25 +210,26 @@ func TestScreensPlain(t *testing.T) {
 
 // One styled capture per screen, with true colour on a dark background: what a terminal shows.
 func TestScreensStyled(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.TrueColor)
-	lipgloss.SetHasDarkBackground(true)
-	defer lipgloss.SetColorProfile(termenv.Ascii)
+	freezeClock(t)
+	setProfile(colorprofile.TrueColor)
+	darkBackground = true
+	defer setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
-	golden(t, "styled/setup-ready.ansi", program(s, nil, nil, nil, 80, 24).View())
-	golden(t, "styled/run-progress.ansi", page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun).View())
+	golden(t, "styled/setup-ready.ansi", frame(program(s, nil, nil, nil, 80, 24)))
+	golden(t, "styled/run-progress.ansi", frame(page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun)))
 	golden(t, "styled/detail-run.ansi", detail(facts(program(s, &s.measured, nil, nil, 80, 24)), pageRun))
 }
 
 // Every frame fits 80x24: 24 lines, none wider than 80 cells.
 func TestFramesFit80x24(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	saved, _ := page(program(s, nil, nil, nil, 80, 24), pageSaved).Update(savedListMsg{savedSample(), nil})
 	for _, m := range []tea.Model{program(s, &s.planned, nil, nil, 80, 24), page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun),
 		page(program(s, nil, nil, nil, 80, 24), pageModel), page(program(s, nil, nil, nil, 80, 24), pageChip),
 		page(program(s, nil, nil, nil, 80, 24), pageEngine),
 		page(program(s, &s.measured, nil, nil, 80, 24), pageRun), saved} {
-		lines := strings.Split(m.View(), "\n")
+		lines := strings.Split(frame(m), "\n")
 		if len(lines) != 24 {
 			t.Fatalf("%d lines", len(lines))
 		}
@@ -213,21 +244,23 @@ func TestFramesFit80x24(t *testing.T) {
 // Setup is one line per choice, Run and Emit; Run is greyed, naming what is missing, until all three are set, and
 // Emit is greyed with "Run first" until the run on screen has a per-role table.
 func TestSetupHasThreeSectionsAndRun(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	acts := setupActions(facts(program(s, nil, nil, nil, 80, 24)))
-	want := []string{"page|Model       Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K\t›", "page|Chip        apple_m3_10c · this Mac · 97.2 GB/s\t›",
-		"page|Engine      llama.cpp\t›", "page|Recommended setup context, speed and engine flags for this model on your GPUs\t›", "page|Workload    decode\t›", "page|Batch       1\t›", "page|Measurement auto\t›", "head|", "analyze|[ Run ]", "|[ Emit ] Run first",
+	// groups apart by a blank line; Run and Emit each say what they do, or why not
+	want := []string{"page|Machine            checking this Mac…\t›", "head|", "page|Model              Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K\t›", "page|Chip               apple_m3_10c · this Mac · 97.2 GB/s\t›",
+		"page|Engine             llama.cpp\t›", "head|", "page|Recommended setup  context, speed and engine flags for this model on your GPUs\t›", "head|", "page|Workload           decode\t›", "page|Batch              1\t›", "page|Measurement        auto\t›", "head|",
+		"analyze|[ Run ]            Measures decode speed: Qwen3-8B, this Mac, llama.cpp", "|[ Emit ]           No run yet: Run first", "head|",
 		"page|Saved runs (0)\t›"}
 	if got := rows(acts); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
-	if acts[0].arg != "4" || acts[1].arg != "5" || acts[2].arg != "6" || acts[3].arg != fmt.Sprint(pageRecommend) || acts[4].arg != "7" || acts[5].arg != "8" || acts[6].arg != "9" {
-		t.Fatalf("each line opens its picker: %+v", acts[:3])
+	if acts[0].arg != fmt.Sprint(pageDoctor) || acts[2].arg != "4" || acts[3].arg != "5" || acts[4].arg != "6" || acts[6].arg != fmt.Sprint(pageRecommend) || acts[8].arg != "7" || acts[9].arg != "8" || acts[10].arg != "9" {
+		t.Fatalf("each line opens its picker: %+v", acts[:4])
 	}
 	none := New(seam.Client{}, jobs.Store{}, "", "", 512)
 	got := rows(setupActions(none.f))
-	if got[0] != "page|Model       not chosen\t›" || got[8] != "|[ Run ] needs a model, a chip, an engine" {
+	if got[2] != "page|Model              not chosen\t›" || runRow(got) != "|[ Run ]            Needs a model, a chip, an engine: pick it above" {
 		t.Fatalf("empty:\n%s", strings.Join(got, "\n"))
 	}
 	what := facts(program(s, nil, nil, nil, 80, 24))
@@ -239,24 +272,24 @@ func TestSetupHasThreeSectionsAndRun(t *testing.T) {
 
 // Enter opens a picker; a pick sets the value and comes back to Setup on that line; esc changes nothing.
 func TestPickersOpenPickAndGoBack(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
-	m := press(press(press(program(s, nil, nil, nil, 80, 24), "j"), "j"), "enter")
+	m := press(keys(program(s, nil, nil, nil, 80, 24).(Model), "j", "j", "j"), "enter")
 	if m.(Model).cursor != pageEngine {
 		t.Fatalf("enter on Engine opens its picker: %d", m.(Model).cursor)
 	}
 	m = press(press(m, "j"), "esc")
-	if got := m.(Model); got.cursor != pageSetup || got.row != 2 || got.f.Engine != "llama.cpp" {
+	if got := m.(Model); got.cursor != pageSetup || got.row != 4 || got.f.Engine != "llama.cpp" {
 		t.Fatalf("esc: page %d row %d engine %q", got.cursor, got.row, got.f.Engine)
 	}
 	m = press(press(press(m, "enter"), "j"), "enter")
-	if got := m.(Model); got.cursor != pageSetup || got.row != 2 || got.f.Engine != "tinygrad" {
+	if got := m.(Model); got.cursor != pageSetup || got.row != 4 || got.f.Engine != "tinygrad" {
 		t.Fatalf("pick: page %d row %d engine %q", got.cursor, got.row, got.f.Engine)
 	}
 }
 
 func TestKeys(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
 	m := program(s, &s.measured, nil, nil, 80, 24)
 	got := m.(Model)
@@ -279,7 +312,7 @@ func TestKeys(t *testing.T) {
 	if m.(Model).cursor != pageSetup {
 		t.Fatal("esc goes back to Setup")
 	}
-	if _, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")}); cmd == nil {
+	if _, cmd := m.Update(char('q')); cmd == nil {
 		t.Fatal("q quits")
 	}
 	if RunStem("/models/Qwen3-8B.gguf", "apple_m3_10c") != "qwen3-8b-apple_m3_10c" {
@@ -302,18 +335,39 @@ func TestRunScreenSaves(t *testing.T) {
 		t.Fatalf("no Save: %+v", runActions(f))
 	}
 	f.SavedID, f.SavedDir = f.Run.ID, "/home/u/runs/saved/"+f.Run.ID
-	if acts := runActions(f); hasLabel(acts, stAccent.Render("[ Save run ]")) || !strings.Contains(plain(acts[0].label), "Saved to /home/u/runs/saved/") {
+	if acts := runActions(f); hasLabel(acts, stAccent.Render("[ Save run ]")) || !strings.Contains(plain(acts[4].label), "Saved to /home/u/runs/saved/") {
 		t.Fatalf("after save: %+v", acts)
 	}
 	f.SavedID, f.ReadOnly = "", true
-	if acts := runActions(f); hasLabel(acts, stAccent.Render("[ Save run ]")) || acts[0].label != "Back to saved runs" {
+	if acts := runActions(f); hasLabel(acts, stAccent.Render("[ Save run ]")) || acts[2].do != "page" || acts[2].arg != fmt.Sprint(pageSaved) {
 		t.Fatalf("read-only: %+v", acts)
+	}
+}
+
+// What next after a finished run, in this order: the report, Run again with this setup, Saved runs, Compare. An
+// unsaved run's Compare saves it first; a saved one opens Saved runs' picker with it already chosen.
+func TestWhatNextOrder(t *testing.T) {
+	s := loadSample(t)
+	f := facts(program(s, &s.measured, nil, nil, 80, 24))
+	dos := func(acts []action) []string {
+		out := []string{}
+		for _, a := range acts[:4] {
+			out = append(out, a.do)
+		}
+		return out
+	}
+	if got := dos(runActions(f)); strings.Join(got, " ") != "report rerun page savecompare" {
+		t.Fatalf("unsaved: %v", got)
+	}
+	f.ReadOnly = true
+	if got := dos(runActions(f)); strings.Join(got, " ") != "report rerun page comparefrom" {
+		t.Fatalf("saved: %v", got)
 	}
 }
 
 // detail renders the open view the way the 80x24 screen does: 21 rows under the header, note and footer.
 func detail(f Facts, i int) string {
-	v := viewport.New(0, 0)
+	v := viewport.New()
 	return DetailView(f, i, 0, 80, 21, &v)
 }
 
@@ -360,8 +414,12 @@ func TestSavedRunsListAndDeleteAsksTwice(t *testing.T) {
 	if got := plain(savedActions(f)[0].label); !strings.HasPrefix(got, "Press d again to delete saved run qwen3-8b-apple_m3_10c-002") {
 		t.Fatalf("the confirm row is %q", got)
 	}
-	if !strings.Contains(ansi.Strip(footer(true, true, false, false)), "d delete run") {
-		t.Fatal("the footer does not name d on a saved run row")
+	m := Model{f: f, cursor: pageSaved, width: 80}
+	if got := ansi.Strip(m.footer()); !strings.Contains(got, "d delete") || !strings.Contains(got, "enter open") || !strings.Contains(got, "c compare") || !strings.HasSuffix(got, "q quit") {
+		t.Fatalf("the footer does not name d on a saved run row: %s", got)
+	}
+	if m.cursor = pageSetup; strings.Contains(ansi.Strip(m.footer()), "delete") {
+		t.Fatal("d is named only where it deletes")
 	}
 }
 
@@ -380,11 +438,11 @@ func TestSavedRunDeleteCallsTheSeamOnTheSecondD(t *testing.T) {
 	m, _ = m.Update(targetsMsg{&s.targets, nil})
 	m, _ = m.Update(savedListMsg{savedSample(), nil})
 	m = page(m, pageSaved)
-	first, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	first, cmd := m.Update(char('d'))
 	if cmd != nil || facts(first).Confirm != "qwen3-8b-apple_m3_10c-002" {
 		t.Fatalf("the first d asks: confirm %q", facts(first).Confirm)
 	}
-	second, cmd := first.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	second, cmd := first.Update(char('d'))
 	if cmd == nil || facts(second).Confirm != "" {
 		t.Fatal("the second d deletes")
 	}
@@ -423,7 +481,7 @@ func TestReplayEvidenceIsNotInvented(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"status":"modeled","provider":"vllm","limit_ms":1,"per":"per session","replay":{"title":"Replay","rows":[{"cells":["1"]}],"columns":["turn"],"total":["warm"],"evidence_words":"Replay timings: server metrics and client clocks.","not_captured":"vllm: turns not captured"}}`), &l); err != nil {
 		t.Fatal(err)
 	}
-	got := ansi.Strip(lossBody(l) + replayBody(l.Replay))
+	got := ansi.Strip(lossBody(l, wide) + replayBody(l.Replay, wide))
 	if strings.Contains(got, "kernels from the capture") || !strings.Contains(got, "server metrics and client clocks") || !strings.Contains(got, "vllm: turns not captured") {
 		t.Fatal(got)
 	}
@@ -434,7 +492,7 @@ func TestReplayBenchmarkOnlyRowsStayVisible(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"title":"Replay","rows":[{"cells":["1"]}],"columns":["turn"],"total":["warm"],"wheres":[{"status":"benchmark_only","title":"Turn 2: llama-bench capture","words":"Benchmark only: not validated as the server's prompt path.","columns":["row","ms now"],"rows":[{"name":"matrix","cells":["7.00"]}],"sum_cells":["total","8.00"],"server_line":"Server prompt_ms 100.0 ms; benchmark GPU first-to-last kernel 8.0 ms."}]}`), &r); err != nil {
 		t.Fatal(err)
 	}
-	got := ansi.Strip(replayBody(&r))
+	got := ansi.Strip(replayBody(&r, wide))
 	for _, want := range []string{"Benchmark only", "matrix", "7.00", "Server prompt_ms 100.0"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %s", want, got)

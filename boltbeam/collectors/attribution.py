@@ -41,7 +41,7 @@ from boltbeam.collectors.pairing import BLOCKS  # noqa: F401  (the decode reader
 from boltbeam.role_key import role_key, shape_nk
 from boltbeam.roofline import moe
 from boltbeam.target import vendors
-from boltbeam.artifacts.run_io import load_manifest
+from boltbeam.artifacts.run_io import load_manifest, optional
 
 ROLE_SOURCE = "attributed_by_bytes_and_count"
 
@@ -103,8 +103,10 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
     for part in item["parts"]:
       share = part["weight_bytes"] * part["count"] / sum(x["weight_bytes"] * x["count"] for x in item["parts"])
       fused = p["fused"] * part["count"] / item["count"]  # a launch packing several rows (pairing._packed): each part's calls per launch
-      row = pairs.setdefault((key, part["role_key"]), {"key": key, "calls": 0, "wall_us": 0.0, "role": part["role"], "quant": part["quant"],
-                                                  "fused": int(fused) if fused == int(fused) else fused, "count": part["count"], "weight_bytes": part["weight_bytes"]})
+      # its shape [n, k] (role_key.shape_nk): a role the limit holds at two shapes is two rows, each timed against its own floor
+      row = pairs.setdefault((key, part["role_key"]), {"key": key, "calls": 0, "wall_us": 0.0, "role": part["role"], "quant": part["quant"], **(
+                                                  {"shape": [part["n"], part["k"]]} if "n" in part else {}), "fused": int(fused) if fused == int(fused) else fused,
+                                                  "count": part["count"], "weight_bytes": part["weight_bytes"]})
       row["calls"] += len(p["launches"])
       row["wall_us"] += us * share
     taken[key] = taken.get(key, 0.0) + us
@@ -118,8 +120,8 @@ def attribute(kernel_groups:list[dict[str, Any]], roles:list[dict[str, Any]], co
     if left_calls > 0:
       rows_out.append({"key": key, "calls": left_calls, "wall_us": max(left_us, 0.0), "role": None, "quant": None,
                        "calls_per_token": left_calls / tokens, "us_per_call": max(left_us, 0.0) / left_calls})
-  pair_rows = [{"role": r["role"], "quant": r["quant"], "key": r["key"], "count": r.pop("count"), "fused": r["fused"],
-                "gbs": r["gbs"]} for r in rows_out if r["role"]]
+  pair_rows = [{"role": r["role"], "quant": r["quant"], **({"shape": r["shape"]} if "shape" in r else {}), "key": r["key"],
+                "count": r.pop("count"), "fused": r["fused"], "gbs": r["gbs"]} for r in rows_out if r["role"]]
   unpaired = [{"role": u["item"]["role"], "quant": u["item"]["quant"], "count": u["item"]["count"],
                "reason": u["reason"] + llama_mmq.untied(u["item"]["parts"][0])} for u in got["unplaced"]]
   return {"pairs": pair_rows, "groups": rows_out, "unpaired": unpaired, "ambiguous": got.get("ambiguous"), "rule": got["words"],
@@ -294,7 +296,11 @@ class CaptureRefused(RuntimeError):
 
 class NotSplitByRole(CaptureRefused):
   """This run's layout or engine is not split by role yet. Nothing about the run is wrong: its measured step and its
-  layout's limit stand, the pipeline goes on to the report, and the report says why there are no roles."""
+  layout's limit stand, the pipeline goes on to the report, and the report says why there are no roles. key names the
+  reason (data/plain_words.json not_split), so a plain screen says it without reading the message."""
+  def __init__(self, message:str, *, key:str = "not_split"):
+    super().__init__(message)
+    self.key = key
 
 
 class UnnamedCapture(CaptureRefused):
@@ -356,9 +362,9 @@ def provider_trace(run, window:list[dict[str, Any]], *, provider:str, method:str
   (pathlib.Path(run) / out).unlink(missing_ok=True)  # a refused capture leaves no earlier result standing
   import json
   from boltbeam.vocab import SCHEMA_TIMING_TRACE
-  from boltbeam.workflow import limit, run_folder
+  from boltbeam.roofline import limit
   manifest = load_manifest(run)
-  profile = run_folder.optional(run, "model_profile.json")
+  profile = optional(run, "model_profile.json")
   # a decode capture is paired with the decode ceiling's bytes whatever the run's workload (a replay, a session):
   # any other workload reads the prefill block, whose role bytes are not one decode token's
   ceil = limit.measured_vs_ceiling({**manifest, "workload": "decode"}, profile, pathlib.Path(run))

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"github.com/charmbracelet/x/ansi"
 	"path/filepath"
@@ -24,6 +25,7 @@ type Facts struct {
 	Files       []string
 	Reading     bool
 	ModelErr    string
+	ModelNeeds  *seam.ForkNeed // the fork the model needs, when only a fork reads its format (never picked for the user)
 	Profile     *seam.Profile
 	Targets     *seam.Targets
 	Target      int
@@ -62,13 +64,14 @@ type Facts struct {
 	CTail       []string
 	Spin        string
 	Confirm     string              // the run id waiting for a second enter before it is deleted
-	CompareFrom string              // the saved run picked as "before"; Saved runs then picks the "after"
+	ComparePick bool                // Saved runs is picking the first of two runs to compare
+	CompareFrom string              // the first run picked; Saved runs then picks the one to set beside it
 	Compared    *Compared           // the last comparison of two saved runs, or why it was refused
 	Batch       int                 // streams decoded at once; 0 means 1
 	BatchTyped  string              // digits typed on the batch picker
 	Measurement string              // how roles are timed, as picked: in_model or generic; "" is Python's default here
 	Settings    map[string]string   // engine settings asked for, by name (capture_settings.ASKED); cleared with a new engine
-	SettingEdit string              // the setting whose value is being typed (into Input); "" when none
+	Form        string              // the open form as drawn (forms.go): it takes the place of the page's rows
 	Repeats     int                 // times Run measures the setup; only the n Python offers counts (repeats)
 	MJob        *jobs.Job           // Measure MTP's job for the model and chip (mtpID)
 	Workload    string              // what the Run measures: decode or prefill; "" is decode
@@ -83,12 +86,27 @@ type Facts struct {
 	stageAt     time.Time           // when this screen saw the current step start
 	stageDone   int                 // the step count stageAt was taken at
 	logRoom     int                 // screen lines the log may take under the bar; 0: up to 20
+	cols        int                 // the width a row is drawn in (DetailActions); 0 outside a frame: an 80-column screen
 
 	// Upgrade engines: each engine's build against upstream's newest release (screen engines --latest), why that look
 	// failed (every standing unknown), and the engine whose newer release the Engine picker's Upgrade is installing.
 	Latest    []seam.EngineStanding
 	LatestErr string
 	Upgrading string
+
+	// Check this machine (boltbeam doctor): its rows, why it could not run, and whether it is running now.
+	Doctor     *seam.Doctor
+	DoctorErr  string
+	DoctorBusy bool
+
+	Fetch FetchForm // Fetch runs (fetch.go)
+	Speed SpeedUp   // Speed up (speedup.go)
+	// ForkAt is the fork ←→ rests on in each engine family on the Engine picker (families.go), by family
+	ForkAt map[string]string
+
+	// The Results screen (render_plain.go): the run's plain block (screen plain), and which of layer 2's sections are open.
+	Plain *seam.Plain
+	Open  Sections
 }
 
 // clock is the time the screen reads; a variable so a test can fix it.
@@ -162,6 +180,8 @@ const (
 	pageRepeats
 	pageCompare
 	pageRecommend
+	pageDoctor
+	pageFetch
 )
 
 func none(Facts) string { return "" }
@@ -181,6 +201,8 @@ var steps = []step{
 	{"Repeats", "", none, func(Facts) (string, string) { return "", "" }, repeatsBody, repeatsActions},
 	{"Compare", "", none, compareLine, compareRunsBody, compareActions},
 	{"Recommended setup", recommendHint, none, func(Facts) (string, string) { return "", "" }, recommendBody, recommendActions},
+	{"This machine", "", none, doctorLine, doctorBody, doctorActions},
+	{"Fetch runs", "", none, fetchLine, fetchBody, fetchActions},
 }
 
 // picker reports whether a page is one of the three pickers Setup opens.
@@ -241,8 +263,31 @@ func chipPickerBody(f Facts, width int) string {
 	return b.String()
 }
 
-// summary is one Setup line: the name, the chosen value, and a mark that enter opens its picker.
-func summary(name, value string) string { return fmt.Sprintf("%-11s %s\t›", name, value) }
+// runWhat is what a Run of each workload measures, in a few words.
+var runWhat = map[string]string{"decode": "decode speed", "prefill": "prompt-reading speed",
+	"session": "speed as the context fills", "replay": "a replayed session"}
+
+// runHelp is what pressing Run does with the setup on screen: what it measures, of which model, where, with which
+// engine. On a chip that is not this machine's, Run plans only. No time is said: nothing before a run gives one.
+func runHelp(f Facts) string {
+	model := strings.TrimSuffix(filepath.Base(f.Path), filepath.Ext(f.Path))
+	engine := f.Engine
+	if p := f.engineRow(); p != nil {
+		engine = p.Provider
+	}
+	if !f.thisChip() {
+		return fmt.Sprintf("Plans a run of %s on %s with %s; it measures only on %s's own chip", model, f.target().ID, engine, here())
+	}
+	what := runWhat[f.workload()]
+	if f.batch() > 1 {
+		what += fmt.Sprintf(" at batch %d", f.batch())
+	}
+	text := fmt.Sprintf("Measures %s: %s, %s, %s", what, model, here(), engine)
+	if n := f.repeats(); n > 1 {
+		text += fmt.Sprintf(", %d times", n)
+	}
+	return text
+}
 
 // notChosen is the value of a Setup line before anything is chosen.
 var notChosen = stMuted.Render("not chosen")
@@ -284,42 +329,78 @@ func engineValue(f Facts) string {
 		return strings.TrimSpace(f.Spin + " looking for engines…")
 	}
 	if p := f.engineRow(); p != nil && p.Available {
-		return p.Provider + layoutSuffix(f)
+		return familyValue(f, p.Provider) + layoutSuffix(f)
 	}
 	return notChosen
 }
 
+// setupLine is one Setup line before it is drawn: its name, its value and the picker enter opens.
+type setupLine struct {
+	name, value string
+	page        int
+}
+
+// setupActions are Setup's lines in groups, a blank line between: the machine; what is measured (model, chip,
+// engine); how the engine is set up; what the run times; Run and Emit, each saying what it does; the runs. The name
+// column is as wide as the longest name.
 func setupActions(f Facts) []action {
-	out := []action{
-		{summary("Model", modelValue(f)), "page", fmt.Sprint(pageModel)},
-		{summary("Chip", chipValue(f)), "page", fmt.Sprint(pageChip)},
-		{summary("Engine", engineValue(f)), "page", fmt.Sprint(pageEngine)},
-	}
-	if s := engineNotice(f); s != "" {
-		out = append(out, note(fmt.Sprintf("%-11s %s", "", s)))
+	groups := [][]setupLine{
+		{{"Machine", doctorValue(f), pageDoctor}},
+		{{"Model", modelValue(f), pageModel}, {"Chip", chipValue(f), pageChip}, {"Engine", engineValue(f), pageEngine}},
+		// the recommendation proposes the context, speed and engine flags; Settings, under it, changes them
+		{{"Recommended setup", recommendValue(f), pageRecommend}},
+		{{"Workload", workloadValue(f), pageWorkload}, {"Batch", fmt.Sprint(f.batch()), pageBatch},
+			{"Measurement", measurementValue(f), pageMeasurement}},
 	}
 	if len(f.settingsOffered()) > 0 { // what the run asks the engine for, when the engine takes anything
-		out = append(out, action{summary("Settings", settingsValue(f)), "page", fmt.Sprint(pageSettings)})
+		groups[2] = append(groups[2], setupLine{"Settings", settingsValue(f), pageSettings})
 	}
-	out = append(out, action{summary("Recommended setup", recommendValue(f)), "page", fmt.Sprint(pageRecommend)},
-		action{summary("Workload", workloadValue(f)), "page", fmt.Sprint(pageWorkload)},
-		action{summary("Batch", fmt.Sprint(f.batch())), "page", fmt.Sprint(pageBatch)},
-		action{summary("Measurement", measurementValue(f)), "page", fmt.Sprint(pageMeasurement)})
 	if f.repeatRuns() > 1 {
-		out = append(out, action{summary("Repeats", repeatsValue(f)), "page", fmt.Sprint(pageRepeats)})
+		groups[3] = append(groups[3], setupLine{"Repeats", repeatsValue(f), pageRepeats})
 	}
-	out = append(append(out, measurementFallback(f)...), head(""))
+	w := 0
+	for _, g := range groups {
+		for _, l := range g {
+			w = max(w, len(l.name))
+		}
+	}
+	under := func(text string) action { return note(strings.Repeat(" ", w+2) + text) } // in the value column
+	out := []action{}
+	for i, g := range groups {
+		if i > 0 {
+			out = append(out, head(""))
+		}
+		for _, l := range g {
+			out = append(out, action{fmt.Sprintf("%-*s  %s\t›", w, l.name, l.value), "page", fmt.Sprint(l.page)})
+			switch {
+			case l.page == pageModel && f.ModelErr != "" && !f.Reading:
+				for _, l := range strings.Split(ansi.Wordwrap(glyphFail+" "+f.ModelErr, cmp.Or(max(f.cols-w-2, 0), 1<<10), " "), "\n") {
+					out = append(out, action{strings.Repeat(" ", w+2) + stBad.Render(l), "note", ""})
+				}
+			case l.page == pageEngine && engineNotice(f) != "":
+				out = append(out, under(engineNotice(f)))
+			}
+		}
+		if i == 3 {
+			out = append(out, measurementFallback(f)...)
+		}
+	}
+	out = append(out, head(""))
 	switch m := f.missing(); {
 	case f.alive():
-		out = append(out, action{"[ Running… ] show the progress", "page", fmt.Sprint(pageRun)})
+		out = append(out, action{button(f, w, "[ Running… ]", "Shows the run's progress", true), "page", fmt.Sprint(pageRun)})
+	case needsFork(f) != "": // only a fork reads this model: say which, never switch to it
+		out = append(out, action{button(f, w, "[ Run ]", needsFork(f), false), "", ""})
+	case f.ModelErr != "" && f.Path != "":
+		out = append(out, action{button(f, w, "[ Run ]", "Pick a model BoltBeam can read: Model says why", false), "", ""})
 	case len(m) > 0:
-		out = append(out, action{stMuted.Render("[ Run ] needs " + strings.Join(m, ", ")), "", ""})
+		out = append(out, action{button(f, w, "[ Run ]", "Needs "+strings.Join(m, ", ")+": pick it above", false), "", ""})
 	case f.measurementBlocked() != "":
-		out = append(out, action{stMuted.Render("[ Run ] " + f.measurementBlocked()), "", ""})
+		out = append(out, action{button(f, w, "[ Run ]", capFirst(f.measurementBlocked()), false), "", ""})
 	default:
-		out = append(out, action{stAccent.Render("[ Run ]"), "analyze", ""})
+		out = append(out, action{button(f, w, "[ Run ]", runHelp(f), true), "analyze", ""})
 	}
-	out = append(out, emitAction(f))
+	out = append(out, emitAction(f, w), head(""))
 	if f.Run != nil && f.outputDone() && !f.alive() && !f.ReadOnly {
 		state := "not saved"
 		if _, ok := f.savedAs(f.Run.ID); ok {
@@ -380,6 +461,9 @@ func modelChoices(f Facts) []action {
 			mark = stAccent.Render("● ")
 		}
 		out = append(out, action{mark + modelLabel(path), "file", path})
+		if path == f.Path && f.ModelErr != "" && !f.Reading { // why the chosen file cannot be measured, under it
+			out = append(out, action{"    " + stBad.Render(glyphFail+" "+f.ModelErr), "note", ""})
+		}
 	}
 	if f.Path != "" && !contains(f.Files, f.Path) {
 		out = append(out, action{stAccent.Render("● ") + modelLabel(f.Path), "file", f.Path})
@@ -424,12 +508,20 @@ func engineBody(f Facts, width int) string {
 		return stMuted.Render("Looking for engines on " + here() + "… (the usual folders, no env vars needed)")
 	}
 	var b strings.Builder
-	b.WriteString("The engine is the runtime that decodes the model. Only engines found on " + here() + " can be picked. " +
-		"They are looked for at start; an env var (BOLTBEAM_LLAMA_BENCH, BOLTBEAM_TINYGRAD_ROOT, …) overrides what was found.\n\n")
+	families := f.Providers.Families != nil
+	if families {
+		b.WriteString("The engine is the runtime that runs the model. Each row is a family: its root (upstream) and its " +
+			"forks. ↑↓ moves between families, ←→ between a family's forks; enter picks the one in brackets.\n\n" +
+			"Only a fork found on " + here() + " that BoltBeam can run is picked. Engines are looked for at start; " +
+			"an env var (BOLTBEAM_LLAMA_BENCH, …) overrides what was found.\n\n")
+	} else {
+		b.WriteString("The engine is the runtime that decodes the model. Only engines found on " + here() + " can be picked. " +
+			"They are looked for at start; an env var (BOLTBEAM_LLAMA_BENCH, BOLTBEAM_TINYGRAD_ROOT, …) overrides what was found.\n\n")
+	}
 	b.WriteString(layoutLegend(f))
 	for _, p := range f.Providers.Providers {
 		p = f.modelProvider(p)
-		if !p.Available {
+		if !p.Available || (families && p.Provider != f.Engine) { // by family: the picked engine's roles only
 			continue // the picker lists these, with why, under one row
 		}
 		state := "can measure"
@@ -449,6 +541,9 @@ func engineActions(f Facts) []action {
 	}
 	if f.Providers == nil {
 		return nil
+	}
+	if f.Providers.Families != nil { // one row per family, ←→ between its forks
+		return familyActions(f)
 	}
 	out := []action{}
 	for _, p := range f.Providers.Providers {
@@ -523,10 +618,14 @@ func layoutBody(l seam.LayoutLimit) string {
 	return b.String()
 }
 
-// Compared is one comparison on screen: the two ids, the seam's lines, or the refusal.
+// Compared is one comparison on screen: the two ids, the two runs head to head, their parts as the seam words them
+// (or why the parts are not compared), or the refusal.
 type Compared struct {
 	Before, After string
+	Head          *seam.HeadToHead
 	Lines         []string
+	Plain         *seam.PlainCompare // the plain answer about the parts, when the seam words one
+	PartsNote     *string
 	Err           string
 }
 
@@ -621,6 +720,17 @@ func aboutChip(f Facts) string {
 		return t.ID
 	}
 	return ""
+}
+
+// modelErrWords is why a model could not be read, in one plain line: a weight format BoltBeam has no layout for is
+// named from the seam's data (inspect's formats); any other refusal is its first line.
+func modelErrWords(err error) string {
+	var e *seam.Error
+	if errors.As(err, &e) && len(e.Formats) > 0 {
+		return "BoltBeam can't read this model's weight format yet (" + strings.Join(e.Formats, ", ") + ")"
+	}
+	first, _, _ := strings.Cut(err.Error(), "\n")
+	return "BoltBeam could not read this model: " + first
 }
 
 func modelLine(f Facts) (string, string) {
@@ -865,12 +975,17 @@ var compareDoing = map[string]string{"search": "searching kernels", "ab": "timin
 
 // --- Workload -------------------------------------------------------------------------------------------------
 
-// workloads are what a Run can measure, in Setup's order; a workload not built yet is shown muted and not picked.
+// workloads are what a Run can measure, in Setup's order, each with what it measures and when to pick it; a workload
+// not built yet is shown muted and not picked.
 var workloads = []struct{ id, about, missing string }{
-	{"decode", "one token at a time, after the prompt", ""},
-	{"prefill", "the prompt read at once, at lengths up to the model's cap", ""},
-	{"session", "a turn appended at depths up to the context that fits", ""},
-	{"replay", "a recorded session replayed on your server's flags", ""},
+	{"decode", "How fast the model writes its answer, one token at a time after the prompt. The usual first run, " +
+		"and the one to pick for chat.", ""},
+	{"prefill", "How fast the model reads a prompt, at lengths from 512 tokens up to the longest it takes. Pick it " +
+		"when long prompts or documents matter.", ""},
+	{"session", "How speed holds up as a conversation grows: a 512-token turn added to 1K tokens already read, then " +
+		"4 times more, up to what fits in memory. Pick it for long chats.", ""},
+	{"replay", "A conversation you recorded, played back turn by turn on your own llama-server, each turn against the " +
+		"best it could do. Pick it to check your real setup.", ""},
 }
 
 // replayShape is the picked shape, else the default the shapes list names.
@@ -903,24 +1018,29 @@ func (f Facts) workload() string {
 }
 
 func workloadBody(Facts, int) string {
-	return "Workload is what the Run measures. Decode times one token at a time. Prefill times the prompt read at once, " +
-		"from 512 tokens up to the model's own cap. Session times a 512-token turn appended to a cache already holding " +
-		"1K, then 4 times more, up to the context that fits before compaction. Replay plays a recorded session, as " +
-		"token counts, through your own llama-server command and shows each turn against its roofline."
+	return "Pick what the Run measures. Each type says what it times below."
 }
 
+// workloadActions are the types, each its own block: the name, then what it measures and when to pick it, wrapped
+// to an 80-column screen, a blank line between types.
 func workloadActions(f Facts) []action {
 	out := []action{}
-	for _, w := range workloads {
+	for i, w := range workloads {
+		if i > 0 {
+			out = append(out, head(""))
+		}
 		if w.missing != "" {
-			out = append(out, note(stMuted.Render(fmt.Sprintf("  %-8s %s", w.id, w.missing))))
+			out = append(out, note(stMuted.Render(fmt.Sprintf("  %s · %s", w.id, w.missing))))
 			continue
 		}
 		chosen := "  "
 		if w.id == f.workload() {
 			chosen = stAccent.Render("● ")
 		}
-		out = append(out, action{fmt.Sprintf("%s%-8s %s", chosen, w.id, stMuted.Render(w.about)), "workload", w.id})
+		out = append(out, action{chosen + w.id, "workload", w.id})
+		for _, l := range strings.Split(ansi.Wordwrap(w.about, 66, " "), "\n") {
+			out = append(out, note("    "+l))
+		}
 	}
 	if f.workload() != "replay" || f.Replay == nil {
 		return out
@@ -1061,9 +1181,7 @@ func measurementFallback(f Facts) []action {
 }
 
 func measurementBody(f Facts, width int) string {
-	return "Measurement is how BoltBeam times each role. In-model watches the real token and splits it exactly. " +
-		"Generic times each kernel alone with BoltBeam's kernel timer: it compares kernels across engines and chips, " +
-		"and its split of the token is an estimate."
+	return "Measurement is how BoltBeam times each role. Each way says below what it times and where it runs."
 }
 
 // measurementActions are the two rows, the one in use marked; a row that cannot run here is muted with why.
@@ -1075,7 +1193,10 @@ func measurementActions(f Facts) []action {
 	}
 	in := f.measurementOption()
 	out := []action{}
-	for _, o := range opts.Options {
+	for i, o := range opts.Options {
+		if i > 0 {
+			out = append(out, head("")) // a blank line between the ways
+		}
 		chosen := "  "
 		if in != nil && in.ID == o.ID {
 			chosen = stAccent.Render("● ")

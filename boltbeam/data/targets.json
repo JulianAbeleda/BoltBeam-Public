@@ -1,9 +1,9 @@
 {
   "schema": "boltbeam.target_registry.v1",
-  "note": "Target capability data (audit A6). Only backend_status=complete targets may promote a route. NVIDIA and Apple targets remain descriptor_only until their evaluators exist.",
+  "note": "Target capability data (audit A6). name: the chip's plain name, as its maker or nvidia-smi spells it, for reports. Only backend_status=complete targets may promote a route. NVIDIA and Apple targets remain descriptor_only until their evaluators exist.",
   "targets": [
     {
-      "target_id": "amd_gfx1100", "backend": "AMD", "wave_size": 32, "subgroup_size": 32,
+      "target_id": "amd_gfx1100", "name": "AMD Radeon RX 7900 XTX", "backend": "AMD", "wave_size": 32, "subgroup_size": 32,
       "lds_bytes_per_cu": 65536, "vram_bytes": 25769803776, "vector_load_bits": 128,
       "compute_units": 96, "memory_bandwidth_gbs": 960.0,
       "peak_tflops": {"fp32": 61.4, "fp16": 122.8},
@@ -60,7 +60,7 @@
       }
     },
     {
-      "target_id": "nvidia_sm89", "backend": "CUDA", "wave_size": 32, "subgroup_size": 32,
+      "target_id": "nvidia_sm89", "name": "NVIDIA Ada GPU (sm_89)", "backend": "CUDA", "wave_size": 32, "subgroup_size": 32,
       "lds_bytes_per_cu": 102400, "vram_bytes": null, "vector_load_bits": 128,
       "compute_units": null, "memory_bandwidth_gbs": null, "peak_tflops": {},
       "dot_primitives": ["mma_m16n8k16", "dp4a"],
@@ -74,7 +74,7 @@
       }
     },
     {
-      "target_id": "nvidia_sm120", "backend": "CUDA", "wave_size": 32, "subgroup_size": 32,
+      "target_id": "nvidia_sm120", "name": "NVIDIA GeForce RTX 5090", "backend": "CUDA", "wave_size": 32, "subgroup_size": 32,
       "lds_bytes_per_cu": 102400, "vram_bytes": 33662435328, "vector_load_bits": 128,
       "compute_units": 170, "memory_bandwidth_gbs": 1707.4,
       "peak_tflops": {"fp32": 104.8, "fp16": 104.8, "int8": 180.0},
@@ -424,7 +424,7 @@
       }
     },
     {
-      "target_id": "apple_metal", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
+      "target_id": "apple_metal", "name": "Apple GPU (Metal)", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
       "lds_bytes_per_cu": null, "vram_bytes": null, "vector_load_bits": 128,
       "compute_units": null, "memory_bandwidth_gbs": null, "peak_tflops": {},
       "dot_primitives": ["simdgroup_matrix"],
@@ -448,7 +448,7 @@
       }
     },
     {
-      "target_id": "apple_m3_10c", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
+      "target_id": "apple_m3_10c", "name": "Apple M3 (10-core GPU)", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
       "lds_bytes_per_cu": null, "vram_bytes": null, "vector_load_bits": 128,
       "compute_units": null, "memory_bandwidth_gbs": 97.2, "peak_tflops": {"fp16": 3.121},
       "dot_primitives": ["simdgroup_matrix"],
@@ -502,7 +502,7 @@
       }
     },
     {
-      "target_id": "apple_m4_10c", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
+      "target_id": "apple_m4_10c", "name": "Apple M4 (10-core GPU)", "backend": "Metal", "wave_size": 32, "subgroup_size": 32,
       "lds_bytes_per_cu": null, "vram_bytes": null, "vector_load_bits": 128,
       "compute_units": null, "memory_bandwidth_gbs": 112.1, "peak_tflops": {"fp16": 3.781},
       "dot_primitives": ["simdgroup_matrix"],
@@ -547,7 +547,7 @@
       }
     },
     {
-      "target_id": "nvidia_rtx4090",
+      "target_id": "nvidia_rtx4090", "name": "NVIDIA GeForce RTX 4090",
       "backend": "CUDA",
       "backend_status": "descriptor_only",
       "capabilities": {
@@ -723,7 +723,7 @@
       "wave_size": 32
     },
     {
-      "target_id": "nvidia_l40s",
+      "target_id": "nvidia_l40s", "name": "NVIDIA L40S",
       "backend": "CUDA",
       "backend_status": "descriptor_only",
       "capabilities": {
@@ -899,7 +899,7 @@
       "wave_size": 32
     },
     {
-      "target_id": "nvidia_rtx3090",
+      "target_id": "nvidia_rtx3090", "name": "NVIDIA GeForce RTX 3090",
       "backend": "CUDA",
       "backend_status": "descriptor_only",
       "capabilities": {
@@ -1068,7 +1068,7 @@
       "wave_size": 32
     },
     {
-      "target_id": "nvidia_h100_sxm",
+      "target_id": "nvidia_h100_sxm", "name": "NVIDIA H100 80GB HBM3",
       "backend": "CUDA",
       "backend_status": "descriptor_only",
       "capabilities": {
@@ -1522,7 +1522,7 @@
       "wave_size": 32
     },
     {
-      "target_id": "nvidia_h200_sxm",
+      "target_id": "nvidia_h200_sxm", "name": "NVIDIA H200",
       "backend": "CUDA",
       "backend_status": "descriptor_only",
       "capabilities": {
@@ -2043,7 +2043,7 @@
       "wave_size": 32
     },
     {
-      "target_id": "nvidia_h200_nvl",
+      "target_id": "nvidia_h200_nvl", "name": "NVIDIA H200 NVL",
       "backend": "CUDA",
       "backend_status": "descriptor_only",
       "capabilities": {

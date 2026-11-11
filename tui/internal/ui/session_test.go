@@ -4,15 +4,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
+	"github.com/charmbracelet/colorprofile"
 
 	"github.com/JulianAbeleda/BoltBeam/tui/internal/seam"
 )
 
 // The results page prints the session table's own cells and its lines, and nothing when the run has none.
 func TestSessionBodyPrintsTheCells(t *testing.T) {
-	lipgloss.SetColorProfile(termenv.Ascii)
+	setProfile(colorprofile.NoTTY)
 	if sessionBody(nil) != "" || sessionBody(&seam.Session{}) != "" {
 		t.Fatal("no session table, no section")
 	}

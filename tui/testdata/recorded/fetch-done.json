@@ -1,0 +1,61 @@
+{
+  "schema": "boltbeam.fetched.v1",
+  "kind": "fetch",
+  "dest": "root@203.0.113.7",
+  "remote_root": "/root/boltbeam/runs",
+  "tried": [
+    "/root/boltbeam/runs"
+  ],
+  "saved": "/home/u/runs/saved",
+  "runs": [
+    {
+      "id": "h100-in-model",
+      "where": "h100-in-model",
+      "model_id": "Qwen3-8B",
+      "target_id": "nvidia_sm90",
+      "gpu": "NVIDIA H100 80GB HBM3",
+      "date": "2026-11-09T09:58:12Z",
+      "bytes": 232,
+      "left_behind_bytes": 4107,
+      "state": "new"
+    },
+    {
+      "id": "h100-generic",
+      "where": ".work/h100-generic",
+      "model_id": "Qwen3-8B",
+      "target_id": "nvidia_sm90",
+      "gpu": "NVIDIA H100 80GB HBM3",
+      "date": "2026-11-09T09:58:12Z",
+      "bytes": 232,
+      "left_behind_bytes": 4107,
+      "state": "conflict"
+    }
+  ],
+  "fetched": [
+    {
+      "id": "h100-in-model",
+      "status": "fetched",
+      "dir": "/home/u/runs/saved/h100-in-model",
+      "transport": "rsync",
+      "files": 5,
+      "bytes": 232,
+      "left_behind": 2,
+      "chip": {
+        "target_id": "nvidia_sm90",
+        "used": "registry"
+      },
+      "results": true,
+      "warning": null
+    },
+    {
+      "id": "h100-generic",
+      "status": "refused",
+      "why": "/home/u/runs/saved/h100-generic holds a different run with the id h100-generic; not overwritten: fetch with --into another runs folder, or move the local one"
+    }
+  ],
+  "lines": [
+    "fetched h100-in-model: 5 files, 232 B, checked by sha256 (rsync) -> /home/u/runs/saved/h100-in-model",
+    "refused h100-generic: /home/u/runs/saved/h100-generic holds a different run with the id h100-generic; not overwritten: fetch with --into another runs folder, or move the local one",
+    "results are home: pause the remote machine now if nothing else needs it"
+  ]
+}

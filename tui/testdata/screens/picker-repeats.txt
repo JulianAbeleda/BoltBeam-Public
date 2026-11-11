@@ -21,4 +21,4 @@
 │     4 runs, then their repeat band                                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
- ↑↓ move · pgup/pgdn page · enter pick · esc setup · q quit
+ ↑↓ move · enter pick · esc setup · ? all keys · q quit

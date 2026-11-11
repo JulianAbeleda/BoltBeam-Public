@@ -437,7 +437,7 @@ step_boltbeam() {
 # log under $WORK/logs. llama.cpp is needed by steps 9 and 10: its failure fails the step. A failed optional engine
 # is noted and the run goes on.
 # The TUI (boltbeam tui) builds from the checkout's tui/ with the Go its go.mod names; Ubuntu's golang-go is older
-# (1.22 on 24.04 against go 1.26.5). The official release goes under /usr/local/go, as root, when go is absent or older.
+# (1.22 on 24.04 against go 1.26.7). The official release goes under /usr/local/go, as root, when go is absent or older.
 install_go() {
   local want have arch
   want="$( ( ((DRY)) && echo "<tui/go.mod>" ) || sed -n 's/^go \([0-9.]*\)$/\1/p' "$BOLTBEAM_DIR/tui/go.mod" 2>/dev/null)"
