@@ -14,11 +14,11 @@
 │   the compiler's matrix backends                                             │
 │   not set                                                                    │
 │                                                                              │
-│   LLAMA_SERVER_CKPT_MIN_HEAD                                                 │
+│   GGML_CUDA_WS_SLOTS                                                         │
 │   environment variable for the engine; the run passes it as set here         │
-│   > 256                                                                      │
+│   > 17                                                                       │
 │                                                                              │
-│   LLAMA_WS_PIN_GIB                                                           │
+│   LLAMA_SERVER_CKPT_MIN_HEAD                                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-Copied 3 values into Engine settings; the next run passes them.
+Copied 4 values into Engine settings; the next run passes them.
  esc cancel · enter next · ctrl+c quit

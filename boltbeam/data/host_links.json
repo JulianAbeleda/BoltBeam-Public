@@ -1,0 +1,160 @@
+{
+ "schema": "boltbeam.host_links.v1",
+ "about": "The links between host memory and a GPU, one row per kind, in the order they are tried (target/host_links.py). detect: the detector names, tried in order; the first that answers decides the kind. rate: how the link's own rate is read when no copy was measured (the measured copy rate, target/host.h2d, always comes first): line_code (GT/s x lanes x the line code's payload bits per code bits / 8, a row [up to GT/s, payload, code]:  a wire rate: an upper bound), reported (the tool's stated link speed), memory_bandwidth (no link: the GPU reads system memory at the memory's own bandwidth), none (not known). semantics: how an engine BoltBeam sets up uses the link (copy: experts copied to GPU memory before use; direct_read: read in place over the link during the GEMM; none: no copy, plain memory reads); can: what the hardware allows. verified_by: the detectors whose answer has been checked on real hardware (verified_on says where); a record is verified only when one of them decided it and every fact in requires is known and holds (requires_why says what is missing otherwise), else the output says \"not verified on this hardware\". The fallback row is the record when no detector answers.",
+ "links": [
+  {
+   "kind": "unified",
+   "detect": [
+    "vendor_shares_memory",
+    "runtime_integrated"
+   ],
+   "rate": "memory_bandwidth",
+   "semantics": "none",
+   "can": [
+    "none"
+   ],
+   "verified_on": "vendor_shares_memory: Apple M-series, Mac mini (boltbeam doctor's host rows and host.facts with no bus id, 2026-11-11)",
+   "unverified_cases": "runtime_integrated answering yes (a DGX Spark-class GB10 through CUDA, an MI300A- or Strix Halo-class APU through HIP): never run on such a chip; the record is unverified and says so",
+   "words": {
+    "name": "shared memory",
+    "short": "shared memory",
+    "the": "shared memory",
+    "detail": "none: the GPU is part of the chip and shares the CPU's memory, so there is no link to read",
+    "reads": "reads from shared memory at the memory's {gbs} GB/s"
+   },
+   "sources": [
+    "target/vendors.py: a vendor row with profile None shares the CPU's memory (Apple)",
+    "cuda.h (CUDA 13.2): CU_DEVICE_ATTRIBUTE_INTEGRATED = 18, 'Device is integrated with host memory'",
+    "hip/hip_runtime_api.h (ROCm 7.2.4): hipDeviceAttributeIntegrated (= 16), 'Device is integrated GPU'"
+   ],
+   "verified_by": [
+    "vendor_shares_memory"
+   ]
+  },
+  {
+   "kind": "nvlink_c2c",
+   "detect": [
+    "nvidia_smi_addressing_mode"
+   ],
+   "rate": "reported",
+   "semantics": "copy",
+   "can": [
+    "copy",
+    "direct_read"
+   ],
+   "words": {
+    "name": "NVLink-C2C link",
+    "short": "NVLink-C2C",
+    "the": "the NVLink-C2C link",
+    "detail": "{gbs} GB/s reported by nvidia-smi c2c",
+    "detail_unknown": "its speed was not read",
+    "reads": "reads over the NVLink-C2C link at {gbs} GB/s"
+   },
+   "sources": [
+    "nvidia-smi manual (docs.nvidia.com/deploy/nvidia-smi): -q 'Addressing Mode' is ATS, HMM or None (Linux only); 'nvidia-smi c2c -s' prints the C2C links' status and, when active, their bandwidth; 'GPU C2C Mode' in -q since v530",
+    "DGX Station development guide, Mixed Coherency Environment (docs.nvidia.com/dgx/dgx-station-development-guide/coherency.html): nvmlDeviceGetAddressingMode gives ATS for the GB300 (the hardware path on NVLink-C2C systems, the GPU uses the host page tables and reads CPU memory directly) and HMM for a PCIe-attached RTX PRO 6000",
+    "nvml.h: NVML_FI_DEV_C2C_LINK_COUNT, NVML_FI_DEV_C2C_LINK_GET_STATUS, NVML_FI_DEV_C2C_LINK_GET_MAX_BW (MB/s, active links)"
+   ],
+   "unverified": "the exact text of 'nvidia-smi -q' and 'nvidia-smi c2c -s' on a Grace machine (the fixtures follow the manual's field names); whether c2c -s states one direction or both; whether a DGX Spark-class chip (also ATS) should be the unified row instead; an integrated GPU that also reports ATS (DGX Spark class) is caught first by the shared-memory row only when the runtime's integrated answer is saved (boltbeam host)",
+   "verified_by": []
+  },
+  {
+   "kind": "pcie",
+   "detect": [
+    "sysfs_pcie",
+    "nvidia_smi_pcie"
+   ],
+   "rate": "line_code",
+   "semantics": "copy",
+   "can": [
+    "copy",
+    "direct_read"
+   ],
+   "gens_by_gts": {
+    "2.5": 1,
+    "5.0": 2,
+    "8.0": 3,
+    "16.0": 4,
+    "32.0": 5,
+    "64.0": 6
+   },
+   "line_code": [
+    [
+     5,
+     8,
+     10
+    ],
+    [
+     32,
+     128,
+     130
+    ],
+    [
+     null,
+     242,
+     256
+    ]
+   ],
+   "words": {
+    "name": "PCIe link",
+    "short": "PCIe",
+    "the": "the PCIe link",
+    "detail": "gen {gen} x{width}: {gbs} GB/s on the wire",
+    "reads": "reads over the PCIe link at {gbs} GB/s"
+   },
+   "sources": [
+    "Linux ABI sysfs-bus-pci: max_link_speed, max_link_width, current_link_speed, current_link_width",
+    "nvidia-smi --help-query-gpu: pcie.link.gen.max, pcie.link.width.max",
+    "PCI Express base spec: 8b/10b to 5 GT/s, 128b/130b to 32 GT/s, 242/256 FLIT at 64 GT/s"
+   ],
+   "verified_by": [
+    "sysfs_pcie",
+    "nvidia_smi_pcie"
+   ],
+   "verified_on": "RTX 5090 at 0000:06:00.0 (2026-11-11): sysfs 32 GT/s card in a 16 GT/s x16 slot, nvidia-smi pcie.link.gen.max 4 / width.max 16, the CUDA integrated attribute 0",
+   "requires": {
+    "integrated": false
+   },
+   "requires_why": "whether the GPU shares the CPU's memory was not read; boltbeam host asks the GPU runtime"
+  },
+  {
+   "kind": "cxl",
+   "detect": [],
+   "rate": "none",
+   "semantics": "direct_read",
+   "can": [
+    "direct_read"
+   ],
+   "words": {
+    "name": "CXL link",
+    "short": "CXL",
+    "the": "the CXL link",
+    "detail": "not read: BoltBeam has no CXL reader",
+    "reads": "reads over the CXL link at {gbs} GB/s"
+   },
+   "sources": [],
+   "unverified": "a placeholder: no GPU-host CXL setup was found to read, so there is no detector and no rate rule",
+   "verified_by": []
+  },
+  {
+   "kind": "unknown",
+   "fallback": true,
+   "detect": [],
+   "rate": "none",
+   "semantics": "copy",
+   "can": [
+    "copy"
+   ],
+   "verified_by": [],
+   "words": {
+    "name": "host link",
+    "short": "the host link",
+    "the": "the host link",
+    "detail": "not read: no detector recognised how this GPU reaches host memory",
+    "reads": "reads over the host link at {gbs} GB/s"
+   },
+   "sources": [],
+   "unverified": "the record when no row's detector answers: nothing about the link is known"
+  }
+ ]
+}

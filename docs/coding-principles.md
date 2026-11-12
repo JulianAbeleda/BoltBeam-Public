@@ -313,6 +313,17 @@ by model-specific assumptions (audit A0–A10). The load-bearing rules:
   scans for each; the sites that predate the rule are listed in
   `KNOWN_VENDOR_DISPATCH`, and a listed site that is gone fails until its
   allowance is removed.
+- Host-to-GPU links are rows, not branches. A link kind (PCIe, NVLink-C2C,
+  shared memory, CXL) is a row of `data/host_links.json` with its detectors,
+  rate rule, semantics (`copy`, `direct_read`, `none`) and plain words; the
+  offload and limit code reads only the link record `target/host_links.py`
+  returns. `policy/guards.py` fails a kind's name in `LINK_AGNOSTIC` and a
+  `pcie_` identifier anywhere outside `target/host_links.py`. A record is
+  verified only when a detector listed in its row's `verified_by` (one that
+  has run on real hardware, named in `verified_on`) decided it and the row's
+  `requires` hold (PCIe: the GPU runtime said the GPU is not integrated); any
+  other record, the fallback `unknown` row included, says "not verified on
+  this hardware" wherever it decides a number.
 
 ## Commit Discipline
 

@@ -19,6 +19,8 @@ BYTES = 256 << 20  # far past any cache, and small enough to pin on any machine
 REPS = 5
 PIN_CAP = 512 << 20  # the most host memory this probe page-locks
 _HIP_H2D = 1  # hipMemcpyHostToDevice
+_CU_INTEGRATED = 18  # CU_DEVICE_ATTRIBUTE_INTEGRATED, cuda.h (CUDA 13.2)
+_HIP_INTEGRATED = 16  # hipDeviceAttributeIntegrated, hip/hip_runtime_api.h (ROCm 7.2.4)
 
 
 class Unavailable(RuntimeError):
@@ -65,6 +67,10 @@ class _Cuda:
   def pinned_free(self, p:int) -> None:
     self.cu.cuMemFreeHost(ctypes.c_void_p(p))
 
+  def integrated(self) -> bool:
+    """CU_DEVICE_ATTRIBUTE_INTEGRATED (18, cuda.h: "Device is integrated with host memory")."""
+    v = ctypes.c_int(); self._call("cuDeviceGetAttribute", ctypes.byref(v), _CU_INTEGRATED, self.dev); return bool(v.value)
+
   def copy(self, dst:int, src:int, n:int) -> None:
     self._call("cuMemcpyHtoD_v2", ctypes.c_uint64(dst), ctypes.c_void_p(src), ctypes.c_size_t(n))
     self._call("cuCtxSynchronize")
@@ -82,7 +88,8 @@ class _Hip:
     try:
       drv = hip_device._Driver()
       self.hip = drv.hip
-      self._call("hipSetDevice", hip_device.index_of(pci_bus_id, drv))
+      self.index = hip_device.index_of(pci_bus_id, drv)
+      self._call("hipSetDevice", self.index)
     except (hip_device.HipUnavailable, RuntimeError, OSError) as exc:
       raise Unavailable(f"no HIP device at PCI {pci_bus_id}: {exc}") from exc
 
@@ -102,6 +109,10 @@ class _Hip:
 
   def pinned_free(self, p:int) -> None:
     self.hip.hipHostFree(ctypes.c_void_p(p))
+
+  def integrated(self) -> bool:
+    """hipDeviceAttributeIntegrated (16, hip_runtime_api.h: "Device is integrated GPU")."""
+    v = ctypes.c_int(); self._call("hipDeviceGetAttribute", ctypes.byref(v), _HIP_INTEGRATED, self.index); return bool(v.value)
 
   def copy(self, dst:int, src:int, n:int) -> None:
     self._call("hipMemcpy", ctypes.c_void_p(dst), ctypes.c_void_p(src), ctypes.c_size_t(n), _HIP_H2D)
@@ -157,3 +168,14 @@ def measure(pci_bus_id:str, *, nbytes:int = BYTES, reps:int = REPS, runtime=None
     rt.close()
   return {"pinned": pinned_gbs, "pageable": pageable_gbs,
           "source": f"{rt.API} copies of {nbytes >> 20} MiB to the GPU at {pci_bus_id}, best of {reps} after a warm-up"}
+
+
+def integrated(pci_bus_id:str, *, runtime=None) -> dict[str, Any]:
+  """Whether the GPU at this address shares the host's memory, as its runtime states it: {"integrated": bool, "source"}.
+  Unavailable when there is no runtime. Nothing is allocated or copied."""
+  rt = runtime or open_runtime(pci_bus_id)
+  try:
+    got = rt.integrated()
+  finally:
+    rt.close()
+  return {"integrated": got, "source": f"{rt.API}: the device's integrated attribute at {pci_bus_id}"}

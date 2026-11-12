@@ -431,9 +431,9 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
   (FormulaRefused): its work comes from a capture's verified stages, never this formula (roofline/mamba2).
   A routed-expert role (n_expert, routed) does w x routed products per chunk and reads the experts it reaches
   (experts_reached: a measured per-layer routing profile, else uniform routing, which the result marks `estimated`).
-  offload {hit_rate, cpu_share, pcie_gbs, ram_gbs, estimated, h2d_gbs, memory, routing}: hit_rate of those bytes is in
+  offload {hit_rate, cpu_share, link_gbs, ram_gbs, estimated, h2d_gbs, memory, link, routing}: hit_rate of those bytes is in
   VRAM (default 0, a cold cache), the rest uploaded per chunk (llama.cpp copy_experts) or CPU-computed (offload.py terms);
-  ms = max(GPU rows, PCIe, CPU), no_overlap_ms their sum. routing: the per-layer records (also taken from offload["routing"]);
+  ms = max(GPU rows, link, CPU), no_overlap_ms their sum. routing: the per-layer records (also taken from offload["routing"]);
   the result says which routing it used (`routing`: measured or uniform)."""
   if formula_cannot_limit(profile):
     raise FormulaRefused(FORMULA_REFUSED)
@@ -486,7 +486,7 @@ def turn_ceiling(profile:dict[str, Any], roles:list[dict[str, Any]], length:int,
     # so a prefill's hits are what decode or small batches put there before it.
     o = offload_limit(dense_bytes=0, expert_bytes=moved, vram_gbs=bandwidth_gbs, **{"hit_rate": 0.0, **offload})
     if routing is None: o.update(estimated=True, notes=[*o["notes"], "routing assumed uniform: no measured routing profile"])
-    out.update(offload=o, no_overlap_ms=out["ms"] + o["ms"]["cpu"] + o["ms"]["pcie"], ms=max(out["ms"], o["ms"]["cpu"], o["ms"]["pcie"]))
+    out.update(offload=o, no_overlap_ms=out["ms"] + o["ms"]["cpu"] + o["ms"]["link"], ms=max(out["ms"], o["ms"]["cpu"], o["ms"]["link"]))
   return out
 
 

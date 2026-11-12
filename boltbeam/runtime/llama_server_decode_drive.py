@@ -23,7 +23,8 @@ sent as token ids with the prompt cache off, one token asked for. One warm-up an
 prompt_n equal to the context (and cache_n 0 where the server reports it): a prompt the server partly reused is refused.
 It prints {"prefill", "context", "prompt_tokens", "samples_ms" (the server's prompt_ms), "wall_samples_ms" (client wall: request sent to reply read), "n_batch", "n_ubatch", "corpus",
 "prompt_form", "request_spans_ns" (each timed request's send and reply on the host's CLOCK_MONOTONIC, so a trace can be cut to it),
-"engine"}. Real text, because an MoE routes random token ids to far more experts than real text and reads ~2x slow.
+"engine", and with --memory-cmd "memory": {"loaded", "warm"}, the GPU's memory right after load and after the warm-up
+request, as that command prints it}. Real text, because an MoE routes random token ids to far more experts than real text and reads ~2x slow.
 
 --prompt-form chat sends the same corpus text as a chat request instead (/v1/chat/completions, one user message,
 max_tokens 1, the prompt cache off): what a chat client sends. The server wraps it in the model's chat template, and for a
@@ -192,6 +193,15 @@ def prefill(base:str, prompt:list[int] | list[dict], expect:int, form:str = "ids
   return float(t["prompt_ms"]), wall, [m0, m1], int(n)
 
 
+def gpu_memory(cmd:str) -> dict:
+  """The GPU's memory as the --memory-cmd prints it (JSON), {"error"} when it fails: a reading, never a reason to stop."""
+  try:
+    out = subprocess.run(json.loads(cmd), capture_output=True, text=True, timeout=60)
+    return json.loads(out.stdout.strip().splitlines()[-1])
+  except (OSError, ValueError, IndexError, subprocess.SubprocessError) as exc:
+    return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def main() -> int:
   ap = argparse.ArgumentParser()
   ap.add_argument("--server", required=True)
@@ -208,6 +218,7 @@ def main() -> int:
   ap.add_argument("--flags", default="[]", help="the engine flags, a JSON list")
   ap.add_argument("--log", default="llama-server.log")
   ap.add_argument("--ready-s", type=float, default=1800.0)
+  ap.add_argument("--memory-cmd", default=None, help="--prefill: a JSON argv that prints the GPU's memory as JSON; run after load and after the warm-up")
   a = ap.parse_args()
   if a.port == 0:  # a free port of the system's choosing, never a fixed one a stale server may hold
     import socket
@@ -223,9 +234,12 @@ def main() -> int:
     build = call(s.base, "/props").get("build_info")
     if a.prefill:
       flags = json.loads(a.flags)
+      memory = {"loaded": gpu_memory(a.memory_cmd)} if a.memory_cmd else None
       ids, cycles = corpus_ids(s.base, a.corpus, contexts[0])
       prompt, expect = (ids, len(ids)) if a.prompt_form == "ids" else chat_prompt(s.base, ids, contexts[0])
       prefill(s.base, prompt, expect, a.prompt_form)  # load and warm; the server must read the fitted length
+      if memory is not None:
+        memory["warm"] = gpu_memory(a.memory_cmd)
       got = [prefill(s.base, prompt, expect, a.prompt_form) for _ in range(a.reps)]
       samples, walls = [g[0] for g in got], [g[1] for g in got]
       if got and {g[3] for g in got} != {expect}:  # --reps 0: the warm-up pass alone (a routing trace reads that one pass)
@@ -234,7 +248,8 @@ def main() -> int:
                         "prompt_form": a.prompt_form, "request_spans_ns": [g[2] for g in got],
                         **({"chat_head_tokens": chat_head(s.base)} if a.prompt_form == "chat" else {}),
                         "n_batch": flag_int(flags, "-b", 2048), "n_ubatch": flag_int(flags, "-ub", 512),
-                        "corpus": {"file": pathlib.Path(a.corpus).name, "repeats": cycles}, "engine": {"build": build, "server": "llama-server"}}), flush=True)
+                        "corpus": {"file": pathlib.Path(a.corpus).name, "repeats": cycles}, "engine": {"build": build, "server": "llama-server"},
+                        **({"memory": memory} if memory is not None else {})}), flush=True)
       return 0
     if a.once:
       prompt = [the] * contexts[0]

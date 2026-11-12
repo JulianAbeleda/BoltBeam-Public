@@ -23,7 +23,7 @@ python -m boltbeam.workflow.screen replay-cross --a runs/a --b runs/b           
 python -m boltbeam.workflow.screen autoscan                       # measure this GPU once when it has no chip profile
 python -m boltbeam.workflow.screen recommend MODEL --target TARGET --engine ENGINE [--check]   # context, speed and flags per GPU layout
 boltbeam offload MODEL --target TARGET [--engine ENGINE]       # the offload page: what goes to the card and to RAM (the same as screen offload)
-boltbeam tune MODEL --engine llama.cpp|vllm [--build BIN] [--experts-in-ram all|N] [--prompt N] [--measure]
+boltbeam tune MODEL --engine llama.cpp|vllm [--build BIN] [--experts-in-ram all|N] [--prompt N] [--context N] [--workload chat|one-shot] [--time-budget BUDGET.json] [--measure]
 boltbeam time-budget capture.sqlite --engine ENGINE [--driver LINE.json | --wall-ms MS] [--out budget.json]
 boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECORD] [--compare OTHER.json]
 ```
@@ -31,7 +31,13 @@ boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECOR
 - `tune` gives this machine's values for an engine's settings (chunk sizes, memory shares, offload, the local patch
   knobs), each with where it came from, and the command to run. It reads facts only (the model file, the GPU, RAM, the
   build); `--measure` also runs the measured rows' prefill sweeps, starting the engine once per point, and `--knob`
-  limits that to one setting. For vLLM, a model whose weights and KV cannot fit is refused in words.
+  limits that to one setting. For vLLM, a model whose weights and KV cannot fit is refused in words. The command's
+  context (`-c`) is `--context`, else the prompt plus 2,048 tokens for the reply. With experts in RAM, the patched
+  build's prefetch slot count is worked out from the copy rate, the compute time and the GPU memory left after load
+  (`--time-budget` gives a measured compute time); `--measure` reads that memory from a running server and backs off
+  if a slot fails to allocate. `--workload one-shot` turns on one checkpoint per prompt (faster prompts; a follow-up
+  that changes an earlier turn re-reads the whole prompt). A measured number is quoted only on the GPU and model it
+  was measured on.
 - `time-budget` splits one request's wall time from an nsys capture's sqlite export: GPU kernels by family, copies
   no kernel hides, GPU idle by its cause, and host time outside the GPU work. Give the client's wall time with
   `--wall-ms`, or the prefill driver's JSON line with `--driver`. The screen shows the same split as "Where the time

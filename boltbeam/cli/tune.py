@@ -11,9 +11,11 @@ def cmd_tune(args) -> int:
   from boltbeam.core.refused import Refused
   from boltbeam.workflow import tune
   try:
+    budget = tune.time_budget(args.time_budget, args.prompt) if args.time_budget else None
     res = tune.tune(args.model, args.engine, args.build, prompt=args.prompt, context=args.context, measure=args.measure,
                     knobs_only=args.knob, port=args.port, out=pathlib.Path(args.out).expanduser() if args.out else None,
-                    extra=args.flags.split() if args.flags else None, experts_in_ram=args.experts_in_ram)
+                    extra=args.flags.split() if args.flags else None, experts_in_ram=args.experts_in_ram,
+                    workload=args.workload, **({"time_budget": budget} if budget else {}))
   except Refused as exc:
     print(f"tune: {exc}")
     return 2
@@ -31,7 +33,11 @@ def register(sub) -> None:
                  "doctor and screen find it)")
   p.add_argument("--experts-in-ram", help="all, or the first N layers' experts kept in host RAM (default: the offload plan's)")
   p.add_argument("--prompt", type=int, default=tune.PROMPT, help="the prompt length the setup is stated and swept at")
-  p.add_argument("--context", type=int, help="the context the setup must hold (default: the prompt length)")
+  p.add_argument("--context", type=int, help=f"the context the setup must hold (default: the prompt plus {tune.REPLY_TOKENS} tokens for the reply)")
+  p.add_argument("--workload", choices=tune.WORKLOADS, default="chat",
+                 help="what the server will serve: chat (follow-ups reuse earlier turns; the default) or one-shot (each prompt once)")
+  p.add_argument("--time-budget", help="a measured time budget (boltbeam.time_budget.v1 JSON) of this setup's prompt: its kernel time "
+                 "replaces the prompt limit's in the slot count")
   p.add_argument("--measure", action="store_true", help="run the measured rows' prefill sweeps (starts the engine once per point)")
   p.add_argument("--knob", action="append", help="with --measure: only this knob (repeatable)")
   p.add_argument("--port", type=int, default=0, help="with --measure: the server's port, for an engine that opens one (0: a free one)")

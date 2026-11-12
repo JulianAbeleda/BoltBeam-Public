@@ -165,7 +165,7 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
   held = (total - free) if total and free else 0
   warning = w["busy"].format(held=held / GiB, total=total / GiB, pct=BUSY_GPU_SHARE * 100) if total and free and held > BUSY_GPU_SHARE * total else ""
   out = {"model_weight_bytes": weights, "kv_bytes_per_token": kv, "model_draft_layers": draft, "model_experts": experts,
-         "host_expert_bytes": 0, "gpu_total_bytes": gpu.get("total"), "gpu_free_bytes": gpu.get("free"), "unified_memory": False,
+         "host_expert_bytes": 0, "gpu_total_bytes": gpu.get("total"), "gpu_free_bytes": gpu.get("free"), "shared_memory": False,
          f"{NS}.gpu_share": 0.92, f"{NS}.kv_bytes_per_token": kv, f"{NS}.offload_gib": 0, f"{NS}.process_headroom_gib": PROCESS_HEADROOM_GIB,
          f"{NS}.min_share": (weights + ACTIVATION_ALLOWANCE_GIB * GiB) / total if total else None, f"{NS}.gpu_warning": warning, f"{NS}.mtp_k_measured": None,
          f"{NS}.mtp_why": "no MTP measurement in this machine's facts", "notes": notes}

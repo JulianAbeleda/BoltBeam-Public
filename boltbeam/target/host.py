@@ -1,7 +1,7 @@
 """The host side of an offload limit: host RAM read bandwidth (probed once, remembered per machine in
 ~/.boltbeam/host.json like the engine scan), the copy rate to the GPU from pinned and from pageable memory (probed once
-per GPU, runtime/h2d_probe.py, remembered in host.json under the GPU's PCI bus id), the GPU's PCIe link (gen and width
-read, not measured: the fallback when no copy can be measured), and the RAM there is now (/proc/meminfo, read at every
+per GPU, runtime/h2d_probe.py, remembered in host.json under the GPU's PCI bus id), the GPU's link to host memory
+(target/host_links.py: read, not measured, the fallback when no copy can be measured), and the RAM there is now (/proc/meminfo, read at every
 plan and never saved: what is free changes with what else runs). The CPU's dequant rate is not probed: nothing here
 returns one, and offload_limit says so in its notes."""
 from __future__ import annotations
@@ -21,7 +21,6 @@ FILE_ENV = "BOLTBEAM_HOST_FILE"
 PROBE_BYTES, REPS = 256 << 20, 5  # far beyond any cache; the best repetition (a lower bound on peak)
 RAM_MARGIN_BYTES = 2 * 2**30  # kept free of the plan: the system, the engine's own process and its page-cache churn
 RAM_SHARE = 0.85  # of total RAM, when what is available cannot be read (an assumed share)
-GENS = {2.5: 1, 5.0: 2, 8.0: 3, 16.0: 4, 32.0: 5, 64.0: 6}  # sysfs max_link_speed in GT/s -> PCIe generation
 
 
 def host_file() -> pathlib.Path:
@@ -107,7 +106,7 @@ PROBE_TIMEOUT_S = 30  # the probe copies 256 MiB a dozen times: about a second; 
 _CHILD = """import json, sys
 from boltbeam.runtime import h2d_probe
 try:
-  print(json.dumps(h2d_probe.measure(sys.argv[1])))
+  print(json.dumps(getattr(h2d_probe, sys.argv[2])(sys.argv[1])))
 except h2d_probe.Unavailable as exc:
   print(json.dumps({"unavailable": str(exc)}))
 except Exception as exc:  # any failure is a figure not measured
@@ -115,14 +114,14 @@ except Exception as exc:  # any failure is a figure not measured
 """
 
 
-def _probe_child(pci_bus_id:str) -> dict[str, Any]:
-  """runtime/h2d_probe.measure in its own process, killed after PROBE_TIMEOUT_S: what it printed, or {"error": why}."""
+def _probe_child(pci_bus_id:str, what:str = "measure") -> dict[str, Any]:
+  """runtime/h2d_probe.measure (or .integrated) in its own process, killed after PROBE_TIMEOUT_S: what it printed, or {"error": why}."""
   import subprocess
   import sys
   root = str(pathlib.Path(__file__).resolve().parents[2])
   env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in (root, os.environ.get("PYTHONPATH")) if p)}
   try:
-    proc = subprocess.run([sys.executable, "-c", _CHILD, pci_bus_id], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S, env=env)
+    proc = subprocess.run([sys.executable, "-c", _CHILD, pci_bus_id, what], capture_output=True, text=True, timeout=PROBE_TIMEOUT_S, env=env)
   except subprocess.TimeoutExpired:
     return {"error": f"it did not finish in {PROBE_TIMEOUT_S} s and was stopped"}
   except OSError as exc:
@@ -261,46 +260,62 @@ def usable_ram(total:float, available:float | None, *, host_tables:float = 0.0, 
           "says": f"{_g(usable)} of RAM for the experts: {RAM_SHARE:.0%} of {_g(total)}, an assumed share, because how much is available now could not be read."}
 
 
-def pcie_gbs(gts:float, width:int) -> float:
-  """One direction's link rate in GB/s: GT/s x the line code (8b/10b to 5 GT/s, 128b/130b to 32, FLIT after) / 8 x lanes."""
-  return gts * (0.8 if gts <= 5 else 128 / 130 if gts <= 32 else 242 / 256) / 8 * width
+def _integrated_probe(pci_bus_id:str, *, child:Callable[..., dict[str, Any]] = _probe_child) -> dict[str, Any]:
+  """runtime/h2d_probe.integrated in a child process with a timeout: the GPU runtime's integrated attribute (a fact of the
+  chip, so no idle GPU is needed). A Refused when no runtime can say."""
+  got = child(pci_bus_id, "integrated")
+  if "unavailable" in got:
+    raise Refused(f"no GPU runtime here (CUDA or HIP) can say: {got['unavailable']}")
+  if "error" in got or not isinstance(got.get("integrated"), bool):
+    raise Refused(f"the runtime's answer was not read ({got.get('error') or got!r})")
+  return got
 
 
-def _link(d:pathlib.Path, which:str) -> tuple[float, int]:
-  return float((d / f"{which}_link_speed").read_text().split()[0]), int((d / f"{which}_link_width").read_text())
+def integrated(pci_bus_id:str | None, *, probe:Callable[[str], dict[str, Any]] | None = None, path:pathlib.Path | None = None,
+               remeasure:bool = False) -> bool | None:
+  """Whether this GPU shares the host's memory, as its runtime said it (host.json "integrated" by PCI bus id): the saved
+  answer, else asked now when probe is given (`boltbeam host`, the offload page) and saved. None when not known."""
+  if not pci_bus_id:
+    return None
+  path, key = path or host_file(), pci_bus_id.lower()
+  saved = _load(path).get("integrated")
+  have = saved.get(key) if isinstance(saved, dict) else None
+  if isinstance(have, dict) and isinstance(have.get("integrated"), bool) and not remeasure:
+    return have["integrated"]
+  if probe is None:
+    return None
+  got = probe(pci_bus_id)
+  doc = _load(path)
+  prior = doc.get("integrated") if isinstance(doc.get("integrated"), dict) else {}
+  _save(path, {**doc, "schema": "boltbeam.host.v1", "integrated": {**prior, key: {"integrated": got["integrated"], "source": got.get("source") or "runtime",
+                                                                                   "measured_at": datetime.date.today().isoformat()}}})
+  return got["integrated"]
 
 
-def pcie_link(pci_bus_id:str | None, *, sysfs:str = "/sys/bus/pci/devices", run_command=run_tool) -> dict[str, Any]:
-  """The GPU's PCIe link as GB/s per direction: the smaller of the GPU's and its upstream port's maximum (a gen5 GPU in
-  a gen4 slot is gen4), from sysfs, else nvidia-smi's maximum for GPU and system; and what it trained to now (an idle
-  GPU trains down). The limit uses the maximum. The figure is a wire rate, so an upper bound."""
-  parts = (pci_bus_id or "").lower().split(":")
-  if len(parts) == 3:
-    d = pathlib.Path(sysfs) / f"{parts[0][-4:]}:{parts[1]}:{parts[2]}"
-    try:
-      (gts, width), (pgts, pwidth), now = _link(d, "max"), _link(d.resolve().parent, "max"), _link(d, "current")
-      gts, width = min(gts, pgts), min(width, pwidth)
-      return {"gen": GENS.get(gts), "width": width, "gbs": pcie_gbs(gts, width), "now_gbs": pcie_gbs(*now),
-              "source": f"sysfs {d.name}: {gts:g} GT/s x{width}, the smaller of the GPU's and its slot's maximum"}
-    except (OSError, ValueError, IndexError):
-      pass
-  rc, out, _ = run_command(("nvidia-smi", "--query-gpu=pcie.link.gen.max,pcie.link.width.max", "--format=csv,noheader,nounits"))
-  try:
-    gen, width = (int(x) for x in out.splitlines()[0].split(","))
-    gts = {v: k for k, v in GENS.items()}[gen]
-  except (ValueError, KeyError, IndexError):
-    raise Refused("the PCIe link of the GPU could not be read (sysfs and nvidia-smi gave nothing)") from None
-  return {"gen": gen, "width": width, "gbs": pcie_gbs(gts, width), "source": f"nvidia-smi: gen {gen} x{width}, the maximum for this GPU and system", "now_gbs": None}
+def link(pci_bus_id:str | None, *, vendor:str | None = None, integrated:bool | None = None, **kw) -> dict[str, Any]:
+  """The GPU's link to host memory as a record (target/host_links.py: the kind's row, its own rate, how engines use it
+  and whether the path that decided it was checked on real hardware); the unknown row's when no detector answers.
+  integrated: the runtime's saved answer (integrated()), which a verified PCIe record needs."""
+  from boltbeam.target import host_links
+  return host_links.detect(pci_bus_id, vendor=vendor, integrated=integrated, **kw)
 
 
-def facts(pci_bus_id:str | None = None, *, h2d_probe:Callable[[str], dict[str, Any]] | None = None, meminfo:str | None = None, **kw) -> dict[str, Any]:
-  """The host inputs of an offload limit: ram_gbs, pcie_gbs, each with its source, and cpu_gbs None (unmeasured).
+def facts(pci_bus_id:str | None = None, *, h2d_probe:Callable[[str], dict[str, Any]] | None = None, meminfo:str | None = None,
+          vendor:str | None = None, integrated_probe:Callable[[str], dict[str, Any]] | None = None, **kw) -> dict[str, Any]:
+  """The host inputs of an offload limit: ram_gbs with its source, link (the GPU's link record, host_links.detect; vendor
+  names the GPU's vendor when known) and cpu_gbs None (unmeasured).
   ram_bytes and ram_available_bytes: RAM now (memory(), read at this call, not saved). h2d_gbs: the measured
   host-to-device rate per host memory kind ({"pinned": GB/s, "pageable": GB/s}, with h2d_source) for this GPU, from
   host.json or measured now (h2d()); None when it cannot be measured (no bus id, no GPU runtime, a busy GPU). h2d_probe
   None (the default) uses only a saved figure: only `boltbeam host` and the offload page (screen offload) probe, passing
-  _h2d_probe. h2d_source then says why and the limit uses the link rate."""
-  ram, link = ram_read(**{k: v for k, v in kw.items() if k in ("probe", "path", "remeasure")}), pcie_link(pci_bus_id, **{k: v for k, v in kw.items() if k in ("sysfs", "run_command")})
+  _h2d_probe. h2d_source then says why and the limit uses the link rate. integrated_probe: likewise for whether the GPU
+  shares the host's memory (integrated(); they pass _integrated_probe), else the saved answer only."""
+  ram = ram_read(**{k: v for k, v in kw.items() if k in ("probe", "path", "remeasure")})
+  try:
+    integ = integrated(pci_bus_id, probe=integrated_probe, path=kw.get("path"))
+  except Refused:
+    integ = None
+  rec = link(pci_bus_id, vendor=vendor, integrated=integ, **{k: v for k, v in kw.items() if k in ("sysfs", "run_command", "system")})
   mem = memory(meminfo=meminfo, **{k: v for k, v in kw.items() if k == "run_command"})
   try:
     if h2d_probe is None:
@@ -311,10 +326,10 @@ def facts(pci_bus_id:str | None = None, *, h2d_probe:Callable[[str], dict[str, A
       have = h2d(pci_bus_id, probe=h2d_probe, **{k: v for k, v in kw.items() if k in ("path", "remeasure")})
     rates, how, when, reason = have["h2d_gbs"], f"{have['h2d_source']} ({have['measured_at']})", have["measured_at"], None
   except Refused as exc:
-    rates, how, when, reason = None, f"no measured copy rate to the GPU: {exc}; the PCIe link's wire rate stands in, an upper bound", None, str(exc)
+    from boltbeam.target.host_links import stands_in
+    rates, how, when, reason = None, f"no measured copy rate to the GPU: {exc}; {stands_in(rec)}", None, str(exc)
   return {"ram_bytes": mem["total_bytes"], "ram_available_bytes": mem["available_bytes"], "ram_bytes_source": mem["source"],
-          "ram_gbs": ram["ram_gbs"], "ram_source": f"{ram['ram_source']} ({ram['measured_at']})", "pcie_gbs": link["gbs"], "pcie_source": link["source"],
-          "pcie_gen": link["gen"], "pcie_width": link["width"], "cpu_gbs": None, "cpu_source": "CPU dequant rate not measured",
+          "ram_gbs": ram["ram_gbs"], "ram_source": f"{ram['ram_source']} ({ram['measured_at']})", "link": rec, "cpu_gbs": None, "cpu_source": "CPU dequant rate not measured",
           "h2d_gbs": rates, "h2d_source": how, "h2d_measured_at": when, "h2d_reason": reason}
 
 

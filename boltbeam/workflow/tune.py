@@ -22,6 +22,7 @@ import ast
 import datetime
 import importlib
 import json
+import math
 import os
 import pathlib
 from typing import Any, Callable
@@ -31,6 +32,7 @@ from boltbeam.core.refused import Refused
 TABLE = pathlib.Path(__file__).resolve().parents[1] / "data" / "engine_knobs.json"
 KiB, MiB, GiB = 1 << 10, 1 << 20, 1 << 30
 PROMPT = 10000  # the prompt length the setup is stated at (the evidence's 10k)
+REPLY_TOKENS = 2048  # room for the reply beside the prompt when no --context is given (a context of the prompt alone holds no reply)
 FACTS = {  # the engine-neutral names a formula may read: the fact and what it is
   "host_expert_bytes": "the experts this placement keeps in host RAM (the model's tensor table, per layer)",
   "model_experts": "experts per layer (0: a dense model)",
@@ -43,11 +45,18 @@ FACTS = {  # the engine-neutral names a formula may read: the fact and what it i
   "l3_bytes": "one L3 instance (target/host.l3_cache)", "page_bytes": "the memory page size",
   "gpu_total_bytes": "the GPU's memory", "gpu_free_bytes": "the GPU's memory free now",
   "prompt_tokens": "the prompt length the setup is stated at", "context_tokens": "the context the setup must hold",
-  "unified_memory": "the GPU reads host memory directly (no copies)",
+  "shared_memory": "the GPU reads host memory directly (no copies)",
+  "h2d_pinned_gbs": "the measured copy rate to the GPU from pinned host memory, GB/s (target/host.facts)",
+  "gpu_name": "the GPU's name (the hardware scan)", "model_file": "the model file's name",
+  "workload": "what the server will serve: one-shot (each prompt once) or chat (follow-ups that reuse earlier turns), --workload",
   "value": "the row's own value (in sets)"}
 FUNCS: dict[str, Callable[..., Any]] = {"min": min, "max": max, "pow2_floor": lambda x: 1 << (int(x).bit_length() - 1) if x >= 1 else 0,
                                          "gib_floor": lambda x: int(x // GiB), "gib_ceil": lambda x: int(-(-x // GiB)),
-                                         "floor_to": lambda x, step: round(int(x / step) * step, 6)}
+                                         "floor_to": lambda x, step: round(int(x / step) * step, 6),
+                                         "ceil": lambda x: int(math.ceil(x)), "floor": lambda x: int(math.floor(x)),
+                                         "has": lambda text, part: str(part).lower() in str(text).lower()}  # a name holds a part (a GPU, a model)
+WORKLOADS = ("chat", "one-shot")
+BUDGET_PROMPT_TOLERANCE = 0.05  # a time budget stands for a prompt within this share of its own length (10k runs read 9,8xx tokens)
 CONSTS = {"KiB": KiB, "MiB": MiB, "GiB": GiB, "True": True, "False": False, "None": None}
 
 
@@ -190,22 +199,72 @@ def say(template:str, facts:dict[str, Any]) -> str:
 
 # --- the host: engine-neutral facts --------------------------------------------------------------------------------------
 
+def copy_rate(link:dict[str, Any] | None = None) -> tuple[float | None, str, str | None]:
+  """The measured pinned copy rate to the run's GPU (GB/s), where it came from, and the GPU's name. The GPU's bus id and
+  name come from the hardware scan; the rate is the figure host.json saved for that bus id (target/host.saved_h2d): no
+  copy or RAM probe runs here. None when it was never measured. link stands in for the saved figure (tests; with its
+  "gpu_name" when a test gives one)."""
+  name = None
+  if link is None:
+    from boltbeam.target import host
+    from boltbeam.target.hardware import hardware_profile
+    try:
+      dev = (hardware_profile()["gpu"].get("devices") or [None])[0] or {}
+      name = dev.get("name")
+      link = host.saved_h2d(dev.get("pci_bus_id")) or {}
+    except Exception:  # noqa: BLE001  no reading is a stated unknown, never a crash
+      return None, "the GPU could not be read here", None
+  else:
+    name = link.get("gpu_name")
+  rate = (link.get("h2d_gbs") or {}).get("pinned")
+  return ((float(rate), str(link.get("h2d_source") or "measured"), name) if rate else
+          (None, str(link.get("h2d_source") or "never measured (boltbeam host measures it)"), name))
+
+
 def host_facts(*, memory:dict[str, Any] | None = None, l3:dict[str, Any] | None = None, prompt:int = PROMPT,
-               context:int | None = None) -> dict[str, Any]:
-  """RAM, L3, the page size and the prompt and context the setup is stated at, with "sources". memory and l3 stand in
-  for the readings (tests)."""
+               context:int | None = None, workload:str = "chat", link:dict[str, Any] | None = None) -> dict[str, Any]:
+  """RAM, L3, the copy rate to the GPU, the page size, the workload and the prompt and context the setup is stated at,
+  with "sources". memory, l3 and link (host.facts' record) stand in for the readings (tests)."""
   from boltbeam.target import host
+  if workload not in WORKLOADS:
+    raise Refused(f"--workload is one of {', '.join(WORKLOADS)}, not {workload!r}")
+  rate, rate_source, gpu_name = copy_rate(link)
+  if context is not None and context < prompt:
+    raise Refused(f"--context {context} is shorter than the {prompt}-token prompt: the context holds the prompt and the reply")
   mem = memory or host.memory()
   ram = host.usable_ram(mem["total_bytes"], mem.get("available_bytes"))
   l3 = l3 or host.l3_cache()
   page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
   out = {"usable_ram_bytes": ram["usable_bytes"], "ram_available_bytes": ram.get("available_bytes"), "ram_total_bytes": ram["total_bytes"],
          "ram_margin_bytes": ram["margin_bytes"], "l3_bytes": l3.get("bytes"), "l3_source": l3["source"], "page_bytes": page,
-         "prompt_tokens": prompt, "context_tokens": context or prompt}
+         "prompt_tokens": prompt, "context_tokens": context or prompt + REPLY_TOKENS, "h2d_pinned_gbs": rate, "workload": workload,
+         "gpu_name": gpu_name}
   out["sources"] = {"usable_ram_bytes": ram["says"], "ram_available_bytes": mem["source"], "ram_total_bytes": mem["source"],
                     "ram_margin_bytes": "target/host.RAM_MARGIN_BYTES", "l3_bytes": l3["source"], "page_bytes": "os.sysconf SC_PAGE_SIZE",
-                    "prompt_tokens": "--prompt", "context_tokens": "--context" if context else "--prompt (no --context given)"}
+                    "prompt_tokens": "--prompt", "context_tokens": "--context" if context else f"--prompt plus {REPLY_TOKENS} tokens for the reply (no --context given)",
+                    "h2d_pinned_gbs": rate_source, "workload": "--workload", "gpu_name": "the hardware scan"}
   return out
+
+
+def time_budget(path:str | pathlib.Path, prompt:int | None = None) -> dict[str, Any]:
+  """A measured time budget (collectors/time_budget.py) read from a file: the record itself, or a run's results.json
+  that holds one (loss.prefill.lengths[L].time_budget: the length nearest `prompt`, else the first). A Refused when the
+  file holds none."""
+  p = pathlib.Path(path).expanduser()
+  try:
+    d = json.loads(p.read_text())
+  except (OSError, ValueError) as exc:
+    raise Refused(f"{p.name}: no time budget could be read (missing or not JSON)") from exc
+  if not isinstance(d, dict):
+    raise Refused(f"{p.name}: holds no time budget (not a time budget or a run's results)")
+  if d.get("schema") != "boltbeam.time_budget.v1":
+    lengths = (((d.get("loss") or {}).get("prefill") or {}).get("lengths") or {})
+    found = [{"prompt_tokens": int(L), **v["time_budget"]} for L, v in lengths.items() if isinstance(v, dict) and isinstance(v.get("time_budget"), dict)
+             and str(L).isdigit()]
+    d = min(found, key=lambda b: abs(b["prompt_tokens"] - prompt)) if found and prompt else (found or [{}])[0]
+  if not isinstance(d.get("kernels_ms"), (int, float)):
+    raise Refused(f"{p.name}: holds no time budget with a kernel time")
+  return {**d, "what": d.get("what") or p.name}
 
 
 # --- the rows ----------------------------------------------------------------------------------------------------------
@@ -217,6 +276,51 @@ def _shown(v:Any) -> Any:
 def groups_in(engine:str, features:dict[str, Any], tab:dict[str, Any]) -> dict[str, bool]:
   """The engine's named extras (local patches) and whether the build has each (its marker is a feature)."""
   return {g: v["marker"] in features["features"] for g, v in tab["engines"][engine]["groups"].items()}
+
+
+def _holds(expr:str | None, f:dict[str, Any], allowed:set[str]) -> bool:
+  """A row's measured_when: true only when it reads true over facts that are all known (an unknown fact is not a match)."""
+  try:
+    return bool(evaluate(expr, f, allowed)) if expr else False
+  except Missing:
+    return False
+
+
+def term_names(k:dict[str, Any]) -> set[str]:
+  """The names a row's terms give (t.<name>), for its formula, sweep and reason to read."""
+  return {f"t.{n}" for n in k.get("terms") or {}}
+
+
+def terms(k:dict[str, Any], f:dict[str, Any], allowed:set[str]) -> dict[str, Any]:
+  """A row's terms, in order: each a named formula over the facts and the terms before it (t.<name>), so a rule's steps
+  are data in the row and its reason can show the arithmetic. A term that reads an unknown fact is None (unknown)."""
+  out: dict[str, Any] = {}
+  ok = allowed | term_names(k)
+  for name, expr in (k.get("terms") or {}).items():
+    try:
+      out[f"t.{name}"] = evaluate(expr, {**f, **out}, ok)
+    except Missing:
+      out[f"t.{name}"] = None
+  return out
+
+
+def case(field:Any, f:dict[str, Any], allowed:set[str]) -> str:
+  """A row's text: a string, or cases [{"when": expr, "text": ...}, ...] read in order, the first whose `when` holds over
+  known facts (a case without one is the fallback), so a row says why for the setup it is in."""
+  if isinstance(field, str):
+    return field
+  return next((c["text"] for c in field if "when" not in c or _holds(c["when"], f, allowed)), "")
+
+
+def budget_unusable(budget:dict[str, Any], prompt:int) -> str | None:
+  """Why a measured time budget cannot stand for this run's prompt, or None when it can: it must say its prompt length,
+  and that length must be within BUDGET_PROMPT_TOLERANCE of the prompt being tuned."""
+  n = budget.get("prompt_tokens")
+  if not isinstance(n, (int, float)) or n <= 0:
+    return "the time budget does not say what prompt length it was measured at"
+  if abs(n - prompt) > BUDGET_PROMPT_TOLERANCE * prompt:
+    return f"the time budget was measured on a {int(n)}-token prompt, not within {BUDGET_PROMPT_TOLERANCE:.0%} of the {prompt}-token prompt tuned here"
+  return None
 
 
 def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, Any] | None = None,
@@ -239,6 +343,8 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
     unread = None
     try:
       applies = evaluate(k.get("applies", "True"), f, allowed)
+      if applies and k.get("terms"):
+        f = {**f, **terms(k, f, allowed)}  # dropped again below: a row's terms are its own
     except Missing as m:
       applies, unread = False, str(m)
     if not applies:
@@ -246,19 +352,25 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
       rows.append({**row, "status": "not_applicable", "value": None, "source": None, "reason": reason,
                    "provenance": {"applies": k.get("applies"), "inputs": {n: _shown(f.get(n)) for n in names_in(k.get("applies", "True"))}}})
       continue
-    value, source, reason = None, "default", say(k.get("reason_default") or k.get("reason", ""), f)
+    ok = allowed | term_names(k)
+    text = lambda field, _f=f, _ok=ok: say(case(field, _f, _ok), _f)  # noqa: E731
+    value, source, reason = None, "default", text(k.get("reason_default") or k.get("reason", ""))
     prov: dict[str, Any] = {"evidence": k.get("evidence"), "features": {r: features["features"][r] for r in k.get("requires", [])}}
+    if k.get("terms"):
+      prov["terms"] = {n: {"formula": e, "value": _shown(f.get(f"t.{n}"))} for n, e in k["terms"].items()}
     if k["derive"] in ("facts", "measured") and k.get("formula"):
       inputs = names_in(k["formula"])
       prov.update(formula=k["formula"], inputs={n: {"value": _shown(f.get(n)), "source": f["sources"].get(n)} for n in inputs})
       try:
-        value = evaluate(k["formula"], f, allowed)
-        source = "derived"
-        reason = say(k["reason"] if value is not None else k.get("reason_default") or k["reason"], f)
+        value = evaluate(k["formula"], f, ok)
+        source = "derived" if value is not None else "default"  # a formula that keeps the default derived nothing
+        reason = text(k["reason"] if value is not None else k.get("reason_default") or k["reason"])
       except Missing as m:
         prov["missing"] = str(m)
         if k.get("reason_missing"):
-          reason = say(k["reason_missing"], f)
+          reason = text(k["reason_missing"])
+    if k.get("measured") and _holds(k.get("measured_when"), f, ok):  # measured numbers only where their setup is this one
+      reason += ("" if reason.endswith(".") else ".") + " Measured: " + say(k["measured"], f)
     got = measured.get(k["name"])
     if got and got.get("value") is not None:
       value, source = got["value"], "measured"
@@ -268,7 +380,10 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
       prov["sweep"] = got
       reason += f" (--measure: {got.get('says') or got.get('why')})"
     if k["derive"] == "measured" and not got:
-      prov["measure"] = f"confirm with --measure: {k['sweep']['type']} over {k['sweep']['axis']} {k['sweep']['points']}"
+      s = k["sweep"]
+      prov["measure"] = (f"confirm with --measure: {s['type']} over {s['axis']} {s['points']}" if s["type"] != "fit" else
+                         f"confirm with --measure: {s['what']}")
+    f = {n: v for n, v in f.items() if not n.startswith("t.")}
     for name, expr in (k.get("sets") or {}).items():
       try:
         f[name] = evaluate(expr, {**f, "value": value}, allowed)
@@ -306,13 +421,59 @@ def values_of(rows:list[dict[str, Any]], **over:Any) -> list[dict[str, Any]]:
 
 # --- --measure: sweeps over a knob's axis --------------------------------------------------------------------------------
 
-def sweep(knob:dict[str, Any], run:Callable[..., float], rows:list[dict[str, Any]], *, prompt:int) -> dict[str, Any]:
+def fit(knob:dict[str, Any], run:Callable[..., Any], rows:list[dict[str, Any]], *, prompt:int, facts:dict[str, Any],
+        allowed:set[str]) -> dict[str, Any]:
+  """A fit sweep: what a resource holds, read from the running engine rather than estimated. One probe point at the
+  row's probe value, which reports the engine's measured facts (run(..., facts=True) -> {ms, facts}); the row's sweep
+  formula sizes the value from them (value is the probe's); then the value runs, and while the run reports the sweep's
+  `failed` fact above 0, the row's backoff formula lowers it, at most `tries` runs. The answer is the first value that ran
+  clean (None when none did: the facts value or the default stands, said so)."""
+  s, name = knob["sweep"], knob["name"]
+  reps = s["reps"]
+  prompt_n = prompt if s.get("prompt") == "prompt_tokens" else int(s.get("prompt") or prompt)
+  ok = allowed | term_names(knob)
+  base = {**facts, **terms(knob, facts, allowed)}
+  got = run(values=values_of(rows, **{name: s["probe"]}), prompt=prompt_n, reps=reps, tag=f"{name}-probe-{s['probe']}", facts=True)
+  base = {**base, **got["facts"]}
+  base = {**base, **terms(knob, base, allowed), "value": int(s["probe"])}
+  out = [{"point": int(s["probe"]), "probe": True, "ms": round(got["ms"], 1), "tok_s": round(prompt_n * 1000 / got["ms"], 1), "facts": got["facts"]}]
+  try:
+    value = int(evaluate(s["formula"], base, ok))
+  except Missing as m:
+    return {"value": None, "points": out, "prompt": prompt_n, "stop": s["stop"], "says": f"the probe did not report {fact_words(str(m))}"}
+  first, answer = value, None
+  for _ in range(s["tries"]):
+    try:
+      got = run(values=values_of(rows, **{name: value}), prompt=prompt_n, reps=reps, tag=f"{name}-{value}", facts=True)
+      failed = got["facts"].get(s["failed"]) or 0
+      out.append({"point": value, "ms": round(got["ms"], 1), "tok_s": round(prompt_n * 1000 / got["ms"], 1), "failed": failed, "facts": got["facts"]})
+    except Exception as exc:  # noqa: BLE001  an engine that did not start or answer at this value counts as a failed run, and backs off
+      failed = "a"
+      out.append({"point": value, "ms": None, "tok_s": None, "failed": failed, "detail": f"{type(exc).__name__}: {str(exc)[-300:]}"})
+    if not failed:
+      answer = value
+      break
+    lower = int(evaluate(s["backoff"], {**base, "value": value}, ok))
+    if lower >= value:
+      break
+    value = lower
+  runs = "; ".join(f"{r['point']}: {r['tok_s']:,.0f} tok/s, {r['failed']} {s['failed_words']}" if r["tok_s"] is not None else
+                   f"{r['point']}: {s['run_failed_words']}" for r in out[1:])
+  said = {**base, "measure.probe": out[0]["point"], "measure.first": first, "measure.value": answer, "measure.runs": runs}
+  says = say(s["says"] if answer is not None else s["says_none"], said)
+  return {"value": answer, "points": out, "prompt": prompt_n, "stop": s["stop"], "says": says}
+
+
+def sweep(knob:dict[str, Any], run:Callable[..., float], rows:list[dict[str, Any]], *, prompt:int, facts:dict[str, Any] | None = None,
+          allowed:set[str] | None = None) -> dict[str, Any]:
   """A row's sweep. crossover: per point of the axis knob (ascending) the knob's on and off arms, alternating order; the
   answer is the first point from which on beats off by more than the tie at two points in a row (or at the last point).
   best: one arm per point, the smallest point within the tie of the fastest; it stops after two points in a row slower
   than the best by more than the tie. run(values=, prompt=, reps=, tag=) -> wall ms; values are the setup's with the
   axis (and the arm) replaced."""
   s = knob["sweep"]
+  if s["type"] == "fit":
+    return fit(knob, run, rows, prompt=prompt, facts=facts or {}, allowed=allowed if allowed is not None else set(FACTS) | {k for k in facts or {} if "." in k})
   tie, reps = s["tie_pct"] / 100, s["reps"]
   prompt_n = prompt if s.get("prompt") == "prompt_tokens" else int(s.get("prompt") or prompt)
   pts = [p for p in s["points"] if p < prompt_n] + [p for p in s["points"] if p >= prompt_n][:1]  # a chunk past the prompt is the prompt
@@ -359,7 +520,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
          knobs_only:list[str] | None = None, port:int = 0, out:pathlib.Path | None = None, extra:list[str] | None = None,
          experts_in_ram:str | None = None, run:Callable[..., float] | None = None, tab:dict[str, Any] | None = None,
          memory:dict[str, Any] | None = None, l3:dict[str, Any] | None = None, say:Callable[[str], None] | None = None,
-         **options) -> dict[str, Any]:
+         workload:str = "chat", link:dict[str, Any] | None = None, **options) -> dict[str, Any]:
   """The setup: the build, the facts, every row, the rendered command, and (measure) the sweeps' records. A Refused when
   the engine, its build or the model cannot be read. options go to the adapter's facts (test stand-ins). say: --measure's
   progress as a screen's pipeline lines (a stage per swept knob, a progress line per point, at most the row's points)."""
@@ -373,9 +534,9 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
       raise Refused(f"{engine} has no knob named {', '.join(unknown)} in BoltBeam's knob table")
     knobs_only = [names[q.lstrip("-")] for q in knobs_only]
   feats = ad.detect(build)
-  f = host_facts(memory=memory, l3=l3, prompt=prompt, context=context)
+  f = host_facts(memory=memory, l3=l3, prompt=prompt, context=context, workload=workload, link=link)
   got = ad.facts(model, f, feats, {"experts_in_ram": experts_in_ram, **options})
-  f = {**f, **got, "sources": {**f["sources"], **got.get("sources", {})}}
+  f = {**f, **got, "model_file": pathlib.Path(model).name, "sources": {**f["sources"], **got.get("sources", {}), "model_file": "the model given"}}
   rows = derive(f, feats, engine, tab)
   measured: dict[str, Any] = {}
   if measure:
@@ -387,7 +548,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
     say = say or (lambda _line: None)
     say(f"pipeline steps: {len(todo)}")
     for k in todo:
-      most = len(k["sweep"]["points"]) * (2 if k["sweep"]["type"] == "crossover" else 1)
+      most = (len(k["sweep"]["points"]) if k["sweep"]["type"] != "fit" else 1 + k["sweep"]["tries"]) * (2 if k["sweep"]["type"] == "crossover" else 1)
       point = [0]
       def timed(*a, _go=go, _most=most, _k=k["name"], _point=point, **kw):
         _point[0] += 1
@@ -395,7 +556,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
         return _go(*a, **kw)
       say(f"stage {k['name']}: start")
       try:
-        measured[k["name"]] = sweep(k, timed, rows, prompt=prompt)
+        measured[k["name"]] = sweep(k, timed, rows, prompt=prompt, facts=f, allowed=fact_names(engine, tab))
       except Exception as exc:  # noqa: BLE001  a failed sweep keeps the facts value and says why (in its row, not the stage)
         measured[k["name"]] = {"value": None, "status": "failed", "why": _words()["tune"]["sweep_failed"].format(out=short_path(str(out))),
                                "detail": f"{type(exc).__name__}: {str(exc)[-300:]}"}  # the raw text: provenance, not the reason

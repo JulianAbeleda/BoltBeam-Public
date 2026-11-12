@@ -6,8 +6,8 @@
   "out": null,
   "page": {
     "absent": [],
-    "command": "~/llama.cpp/build/bin/llama-server -m /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf -ngl 99 -ub 4096 -b 4096",
-    "head": "llama.cpp build: a build BoltBeam does not know by name, at ~/llama.cpp/build/bin/llama-server (CUDA). Its local patches: llama-pinned-copy-stream, llama-moe-prefill, llama-server-ckpt-min-head.",
+    "command": "~/llama.cpp/build/bin/llama-server -m /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf -ngl 99 -c 10000 -ub 4096 -b 4096",
+    "head": "llama.cpp build: a build BoltBeam does not know by name, at ~/llama.cpp/build/bin/llama-server (CUDA). Its local patches: llama-pinned-copy-stream, llama-moe-prefill, llama-server-ckpt-min-head, llama-server-ckpt-tail-only.",
     "measure": {
       "failed": "The measurement stopped without an answer: the values read from facts stand. Its log: {log}",
       "helper": "short sweeps, one engine start per point",
@@ -65,7 +65,7 @@
     "not_used_title": "Not used with this model and placement",
     "notes": [
       "Model: Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf, 48 expert layers of 256 experts, 23.42 GiB of experts; 0.00 GiB of them in host RAM (the offload plan on nvidia_sm120 (boltbeam offload)).",
-      "Host: 31.3 GiB RAM, 28.5 GiB available now, 26 GiB usable for the model; L3 32 MiB (sysfs index3: 32 MiB shared by cpus 0-15)."
+      "Host: 31.3 GiB RAM, 28.3 GiB available now, 26 GiB usable for the model; L3 32 MiB (sysfs index3: 32 MiB shared by cpus 0-15)."
     ],
     "rows": [
       {
@@ -74,7 +74,7 @@
         "held": null,
         "kind": "flag",
         "name": "-ub",
-        "reason": "the chunk BoltBeam's prompt limit picks for this machine (the offload page's prompt setup): the smallest within the policy tie of the best; host experts are uploaded once per chunk, so bigger chunks upload less (with experts in RAM, 4096 measured 15% faster than 2048)",
+        "reason": "the chunk BoltBeam's prompt limit picks for this machine (the offload page's prompt setup): the smallest within the policy tie of the best",
         "source": "derived",
         "source_words": "derived",
         "status": "set",
@@ -91,7 +91,7 @@
         "held": null,
         "kind": "flag",
         "name": "-b",
-        "reason": "raised to -ub when -ub is larger (the command does it); larger than -ub measured no effect: -b 8192 at -ub 4096, 10k, 4,295 vs 4,312 tok/s (the server's head and near-end breaks still set the decode calls)",
+        "reason": "raised to -ub when -ub is larger (the command does it); a prompt is read in chunks of at most -ub, so a -b above -ub adds no larger chunk",
         "source": "default",
         "source_words": "default",
         "status": "default",
@@ -105,7 +105,7 @@
         "held": null,
         "kind": "env",
         "name": "GGML_CUDA_MMID_PAR_MIN",
-        "reason": "the patch's crossover (outputs are bit-identical either way; at 10k it cut mm_ids 82 -> 26 ms); confirmed by --measure",
+        "reason": "the patch's crossover (outputs are bit-identical either way); --measure confirms it on this machine. Measured: with the whole Flash-Next model on the card, at 10k the parallel sort cut mm_ids from 82 to 26 ms",
         "source": "default",
         "source_words": "default",
         "status": "default",
@@ -119,7 +119,7 @@
         "held": null,
         "kind": "env",
         "name": "GGML_CUDA_MMQ_ID_J",
-        "reason": "a sweep knob, left unset: wider tiles were measured slower (J=128 at -ub 2048: expert MMQ 354 -> 395 ms); llama.cpp's mean-columns rule was already the best of the sweep",
+        "reason": "a sweep knob, left unset: llama.cpp's own mean-columns rule picks the tile width. Measured: with the whole Flash-Next model on the card, wider tiles read slower (J=128 at -ub 2048: expert MMQ 354 -> 395 ms), and the mean-columns rule was the best of the sweep",
         "source": "default",
         "source_words": "default",
         "status": "default",
@@ -133,7 +133,7 @@
         "held": null,
         "kind": "env",
         "name": "GGML_CUDA_BATCH_GET_STAGING",
-        "reason": "on: each fresh 112 MiB pin cost ~40 ms per checkpoint; staging measured +4.5% at 10k, results bit-identical",
+        "reason": "on: a reused pinned buffer saves pinning each checkpoint's destination afresh, and the results are bit-identical",
         "source": "default",
         "source_words": "default",
         "status": "default",
@@ -147,7 +147,7 @@
         "held": null,
         "kind": "env",
         "name": "GGML_CUDA_BATCH_GET_STAGING_MAX_MIB",
-        "reason": "a cap on pinned memory: the largest staged span measured 448 MiB with the prompt cache on (128 MiB with --cache-ram 0), under the cap",
+        "reason": "a cap on pinned memory: a state read larger than it takes the old path",
         "source": "default",
         "source_words": "default",
         "status": "default",
@@ -168,6 +168,20 @@
         "tags": [
           "changes outputs: not bitwise identical"
         ],
+        "use": null,
+        "value": "0"
+      },
+      {
+        "confirm": null,
+        "group": "llama-server-ckpt-tail-only",
+        "held": null,
+        "kind": "env",
+        "name": "LLAMA_SERVER_CKPT_TAIL_ONLY",
+        "reason": "off, because the workload is chat (--workload chat, the default): with it on, a follow-up that changes an earlier part of the conversation re-reads the whole prompt; outputs of a single request are identical. Turn it on only for one-shot prompts (--workload one-shot)",
+        "source": "derived",
+        "source_words": "derived",
+        "status": "default",
+        "tags": [],
         "use": null,
         "value": "0"
       }
