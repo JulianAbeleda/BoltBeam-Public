@@ -70,8 +70,8 @@ func TestReadTuneFromTheJobLog(t *testing.T) {
 	if _, err := ReadTune(log[:4]); err == nil {
 		t.Fatal("a stopped job has no answer")
 	}
-	argv := Client{Python: "py"}.TuneArgv("/m", "e", "/b")
-	if strings.Join(argv, " ") != "py -m boltbeam.workflow.screen tune /m --engine e --build /b --measure" {
+	argv := Client{Python: "py", Root: "/r", Saved: "/s"}.TuneArgv("/m", "e", "/b", "--knob", "-ub")
+	if strings.Join(argv, " ") != "py -m boltbeam.workflow.screen tune /m --engine e --knob -ub --build /b --facts-root /r --facts-root /r/.work --facts-root /s --measure" {
 		t.Fatalf("argv: %v", argv)
 	}
 }
@@ -139,5 +139,28 @@ func TestCompareFormsAndBudgets(t *testing.T) {
 	if err := json.Unmarshal(raw, &e); err != nil || e.Engine.PromptForm == nil || *e.Engine.PromptForm != "chat" ||
 		!regexp.MustCompile(`chat request`).MatchString(*e.Engine.PromptFormWords) {
 		t.Fatalf("prompt form: %+v %v", e.Engine, err)
+	}
+}
+
+// A demo plays the measure jobs from its recording, else prints the line a successful job ends with; only outside a demo
+// do they run the CLI (the GPU).
+func TestMeasureJobsAreDemoSafe(t *testing.T) {
+	c := Client{Python: "py"}
+	if got := strings.Join(c.RoutingArgv("/m/a.gguf", "llama.cpp", "/b/llama-bench"), " "); got != "py -m boltbeam.cli routing /m/a.gguf --engine llama.cpp --build /b/llama-bench" {
+		t.Fatalf("routing: %s", got)
+	}
+	if got := strings.Join(c.HostArgv(), " "); got != "py -m boltbeam.cli host --remeasure --json" {
+		t.Fatalf("host: %s", got)
+	}
+	c.Demo = &Demo{Argv: map[string][]string{"routing": {"echo", "recorded"}}}
+	if got := c.RoutingArgv("/m/a.gguf", "llama.cpp", ""); len(got) != 2 || got[0] != "echo" {
+		t.Fatalf("a demo plays its recording: %v", got)
+	}
+	if got := c.HostArgv(); len(got) != 2 || got[0] != "echo" || !strings.Contains(got[1], `"remeasure_failed": false`) {
+		t.Fatalf("a demo with no recording prints its success line: %v", got)
+	}
+	c.Demo = &Demo{}
+	if got := c.RoutingArgv("/m", "e", ""); got[1] != "routing profile: demo" {
+		t.Fatalf("%v", got)
 	}
 }

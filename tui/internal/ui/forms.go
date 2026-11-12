@@ -19,7 +19,7 @@ import (
 
 // formState is the open form and the values its fields write. A pointer: every copy of the Model shares one form.
 type formState struct {
-	kind       string // remote (where to fetch from), pick (which runs, raw traces), settings or speedup (the confirm step)
+	kind       string // remote (where to fetch from), pick (which runs, raw traces), settings, context or speedup (the confirm step)
 	f          *huh.Form
 	dest, port string
 	picked     []string
@@ -27,6 +27,7 @@ type formState struct {
 	confirmed  bool // the confirm step's answer: Make the copy
 	settings   map[string]*string
 	env        map[string]*string // the environment set for the engine, by name
+	ctx        [3]string          // the Context form: prompt, reply, replies file
 }
 
 // remoteRule is user@host or a host (an ssh Host alias): letters, digits, dot, dash and underscore, no leading dash.
@@ -138,6 +139,8 @@ func (m Model) formStep(msg tea.Msg) (Model, tea.Cmd) {
 			m.f.setEnv(name, strings.TrimSpace(*p))
 		}
 		m.backToSetup()
+	case "context":
+		return m.contextDone(s.ctx), nil
 	}
 	return m, nil
 }

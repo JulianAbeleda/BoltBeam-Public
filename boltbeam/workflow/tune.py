@@ -44,7 +44,7 @@ FACTS = {  # the engine-neutral names a formula may read: the fact and what it i
   "ram_total_bytes": "RAM installed", "ram_margin_bytes": "RAM kept free for the system and the engine (target/host.RAM_MARGIN_BYTES)",
   "l3_bytes": "one L3 instance (target/host.l3_cache)", "page_bytes": "the memory page size",
   "gpu_total_bytes": "the GPU's memory", "gpu_free_bytes": "the GPU's memory free now",
-  "prompt_tokens": "the prompt length the setup is stated at", "context_tokens": "the context the setup must hold",
+  "prompt_tokens": "the prompt length the setup is stated at", "context_tokens": "the context the setup must hold", "reply_tokens": "the reply length the context leaves room for, from measured replies (--replies; absent when not measured)",
   "shared_memory": "the GPU reads host memory directly (no copies)",
   "h2d_pinned_gbs": "the measured copy rate to the GPU from pinned host memory, GB/s (target/host.facts)",
   "gpu_name": "the GPU's name (the hardware scan)", "model_file": "the model file's name",
@@ -222,13 +222,15 @@ def copy_rate(link:dict[str, Any] | None = None) -> tuple[float | None, str, str
 
 
 def host_facts(*, memory:dict[str, Any] | None = None, l3:dict[str, Any] | None = None, prompt:int = PROMPT,
-               context:int | None = None, workload:str = "chat", link:dict[str, Any] | None = None) -> dict[str, Any]:
+               context:int | None = None, workload:str = "chat", link:dict[str, Any] | None = None, reply:dict[str, Any] | None = None) -> dict[str, Any]:
   """RAM, L3, the copy rate to the GPU, the page size, the workload and the prompt and context the setup is stated at,
   with "sources". memory, l3 and link (host.facts' record) stand in for the readings (tests)."""
   from boltbeam.target import host
   if workload not in WORKLOADS:
     raise Refused(f"--workload is one of {', '.join(WORKLOADS)}, not {workload!r}")
   rate, rate_source, gpu_name = copy_rate(link)
+  if context is not None and reply:
+    raise Refused("--context and --replies both say how much room the reply gets: give one or the other")
   if context is not None and context < prompt:
     raise Refused(f"--context {context} is shorter than the {prompt}-token prompt: the context holds the prompt and the reply")
   mem = memory or host.memory()
@@ -237,11 +239,12 @@ def host_facts(*, memory:dict[str, Any] | None = None, l3:dict[str, Any] | None 
   page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
   out = {"usable_ram_bytes": ram["usable_bytes"], "ram_available_bytes": ram.get("available_bytes"), "ram_total_bytes": ram["total_bytes"],
          "ram_margin_bytes": ram["margin_bytes"], "l3_bytes": l3.get("bytes"), "l3_source": l3["source"], "page_bytes": page,
-         "prompt_tokens": prompt, "context_tokens": context or prompt + REPLY_TOKENS, "h2d_pinned_gbs": rate, "workload": workload,
-         "gpu_name": gpu_name}
+         "prompt_tokens": prompt, "context_tokens": context or prompt + (reply["value"] if reply else REPLY_TOKENS), "h2d_pinned_gbs": rate, "workload": workload,
+         "gpu_name": gpu_name, **({"reply_tokens": reply["value"]} if reply else {})}
   out["sources"] = {"usable_ram_bytes": ram["says"], "ram_available_bytes": mem["source"], "ram_total_bytes": mem["source"],
                     "ram_margin_bytes": "target/host.RAM_MARGIN_BYTES", "l3_bytes": l3["source"], "page_bytes": "os.sysconf SC_PAGE_SIZE",
-                    "prompt_tokens": "--prompt", "context_tokens": "--context" if context else f"--prompt plus {REPLY_TOKENS} tokens for the reply (no --context given)",
+                    "prompt_tokens": "--prompt", "context_tokens": "--context" if context else f"--prompt plus {reply['value']} tokens for the reply: {reply['says']}" if reply else
+                    f"--prompt plus {REPLY_TOKENS} tokens for the reply (the unmeasured default: no --context and no --replies given)",
                     "h2d_pinned_gbs": rate_source, "workload": "--workload", "gpu_name": "the hardware scan"}
   return out
 
@@ -265,6 +268,37 @@ def time_budget(path:str | pathlib.Path, prompt:int | None = None) -> dict[str, 
   if not isinstance(d.get("kernels_ms"), (int, float)):
     raise Refused(f"{p.name}: holds no time budget with a kernel time")
   return {**d, "what": d.get("what") or p.name}
+
+
+def reply_budget(path:str | pathlib.Path, target:float = 0.05) -> dict[str, Any]:
+  """The reply budget measured replies call for (a JSONL file, one row per reply: tokens, finish; "length" = cut at the
+  budget it ran with): the (1 - target) quantile of the lengths, the smallest length that holds at least that share of
+  replies. A cut reply is longer than it shows, so when more than `target` were cut the quantile is not placed by the
+  data: a Refused. {value, n, cut, quantile, what, says}."""
+  p = pathlib.Path(path).expanduser()
+  got: list[tuple[int, bool]] = []
+  try:
+    rows = [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
+  except (OSError, ValueError) as exc:
+    raise Refused(f"{p.name}: no replies could be read (a JSON line per reply with its tokens and finish is needed)") from exc
+  for i, r in enumerate(rows, 1):
+    ok = isinstance(r, dict) and isinstance(r.get("tokens"), int) and not isinstance(r.get("tokens"), bool) and r["tokens"] > 0
+    if not ok or r.get("finish") not in ("stop", "length"):
+      raise Refused(f"{p.name}: reply {i} does not say its length in tokens and how it ended (finish is stop, or length when it was cut off)")
+    got.append((r["tokens"], r["finish"] == "length"))
+  if not got:
+    raise Refused(f"{p.name}: holds no replies")
+  n, cut, q = len(got), sum(c for _, c in got), 1 - target
+  if cut > target * n:
+    at = sorted({t for t, c in got if c})
+    raise Refused(f"{p.name}: {cut} of {n} replies were cut off at {', '.join(f'{t:,}' for t in at)} tokens ({cut / n:.1%} of them, more than the {target:.0%} the budget may leave cut), "
+                  f"so how long they would have run is not known: measure the replies again at a larger budget")
+  k = math.ceil(round(q * n, 9))
+  value = int(sorted(math.inf if c else t for t, c in got)[k - 1])  # a cut reply is at least its length: it sorts last
+  upto = sum(t <= value and not c for t, c in got)
+  few = f"n={n}: too few replies for a {q:.0%} length, so this is the longest measured reply: " if n < 20 else ""
+  return {"value": value, "n": n, "cut": cut, "quantile": q, "what": p.name,
+          "says": f"{few}{upto} of {n} measured replies ({cut} cut) are {value:,} tokens or shorter, the smallest length that holds {q:.0%} of them ({p.name})"}
 
 
 # --- the rows ----------------------------------------------------------------------------------------------------------
@@ -520,7 +554,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
          knobs_only:list[str] | None = None, port:int = 0, out:pathlib.Path | None = None, extra:list[str] | None = None,
          experts_in_ram:str | None = None, run:Callable[..., float] | None = None, tab:dict[str, Any] | None = None,
          memory:dict[str, Any] | None = None, l3:dict[str, Any] | None = None, say:Callable[[str], None] | None = None,
-         workload:str = "chat", link:dict[str, Any] | None = None, **options) -> dict[str, Any]:
+         workload:str = "chat", link:dict[str, Any] | None = None, reply:dict[str, Any] | None = None, **options) -> dict[str, Any]:
   """The setup: the build, the facts, every row, the rendered command, and (measure) the sweeps' records. A Refused when
   the engine, its build or the model cannot be read. options go to the adapter's facts (test stand-ins). say: --measure's
   progress as a screen's pipeline lines (a stage per swept knob, a progress line per point, at most the row's points)."""
@@ -534,8 +568,8 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
       raise Refused(f"{engine} has no knob named {', '.join(unknown)} in BoltBeam's knob table")
     knobs_only = [names[q.lstrip("-")] for q in knobs_only]
   feats = ad.detect(build)
-  f = host_facts(memory=memory, l3=l3, prompt=prompt, context=context, workload=workload, link=link)
-  got = ad.facts(model, f, feats, {"experts_in_ram": experts_in_ram, **options})
+  f = host_facts(memory=memory, l3=l3, prompt=prompt, context=context, workload=workload, link=link, reply=reply)
+  got = ad.facts(model, f, feats, {"experts_in_ram": experts_in_ram, "extra": extra, **options})
   f = {**f, **got, "model_file": pathlib.Path(model).name, "sources": {**f["sources"], **got.get("sources", {}), "model_file": "the model given"}}
   rows = derive(f, feats, engine, tab)
   measured: dict[str, Any] = {}
@@ -674,7 +708,7 @@ def page(res:dict[str, Any], setting_of:Callable[[dict[str, Any]], str | None] |
           "rows": rows, "not_used_title": wp["not_used"],
           "not_used": [{"name": r["name"], "reason": r["reason"]} for r in res["rows"] if r["status"] == "not_applicable"],
           "absent": absent, "command": res["command"],
-          "measure": {"label": wp["measure"], "helper": wp["measure_helper"], "knobs": to_measure, "none": None if to_measure else wp["measure_none"],
+          "measure": {"label": wp["measure"], "one": wp["measure_one"], "helper": wp["measure_helper"], "knobs": to_measure, "none": None if to_measure else wp["measure_none"],
                       "running": wp["running"], "stop": wp["stop"], "stop_helper": wp["stop_helper"], "stopped": wp["stopped"],
                       "failed": wp["failed"], "starting": wp["starting"], "progress": wp["progress"]},
           "use": {"label": wp["use"], "helper": wp["use_helper"], "settings": settings, "env": env,

@@ -23,7 +23,7 @@ python -m boltbeam.workflow.screen replay-cross --a runs/a --b runs/b           
 python -m boltbeam.workflow.screen autoscan                       # measure this GPU once when it has no chip profile
 python -m boltbeam.workflow.screen recommend MODEL --target TARGET --engine ENGINE [--check]   # context, speed and flags per GPU layout
 boltbeam offload MODEL --target TARGET [--engine ENGINE]       # the offload page: what goes to the card and to RAM (the same as screen offload)
-boltbeam tune MODEL --engine llama.cpp|vllm [--build BIN] [--experts-in-ram all|N] [--prompt N] [--context N] [--workload chat|one-shot] [--time-budget BUDGET.json] [--measure]
+boltbeam tune MODEL --engine llama.cpp|vllm [--build BIN] [--experts-in-ram all|N] [--prompt N] [--context N] [--replies REPLIES.jsonl] [--workload chat|one-shot] [--time-budget BUDGET.json] [--measure]
 boltbeam time-budget capture.sqlite --engine ENGINE [--driver LINE.json | --wall-ms MS] [--out budget.json]
 boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECORD] [--compare OTHER.json]
 ```
@@ -32,8 +32,13 @@ boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECOR
   knobs), each with where it came from, and the command to run. It reads facts only (the model file, the GPU, RAM, the
   build); `--measure` also runs the measured rows' prefill sweeps, starting the engine once per point, and `--knob`
   limits that to one setting. For vLLM, a model whose weights and KV cannot fit is refused in words. The command's
-  context (`-c`) is `--context`, else the prompt plus 2,048 tokens for the reply. With experts in RAM, the patched
-  build's prefetch slot count is worked out from the copy rate, the compute time and the GPU memory left after load
+  context (`-c`) is `--context`, else the prompt plus the reply budget: with `--replies FILE` (a JSON line per
+  measured reply, `tokens` and `finish`, where `length` means cut off) the length that holds 95% of the replies,
+  refused when more than 5% were cut (measure again at a larger budget); with neither, 2,048 tokens, said to be
+  unmeasured. `--context` and `--replies` together are refused. A context that cannot fit one request on the GPU is
+  refused in words (llama.cpp: at least the model's card share plus the KV, unless `--flags` sets `-c`, `-ctk` or
+  `-ctv`; vLLM: the weights plus the KV). With experts in RAM, the patched build's prefetch slot count is worked out
+  from the copy rate, the compute time and the GPU memory left after load
   (`--time-budget` gives a measured compute time); `--measure` reads that memory from a running server and backs off
   if a slot fails to allocate. `--workload one-shot` turns on one checkpoint per prompt (faster prompts; a follow-up
   that changes an earlier turn re-reads the whole prompt). A measured number is quoted only on the GPU and model it

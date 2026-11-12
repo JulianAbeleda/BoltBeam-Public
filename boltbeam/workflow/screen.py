@@ -167,7 +167,7 @@ def compare_runs(a:pathlib.Path, b:pathlib.Path, bands:dict[str, Any] | None = N
 
 
 def replay_command(args) -> dict[str, Any]:
-  """The replay's seam commands: write a shape's trace, list the shapes, find running servers, compare two runs."""
+  """The replay's seam commands: list the shapes, find running servers, compare two runs."""
   if args.command == "replay-shapes":
     table = rt.shapes()
     return {"schema": SCHEMA, "default": table["default"],
@@ -184,14 +184,10 @@ def replay_command(args) -> dict[str, Any]:
     d = rw.diff(pathlib.Path(args.before).expanduser(), pathlib.Path(args.after).expanduser(),
                 bands=read_json(args.bands) if getattr(args, "bands", None) else None)
     return {**d, "lines": rw.diff_lines(d), "plain": plain.compare(d)}
-  if args.command=='replay-review':
-    from boltbeam.collectors.forced_replay import publish
-    publish(pathlib.Path(args.run),read_json(args.inputs))
-    output_run(pathlib.Path(args.run))
-    return rs.results(pathlib.Path(args.run))
-  trace = rt.shape(args.shape)
-  rt.write(trace, pathlib.Path(args.out).expanduser())
-  return {"schema": SCHEMA, "out": args.out, "label": rt.label(trace), "source": trace["source"]}
+  from boltbeam.collectors.forced_replay import publish  # replay-review
+  publish(pathlib.Path(args.run),read_json(args.inputs))
+  output_run(pathlib.Path(args.run))
+  return rs.results(pathlib.Path(args.run))
 
 # --- the command line ------------------------------------------------------------------------------------------
 
@@ -243,12 +239,55 @@ def recommended(profile:dict[str, Any], target, *, engine:str = "vllm", gpus:int
   return {**out, "check": {**got, "after": rec.compare(after, got["overhead"], got["layout"])}}
 
 
+def run_time_budget(model:str, engine:str, roots:list[pathlib.Path], prompt:int, target:str | None = None) -> dict[str, Any] | None:
+  """The measured time budget of the newest run under roots, of this model, engine and chip (target), whose results.json holds one that
+  stands for this prompt (tune.budget_unusable); its "what" names the run. None when no run has one."""
+  from boltbeam.profile.ir import model_name
+  from boltbeam.workflow import tune
+  mid, runs = model_name(model), []
+  for root in roots:
+    runs += [p for p in root.glob("*/results.json") if rf.is_run(p.parent)]
+  for p in sorted(runs, key=lambda p: p.stat().st_mtime, reverse=True):
+    try:
+      man = load_manifest(p.parent)
+      if man.get("model_id") != mid or providers.run_provider(p.parent) != engine or (target and man.get("target_id") != target):
+        continue
+      budget = {**tune.time_budget(p, prompt), "what": f"the saved run {p.parent.name}"}
+    except (Refused, ValueError, OSError):
+      continue
+    if tune.budget_unusable(budget, prompt) is None:
+      return budget
+  return None
+
+
+def setting_flags(engine:str, settings:list[str]) -> tuple[list[str] | None, list[str]]:
+  """Settings (NAME=VALUE, the names a run is asked with) as the engine's own flags, through the one setting<->flag map
+  (capture_settings.KNOB_SETTINGS) and the pipeline's value types (ASKED). A setting whose flag is a knob this page tunes
+  is left out and named: its value is the page's to set, and a flag given last would pin a sweep."""
+  from boltbeam.workflow import tune
+  flag_of = {name: flag for flag, name in capture_settings.KNOB_SETTINGS.get(engine, {}).items()}
+  knobs = {k["name"] for k in tune.knobs(engine, tune.table())}
+  flags, tuned_here = [], []
+  for item in settings:
+    name, _, value = item.partition("=")
+    if flag_of.get(name) in knobs:
+      tuned_here.append(flag_of[name])
+    elif flag_of.get(name, "").startswith("-"):  # a config key or a setting only the pipeline takes (matrix backends) is no flag
+      kind = capture_settings.ASKED.get(name, (str,))[0]
+      flags += [flag_of[name]] if kind is capture_settings.switch and kind(value) else [flag_of[name], str(kind(value))]
+  return flags or None, tuned_here
+
+
 def tuned(model:str, engine:str, build:str | None = None, *, measure:bool = False, knobs:list[str] | None = None,
-          experts_in_ram:str | None = None, say=None) -> dict[str, Any]:
+          experts_in_ram:str | None = None, say=None, prompt:int | None = None, context:int | None = None, replies:str | None = None,
+          workload:str | None = None, settings:list[str] | None = None, roots:list[pathlib.Path] | None = None,
+          target:str | None = None) -> dict[str, Any]:
   """Tuned for this machine (workflow/tune.py): the engine's knob rows as the Recommended setup page lays them out, and what
   a run passes of them (capture_settings.knob_setting; env rows as environment). Facts only unless measure, which writes
-  its progress through say as pipeline lines. An engine with no knob table, or a build or model the adapter cannot read,
-  is a refusal in plain words, with no page."""
+  its progress through say as pipeline lines. prompt, context, replies, workload, settings (NAME=VALUE: the pipeline's
+  names, turned into the engine's flags here) and experts_in_ram are Setup's
+  (the screen passes what the user set; unset keeps tune's own); the time budget is the newest run's under roots. An
+  engine with no knob table, or a build or model the adapter cannot read, is a refusal in plain words, with no page."""
   from boltbeam.core.refused import Refused
   from boltbeam.workflow import tune
   out = {"schema": SCHEMA, "kind": "tune", "engine": engine, "model": model, "page": None, "refused": None}
@@ -256,9 +295,18 @@ def tuned(model:str, engine:str, build:str | None = None, *, measure:bool = Fals
   if engine not in tune.engines():
     return {**out, "refused": refused.format(reason=f"BoltBeam has no knob table for {engine} yet")}
   try:
-    res = tune.tune(model, engine, build, measure=measure, knobs_only=knobs, experts_in_ram=experts_in_ram, say=say)
+    kw: dict[str, Any] = {"prompt": prompt or tune.PROMPT, "context": context, "workload": workload or "chat",
+                          "reply": tune.reply_budget(replies) if replies else None}
+    kw["extra"], tuned_here = setting_flags(engine, settings or [])
+    if budget := run_time_budget(model, engine, roots or [], kw["prompt"], target):
+      kw["time_budget"] = budget
+    res = tune.tune(model, engine, build, measure=measure, knobs_only=knobs, experts_in_ram=experts_in_ram, say=say, **kw)
   except Refused as exc:
     return {**out, "refused": refused.format(reason=str(exc))}
+  if workload:
+    res["facts"]["sources"]["workload"] = plain.words()["tune"]["page"]["setup_workload"]
+  if tuned_here:
+    res["facts"].setdefault("notes", []).append(plain.words()["tune"]["page"]["settings_tuned"].format(knobs=", ".join(tuned_here)))
   return {**out, "build": res["build"].get("build"), "out": res.get("out"),
           "page": tune.page(res, lambda r: capture_settings.knob_setting(engine, r["name"]))}
 
@@ -364,6 +412,21 @@ def _offload_args(p) -> None:
   p.add_argument("--experts", type=int, help="with --offload: re-size the experts to N per layer (a file not on disk; the result is an estimate)")
   p.add_argument("--bits-per-weight", type=float, help="with --experts: the experts' bits per weight")
   p.add_argument("--draft", help="a draft model's file (an MTP head kept apart): its weights and KV count against the fit")
+
+
+def _context_args(p) -> None:
+  p.add_argument("--prompt", type=int, help="with --replies: the prompt length; the context is it plus the reply measured replies call for")
+  p.add_argument("--replies", help="measured replies (a JSON line per reply): the room for the reply is the length that holds 95%% of them")
+
+
+def _context(args) -> int | None:
+  """The context a page is stated at: --context, or the prompt plus the reply tune.reply_budget reads from --replies (the one authority)."""
+  from boltbeam.workflow import tune
+  if args.replies and args.context is not None:
+    raise Refused("--context and --replies both say how much room the reply gets: give one or the other")
+  if args.prompt and not args.replies:
+    raise Refused("--prompt goes with --replies (the context is the prompt plus the reply those replies call for); without them give --context")
+  return (args.prompt or tune.PROMPT) + tune.reply_budget(args.replies)["value"] if args.replies else args.context
 
 
 def _offload_kw(args) -> dict[str, Any]:
@@ -480,9 +543,6 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p = sub.add_parser("replay-review", help="reconcile retained forced replay captures without GPU measurement")
   p.add_argument("--run", required=True)
   p.add_argument("--inputs", required=True, help="local capture manifest; raw tokens remain local")
-  p = sub.add_parser("replay-trace", help="write a shape's counts-only replay trace")
-  p.add_argument("--out", required=True)
-  p.add_argument("--shape", default=None, help="a shape in data/replay_shapes.json")
   sub.add_parser("replay-shapes", help="the shipped replay shapes, each with its label")
   sub.add_parser("replay-servers", help="the llama-server commands running on this machine, to replay on")
   p = sub.add_parser("replay-cross", help="two engines' replays of one trace: the same work per turn, each against its roofline")
@@ -518,6 +578,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p.add_argument("--engine", default="vllm", choices=list(providers.NAMES))
   p.add_argument("--seqs", type=int, default=1, help="sequences served together (1: one user)")
   p.add_argument("--context", type=int, default=None, help="the context the sequence count and the speed are stated at")
+  _context_args(p)
   p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts there")
   _offload_args(p)
   q = sub.add_parser("offload", help="the offload page for this model on this machine: the card and RAM, each setup's limits, the pinned-copy gap (derived; the first call on a GPU measures its copy rate, about a second)")
@@ -527,6 +588,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   q.add_argument("--target", required=True)
   q.add_argument("--engine", default="llama.cpp", choices=list(providers.NAMES))
   q.add_argument("--context", type=int, default=None, help="the context the KV and the prompt are stated at")
+  _context_args(q)
   q.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts there")
   p.add_argument("--check", action="store_true", help="start the engine once with these flags (a free GPU, a minute or two), "
                  "read its KV cache figures, cache its overhead in the facts and show predicted against measured")
@@ -538,6 +600,13 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p.add_argument("--measure", action="store_true", help="run the measured rows' sweeps on this machine's GPU")
   p.add_argument("--knob", action="append", help="with --measure: only this knob (repeatable)")
   p.add_argument("--experts-in-ram", help="all, or the first N layers' experts in host RAM (default: the offload plan's)")
+  p.add_argument("--prompt", type=int, help="the prompt length the setup is stated and swept at")
+  p.add_argument("--context", type=int, help="the context the setup must hold (not with --replies)")
+  p.add_argument("--replies", help="measured replies (a JSON line per reply): the room for the reply is the length that holds 95%% of them")
+  p.add_argument("--workload", help="chat or one-shot (refused otherwise)")
+  p.add_argument("--setting", action="append", default=[], help="NAME=VALUE: an engine setting Setup holds, passed as the engine's flag unless this page tunes it")
+  p.add_argument("--target", help="the chip: only a run on it gives the time budget")
+  p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest run there with a measured time budget is used")
   p = sub.add_parser("mtp", help="vLLM's multi-token prediction per draft count on natural prompts (collectors/vllm_mtp)")
   p.add_argument("model")
   p.add_argument("--target", required=True)
@@ -613,15 +682,17 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
     elif args.command == "recommend":
       target = _target_arg(args.target)
       roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
-      out = recommended(_profile_arg(args), target, engine=args.engine, gpus=args.gpus, seqs=args.seqs, context=args.context,
+      out = recommended(_profile_arg(args), target, engine=args.engine, gpus=args.gpus, seqs=args.seqs, context=_context(args),
                         facts=lay.newest_facts(roots, target.target_id), check_in=roots if args.check else None, **_offload_kw(args))
     elif args.command == "offload":
       target = _target_arg(args.target)
       roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
-      got = recommended(_profile_arg(args), target, engine=args.engine, context=args.context, facts=lay.newest_facts(roots, target.target_id), offload=True,
+      got = recommended(_profile_arg(args), target, engine=args.engine, context=_context(args), facts=lay.newest_facts(roots, target.target_id), offload=True,
                         probe_h2d=True)  # the offload page may measure the copy rate (an idle GPU only); recommend reads the saved one
       moe = got.get("offload") or {}
-      out = {"schema": SCHEMA, "kind": "offload", "target_id": target.target_id, "model": got.get("model"), "status": moe.get("status"), "page": moe.get("page")}
+      from boltbeam.workflow import routing  # Measure routing is offered where there are experts to place and the engine captures a profile
+      out = {"schema": SCHEMA, "kind": "offload", "target_id": target.target_id, "model": got.get("model"), "status": moe.get("status"), "page": moe.get("page"),
+             "routing": moe.get("status") == "recommended" and bool(routing.table().get(args.engine, {}).get("captures"))}
     elif args.command == "engines" and args.update:
       target = _target_arg(args.target or chips.detect().get("target_id") or "")
       out = {"schema": SCHEMA, "kind": "engines-update", "file": str(engine_builds.state_file()),
@@ -638,7 +709,9 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
     elif args.command == "tune":
       say = (lambda line: print(line, flush=True)) if args.measure else None  # the job's log: progress, then the page
       out = tuned(str(pathlib.Path(args.model).expanduser()), args.engine, args.build, measure=args.measure, knobs=args.knob,
-                  experts_in_ram=args.experts_in_ram, say=say)
+                  experts_in_ram=args.experts_in_ram, say=say, prompt=args.prompt, context=args.context, replies=args.replies,
+                  workload=args.workload, settings=args.setting, roots=[pathlib.Path(r).expanduser() for r in args.facts_root],
+                  target=args.target)
     elif args.command == "gpu-free":
       out = gpu_free(_target_arg(args.target))
     elif args.command == "mtp":

@@ -167,7 +167,27 @@ type Words struct {
 		Match []string `json:"match"`
 		Plain string   `json:"plain"`
 	} `json:"glossary"`
-	SpeedUp SpeedWords `json:"speed_up"`
+	SpeedUp SpeedWords        `json:"speed_up"`
+	Context map[string]string `json:"context"` // the Context form and line (plain_words.json context)
+	Measure struct {
+		Stop        string      `json:"stop"`
+		Stopped     string      `json:"stopped"`
+		Busy        string      `json:"busy"`
+		StartFailed string      `json:"start_failed"`
+		StopFailed  string      `json:"stop_failed"`
+		Routing     MeasureWord `json:"routing"`
+		Host        MeasureWord `json:"host"`
+	} `json:"measure_again"`
+}
+
+// MeasureWord are the words of one measure job beside a page (data/plain_words.json measure_again): its action, what
+// it does, while it runs, and how it ends (Failed names the log).
+type MeasureWord struct {
+	Label   string `json:"label"`
+	Helper  string `json:"helper"`
+	Running string `json:"running"`
+	Done    string `json:"done"`
+	Failed  string `json:"failed"`
 }
 
 // SpeedWords are the screen's own words for Speed up (data/plain_words.json speed_up): the rest of its sentences arrive

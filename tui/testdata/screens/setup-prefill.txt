@@ -1,14 +1,14 @@
 ⚡ BoltBeam                                                                (•ᴗ•)
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Setup                                                                        │
-│   Machine            checking this Mac…                                    › │
-│                                                                              │
+│   ↑ 2 more                                                                   │
 │   Model              Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K             › │
 │   Chip               apple_m3_10c · this Mac · 97.2 GB/s                   › │
 │   Engine             llama.cpp                                             › │
 │                                                                              │
 │   Recommended setup  context, speed and engine flags for this model on y…  › │
 │   Offload            working out the plan, a few seconds…                  › │
+│   Context            each page's default                                   › │
 │                                                                              │
 │ ▸ Workload           prefill                                               › │
 │   Batch              1                                                     › │
@@ -18,7 +18,7 @@
 │                      llama.cpp                                               │
 │   [ Emit ]           No run yet: Run first                                   │
 │                                                                              │
-│   Saved runs (0)                                                           › │
+│   ↓ 1 more                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ move · enter pick · ? all keys · q quit

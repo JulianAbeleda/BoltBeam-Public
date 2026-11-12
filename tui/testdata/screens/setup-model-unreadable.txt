@@ -11,13 +11,13 @@
 │                                                                              │
 │   Recommended setup  context, speed and engine flags for this model on y…  › │
 │   Offload            working out the plan, a few seconds…                  › │
+│   Context            each page's default                                   › │
 │                                                                              │
 │   Workload           decode                                                › │
 │   Batch              1                                                     › │
 │   Measurement        auto                                                  › │
 │                                                                              │
-│   [ Run ]            Pick a model BoltBeam can read: Model says why          │
-│   ↓ 3 more                                                                   │
+│   ↓ 4 more                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
 

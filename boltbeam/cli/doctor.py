@@ -42,6 +42,9 @@ def row(item:str, found:bool | None, detail:str, fix:str | None = None, *, block
   return {"item": item, "found": found, "detail": detail, "fix": fix, "blocks": blocks}
 
 
+REMEASURE_FAILED = "the remeasure failed"  # in a host row's detail when a saved figure stood in
+
+
 def _python() -> dict[str, Any]:
   ok = sys.version_info[:2] >= FLOOR
   return row("python", ok, f"{platform.python_version()} ({sys.executable})",
@@ -218,9 +221,10 @@ def _gpu_vendor(gpu:dict[str, Any]) -> str | None:
   return gpu.get("vendor") or next((d.get("vendor") for d in gpu.get("devices") or []), None)
 
 
-def _host(gpu:dict[str, Any], *, measure:bool = False, remeasure:bool = False) -> list[dict[str, Any]]:
+def _host(gpu:dict[str, Any], *, measure:bool = False, remeasure:bool = False, failed:list[str] | None = None) -> list[dict[str, Any]]:
   """RAM total and available now, RAM read GB/s, the GPU's link to host memory (target/host_links.py) and the copies to the GPU from pinned and from pageable
-  memory. measure: run the probes for what is not saved (remeasure: all of it); else saved figures only."""
+  memory. measure: run the probes for what is not saved (remeasure: all of it); else saved figures only. failed collects
+  the reason of each probe that raised (RAM reads, copies), whether or not a saved figure stood in."""
   from boltbeam.core.refused import Refused
   from boltbeam.target import host
   from boltbeam.workflow.offload import machine_rows
@@ -230,6 +234,8 @@ def _host(gpu:dict[str, Any], *, measure:bool = False, remeasure:bool = False) -
     if not isinstance(ram.get("ram_gbs"), (int, float)):
       ram = {k: v for k, v in ram.items() if k != "ram_gbs"}
   except Refused as exc:  # a failed remeasure keeps the saved figure, and says the new one could not be taken
+    if failed is not None:
+      failed.append(str(exc))
     saved = host._load(host.host_file())
     ram = {"ram_gbs": saved["ram_gbs"], "remeasure_failed": str(exc)} if isinstance(saved.get("ram_gbs"), (int, float)) else {"error": str(exc)}
   from boltbeam.target import host_links
@@ -242,6 +248,8 @@ def _host(gpu:dict[str, Any], *, measure:bool = False, remeasure:bool = False) -
   try:
     copies = host.h2d(pci, remeasure=remeasure) if measure else host.saved_h2d(pci)
   except Refused as exc:  # a failed (re)measure keeps the saved figure, as the RAM row does
+    if failed is not None:
+      failed.append(str(exc))
     copies, why = host.saved_h2d(pci), str(exc)
   mem = host.memory()
   figures = {"ram_bytes": mem["total_bytes"], "ram_available_bytes": mem["available_bytes"], "ram_gbs": ram.get("ram_gbs"),
@@ -249,13 +257,13 @@ def _host(gpu:dict[str, Any], *, measure:bool = False, remeasure:bool = False) -
              "h2d_gbs": (copies or {}).get("h2d_gbs"), "h2d_measured_at": (copies or {}).get("measured_at")}
   rows = {r["label"]: r["value"] for r in machine_rows(figures)}
   out = [row("RAM", True, rows["RAM"] + f" ({mem['source']})")]
-  out.append(row("RAM reads", True, rows["RAM reads"] + (f"; saved figure kept, the remeasure failed: {ram['remeasure_failed']}" if ram.get("remeasure_failed") else "")) if "RAM reads" in rows else
+  out.append(row("RAM reads", True, rows["RAM reads"] + (f"; saved figure kept, {REMEASURE_FAILED}: {ram['remeasure_failed']}" if ram.get("remeasure_failed") else "")) if "RAM reads" in rows else
              row("RAM reads", True, ram.get("error") or "not measured yet", None if measure else HOST_SCAN + "   (measures RAM reads and the copies to the GPU, a few seconds)"))
   name = host_links.words(link, "name")
   out.append(row(name, None if link["kind"] == "unknown" else True, rows[name],
                  None if measure or link["verified"] or not pci else HOST_SCAN + "   (asks the GPU runtime whether the GPU shares the CPU's memory)"))
   if "Copies to the card" in rows and (copies or {}).get("h2d_gbs"):
-    out.append(row("copies to the GPU", True, rows["Copies to the card"] + ("" if why == "not measured yet" else f"; saved figure kept, the remeasure failed: {why}")))
+    out.append(row("copies to the GPU", True, rows["Copies to the card"] + ("" if why == "not measured yet" else f"; saved figure kept, {REMEASURE_FAILED}: {why}")))
   elif pci:
     out.append(row("copies to the GPU", True, ("not measured: " + why) if measure else "not measured yet; until it is, " + host_links.stands_in(link),
                    None if measure else HOST_SCAN + "   (about a second on the GPU)"))
@@ -303,8 +311,9 @@ def cmd_doctor(args) -> int:
 
 def cmd_host(args) -> int:
   """`boltbeam host`: measure what is not saved (or all with --remeasure) and print the host rows."""
-  rows = [{**r, "group": "host"} for r in _host(hardware.hardware_profile()["gpu"], measure=True, remeasure=args.remeasure)]
-  rep = {"schema": SCHEMA, "rows": rows, "gaps": 0, "ready": True}
+  failed: list[str] = []
+  rows = [{**r, "group": "host"} for r in _host(hardware.hardware_profile()["gpu"], measure=True, remeasure=args.remeasure, failed=failed)]
+  rep = {"schema": SCHEMA, "rows": rows, "gaps": 0, "ready": True, "remeasure_failed": bool(failed)}
   sys.stdout.write(json.dumps(rep, indent=2) + "\n" if args.json else render(rep).rsplit("\n", 2)[0] + "\n")
   return 0
 

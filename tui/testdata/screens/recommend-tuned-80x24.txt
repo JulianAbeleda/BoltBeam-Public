@@ -7,9 +7,6 @@
 │ Contexts are upper bounds: this engine's own overhead is not measured here   │
 │ yet. Check measures it.                                                      │
 │                                                                              │
-│ Layout                                                                       │
-│   use one: one GPU                                                           │
-│                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │
@@ -18,6 +15,9 @@
 │   [ Check ] start the engine once with these flags and compare               │
 │   [ Speed up ] Makes a faster copy. The original stays.                      │
 │   [ Measure on this machine ] short sweeps, one engine start per point       │
+│   [ Measure this ] -ub                                                       │
+│   [ Measure this ] GGML_CUDA_WS_SLOTS                                        │
+│   [ Measure this ] GGML_CUDA_MMID_PAR_MIN                                    │
 │   [ Use these ] copy into Engine settings for the next run                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 

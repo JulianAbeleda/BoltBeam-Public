@@ -2,7 +2,7 @@
 The original is never modified. This core knows no engine: data/speed_up.json has a row per engine and
 head_writers/<writer>.py the parts of that engine (find, stock, plan, write, accuracy). Steps: plan (refuse unless the head is
 wider than the target), write <source>-boltbeam, gate (pooled next-token agreement on data/gate_corpus.json against the
-table's threshold; a failing copy is deleted unless keep_failed), speed (original then copy at a short and a long context;
+table's threshold; a failing copy is deleted), speed (original then copy at a short and a long context;
 kept only if faster at every one by more than the spread), record (speed_up.json in the copy).
 """
 from __future__ import annotations
@@ -158,7 +158,7 @@ def _remove(p:pathlib.Path) -> None:
 
 
 def derive(checkpoint:str, engine:str | None = None, out:str | None = None, engine_path:str | None = None,
-           keep_failed:bool = False, speed:bool = True, progress=None) -> dict[str, Any]:
+           speed:bool = True, progress=None) -> dict[str, Any]:
   """Plan, write, gate, record. Returns the record; "passed" says whether the copy stays. Refused if it cannot start.
   progress(stage, event) hears STAGES start and finish ("start", "done"); a screen draws its bar from them."""
   say = progress or (lambda stage, event: None)
@@ -214,14 +214,14 @@ def derive(checkpoint:str, engine:str | None = None, out:str | None = None, engi
          "accuracy": figures, "threshold": th, "text": {"file": TEXT, "sha256": digest, "positions": figures["n"], "corpus": CORPUS.name, "corpus_sha256": th["corpus_sha256"]}, "passed": passed,
          "speed": [timed] if timed else [], "speed_note": None if timed else "not measured: " + ("switched off" if not speed else "the engine row has no speed measurement" if passed else "the accuracy check failed")}
   slower = timed is not None and not timed["passed"]  # timed exists only if passed, so at most one reason below
-  rec["kept"] = (passed and not slower) or keep_failed
+  rec["kept"] = passed and not slower
   if slower:
     rec["deleted_because"] = timed["why"]
   if not passed:
     lo, hi = figures["interval"]
     rec["deleted_because"] = (f"next-token agreement {figures[th['metric']]:.4f} on the natural-text gate corpus is below {th['min']} (documents {figures['doc_min']:.4f} to "
                               f"{max(d['hits'] / d['n'] for d in docs):.4f}, interval {lo:.4f} to {hi:.4f})")
-  if "deleted_because" in rec and not keep_failed:
+  if "deleted_because" in rec:
     dst.with_name(dst.name + ".speed_up.json").write_text(json.dumps(rec, indent=2))  # the copy goes; its reason (and the per-document figures) stay beside it
   if rec["kept"]:
     beside = (lambda name: dst / name) if dst.is_dir() else (lambda name: dst.with_name(dst.name + "." + name))

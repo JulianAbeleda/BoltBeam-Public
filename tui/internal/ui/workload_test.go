@@ -15,7 +15,7 @@ import (
 func TestWorkloadPicker(t *testing.T) {
 	setProfile(colorprofile.NoTTY)
 	s := loadSample(t)
-	m := press(keys(program(s, nil, nil, nil, 80, 24).(Model), "j", "j", "j", "j", "j", "j"), "enter")
+	m := press(keys(program(s, nil, nil, nil, 80, 24).(Model), "j", "j", "j", "j", "j", "j", "j"), "enter")
 	if m.(Model).cursor != pageWorkload {
 		t.Fatalf("enter on Workload opens its picker: %d", m.(Model).cursor)
 	}

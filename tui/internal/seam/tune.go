@@ -72,6 +72,7 @@ type TuneUnused struct {
 // nothing is offered (no row to confirm).
 type TuneMeasure struct {
 	Label      string   `json:"label"`
+	One        string   `json:"one"` // the action on one measured row
 	Helper     string   `json:"helper"`
 	Knobs      []string `json:"knobs"`
 	None       *string  `json:"none"`
@@ -96,27 +97,32 @@ type TuneUse struct {
 	EnvAbout  string            `json:"env_about"`
 }
 
-func tuneArgs(model, engine, build string) []string {
-	args := []string{"tune", model, "--engine", engine}
+// tuneArgs: the setup's own asks (extra: context, workload, experts in RAM, flags) and the run folders, whose newest
+// measured time budget the screen reads.
+func (c Client) tuneArgs(model, engine, build string, extra []string) []string {
+	args := append([]string{"tune", model, "--engine", engine}, extra...)
 	if build != "" {
 		args = append(args, "--build", build)
+	}
+	for _, pl := range c.Places() {
+		args = append(args, "--facts-root", pl.Dir)
 	}
 	return args
 }
 
 // Tune reads this machine's values for the engine's knobs, from facts only: no engine starts, a few seconds of CPU.
-func (c Client) Tune(model, engine, build string) (*Tune, error) {
+func (c Client) Tune(model, engine, build string, extra ...string) (*Tune, error) {
 	var t Tune
-	_, _, err := c.decode(&t, nil, "boltbeam.workflow.screen", tuneArgs(model, engine, build)...)
+	_, _, err := c.decode(&t, nil, "boltbeam.workflow.screen", c.tuneArgs(model, engine, build, extra)...)
 	return &t, err
 }
 
 // TuneArgv is the measure job: the sweeps on this machine's GPU, progress lines, then the page.
-func (c Client) TuneArgv(model, engine, build string) []string {
+func (c Client) TuneArgv(model, engine, build string, extra ...string) []string {
 	if argv := c.Demo.argv("tune"); argv != nil { // a demo plays the job; nothing runs
 		return argv
 	}
-	return append(append([]string{c.Python, "-m", "boltbeam.workflow.screen"}, tuneArgs(model, engine, build)...), "--measure")
+	return append(append([]string{c.Python, "-m", "boltbeam.workflow.screen"}, c.tuneArgs(model, engine, build, extra)...), "--measure")
 }
 
 // ReadTune reads the measure job's answer out of its log: the JSON object after the job's start line and its progress
@@ -144,4 +150,34 @@ func ReadTune(lines []string) (*Tune, error) {
 		}
 	}
 	return nil, errors.New("the measurement ended without an answer")
+}
+
+// RoutingArgv is the Measure routing job: the engine serves the model once on the GPU and the experts its router picks
+// are saved as a routing profile, where the offload page and Tuned for this machine look. A demo plays a recorded job.
+func (c Client) RoutingArgv(model, engine, build string) []string {
+	if c.Demo != nil {
+		return c.Demo.noGPU("routing", "routing profile: demo")
+	}
+	argv := []string{c.Python, "-m", "boltbeam.cli", "routing", model, "--engine", engine}
+	if build != "" { // routing resolves the build as tune does
+		argv = append(argv, "--build", build)
+	}
+	return argv
+}
+
+// HostArgv is the Measure again job: this machine's RAM reads and copies to the GPU, measured again and saved.
+func (c Client) HostArgv() []string {
+	if c.Demo != nil {
+		return c.Demo.noGPU("host", `"remeasure_failed": false`)
+	}
+	return []string{c.Python, "-m", "boltbeam.cli", "host", "--remeasure", "--json"}
+}
+
+// noGPU is a demo's job: the recorded command, else one that prints the line a successful job ends with. A demo never
+// touches the GPU.
+func (d *Demo) noGPU(job, success string) []string {
+	if argv := d.argv(job); argv != nil {
+		return argv
+	}
+	return []string{"echo", success}
 }

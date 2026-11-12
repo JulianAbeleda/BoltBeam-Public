@@ -74,6 +74,7 @@ type Facts struct {
 	BatchTyped  string              // digits typed on the batch picker
 	Measurement string              // how roles are timed, as picked: in_model or generic; "" is Python's default here
 	Settings    map[string]string   // engine settings asked for, by name (capture_settings.ASKED); cleared with a new engine
+	Context     Context             // the prompt and reply the three setup pages are stated at (context.go)
 	Form        string              // the open form as drawn (forms.go): it takes the place of the page's rows
 	Repeats     int                 // times Run measures the setup; only the n Python offers counts (repeats)
 	MJob        *jobs.Job           // Measure MTP's job for the model and chip (mtpID)
@@ -105,6 +106,7 @@ type Facts struct {
 	Fetch FetchForm // Fetch runs (fetch.go)
 	Speed SpeedUp   // Speed up (speedup.go)
 	Tune  TuneState // Tuned for this machine (tune.go)
+	Side  SideJob   // Measure routing and Measure again (measure.go)
 	// Env is the environment Run sets for the engine (Use these on Tuned for this machine), by name; cleared with a new
 	// engine, as Settings is.
 	Env    map[string]string
@@ -194,6 +196,7 @@ const (
 	pageDoctor
 	pageFetch
 	pageOffload
+	pageContext
 )
 
 func none(Facts) string { return "" }
@@ -216,6 +219,7 @@ var steps = []step{
 	{"This machine", "", none, doctorLine, doctorBody, doctorActions},
 	{"Fetch runs", "", none, fetchLine, fetchBody, fetchActions},
 	{"Offload", offloadHint, none, func(Facts) (string, string) { return "", "" }, offloadBody, offloadActions},
+	{"Context", "", none, func(Facts) (string, string) { return "", "" }, contextBody, nil},
 }
 
 // picker reports whether a page is one of the three pickers Setup opens.
@@ -368,7 +372,7 @@ func setupActions(f Facts) []action {
 	if len(f.settingsOffered()) > 0 || len(f.envNames()) > 0 { // what the run asks the engine for, when the engine takes anything
 		groups[2] = append(groups[2], setupLine{"Settings", settingsValue(f), pageSettings})
 	}
-	groups[2] = append(groups[2], setupLine{"Offload", offloadValue(f), pageOffload})
+	groups[2] = append(groups[2], setupLine{"Offload", offloadValue(f), pageOffload}, setupLine{"Context", contextValue(f), pageContext})
 	if f.repeatRuns() > 1 {
 		groups[3] = append(groups[3], setupLine{"Repeats", repeatsValue(f), pageRepeats})
 	}

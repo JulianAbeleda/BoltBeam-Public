@@ -175,7 +175,7 @@ func TestRecommendedSetupAboveSettings(t *testing.T) {
 	got := rows(setupActions(vllmProgram(t).f))
 	want := []string{"page|Machine            checking this Mac…\t›", "head|", "page|Model              Qwen3-8B.gguf · 36 layers · F32/Q4_K/Q6_K\t›", "page|Chip               apple_m3_10c · this Mac · 97.2 GB/s\t›",
 		"page|Engine             vllm\t›", "head|", "page|Recommended setup  context, speed and engine flags for this model on your GPUs\t›",
-		"page|Settings           engine defaults\t›", "page|Offload            working out the plan, a few seconds…\t›", "head|", "page|Workload           decode\t›"}
+		"page|Settings           engine defaults\t›", "page|Offload            working out the plan, a few seconds…\t›", "page|Context            each page's default\t›", "head|", "page|Workload           decode\t›"}
 	if strings.Join(got[:len(want)], "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}

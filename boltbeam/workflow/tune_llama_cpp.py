@@ -59,6 +59,13 @@ def linked(binary:pathlib.Path, run_command=None) -> list[pathlib.Path]:
   return [pathlib.Path(f) for f in dict.fromkeys(found) if pathlib.Path(f).is_file()]
 
 
+def server_of(build:str | pathlib.Path) -> pathlib.Path:
+  """The llama-server of a build given as any of its programs: the screen's llama-bench maps to the server beside it."""
+  from boltbeam.collectors import llama_server_decode as lsd
+  p = pathlib.Path(build).expanduser()
+  return p.parent / lsd.TOOL if p.is_file() and p.name != lsd.TOOL and (p.parent / lsd.TOOL).is_file() else p
+
+
 def detect(server:str | pathlib.Path | None) -> dict[str, Any]:
   """What a llama-server build is, read without running it: the env-var names compiled into it and the libraries beside it
   (each patch's knobs are getenv literals), its backend from those libraries' names and the fork row it matches
@@ -67,9 +74,7 @@ def detect(server:str | pathlib.Path | None) -> dict[str, Any]:
   server = server or lsd.find(None)
   if not server:
     raise Refused("no llama-server found (beside llama-bench, $BOLTBEAM_LLAMA_SERVER or on PATH); pass --build PATH")
-  p = pathlib.Path(server).expanduser()
-  if p.is_file() and p.name != lsd.TOOL and (p.parent / lsd.TOOL).is_file():  # another program of the build (the screen's llama-bench)
-    p = p.parent / lsd.TOOL
+  p = server_of(server)
   if not p.is_file():
     raise Refused(f"no llama-server at {p}; pass --build PATH or put llama-server on PATH")
   real = p.resolve()
@@ -254,6 +259,14 @@ def slot_facts(model:str, ex:dict[str, Any], tabs:dict[str, Any], host:dict[str,
   if tabs.get("file_bytes") is not None:
     out[f"{NS}.on_card_bytes"] = max(tabs["file_bytes"] - host_experts - tabs["bytes"], 0)
     src[f"{NS}.on_card_bytes"] = "the GGUF files' tensor data less the host experts and the host-mapped tables"
+  total, on_card, kv_b = out.get("gpu_total_bytes"), out.get(f"{NS}.on_card_bytes"), out.get(f"{NS}.kv_cache_bytes")
+  sized = [x for x in options.get("extra") or [] if x in ("-c", "--ctx-size", "-ctk", "-ctv", "--cache-type-k", "--cache-type-v")]
+  if sized:  # the KV here is sized at f16 and the context given: flags that change either are not seen, so no fit is claimed
+    src[f"{NS}.kv_cache_bytes"] = src.get(f"{NS}.kv_cache_bytes", "") + f"; the fit of one request on the GPU is not checked: --flags sets {', '.join(sized)}"
+  elif total and on_card is not None and kv_b is not None and on_card + kv_b > total:  # one request cannot fit this GPU: say so, never clamp the slots to 4 and go on
+    from boltbeam.report.plain import words
+    raise Refused(words()["tune_llama_cpp"]["no_fit_context"].format(context=int(host.get("context_tokens") or host["prompt_tokens"]),
+                                                                       need=(on_card + kv_b) / GiB, gpu=total / GiB))
   need = {"gpu_free_bytes": "the GPU's free memory was not read", f"{NS}.on_card_bytes": "the GGUF's size was not read", f"{NS}.kv_cache_bytes": "no KV size",
           f"{NS}.hidden_size": "no hidden width", f"{NS}.host_expert_tensor_max_bytes": "no host expert tensor",
           f"{NS}.prompt_compute_ms": "no compute time for the prompt (no measured time budget and no prompt limit)"}

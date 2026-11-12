@@ -912,6 +912,9 @@
    "measured": "Measured on this machine: {knobs}.",
    "measure": "Measure on this machine",
    "measure_helper": "short sweeps, one engine start per point",
+   "measure_one": "Measure this",
+   "setup_workload": "Setup's Workload",
+   "settings_tuned": "Settings for {knobs} are not passed to the engine here: this page sets {knobs} itself.",
    "measure_none": "Nothing here is measured: every row is set from facts or left at its default.",
    "running": "Measuring on this machine",
    "progress": "{knob}: point {i} of at most {n}",
@@ -933,6 +936,7 @@
   }
  },
  "tune_llama_cpp": {
+  "no_fit_context": "A {context:,}-token context does not fit this GPU: what the model keeps on the card and the KV cache for one request need at least {need:.1f} GiB (the compute buffers and the GPU context come on top), and the GPU has {gpu:.1f} GiB. Use a shorter context, keep more of the model in host RAM, or use a smaller model.",
   "no_patch": "This build has none of BoltBeam's local llama.cpp patches, so their knobs do not apply: only stock flags are recommended below.",
   "shared_memory": "The GPU shares memory with the CPU (unified memory): nothing is copied to it, so the knobs for copying experts (the pin budget, the staging ring) do not apply.",
   "model": "Model: {name}, {layers} expert layers of {experts} experts, {gib:.2f} GiB of experts; {host:.2f} GiB of them in host RAM ({placement}).",
@@ -945,5 +949,21 @@
   "no_fit": "This model does not fit this machine: the weights and a {context}-token KV cache need {need:.1f} GiB, and the GPU's share ({gpu:.1f} GiB) plus the usable RAM ({ram:.0f} GiB, less {headroom} GiB kept free for vLLM itself) cannot hold them. Use a smaller model, a shorter --context, or free memory.",
   "busy": " Another program holds {held:.1f} of the GPU's {total:.1f} GiB (over {pct:.0f}%), so this share is lower than on an idle GPU.",
   "placement": "--experts-in-ram is a llama.cpp placement; vLLM keeps weights in host RAM through --cpu-offload-gb, set below when the model does not fit."
+ },
+ "context": {
+  "default": "each page's default", "value": "{prompt} prompt + {reply} reply tokens", "value_replies": "{prompt} prompt + replies measured in {file}",
+  "body": "Context is the prompt and the reply that Recommended setup, Offload and Tuned for this machine state their numbers at. Left empty, each page keeps its own default.",
+  "prompt": "Prompt tokens", "prompt_about": "empty keeps each page's own default", "reply": "Reply tokens", "reply_about": "room for the reply beside the prompt",
+  "replies": "Or measured replies", "replies_about": "a file with a JSON line per reply (tokens, finish); the reply is the length that holds 95% of them",
+  "whole": "a whole number above 0, or nothing", "need_prompt": "give the prompt tokens too",
+  "need_reply": "give the reply tokens, or a file of measured replies, not both and not neither"
+ },
+ "measure_again": {
+  "stop": "Stop", "stopped": "Stopped.", "busy": "{id} is still going. Stop it or wait, then measure.",
+  "start_failed": "Start failed: {why}", "stop_failed": "Stop failed: {why}",
+  "routing": {"label": "Measure routing", "helper": "Finds which experts this model uses on real text (a few minutes on the GPU).",
+              "running": "Measuring which experts the model uses", "done": "Routing measured; the plan now uses it.", "failed": "Routing was not measured. The log: {log}"},
+  "host": {"label": "Measure again", "helper": "Times RAM and copies to the GPU again (about a minute).",
+           "running": "Measuring this machine", "done": "This machine was measured again.", "failed": "This machine was not measured. The log: {log}"}
  }
 }

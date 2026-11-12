@@ -28,9 +28,9 @@ func (m *Model) loadOffload() tea.Cmd {
 		return nil
 	}
 	m.f.OffKey, m.f.Offload, m.f.OffErr = key, nil, ""
-	path, target, engine := m.f.Path, m.f.target().ID, m.f.Engine
+	path, target, engine, ctx := m.f.Path, m.f.target().ID, m.f.Engine, m.f.Context.pageArgs()
 	return func() tea.Msg {
-		o, err := m.client.Offload(path, target, engine)
+		o, err := m.client.Offload(path, target, engine, ctx...)
 		return offloadMsg{key, o, err}
 	}
 }
@@ -88,6 +88,10 @@ func offloadBody(f Facts, width int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func offloadActions(Facts) []action {
-	return []action{{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)}}
+func offloadActions(f Facts) []action {
+	out := []action{}
+	if f.Offload != nil && f.Offload.Routing {
+		out = sideActions(f, "routing")
+	}
+	return append(out, action{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)})
 }

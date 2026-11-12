@@ -20,7 +20,7 @@ def cmd_lighter_head(args, out=sys.stdout) -> int:
     if progress:  # the pipeline's own lines on stderr, for a screen's bar; stdout stays the one JSON object
       for line in speed_up.progress_lines(args.checkpoint, not args.no_speed):
         print(line, file=sys.stderr, flush=True)
-    rec = speed_up.derive(args.checkpoint, args.engine if named else None, args.out, None if named else args.engine, args.keep_failed, not args.no_speed,
+    rec = speed_up.derive(args.checkpoint, args.engine if named else None, args.out, None if named else args.engine, not args.no_speed,
                           (lambda stage, event: print(f"stage {stage}: {event}", file=sys.stderr, flush=True)) if progress else None)
   except Refused as exc:
     print(json.dumps({"schema": speed_up.SCHEMA, "kind": "error", "error": str(exc)}) if args.json else f"speed up refused: {exc}", file=out)
@@ -38,7 +38,6 @@ def register(sub) -> None:
   q.add_argument("checkpoint", help="a GGUF file or a Hugging Face checkpoint folder")
   q.add_argument("--engine", default=None, help="an engine row of data/speed_up.json (vllm, llama.cpp), or the engine's python (vLLM) or llama-bench (llama.cpp); default: the row for the format, the engine found as other commands find it")
   q.add_argument("--out", default=None, help="where the copy goes (default: <checkpoint>-boltbeam beside it)")
-  q.add_argument("--keep-failed", action="store_true", help="keep a copy that fails the accuracy check")
   q.add_argument("--no-speed", action="store_true", help="skip the decode-speed measurement (original vs copy, short and long context)")
   q.add_argument("--verify", action="store_true", help="CHECKPOINT is a copy: check its files, gate text, engine version and GPU against its speed_up.json; refuses on a mismatch")
   q.add_argument("--progress", action="store_true", help="print the stages to stderr as they start and finish (a screen draws its bar from them)")

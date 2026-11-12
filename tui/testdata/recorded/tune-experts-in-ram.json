@@ -17,6 +17,7 @@
         "GGML_CUDA_MMID_PAR_MIN"
       ],
       "label": "Measure on this machine",
+      "one": "Measure this",
       "none": null,
       "progress": "{knob}: point {i} of at most {n}",
       "running": "Measuring on this machine",

@@ -516,9 +516,9 @@ func (c Client) ReplayChoices() (*ReplayChoices, error) {
 
 // Recommend is the recommended setup for the model on this chip and engine, from the newest machine facts in the run
 // folders; check also starts the engine once (a minute or two) and caches its overhead there.
-func (c Client) Recommend(model, target, engine string, check bool) (*Recommend, error) {
+func (c Client) Recommend(model, target, engine string, check bool, extra ...string) (*Recommend, error) {
 	var r Recommend
-	args := []string{"recommend", model, "--target", target, "--engine", engine}
+	args := append([]string{"recommend", model, "--target", target, "--engine", engine}, extra...)
 	for _, pl := range c.Places() {
 		args = append(args, "--facts-root", pl.Dir)
 	}
@@ -531,9 +531,9 @@ func (c Client) Recommend(model, target, engine string, check bool) (*Recommend,
 
 // Offload is the offload page for the model on this chip and engine, from the newest machine facts in the run
 // folders. The first call on a machine measures the GPU's copy rate, so it can take a couple of seconds.
-func (c Client) Offload(model, target, engine string) (*Offload, error) {
+func (c Client) Offload(model, target, engine string, extra ...string) (*Offload, error) {
 	var o Offload
-	args := []string{"offload", model, "--target", target, "--engine", engine}
+	args := append([]string{"offload", model, "--target", target, "--engine", engine}, extra...)
 	for _, pl := range c.Places() {
 		args = append(args, "--facts-root", pl.Dir)
 	}

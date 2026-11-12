@@ -9,6 +9,7 @@
 │                                                                              │
 │   Recommended setup  context, speed and engine flags for this model on y…  › │
 │   Offload            working out the plan, a few seconds…                  › │
+│   Context            each page's default                                   › │
 │                                                                              │
 │   Workload           decode                                                › │
 │   Batch              1                                                     › │
@@ -16,9 +17,8 @@
 │                                                                              │
 │   [ Run ]            Measures decode speed: Qwen3-8B, this Mac, llama.cpp    │
 │   [ Emit ]           Writes the kernel gameplan from the last run            │
-│                                                                              │
-│   Last run 002 (not saved)                                                   │
-│   Saved runs (0)                                                           › │
+│   ↓ 3 more                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
+
 
  ↑↓ move · enter pick · ? all keys · q quit

@@ -22,15 +22,12 @@ import (
 
 // TuneState is the section: the page for TuneKey, why it could not be read, the measure job and its log.
 type TuneState struct {
-	Key   string // what Page was asked for (tuneKey)
-	Page  *seam.Tune
-	Err   string
-	Job   *jobs.Job
-	Tail  []string
-	Seen  string // the start time of the job this screen saw running: only its end replaces the page
-	Ended string // the start time of the job whose end was read
-	at    time.Time
-	done  int
+	Key    string // what Page was asked for (tuneKey)
+	Page   *seam.Tune
+	Err    string
+	GPUJob // the measure job and its log (gpujob.go)
+	at     time.Time
+	done   int
 }
 
 type tuneMsg struct {
@@ -59,10 +56,34 @@ func (f Facts) engineBuild() string {
 	return ""
 }
 
-// tuneKey names what the section is for: the model, chip and engine (recommendKey) and the build.
+// tuneAsk is what Setup says to Tuned for this machine: the context, the workload (session and replay serve follow-ups,
+// so chat; decode and prefill time single prompts, so one-shot), the chip, the experts in RAM that Settings asks for
+// and every other setting by its name (--setting NAME=VALUE: the screen turns it into the engine's flag, and leaves out
+// one this page tunes). The experts go as --experts-in-ram, which the plan reads, so it hears them once.
+func (f Facts) tuneAsk() []string {
+	workload := "one-shot"
+	if w := f.workload(); w == "session" || w == "replay" {
+		workload = "chat"
+	}
+	ask := append(f.Context.tuneArgs(), "--workload", workload, "--target", f.target().ID)
+	for _, s := range f.settingsOffered() {
+		switch v := f.Settings[s.Name]; {
+		case v == "":
+		case s.Name == "n_cpu_moe":
+			ask = append(ask, "--experts-in-ram", v)
+		case s.Name == "cpu_moe":
+			ask = append(ask, "--experts-in-ram", "all")
+		default:
+			ask = append(ask, "--setting", s.Name+"="+v)
+		}
+	}
+	return ask
+}
+
+// tuneKey names what the section is for: the model, chip and engine (recommendKey), the build and what Setup asks.
 func (f Facts) tuneKey() string {
 	if k := f.recommendKey(); k != "" {
-		return k + "|" + f.engineBuild()
+		return k + "|" + f.engineBuild() + "|" + strings.Join(f.tuneAsk(), " ")
 	}
 	return ""
 }
@@ -89,43 +110,30 @@ func (m *Model) loadTune() tea.Cmd {
 		return nil
 	}
 	m.f.Tune = TuneState{Key: key} // another model, engine or build: another page and another job
-	path, engine, build, client := m.f.Path, m.f.Engine, m.f.engineBuild(), m.client
+	path, engine, build, ask, client := m.f.Path, m.f.Engine, m.f.engineBuild(), m.f.tuneAsk(), m.client
 	return tea.Batch(func() tea.Msg {
-		t, err := client.Tune(path, engine, build)
+		t, err := client.Tune(path, engine, build, ask...)
 		return tuneMsg{key, t, err}
 	}, m.readTune())
 }
 
 // readTune reads the measure job and its whole log: the answer is one JSON object after the progress lines.
 func (m Model) readTune() tea.Cmd {
-	id, store := m.f.tuneID(), m.store
-	return func() tea.Msg {
-		job, err := store.Status(id)
-		if err != nil {
-			return tuneJobMsg{id, nil, nil}
-		}
-		lines, _ := store.Tail(id, 0)
-		return tuneJobMsg{id, &job, lines}
-	}
+	id := m.f.tuneID()
+	return m.readGPUJob(id, func(j *jobs.Job, tail []string) tea.Msg { return tuneJobMsg{id, j, tail} })
 }
 
-// startTune starts the measure job on a free GPU.
-func (m Model) startTune() tea.Cmd {
+// startTune starts the measure job on a free GPU: every measured row, or just the knob named.
+func (m Model) startTune(knob string) tea.Cmd {
 	if m.f.tuning() || m.f.tunePage() == nil || m.f.tunePage().Measure.None != nil {
 		return nil
 	}
-	id, store, repo := m.f.tuneID(), m.store, m.client.Repo
-	argv := m.client.TuneArgv(m.f.Path, m.f.Engine, m.f.engineBuild())
-	return func() tea.Msg {
-		if live := gpuJobs(store); len(live) > 0 { // two measurements on one GPU would both be wrong
-			return noteMsg(live[0].ID + " is still going. Stop it or wait, then measure.")
-		}
-		job, err := store.Start(id, repo, argv)
-		if err != nil {
-			return noteMsg("Start failed: " + err.Error())
-		}
-		return tuneStartedMsg{&job}
+	ask := m.f.tuneAsk()
+	if knob != "" {
+		ask = append(ask, "--knob", knob)
 	}
+	argv := m.client.TuneArgv(m.f.Path, m.f.Engine, m.f.engineBuild(), ask...)
+	return m.startGPUJob(m.f.tuneID(), argv, func(j *jobs.Job) tea.Msg { return tuneStartedMsg{j} })
 }
 
 // advance times the knob in flight, as Speed up times its stage.
@@ -155,35 +163,32 @@ func (m Model) tuneMsg(msg tea.Msg) (Model, tea.Cmd, bool) {
 		}
 		m.f.Tune.Page = msg.t
 	case tuneStartedMsg:
-		m.f.Tune.Job, m.f.Tune.Tail, m.f.Tune.Seen = msg.job, nil, msg.job.StartedAt
+		m.f.Tune.GPUJob = GPUJob{Job: msg.job, Seen: msg.job.StartedAt}
 		m.f.Tune.done, m.f.Tune.at = -1, time.Time{}
 		m.f.Tune.advance(clock())
 		m.note = ""
-		if !m.ticking {
-			m.ticking = true
-			return m, tick(), true
-		}
+		return m, m.tickOn(), true
 	case tuneJobMsg:
 		if msg.id != m.f.tuneID() {
 			break
 		}
-		m.f.Tune.Job, m.f.Tune.Tail = msg.job, msg.tail
+		running, ended := m.f.Tune.take(msg.id, msg.job, msg.tail)
 		m.f.Tune.advance(clock())
-		switch j := msg.job; {
-		case m.f.tuning():
-			m.f.Tune.Seen = j.StartedAt
-			if !m.ticking {
-				m.ticking = true
-				return m, tick(), true
+		switch t, err := seam.ReadTune(msg.tail); {
+		case running:
+			return m, m.tickOn(), true
+		case ended && m.f.Tune.Stopped: // Stop was sent: the values read from facts stand, and the note says so
+		case ended && err == nil && t.Page != nil:
+			m.f.Tune.Page, m.f.Tune.Err = t, ""
+			m.note = t.Page.Says
+		case ended:
+			if p := m.f.tunePage(); p != nil {
+				m.note = strings.ReplaceAll(p.Measure.Failed, "{log}", msg.job.LogPath)
 			}
-		case j != nil && j.StartedAt == m.f.Tune.Seen && m.f.Tune.Ended != j.StartedAt: // the job this screen saw ended
-			m.f.Tune.Ended = j.StartedAt
-			if t, err := seam.ReadTune(msg.tail); err == nil && t.Page != nil {
-				m.f.Tune.Page, m.f.Tune.Err = t, ""
-				m.note = t.Page.Says
-			} else if p := m.f.tunePage(); p != nil {
-				m.note = strings.ReplaceAll(p.Measure.Failed, "{log}", j.LogPath)
-			}
+		}
+	case gpuStoppedMsg:
+		if msg.id == m.f.tuneID() {
+			m.f.Tune.Stopped, m.note = true, msg.note
 		}
 	default:
 		return m, nil, false
@@ -195,17 +200,10 @@ func (m Model) tuneMsg(msg tea.Msg) (Model, tea.Cmd, bool) {
 func (m Model) doTune(a action) (Model, tea.Cmd) {
 	switch a.do {
 	case "tunemeasure":
-		return m, m.startTune()
+		return m, m.startTune(a.arg)
 	case "tunestop":
-		id, store, p := m.f.tuneID(), m.store, m.f.tunePage()
-		return m, func() tea.Msg {
-			if _, err := store.Stop(id); err != nil {
-				return noteMsg("Stop failed: " + err.Error())
-			}
-			if p != nil {
-				return noteMsg(p.Measure.Stopped)
-			}
-			return noteMsg("")
+		if p := m.f.tunePage(); p != nil {
+			return m, m.stopGPUJob(m.f.tuneID(), p.Measure.Stopped)
 		}
 	case "tuneuse":
 		p := m.f.tunePage()
@@ -234,6 +232,7 @@ func (m Model) doTune(a action) (Model, tea.Cmd) {
 			m.f.setEnv(name, p.Use.Env[name])
 			n++
 		}
+		m.f.Tune.Key = m.f.tuneKey() // the copied values are now Settings, so asked of this page again: it stands, not re-read
 		m.note = strings.ReplaceAll(p.Use.Used, "{n}", fmt.Sprint(n))
 		if p.Use.NotPassed != nil {
 			m.note += " " + *p.Use.NotPassed
@@ -256,6 +255,9 @@ func tuneActions(f Facts) []action {
 		out = append(out, note("  [ "+ms.Label+" ] "+*ms.None))
 	default:
 		out = append(out, action{"[ " + ms.Label + " ] " + ms.Helper, "tunemeasure", ""})
+		for _, k := range ms.Knobs { // one measured row on its own
+			out = append(out, action{"[ " + ms.One + " ] " + k, "tunemeasure", k})
+		}
 	}
 	if u := p.Use; u.None != nil {
 		out = append(out, note("  [ "+u.Label+" ] "+*u.None))

@@ -1411,4 +1411,5 @@ type Offload struct {
 	TargetID string      `json:"target_id"`
 	Status   string      `json:"status"`
 	Page     OffloadPage `json:"page"`
+	Routing  bool        `json:"routing"` // Measure routing is offered: experts to place, an engine that captures
 }

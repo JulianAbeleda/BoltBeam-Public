@@ -58,6 +58,28 @@ engine's environment, which Run passes as `--engine-env NAME=VALUE` (set for eve
 `workload_profile.json`, said on the run's settings line). What a run cannot pass is said. The screen knows no engine's
 knobs; a test scans the new files for engine names and flags.
 
+Tuned for this machine is asked what Setup already holds, with no control of its own: Context (below), the chip, the Workload
+(session and replay serve follow-ups, so `--workload chat`; decode and prefill time single prompts, so `one-shot`; an unset
+Workload is decode, so tune is told `one-shot` though its own default is `chat`), the experts in RAM that Settings asks for
+(`n_cpu_moe` N is `--experts-in-ram N`, `cpu_moe` is `all`), and every other Setting by its name (`--setting NAME=VALUE`): the
+screen turns it into the engine's flag (capture_settings.KNOB_SETTINGS) and leaves out one the page tunes, saying so in a note.
+The newest run under the run folders, of this model, engine and chip, with a measured time budget at this prompt is read for the
+slot count (`screen tune --facts-root --target`), and the row's source names it. Changing any of these asks the page again
+(Use these keeps the page it copied from). `[ Measure this ]`, one per measured row under Measure on this machine, sweeps that
+knob alone (`--knob`); Measure on this machine stays the whole sweep. Stop is remembered, so a stopped job says Stopped.
+
+**Context.** One line on Setup, with Recommended setup, Settings and Offload: the prompt and reply those three pages are
+stated at. Unset (`each page's default`) passes nothing. Set, it is a prompt and a reply in tokens, or a prompt and a file of
+measured replies (a JSON line per reply, kept as an absolute path). Recommended setup and Offload get `--context PROMPT+REPLY`
+or `--prompt P --replies FILE`; Tuned for this machine gets `--prompt P` with `--replies FILE`, or `--context P+R`. The screen
+reads the file (`tune.reply_budget`, the length that holds 95% of the replies) on each page; a file it refuses is that page's
+error, in Python's words. The words are `data/plain_words.json` `context`; the form is Huh (internal/ui/context.go).
+
+Measure routing (Offload) and Measure again (This machine) are GPU jobs read as Measure on this machine is (ui/gpujob.go). A job
+counts as measured only if its log says so (`routing profile: PATH`; `"remeasure_failed": false` from `host --remeasure --json`);
+Stop, a crash, a refusal and a remeasure that kept the saved figure each say so. When one ends, the pages that read what it
+measured are asked again.
+
 ## The three screens
 
 **Setup.** The choices and a button.
@@ -89,6 +111,7 @@ run on this Mac", or the things to set up before a run (Python marks those rows 
 verdict, then the checks by their `group`: This GPU, Engines you can run here (each family with the forks found; the
 forks not found in one dimmed line, never a gap), Measuring tools, Not on this Mac (the n/a checks, one dimmed line
 each) and BoltBeam itself; under a gap, its one fix. `[ Check again ]` asks once more. It never greys Run.
+`[ Measure again ]` runs `boltbeam host --remeasure` as a short GPU job (progress and Stop), then reads the checks again.
 
 Model searches beside the current model and recursively under `~/models`, or takes a typed path. Checkpoint folders appear once, with the model name and format/quantization label; weight shards are not separate choices. Chip is this
 machine, detected (autoscan: a known profile is used, a new GPU is measured into `~/.boltbeam/chips/<id>.json`,

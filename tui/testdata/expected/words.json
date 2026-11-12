@@ -5,6 +5,21 @@
     "report": "This server kept its prompt cache in RAM (the default), which saves the previous request's state before each prompt; that is part of the time outside its timer.",
     "tight": "RAM is tight: the experts in RAM and the 8 GiB cache are more than the {usable} GB usable"
   },
+  "context": {
+    "body": "Context is the prompt and the reply that Recommended setup, Offload and Tuned for this machine state their numbers at. Left empty, each page keeps its own default.",
+    "default": "each page's default",
+    "need_prompt": "give the prompt tokens too",
+    "need_reply": "give the reply tokens, or a file of measured replies, not both and not neither",
+    "prompt": "Prompt tokens",
+    "prompt_about": "empty keeps each page's own default",
+    "replies": "Or measured replies",
+    "replies_about": "a file with a JSON line per reply (tokens, finish); the reply is the length that holds 95% of them",
+    "reply": "Reply tokens",
+    "reply_about": "room for the reply beside the prompt",
+    "value": "{prompt} prompt + {reply} reply tokens",
+    "value_replies": "{prompt} prompt + replies measured in {file}",
+    "whole": "a whole number above 0, or nothing"
+  },
   "engines": {
     "llama.cpp": "llama.cpp",
     "tensorrt-llm": "TensorRT-LLM",
@@ -403,6 +418,27 @@
     "toolchain": "Toolchain: {words}.",
     "upstream": "{line}",
     "weights": "Weights: {format}."
+  },
+  "measure_again": {
+    "busy": "{id} is still going. Stop it or wait, then measure.",
+    "host": {
+      "done": "This machine was measured again.",
+      "failed": "This machine was not measured. The log: {log}",
+      "helper": "Times RAM and copies to the GPU again (about a minute).",
+      "label": "Measure again",
+      "running": "Measuring this machine"
+    },
+    "routing": {
+      "done": "Routing measured; the plan now uses it.",
+      "failed": "Routing was not measured. The log: {log}",
+      "helper": "Finds which experts this model uses on real text (a few minutes on the GPU).",
+      "label": "Measure routing",
+      "running": "Measuring which experts the model uses"
+    },
+    "start_failed": "Start failed: {why}",
+    "stop": "Stop",
+    "stop_failed": "Stop failed: {why}",
+    "stopped": "Stopped."
   },
   "measured": {
     "band": "This setup has repeat runs; how far apart they were is in Full detail.",
@@ -998,12 +1034,15 @@
       "measure": "Measure on this machine",
       "measure_helper": "short sweeps, one engine start per point",
       "measure_none": "Nothing here is measured: every row is set from facts or left at its default.",
+      "measure_one": "Measure this",
       "measured": "Measured on this machine: {knobs}.",
       "not_passed": "A run does not pass these yet, so they are not copied: {knobs}.",
       "not_used": "Not used with this model and placement",
       "progress": "{knob}: point {i} of at most {n}",
       "refused": "No tuning here: {reason}",
       "running": "Measuring on this machine",
+      "settings_tuned": "Settings for {knobs} are not passed to the engine here: this page sets {knobs} itself.",
+      "setup_workload": "Setup's Workload",
       "starting": "starting",
       "stop": "Stop",
       "stop_helper": "the values read from facts stand",
@@ -1025,6 +1064,7 @@
   "tune_llama_cpp": {
     "model": "Model: {name}, {layers} expert layers of {experts} experts, {gib:.2f} GiB of experts; {host:.2f} GiB of them in host RAM ({placement}).",
     "model_dense": "Model: {name}, dense (no experts): there are no experts to place in host RAM.",
+    "no_fit_context": "A {context:,}-token context does not fit this GPU: what the model keeps on the card and the KV cache for one request need at least {need:.1f} GiB (the compute buffers and the GPU context come on top), and the GPU has {gpu:.1f} GiB. Use a shorter context, keep more of the model in host RAM, or use a smaller model.",
     "no_patch": "This build has none of BoltBeam's local llama.cpp patches, so their knobs do not apply: only stock flags are recommended below.",
     "no_plan": "the offload plan could not be worked out here",
     "routing_changed": "A saved routing profile ({what}) changed the chunk -ub from {before} to {after}.",

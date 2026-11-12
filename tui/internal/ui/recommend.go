@@ -29,7 +29,7 @@ func (f Facts) recommendKey() string {
 	if p := f.engineRow(); p == nil || !p.Available {
 		return ""
 	}
-	return f.Path + "|" + f.target().ID + "|" + f.Engine
+	return f.Path + "|" + f.target().ID + "|" + f.Engine + "|" + strings.Join(f.Context.pageArgs(), " ") // another context, another page
 }
 
 // loadRecommend asks Python for the recommendation when the model, chip or engine changed since the last answer.
@@ -43,9 +43,9 @@ func (m *Model) loadRecommend() tea.Cmd {
 }
 
 func (m Model) askRecommend(key string, check bool) tea.Cmd {
-	path, target, engine := m.f.Path, m.f.target().ID, m.f.Engine
+	path, target, engine, ctx := m.f.Path, m.f.target().ID, m.f.Engine, m.f.Context.pageArgs()
 	return func() tea.Msg {
-		r, err := m.client.Recommend(path, target, engine, check)
+		r, err := m.client.Recommend(path, target, engine, check, ctx...)
 		return recommendMsg{key, r, err, check}
 	}
 }

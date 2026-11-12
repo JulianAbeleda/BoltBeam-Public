@@ -215,16 +215,19 @@ func TestMeasureOnThisMachineJob(t *testing.T) {
 	s, _, _ = next.tuneMsg(cmd())
 	s.row = speedRow(s, "tunestop")
 	next, cmd = s.do(s.actions()[s.row])
-	if msg := cmd(); string(msg.(noteMsg)) != s.f.tunePage().Measure.Stopped {
-		t.Fatalf("stop says so: %v", msg)
+	stopped := cmd()
+	if msg, ok := stopped.(gpuStoppedMsg); !ok || msg.note != s.f.tunePage().Measure.Stopped {
+		t.Fatalf("stop says so: %v", stopped)
 	}
+	nn, _ := next.Update(stopped)
+	next = nn.(Model)
 	for i := 0; i < 100 && len(next.store.Alive()) > 0; i++ {
 		time.Sleep(20 * time.Millisecond)
 	}
 	before := next.f.tunePage()
 	next, _, _ = next.tuneMsg(next.readTune()())
-	if next.f.tuning() || next.f.tunePage() != before || !strings.Contains(next.note, "stopped without an answer") {
-		t.Fatalf("a stopped job keeps the facts page: %q", next.note)
+	if next.f.tuning() || next.f.tunePage() != before || next.note != before.Measure.Stopped {
+		t.Fatalf("a stopped job keeps the facts page and says it was stopped, not that it failed: %q", next.note)
 	}
 }
 
@@ -258,6 +261,7 @@ func TestUseTheseReplacesTheLastOne(t *testing.T) {
 	}
 	if other != "" {
 		m.f.setSetting(other, "typed")
+		m.f.Tune.Key = m.f.tuneKey() // a typed flag is asked of the page: it reloads; this one stands to be used again
 	}
 	p.Use.Settings, p.Use.Env = nil, map[string]string{"A": "3"}
 	m = typeKeys(m, "enter")

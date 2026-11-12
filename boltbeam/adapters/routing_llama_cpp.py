@@ -59,9 +59,10 @@ def profile(path:str | pathlib.Path, model:dict[str, Any], *, corpus:str, tokens
 
 def capture(model:str, out:pathlib.Path, *, tokens:int, ident:dict[str, Any], corpus:pathlib.Path, build:str | None = None,
             port:int = 0, cache_mib:int = 18000) -> dict[str, Any]:
-  """Run the real-text prefill driver once with the trace on and read it. build: llama-server (default: as screen finds it)."""
+  """Run the real-text prefill driver once with the trace on and read it. build: any program of the build, taken as its llama-server (default: as screen finds it)."""
   from boltbeam.collectors import engine_common as ec, llama_server_decode as lsd
-  server = build or lsd.find(os.environ.get("BOLTBEAM_LLAMA_BENCH"))
+  from boltbeam.workflow.tune_llama_cpp import server_of  # the build tune uses: any program of it maps to its llama-server
+  server = str(server_of(build)) if build else lsd.find(os.environ.get("BOLTBEAM_LLAMA_BENCH"))
   if not server:
     raise FileNotFoundError("no llama-server found (beside llama-bench, $BOLTBEAM_LLAMA_SERVER or on PATH); pass --build")
   out.mkdir(parents=True, exist_ok=True)

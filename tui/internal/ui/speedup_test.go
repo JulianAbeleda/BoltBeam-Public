@@ -378,6 +378,7 @@ func TestSpeedUpDemoPlaysTheTape(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		m = settle(m, m.readSpeed())
 	}
+	m = settle(m, m.readSpeed()) // the job can end between the last read and the loop's check: read the ended job once
 	if m.f.speeding() || m.f.Speed.Result == nil || !strings.Contains(plain(speedBody(m.f, 80)), "✓ Made m · BoltBeam.") {
 		t.Fatalf("the end shows the kept copy:\n%s", frame(m))
 	}

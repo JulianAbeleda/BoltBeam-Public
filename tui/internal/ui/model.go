@@ -525,9 +525,16 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 	case speedOfferMsg, speedStartedMsg, speedJobMsg, speedResultMsg, speedVerifyMsg:
 		next, cmd, _ := m.speedMsg(msg)
 		return next, cmd
+	case sideStartedMsg, sideJobMsg:
+		next, cmd, _ := m.sideMsg(msg)
+		return next, cmd
 	case tuneMsg, tuneStartedMsg, tuneJobMsg:
 		next, cmd, _ := m.tuneMsg(msg)
 		return next, cmd
+	case gpuStoppedMsg: // Stop was sent to a measure job: whichever it was remembers it
+		next, _, _ := m.tuneMsg(msg)
+		next, _, _ = next.sideMsg(msg)
+		return next, nil
 	case mtpJobMsg:
 		was := m.f.measuringMtp()
 		m.f.MJob = msg.job
@@ -675,6 +682,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, tea.Batch(m.readSpeed(), fetch, tick())
 		case m.f.tuning():
 			return m, tea.Batch(m.readTune(), fetch, tick())
+		case m.f.siding():
+			return m, tea.Batch(m.readSide(), fetch, tick())
 		case fetch != nil:
 			return m, tea.Batch(fetch, tick())
 		}
@@ -897,7 +906,7 @@ func (m Model) key(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 // backToSetup shows Setup again; from a picker the cursor rests on that picker's line.
 func (m *Model) backToSetup() {
 	m.row = 0
-	if picker(m.cursor) || m.cursor == pageRecommend || m.cursor == pageDoctor || m.cursor == pageOffload { // the cursor rests on the Setup line that opened the page
+	if picker(m.cursor) || m.cursor == pageRecommend || m.cursor == pageDoctor || m.cursor == pageOffload || m.cursor == pageContext { // the cursor rests on the Setup line that opened the page
 		for i, a := range setupActions(m.f) {
 			if a.do == "page" && a.arg == fmt.Sprint(m.cursor) {
 				m.row = i
@@ -987,6 +996,8 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 			return m, tea.Batch(m.loadFetch(), m.openRemote())
 		case pageSettings:
 			return m, m.openSettings()
+		case pageContext:
+			return m, m.openContext()
 		case pageRecommend:
 			return m, tea.Batch(m.loadSpeed(), m.readTune())
 		}
@@ -1038,6 +1049,8 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		return m.doSpeed(a)
 	case "tunemeasure", "tunestop", "tuneuse":
 		return m.doTune(a)
+	case "measurerouting", "measurehost", "sidestop":
+		return m.doSide(a)
 	case "doctor":
 		return m, m.checkMachine()
 	case "fetchgo", "fetchstop":

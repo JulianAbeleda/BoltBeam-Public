@@ -169,5 +169,6 @@ func doctorActions(f Facts) []action {
 	if f.DoctorBusy {
 		again = action{stMuted.Render(strings.TrimSpace(f.Spin + " checking…")), "", ""} // the cursor stays on it
 	}
-	return []action{again, {"[ Back to setup ]", "page", fmt.Sprint(pageSetup)}}
+	out := append([]action{again}, sideActions(f, "host")...)
+	return append(out, action{"[ Back to setup ]", "page", fmt.Sprint(pageSetup)})
 }
