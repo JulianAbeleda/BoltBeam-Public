@@ -23,7 +23,8 @@ FACTS = {"gpu_share": "vLLM's share of the GPU (set by the --gpu-memory-utilizat
          "process_headroom_gib": "GiB of RAM kept free for the vLLM process itself, beyond the margin usable RAM already leaves",
          "min_share": "the least share of the GPU the weights need: the weights plus a small allowance for activations and KV, over the GPU's total",
          "gpu_warning": "a sentence when another program holds a meaningful share of the GPU, else empty",
-         "mtp_k_measured": "the MTP draft count measured on this chip", "mtp_why": "why there is no measured draft count"}
+         "mtp_k_measured": "the MTP draft count measured on this chip", "mtp_why": "why there is no measured draft count",
+         "mtp_says": "where the measured draft count was measured, its speed and spread"}
 FEATURE_FILES = ("engine/arg_utils.py", "config/cache.py", "config/speculative.py", "config/offload.py")
 PROBE = ("import importlib.metadata as m, importlib.util as u, json, pathlib\n"
          "s = u.find_spec('vllm')\n"
@@ -167,13 +168,21 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
   out = {"model_weight_bytes": weights, "kv_bytes_per_token": kv, "model_draft_layers": draft, "model_experts": experts,
          "host_expert_bytes": 0, "gpu_total_bytes": gpu.get("total"), "gpu_free_bytes": gpu.get("free"), "shared_memory": False,
          f"{NS}.gpu_share": 0.92, f"{NS}.kv_bytes_per_token": kv, f"{NS}.offload_gib": 0, f"{NS}.process_headroom_gib": PROCESS_HEADROOM_GIB,
-         f"{NS}.min_share": (weights + ACTIVATION_ALLOWANCE_GIB * GiB) / total if total else None, f"{NS}.gpu_warning": warning, f"{NS}.mtp_k_measured": None,
-         f"{NS}.mtp_why": "no MTP measurement in this machine's facts", "notes": notes}
+         f"{NS}.min_share": (weights + ACTIVATION_ALLOWANCE_GIB * GiB) / total if total else None, f"{NS}.gpu_warning": warning, "notes": notes,
+         **mtp_facts(options.get("machine_facts"), model, host.get("context_tokens"), b)}
   out["sources"] = {"model_weight_bytes": f"{tb.get('source', 'safetensors headers')}: all tensors less the vision tower and the MTP head",
                     "kv_bytes_per_token": "roofline/prefill_work.kv_bytes_per_token at 2 bytes", "model_draft_layers": "config.json",
                     "model_experts": "config.json", "gpu_total_bytes": "the GPU's telemetry source (NVML / amdgpu sysfs)" if gpu else "not read",
                     "gpu_free_bytes": "the GPU's telemetry source (NVML / amdgpu sysfs)" if gpu else "not read"}
   return out
+
+
+def mtp_facts(machine:dict[str, Any] | None, model:str, context:int | None, b:dict[str, Any]) -> dict[str, Any]:
+  """The measured draft count for this context (recommend.mtp_tune: the recommended setup's own rule and gates), as this engine's facts."""
+  from boltbeam.workflow import recommend as rec
+  from boltbeam.workflow.tune import SERVED
+  got = rec.mtp_tune(machine, ENGINE, model, context, b.get("backend"), b.get("build"), seqs=SERVED)
+  return {f"{NS}.mtp_k_measured": got["k"], f"{NS}.mtp_why": got["why"], f"{NS}.mtp_says": got["says"]}
 
 
 def _typed(v:str) -> Any:

@@ -5,11 +5,13 @@ is its own type byte for byte. `identical_but_head` then proves it on the files.
 divergence run: its "Same top p" is the share of positions with the same most likely token."""
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import subprocess
 import tempfile
 
+from boltbeam.collectors import capture_settings as cs
 from boltbeam.core.refused import Refused
 from boltbeam.profile import gguf
 from boltbeam.profile.decode_roles import GGML_BITS_PER_WEIGHT, GGML_BLOCK_LAYOUTS
@@ -17,6 +19,8 @@ from boltbeam.profile.decode_roles import GGML_BITS_PER_WEIGHT, GGML_BLOCK_LAYOU
 HEAD = "output.weight"
 STOCK_OWNERS = ("ggml-org", "ggerganov")  # ggerganov/llama.cpp is the same repo under its former owner name
 CTX = 512
+TOOL_TIMEOUT_S = 7200  # one llama-quantize or llama-perplexity run: a guard on a hung tool, not a measured length (a big model's whole pass takes minutes)
+ERROR_TAIL = 300  # the end of a tool's error text said in a refusal: its last lines say why
 
 
 def find(explicit:str | None = None) -> str | None:
@@ -44,7 +48,7 @@ def checkout_of(path:str) -> pathlib.Path | None:
 
 def tool(bench:str, name:str, env:dict | None = None) -> str:
   """llama-quantize / llama-perplexity: beside the llama-bench, else in a build folder of its checkout."""
-  import os, shutil
+  import shutil
   env = os.environ if env is None else env
   if env.get("BOLTBEAM_" + name.upper().replace("-", "_")):
     return env["BOLTBEAM_" + name.upper().replace("-", "_")]
@@ -77,7 +81,7 @@ def stock(bench:str, env:dict | None = None) -> dict:
   return {"engine_version": "llama.cpp " + _git(co, "rev-parse", "--short", "HEAD"), "source": url}
 
 
-def plan(src:str, bench:str, target:str) -> dict:
+def plan(src:str, bench:str, target:str, part:dict | None = None) -> dict:
   kv, tensors, _ = gguf.read_gguf_layout(src)
   if int(kv.get("split.count") or 1) > 1:
     raise Refused("a split GGUF (several files) is not handled")
@@ -110,12 +114,12 @@ def write(src:str, dst:str, bench:str, pl:dict) -> dict:
     f.write(pins(src))
   try:
     p = subprocess.run([q, "--allow-requantize", "--output-tensor-type", pl["target"].lower(), "--tensor-type-file", f.name, src, dst, "Q4_K_M"],
-                       capture_output=True, text=True, timeout=7200)
+                       capture_output=True, text=True, timeout=TOOL_TIMEOUT_S)
   finally:
     pathlib.Path(f.name).unlink(missing_ok=True)
   if p.returncode:
     pathlib.Path(dst).unlink(missing_ok=True)
-    raise Refused(f"llama-quantize failed: {(p.stderr or p.stdout).strip()[-300:]}")
+    raise Refused(f"llama-quantize failed: {(p.stderr or p.stdout).strip()[-ERROR_TAIL:]}")
   bad = identical_but_head(src, dst)
   if bad:
     pathlib.Path(dst).unlink(missing_ok=True)
@@ -156,6 +160,11 @@ def identical_but_head(a:str, b:str, chunk:int = 1 << 26) -> list[str]:
   return sorted(bad)
 
 
+def scored(ctx:int) -> int:
+  """The positions one chunk of ctx tokens scores: its second half, less the first of it."""
+  return ctx - ctx // 2 - 1
+
+
 def _kld(output:str, ctx:int = CTX) -> dict:
   """The last row of llama-perplexity's --kl-divergence table (running figures over every chunk): chunk, PPL(Q),
   ln(PPL(Q)/PPL(base)), KLD, delta-p RMS %, same top p %, each as `value ± uncertainty`. n, the scored positions, is
@@ -166,12 +175,16 @@ def _kld(output:str, ctx:int = CTX) -> dict:
     raise Refused("llama-perplexity printed no KL divergence table, so the copy cannot be checked")
   v = [float(x) for x in rows[-1]]
   p, unc = v[9] / 100, v[10] / 100
-  n = round(p * (1 - p) / unc ** 2) + 1 if unc > 0 else int(v[0]) * (ctx - ctx // 2 - 1)
+  n = round(p * (1 - p) / unc ** 2) + 1 if unc > 0 else int(v[0]) * scored(ctx)
   return {"top1_agreement": p, "mean_kld": v[5], "ppl_copy": v[1], "ppl_original": v[1] / math.exp(v[3]), "chunks": int(v[0]), "n": n}
 
 
-def accuracy(src:str, dst:str, bench:str, texts:list[str]) -> dict:
-  """One llama-perplexity pair per document, so each document has its own agreement."""
+def accuracy(src:str, dst:str, bench:str, texts:list[str], *, src_flags:tuple[str, ...] = (), dst_flags:tuple[str, ...] = (),
+             env:dict[str, str] | None = None, ctx:int | None = None, chunks:int | None = None) -> dict:
+  """One llama-perplexity pair per document, so each document has its own agreement. src_flags, dst_flags: each arm's
+  own flags (tune's output-changing knobs: one model, two settings); env: the engine's environment for both; ctx: the
+  context each chunk is read at (default CTX), chunks: at most this many per document (each scores its second half)."""
+  ctx = ctx or CTX
   ppl = tool(bench, "llama-perplexity")
   per_doc, last = [], {}
   with tempfile.TemporaryDirectory(prefix="speed-up-") as d:
@@ -179,15 +192,15 @@ def accuracy(src:str, dst:str, bench:str, texts:list[str]) -> dict:
       text = pathlib.Path(d, f"doc{i}.txt")
       text.write_text(doc)
       base = str(pathlib.Path(d, f"base{i}.kld"))
-      common = ["-f", str(text), "-c", str(CTX), "-ngl", "99", "--kl-divergence-base", base]
+      common = ["-f", str(text), "-c", str(ctx), *cs.all_layers(None), "--kl-divergence-base", base, *(["--chunks", str(chunks)] if chunks else [])]
       out = ""
-      for cmd in ([ppl, "-m", src, *common], [ppl, "-m", dst, *common, "--kl-divergence"]):
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+      for cmd in ([ppl, "-m", src, *common, *src_flags], [ppl, "-m", dst, *common, *dst_flags, "--kl-divergence"]):
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=TOOL_TIMEOUT_S, env=None if env is None else {**os.environ, **env})
         if p.returncode:
-          raise Refused(f"llama-perplexity failed: {(p.stderr or p.stdout).strip()[-300:]}")
+          raise Refused(f"llama-perplexity failed: {(p.stderr or p.stdout).strip()[-ERROR_TAIL:]}")
         out = p.stdout + p.stderr
-      last = _kld(out)
+      last = _kld(out, ctx)
       per_doc.append({"n": last["n"], "hits": round(last["top1_agreement"] * last["n"]), "ppl_copy": last["ppl_copy"], "ppl_original": last["ppl_original"]})
   n = sum(x["n"] for x in per_doc)
-  return {"method": "llama-perplexity --kl-divergence (Same top p), one run per document of the shipped natural-text corpus", "n": n, "per_doc": per_doc,
+  return {"method": "llama-perplexity --kl-divergence (Same top p), one run per document of the shipped natural-text corpus", "n": n, "per_doc": per_doc, "ctx": ctx, "scored": scored(ctx),
           "top1_agreement": sum(x["hits"] for x in per_doc) / n, "ppl_copy": last["ppl_copy"], "ppl_original": last["ppl_original"]}

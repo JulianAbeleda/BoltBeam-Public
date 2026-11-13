@@ -52,14 +52,30 @@ func speedRow(m Model, do string) int {
 	return -1
 }
 
+// off is an offer with no part enabled, for the reason given.
 func off(reason string) func(*seam.SpeedOffer) {
 	return func(o *seam.SpeedOffer) {
-		o.Enabled, o.Reason, o.Confirm, o.Expect, o.CopyBytes = false, &reason, nil, nil, nil
+		o.Enabled, o.Reason, o.CopyBytes = false, &reason, nil
+		for i := range o.Parts {
+			o.Parts[i] = seam.SpeedPart{Part: o.Parts[i].Part, Label: o.Parts[i].Label, Reason: &reason}
+		}
 	}
 }
 
-// Speed up sits under Measure MTP on the Recommended setup page; it is a button only when the model's format has a
-// writer, else a muted row with the plain reason; a copy says so and offers Check this copy.
+// only is an offer with one part enabled: the other says why not.
+func only(part, why string) func(*seam.SpeedOffer) {
+	return func(o *seam.SpeedOffer) {
+		for i, p := range o.Parts {
+			if p.Part != part {
+				o.Parts[i] = seam.SpeedPart{Part: p.Part, Label: p.Label, Reason: &why}
+			}
+		}
+	}
+}
+
+// Speed up sits under Measure MTP on the Recommended setup page: a button per part the checkpoint can take (the output
+// stage, the draft layer), else a muted row with the plain reason; a copy is offered the parts it does not have yet and
+// Check this copy.
 func TestSpeedUpRowBesideMeasureMtp(t *testing.T) {
 	setProfile(colorprofile.NoTTY)
 	m := speedProgram(t, nil)
@@ -67,10 +83,21 @@ func TestSpeedUpRowBesideMeasureMtp(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rows(m.actions())
-	if n := len(got); got[n-2] != "mtp|[ Measure MTP ] decode with 1, 2, 3 draft tokens against none" || got[n-1] != "speedup|[ Speed up ] Makes a faster copy. The original stays." {
-		t.Fatalf("enabled, under Measure MTP:\n%s", strings.Join(got, "\n"))
+	if n := len(got); got[n-3] != "mtp|[ Measure MTP ] decode with 1, 2, 3 draft tokens against none" ||
+		got[n-2] != "speedup|[ Speed up: the output layer ] Shrinks the word-picking layer, 18 min" ||
+		got[n-1] != "speedup|[ Speed up: the draft layer ] Shrinks the guess-ahead layer, 25 to 102 min" {
+		t.Fatalf("both parts enabled, under Measure MTP:\n%s", strings.Join(got, "\n"))
 	}
 	golden(t, "speedup-row.txt", frame(m))
+	m = speedProgram(t, only("output", "This model has no draft layer to make smaller."))
+	if got := rows(m.actions()); got[len(got)-1] != "speedup|[ Speed up: the output layer ] Shrinks the word-picking layer, 18 min" || strings.Contains(strings.Join(got, "\n"), "draft layer") {
+		t.Fatalf("one part: no row for the other:\n%s", strings.Join(got, "\n"))
+	}
+	m = speedProgram(t, func(o *seam.SpeedOffer) { only("mtp", "This model is already a faster copy.")(o); o.IsCopy = true })
+	got = rows(m.actions())
+	if n := len(got); got[n-2] != "speedup|[ Speed up: the draft layer ] Shrinks the guess-ahead layer, 25 to 102 min" || !strings.HasPrefix(got[n-1], "speedcheck|[ Check this copy ]") {
+		t.Fatalf("a copy is offered the part it lacks, and the check:\n%s", strings.Join(got, "\n"))
+	}
 
 	m = speedProgram(t, off("This model's format has no faster copy yet."))
 	if got := rows(m.actions()); got[len(got)-1] != "note|[ Speed up ] This model's format has no faster copy yet." || speedRow(m, "speedup") >= 0 {
@@ -86,8 +113,9 @@ func TestSpeedUpRowBesideMeasureMtp(t *testing.T) {
 	}
 }
 
-// Before it runs, a confirm step says what happens, the disk space, the time and the GPU. It opens on Not now: enter
-// starts nothing. Make the copy starts the job on a free GPU, and a GPU already busy says so.
+// Before it runs, a confirm step says what happens, the time up front (the draft layer's a range, the GPU held all of it),
+// the disk space and the GPU. It opens on Not now: enter starts nothing. Make the copy starts the job for that part on a
+// free GPU, and a GPU already busy says so.
 func TestSpeedUpConfirmStartsOnlyOnYes(t *testing.T) {
 	setProfile(colorprofile.NoTTY)
 	dir := t.TempDir()
@@ -99,18 +127,21 @@ func TestSpeedUpConfirmStartsOnlyOnYes(t *testing.T) {
 	store := jobs.Store{Dir: filepath.Join(dir, "state")}
 	m := speedProgram(t, nil)
 	m.client, m.store = seam.Client{Python: fake, Repo: dir}, store
-	m.row = speedRow(m, "speedup")
+	m.row = speedRow(m, "speedup") + 1 // the draft layer
 	m = typeKeys(m, "enter")
-	if m.form == nil || m.form.kind != "speedup" {
+	if m.form == nil || m.form.kind != "speedup" || m.form.part != "mtp" {
 		t.Fatalf("enter opens the confirm step: %v", m.form)
 	}
 	view := frame(m)
 	golden(t, "speedup-confirm.txt", view)
-	for _, want := range []string{"Make a faster copy of", "Makes a faster copy. The original stays.", "Needs up to 12.1 GB of free disk space", "Takes about 18 minutes (an estimate).",
-		"Uses the GPU the whole time.", "Make the copy", "Not now"} {
-		if !strings.Contains(view, want) {
+	for _, want := range []string{"Make a faster copy of", "Makes a faster copy. The original stays.", "Changes only the draft layer", "Takes about 25 to 102 minutes (an estimate), using the GPU the whole time.",
+		"once for each number of drafts it tries", "Needs up to 12.1 GB of free disk space", "Make the copy", "Not now"} {
+		if !strings.Contains(flat(view), want) {
 			t.Fatalf("the confirm lacks %q:\n%s", want, view)
 		}
+	}
+	if strings.Index(flat(view), "Takes about") > strings.Index(flat(view), "Needs up to") || strings.Count(view[strings.Index(view, "Make a faster copy of"):], "GPU") != 1 {
+		t.Fatalf("the time and the GPU, once, come before the space:\n%s", view)
 	}
 	if m = typeKeys(m, "enter"); m.form != nil || len(store.Alive()) > 0 || m.f.Speed.Job != nil {
 		t.Fatal("enter on the default, Not now, starts nothing")
@@ -122,7 +153,7 @@ func TestSpeedUpConfirmStartsOnlyOnYes(t *testing.T) {
 	for i := 0; i < 100 && len(store.Alive()) > 0; i++ {
 		time.Sleep(20 * time.Millisecond)
 	}
-	want := "-m boltbeam.cli derive lighter-head " + m.f.Path + " --json --progress\n"
+	want := "-m boltbeam.cli derive lighter-head " + m.f.Path + " --part mtp --json --progress\n"
 	if got, _ := os.ReadFile(calls); string(got) != want || m.form != nil || m.f.Speed.Job == nil {
 		t.Fatalf("Make the copy starts the job: %q", got)
 	}
@@ -132,12 +163,27 @@ func TestSpeedUpConfirmStartsOnlyOnYes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer busy.store.Stop("a-run")
-	if busy = settle(busy, busy.startSpeed()); !strings.Contains(busy.note, "a-run is still going") {
+	if busy = settle(busy, busy.startSpeed("output")); !strings.Contains(busy.note, "a-run is still going") {
 		t.Fatalf("a busy GPU is said: %q", busy.note)
 	}
 }
 
 const speedStart = "2026-10-08T10:00:00Z"
+
+// While a Speed up job runs, no part's confirm opens and no second job is started from the page: its rows are the stage and Stop.
+func TestSpeedUpConfirmIsClosedWhileItRuns(t *testing.T) {
+	m := speedRunning(t, "stage speed_write: start")
+	if !m.f.speeding() || m.openSpeedConfirm("mtp") != nil || m.form != nil || speedRow(m, "speedup") >= 0 {
+		t.Fatalf("a running job opens no confirm: %v", rows(m.actions()))
+	}
+	if m.f.Speed.Job.Alive = false; m.openSpeedConfirm("mtp") == nil || m.form == nil || m.form.part != "mtp" {
+		t.Fatal("once it ends, the part's confirm opens")
+	}
+	m.form = nil
+	if m.openSpeedConfirm("nope") != nil || m.form != nil {
+		t.Fatal("a part the offer does not hold opens nothing")
+	}
+}
 
 func speedRunning(t *testing.T, tail ...string) Model {
 	t.Helper()
@@ -328,20 +374,22 @@ func TestSpeedUpCopyShowsInModelLists(t *testing.T) {
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	file := filepath.Join(dir, "tiny-boltbeam.gguf")
-	for path, record := range map[string]string{folder: filepath.Join(folder, "speed_up.json"), file: file + ".speed_up.json"} {
-		if path == file {
-			_ = os.WriteFile(file, []byte("x"), 0o644)
-		}
-		if err := os.WriteFile(record, []byte("{}"), 0o644); err != nil {
+	file, mtp, unnamed := filepath.Join(dir, "tiny-boltbeam.gguf"), filepath.Join(dir, "m-boltbeam-mtp"), filepath.Join(dir, "old-boltbeam")
+	for _, d := range []string{mtp, unnamed} {
+		_ = os.MkdirAll(d, 0o755)
+	}
+	_ = os.WriteFile(file, []byte("x"), 0o644)
+	for record, name := range map[string]string{filepath.Join(folder, "speed_up.json"): `{"name": "Qwen3-14B-AWQ · BoltBeam"}`, file + ".speed_up.json": `{"name": "tiny · BoltBeam"}`,
+		filepath.Join(mtp, "speed_up.json"): `{"name": "m-mtp · BoltBeam"}`, filepath.Join(unnamed, "speed_up.json"): "{}"} {
+		if err := os.WriteFile(record, []byte(name), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := modelLabel(folder); got != "Qwen3-14B-AWQ · BoltBeam" {
-		t.Fatalf("folder: %q", got)
-	}
-	if got := modelLabel(file); got != "tiny · BoltBeam" {
-		t.Fatalf("file: %q", got)
+	// the record's name, as Python gave it: the screen never re-derives a copy's name from its path
+	for path, want := range map[string]string{folder: "Qwen3-14B-AWQ · BoltBeam", file: "tiny · BoltBeam", mtp: "m-mtp · BoltBeam", unnamed: "old-boltbeam"} {
+		if got := modelLabel(path); got != want {
+			t.Fatalf("%s: %q, want %q", path, got, want)
+		}
 	}
 	plainFile := filepath.Join(dir, "tiny.gguf")
 	_ = os.WriteFile(plainFile, []byte("x"), 0o644)

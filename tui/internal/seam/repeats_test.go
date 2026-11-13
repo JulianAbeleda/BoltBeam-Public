@@ -46,8 +46,9 @@ func TestPipelineSettingsRepeatsAndMtpArgv(t *testing.T) {
 	if argv = c.PipelineArgv(Pipeline{Model: "m", RunDir: "/r/x", Target: "t", Repeats: 1}); slices.Contains(argv, "--repeats") {
 		t.Fatalf("one run asks for no repeats: %v", argv)
 	}
-	got := strings.Join(c.MtpArgv("/m/q", "nvidia_sm120", "/r/.work/q-mtp", []int{1, 2, 3}), " ")
-	if want := "py -m boltbeam.workflow.screen mtp /m/q --target nvidia_sm120 --out /r/.work/q-mtp --ks 1,2,3 --facts-root /r"; !strings.HasPrefix(got, want) {
+	ctx := 8192
+	got := strings.Join(c.MtpArgv("/m/q", "nvidia_sm120", "llama.cpp", "/r/.work/q-mtp", []int{1, 2, 3}, &ctx), " ")
+	if want := "py -m boltbeam.workflow.screen mtp /m/q --target nvidia_sm120 --engine llama.cpp --out /r/.work/q-mtp --ks 1,2,3 --context 8192 --facts-root /r"; !strings.HasPrefix(got, want) {
 		t.Fatalf("mtp argv %q", got)
 	}
 }

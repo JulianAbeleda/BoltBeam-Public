@@ -149,7 +149,7 @@ def step4_token(run:pathlib.Path, context:float | None, provider:str) -> tuple[f
 def offered(provider:str) -> list[dict[str, Any]]:
   """The settings a run on this engine may ask for, as the screen offers them: the flag, a whole number or text, the
   values when they are a fixed set, the help, and whether the checkpoint needs a draft head (the mtp rows)."""
-  from boltbeam.collectors.vllm_mtp import prompt_set
+  from boltbeam.collectors.mtp import prompt_set
   choices = {"gemm_backends": lambda: list(GEMM_BACKENDS), "mtp_prompt": lambda: prompt_set()["ids"], "cpu_moe": lambda: ["on"]}
   return [{"name": k, "flag": "--" + k.replace("_", "-"), "label": label, "whole": kind is int,
            **({"least": LLAMA_WHOLE[k]} if kind is int and LLAMA_WHOLE.get(k, 1) != 1 else {}),
@@ -219,7 +219,7 @@ def setting_words(settings:dict[str, Any]) -> list[str]:
 
 def mtp_request(settings:dict[str, Any]) -> dict[str, Any] | None:
   """The requested speculation: vLLM's speculative_config for MTP with k draft tokens, and the natural prompt the
-  context is built from (collectors/vllm_mtp.PROMPTS, the prompt set's first prompt unless one is named). None when
+  context is built from (collectors/mtp.PROMPTS, the prompt set's first prompt unless one is named). None when
   the run requests none. A prompt without k, or a k that is not a positive whole number, is refused."""
   k, prompt = settings.get("mtp"), settings.get("mtp_prompt")
   if k is None:
@@ -228,7 +228,7 @@ def mtp_request(settings:dict[str, Any]) -> dict[str, Any] | None:
     return None
   if type(k) is not int or k < 1:
     raise ValueError("mtp is the draft tokens per step, a whole number of 1 or more")
-  from boltbeam.collectors.vllm_mtp import PROMPTS, prompt_set
+  from boltbeam.collectors.mtp import PROMPTS, prompt_set
   ids = prompt_set()["ids"]
   if prompt is not None and prompt not in ids:
     raise ValueError(f"mtp_prompt {prompt!r} is not in {PROMPTS.name} ({', '.join(ids)})")

@@ -1,0 +1,50 @@
+
+Tuned for this machine
+  llama.cpp build: master, at ~/llama.cpp/build/bin/llama-server (CUDA). Its
+  local patches: none.
+  This build has none of BoltBeam's local llama.cpp patches, so their knobs
+  do not apply: only stock flags are recommended below.
+  Model: Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf, 48 expert
+  layers of 256 experts, 23.42 GiB of experts; 5.41 GiB of them in host RAM
+  (--experts-in-ram 12 (given)).
+  Host: 31.3 GiB RAM, 24.0 GiB available now, 21 GiB usable for the model;
+  L3 32 MiB (sysfs index3: 32 MiB shared by cpus 0-15).
+  Read from this machine and the build; nothing ran to get them.
+
+  --cache-ram 8192 · default
+    kept: the host experts (and a full pinned copy, when the build can pin),
+    the tables' resident rows and the 8 GiB prompt cache fit the 21 GiB
+    usable RAM
+  -ub 512 · default
+    llama-server's default: no prefill limit was computed here (no GPU
+    target detected)
+    to confirm: best over -ub [1024, 2048, 4096, 8192]
+  -b 2048 · default
+    raised to -ub when -ub is larger (the command does it); a prompt is read
+    in chunks of at most -ub, so a -b above -ub adds no larger chunk
+  --spec-draft-n-max (unset) · default
+    unset: not measured for this checkpoint on this chip (no MTP measurement
+    of it in this machine's facts): run Measure MTP
+  -fa auto · default
+    auto, llama-server's default; --measure times the other values this
+    build takes (on, off, auto) writing a reply, and checks their answers
+    to confirm: choice over -fa on, off, auto
+  -ctk f16 · default
+    f16, llama-server's default (24,576 bytes per token); the types this
+    build takes with flash attention kernels for them, in bytes per token:
+    f16 24,576, bf16 24,576, q8_0 13,056, q4_0 6,912. Another type changes
+    the answers: --measure keeps one only when it writes replies faster and
+    passes Speed up's next-token agreement gate against f16 at this context
+    to confirm: choice over -ctk f16, bf16, q8_0, q4_0
+  -t -1 · default
+    -1, llama-server's default (its own count of the cores): with 5.41 GiB
+    of experts and 26.82 GiB of per-layer embedding in host RAM the CPU
+    works on every reply token, so --measure times 8, 16 threads (the cores
+    sharing one L3, the physical cores and the logical CPUs)
+    to confirm: choice over -t 8, 16
+
+  Not in this build (no knobs from it): llama-moe-prefill, llama-pinned-
+  copy-stream, llama-server-ckpt-min-head, llama-server-ckpt-tail-only.
+
+  ~/llama.cpp/build/bin/llama-server -m /models/Qwen3.8-Flash-Next-GSQ-
+    RCO-IQ1_M-00001-of-00002.gguf -ngl 99 --n-cpu-moe 12 -c 12048

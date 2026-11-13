@@ -6,6 +6,7 @@ The build is read, not run: a knob applies when its env-var name is a string in 
 (getenv literals), so a stock build gets only stock flags, and a v1 pinned-stream build no pin budget."""
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import mmap
@@ -16,6 +17,7 @@ import statistics
 import sys
 from typing import Any, Callable
 
+from boltbeam.collectors import capture_settings as cs
 from boltbeam.core.refused import Refused
 from boltbeam.roofline import routing_profile as rp
 
@@ -43,9 +45,41 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "free_after_warm_bytes": "--measure: the GPU's free memory after llama-server read one prompt (its slots and pools grown)",
          "slot_alloc_failures": "--measure: the streamer's failed slot allocations in llama-server's log",
          "logged_compute_buffer_bytes": "--measure: the GPU compute buffer llama-server logged at load",
-         "vram_why": "which of the facts the slot count reads could not be read, or empty"}
+         "vram_why": "which of the facts the slot count reads could not be read, or empty",
+         "fa_modes": "the values this build's -fa takes (its --help)",
+         "flash_attn": "the flash attention setting the command runs: the build's default, else the -fa row's value",
+         "kv_types": "the KV cache types this build takes (its --help) that it has flash attention kernels for, K and V alike (its GPU library), with the default first",
+         "kv_quantized_types": "those of the KV types that are block-quantized",
+         "v_quant_needs_fa": "the build refuses a block-quantized V cache with flash attention off (its own error message is in it)",
+         "kv_sizes": "the KV cache's bytes per token at each of those types",
+         "thread_candidates": "the thread counts a decode sweep tries: the cores sharing one L3, the physical cores and the logical CPUs",
+         "fa_default": "the build's own -fa default (its --help)", "kv_default": "the build's own KV cache type default (its --help)",
+         "threads_default": "the build's own -t default (its --help)",
+         "per_layer_embd_bytes": "the per-layer token embedding llama.cpp keeps in host RAM and gathers a row of per token and layer",
+         "mtp_head": "the multi-token prediction head the command loads (--draft, else the one beside the model)",
+         "mtp_k_measured": "the MTP draft count measured on this machine for this model", "mtp_why": "why there is no measured draft count",
+         "mtp_says": "where the measured draft count was measured, its speed and spread"}
 NAMES = re.compile(rb"(?:LLAMA|GGML)_[A-Z0-9_]{2,}")  # getenv literals in the build
+READ_FROM = "llama.cpp b12257-19-g7592b61d3 (2026-11-10)"  # the build LITERALS and FA_KERNELS were read from: a later build that renames them reads as lacking them, said
+LITERALS = {"draft-mtp": rb"adding speculative implementation 'draft-mtp'",  # common/speculative.cpp: llama-server registers the MTP draft type
+            "quantized-v-needs-flash-attention": rb"quantized V cache requires flash_attn"}  # src/llama-context.cpp: refused with flash attention off
+FA_KERNELS = (re.compile(rb"flash_attn_ext_vecILi\d+ELi\d+EL9ggml_type(\d+)ELS0_(\d+)E"),  # ggml-cuda/fattn-vec.cuh: one CUDA/HIP template instance per (K, V) type id
+              re.compile(rb"kernel_flash_attn_ext_vec_([a-z0-9]+(?:_[0-9])?)_dk\d+"))  # ggml-metal: one Metal kernel per type
+HELP_TIMEOUT_S = 60  # --help loads no model; a build that has not answered in a minute is hung, and its help is read as empty
 GiB = 1 << 30
+GATE_CHUNKS = 1  # the output check reads one chunk of the tuned context per document: its second half is what is scored, the depth tune is for
+
+
+def _flag_of(fact:str) -> str:
+  """The flag whose default this fact holds: the row of the knob table that reads its default from it (default_from)."""
+  from boltbeam.workflow import tune
+  return next(k["name"] for k in tune.knobs(ENGINE) if k.get("default_from") == f"{NS}.{fact}")
+
+
+def _row() -> dict[str, Any]:
+  """This engine's row of the knob table: the names of its draft flags and its per-layer host table."""
+  from boltbeam.workflow import tune
+  return tune.table()["engines"][ENGINE]
 
 
 def linked(binary:pathlib.Path, run_command=None) -> list[pathlib.Path]:
@@ -82,7 +116,7 @@ def detect(server:str | pathlib.Path | None) -> dict[str, Any]:
   for dep in linked(real):  # a packaged build (Homebrew) keeps ggml and its loadable backends (libexec) apart
     dirs |= {dep.parent, dep.parent.parent / "libexec"}
   files = [real] + sorted(f for d in dirs if d.is_dir() for f in d.iterdir() if f.is_file() and re.search(r"^lib(ggml|llama)\S*\.(so|dylib)", f.name))
-  seen, names, libs, where = set(), set(), [], {}
+  seen, names, libs, where, fa = set(), set(), [], {}, set()
   for f in files:
     r = f.resolve()
     if r in seen:
@@ -93,6 +127,10 @@ def detect(server:str | pathlib.Path | None) -> dict[str, Any]:
       with open(r, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
         for m in NAMES.finditer(mm):
           where.setdefault(m.group().decode(), f.name)
+        for name, lit in LITERALS.items():
+          if mm.find(lit) >= 0:
+            where.setdefault(name, f.name)
+        fa |= fa_kernel_types(mm)
     except (OSError, ValueError):
       continue
   names = set(where)
@@ -108,7 +146,53 @@ def detect(server:str | pathlib.Path | None) -> dict[str, Any]:
   except Exception:  # noqa: BLE001  a fork name is a label, never a reason to refuse
     pass
   return {"build": str(p), "files": libs, "features": where, "backend": backend, "fork": fork, "version": None,
-          "source": f"env-var names in {len(libs)} file(s) of the build (no run)"}
+          "fa_kv_types": sorted(fa) or None, "source": f"env-var names in {len(libs)} file(s) of the build (no run); messages and kernel names as {READ_FROM} has them"}
+
+
+def fa_kernel_types(blob) -> set[str]:
+  """The KV cache types a GPU library has flash attention kernels for with K and V of that same type (FA_KERNELS), by
+  ggml's type names (profile/gguf.GGML_TYPE_NAMES)."""
+  from boltbeam.profile.gguf import GGML_TYPE_NAMES
+  out = {GGML_TYPE_NAMES.get(int(k), "").lower() for k, v in FA_KERNELS[0].findall(blob) if k == v}
+  return (out | {m.decode() for m in FA_KERNELS[1].findall(blob)}) - {""}
+
+
+def build_help(server:str, run_command=None) -> str:
+  """llama-server --help, the build's own list of its flags and the values each takes, with every GPU hidden from it (it
+  loads no model and touches no GPU); empty when it does not answer."""
+  import os, subprocess
+  from boltbeam.target import vendors
+  hide = {name: "" for v in vendors.VENDORS.values() for name in v.visible}  # each vendor runtime's own variables that hide its GPUs
+  try:
+    got = (run_command or (lambda argv: subprocess.run(argv, capture_output=True, text=True, timeout=HELP_TIMEOUT_S, env={**os.environ, **hide})))([server, "--help"])
+  except (OSError, subprocess.SubprocessError):
+    return ""
+  return (got.stdout or "") + (got.stderr or "")
+
+
+def _help_block(text:str, flag:str) -> list[str]:
+  """A flag's lines in --help: its own and the indented ones after it."""
+  lines = text.splitlines()
+  at = next((i for i, ln in enumerate(lines) if re.match(rf"\s*(?:\S+,\s*)*{re.escape(flag)}[,\s]", ln + " ")), None)
+  return [] if at is None else [lines[at]] + list(itertools.takewhile(lambda ln: not re.match(r"\s*-", ln) and ln.strip(), lines[at + 1:]))
+
+
+def help_default(text:str, flag:str) -> str | None:
+  """The default a flag's --help states, (default: x) or default: 'x'."""
+  m = re.search(r"default:\s*'?(-?[a-z0-9_]+)", " ".join(_help_block(text, flag)))
+  return m.group(1) if m else None
+
+
+def help_choices(text:str, flag:str) -> list[str]:
+  """The values a flag takes, read from --help: its [a|b|c] or its "allowed values: a, b, ..." (wrapped lines joined)."""
+  block = _help_block(text, flag)
+  if not block:
+    return []
+  if m := re.search(r"\[([a-z0-9_]+(?:\|[a-z0-9_]+)+)\]", block[0]):
+    return m.group(1).split("|")
+  joined = " ".join(x.strip() for x in block)
+  m = re.search(r"allowed values:\s*(.*?)(?:\(default|$)", joined)
+  return [v.strip() for v in m.group(1).split(",") if v.strip()] if m else []
 
 
 # --- the facts ---------------------------------------------------------------------------------------------------------
@@ -148,6 +232,7 @@ def host_tables(source:str | pathlib.Path, prompt:int, page:int) -> dict[str, An
   from boltbeam.profile import gguf
   from boltbeam.workflow.recommend import HOST_ONLY, _gguf_files
   total = resident = data = 0
+  by: dict[str, int] = {}
   for f in _gguf_files(pathlib.Path(source).expanduser()):
     _, ts, start = gguf.read_gguf_layout(f)
     data += f.stat().st_size - start
@@ -156,8 +241,9 @@ def host_tables(source:str | pathlib.Path, prompt:int, page:int) -> dict[str, An
       if name.split(".")[0] in HOST_ONLY:
         rows = max(1, math.prod(dims[1:]))
         total += nxt - o
+        by[name.split(".")[0]] = by.get(name.split(".")[0], 0) + nxt - o
         resident += min(nxt - o, prompt * max((nxt - o) // rows, page))
-  return {"bytes": total, "resident_bytes": resident, "file_bytes": data}
+  return {"bytes": total, "resident_bytes": resident, "file_bytes": data, "by_table": by}
 
 
 def offload_plan(model:str, prompt:int) -> dict[str, Any]:
@@ -214,7 +300,7 @@ def compute_time(plan:dict[str, Any], budget:dict[str, Any] | None, prompt:int) 
 
 
 def slot_facts(model:str, ex:dict[str, Any], tabs:dict[str, Any], host:dict[str, Any], *, in_ram:int, host_experts:int, plan:dict[str, Any],
-               options:dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+               options:dict[str, Any], kv:tuple[float | None, str | None] = (None, None)) -> tuple[dict[str, Any], dict[str, str]]:
   """The facts the streamer's slot count reads, read and not combined (the rule is the row's, data/engine_knobs.json): the
   host expert tensors (count, the largest, their layers), the GPU's free memory now, what the model takes of it on the
   card (weights, KV at the context and the recurrent state), the shapes the compute buffer scales with, the chunk, and
@@ -247,12 +333,13 @@ def slot_facts(model:str, ex:dict[str, Any], tabs:dict[str, Any], host:dict[str,
     from boltbeam.roofline import prefill_work as pw
     out[f"{NS}.hidden_size"] = int(profile["hidden_size"]) if profile.get("hidden_size") else None
     src[f"{NS}.hidden_size"] = "the model's profile"
-    per, state = pw.kv_bytes_per_token(profile), pw.recurrent_state_bytes(profile)
+    per, state = kv[0] if kv[0] is not None else pw.kv_bytes_per_token(profile), pw.recurrent_state_bytes(profile)
     if per is None and state is None:
       raise ValueError("the profile gives no attention or recurrent shape for a KV size")
     ctx = int(host.get("context_tokens") or host["prompt_tokens"])
     out[f"{NS}.kv_cache_bytes"] = int((per or 0) * ctx + (state or 0))
-    src[f"{NS}.kv_cache_bytes"] = f"roofline/prefill_work at f16: {ctx} tokens x KV per token + the recurrent state"
+    at = f"the build's own type, {kv[1]}" if kv[0] is not None else "2 bytes an element (the build's cache type could not be read)"
+    src[f"{NS}.kv_cache_bytes"] = f"roofline/prefill_work at {at}: {ctx} tokens x KV per token + the recurrent state"
   except Exception as exc:  # noqa: BLE001  an unsized piece is a stated unknown, never a crash; the raw text is provenance
     out[f"{NS}.vram_why"] = "the model's shapes could not be read for a KV size"
     src[f"{NS}.vram_why"] = f"{type(exc).__name__}: {exc}"
@@ -322,17 +409,84 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
          f"{NS}.plan_ubatch": plan.get("ubatch"), f"{NS}.plan_ubatch_why": plan.get("why") or plan.get("source"),
          f"{NS}.pin_in_build": "LLAMA_WS_PIN_GIB" in b["features"], "layers": top, "layers_in_ram": 0 if shared else in_ram,
          "expert_bytes_total": sum(ex["per_layer"]), "host_tables_bytes": tabs["bytes"], "placement": placement, "notes": notes}
-  if not shared:
-    vr, vsrc = slot_facts(model, ex, tabs, host, in_ram=in_ram, host_experts=host_experts, plan=plan, options=options)
+  dr, dsrc = decode_facts(model, host, b, options, tabs)
+  out |= dr
+  if not shared:  # the KV it sizes is at the build's own cache type (decode_facts)
+    vr, vsrc = slot_facts(model, ex, tabs, host, in_ram=in_ram, host_experts=host_experts, plan=plan, options=options,
+                          kv=(dr["kv_bytes_per_token"], dr[f"{NS}.kv_default"]))
     out |= vr
   else:
     vsrc = {}
+  vsrc = {**vsrc, **dsrc}
   out["sources"] = {**vsrc, "host_expert_bytes": f"{ex['source']}: layers 0-{in_ram - 1} ({where})" if in_ram and not shared else where,
                     "model_experts": ex["source"], f"{NS}.host_tables_resident_bytes": f"estimate: {host['prompt_tokens']} tokens x one row (at least a {host['page_bytes']} B page) per host table",
                     f"{NS}.prompt_cache_default_bytes": "llama-server --cache-ram default (8192 MiB)", f"{NS}.prompt_cache_bytes": "the --cache-ram row",
                     f"{NS}.plan_ubatch": plan.get("source") or plan.get("detail") or plan.get("why"), f"{NS}.pin_in_build": b["source"],
                     "shared_memory": f"build backend {b['backend']}, {system}"}
   return out
+
+
+def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, Any], tabs:dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+  """The facts the decode rows read, each from where it is: the -fa, -ctk and -t values and defaults this build takes
+  (its --help; options help stands in), the KV types it has flash attention kernels for (detect), the KV cache's elements
+  per token (the model's profile) and its bytes at each type (ggml's block layouts), the thread counts to try (the CPU's
+  topology), the per-layer embedding kept in host RAM, and the MTP head with the draft count measured for it (options:
+  draft, the head file; machine_facts, where the measurement is kept)."""
+  from boltbeam.collectors import llama_mtp
+  from boltbeam.profile import gguf
+  from boltbeam.profile.decode_roles import GGML_BLOCK_LAYOUTS
+  from boltbeam.report.plain import words
+  from boltbeam.workflow import recommend as rec
+  w = words()["tune_llama_cpp"]
+  text = options["help"] if "help" in options else build_help(b["build"])
+  said = "llama-server --help" if text else "llama-server --help did not answer"
+  kv_flag, fa_flag, t_flag = (_flag_of(x) for x in ("kv_default", "fa_default", "threads_default"))
+  default = help_default(text, kv_flag)
+  layout = {t: GGML_BLOCK_LAYOUTS.get(gguf.GGML_TYPE_IDS.get(t.upper(), -1)) for t in help_choices(text, kv_flag)}
+  unknown = [t for t, lay in layout.items() if lay is None]  # a type ggml's block table here does not hold: its size is not known, so it is not a candidate
+  kinds = [t for t, lay in layout.items() if lay and (b.get("fa_kv_types") is None or t in b["fa_kv_types"])]
+  kinds = ([default] if default in kinds else []) + [t for t in kinds if t != default]
+  out: dict[str, Any] = {f"{NS}.fa_modes": help_choices(text, fa_flag), f"{NS}.flash_attn": help_default(text, fa_flag), f"{NS}.fa_default": help_default(text, fa_flag),
+                         f"{NS}.kv_default": default, f"{NS}.threads_default": help_default(text, t_flag),
+                         f"{NS}.v_quant_needs_fa": "quantized-v-needs-flash-attention" in b["features"], f"{NS}.kv_types": kinds,
+                         f"{NS}.kv_quantized_types": [t for t in kinds if layout[t][0] > 1], "kv_bytes_per_token": None, f"{NS}.kv_sizes": None,
+                         f"{NS}.per_layer_embd_bytes": (tabs.get("by_table") or {}).get(_row()["per_layer_table"], 0)}
+  src = {f"{NS}.fa_modes": said, f"{NS}.flash_attn": f"{said}: its default, until the -fa row sets it", f"{NS}.v_quant_needs_fa": b["source"],
+         f"{NS}.kv_types": f"{said}, " + ("the flash attention kernels in the build's GPU library" if b.get("fa_kv_types") else "no flash attention kernels read in the build: every type it takes")
+         + (f"; not {', '.join(unknown)}: no block layout for them here" if unknown else ""), f"{NS}.per_layer_embd_bytes": "the GGUF tensor table"}
+  try:
+    profile = options.get("profile")
+    if profile is None:
+      from boltbeam.profile.loaders import profile_from_model
+      profile = profile_from_model(model, None).to_json()
+    from boltbeam.roofline import prefill_work as pw
+    elems = pw.kv_bytes_per_token(profile, element_bytes=1)  # elements per token: K and V of every attended layer
+  except Exception as exc:  # noqa: BLE001  an unread shape is a stated unknown; the raw text is provenance
+    elems, src["kv_bytes_per_token"] = None, f"the model's shapes could not be read: {type(exc).__name__}: {exc}"
+  size = lambda t: elems * layout[t][1] / layout[t][0]  # noqa: E731  bytes per token at a type: its block's bytes over its block's elements
+  if elems and default in kinds:
+    out["kv_bytes_per_token"] = size(default)
+    out[f"{NS}.kv_sizes"] = ", ".join(w["kv_size"].format(type=t, bytes=size(t)) for t in kinds)
+    src["kv_bytes_per_token"] = f"roofline/prefill_work.kv_bytes_per_token's elements (the attended layers) at the build's default type, {default}"
+  topo = {"l3": host.get("cpu_l3_cores"), "physical": host.get("cpu_physical_cores"), "logical": host.get("cpu_logical_cores")}
+  out[f"{NS}.thread_candidates"] = sorted({int(v) for v in topo.values() if v})
+  src[f"{NS}.thread_candidates"] = "the CPU's topology (target/host.cpu_cores): " + ", ".join(f"{k} {v}" for k, v in topo.items() if v)
+  given = options.get("draft")
+  if given and not pathlib.Path(given).expanduser().is_file():
+    raise Refused(w["no_head"].format(head=given))
+  heads = [pathlib.Path(given).expanduser()] if given else llama_mtp.heads(model)
+  head = str(heads[0].absolute()) if len(heads) == 1 else None
+  layers = 0
+  if head:
+    kv = gguf.read_gguf_layout(heads[0])[0]
+    layers = int(kv.get(f"{kv.get('general.architecture')}.nextn_predict_layers") or 0)
+  pick = rec.mtp_tune(options.get("machine_facts"), ENGINE, str(pathlib.Path(model).expanduser()), host.get("context_tokens"), b.get("backend"), b.get("build"),
+                      seqs=host["served_requests"]) if head else \
+    {"k": None, "says": None, "why": w["heads"].format(heads=", ".join(h.name for h in heads)) if heads else w["no_heads"]}
+  out |= {"model_draft_layers": layers, f"{NS}.mtp_head": head, f"{NS}.mtp_k_measured": pick["k"], f"{NS}.mtp_why": pick["why"], f"{NS}.mtp_says": pick["says"]}
+  src |= {"model_draft_layers": f"{heads[0].name}: its nextn_predict_layers" if head else "no MTP head (--draft, or one beside the model)",
+          f"{NS}.mtp_head": "--draft (given)" if given else "the one MTP head beside the model (collectors/llama_mtp.heads)"}
+  return out, src
 
 
 # --- the command and a measured point -----------------------------------------------------------------------------------
@@ -343,24 +497,30 @@ def _placement(f:dict[str, Any]) -> list[str]:
   return ["--cpu-moe"] if f["layers_in_ram"] >= f["layers"] else ["--n-cpu-moe", str(f["layers_in_ram"])]
 
 
-def _env_flags(values:list[dict[str, Any]]) -> tuple[dict[str, str], list[str]]:
-  """The env block and the flags; -b is raised to -ub when -ub is larger than llama-server's default batch."""
+def _env_flags(values:list[dict[str, Any]], f:dict[str, Any] | None = None) -> tuple[dict[str, str], list[str]]:
+  """The env block and the flags; -b is raised to -ub when -ub is larger than llama-server's default batch. A flag row's
+  `with` adds the flags it goes with (their values filled from the row's value and the facts), and its `with_draft` those
+  for the draft model, only when a draft model (-md) is in the command."""
+  from boltbeam.workflow.tune import say
   env = {v["name"]: v["value"] for v in values if v["kind"] == "env"}
   flags: list[str] = []
   given = {v["name"] for v in values}
+  fill = lambda t, v: say(t, {**(f or {}), "value": v["value"]})  # noqa: E731
   for v in values:
     if v["kind"] == "flag":
-      flags += [v["name"], v["value"]]
+      flags += [v["name"], v["value"], *(x for k, t in (v.get("with") or {}).items() for x in (k, fill(t, v)))]
       if v["name"] == "-ub" and "-b" not in given and int(v["value"]) > 2048:
         flags += ["-b", v["value"]]
+  if _row()["draft"]["model"] in flags:
+    flags += [x for v in values if v["kind"] == "flag" for k, t in (v.get("with_draft") or {}).items() for x in (k, fill(t, v))]
   return env, flags
 
 
 def render(values:list[dict[str, Any]], f:dict[str, Any], b:dict[str, Any], model:str, extra:list[str] | None = None) -> dict[str, Any]:
-  env, flags = _env_flags(values)
+  env, flags = _env_flags(values, f)
   asked = {x for x in extra or [] if x in ("-c", "--ctx-size")}
   ctx = [] if asked or not f.get("context_tokens") else ["-c", str(f["context_tokens"])]  # the context the KV estimate used
-  argv = [b["build"], "-m", model, "-ngl", "99", *_placement(f), *ctx, *flags, *(extra or [])]
+  argv = [b["build"], "-m", model, *cs.all_layers(extra), *_placement(f), *ctx, *flags, *(extra or [])]
   place = _placement(f)  # where the experts sit: a run takes it as a setting, so "use these" copies it with the values that assume it
   placement = [{"name": "--cpu-moe", "value": "on"}] if place == ["--cpu-moe"] else [{"name": place[0], "value": place[1]}] if place else []
   return {"env": env, "flags": flags, "config": {}, "argv": argv, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), *argv]),
@@ -407,12 +567,74 @@ def point_ms(server:str, model:str, **kw) -> float:
   return point(server, model, **kw)["ms"]
 
 
+def decode_point(server:str, model:str, *, flags:list[str], env:dict[str, str], port:int, log:pathlib.Path, context:int | None = None) -> dict[str, Any]:
+  """Decode speed at one request in a fresh llama-server, as the MTP measurement times it (the driver's --mtp-prompts
+  mode, collectors/llama_mtp): the shipped short prompts and the real-text long corpus cut to the setup's context, each
+  with its task, a reply of collectors/mtp.TOKENS each, the server's own tok/s, held to the loop guard (collectors/mtp.guard:
+  a reply that repeats itself is refused). The draft count is the setup's (the engine row's draft count flag, else none). {tokens, depths:
+  {depth: {context, per_prompt}}}."""
+  from boltbeam.collectors import engine_common as ec, llama_mtp, llama_server_decode as lsd, mtp
+  prompts = mtp.prompt_set()
+  count = _row()["draft"]["count"]
+  k = int(flags[flags.index(count) + 1]) if count in flags else 0
+  long_tokens = max(0, (context or 0) - prompts["room"] - mtp.TOKENS)  # the long prompts fill the setup's context, as screen mtp --context sizes them
+  argv = [sys.executable, str(lsd.DRIVER), "--server", server, "--model", str(pathlib.Path(model).absolute()), "--port", str(port),
+          "--ctx-size", str(max(prompts["room"] + long_tokens + mtp.TOKENS + lsd.HEADROOM, context or 0)), "--flags", json.dumps([*flags, "--metrics"]),
+          "--mtp-prompts", prompts["path"], "--k", str(k), "--tokens", str(mtp.TOKENS), "--long-tokens", str(long_tokens), "--long-corpus", str(mtp.LONG),
+          "--log", str(log.with_suffix(".server.log")), "--deadline-s", str(llama_mtp.TIMEOUT_S)]
+  lines = ec.run_driver(argv, env=env, log=log, timeout_s=llama_mtp.TIMEOUT_S + llama_mtp.DRIVER_GRACE_S)
+  rows, eng = [x for x in lines if "decode_tok_s" in x], next(x["engine"] for x in lines if "engine" in x)
+  if why := mtp.guard(rows, eng["real_text"]):
+    raise Refused("; ".join(why))
+  return {"tokens": mtp.TOKENS, "depths": {d: {"context": statistics.median(r["context"] for r in rows if r["depth"] == d),
+                                               "per_prompt": {r["prompt"]: r["decode_tok_s"] for r in rows if r["depth"] == d}}
+                                           for d in sorted({r["depth"] for r in rows})}}
+
+
+def help_flags(text:str) -> set[str]:
+  """Every flag a tool's --help lists on its option lines."""
+  return {m for ln in text.splitlines() if re.match(r"\s*-", ln) for m in re.findall(r"(?<![\w-])(--?[a-zA-Z][\w-]*)", ln.split("  ")[0])}
+
+
+def gate_flags(values:list[dict[str, Any]], f:dict[str, Any], accepted:set[str]) -> tuple[dict[str, str], list[str]]:
+  """The setup as the output check's tool runs it: the placement and each of the command's flags the tool accepts (its
+  --help: the server's own and the draft model's are not its; a draft cache's flags only beside a draft model it loads)."""
+  def keep(vals):
+    env, fl = _env_flags(vals, f)
+    return env, [x for i in range(0, len(fl), 2) if fl[i] in accepted for x in fl[i:i + 2]]
+  env, flags = keep(values)
+  if _row()["draft"]["model"] not in flags:
+    env, flags = keep([{**v, "with_draft": None} for v in values])
+  return env, [*_placement(f), *flags]
+
+
 def launch_measure(model:str, b:dict[str, Any], f:dict[str, Any], *, port:int, out:pathlib.Path, extra:list[str] | None = None) -> Callable[..., Any]:
   """run(values=, prompt=, reps=, tag=) -> wall ms: a fresh llama-server per point with that setup. facts=True: {"ms",
-  "facts"} with the GPU's free memory after load and after one prompt, and the server log's slot failures (a fit sweep)."""
-  def run(*, values, prompt, reps, tag, facts=False):
-    env, flags = _env_flags(values)
-    got = point(b["build"], model, prompt=prompt, flags=["-ngl", "99", *_placement(f), *flags, *(extra or []), "--no-warmup"], env=env,
+  "facts"} with the GPU's free memory after load and after one prompt, and the server log's slot failures (a fit sweep).
+  decode=True: decode speed per real-text prompt at one request (decode_point). agree=setup values, texts=, context=:
+  Speed up's accuracy check (llama-perplexity, one pair per document, one chunk of the context each) of these values
+  against those, on one model; refused when the two do not differ or the tool does not take a flag they differ in."""
+  def run(*, values, prompt, reps, tag, facts=False, decode=False, agree=None, texts=None, context=None):
+    env, flags = _env_flags(values, f)
+    if agree is not None:
+      from boltbeam.quantization.head_writers import gguf_quantize as gq
+      accepted = help_flags(build_help(gq.tool(b["build"], "llama-perplexity")))
+      main = (lambda vals: vals) if _row()["draft"]["model"] in accepted else (lambda vals: [{**v, "with_draft": None} for v in vals])  # noqa: E731  no draft model there: no draft cache
+      pairs = lambda vals: {tuple(fl[i:i + 2]) for fl in [_env_flags(main(vals), f)[1]] for i in range(0, len(fl), 2)}  # noqa: E731
+      differ = sorted({x for x, _ in pairs(agree) ^ pairs(values)})
+      if not differ:
+        raise Refused("the output check would compare a setting with itself")
+      if missing := [x for x in differ if x not in accepted]:
+        raise Refused(f"llama-perplexity does not take {', '.join(missing)}, so the answers with it cannot be checked")
+      base_env, base = gate_flags(agree, f, accepted)
+      cand_env, cand = gate_flags(values, f, accepted)
+      if base_env != cand_env:
+        raise Refused("the output check runs both settings in one environment, and these two differ in their environment variables")
+      return gq.accuracy(model, model, b["build"], texts, src_flags=tuple(base), dst_flags=tuple(cand), env=base_env, ctx=context, chunks=GATE_CHUNKS)
+    if decode:
+      return decode_point(b["build"], model, flags=[*cs.all_layers(extra), *_placement(f), *flags, *(extra or [])], env=env, port=port,
+                          log=out / f"{tag}.driver.log", context=f.get("context_tokens"))
+    got = point(b["build"], model, prompt=prompt, flags=[*cs.all_layers(extra), *_placement(f), *flags, *(extra or []), "--no-warmup"], env=env,
                 reps=reps, port=port, log=out / f"{tag}.driver.log", memory=facts, context=f.get("context_tokens"))
     return got if facts else got["ms"]
   return run

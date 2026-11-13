@@ -1,7 +1,15 @@
 {
  "schema": "boltbeam.kernel_families.v1",
  "note": "Which family a captured kernel's time goes to in a time budget (collectors/time_budget.py), by a regular expression on the name the capture tool reports (nsys shortName). Read only through collectors/time_budget.families_for. A trace is read with one engine's rows, then the rows of the engines that engine lists in `also` (in order), then the rows of the GPU vendor (libraries every engine on that vendor links: cuBLAS, CUTLASS, nvjet), then `any` rows; within a set the first matching row wins; a row with `after` matches a launch only when a kernel matching `after` ran on the same stream since that row last matched there (the launch's role is told by the call that prepared it, when its name and template are the same in both roles); no match is `other`. A name the rows do not know is never guessed: it is `other`, and the budget lists the largest `other` kernels so a missing row is visible. Families are for the budget's split of kernel time only; the role attribution (collectors/kernel_kind.py, pairing) does not read this table.",
- "families": ["expert_mmq", "expert_routing", "dense_gemm", "attention", "recurrent", "elementwise", "copy_gather", "other"],
+ "families": ["expert_mmq", "expert_routing", "dense_gemm", "output_layer", "attention", "recurrent", "elementwise", "row_gather", "copy_gather", "sampling", "draft_head", "other"],
+ "forward": {
+  "why": "How a decode trace is cut into forwards (collectors/time_budget.forwards): the host reads each forward's result back (the logits or the picked tokens) before it can choose what runs next, so a copy of kind result_read ends a forward; no other copy cuts one; a run of kernels with no per-layer launch (a sampler) joins the forward before it. The families in layer_families run once per layer: which forwards are the model's and which a draft head's comes from the engine's own counts (its decode row and the request's spec-decode counters) split at a per-layer launch count, never from a layer count written here, and a cut that does not give those counts is refused. A main forward's last launch of a tail row's family becomes that row's family: the output layer is the last matmul before the result is read. A draft forward's kernels all go to the draft family. input_copy: the copy kind a step's input arrives by (a per-layer embedding row sent from host memory), its bytes per step.",
+  "result_read": "DtoH",
+  "input_copy": "HtoD",
+  "layer_families": ["attention", "recurrent"],
+  "tail": [{"family": "dense_gemm", "becomes": "output_layer"}],
+  "draft": "draft_head"
+ },
  "engines": {
   "llama.cpp": {
    "also": [],
@@ -15,6 +23,34 @@
     {"pattern": "^gdn_|gated_delta_net|^ssm_|delta_net", "family": "recurrent", "why": "the gated delta net and its short convolution"},
     {"pattern": "^convert_|^quantize_|^rms_norm|^norm_f32|^group_norm|^l2_norm|^unary|^k_bin_bcast|^scale_f32|^clamp_f32|^softplus|^sum_rows|^cumsum|^fill_|^k_repeat", "family": "elementwise", "why": "elementwise work, norms and type conversion: the F32->BF16 convert that feeds cuBLAS, the activation quantize of a dense matmul, rms norm, the unary and binary ops"},
     {"pattern": "^cpy_|^concat|^k_get_rows|^dup", "family": "copy_gather", "why": "copies, concatenation and row gathers"}
+   ],
+   "decode_rows": [
+    {"pattern": "^k_get_rows", "family": "row_gather", "why": "a decode's GET_ROWS (ggml-cuda/getrows.cu k_get_rows*): the token embedding row, a per-layer embedding row, the router's picked weights; the name does not say which. Read before `rows` in a decode only: the prefill record keeps copy_gather, as it was made (changing it is its own decision)"},
+    {"pattern": "^argmax", "family": "sampling", "why": "ggml's ARGMAX (ggml-cuda/argmax.cu argmax_f32): a greedy pick on the GPU (a decode only, as above)"}
+   ],
+   "decode": {
+    "tokens_from_prompt": 1,
+    "draft_forwards": {"per_draft_token": 1, "per_main_forward": 1, "uncounted_per_step": 1},
+    "residency": {"host_buffers": "^CPU|^AMX$|_Host$", "why": "the host-memory buffer types ggml names (ggml-backend.cpp CPU and CPU_Mapped; ggml-cpu: CPU_REPACK, CPU_HBM, CPU_KLEIDIAI, CPU_RISCV64_SPACEMIT, AMX; a GPU backend's pinned host buffer <name>_Host, ggml-cuda.cu GGML_CUDA_NAME \"_Host\", ggml-vulkan.cpp GGML_VK_NAME \"_Host\"); every other buffer is a device's (CUDA0, ROCm0, MUSA0, MTL0, Vulkan0, SYCL0, CANN0, ...), so a device name BoltBeam has not seen is never refused"},
+    "host_rows_element_bytes": 4,
+    "draft_hidden_rows": true,
+    "why": "llama-server, read from llama.cpp master 7592b61d3 and checked on its 2026-11-12 Flash-Next MTP trace (k 3, 8 requests: every count matched; storage boltbeam-runs/decode-trace-flash-20261112). The prompt samples the first token; its forwards are however many the server runs (batches, checkpoint splits, catch-ups), found by the driver's first-token mark, never counted here. After every batch of the model, server-context.cpp runs common_speculative_process, one catch-up decode of the draft context (common/speculative.cpp common_speculative_impl_draft_mtp, skipped only for a head sharing the target's KV), and draft() one decode per drafted token; a draft pass whose token falls under p_min is run and not counted as drafted, and ends that step's drafting (draft() stops at it): at most one uncounted pass a step (uncounted_per_step), as the 2026-11-12 Flash-Next trace shows (0 to 3 a request of ~100 steps); a build that runs the catch-up and the first draft pass with no result read between them shows one forward of both passes' launches, counted as both (on Flash-Next a catch-up runs 11 per-layer launches, a draft pass 21, the two together 32; the prompt is two forwards of the model, a checkpoint split, and one catch-up). residency: where the target model's weights went is read from its weight buffers (llama-model.cpp load_tensors \"model buffer size\", printed only at -lv 4, so the driver's --residency-probe loads the same command once at -lv 4 first); host-side buffers may hold only the host input tables. draft_hidden_rows: the MTP context uploads a hidden row of n_embd floats per token (common/speculative.cpp llama_set_embeddings_nextn_rows), as large as a token embedding row, so a copy of that size is ambiguous. host_rows_element_bytes (a named engine fact, not in the model file): the input tables llama.cpp keeps in host RAM (workflow/recommend.HOST_ONLY) are gathered there by GET_ROWS, whose output is F32 (ggml.c ggml_get_rows), and copied in: 4 bytes an element of a row"
+   }
+  },
+  "vllm": {
+   "also": [],
+   "decode": {
+    "tokens_from_prompt": 1, "draft_forwards": null, "residency": null, "host_rows_element_bytes": null, "draft_hidden_rows": false,
+    "why": "vLLM v1 (v1/spec_decode/eagle.py propose, the MTP proposer): the prefill samples the first token (the driver's mark: the request's first_token_ts, an engine-core time.monotonic stamp, v1/metrics/stats.py); the k draft passes run on the GPU after the verify with their tokens kept on the device, read back with the step's result, so they are inside the step, not forwards of their own. residency null: where the weights went is not read for vLLM, so its bound says not checked; no input table in host RAM. Not yet checked on a trace"
+   },
+   "rows": [
+    {"pattern": "^fused_moe_kernel|^fused_marlin_moe|^marlin_moe|moe_wna16|^grouped_gemm", "family": "expert_mmq", "why": "vLLM's fused MoE matmuls (model_executor/layers/fused_moe: the Triton fused_moe_kernel, the Marlin MoE path)"},
+    {"pattern": "^moe_align|^topk_softmax|^moe_sum|^count_and_sort|^grouped_topk|^moe_permute|^moe_unpermute", "family": "expert_routing", "why": "vLLM's MoE routing: top-k, the align-and-sort of tokens by expert, the sum of the experts' outputs"},
+    {"pattern": "^_topk_log_softmax|^_gumbel_sample|^gatherTopK|^computeBlockDigitCounts|^computeDigitCumSum|^computeBlockwiseWithinKCounts|^_ranks_kernel|^radixSort|^argmax|^_compute_probs|^_rejection|^rejection_", "family": "sampling", "why": "vLLM's sampler and the speculative rejection sampler: the recorded vLLM trace ~/vllm-bench/runs/prof_spec64.1.sqlite (2026-09-25) holds _topk_log_softmax_kernel, _gumbel_sample_kernel, gatherTopK, computeBlockDigitCounts, computeDigitCumSum, computeBlockwiseWithinKCounts (torch.topk) and _ranks_kernel once per step"},
+    {"pattern": "^_selective_scan|^_causal_conv1d|^_chunk_scan|^_chunk_state|^_state_passing|^_bmm_chunk|mamba|^fused_recurrent|^chunk_gated_delta|^fused_gdn", "family": "recurrent", "why": "the Mamba and gated-delta-net kernels (the same recorded trace: _selective_scan_update_kernel, _causal_conv1d_update_kernel, precopy_mamba_align_fused_kernel)"},
+    {"pattern": "^reshape_and_cache|^rotary|^flash_fwd|^paged_attention", "family": "attention", "why": "the KV write, rope and the attention kernels (flash_fwd_splitkv_kernel in the recorded trace)"},
+    {"pattern": "^vectorized_gather|^index_elementwise|^_scatter_gather", "family": "row_gather", "why": "torch's gathers and index kernels (the embedding lookup among them)"},
+    {"pattern": "^triton_red_fused|^triton_poi_fused|rms_norm|^elementwise_kernel|^vectorized_elementwise|^unrolled_elementwise|^act_and_mul|^silu_and_mul", "family": "elementwise", "why": "the torch.compile fused norms and activations (triton_red_fused_*, triton_poi_fused_*) and torch's elementwise kernels"}
    ]
   },
   "strata-stripped": {"also": ["strata"], "rows": []},

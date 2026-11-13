@@ -7,23 +7,55 @@
   "enabled": true,
   "reason": null,
   "copy_bytes": 13000000000,
-  "expect": {
-    "speed_write": 70.0,
-    "speed_check": 300.0,
-    "speed_measure": 690.0
-  },
   "gpu": true,
+  "parts": [
+    {
+      "part": "output",
+      "label": "Speed up: the output layer",
+      "enabled": true,
+      "reason": null,
+      "helper": "Shrinks the word-picking layer, 18 min",
+      "expect": {
+        "speed_write": 68.4,
+        "speed_check": 301.6,
+        "speed_measure": 663.2
+      },
+      "confirm": {
+        "title": "Make a faster copy of m?",
+        "yes": "Make the copy",
+        "no": "Not now",
+        "lines": [
+          "Makes a faster copy. The original stays.",
+          "Changes only the output layer, the last step that picks each next word. The copy's answers are checked against the original's, then its speed.",
+          "Takes about 18 minutes (an estimate), using the GPU the whole time.",
+          "Needs up to 12.1 GB of free disk space for the copy."
+        ]
+      }
+    },
+    {
+      "part": "mtp",
+      "label": "Speed up: the draft layer",
+      "enabled": true,
+      "reason": null,
+      "helper": "Shrinks the guess-ahead layer, 25 to 102 min",
+      "expect": {
+        "speed_write": 68.4,
+        "speed_measure": 6023.8
+      },
+      "confirm": {
+        "title": "Make a faster copy of m?",
+        "yes": "Make the copy",
+        "no": "Not now",
+        "lines": [
+          "Makes a faster copy. The original stays.",
+          "Changes only the draft layer, which guesses a few words ahead for the model to check (MTP). The model checks every guess, so only the speed with drafts on is measured.",
+          "Takes about 25 to 102 minutes (an estimate), using the GPU the whole time.",
+          "The speed with drafts on is timed on the original, the copy and the original again, once for each number of drafts it tries; how many it tries decides where in that range it ends.",
+          "Needs up to 12.1 GB of free disk space for the copy."
+        ]
+      }
+    }
+  ],
   "engine": "vLLM",
-  "expect_source": "estimate",
-  "confirm": {
-    "title": "Make a faster copy of m?",
-    "yes": "Make the copy",
-    "no": "Not now",
-    "lines": [
-      "Makes a faster copy. The original stays.",
-      "Needs up to 12.1 GB of free disk space for the copy.",
-      "Takes about 18 minutes (an estimate).",
-      "Uses the GPU the whole time."
-    ]
-  }
+  "expect_source": "estimate"
 }

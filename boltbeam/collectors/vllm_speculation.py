@@ -114,7 +114,7 @@ def ledger(engine:dict[str, Any]) -> list[dict[str, Any]]:
 
 def acceptance(steps:list[dict[str, Any]], k:int) -> dict[str, Any]:
   """What speculation did over the captured decode: drafts (verify steps the engine reported), the tokens they
-  emitted, accept length (tokens per step, 1 + accepted / drafts: vLLM's and vllm_mtp.summarize's definition), the
+  emitted, accept length (tokens per step, 1 + accepted / drafts: vLLM's and collectors/mtp.summarize's definition), the
   accepted share of draft tokens, the share accepted at each draft position, and the steps run ahead."""
   decode = [s for s in steps if s["phase"] == "decode"]
   if not decode:

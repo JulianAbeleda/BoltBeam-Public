@@ -149,6 +149,15 @@ func TestMeasureMtp(t *testing.T) {
 	if got := rows(recommendActions(f)); got[3] != "mtp|[ Measure MTP ] decode with 1, 2, 3 draft tokens against none" {
 		t.Fatalf("offered: %v", got)
 	}
+	says, ctx := "decode with 1, 2, 3 draft tokens ... first 8 prompts x 7,496 tokens", 8192
+	f.Recommend.MtpMeasure.Says, f.Recommend.MtpMeasure.Context = &says, &ctx
+	if got := rows(recommendActions(f)); got[3] != "mtp|[ Measure MTP ] "+says {
+		t.Fatalf("its cost said first: %v", got)
+	}
+	f.Engine = "llama.cpp" // the chosen engine measures: llama.cpp's head GGUF beside the model, as vLLM's in the checkpoint
+	if got := strings.Join(f.mtpArgv(seam.Client{Python: "py"}, "/m", "t", "/o"), " "); !strings.Contains(got, "--engine llama.cpp --out /o --ks 1,2,3 --context 8192") {
+		t.Fatalf("Setup's Context reaches the job: %q", got)
+	}
 	body := plain(recommendBody(f, 120))
 	for _, want := range []string{"MTP measured 2026-11-08 10:00 UTC", "short, context 300, k=0: 60.0 tok/s, 1.00x k=0 (prompts spread 5%)",
 		"short, context 300, k=2: 92.4 tok/s, 1.54x k=0, 2.47 tokens per step, 74% of drafts kept"} {

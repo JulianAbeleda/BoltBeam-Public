@@ -67,8 +67,10 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
                                                each with the reason when it cannot, the weight formats it reads,
                                                and how step 5 times its roles
     gpu-free --target T                        is the GPU free, or which program holds it
-    mtp MODEL --target T --out DIR [--ks 1,2,3] vLLM's multi-token prediction per draft count k on the shipped natural
-                                               prompts, against k=0: tok/s per prompt and their spread, acceptance
+    mtp MODEL --target T --out DIR [--engine E] [--draft HEAD] [--ks 1,2,3] [--context N]  multi-token prediction per
+                                               draft count k on vLLM or llama-server (more k while a larger one could still
+                                               win) on the shipped natural prompts at a short and a long context, against
+                                               k=0: tok/s per prompt and their spread, acceptance
     role-time --run DIR [--provider P]         time every role inside a real decode with the run's provider
                                                (collectors/providers.py); feeds `results.loss`
     compare-ready --run DIR [--tinygrad-root R]  can this machine compare kernels for the run: the missing piece
@@ -100,8 +102,9 @@ import sys
 from typing import Any
 
 from boltbeam.cli import self_update
-from boltbeam.collectors import capture_settings, engine_builds, engine_families, engine_scan, providers, tinygrad_role_time, vllm_mtp
+from boltbeam.collectors import capture_settings, engine_builds, engine_families, engine_scan, mtp, providers, tinygrad_role_time
 from boltbeam.collectors import replay as rp
+from boltbeam.core import draft_count
 from boltbeam.core.canonical import pretty_json
 from boltbeam.profile.loaders import profile_from_model
 from boltbeam.quantization import speed_up
@@ -225,6 +228,7 @@ def recommended(profile:dict[str, Any], target, *, engine:str = "vllm", gpus:int
   devs = tgpu.devices(hardware_profile()["gpu"])[:gpus or None]
   args = dict(target=target, seqs=seqs, context=context or rec.CONTEXT, **offload)
   out = {"schema": SCHEMA, "kind": "recommend", "target_id": target.target_id, **rec.setup(profile, facts, engine, devs, **args)}
+  out["mtp_measure"] = mtp_offer(out.get("mtp_measure"), profile["source"], context, engine)
   if check_in is None:
     return out
   free = gpu_free(target)
@@ -260,13 +264,78 @@ def run_time_budget(model:str, engine:str, roots:list[pathlib.Path], prompt:int,
   return None
 
 
+def mtp_sized(model:pathlib.Path, head:str | None) -> tuple[dict[str, Any], int]:
+  """What the long context is sized from: the model's position limit and KV in the keys speed_up.long_context reads
+  (config.json; a GGUF's from its profile, the one KV rule), and the bytes on the GPU (a GGUF's resident tensors, as the
+  recommended setup counts them, and its draft head's file)."""
+  if model.suffix != ".gguf":
+    return json.loads((model / "config.json").read_text()), speed_up.checkpoint_bytes(model)
+  from boltbeam.roofline import prefill_work as pw
+  p = profile_from_model(str(model)).to_json()
+  cfg = {"max_position_embeddings": p["metadata"]["context"]["length"], "kv_bytes_per_token": int(pw.kv_bytes_per_token(p, element_bytes=2) or 0)}
+  return cfg, rec.weights_resident(rec.tensor_bytes(model), text_only=True) + (pathlib.Path(head).stat().st_size if head else 0)
+
+
+def mtp_long(model:pathlib.Path, long_tokens:int | None, context:int | None, tokens:int, engine:str = "vllm",
+             head:str | None = None, fit_in:pathlib.Path | None = None, k_top:int = draft_count.K_MAX) -> tuple[int, str]:
+  """The long depth's document tokens and why. --long-tokens as asked; --context N: the document tokens that keep the
+  prompt room (the chat template and the task), the document and the measured tokens within N, refused past the model's position limit or the KV that fits
+  (quantization/speed_up.long_context at the engine's GPU share and reserve, mtp_sized); neither: Speed up's long
+  context less that room. Past the long-depth corpus's length a long depth is refused here, before an engine loads.
+  fit_in: the run's folder, where an engine with its own fit (the module's fit_context: llama.cpp's common_fit_params,
+  with the draft head at k_top, the largest draft count the sweep may reach) is asked what context it holds on the GPU's
+  free memory now; that bounds the KV in place of the byte count, and a context it cannot hold is refused before a load."""
+  if long_tokens is not None and context:
+    raise mtp.MtpRefused("--long-tokens and --context both set the long depth: give one")
+  room, docs = mtp.prompt_set()["room"], min(d["qwen3_tokens"] for d in json.loads(mtp.LONG.read_text())["documents"])
+  if (long_tokens or 0) > docs or (context or 0) - room - tokens > docs:  # docs: the corpus as one tokenizer reads it; the driver refuses a shorter read
+    raise mtp.MtpRefused(f"the long-depth corpus holds about {docs:,} tokens a document (data/mtp_long_corpus.json): ask a long depth within it")
+  if long_tokens is not None:
+    return long_tokens, "asked (--long-tokens)"
+  if context and context - room - tokens < 1:
+    raise mtp.MtpRefused(f"--context {context} is too short to measure: it must hold the prompt room ({room}) and the {tokens} measured tokens")
+  from boltbeam.workflow import tune_vllm
+  total = tune_vllm.gpu_memory().get("total")
+  if not total:
+    raise mtp.MtpRefused("the GPU's memory could not be read, so the long context cannot be sized: pass --long-tokens")
+  cfg, weights = mtp_sized(model, head)
+  if (m := mtp.engine(engine)) is None:
+    raise mtp.MtpRefused(f"{engine} has no MTP measurement in its engine row (data/engine_knobs.json)")
+  fit = None
+  if fit_in is not None and hasattr(m, "fit_context"):
+    got, said = m.fit_context(str(model), head, k=k_top, need=context or room + tokens + 1, out=fit_in)
+    fit = (got and got - tokens, said)  # the decode context: the server's less the measured tokens, as the model limit is cut
+  lc = speed_up.long_context(cfg, weights, int(total * m.GPU_SHARE), tokens=tokens, reserve=getattr(m, "RESERVE", speed_up.RESERVE_BYTES), engine_fit=fit)
+  if context:
+    bound = min(("model_limit", "kv_fit"), key=lc["bounds"].get)
+    if context > lc["bounds"][bound]:
+      raise mtp.MtpRefused(f"--context {context} cannot be measured here: past {lc['bounds'][bound]} tokens, "
+                                f"{'the position limit' if bound == 'model_limit' else 'the KV that fits'} ({lc['why']})")
+    return context - room - tokens, f"the asked context, {context} (--context), less the prompt room and the measured tokens"
+  return lc["context"] - room, f"Speed up's long context, {lc['context']} tokens: {lc['why']}"
+
+
+def mtp_offer(offer:dict[str, Any] | None, model:str, context:int | None, engine:str = "vllm") -> dict[str, Any] | None:
+  """Measure MTP's offer with its cost said up front: the stated context (Setup's Context) it measures at, else the
+  derived long one, and the tokens it generates first."""
+  if not offer or offer.get("blocked"):
+    return offer
+  try:
+    long, why = mtp_long(pathlib.Path(model), None, context, mtp.TOKENS, engine, offer.get("head"))
+  except (mtp.MtpRefused, Refused, OSError, ValueError, KeyError) as exc:
+    return {**offer, "context": context, "says": None, "blocked": str(exc)}
+  w, ps = plain.words()["mtp_pick"]["measure"], mtp.prompt_set()
+  return {**offer, "context": context, "says": w.format(ks=", ".join(map(str, offer["ks"])), kmax=draft_count.K_MAX,
+                                                        ctx=context or long + ps["room"], why=why, n=len(mtp.long_corpus()["ids"]), long=long)}
+
+
 def setting_flags(engine:str, settings:list[str]) -> tuple[list[str] | None, list[str]]:
   """Settings (NAME=VALUE, the names a run is asked with) as the engine's own flags, through the one setting<->flag map
   (capture_settings.KNOB_SETTINGS) and the pipeline's value types (ASKED). A setting whose flag is a knob this page tunes
   is left out and named: its value is the page's to set, and a flag given last would pin a sweep."""
   from boltbeam.workflow import tune
   flag_of = {name: flag for flag, name in capture_settings.KNOB_SETTINGS.get(engine, {}).items()}
-  knobs = {k["name"] for k in tune.knobs(engine, tune.table())}
+  knobs = {n for k in tune.knobs(engine, tune.table()) for n in (k["name"], *(k.get("with") or {}), *(k.get("with_draft") or {}))}  # a flag a row sets beside it too
   flags, tuned_here = [], []
   for item in settings:
     name, _, value = item.partition("=")
@@ -281,7 +350,7 @@ def setting_flags(engine:str, settings:list[str]) -> tuple[list[str] | None, lis
 def tuned(model:str, engine:str, build:str | None = None, *, measure:bool = False, knobs:list[str] | None = None,
           experts_in_ram:str | None = None, say=None, prompt:int | None = None, context:int | None = None, replies:str | None = None,
           workload:str | None = None, settings:list[str] | None = None, roots:list[pathlib.Path] | None = None,
-          target:str | None = None) -> dict[str, Any]:
+          target:str | None = None, draft:str | None = None) -> dict[str, Any]:
   """Tuned for this machine (workflow/tune.py): the engine's knob rows as the Recommended setup page lays them out, and what
   a run passes of them (capture_settings.knob_setting; env rows as environment). Facts only unless measure, which writes
   its progress through say as pipeline lines. prompt, context, replies, workload, settings (NAME=VALUE: the pipeline's
@@ -300,7 +369,9 @@ def tuned(model:str, engine:str, build:str | None = None, *, measure:bool = Fals
     kw["extra"], tuned_here = setting_flags(engine, settings or [])
     if budget := run_time_budget(model, engine, roots or [], kw["prompt"], target):
       kw["time_budget"] = budget
-    res = tune.tune(model, engine, build, measure=measure, knobs_only=knobs, experts_in_ram=experts_in_ram, say=say, **kw)
+    if target and roots:  # this chip's facts: an MTP measurement kept there gives the draft count (recommend.mtp_pick)
+      kw["machine_facts"] = lay.newest_facts(roots, target)
+    res = tune.tune(model, engine, build, measure=measure, knobs_only=knobs, experts_in_ram=experts_in_ram, say=say, draft=draft, **kw)
   except Refused as exc:
     return {**out, "refused": refused.format(reason=str(exc))}
   if workload:
@@ -606,14 +677,18 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p.add_argument("--workload", help="chat or one-shot (refused otherwise)")
   p.add_argument("--setting", action="append", default=[], help="NAME=VALUE: an engine setting Setup holds, passed as the engine's flag unless this page tunes it")
   p.add_argument("--target", help="the chip: only a run on it gives the time budget")
+  p.add_argument("--draft", help="the multi-token prediction head file (default: the one beside the model)")
   p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest run there with a measured time budget is used")
-  p = sub.add_parser("mtp", help="vLLM's multi-token prediction per draft count on natural prompts (collectors/vllm_mtp)")
+  p = sub.add_parser("mtp", help="multi-token prediction per draft count on natural prompts, on the engine's row (collectors/mtp)")
   p.add_argument("model")
   p.add_argument("--target", required=True)
-  p.add_argument("--out", required=True, help="the folder the measurement, the continuations and the logs go to")
-  p.add_argument("--ks", default=",".join(map(str, vllm_mtp.KS)), help="draft counts to measure; k=0 always runs as the baseline")
-  p.add_argument("--tokens", type=int, default=256, help="tokens generated per prompt and depth")
-  p.add_argument("--long-tokens", type=int, default=2048, help="the long depth's natural continuation; 0: short only")
+  p.add_argument("--out", required=True, help="the folder the measurement and the logs go to")
+  p.add_argument("--engine", default="vllm", help="the engine (a provider name whose row names an MTP measurement: vllm, llama.cpp)")
+  p.add_argument("--draft", help="llama.cpp: the MTP head file (default: the one beside the model, collectors/llama_mtp.heads)")
+  p.add_argument("--ks", default=",".join(map(str, mtp.KS)), help="draft counts to measure; k=0 always runs as the baseline")
+  p.add_argument("--tokens", type=int, default=mtp.TOKENS, help="tokens generated per prompt and depth")
+  p.add_argument("--long-tokens", type=int, help="the long depth's real-text document tokens (data/mtp_long_corpus.json); 0: short only (default: derived, mtp_long)")
+  p.add_argument("--context", type=int, help="measure the long depth at this context (tune's asked context)")
   p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the measurement is cached in the newest "
                  "machine facts there, where the recommended setup reads it")
   p = sub.add_parser("speedup-offer", help="Speed up for this model: enabled or why not, the copy's size and time, no GPU (quantization/speed_up.offer)")
@@ -711,25 +786,33 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
       out = tuned(str(pathlib.Path(args.model).expanduser()), args.engine, args.build, measure=args.measure, knobs=args.knob,
                   experts_in_ram=args.experts_in_ram, say=say, prompt=args.prompt, context=args.context, replies=args.replies,
                   workload=args.workload, settings=args.setting, roots=[pathlib.Path(r).expanduser() for r in args.facts_root],
-                  target=args.target)
+                  target=args.target, draft=args.draft)
     elif args.command == "gpu-free":
       out = gpu_free(_target_arg(args.target))
     elif args.command == "mtp":
+      found = lay.newest_facts_file([pathlib.Path(r).expanduser() for r in args.facts_root], _target_arg(args.target).target_id)
       try:
-        record = vllm_mtp.measure(str(pathlib.Path(args.model).expanduser()), [int(k) for k in args.ks.split(",") if k.strip()],
-                                  backend=_target_arg(args.target).backend, out=pathlib.Path(args.out).expanduser(),
-                                  tokens=args.tokens, long_tokens=args.long_tokens)
-      except vllm_mtp.MtpRefused as exc:  # refused before or between engines: free the GPU or fix the request, then rerun
+        model = pathlib.Path(args.model).expanduser()
+        head = args.draft or (mtp.offer(args.engine, str(model), 1, facts=True) or {}).get("head")
+        ks = [int(k) for k in args.ks.split(",") if k.strip()]
+        long_tokens, why = mtp_long(model, args.long_tokens, args.context, args.tokens, args.engine, head,
+                                    fit_in=pathlib.Path(args.out).expanduser(), k_top=max([draft_count.K_MAX, *ks]))
+        record = mtp.measure(args.engine, str(model), ks, backend=_target_arg(args.target).backend,
+                           out=pathlib.Path(args.out).expanduser(), tokens=args.tokens, long_tokens=long_tokens, long_why=why, grow=True,
+                           head=head)
+      except mtp.MtpRefused as exc:  # refused before or between engines: free the GPU or fix the request, then rerun
         sys.stdout.write(pretty_json({"schema": SCHEMA, "kind": "refused", "error": str(exc), "retry": "after the cause is fixed"}))
         return 2
       except RuntimeError as exc:  # an engine failed; its log is in --out
         sys.stdout.write(pretty_json({"schema": SCHEMA, "kind": "error", "error": str(exc), "logs": str(args.out)}))
         return 1
-      out = {k: record[k] for k in ("schema", "model", "prompts", "ks", "depths", "measured_at")}
-      found = lay.newest_facts_file([pathlib.Path(r).expanduser() for r in args.facts_root], _target_arg(args.target).target_id)
-      if found:
-        found[0].write_text(json.dumps(rec.facts_with_mtp(found[1], "vllm", record["model"], record), indent=2, sort_keys=True))
+      out = {k: record.get(k) for k in ("schema", "model", "prompts", "ks", "sweep", "long_why", "depths", "measured_at")}
       out["cached_in"] = str(found[0]) if found else "not cached: no machine facts for this chip under --facts-root"
+      try:
+        if found:
+          found[0].write_text(json.dumps(rec.facts_with_mtp(found[1], args.engine, record["model"], record), indent=2, sort_keys=True))
+      except Refused as exc:  # the measurement is in --out; the facts keep the earlier one
+        out["cached_in"] = f"not cached: {exc}"
     elif args.command == "ceiling":
       target = _target_arg(args.target)
       read = None

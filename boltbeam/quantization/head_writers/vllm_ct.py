@@ -1,7 +1,8 @@
-"""vLLM, compressed-tensors pack-quantized (W4, group): the output layer (lm_head) as RTN int4, asymmetric, nibble zero
-point, the group size and bits read from the checkpoint's own quantization_config. Three checkpoint changes, no vLLM
-patch: lm_head out of `ignore`, target `re:.*lm_head$` in the group, the bf16 head out of the shards. The torch work
-is vllm_engine.py, run under the engine's own python."""
+"""vLLM, compressed-tensors pack-quantized (W4, group): the parts data/speed_up.json names (the output layer lm_head, the
+MTP draft layer's Linear modules) as RTN int4, asymmetric, nibble zero point, the group size and bits read from the
+checkpoint's own quantization_config. No vLLM patch: the modules out of `ignore`, a target for lm_head (not a Linear),
+the 16 bit weights out of the shards. Stock vLLM passes quant_config to the MTP layers. The torch work is vllm_engine.py,
+run under the engine's own python."""
 from __future__ import annotations
 
 import json
@@ -12,6 +13,7 @@ import sys
 from boltbeam.core.refused import Refused
 
 ENGINE_SCRIPT = pathlib.Path(__file__).with_name("vllm_engine.py")
+INDEX = "model.safetensors.index.json"
 
 
 def _run(python:str, cmd:str, args:dict, timeout:int = 7200) -> dict:
@@ -41,62 +43,89 @@ def stock(python:str) -> dict:
 
 def _group(src:pathlib.Path) -> dict:
   q = json.loads((src / "config.json").read_text())["quantization_config"]
-  groups = q["config_groups"]
+  groups = q.get("config_groups") or {}  # read for any model a screen offers Speed up on: a missing key refuses, never raises
   if len(groups) != 1:
-    raise Refused("the checkpoint has more than one quantization group; only one group is handled")
+    raise Refused(f"the checkpoint has {len(groups)} quantization groups; only one group is handled")
   w = next(iter(groups.values()))["weights"]
   if w.get("strategy") != "group" or w.get("type") != "int" or w.get("symmetric") is not False or w.get("num_bits") != 4:
     raise Refused("only asymmetric int4 group quantization is handled (the checkpoint's weights say otherwise)")
   return w
 
 
-def plan(src:str, python:str, target:str | None = None) -> dict:
-  p = pathlib.Path(src)
+def _gb(p:pathlib.Path) -> tuple[int, int]:
   w = _group(p)
-  cfg = json.loads((p / "config.json").read_text())
-  if "lm_head" not in cfg["quantization_config"].get("ignore", []):
-    raise Refused("the output layer is already quantized (lm_head is not in the ignore list)")
   if w.get("group_size") is None:
     raise Refused("no group_size in the quantization config")
-  g, b = int(w["group_size"]), int(w["num_bits"])
-  shape, dtype, bits_now = head(p, "lm_head.weight_packed", g)
-  return plan_row(shape, dtype, bits_now, f"int{b} group {g}", b + (16 / g + b / g), g, b)  # a bf16 scale and a nibble zero point per group
+  return int(w["group_size"]), int(w["num_bits"])
 
 
-def head(p:pathlib.Path, packed:str, g:int) -> tuple[list[int], str, int]:
-  """lm_head.weight's (shape, dtype, bits now) in checkpoint p, or Refused: already quantized (`packed` is in it), tied, not a
-  float, or not divisible into groups of g."""
-  idx_path = p / "model.safetensors.index.json"
-  wmap = json.loads(idx_path.read_text())["weight_map"] if idx_path.is_file() else None
-  if packed in (wmap or {}):
-    raise Refused(f"the output layer is already quantized ({packed} is in the checkpoint)")
-  holder = wmap.get("lm_head.weight") if wmap is not None else "model.safetensors"
-  tied = Refused("the checkpoint has no lm_head.weight (tied to the embedding), so there is no separate output layer to lighten")
-  if holder is None:
-    raise tied
-  with (p / holder).open("rb") as f:  # a safetensors header is a length and JSON: BoltBeam's python needs no torch for it
-    h = json.loads(f.read(int.from_bytes(f.read(8), "little"))).get("lm_head.weight")
+def plan(src:str, python:str, target:str | None = None, part:dict | None = None) -> dict:
+  p = pathlib.Path(src)
+  g, b = _gb(p)
+  if "lm_head" not in json.loads((p / "config.json").read_text())["quantization_config"].get("ignore", []):
+    raise Refused("the output layer is already quantized (lm_head is not in the ignore list)")
+  return plan_row([head(p, "lm_head.weight_packed", g)], f"int{b} group {g}", b + (16 / g + b / g), g, b)  # a bf16 scale and a nibble zero point per group
+
+
+def plan_mtp(src:str, python:str, target:str | None = None, part:dict | None = None) -> dict:
+  """The MTP draft layer: every module under part's prefix in `ignore` (kept 16 bit by the checkpoint), or Refused: no MTP
+  layer, already quantized, a module not divisible into groups."""
+  p, prefix = pathlib.Path(src), part["prefix"]
+  (g, b), names = _gb(p), _index(p)
+  if not any(k.startswith(prefix) for k in names):
+    raise Refused(f"the checkpoint has no MTP draft layer (no {prefix}* weights in {'its index' if (p / INDEX).is_file() else 'model.safetensors'})")
+  packed = next((k for k in names if k.startswith(prefix) and k.endswith(".weight_packed")), None)
+  ignored = [m for m in json.loads((p / "config.json").read_text())["quantization_config"].get("ignore", []) if m.startswith(prefix)]
+  if packed or not ignored:
+    raise Refused(f"the MTP draft layer is already quantized ({packed + ' is in the checkpoint' if packed else 'no ' + prefix + '* module is in the ignore list'})")
+  return plan_row([head(p, m + ".weight_packed", g, m, names) for m in ignored], f"int{b} group {g}", b + (16 / g + b / g), g, b)
+
+
+def _header(f:pathlib.Path) -> dict:
+  with f.open("rb") as h:  # a safetensors header is a length and JSON: BoltBeam's python needs no torch for it
+    return json.loads(h.read(int.from_bytes(h.read(8), "little")))
+
+
+def _index(p:pathlib.Path) -> dict[str, str]:
+  """{tensor: file} of checkpoint p: its index, else the header of its one model.safetensors."""
+  if (p / INDEX).is_file():
+    return json.loads((p / INDEX).read_text())["weight_map"]
+  return dict.fromkeys(_header(p / "model.safetensors"), "model.safetensors") if (p / "model.safetensors").is_file() else {}
+
+
+def head(p:pathlib.Path, packed:str, g:int, module:str = "lm_head", wmap:dict[str, str] | None = None) -> dict:
+  """module.weight's name, shape, dtype and bits now in checkpoint p (wmap: its _index), or Refused: already quantized
+  (`packed` is in it), absent (lm_head: tied), not a float, or not divisible into groups of g."""
+  wmap = _index(p) if wmap is None else wmap
+  what = "the output layer" if module == "lm_head" else "the draft layer module " + module
+  if packed in wmap:
+    raise Refused(f"{what} is already quantized ({packed} is in the checkpoint)")
+  h = _header(p / wmap[module + ".weight"]).get(module + ".weight") if module + ".weight" in wmap else None
   if h is None:
-    raise tied
+    raise Refused("the checkpoint has no lm_head.weight (tied to the embedding), so there is no separate output layer to lighten" if module == "lm_head"
+                  else f"{what} has no weight in the checkpoint")
   shape, dtype = h["shape"], h["dtype"]
-  bits_now = {"BF16": 16, "F16": 16, "F32": 32}.get(dtype)
-  if bits_now is None:
-    raise Refused(f"the output layer is {dtype}, not a 16 or 32 bit float")
-  if shape[1] % g or shape[1] % 8 or shape[0] % 8:
-    raise Refused(f"the output layer {shape} does not divide into groups of {g}")
-  return shape, dtype, bits_now
+  if (bits_now := {"BF16": 16, "F16": 16, "F32": 32}.get(dtype)) is None:
+    raise Refused(f"{what} is {dtype}, not a 16 or 32 bit float")
+  if len(shape) != 2 or shape[1] % g or shape[1] % 8 or shape[0] % 8:
+    raise Refused(f"{what} {shape} does not divide into groups of {g}")
+  return {"module": module, "shape": shape, "dtype": dtype, "bits_now": bits_now}
 
 
-def plan_row(shape:list[int], dtype:str, bits_now:int, target:str, bpw:float, g:int, b:int) -> dict:
-  return {"output_layer": "lm_head.weight", "shape": shape, "held": dtype, "bits_now": bits_now, "target": target,
-          "bits_target": bpw, "group_size": g, "num_bits": b,
-          "bytes_now": shape[0] * shape[1] * bits_now // 8, "bytes_after": int(shape[0] * shape[1] * bpw / 8)}
+def plan_row(layers:list[dict], target:str, bpw:float, g:int, b:int) -> dict:
+  n = [x["shape"][0] * x["shape"][1] for x in layers]
+  return {"layer": ", ".join(x["module"] + ".weight" for x in layers), "modules": [x["module"] for x in layers],
+          "shape": layers[0]["shape"] if len(layers) == 1 else [x["shape"] for x in layers], "held": "/".join(sorted({x["dtype"] for x in layers})),
+          "bits_now": max(x["bits_now"] for x in layers), "target": target, "bits_target": bpw, "group_size": g, "num_bits": b,
+          "bytes_now": sum(k * x["bits_now"] // 8 for k, x in zip(n, layers)), "bytes_after": sum(int(k * bpw / 8) for k in n)}
 
 
 def write(src:str, dst:str, python:str, pl:dict, **extra) -> dict:
-  out = _run(python, "write", {"src": src, "dst": dst, "bits": pl["num_bits"], "group_size": pl["group_size"], **extra})
-  return {"layer": "lm_head.weight", "from": pl["held"], "to": pl["target"], "relative_error": out["rel_error"],
-          "files": out["resharded"] + [out["head_file"], "config.json", "model.safetensors.index.json"], "all_else": "linked, unchanged"}
+  """The part's modules into its file in one pass (vllm_engine.write); the relative error per module, for the record."""
+  out = _run(python, "write", {"src": src, "dst": dst, "bits": pl["num_bits"], "group_size": pl["group_size"], "modules": dict.fromkeys(pl["modules"], pl["file"].format(bits=pl["num_bits"])),
+                               "targets": pl.get("targets", []), **extra})
+  return {"part": pl["part"], "layer": pl["layer"], "from": pl["held"], "to": pl["target"], "relative_error": out["rel_error"],
+          "files": out["resharded"] + out["files"] + ["config.json", INDEX], "all_else": "linked, unchanged"}
 
 
 def accuracy(src:str, dst:str, python:str, texts:list[str]) -> dict:
@@ -117,6 +146,39 @@ def accuracy(src:str, dst:str, python:str, texts:list[str]) -> dict:
   return {"method": "vLLM prompt_logprobs, teacher-forced on the shipped natural-text corpus", "n": len(a), "engine_version": "vllm " + runs[0]["version"], "per_doc": per_doc,
           "top1_agreement": sum(x[1] == y[1] for x, y in zip(a, b)) / len(a),
           "ppl_original": ppl(a), "ppl_copy": ppl(b)}
+
+
+def mtp(model:str, python:str, out:pathlib.Path, how:dict) -> dict:
+  """Speed with MTP on (collectors/vllm_mtp, the `screen mtp` path) at k=0 and each k of how["ks"] (default collectors/mtp.KS), more
+  while how["grow"] and a larger k could still win (core/draft_count.sweep_next; its last reason returned as sweep), at the short and the long
+  depth, as the core reads it (mtp_depths), on the engine found (python: the one the stock check passed). The long depth is the shipped real
+  text, so every arm reads the same ids where the tokenizer is the same (compare_mtp checks the ids' hashes)."""
+  from boltbeam.collectors import mtp as core, vllm_mtp
+  out.mkdir(parents=True, exist_ok=True)
+  try:
+    rec = vllm_mtp.measure(model, how.get("ks") or mtp_ks(), backend=device(python)["backend"], out=out, tokens=how["tokens"],
+                           long_tokens=how["long_tokens"], python=python, grow=bool(how.get("grow")))
+  except (core.MtpRefused, RuntimeError) as exc:
+    raise Refused(f"the MTP measurement failed on {model}: {exc}")
+  builds = {e.get("vllm") for e in rec["engines"]}
+  if len(builds) != 1:
+    raise Refused(f"the MTP measurement of {model} ran on several vLLM builds: {sorted(map(str, builds))}")
+  return {"depths": mtp_depths(rec), "engine": builds.pop(), "sweep": (rec.get("sweep") or [None])[-1]}
+
+
+def mtp_ks() -> list[int]:
+  """The draft counts mtp() starts from when how names none (Speed up's time estimate counts them)."""
+  from boltbeam.collectors import mtp
+  return list(mtp.KS)
+
+
+def mtp_depths(rec:dict) -> dict:
+  """An MTP measurement (collectors/mtp) as {depth: {context, base, ks, tokens}}: k=0 (vLLM without speculation) is the base, each
+  prompt's tok/s; every other k a draft count with its prompts' tok/s and the acceptance length vLLM counted; tokens: each
+  prompt's output hash per k and at the base, so the arms' outputs can be compared; read: each prompt's input ids' hash."""
+  sha = lambda d, k, f="token_ids_sha": {r["prompt"]: r.get(f) for r in rec.get("rows", []) if r["depth"] == d and str(r["k"]) == k}  # noqa: E731
+  return {d: {"context": v["0"]["context"], "base": v["0"]["per_prompt"], "tokens": {"base" if k == "0" else k: sha(d, k) for k in v}, "read": sha(d, "0", "prompt_sha"),
+              "ks": {k: {"per_prompt": x["per_prompt"], "accept_length": x.get("accept_length")} for k, x in v.items() if k != "0"}} for d, v in rec["depths"].items()}
 
 
 def device(python:str) -> dict:

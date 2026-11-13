@@ -117,7 +117,7 @@ func (m Model) startMtp() tea.Cmd {
 		if abs, err := filepath.Abs(path); err == nil {
 			path = abs
 		}
-		if _, err := store.Start(id, m.client.Repo, m.client.MtpArgv(path, target, dir, o.Ks)); err != nil {
+		if _, err := store.Start(id, m.client.Repo, m.f.mtpArgv(m.client, path, target, dir)); err != nil {
 			return noteMsg("Start failed: " + err.Error())
 		}
 		return mtpJobMsg{&jobs.Job{ID: id, Alive: true}, true}

@@ -238,11 +238,11 @@ func TestPipelineArgvSearchFlag(t *testing.T) {
 // Speed up's job is the derive command with its JSON and progress lines; a demo plays its own command instead.
 func TestSpeedArgv(t *testing.T) {
 	c := Client{Python: "py"}
-	if got := strings.Join(c.SpeedArgv("/m/x"), " "); got != "py -m boltbeam.cli derive lighter-head /m/x --json --progress" {
+	if got := strings.Join(c.SpeedArgv("/m/x", "mtp"), " "); got != "py -m boltbeam.cli derive lighter-head /m/x --part mtp --json --progress" {
 		t.Fatalf("argv: %q", got)
 	}
 	c.Demo = &Demo{Argv: map[string][]string{"speedup": {"sh", "-c", "true"}}}
-	if got := strings.Join(c.SpeedArgv("/m/x"), " "); got != "sh -c true" {
+	if got := strings.Join(c.SpeedArgv("/m/x", "mtp"), " "); got != "sh -c true" {
 		t.Fatalf("a demo's job: %q", got)
 	}
 }

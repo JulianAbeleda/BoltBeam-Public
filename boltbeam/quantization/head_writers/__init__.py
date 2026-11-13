@@ -13,7 +13,11 @@ def detect(path:str | pathlib.Path) -> str:
   p = pathlib.Path(path).expanduser()
   if p.is_file():
     return "gguf" if p.suffix == ".gguf" else p.suffix.lstrip(".") or "file"
-  cfg = json.loads((p / "config.json").read_text()) if (p / "config.json").is_file() else {}
+  try:
+    cfg = json.loads((p / "config.json").read_text()) if (p / "config.json").is_file() else {}
+  except (ValueError, OSError) as exc:
+    from boltbeam.core.refused import Refused
+    raise Refused(f"{p.name} could not be read: config.json {type(exc).__name__} {exc}") from exc
   if "build_config" in cfg or any(p.glob("*.engine")):
     return "tensorrt-llm-engine"
   q = cfg.get("quantization_config") or {}

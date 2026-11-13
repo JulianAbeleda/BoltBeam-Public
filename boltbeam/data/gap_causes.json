@@ -7,11 +7,17 @@
   "allocate": "allocating or freeing memory",
   "copy_call": "a copy call the host waits in",
   "sync": "the host waiting for the GPU (synchronize)",
+  "graph_build": "building or updating a CUDA graph (capture, instantiate, update)",
+  "graph_launch": "launching a CUDA graph",
   "launch": "launching work (kernel or graph launch calls)",
   "module": "loading kernels (module load)",
   "other_call": "another GPU API call",
   "cpu_work": "CPU work (no GPU API call in flight)"
  },
+ "decode_rows": [
+  {"call": "^(cuda|hip|cu)(StreamBeginCapture|StreamEndCapture|GraphInstantiate|GraphExecUpdate|GraphExecKernelNodeSetParams|GraphExecDestroy|GraphDestroy|GraphCreate|GraphAdd|GraphUpload)", "cause": "graph_build", "why": "the CUDA runtime's graph calls (CUDA Runtime API, Graph Management: cudaStreamBeginCapture/EndCapture, cudaGraphInstantiate, cudaGraphExecUpdate, cudaGraphExecKernelNodeSetParams, cudaGraphUpload; hip and the driver API name them alike); llama.cpp captures and updates its decode graph each step (ggml-cuda.cu, cuda graph update). Read before `rows` in a decode only, so before the waits they overlap (host-side calls come first, as the note says); the prefill record keeps them under launch and other_call, as it was made"},
+  {"call": "^(cuda|hip|cu)GraphLaunch", "cause": "graph_launch", "why": "cudaGraphLaunch (CUDA Runtime API, Graph Management) / cuGraphLaunch / hipGraphLaunch: one call submits a whole step's graph (a decode only, as above)"}
+ ],
  "rows": [
   {"call": "^(cuda|hip|cu)(Host|Mem)(Register|Unregister|HostRegister|HostUnregister)", "cause": "host_register"},
   {"call": "^(cuda|hip|cu)(Malloc|Free|MemAlloc|MemFree|HostAlloc|MallocHost|FreeHost|MemHostAlloc|MemFreeHost|MallocAsync|FreeAsync|MemCreate|MemMap|MemRelease|MemPool)", "cause": "allocate"},

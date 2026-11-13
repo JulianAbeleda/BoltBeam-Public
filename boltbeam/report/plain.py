@@ -398,6 +398,60 @@ def time_budget_words(tb:dict[str, Any]) -> dict[str, Any]:
   return {"line": line, "lines": lines, "rows": rows}
 
 
+def time_budget_decode_words(tb:dict[str, Any]) -> list[str]:
+  """A decode request's budget (collectors/time_budget.decode_budget) in plain words: its steps and the engine's counts
+  they match, the shares of the decode time, the input copies, what bounds a token, and the capture overhead. A refused
+  cut says why and the counts, and no share."""
+  w = words()["time_budget"]
+  d, wd = tb.get("decode") or {}, w["decode"]
+  f = lambda x: f"{round(x, 2) + 0.0:,.2f}"  # noqa: E731
+  p = lambda x: f"{round(x, 1) + 0.0:.1f}"  # noqa: E731
+  c = dict(d.get("check") or {})
+  if isinstance(c.get("drafts_expected"), list):  # a range: the drafted tokens, and the passes the engine may run uncounted
+    lo, hi = c["drafts_expected"]
+    c["drafts_expected"] = f"{lo}" if lo == hi else wd["range"].format(lo=lo, hi=hi)
+  if not d or d.get("refused"):
+    return [wd["refused"].format(why=wd["why"].get(d.get("refused"), tb.get("refused") or "-"))] + \
+           ([wd["counts"].format(**{"catchups_expected": 0, **{k: ", ".join(map(str, v)) if isinstance(v, list) else v for k, v in c.items()}})] if c else [])
+  pc = d["pct"]
+  out = [wd["steps"].format(steps=d["steps"], tokens=d["out_tokens"], per_token=f(d["per_token_ms"]), median=f(d["step_ms"]["median"]),
+                            low=f(d["step_ms"]["min"]), high=f(d["step_ms"]["max"]), drafts=d["draft_passes"], catchups=d.get("catchups", 0), prompt=f(d["prompt_ms"]),
+                            tail=f(d["tail_ms"])),
+         wd["check_ok"].format(steps=c["steps_expected"], mains=c["mains_expected"], drafts=c["drafts_expected"], drafted=c["drafted"],
+                               catchups=c.get("catchups_expected", 0), found=d["draft_passes"] + 0)]
+  if c.get("prompt_from") == "counts":
+    out.append(wd["prompt_from_counts"].format(n=c["prompt_forwards"]))
+  if not d["drafts_apart"] and c["drafted"]:
+    out.append(wd["drafts_inside"])
+  out.append(wd["share"].format(families=", ".join(wd["share_item"].format(name=w["families"].get(k, k), pct=p(v)) for k, v in pc["families"].items())))
+  out.append(wd["parts"].format(verify=p(pc["verify"]), draft=p(pc["draft"]), exposed=p(pc["exposed_copy"])))
+  cause_words = {r["cause"]: r["words"] for r in tb["gaps"]["by_cause"]}
+  out.append(wd["idle"].format(causes=", ".join(wd["share_item"].format(name=cause_words.get(k, k), pct=p(v)) for k, v in pc["idle_by_cause"].items()) or "-"))
+  for name, g in d["input_copy"].items():  # a table the rule identified says its host gather; an unidentified copy does not
+    said = dict(what=wd["inputs"].get(name, name), n=g["copies"], bytes=f"{g['per_token_bytes']:,.0f}", copy=f(g["exposed_ms"] / d["out_tokens"]), pct=p(g["pct"]))
+    out.append(wd["input"].format(**said, before=f(g["host_before_ms"] / d["out_tokens"])) if g["host_before_ms"] is not None else wd["input_other"].format(**said))
+  if d["input_rows"]:
+    out.append(wd["input_rows"].format(rows=", ".join(f"{wd['inputs'].get(n, n)} {v:,}" for n, v in d["input_rows"].items()),
+                                       element=d.get("input_element_bytes")))
+  if d.get("draft_forwards_holding_more"):
+    out.append(wd["held_more"].format(n=d["draft_forwards_holding_more"]))
+  if b := d.get("bound"):
+    out.append(wd["bound"].format(gbs=f"{b['read']['gbs']:,.1f}", source=b["read"]["source"], weight=f(b["per_token_weight_ms"]),
+                                  per_token=f(d["per_token_ms"]), share=p(100.0 * b["weight_share"]),
+                                  rest=f(b["rest_ms"] / d["out_tokens"]), how=b["read"]["how"]))
+    out.append(wd["residency"].format(how=b["read"].get("residency") or "-"))
+  else:
+    out.append(wd["bound_missing"].format(why=wd["why"].get(d.get("bound_missing"), d.get("bound_missing"))))
+  st = d.get("streaming") or {}
+  if st.get("streamed"):
+    out.append(wd["streamed"].format(pct=f"{st['pct']:+.2f}") if st.get("pct") is not None else wd["streamed_unmeasured"])
+  out.append(wd["constants"].format(**d.get("constants") or {}))
+  o = d.get("capture_overhead") or {}
+  out.append(wd["overhead"].format(words=o["words"]) if o.get("words") else
+             wd["overhead_missing"].format(why=wd["why"].get(o.get("why") or "no_untraced", o.get("why"))))
+  return out
+
+
 def budget_unfit(tb:dict[str, Any]) -> bool:
   """The trace's GPU work is longer than the request's wall (a record from before host_outside_ms went null says it by
   window_fits_wall false): its parts cannot add up to the wall and the host time outside the GPU work is unknown."""

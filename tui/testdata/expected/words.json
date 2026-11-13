@@ -408,6 +408,16 @@
     "top": "The three parts that lose the most time",
     "top_line": "{time}, {share} of the lost time"
   },
+  "llama_server": {
+    "allocation": "a CUDA allocation failed",
+    "cublas": "cuBLAS could not allocate its handle (cublasCreate)",
+    "fit_bound": "llama.cpp's own fit at k={k} with the draft head, {why}",
+    "fit_refused": "the long context cannot be measured with the draft head here: llama.cpp's own fit at k={k}: {why}",
+    "no_fit": "llama-server's own fit (common_fit_params) says the context {ctx:,}{with} at k={k} leaves less GPU memory free than its target: the first request would run out of memory, so nothing was measured",
+    "out_of_memory": "llama-server ran out of GPU memory at k={k}: {what}; the context {ctx:,} does not fit{with}",
+    "stopped": "llama-server stopped at k={k} without a reply (context {ctx:,}{with}); the last error in its log: {last}",
+    "with_head": " with the draft head"
+  },
   "machine": {
     "chip": "GPU: {chip}, {gbs} GB/s memory speed ({source}).",
     "engine": "Engine: {words}.",
@@ -463,6 +473,24 @@
     "speed": "The speed is the engine running on its own, with nothing recording it, {how}.",
     "sweep": "The batch sweep's best was {best} tok/s in all, with {best_batch} streams at a context of {best_context} tokens; the figures above are the run the parts were timed on.",
     "upgrade": "This build was compared once with the previous one (Full detail)."
+  },
+  "mtp_pick": {
+    "asked": "; k was not measured at the asked {asked:,} tokens (best k per measured context: {picks}; between two, the smaller). To pick k there, Measure MTP at it (screen mtp MODEL --context {asked})",
+    "at": "k={k}: {tok_s:.0f} tok/s, the median over {n} prompts (they ranged {lo:.0f} to {hi:.0f}), {speedup:.2f}x k=0, measured at a {ctx:,.0f}-token context on {engine}, {date}",
+    "forgone": ". k={k} measured {tok_s:.0f} tok/s median, faster on {wins} of {n} prompts; not taken: across {n} prompts that is not faster with 95% confidence (re-runs repeat to 0.1%; the uncertainty is across prompts, and more prompts would decide it)",
+    "held": {
+      "batch": "batch > 1 (MTP pays at batch 1)",
+      "context_limit": "not recommended past {limit} tokens of context (stated {context}; --context {limit} turns it on): {why}",
+      "k0": "no draft count is faster than k=0 with 95% confidence at a {ctx:,.0f}-token context (the best, k={k}, {tok_s:.0f} tok/s)"
+    },
+    "measure": "decode with {ks} draft tokens, and more while a larger one could still win (up to {kmax}), against none, at a short and a {ctx:,}-token context ({why}). The long context is the start of {n} real documents, {long:,} tokens each, with a task at the end; it starts the engine once per draft count",
+    "none": "not measured for this checkpoint on this chip (no MTP measurement of it in this machine's facts): run Measure MTP",
+    "offer_facts": "needs this machine's facts: run once on this chip first",
+    "offer_heads": "several MTP heads beside the model ({heads}): keep the one to measure beside it, or run screen mtp --draft HEAD",
+    "open": ". k={top} was the largest measured there and a larger k could still win: the best may be higher",
+    "picks": ". Best k per measured context: {picks}; a switch lies somewhere between two of them, not measured in between",
+    "retired": ". Its long-context speeds are not used: they were measured before BoltBeam checked that the replies did not repeat themselves (before 2026-11-13), and some measured repetition. Measure MTP again for a long context",
+    "rule": ". A larger k is taken only when it is faster on these prompts with 95% confidence (paired bootstrap)"
   },
   "no_limit": {
     "formula_refused": "There is no limit for this run yet: BoltBeam cannot yet work out the fastest this GPU allows for a model with these state-space layers.",
@@ -678,22 +706,23 @@
   "schema": "boltbeam.plain_words.v1",
   "speed_up": {
     "action": "Speed up",
-    "already": "This model is already a faster copy.",
     "confirm": {
-      "gpu": "Uses the GPU the whole time.",
       "no": "Not now",
       "space": "Needs up to {size} of free disk space for the copy.",
-      "time": "Takes about {minutes} minutes (an estimate).",
+      "time": "Takes about {minutes} minutes (an estimate), using the GPU the whole time.",
       "title": "Make a faster copy of {model}?",
       "yes": "Make the copy"
     },
     "helper": "Makes a faster copy. The original stays.",
     "kept": {
       "answers": "Scores the same on the answer check.",
+      "draft_answers": "Only the draft layer changed, and the model checks every word it drafts. Answers can still differ where two words were nearly tied, as they do when drafts are on in the original.",
       "head": "Made {name}.",
       "line": "{label}: {before} to {after} tok/s ({change})",
       "listed": "It shows in model lists as {name}.",
       "long": "Long prompt, {context} tokens",
+      "mtp_line": "With MTP, {label}: {before} to {after} tok/s ({change} per prompt)",
+      "mtp_retired": "With MTP on a long prompt: not shown. That run was measured before BoltBeam checked that the replies did not repeat themselves, and some measured repetition. Measure again to see it.",
       "not_measured": "SPEED NOT MEASURED: {reason}",
       "not_measured_off": "the speed step was switched off.",
       "not_measured_why": "the speed was not measured, so this copy is not known to be faster.",
@@ -704,9 +733,25 @@
     "not_kept": {
       "answers": "Its answers matched the original's {pct}% of the time; {need}% is needed.",
       "head": "NOT KEPT: the faster copy was deleted.",
+      "logs_kept": "Its speed logs are kept in {where}.",
+      "mtp_slower": "With MTP on, it was not clearly faster than {base} with a {context}-token prompt: {before} to {after} tok/s, within what {base} itself varied between two runs.",
       "original": "The original is untouched.",
       "slower": "It was not faster than the original with a {context}-token prompt: {before} to {after} tok/s."
     },
+    "parts": {
+      "mtp": {
+        "name": "the draft layer",
+        "short": "Shrinks the guess-ahead layer",
+        "what": "Changes only the draft layer, which guesses a few words ahead for the model to check (MTP). The model checks every guess, so only the speed with drafts on is measured.",
+        "why_range": "The speed with drafts on is timed on the original, the copy and the original again, once for each number of drafts it tries; how many it tries decides where in that range it ends."
+      },
+      "output": {
+        "name": "the output layer",
+        "short": "Shrinks the word-picking layer",
+        "what": "Changes only the output layer, the last step that picks each next word. The copy's answers are checked against the original's, then its speed."
+      }
+    },
+    "pick": "{action}: {part}",
     "refused": {
       "crashed": "The run stopped without an answer.",
       "crashed_fix": "Read the log, delete any half-written copy, and try again.",
@@ -715,9 +760,142 @@
       "rows": [
         {
           "match": [
+            "could not be read:"
+          ],
+          "reason": "This model's file could not be read, or it holds a kind of weight BoltBeam does not know yet."
+        },
+        {
+          "match": [
+            "so its speed would measure repetition"
+          ],
+          "reason": "The model repeated itself while its speed was measured, so that speed would measure repetition, not real text."
+        },
+        {
+          "fix": "Update BoltBeam, then try again.",
+          "match": [
+            "so it cannot be shown to be text"
+          ],
+          "reason": "A speed run did not report what shows its text was real, so it was not used."
+        },
+        {
+          "fix": "Try again.",
+          "match": [
+            "read different token ids for one prompt"
+          ],
+          "reason": "The speed runs did not read the same text, so they cannot be compared."
+        },
+        {
+          "fix": "Update BoltBeam, then try again.",
+          "match": [
+            "did not say how diverse the real-text corpus is"
+          ],
+          "reason": "A speed run did not report what shows its text was real, so it was not used."
+        },
+        {
+          "fix": "Ask for a shorter context.",
+          "match": [
+            "ask a long depth within it",
+            "ask a shorter long depth"
+          ],
+          "reason": "The long text BoltBeam ships is shorter than the context asked."
+        },
+        {
+          "match": [
+            "no paragraph break in the first",
+            "decode does not give back"
+          ],
+          "reason": "This model's tokenizer could not cut the long text BoltBeam ships cleanly."
+        },
+        {
+          "fix": "Reinstall BoltBeam.",
+          "match": [
+            "mtp_long_corpus.json: the text of"
+          ],
+          "reason": "The long text BoltBeam ships was changed, so a speed on it would not be comparable."
+        },
+        {
+          "fix": "Read the message after this one, then try again.",
+          "match": [
+            "the MTP measurement failed"
+          ],
+          "reason": "Measuring the speed with drafts on failed."
+        },
+        {
+          "match": [
+            "would write into the source"
+          ],
+          "reason": "Making the copy would have changed the original's files, so it stopped. The original is untouched."
+        },
+        {
+          "fix": "Leave the speed step on.",
+          "match": [
+            "gated on speed alone"
+          ],
+          "reason": "This part is checked only by its speed, so it cannot be made with the speed step off."
+        },
+        {
+          "match": [
+            "no part named"
+          ],
+          "reason": "There is no part by that name to make smaller."
+        },
+        {
+          "match": [
+            "has no writer for the"
+          ],
+          "reason": "This engine cannot make that part of this model smaller yet."
+        },
+        {
+          "fix": "Try again.",
+          "match": [
+            "ran different prompts or draft counts",
+            "ran different depths"
+          ],
+          "reason": "The speed runs did not measure the same things, so they cannot be compared."
+        },
+        {
+          "match": [
+            "prompts at the"
+          ],
+          "reason": "The speed runs had too few prompts to decide."
+        },
+        {
+          "fix": "Use a copy with the original's tokenizer.",
+          "match": [
+            "read different text at the"
+          ],
+          "reason": "The two speed runs read different text, so they cannot be compared."
+        },
+        {
+          "match": [
+            "has no weight in the checkpoint"
+          ],
+          "reason": "This model's draft layer is missing a piece, so it cannot be made smaller."
+        },
+        {
+          "fix": "Make both copies again from the original.",
+          "match": [
+            "the copy it was built on"
+          ],
+          "reason": "The copy this one was built on is missing or changed."
+        },
+        {
+          "match": [
+            "MTP draft layer is already quantized"
+          ],
+          "reason": "This model's draft layer is already small, so a copy would not be faster."
+        },
+        {
+          "match": [
+            "no MTP draft layer"
+          ],
+          "reason": "This model has no draft layer to make smaller."
+        },
+        {
+          "match": [
             "already quantized"
           ],
-          "reason": "This model's output stage is already small, so a copy would not be faster."
+          "reason": "This model's output layer is already small, so a copy would not be faster."
         },
         {
           "fix": "Speed up the original instead.",
@@ -776,7 +954,9 @@
           "fix": "Try again.",
           "match": [
             "ran on engine build",
-            "the accuracy check ran on"
+            "the accuracy check ran on",
+            "different engine builds",
+            "ran on several vLLM builds"
           ],
           "reason": "The engine changed while the copy was made."
         },
@@ -799,7 +979,9 @@
           "match": [
             "only asymmetric int4",
             "only AutoAWQ",
-            "does not divide into groups"
+            "does not divide into groups",
+            "not a 16 or 32 bit float",
+            "only one group is handled"
           ],
           "reason": "This model's layout is not one the copy can use yet."
         },
@@ -832,6 +1014,7 @@
         }
       ]
     },
+    "row": "{short}, {minutes} min",
     "ui": {
       "check": "Check this copy",
       "check_helper": "Checks the copy's files and answers still match what was recorded.",
@@ -922,6 +1105,52 @@
   "time_budget": {
     "cause": "{words} took {ms} ms",
     "copy": "{direction} copies from {memory} on GPU queue {stream}: {gb} GB in {busy} ms ({gbs} GB/s), {exposed} ms with no kernel running.",
+    "decode": {
+      "bound": "What bounds a token: reading the weights at the measured {gbs} GB/s ({source}) takes {weight} ms of each token's {per_token} ms ({share}%); the other {rest} ms a token is the rest: kernel time beyond that read, idle and copies. The bytes: {how}.",
+      "bound_missing": "What bounds a token is not derived: {why}.",
+      "check_ok": "The forwards found match the engine's own counts: {mains} of the model ({steps} steps after the prompt), {catchups} catch-up passes and {drafts} draft passes ({drafted} tokens drafted).",
+      "constants": "Fixed, not derived: the sums check's allowance {tolerance}; the display cuts {display_cuts}; idle gaps: {gap_ms}.",
+      "counts": "The engine's counts: {steps_expected} steps after the prompt, so {mains_expected} forwards of the model, {catchups_expected} catch-up passes of the draft head and {drafts_expected} draft passes ({drafted} tokens drafted); the trace holds {forwards_found} forwards, {prompt_forwards} of them the prompt's (read before the first token arrived), the rest with {layers_found} per-layer kernels each.",
+      "drafts_inside": "This engine runs its draft passes inside the step, with no result read between them, so their time is in the step's kernels and not told apart.",
+      "held_more": "{n} draft forwards each hold more than one draft pass's kernels (the build ran them with no result read between); each is counted as the passes it holds.",
+      "idle": "GPU idle by what the host was doing: {causes}.",
+      "input": "Input copies, {what}: {n} copies, {bytes} bytes a token; {copy} ms a token of copy with no kernel running and {before} ms a token of GPU idle right before them, the host gathering the rows ({pct}% of the decode time).",
+      "input_other": "Input copies, {what}: {n} copies, {bytes} bytes a token; {copy} ms a token of copy with no kernel running ({pct}% of the decode time).",
+      "input_rows": "The copies are matched by size against a token's row of each input (bytes): {rows}; the {element} bytes an element are the engine's gather output (its decode row's host_rows_element_bytes), an engine fact, not read from the model file.",
+      "inputs": {
+        "ambiguous": "host-to-GPU copies whose size fits more than one input's rows, so not named as any",
+        "draft_hidden": "the draft head's hidden rows (each copy a whole number of them and of no other input's)",
+        "per_layer_token_embd": "per-layer embedding rows (each copy a whole number of the model's per-layer embedding rows and of no other input's)",
+        "token_embd": "token embedding rows (each copy a whole number of the model's token embedding rows and of no other input's)",
+        "unidentified": "other host-to-GPU copies, not identified (token ids, positions and the like)"
+      },
+      "overhead": "Capture overhead: {words}.",
+      "overhead_missing": "The capture overhead is not measured: {why}. Every time above is under the profiler.",
+      "parts": "The verify forwards' kernels {verify}%, the draft passes' kernels {draft}%, copies with no kernel running {exposed}%.",
+      "prompt_from_counts": "No first-token mark was recorded, so the prompt is the first {n} forwards: the fewest after which the rest give the engine's counts. The count check is weaker for it (it chose the cut); a capture with the driver's --first-token-mark is not.",
+      "range": "{lo} to {hi}",
+      "refused": "This decode request is not attributed: {why}.",
+      "residency": "Where the weights were: {how}.",
+      "share": "Of the decode time, kernels: {families}.",
+      "share_item": "{name} {pct}%",
+      "steps": "The decode: {steps} steps for the {tokens} tokens after the prompt's, {per_token} ms a token (a step {median} ms median, {low} to {high}), with {drafts} passes of the draft head ({catchups} of them catch-ups); the prompt took {prompt} ms and the time after the last step {tail} ms.",
+      "streamed": "Each request was streamed, to mark its first token; the same request unstreamed right after decoded {pct}% against it (more than 0: streaming slowed it).",
+      "streamed_unmeasured": "Each request was streamed, to mark its first token; what streaming does to the decode is not measured in this run (no unstreamed control: --stream-control).",
+      "why": {
+        "forwards_unmatched": "the forwards in the trace do not give the engine's own counts (a draft pass run and not counted, as one whose token fell under p_min, or forwards in a shape that is not whole draft passes), so the span or the cut is off and no share is said",
+        "no_decode_row": "BoltBeam has no decode row for this engine (data/kernel_families.json engines.<engine>.decode), so its forwards cannot be counted",
+        "no_draft_bytes": "the draft head's weight bytes are not known (--draft)",
+        "no_engine_line": "the driver output has no engine line for this draft count, so where the weights were is not known",
+        "no_first_token": "the driver did not record when the first token arrived (--first-token-mark), so the prompt's forwards cannot be told",
+        "no_read": "no measured read rate or weight bytes were given (--model and --target)",
+        "no_steps": "the engine's counts leave no decode step after the prompt",
+        "no_untraced": "no untraced run of this request was given (--untraced)",
+        "not_all_on_gpu": "the server's load log says not every weight is on the GPU (layers left on the CPU, or tensors placed in host RAM), and the GPU's read rate does not cover reading them",
+        "prompt_unmatched": "no forward of the trace ends before the first token arrived: the span or the clock is off",
+        "residency_not_read": "where the weights went was not read (the driver's --residency-probe), so the GPU's read rate may not cover them",
+        "untraced_no_row": "the untraced run has no request at this draft count and depth"
+      }
+    },
     "directions": {
       "DtoD": "GPU-to-GPU",
       "DtoH": "GPU-to-host",
@@ -933,11 +1162,15 @@
       "attention": "attention",
       "copy_gather": "copies and gathers",
       "dense_gemm": "dense matrix multiplies",
+      "draft_head": "the draft head's passes",
       "elementwise": "elementwise kernels (norms, type conversion)",
       "expert_mmq": "expert matrix multiplies",
       "expert_routing": "expert routing and combine",
       "other": "other kernels",
-      "recurrent": "recurrent layers"
+      "output_layer": "the output layer (the last matmul before the result is read)",
+      "recurrent": "recurrent layers",
+      "row_gather": "row gathers (embedding rows, per-layer embeddings, picked expert weights)",
+      "sampling": "sampling on the GPU"
     },
     "family": "{name} {ms} ms",
     "idle": "Of the GPU idle time, {causes}.",
@@ -1014,11 +1247,26 @@
   },
   "tune": {
     "build": "{engine} build: {fork}, at {path} ({backend}{version}).",
+    "choice": {
+      "depth": "{n} {depth} prompts at about {context:,.0f} tokens (the setup moved {drift:.1%} between its runs)",
+      "dropped": " Not run: {points}, because {why}.",
+      "failed": " {point} did not run (its log is beside the record): left out.",
+      "gate_below": " {point} was faster but changes the answers: on the real-text long corpus, teacher-forced over the last {scored:,} positions of a {context:,}-token context in each of {docs} documents, the most likely next token agreed with {here} only {agreement:.1%} of the time (interval {lo:.1%} to {hi:.1%}), below Speed up's {min:.0%}: reported, not recommended.",
+      "gate_failed": " {point} was faster, but its answers could not be checked against {here} ({why}): not recommended. The check reads two contexts of each document, so a context longer than half the shortest one is not checked.",
+      "gate_passed": " Its answers checked against {here} on the real-text long corpus, teacher-forced: the last {scored:,} positions of a {context:,}-token context in each of {docs} documents; the most likely next token agreed {agreement:.1%} of the time (documents clustered interval {lo:.1%} to {hi:.1%}), at or above Speed up's {min:.0%}.",
+      "gate_short": " {point} is not recommended: its answers were checked only to a {checked:,}-token context, short of the {context:,} tuned here.",
+      "lower": " (at least {lower} faster)",
+      "none": "{setup}: nothing was faster than {here} beyond that, so {here} stands",
+      "picked": "{setup}: {value} is faster than {here}",
+      "run": "{point}: {speeds} tok/s",
+      "setup": "measured with {served} request at a time, a reply of {tokens} tokens each, on {where}; {here} ran first and last, the others between in a random order (seed {seed}); a value is kept only when, on every prompt set, the paired bootstrap lower bound of its speed over {here}'s at {level:.1%} confidence is above {here}'s own change between its two runs ({runs})"
+    },
     "command": "Command:",
     "groups": "Its {what}: {groups}.",
     "host": "Host: {total:.1f} GiB RAM, {avail} GiB available now, {usable:.0f} GiB usable for the model; L3 {l3} ({l3_source}).",
     "lacks": "This {engine} build lacks these knobs: {knobs}.",
-    "measure_hint": "Rows marked derived or default for a chunk size or crossover are the starting point; --measure confirms them with a short real-text prefill sweep (it starts the engine once per point).",
+    "measure_hint": "Rows marked derived or default for a chunk size, a crossover or a choice are the starting point; --measure confirms them with a short real-text sweep, of reading a prompt or of writing a reply (it starts the engine once per point).",
+    "measured_with": " It was measured with {knobs} at the build's defaults, and this setup sets {moved}: it is not measured again here, so measure it again with them.",
     "missing": "not checked: {fact} could not be read here",
     "none": "none",
     "not_applicable": "Not used with this model and placement:",
@@ -1062,9 +1310,14 @@
     "unset": "(unset)"
   },
   "tune_llama_cpp": {
+    "heads": "several MTP heads sit beside the model ({heads}): name the one to load with --draft",
+    "kv_size": "{type} {bytes:,.0f}",
+    "kv_size_unknown": "{type} (size unknown)",
     "model": "Model: {name}, {layers} expert layers of {experts} experts, {gib:.2f} GiB of experts; {host:.2f} GiB of them in host RAM ({placement}).",
     "model_dense": "Model: {name}, dense (no experts): there are no experts to place in host RAM.",
     "no_fit_context": "A {context:,}-token context does not fit this GPU: what the model keeps on the card and the KV cache for one request need at least {need:.1f} GiB (the compute buffers and the GPU context come on top), and the GPU has {gpu:.1f} GiB. Use a shorter context, keep more of the model in host RAM, or use a smaller model.",
+    "no_head": "the MTP head {head} is not a file",
+    "no_heads": "none was given (--draft) and none sits beside the model",
     "no_patch": "This build has none of BoltBeam's local llama.cpp patches, so their knobs do not apply: only stock flags are recommended below.",
     "no_plan": "the offload plan could not be worked out here",
     "routing_changed": "A saved routing profile ({what}) changed the chunk -ub from {before} to {after}.",

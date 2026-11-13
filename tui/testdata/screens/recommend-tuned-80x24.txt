@@ -6,14 +6,14 @@
 │                                                                              │
 │ Contexts are upper bounds: this engine's own overhead is not measured here   │
 │ yet. Check measures it.                                                      │
-│                                                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ What next                                                                    │
 │ ▸ [ Copy engine command line ]                                               │
 │   [ Copy Arkey vllm_args ]                                                   │
 │   [ Check ] start the engine once with these flags and compare               │
-│   [ Speed up ] Makes a faster copy. The original stays.                      │
+│   [ Speed up: the output layer ] Shrinks the word-picking layer, 18 min      │
+│   [ Speed up: the draft layer ] Shrinks the guess-ahead layer, 25 to 102 min │
 │   [ Measure on this machine ] short sweeps, one engine start per point       │
 │   [ Measure this ] -ub                                                       │
 │   [ Measure this ] GGML_CUDA_WS_SLOTS                                        │

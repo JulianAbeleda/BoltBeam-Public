@@ -4,21 +4,32 @@ package seam
 // speedup-offer` says whether and what it costs, the job is `derive lighter-head --json --progress`, and `screen
 // speedup-plain` words its log; `screen speedup-verify` checks a copy against its record.
 
-// SpeedOffer is `screen speedup-offer`: enabled, or Reason (plain) why not; the copy's size (at most) and the seconds each
-// stage is expected to take (an estimate, not a measurement).
+// SpeedOffer is `screen speedup-offer`: enabled if any part is, else Reason (plain) why not; the copy's size (at most);
+// Parts, each part the engine writes, offered or why not (a copy is offered the parts it does not have yet).
 type SpeedOffer struct {
-	Schema    string             `json:"schema"`
-	Kind      string             `json:"kind"`
-	Model     string             `json:"model"`
-	Name      string             `json:"name"`
-	IsCopy    bool               `json:"is_copy"`
-	Enabled   bool               `json:"enabled"`
-	Reason    *string            `json:"reason"`
-	CopyBytes *int64             `json:"copy_bytes"`
-	Expect    map[string]float64 `json:"expect"`
-	Gpu       bool               `json:"gpu"`
-	Engine    string             `json:"engine"`
-	Confirm   *SpeedConfirm      `json:"confirm"`
+	Schema    string      `json:"schema"`
+	Kind      string      `json:"kind"`
+	Model     string      `json:"model"`
+	Name      string      `json:"name"`
+	IsCopy    bool        `json:"is_copy"`
+	Enabled   bool        `json:"enabled"`
+	Reason    *string     `json:"reason"`
+	CopyBytes *int64      `json:"copy_bytes"`
+	Gpu       bool        `json:"gpu"`
+	Engine    string      `json:"engine"`
+	Parts     []SpeedPart `json:"parts"`
+}
+
+// SpeedPart is one part Speed up can lighten: Label is its button and Helper what it changes and costs, worded; the seconds each stage is expected to take
+// (an estimate, not a measurement) and its confirm step when Enabled, else Reason (plain).
+type SpeedPart struct {
+	Part    string             `json:"part"`
+	Label   string             `json:"label"`
+	Enabled bool               `json:"enabled"`
+	Reason  *string            `json:"reason"`
+	Helper  string             `json:"helper"`
+	Expect  map[string]float64 `json:"expect"`
+	Confirm *SpeedConfirm      `json:"confirm"`
 }
 
 // SpeedConfirm is the confirm step, worded: what will happen, the disk space, the time, the GPU.
@@ -58,12 +69,12 @@ func (c Client) SpeedOffer(model string) (*SpeedOffer, error) {
 	return &o, err
 }
 
-// SpeedArgv is the Speed up job: the copy is written beside the model, checked, and its speed measured (one GPU).
-func (c Client) SpeedArgv(model string) []string {
+// SpeedArgv is the Speed up job for one part: the copy is written beside the model, checked, and its speed measured (one GPU).
+func (c Client) SpeedArgv(model, part string) []string {
 	if argv := c.Demo.argv("speedup"); argv != nil { // a demo plays the job; nothing is made
 		return argv
 	}
-	return []string{c.Python, "-m", "boltbeam.cli", "derive", "lighter-head", model, "--json", "--progress"}
+	return []string{c.Python, "-m", "boltbeam.cli", "derive", "lighter-head", model, "--part", part, "--json", "--progress"}
 }
 
 // SpeedPlain words a finished job's log.

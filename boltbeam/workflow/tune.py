@@ -25,6 +25,7 @@ import json
 import math
 import os
 import pathlib
+import statistics
 from typing import Any, Callable
 
 from boltbeam.core.refused import Refused
@@ -32,6 +33,9 @@ from boltbeam.core.refused import Refused
 TABLE = pathlib.Path(__file__).resolve().parents[1] / "data" / "engine_knobs.json"
 KiB, MiB, GiB = 1 << 10, 1 << 20, 1 << 30
 PROMPT = 10000  # the prompt length the setup is stated at (the evidence's 10k)
+DETAIL_CHARS = 300  # the end of an engine's error text kept as provenance: its last lines say why, its start is the command
+SEED_BITS = 31  # a choice sweep's order seed: a positive whole number a reader can retype and JSON keeps exact
+SERVED = 1  # tune states a setup for one request at a time: its context fit, its KV estimate and its decode rows are one request's
 REPLY_TOKENS = 2048  # room for the reply beside the prompt when no --context is given (a context of the prompt alone holds no reply)
 FACTS = {  # the engine-neutral names a formula may read: the fact and what it is
   "host_expert_bytes": "the experts this placement keeps in host RAM (the model's tensor table, per layer)",
@@ -48,13 +52,17 @@ FACTS = {  # the engine-neutral names a formula may read: the fact and what it i
   "shared_memory": "the GPU reads host memory directly (no copies)",
   "h2d_pinned_gbs": "the measured copy rate to the GPU from pinned host memory, GB/s (target/host.facts)",
   "gpu_name": "the GPU's name (the hardware scan)", "model_file": "the model file's name",
+  "cpu_physical_cores": "the CPU's physical cores (target/host.cpu_cores)", "cpu_logical_cores": "the CPU's logical CPUs (target/host.cpu_cores)",
+  "cpu_l3_cores": "the physical cores that share one L3 (one core complex; target/host.cpu_cores)",
+  "served_requests": "the requests the setup is stated for at once (SERVED)",
   "workload": "what the server will serve: one-shot (each prompt once) or chat (follow-ups that reuse earlier turns), --workload",
   "value": "the row's own value (in sets)"}
 FUNCS: dict[str, Callable[..., Any]] = {"min": min, "max": max, "pow2_floor": lambda x: 1 << (int(x).bit_length() - 1) if x >= 1 else 0,
                                          "gib_floor": lambda x: int(x // GiB), "gib_ceil": lambda x: int(-(-x // GiB)),
                                          "floor_to": lambda x, step: round(int(x / step) * step, 6),
                                          "ceil": lambda x: int(math.ceil(x)), "floor": lambda x: int(math.floor(x)),
-                                         "has": lambda text, part: str(part).lower() in str(text).lower()}  # a name holds a part (a GPU, a model)
+                                         "has": lambda text, part: str(part).lower() in str(text).lower(),  # a name holds a part (a GPU, a model)
+                                         "len": len}
 WORKLOADS = ("chat", "one-shot")
 BUDGET_PROMPT_TOLERANCE = 0.05  # a time budget stands for a prompt within this share of its own length (10k runs read 9,8xx tokens)
 CONSTS = {"KiB": KiB, "MiB": MiB, "GiB": GiB, "True": True, "False": False, "None": None}
@@ -91,7 +99,7 @@ def fact_names(engine:str, tab:dict[str, Any] | None = None) -> set[str]:
 _BIN = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b, ast.Mult: lambda a, b: a * b, ast.Div: lambda a, b: _div(a, b, False),
         ast.FloorDiv: lambda a, b: _div(a, b, True)}
 _CMP = {ast.Lt: lambda a, b: a < b, ast.LtE: lambda a, b: a <= b, ast.Gt: lambda a, b: a > b, ast.GtE: lambda a, b: a >= b,
-        ast.Eq: lambda a, b: a == b, ast.NotEq: lambda a, b: a != b}
+        ast.Eq: lambda a, b: a == b, ast.NotEq: lambda a, b: a != b, ast.In: lambda a, b: a in b, ast.NotIn: lambda a, b: a not in b}
 
 
 class Missing(Exception):
@@ -182,15 +190,15 @@ class _View(dict):
 
 
 def say(template:str, facts:dict[str, Any]) -> str:
-  """A row's reason with its facts filled in: *_bytes also as *_gib and *_mib, ns.x as an engine's own, a missing or
-  None fact as "unknown"."""
+  """A row's reason with its facts filled in: *_bytes also as *_gib and *_mib, ns.x as an engine's own, a list as its
+  items, a missing or None fact as "unknown"."""
   view = _View()
   for k, v in facts.items():
     ns, _, key = k.rpartition(".")
     into = view.setdefault(ns, _View()) if ns else view
     if not isinstance(into, _View):
       continue
-    into[key] = _Unknown() if v is None else v
+    into[key] = _Unknown() if v is None else ", ".join(map(str, v)) if isinstance(v, list) else v
     if key.endswith("_bytes"):
       base = key[:-6]
       into[f"{base}_gib"], into[f"{base}_mib"] = (_Unknown(), _Unknown()) if not isinstance(v, (int, float)) else (v / GiB, v / MiB)
@@ -222,9 +230,10 @@ def copy_rate(link:dict[str, Any] | None = None) -> tuple[float | None, str, str
 
 
 def host_facts(*, memory:dict[str, Any] | None = None, l3:dict[str, Any] | None = None, prompt:int = PROMPT,
-               context:int | None = None, workload:str = "chat", link:dict[str, Any] | None = None, reply:dict[str, Any] | None = None) -> dict[str, Any]:
-  """RAM, L3, the copy rate to the GPU, the page size, the workload and the prompt and context the setup is stated at,
-  with "sources". memory, l3 and link (host.facts' record) stand in for the readings (tests)."""
+               context:int | None = None, workload:str = "chat", link:dict[str, Any] | None = None, reply:dict[str, Any] | None = None,
+               cpu:dict[str, Any] | None = None) -> dict[str, Any]:
+  """RAM, L3, the CPU's cores, the copy rate to the GPU, the page size, the workload and the prompt and context the setup
+  is stated at, with "sources". memory, l3, cpu and link (host.facts' record) stand in for the readings (tests)."""
   from boltbeam.target import host
   if workload not in WORKLOADS:
     raise Refused(f"--workload is one of {', '.join(WORKLOADS)}, not {workload!r}")
@@ -236,16 +245,18 @@ def host_facts(*, memory:dict[str, Any] | None = None, l3:dict[str, Any] | None 
   mem = memory or host.memory()
   ram = host.usable_ram(mem["total_bytes"], mem.get("available_bytes"))
   l3 = l3 or host.l3_cache()
+  cpu = cpu or host.cpu_cores()
   page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
   out = {"usable_ram_bytes": ram["usable_bytes"], "ram_available_bytes": ram.get("available_bytes"), "ram_total_bytes": ram["total_bytes"],
          "ram_margin_bytes": ram["margin_bytes"], "l3_bytes": l3.get("bytes"), "l3_source": l3["source"], "page_bytes": page,
          "prompt_tokens": prompt, "context_tokens": context or prompt + (reply["value"] if reply else REPLY_TOKENS), "h2d_pinned_gbs": rate, "workload": workload,
-         "gpu_name": gpu_name, **({"reply_tokens": reply["value"]} if reply else {})}
+         "gpu_name": gpu_name, "cpu_physical_cores": cpu["physical"], "cpu_logical_cores": cpu["logical"], "cpu_l3_cores": cpu.get("l3_cores"), "served_requests": SERVED, **({"reply_tokens": reply["value"]} if reply else {})}
   out["sources"] = {"usable_ram_bytes": ram["says"], "ram_available_bytes": mem["source"], "ram_total_bytes": mem["source"],
                     "ram_margin_bytes": "target/host.RAM_MARGIN_BYTES", "l3_bytes": l3["source"], "page_bytes": "os.sysconf SC_PAGE_SIZE",
                     "prompt_tokens": "--prompt", "context_tokens": "--context" if context else f"--prompt plus {reply['value']} tokens for the reply: {reply['says']}" if reply else
                     f"--prompt plus {REPLY_TOKENS} tokens for the reply (the unmeasured default: no --context and no --replies given)",
-                    "h2d_pinned_gbs": rate_source, "workload": "--workload", "gpu_name": "the hardware scan"}
+                    "h2d_pinned_gbs": rate_source, "workload": "--workload", "gpu_name": "the hardware scan",
+                    "cpu_physical_cores": cpu["source"], "cpu_logical_cores": cpu["source"], "cpu_l3_cores": cpu["source"], "served_requests": "SERVED"}
   return out
 
 
@@ -358,16 +369,18 @@ def budget_unusable(budget:dict[str, Any], prompt:int) -> str | None:
 
 
 def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, Any] | None = None,
-           measured:dict[str, Any] | None = None) -> list[dict[str, Any]]:
+           measured:dict[str, Any] | None = None, into:dict[str, Any] | None = None) -> list[dict[str, Any]]:
   """Every row of the engine on this build and these facts: {name, kind, group, status (set | default | not_applicable |
   not_in_build), value, default, source (derived | measured | default), reason, provenance}. measured: --measure's
-  result per knob name ({value, ...} or {status: failed}), which overrides the facts value."""
+  result per knob name ({value, ...} or {status: failed}), which overrides the facts value. into: given the facts as the
+  rows leave them (each row's sets written), what a later row's sweep reads."""
   tab, measured, f = tab or table(), measured or {}, dict(f)
   allowed = fact_names(engine, tab)
   rows = []
   for k in knobs(engine, tab):
-    row = {"name": k["name"], "kind": k["kind"], "group": k.get("group"), "default": k["default"], "controls": k["controls"],
-           "bitwise": k.get("bitwise", True), "with": k.get("with")}
+    default = f.get(k["default_from"]) if k.get("default_from") else k["default"]  # a default the build states is read from it
+    row = {"name": k["name"], "kind": k["kind"], "group": k.get("group"), "default": default, "controls": k["controls"],
+           "bitwise": k.get("bitwise", True), "with": k.get("with"), "with_draft": k.get("with_draft")}
     lacks = [r for r in k.get("requires", []) if r not in features["features"]]
     if lacks:
       rows.append({**row, "status": "not_in_build", "value": None, "source": None, "reason": None,
@@ -415,18 +428,34 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
       reason += f" (--measure: {got.get('says') or got.get('why')})"
     if k["derive"] == "measured" and not got:
       s = k["sweep"]
-      prov["measure"] = (f"confirm with --measure: {s['type']} over {s['axis']} {s['points']}" if s["type"] != "fit" else
-                         f"confirm with --measure: {s['what']}")
+      over = say("{x}", {"x": _try(s["candidates"], f, ok)}) if s["type"] == "choice" else s.get("points")  # a choice's points are this build's and machine's
+      prov["measure"] = (f"confirm with --measure: {s['what']}" if s["type"] == "fit" else f"confirm with --measure: {s['type']} over {s['axis']} {over}")
     f = {n: v for n, v in f.items() if not n.startswith("t.")}
     for name, expr in (k.get("sets") or {}).items():
       try:
         f[name] = evaluate(expr, {**f, "value": value}, allowed)
       except Missing:
         f[name] = None
-    shown = str(value) if value is not None else k["default"]
-    rows.append({**row, "status": "set" if value is not None and shown != k["default"] else "default", "value": shown, "source": source,
+    shown = str(value) if value is not None else default
+    if isinstance(row["bitwise"], str):  # whether outputs stay bitwise identical can hang on the value (only at the default, say)
+      row["bitwise"] = bool(evaluate(row["bitwise"], {**f, "value": value}, allowed))
+    rows.append({**row, "status": "set" if value is not None and shown != default else "default", "value": shown, "source": source,
                  "reason": reason, "provenance": prov})
+  for r, k in zip(rows, knobs(engine, tab)):  # a value measured with other rows at their defaults says when this setup moves them
+    moved = [f"{x['name']} {x['value']}" for x in rows if x["name"] in (k.get("measured_with") or ()) and x["status"] == "set"]
+    if moved and r["status"] == "set":
+      r["reason"] += _words()["tune"]["measured_with"].format(knobs=", ".join(k["measured_with"]), moved=", ".join(moved))
+  if into is not None:
+    into.update(f)
   return rows
+
+
+def _try(expr:str, f:dict[str, Any], allowed:set[str]) -> Any:
+  """A formula's value, None when it reads an unknown fact."""
+  try:
+    return evaluate(expr, f, allowed)
+  except Missing:
+    return None
 
 
 def _words() -> dict[str, Any]:
@@ -450,7 +479,7 @@ def values_of(rows:list[dict[str, Any]], **over:Any) -> list[dict[str, Any]]:
   kinds = {r["name"]: r for r in rows}
   out = {r["name"]: r["value"] for r in rows if r["status"] == "set"}
   out.update({k: str(v) for k, v in over.items()})
-  return [{"name": n, "kind": kinds[n]["kind"], "value": v, "with": kinds[n].get("with")} for n, v in out.items()]
+  return [{"name": n, "kind": kinds[n]["kind"], "value": v, "with": kinds[n].get("with"), "with_draft": kinds[n].get("with_draft")} for n, v in out.items()]
 
 
 # --- --measure: sweeps over a knob's axis --------------------------------------------------------------------------------
@@ -483,7 +512,7 @@ def fit(knob:dict[str, Any], run:Callable[..., Any], rows:list[dict[str, Any]], 
       out.append({"point": value, "ms": round(got["ms"], 1), "tok_s": round(prompt_n * 1000 / got["ms"], 1), "failed": failed, "facts": got["facts"]})
     except Exception as exc:  # noqa: BLE001  an engine that did not start or answer at this value counts as a failed run, and backs off
       failed = "a"
-      out.append({"point": value, "ms": None, "tok_s": None, "failed": failed, "detail": f"{type(exc).__name__}: {str(exc)[-300:]}"})
+      out.append({"point": value, "ms": None, "tok_s": None, "failed": failed, "detail": f"{type(exc).__name__}: {str(exc)[-DETAIL_CHARS:]}"})
     if not failed:
       answer = value
       break
@@ -498,6 +527,99 @@ def fit(knob:dict[str, Any], run:Callable[..., Any], rows:list[dict[str, Any]], 
   return {"value": answer, "points": out, "prompt": prompt_n, "stop": s["stop"], "says": says}
 
 
+def choice_points(knob:dict[str, Any], rows:list[dict[str, Any]], facts:dict[str, Any], allowed:set[str]) -> dict[str, Any]:
+  """A choice sweep's points: the setup's own value (base: None when the row is at its default, which `here` names) and
+  each candidate the row's `candidates` fact lists for this machine and build; a candidate the row's `keep` rule (over
+  the facts and `point`) rejects is dropped, said, not run."""
+  s, ok = knob["sweep"], allowed | term_names(knob) | {"point"}
+  f = {**facts, **terms(knob, facts, allowed)}
+  row = next(r for r in rows if r["name"] == knob["name"])
+  base = row["value"] if row["status"] == "set" else None
+  here = base if base is not None else row["default"]
+  points, dropped = [base], []
+  for c in (str(c) for c in _try(s["candidates"], f, ok) or []):
+    if c != here and c not in points:
+      (points if not s.get("keep") or _holds(s["keep"], {**f, "point": c}, ok) else dropped).append(c)
+  return {"base": base, "here": here, "points": points, "dropped": dropped}
+
+
+def choice(knob:dict[str, Any], run:Callable[..., Any], rows:list[dict[str, Any]], *, prompt:int, facts:dict[str, Any],
+           allowed:set[str], seed:int | None = None) -> dict[str, Any]:
+  """A choice sweep: decode speed at SERVED requests at a time (run(..., decode=True) -> {tokens, depths: {depth: {context, per_prompt}}},
+  the engine's real-text prompts with their tasks, short and long, a reply each, held to the loop guard) of the setup's
+  own value, run first and last, and of choice_points' candidates between, in a random order (seed, said). A candidate
+  that does not run is said and left out. One rule, core/draft_count's: at every depth the paired bootstrap lower bound
+  of its per-prompt speed over the setup's (the two runs averaged) is above 1 plus the setup's own drift between its two
+  runs, at the level corrected for the candidates compared together (draft_count.corrected); of those, the one with the
+  highest lower bound. A row with a gate checks the output too: the candidate against the setup's value, teacher-forced
+  on the real-text long corpus at the setup's context (run(..., agree=setup values, texts=, context=) -> per-document
+  figures), judged by Speed up's own agreement and threshold (quantization/speed_up.agreement, passes); one that fails is
+  reported, not recommended."""
+  import random
+  from boltbeam.collectors import mtp
+  from boltbeam.core import draft_count as dc
+  from boltbeam.quantization import speed_up
+  s, name, w = knob["sweep"], knob["name"], _words()["tune"]["choice"]
+  pts = choice_points(knob, rows, facts, allowed)
+  vals = lambda p: values_of(rows, **({name: p} if p is not None else {}))  # noqa: E731  None: the setup as it is, its own value included
+  seed = random.SystemRandom().getrandbits(SEED_BITS) if seed is None else seed
+  order = random.Random(seed).sample(pts["points"][1:], len(pts["points"]) - 1)
+  timed = lambda p, tag: run(values=vals(p), prompt=prompt, reps=1, tag=f"{name}-{tag}", decode=True)  # noqa: E731
+  first, got, failed = timed(None, "setup"), {}, []
+  for p in order:
+    try:
+      got[p] = timed(p, p)
+    except Exception as exc:  # noqa: BLE001  one candidate that does not run is said, never the row's end
+      failed.append({"point": p, "why": f"{type(exc).__name__}: {str(exc)[-DETAIL_CHARS:]}"})
+  last = timed(None, "setup-again")
+  depths, level = sorted(first["depths"]), dc.corrected(len(got))
+  base = {d: {q: (first["depths"][d]["per_prompt"][q] + last["depths"][d]["per_prompt"][q]) / 2 for q in first["depths"][d]["per_prompt"]} for d in depths}
+  drift = {d: abs(statistics.median(last["depths"][d]["per_prompt"][q] / first["depths"][d]["per_prompt"][q] for q in base[d]) - 1) for d in depths}
+  out = [{"point": pts["here"], "runs": [first, last], "median": {d: statistics.median(base[d].values()) for d in depths}}]
+  for p, r in got.items():
+    if any(set(r["depths"][d]["per_prompt"]) != set(base[d]) for d in depths):
+      raise Refused(f"{name} {p} did not run the setup's prompts: a speed is compared only on the same prompts")
+    lo = {d: dc.bounds((r["depths"][d]["per_prompt"], None), (base[d], None), level)[0] for d in depths}
+    out.append({"point": p, "runs": [r], "median": {d: statistics.median(r["depths"][d]["per_prompt"].values()) for d in depths}, "lower": lo,
+                "beats": all(lo[d] > 1 + drift[d] for d in depths)})
+  gates, answer, th = [], None, speed_up.table()["threshold"]
+  for r in sorted((r for r in out[1:] if r["beats"]), key=lambda r: -min(r["lower"].values())):
+    if s.get("gate"):
+      try:
+        mtp.long_corpus()  # hash-checked
+        texts = [d["text"] for d in json.loads(mtp.LONG.read_text())["documents"]]
+        fig = speed_up.agreement(run(values=vals(r["point"]), agree=vals(pts["base"]), texts=texts, context=facts.get("context_tokens"), prompt=prompt,
+                                     reps=1, tag=f"{name}-{r['point']}-agree"), texts)
+      except (Refused, mtp.MtpRefused) as exc:
+        gates.append({"point": r["point"], "passed": False, "why": str(exc)})
+        continue
+      short = (fig.get("ctx") or 0) < (facts.get("context_tokens") or 0)  # a check at a shorter context says nothing past it
+      gates.append({"point": r["point"], "agrees": speed_up.passes(fig), "passed": speed_up.passes(fig) and not short, "agreement": fig[th["metric"]], "interval": fig["interval"], "figures": fig,
+                    **({"short": True} if short else {})})
+      if not gates[-1]["passed"]:
+        continue
+    answer = r["point"]
+    break
+  where = ", ".join(w["depth"].format(depth=d, context=first["depths"][d]["context"], n=len(base[d]), drift=drift[d]) for d in depths)
+  runs = "; ".join(w["run"].format(point=r["point"], speeds=", ".join(f"{r['median'][d]:,.1f}" for d in depths)) +
+                   ("" if "lower" not in r else w["lower"].format(lower=", ".join(f"{r['lower'][d] - 1:+.1%}" for d in depths))) for r in out)
+  setup = w["setup"].format(tokens=first["tokens"], served=facts["served_requests"], where=where, here=pts["here"], seed=seed, level=level, runs=runs)
+  says = w["picked" if answer is not None else "none"].format(setup=setup, value=answer, here=pts["here"])
+  for g in gates:
+    says += (w["gate_failed"].format(point=g["point"], here=pts["here"], why=g["why"]) if "why" in g else
+             w["gate_passed" if g["agrees"] else "gate_below"].format(point=g["point"], here=pts["here"], agreement=g["agreement"], lo=g["interval"][0],
+                                                                       hi=g["interval"][1], min=th["min"], context=g["figures"]["ctx"],
+                                                                       scored=g["figures"]["scored"], docs=len(g["figures"]["per_doc"])))
+    if g.get("short"):
+      says += w["gate_short"].format(point=g["point"], checked=g["figures"]["ctx"], context=facts.get("context_tokens"))
+  for x in failed:
+    says += w["failed"].format(point=x["point"])
+  if pts["dropped"]:
+    says += w["dropped"].format(points=", ".join(pts["dropped"]), why=say(s["keep_words"], facts))
+  return {"value": answer, "points": out, "gates": gates, "failed": failed, "dropped": pts["dropped"], "seed": seed, "level": level, "drift": drift,
+          "stop": s["stop"], "says": says}
+
+
 def sweep(knob:dict[str, Any], run:Callable[..., float], rows:list[dict[str, Any]], *, prompt:int, facts:dict[str, Any] | None = None,
           allowed:set[str] | None = None) -> dict[str, Any]:
   """A row's sweep. crossover: per point of the axis knob (ascending) the knob's on and off arms, alternating order; the
@@ -506,6 +628,8 @@ def sweep(knob:dict[str, Any], run:Callable[..., float], rows:list[dict[str, Any
   than the best by more than the tie. run(values=, prompt=, reps=, tag=) -> wall ms; values are the setup's with the
   axis (and the arm) replaced."""
   s = knob["sweep"]
+  if s["type"] == "choice":
+    return choice(knob, run, rows, prompt=prompt, facts=facts or {}, allowed=allowed if allowed is not None else set(FACTS) | {k for k in facts or {} if "." in k})
   if s["type"] == "fit":
     return fit(knob, run, rows, prompt=prompt, facts=facts or {}, allowed=allowed if allowed is not None else set(FACTS) | {k for k in facts or {} if "." in k})
   tie, reps = s["tie_pct"] / 100, s["reps"]
@@ -554,7 +678,8 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
          knobs_only:list[str] | None = None, port:int = 0, out:pathlib.Path | None = None, extra:list[str] | None = None,
          experts_in_ram:str | None = None, run:Callable[..., float] | None = None, tab:dict[str, Any] | None = None,
          memory:dict[str, Any] | None = None, l3:dict[str, Any] | None = None, say:Callable[[str], None] | None = None,
-         workload:str = "chat", link:dict[str, Any] | None = None, reply:dict[str, Any] | None = None, **options) -> dict[str, Any]:
+         workload:str = "chat", link:dict[str, Any] | None = None, reply:dict[str, Any] | None = None, cpu:dict[str, Any] | None = None,
+         **options) -> dict[str, Any]:
   """The setup: the build, the facts, every row, the rendered command, and (measure) the sweeps' records. A Refused when
   the engine, its build or the model cannot be read. options go to the adapter's facts (test stand-ins). say: --measure's
   progress as a screen's pipeline lines (a stage per swept knob, a progress line per point, at most the row's points)."""
@@ -568,7 +693,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
       raise Refused(f"{engine} has no knob named {', '.join(unknown)} in BoltBeam's knob table")
     knobs_only = [names[q.lstrip("-")] for q in knobs_only]
   feats = ad.detect(build)
-  f = host_facts(memory=memory, l3=l3, prompt=prompt, context=context, workload=workload, link=link, reply=reply)
+  f = host_facts(memory=memory, l3=l3, prompt=prompt, context=context, workload=workload, link=link, reply=reply, cpu=cpu)
   got = ad.facts(model, f, feats, {"experts_in_ram": experts_in_ram, "extra": extra, **options})
   f = {**f, **got, "model_file": pathlib.Path(model).name, "sources": {**f["sources"], **got.get("sources", {}), "model_file": "the model given"}}
   rows = derive(f, feats, engine, tab)
@@ -581,8 +706,13 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
             and next(x for x in rows if x["name"] == k["name"])["status"] not in ("not_in_build", "not_applicable")]
     say = say or (lambda _line: None)
     say(f"pipeline steps: {len(todo)}")
+    allowed = fact_names(engine, tab)
     for k in todo:
-      most = (len(k["sweep"]["points"]) if k["sweep"]["type"] != "fit" else 1 + k["sweep"]["tries"]) * (2 if k["sweep"]["type"] == "crossover" else 1)
+      now: dict[str, Any] = {}
+      rows = derive(f, feats, engine, tab, measured, into=now)  # a later sweep runs with the earlier ones' answers and reads the facts they set
+      s = k["sweep"]
+      most = ((len(choice_points(k, rows, now, allowed)["points"]) + 1) * (2 if s.get("gate") else 1) if s["type"] == "choice" else
+              (len(s["points"]) if s["type"] != "fit" else 1 + s["tries"]) * (2 if s["type"] == "crossover" else 1))
       point = [0]
       def timed(*a, _go=go, _most=most, _k=k["name"], _point=point, **kw):
         _point[0] += 1
@@ -590,10 +720,10 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
         return _go(*a, **kw)
       say(f"stage {k['name']}: start")
       try:
-        measured[k["name"]] = sweep(k, timed, rows, prompt=prompt, facts=f, allowed=fact_names(engine, tab))
+        measured[k["name"]] = sweep(k, timed, rows, prompt=prompt, facts=now, allowed=allowed)
       except Exception as exc:  # noqa: BLE001  a failed sweep keeps the facts value and says why (in its row, not the stage)
         measured[k["name"]] = {"value": None, "status": "failed", "why": _words()["tune"]["sweep_failed"].format(out=short_path(str(out))),
-                               "detail": f"{type(exc).__name__}: {str(exc)[-300:]}"}  # the raw text: provenance, not the reason
+                               "detail": f"{type(exc).__name__}: {str(exc)[-DETAIL_CHARS:]}"}  # the raw text: provenance, not the reason
       say(f"stage {k['name']}: done")
     say("pipeline done")
     rows = derive(f, feats, engine, tab, measured)
@@ -677,8 +807,9 @@ def page(res:dict[str, Any], setting_of:Callable[[dict[str, Any]], str | None] |
     if r["status"] == "set" and r["value"] is not None:
       if r["kind"] == "env":
         uses[r["name"]] = {"env": r["name"], "value": r["value"]}
-      elif name := (setting_of(r) if setting_of else None):
-        uses[r["name"]] = {"setting": name, "value": r["value"]}
+      elif (name := (setting_of(r) if setting_of else None)) and None not in (goes := {setting_of({**r, "name": x}): t for x, t in (r.get("with") or {}).items()} if r["kind"] == "flag" else {}):
+        uses[r["name"]] = {"setting": name, "value": r["value"],  # the flags it goes with are copied beside it, or the row is not
+                           **({"with": {x: say(t, {**res["facts"], "value": r["value"]}) for x, t in goes.items()}} if goes else {})}
       else:
         not_passed.append(r["name"])
   placed = [{**p, "use": setting_of({**p, "kind": "flag"}) if setting_of else None} for p in res.get("placement") or []]
@@ -694,7 +825,7 @@ def page(res:dict[str, Any], setting_of:Callable[[dict[str, Any]], str | None] |
     if use and "env" in use:
       env[use["env"]] = use["value"]
     elif use:
-      settings[use["setting"]] = use["value"]
+      settings |= {use["setting"]: use["value"], **use.get("with", {})}
     confirm = (r["provenance"] or {}).get("measure")
     rows.append({"name": r["name"], "kind": r["kind"], "status": r["status"], "value": w["unset"] if r["value"] is None else r["value"],
                  "source": r["source"], "source_words": w["source_" + r["source"]], "reason": r["reason"], "tags": tags,

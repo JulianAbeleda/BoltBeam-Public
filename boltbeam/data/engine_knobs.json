@@ -1,9 +1,12 @@
 {
   "schema": "boltbeam.engine_knobs.v1",
-  "about": "Engine knobs, one row each, keyed by engine, and how `boltbeam tune MODEL --engine E` sets them on the machine it runs on (workflow/tune.py reads it; engines.<E>.adapter is the module that reads that engine's build, supplies its facts, runs its measured points and writes its command). kind: env (an environment variable), flag (a command-line flag), config (a key of a JSON config flag, a.b). requires: the build features the knob needs (the adapter's detect: llama.cpp the getenv names compiled into the build, vLLM the flags its installed arg parser adds and the Literal values of its config classes); a row whose feature is missing is not in that build. group: the engine's named extra the knob comes from (a local patch), for the words. applies: an expression over facts. derive: facts (a formula, instant), measured (a short real-text prefill sweep under --measure, over the row's axis knob; without it the facts value or the default stands, said so), default (left at the default, with the evidence why). bitwise false: the knob changes outputs (said beside it). Formulas use only the facts in workflow/tune.FACTS and the adapter's namespaced facts (ns.name), numbers, strings, + - * / //, comparisons, and/or/not, x if c else y, min, max, pow2_floor, gib_floor, gib_ceil, floor_to. measured_when/measured: a clause of measured numbers a row adds to its reason only when the expression is true over this run's facts (the setup it was measured in), so a general reason never quotes another setup's numbers. Adding a knob is adding a row; adding an engine is a row under engines, its knobs and an adapter module.",
+  "about": "Engine knobs, one row each, keyed by engine, and how `boltbeam tune MODEL --engine E` sets them on the machine it runs on (workflow/tune.py reads it; engines.<E>.adapter is the module that reads that engine's build, supplies its facts, runs its measured points and writes its command; engines.<E>.mtp, the module that measures its multi-token prediction for collectors/mtp.py). kind: env (an environment variable), flag (a command-line flag), config (a key of a JSON config flag, a.b). requires: the build features the knob needs (the adapter's detect: llama.cpp the getenv names compiled into the build, vLLM the flags its installed arg parser adds and the Literal values of its config classes); a row whose feature is missing is not in that build. group: the engine's named extra the knob comes from (a local patch), for the words. applies: an expression over facts. derive: facts (a formula, instant), measured (a short real-text prefill sweep under --measure, over the row's axis knob, or a choice: decode speed at tune.SERVED requests at a time on real-text prompts over a candidate list fact, kept only by core/draft_count's paired rule and, with gate agreement, only past Speed up's next-token agreement gate at the setup's context; without --measure the facts value or the default stands, said so), default (left at the default, with the evidence why). bitwise false: the knob changes outputs (said beside it); an expression over value says when. with: the flags a flag row goes with ({value} and facts filled in); with_draft: those for the draft model, only when the command loads one. default_from: the fact that holds the default the build states (its --help), in place of default. measured_with: rows whose defaults the value was measured with; a setup that sets one says so beside it. Formulas use only the facts in workflow/tune.FACTS and the adapter's namespaced facts (ns.name), numbers, strings, + - * / //, comparisons, and/or/not, x if c else y, min, max, pow2_floor, gib_floor, gib_ceil, floor_to. measured_when/measured: a clause of measured numbers a row adds to its reason only when the expression is true over this run's facts (the setup it was measured in), so a general reason never quotes another setup's numbers. Adding a knob is adding a row; adding an engine is a row under engines, its knobs and an adapter module.",
   "engines": {
     "llama.cpp": {
       "adapter": "boltbeam.workflow.tune_llama_cpp",
+      "mtp": "boltbeam.collectors.llama_mtp",
+      "draft": {"count": "--spec-draft-n-max", "model": "-md"},
+      "per_layer_table": "per_layer_token_embd",
       "group_noun": "patch",
       "groups_words": "local patches",
       "groups": {
@@ -19,6 +22,7 @@
     },
     "vllm": {
       "adapter": "boltbeam.workflow.tune_vllm",
+      "mtp": "boltbeam.collectors.vllm_mtp",
       "group_noun": "feature",
       "groups_words": "extras",
       "groups": {}
@@ -180,6 +184,48 @@
      "measured": "on an RTX 5090 with 12 layers of Flash-Next experts in RAM (10k chat prompt, 24 slots, n=6), 5,892 -> 6,016 tok/s wall (+124 tok/s, about 35 ms a prompt); the restore test lost its restore point (2,215 cached tokens -> 0)",
      "evidence": "~/storage/boltbeam-runs/llama-expert-table-20261111.md Step 2 (the checkpoint candidate and the decisive arms, close-results.jsonl); tools/patches/llama-server-ckpt-tail-only.patch"},
 
+    {"engine": "llama.cpp", "name": "--spec-draft-n-max", "kind": "flag", "with": {"--spec-type": "draft-mtp", "-md": "{llama_cpp.mtp_head}"},
+     "requires": ["LLAMA_ARG_SPEC_DRAFT_N_MAX", "draft-mtp"], "default": null, "measured_with": ["-fa", "-ctk", "-t"],
+     "controls": "MTP: draft tokens per step from the model's multi-token-prediction head (-md HEAD --spec-type draft-mtp); unset: no speculation",
+     "derive": "facts", "applies": "model_draft_layers > 0", "formula": "llama_cpp.mtp_k_measured",
+     "reason": "the draft count measured on this chip for this model, picked as the recommended setup picks it: {llama_cpp.mtp_says}",
+     "reason_default": "unset: {llama_cpp.mtp_why}",
+     "not_applicable": "no MTP head to load: {llama_cpp.mtp_why}",
+     "evidence": "llama-server --help (--spec-type draft-mtp, --spec-draft-n-max, -md); measured by collectors/llama_mtp.py (boltbeam screen mtp --engine llama.cpp), picked by core/draft_count.choose through workflow/recommend.mtp_tune, the vLLM row's rule and gates"},
+
+    {"engine": "llama.cpp", "name": "-fa", "kind": "flag", "requires": ["LLAMA_ARG_FLASH_ATTN"], "default": null, "default_from": "llama_cpp.fa_default", "bitwise": "value == None",
+     "controls": "flash attention (llama-server --flash-attn): on, off, or the build's automatic choice; its kernels differ, so the answers can",
+     "derive": "measured", "applies": "len(llama_cpp.fa_modes) > 1", "sets": {"llama_cpp.flash_attn": "value if value != None else llama_cpp.flash_attn"},
+     "reason_default": "{llama_cpp.fa_default}, llama-server's default; --measure times the other values this build takes ({llama_cpp.fa_modes}) writing a reply, and checks their answers",
+     "not_applicable": "this build's --help lists no values for -fa",
+     "sweep": {"type": "choice", "axis": "-fa", "candidates": "llama_cpp.fa_modes", "gate": "agreement",
+               "what": "decode speed with {served_requests} request at a time with each -fa value this build takes ({llama_cpp.fa_modes}) on the real-text prompts, short and at the {context_tokens:,}-token context, paired with the setup's own value; a faster one is kept only if its answers pass Speed up's next-token agreement gate",
+               "stop": "each value the build takes, once; the output check only for a faster one"},
+     "evidence": "llama-server --help (-fa [on|off|auto] and its default); src/llama-context.cpp: auto turns flash attention on where the device supports it, and on for a quantized V cache"},
+
+    {"engine": "llama.cpp", "name": "-ctk", "kind": "flag", "with": {"-ctv": "{value}"}, "with_draft": {"-ctkd": "{value}", "-ctvd": "{value}"},
+     "requires": ["LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"], "default": null, "default_from": "llama_cpp.kv_default", "bitwise": "value == None",
+     "controls": "the KV cache's type, K and V alike (-ctk, -ctv), and the draft model's with it (-ctkd, -ctvd)",
+     "derive": "measured", "applies": "kv_bytes_per_token > 0 and len(llama_cpp.kv_types) > 1",
+     "reason_default": "{llama_cpp.kv_default}, llama-server's default ({kv_bytes_per_token:,.0f} bytes per token); the types this build takes with flash attention kernels for them, in bytes per token: {llama_cpp.kv_sizes}. Another type changes the answers: --measure keeps one only when it writes replies faster and passes Speed up's next-token agreement gate against {llama_cpp.kv_default} at this context",
+     "not_applicable": "this build offers no other KV cache type with flash attention kernels, or the model's KV size could not be read",
+     "sweep": {"type": "choice", "axis": "-ctk", "candidates": "llama_cpp.kv_types", "gate": "agreement",
+               "keep": "point not in llama_cpp.kv_quantized_types or not llama_cpp.v_quant_needs_fa or llama_cpp.flash_attn != 'off'",
+               "keep_words": "a block-quantized V cache needs flash attention, and the setup turns it off (-fa off)",
+               "what": "decode speed with {served_requests} request at a time at each KV type this build has flash attention kernels for ({llama_cpp.kv_types}) on the real-text prompts, short and at the {context_tokens:,}-token context, paired with the setup's own type; a faster one is kept only if its answers pass Speed up's next-token agreement gate at that context",
+               "stop": "each type once; the output check only for a faster one"},
+     "evidence": "llama-server --help (-ctk/-ctv/-ctkd/-ctvd allowed values and default); the build's flash attention kernels (a template instance per K and V type); src/llama-context.cpp: a quantized V cache needs flash attention; data/speed_up.json threshold (the gate)"},
+
+    {"engine": "llama.cpp", "name": "-t", "kind": "flag", "requires": ["LLAMA_ARG_THREADS"], "default": null, "default_from": "llama_cpp.threads_default",
+     "controls": "CPU threads for writing a reply (llama-server --threads; the prompt's, -tb, follows it unless set)",
+     "derive": "measured", "applies": "(host_expert_bytes > 0 or llama_cpp.per_layer_embd_bytes > 0) and len(llama_cpp.thread_candidates) > 0",
+     "reason_default": "{llama_cpp.threads_default}, llama-server's default (its own count of the cores): with {host_expert_gib:.2f} GiB of experts and {llama_cpp.per_layer_embd_gib:.2f} GiB of per-layer embedding in host RAM the CPU works on every reply token, so --measure times {llama_cpp.thread_candidates} threads (the cores sharing one L3, the physical cores and the logical CPUs)",
+     "not_applicable": "no experts and no per-layer embedding in host RAM: the CPU does little per reply token",
+     "sweep": {"type": "choice", "axis": "-t", "candidates": "llama_cpp.thread_candidates",
+               "what": "decode speed with {served_requests} request at a time with {llama_cpp.thread_candidates} threads (from the CPU's topology) on the real-text prompts, short and at the {context_tokens:,}-token context, paired with the setup's own count",
+               "stop": "each count once"},
+     "evidence": "llama-server --help (-t and its default; -tb defaults to -t); target/host.cpu_cores"},
+
     {"engine": "vllm", "name": "--max-model-len", "kind": "flag", "requires": ["--max-model-len"], "default": null,
      "controls": "the longest context vLLM serves; it must find KV cache room for one sequence this long at start",
      "derive": "facts", "applies": "True", "formula": "context_tokens",
@@ -237,8 +283,8 @@
      "requires": ["--speculative-config", "MTPModelTypes:mtp"], "default": null,
      "controls": "MTP: draft tokens per step from the checkpoint's own multi-token-prediction head (unset: no speculation)",
      "derive": "facts", "applies": "model_draft_layers > 0", "formula": "vllm.mtp_k_measured",
-     "reason": "the draft count measured on this chip (workflow/recommend: the largest k that beats the next smaller one by more than the tie and loses at no depth measured here)",
-     "reason_default": "unset: not measured for this model on this chip ({vllm.mtp_why})",
+     "reason": "the draft count measured on this chip for this checkpoint, picked as the recommended setup picks it: {vllm.mtp_says}",
+     "reason_default": "unset: {vllm.mtp_why}",
      "not_applicable": "the checkpoint has no MTP head",
      "evidence": "vllm/config/speculative.py:39-66 (MTP model types), :394 (num_speculative_tokens); vllm/engine/arg_utils.py:1793; workflow/recommend.MTP_NOTE (measured elsewhere, not quoted in the reason: 1.6x at k=3 on a 27B on the 5090)"}
   ]

@@ -20,7 +20,7 @@ line {"tokens", "seconds"}. Two such runs, N and 1, differ only in the decode st
 subtracted kernel by kernel (collectors/attribution.shared_window).
 
 --mtp-prompt ID (with --speculative-config, one stream): speculation's speed follows how predictable the text is, so
-the context is natural text, not token ids: prompt ID of --prompt-set (collectors/vllm_mtp.PROMPTS, through the model's
+the context is natural text, not token ids: prompt ID of --prompt-set (collectors/mtp.PROMPTS, through the model's
 chat template) and this engine's own greedy continuation of it, cut to exactly the context. The ids' sha256 is
 recorded, so two processes (the untraced timing and the capture) are shown to decode from the same context. Under
 speculation the engine keeps its statistics (disable_log_stats off, in every arm alike): vLLM's spec-decode counters are
@@ -95,7 +95,7 @@ def main() -> int:
   ap.add_argument("--speculative-config", default=os.environ.get("BOLTBEAM_VLLM_SPECULATIVE_CONFIG"),
                   help="explicit MTP configuration; recorded in the measurement")
   ap.add_argument("--mtp-prompt", help="speculative decode: the natural prompt (an id of --prompt-set) the context is built from")
-  ap.add_argument("--prompt-set", help="a boltbeam.mtp_prompts.v1 file (collectors/vllm_mtp.PROMPTS)")
+  ap.add_argument("--prompt-set", help="a boltbeam.mtp_prompts.v1 file (collectors/mtp.PROMPTS)")
   ap.add_argument("--mtp-context", help="the run's natural contexts: read when present, else written (natural_context)")
   ap.add_argument("--quality-suite", help="JSON prompts and expected JSON answers for a bounded smoke check")
   ap.add_argument("--quality-thinking", action="store_true", help="enable thinking for quality prompts")

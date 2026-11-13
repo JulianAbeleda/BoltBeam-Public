@@ -13,15 +13,23 @@ def cmd_tune(args) -> int:
   try:
     budget = tune.time_budget(args.time_budget, args.prompt) if args.time_budget else None
     reply = tune.reply_budget(args.replies) if args.replies else None
+    kept = {"machine_facts": machine_facts(args.facts_root)} if args.facts_root else {}
     res = tune.tune(args.model, args.engine, args.build, prompt=args.prompt, context=args.context, measure=args.measure,
                     knobs_only=args.knob, port=args.port, out=pathlib.Path(args.out).expanduser() if args.out else None,
                     extra=args.flags.split() if args.flags else None, experts_in_ram=args.experts_in_ram,
-                    workload=args.workload, reply=reply, **({"time_budget": budget} if budget else {}))
+                    workload=args.workload, reply=reply, draft=args.draft, **kept, **({"time_budget": budget} if budget else {}))
   except Refused as exc:
     print(f"tune: {exc}")
     return 2
   print(json.dumps(res, indent=1, default=str) if args.json else tune.text(res))
   return 0
+
+
+def machine_facts(roots:list[str]) -> dict | None:
+  """This GPU's newest machine facts under the run folders (workflow/layout.newest_facts): where a measured draft count is kept."""
+  from boltbeam.workflow import chips, layout
+  tid = chips.detect().get("target_id")
+  return layout.newest_facts([pathlib.Path(r).expanduser() for r in roots], tid) if tid else None
 
 
 def register(sub) -> None:
@@ -46,5 +54,7 @@ def register(sub) -> None:
   p.add_argument("--port", type=int, default=0, help="with --measure: the server's port, for an engine that opens one (0: a free one)")
   p.add_argument("--flags", help="extra engine flags for the command and, where the engine's driver takes them, every measured point")
   p.add_argument("--out", help="with --measure: the folder for logs and the record (default ~/.boltbeam/tune/<engine>-<time>)")
+  p.add_argument("--draft", help="the multi-token prediction head file, for an engine that loads one beside the model (default: the one found beside it)")
+  p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts of this GPU there hold the measured draft count")
   p.add_argument("--json", action="store_true", help="the whole record as JSON")
   p.set_defaults(fn=cmd_tune)

@@ -364,3 +364,35 @@ def l3_cache(*, sysfs:str = "/sys/devices/system/cpu/cpu0/cache", system:str | N
     n = int(out.strip()) if rc == 0 and out.strip().isdigit() else 0
     return {"bytes": n, "source": "sysctl hw.l3cachesize"} if n > 0 else {"bytes": None, "source": "sysctl reports no L3 (Apple silicon: a system-level cache instead)"}
   return {"bytes": None, "source": f"no reading of the L3 cache on {system}"}
+
+
+def _cpus(cpu_list:str) -> int:
+  """How many CPUs a sysfs list names ("0-7,16-23")."""
+  return sum(int(b) - int(a) + 1 for a, _, b in (x.partition("-") if "-" in x else (x, "", x) for x in cpu_list.strip().split(",") if x))
+
+
+def cpu_cores(*, cpuinfo:str = "/proc/cpuinfo", sysfs:str = "/sys/devices/system/cpu/cpu0", system:str | None = None, run_command=run_tool) -> dict[str, Any]:
+  """The CPU's topology: {"physical" cores, "logical" CPUs, "l3_cores" (the physical cores sharing cpu0's L3: one core
+  complex on a chip with several), "source"}, None where unknown. Linux: the distinct (physical id, core id) pairs of
+  /proc/cpuinfo, and cpu0's L3 sharing list over its SMT siblings (sysfs); macOS: sysctl hw.physicalcpu and hw.logicalcpu."""
+  system = system or platform.system()
+  if system == "Linux":
+    try:
+      blocks = [dict(ln.split(":", 1) for ln in b.splitlines() if ":" in ln) for b in pathlib.Path(cpuinfo).read_text().split("\n\n") if b.strip()]
+    except OSError:
+      blocks = []
+    blocks = [{k.strip(): v.strip() for k, v in b.items()} for b in blocks if "processor" in {k.strip() for k in b}]
+    cores = {(b.get("physical id"), b.get("core id")) for b in blocks if "core id" in b}
+    l3 = None
+    try:
+      shared = next(_cpus((d / "shared_cpu_list").read_text()) for d in sorted(pathlib.Path(sysfs, "cache").glob("index*")) if (d / "level").read_text().strip() == "3")
+      l3 = shared // _cpus(pathlib.Path(sysfs, "topology", "thread_siblings_list").read_text())
+    except (OSError, StopIteration, ValueError, ZeroDivisionError):
+      pass
+    return {"physical": len(cores) or None, "logical": len(blocks) or None, "l3_cores": l3,
+            "source": f"{cpuinfo} (physical id, core id) pairs and processors; {sysfs} L3 sharing over SMT siblings"}
+  if system == "Darwin":
+    got = [run_command(("sysctl", "-n", f"hw.{k}cpu")) for k in ("physical", "logical")]
+    n = [int(o.strip()) if rc == 0 and o.strip().isdigit() else None for rc, o, _ in got]
+    return {"physical": n[0], "logical": n[1], "l3_cores": None, "source": "sysctl hw.physicalcpu, hw.logicalcpu"}
+  return {"physical": None, "logical": None, "l3_cores": None, "source": f"no reading of the CPU's cores on {system}"}

@@ -8,6 +8,7 @@ package ui
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -104,10 +105,10 @@ func (m Model) readSpeed() tea.Cmd {
 	}
 }
 
-// startSpeed starts the job on a free GPU.
-func (m Model) startSpeed() tea.Cmd {
+// startSpeed starts the job for one part on a free GPU.
+func (m Model) startSpeed(part string) tea.Cmd {
 	id, path, store, repo := m.f.speedID(), m.f.Path, m.store, m.client.Repo
-	argv := m.client.SpeedArgv(path)
+	argv := m.client.SpeedArgv(path, part)
 	return func() tea.Msg {
 		if live := gpuJobs(store); len(live) > 0 { // two measurements on one GPU would both be wrong
 			return noteMsg(live[0].ID + " is still going. Stop it or wait, then speed up.")
@@ -211,8 +212,8 @@ func (f Facts) speedLeft() string {
 	return ""
 }
 
-// speedActions are the page's Speed up rows: the button, or its plain reason when off; Stop while it runs; the check of
-// a copy; and what next after a kept copy.
+// speedActions are the page's Speed up rows: a button per part offered (a copy: the parts it does not have yet), or the
+// plain reason when none is; Stop while it runs; the check of a copy; and what next after a kept copy.
 func speedActions(f Facts) []action {
 	o, w := f.speedOffered(), vocab.SpeedUp
 	switch {
@@ -222,12 +223,19 @@ func speedActions(f Facts) []action {
 		return []action{note("  " + f.Spin + " " + w.UI.Running + ": " + f.speedStage() + "…"), {"[ " + w.UI.Stop + " ] " + w.UI.StopHelper, "speedstop", ""}}
 	case f.Speed.Checking:
 		return []action{note("  " + f.Spin + " " + w.UI.Checking + "…")}
-	case o.IsCopy:
-		return []action{note("  [ " + w.Action + " ] " + deref(o.Reason)), {"[ " + w.UI.Check + " ] " + w.UI.CheckHelper, "speedcheck", ""}}
-	case !o.Enabled:
-		return []action{note("  [ " + w.Action + " ] " + deref(o.Reason))}
 	}
-	out := []action{{"[ " + w.Action + " ] " + w.Helper, "speedup", ""}}
+	var out []action
+	for _, p := range o.Parts {
+		if p.Enabled {
+			out = append(out, action{"[ " + p.Label + " ] " + p.Helper, "speedup", p.Part})
+		}
+	}
+	if !o.Enabled {
+		out = append(out, note("  [ "+w.Action+" ] "+deref(o.Reason)))
+	}
+	if o.IsCopy {
+		out = append(out, action{"[ " + w.UI.Check + " ] " + w.UI.CheckHelper, "speedcheck", ""})
+	}
 	if r := f.Speed.Result; r != nil && r.Outcome == "kept" && r.Copy != nil {
 		out = append(out, action{"[ " + w.UI.NextMtp + " ]", "speedmtp", ""}, action{"[ " + w.UI.NextCompare + " ]", "comparepick", ""})
 	}
@@ -300,14 +308,19 @@ func speedBody(f Facts, width int) string {
 	return b.String()
 }
 
-// openSpeedConfirm is the confirm step: what will happen, the disk space, the time, the GPU. The answer starts as Not now.
-func (m *Model) openSpeedConfirm() tea.Cmd {
+// openSpeedConfirm is the confirm step of one part: what will happen, the time, the disk space, the GPU. The answer starts
+// as Not now.
+func (m *Model) openSpeedConfirm(part string) tea.Cmd {
 	o := m.f.speedOffered()
-	if o == nil || !o.Enabled || o.Confirm == nil || m.f.speeding() {
+	if o == nil || m.f.speeding() {
 		return nil
 	}
-	s := &formState{kind: "speedup"}
-	c := o.Confirm
+	i := slices.IndexFunc(o.Parts, func(p seam.SpeedPart) bool { return p.Part == part && p.Enabled && p.Confirm != nil })
+	if i < 0 {
+		return nil
+	}
+	s := &formState{kind: "speedup", part: part}
+	c := o.Parts[i].Confirm
 	return m.openForm(s, huh.NewConfirm().Title(c.Title).Description(strings.Join(c.Lines, "\n")).
 		Affirmative(c.Yes).Negative(c.No).Value(&s.confirmed))
 }
@@ -316,7 +329,7 @@ func (m *Model) openSpeedConfirm() tea.Cmd {
 func (m Model) doSpeed(a action) (Model, tea.Cmd) {
 	switch a.do {
 	case "speedup":
-		return m, m.openSpeedConfirm()
+		return m, m.openSpeedConfirm(a.arg)
 	case "speedstop":
 		id, store := m.f.speedID(), m.store
 		return m, func() tea.Msg {

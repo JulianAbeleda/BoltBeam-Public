@@ -210,7 +210,13 @@ func (f Facts) mtpID() string { return RunStem(f.Path, f.target().ID) + "-mtp" }
 
 func (f Facts) measuringMtp() bool { return f.MJob != nil && f.MJob.Alive }
 
-// mtpAction is the Recommended setup row that measures MTP here; nil when Python offers none (not vLLM, or no draft head).
+// mtpArgv is the Measure MTP job's command: the offer's draft counts at the context it states (Setup's Context).
+func (f Facts) mtpArgv(c seam.Client, path, target, dir string) []string {
+	return c.MtpArgv(path, target, f.Engine, dir, f.Recommend.MtpMeasure.Ks, f.Recommend.MtpMeasure.Context)
+}
+
+// mtpAction is the Recommended setup row that measures MTP here; nil when Python offers none (no MTP measurement on
+// this engine, or no draft head: vLLM's in the checkpoint, llama.cpp's a head GGUF beside the model).
 func mtpAction(f Facts) []action {
 	o := f.Recommend.MtpMeasure
 	switch {
@@ -220,6 +226,9 @@ func mtpAction(f Facts) []action {
 		return []action{note("  " + f.Spin + " measuring MTP: one engine start per draft count, several minutes…")}
 	case o.Blocked != nil:
 		return []action{note("  [ Measure MTP ] " + *o.Blocked)}
+	}
+	if o.Says != nil {
+		return []action{{"[ Measure MTP ] " + *o.Says, "mtp", ""}}
 	}
 	ks := make([]string, len(o.Ks))
 	for i, k := range o.Ks {

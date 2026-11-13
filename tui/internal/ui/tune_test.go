@@ -301,3 +301,24 @@ func TestASettingTakesZeroWhenItsLeastIsZero(t *testing.T) {
 		t.Fatal("chunk_size 0 taken")
 	}
 }
+
+// The decode rows (the draft count, flash attention, the KV type, threads): each with its value, source and reason, and
+// a short "to confirm" naming the values --measure would time on this build and machine.
+func TestTunedDecodeRows(t *testing.T) {
+	setProfile(colorprofile.NoTTY)
+	m := tunedProgram(t, "tune-decode.json")
+	got := plain(wrapText(tuneBody(m.f, 76), 76))
+	golden(t, "recommend-tuned-decode.txt", got)
+	squash := func(s string) string { return strings.Join(strings.Fields(ansi.Strip(s)), "") }
+	for _, r := range m.f.tunePage().Rows {
+		if r.Name != "-fa" && r.Name != "-ctk" && r.Name != "-t" && r.Name != "--spec-draft-n-max" {
+			continue
+		}
+		if !strings.Contains(squash(got), squash(r.Reason)) || (r.Name != "--spec-draft-n-max" && (r.Confirm == nil || !strings.Contains(squash(got), squash(*r.Confirm)))) {
+			t.Errorf("%s: its reason and what --measure confirms", r.Name)
+		}
+		if r.Confirm != nil && len(*r.Confirm) > 76 {
+			t.Errorf("%s: the confirm line is %d characters, more than a line", r.Name, len(*r.Confirm))
+		}
+	}
+}

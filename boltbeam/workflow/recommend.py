@@ -31,15 +31,14 @@ import tempfile
 import time
 from typing import Any, NamedTuple
 
-from boltbeam.collectors import engine_common as ec, vllm_mtp
+from boltbeam.collectors import engine_common as ec, mtp as mtp_core
+from boltbeam.core import draft_count as dc
 from boltbeam.core.refused import Refused
 from boltbeam.profile import loaders
 from boltbeam.roofline import prefill_work as pw
 from boltbeam.target import gpu as tgpu, vendors
 from boltbeam.workflow import layout as lay, offload as off
 
-MTP_TIE = 0.05  # two draft counts within this share are one speed; derivation (run-to-run noise of one k) below, set from data
-MTP_BELOW = 0.5  # a stated context under this share of the shallowest measured depth is outside the measurement too
 TIE = 0.05  # limits within this share of the best are one prediction (docs/multi-gpu-recommendation-checks.md)
 UTILIZATION = 0.90  # vLLM --gpu-memory-utilization, Arkey's value
 CONTEXT = 4096  # the context the sequence count and the speed are stated at
@@ -239,63 +238,134 @@ def facts_with_overhead(facts:dict[str, Any], engine:str, got:dict[str, Any], so
   return {**facts, OVERHEAD: {**(facts.get(OVERHEAD) or {}), engine: cur}}
 
 
-MTP_CACHE = "engine_mtp"  # in the machine facts: {engine: {checkpoint path: a collectors/vllm_mtp summary}}
+MTP_CACHE = "engine_mtp"  # in the machine facts: {engine: {checkpoint path: a collectors/mtp summary}}
 
 
 def facts_with_mtp(facts:dict[str, Any], engine:str, path:str, record:dict[str, Any]) -> dict[str, Any]:
-  """The machine facts with an in-repo MTP measurement (collectors/vllm_mtp) cached for this checkpoint, as
-  facts_with_overhead caches a Check: the per-k summary and where it came from, not its rows."""
-  entry = {"depths": record["depths"], "prompts": record["prompts"], "tokens": record["tokens"],
-           "long_tokens": record["long_tokens"], "measured_at": record["measured_at"],
-           "vllm": sorted({e.get("vllm") for e in record.get("engines", []) if e.get("vllm")})}
-  return {**facts, MTP_CACHE: {**(facts.get(MTP_CACHE) or {}), engine: {**((facts.get(MTP_CACHE) or {}).get(engine) or {}),
-                                                                         str(path): entry}}}
+  """The machine facts with an in-repo MTP measurement (collectors/mtp, any engine) cached for this checkpoint, as
+  facts_with_overhead caches a Check: the per-k summary and where it came from, not its rows. Depths are keyed by
+  their context. One measured before on the same prompt set, tokens, engine build and GPU is merged per (context, k), the
+  later measured_at kept, with which session each came from (from), so a narrower re-measure (--ks 5,6,7) keeps k=4; the
+  same long-depth corpus and record schema too (one before collectors/mtp.SCHEMA is never merged, and mtp_of reads only its short depth).
+  Both sessions ran k=0: their paired k=0 ratio is the drift between them, recorded (drift), and the merge is refused
+  when it exceeds the smallest gain between neighbouring ks it would join across sessions. Each row's speedup stays
+  against its own session's k=0."""
+  key = lambda e: (e["prompts"]["sha256"], e["tokens"], e.get(engine), e.get("gpu"), (e.get("long_text") or {}).get("sha256"), e.get("schema"))  # noqa: E731
+  at, ctx = record["measured_at"], lambda per_k: f"{next(iter(per_k.values()))['context']:.0f}"  # noqa: E731
+  entry = {"prompts": record["prompts"], "tokens": record["tokens"], "gpu": ((facts.get("gpus") or [{}])[0]).get("name"), "long_text": record.get("long_text"), "schema": record.get("schema"),
+           "engine": engine, engine: sorted({e.get(engine) for e in record.get("engines", []) if e.get(engine)}), "depths": {}, "from": {}, "drift": {}}
+  prior = mtp_of(facts, engine, path)
+  if prior and key(prior) == key(entry) and prior.get("from"):
+    entry.update(depths={c: dict(v) for c, v in prior["depths"].items()}, **{f: {c: dict(v) for c, v in prior[f].items()} for f in ("from", "drift")})
+  for per_k in (v for v in record["depths"].values() if v):
+    c = ctx(per_k)
+    old, src = entry["depths"].setdefault(c, {}), entry["from"].setdefault(c, {})
+    if "0" in old:
+      entry["drift"][c] = _ratio(per_k["0"], old["0"]) - 1
+    for k, v in per_k.items():
+      if src.get(k, "") <= at:
+        old[k], src[k] = v, at
+    _merge_guard(c, old, src, entry["drift"].get(c))
+  entry["measured_at"] = max((t for v in entry["from"].values() for t in v.values()), default=at)
+  return {**facts, MTP_CACHE: {**(facts.get(MTP_CACHE) or {}), engine: {**((facts.get(MTP_CACHE) or {}).get(engine) or {}), str(path): entry}}}
+
+
+def _ratio(new:dict[str, Any], old:dict[str, Any]) -> float:
+  """The median per-prompt ratio of two summary rows on the same prompts."""
+  return statistics.median(new["per_prompt"][p] / old["per_prompt"][p] for p in new["per_prompt"])
+
+
+def _merge_guard(c:str, per_k:dict[str, Any], src:dict[str, str], drift:float | None) -> None:
+  """Refuse a merge whose k=0 drift is larger than the smallest gain between neighbouring ks from different sessions."""
+  ks = sorted(per_k, key=int)
+  gains = [abs(_ratio(per_k[b], per_k[a]) - 1) for a, b in zip(ks, ks[1:]) if src[a] != src[b]]
+  moved = abs(drift or 0)
+  if gains and moved > min(gains):
+    raise Refused(f"not merged with the earlier MTP measurement: k=0 moved {moved:.1%} between the two sessions at {c} "
+                  f"tokens, more than the {min(gains):.1%} between draft counts it would compare across them; measure those ks together")
 
 
 def mtp_of(facts:dict[str, Any] | None, engine:str, path:str | None) -> dict[str, Any] | None:
-  """This checkpoint's cached MTP measurement, or None: another checkpoint's acceptance is not this one's."""
-  return (((facts or {}).get(MTP_CACHE) or {}).get(engine) or {}).get(str(path)) if path else None
+  """This checkpoint's cached MTP measurement, or None: another checkpoint's acceptance is not this one's. One cached
+  before collectors/mtp.SCHEMA (v1: the long depth was the model's own looping continuation; v2: real text, its replies
+  under a weaker guard) keeps only its short depth, the smallest context, and says so (retired)."""
+  m = (((facts or {}).get(MTP_CACHE) or {}).get(engine) or {}).get(str(path)) if path else None
+  if not m or m.get("schema") == mtp_core.SCHEMA or len(m["depths"]) < 2:
+    return m
+  short = min(m["depths"], key=float)
+  return {**m, "depths": {short: m["depths"][short]}, "retired": _mtp_words()["retired"]}
 
 
-def best_k(speeds:dict[int, dict[str, Any]]) -> int | None:
-  """The draft count to recommend, from the smallest up: a larger k replaces the pick only when it beats it by more
-  than MTP_TIE. Measured figures carry their prompts (per_prompt), and then the win is the median of the per-prompt
-  ratios: every k ran the same prompts, and their spread is the text's (a story drafts worse than a derivation at
-  every k), not noise, so it cancels in the pair. Spread across prompts as the margin picked k=1 on the 27B AWQ,
-  whose k=2 beat k=1 on all eight prompts (RTX 5090, 2026-11-08).
-  Measured at several depths (by_depth), the pair is judged at every depth, so the pick does not flip with the
-  prompt's length: the larger k replaces the pick when it is nowhere slower by more than MTP_TIE and somewhere faster by
-  more than MTP_TIE (the 27B AWQ's k=3 against k=2: 1.003 at 73 tokens, 1.129 at 2,121, so k=3 at any context); a tie at
-  every depth keeps the smaller k (less verify work, a narrower spread). Only a real trade-off, faster at one depth
-  and slower at another by more than MTP_TIE, is decided at the depth nearest the stated context (the figure's own)."""
-  ks = sorted(k for k, f in speeds.items() if f.get("value"))
-  if not ks:
-    return None
-  pick = ks[0]
-  for k in ks[1:]:
-    wins = depth_wins(speeds[k], speeds[pick])
-    if wins and min(wins) >= 1 - MTP_TIE:
-      replace = max(wins) > 1 + MTP_TIE
-    else:
-      replace = win(speeds[k], speeds[pick]) > 1 + MTP_TIE
-    pick = k if replace else pick
-  return pick
+def _mtp_engine(m:dict[str, Any]) -> str:
+  """The engine and builds a cached measurement ran on, in words (vLLM 0.31.0); one cached before the engine was kept is vLLM's."""
+  from boltbeam.collectors import engine_families
+  e = m.get("engine", "vllm")
+  return f"{next((f['label'] for f in engine_families.families() if f['family'] == e), e)} {', '.join(m.get(e) or []) or 'unknown'}"
 
 
-def depth_wins(new:dict[str, Any], old:dict[str, Any]) -> list[float]:
-  """win at each depth both were measured at (by_depth: per_prompt per depth); [] with fewer than two such depths."""
-  a, b = new.get("by_depth") or {}, old.get("by_depth") or {}
-  common = [d for d in a if d in b and a[d] and set(a[d]) == set(b[d])]
-  return [win({"per_prompt": a[d]}, {"per_prompt": b[d]}) for d in common] if len(common) > 1 else []
+def _mtp_words() -> dict[str, Any]:
+  from boltbeam.report.plain import words
+  return words()["mtp_pick"]
 
 
-def win(new:dict[str, Any], old:dict[str, Any]) -> float:
-  """How much faster `new` is than `old`: the median per-prompt ratio when both were measured on the same prompts,
-  else the ratio of their values."""
-  a, b = new.get("per_prompt") or {}, old.get("per_prompt") or {}
-  if a and set(a) == set(b):
-    return statistics.median(a[p] / b[p] for p in a)
-  return new["value"] / old["value"]
+def mtp_limit(provider:str, row, py:str | None) -> tuple[int, str] | None:
+  """The context past which this engine's MTP verify is not recommended on this vendor (vllm_mtp_context), or None."""
+  lim = getattr(row, "vllm_mtp_context", None) if provider == "vllm" else None
+  return lim if lim and not split_kv_verify(py) else None
+
+
+def mtp_choice(m:dict[str, Any] | None, context:int | None, *, seqs:int = 1, limit:tuple[int, str] | None = None,
+               figs:dict[int, dict[str, Any]] | None = None, base:float | None = None) -> dict[str, Any] | None:
+  """The draft count for this context, the one rule (core/draft_count.choose) tune and the recommended setup read:
+  from this checkpoint's measurement (m: every measured depth, k=0 measured, paired by prompt) or else from formula
+  figures at one context against one-token decode (figs, base). A measured depth is the asked context's own when its
+  decode ends at or before the context, by no more than the prompt set's room."""
+  if m:
+    room = m["prompts"].get("room", m["tokens"])
+    return dc.choose(mtp_core.by_context(m["depths"]), context, lambda c, x: 0 <= x - c - m["tokens"] <= room, seqs=seqs, limit=limit and limit[0])
+  depths = {float(context or CONTEXT): {0: (None, base), **{k: (f.get("per_prompt"), f["value"]) for k, f in (figs or {}).items()}}}
+  return dc.choose(depths, context, lambda c, x: True, seqs=seqs, limit=limit and limit[0]) if base and figs else None
+
+
+def mtp_tune(machine:dict[str, Any] | None, engine:str, model:str, context:int | None, backend:str | None, build:str | None, *,
+             seqs:int) -> dict[str, Any]:
+  """tune's draft count for this context by the recommended setup's own rule and gates (mtp_choice: batch 1, one GPU,
+  this vendor's MTP context limit, a beat over k=0 by more than its own paired bounds), read from this checkpoint's
+  measurement in the machine facts: {k (None when none is used), why (why not, in words), says (the pick in words)}.
+  seqs: the sequences the setup serves at once (tune.SERVED)."""
+  from boltbeam.target import vendors
+  m = mtp_of(machine, engine, model)
+  try:
+    lim = mtp_limit(engine, vendors.for_backend(backend), build)
+  except vendors.NoVendorRow:
+    lim = None
+  ch = mtp_choice(m, context, seqs=seqs, limit=lim)
+  if not ch:
+    return {"k": None, "why": _mtp_words()["none"], "says": None}
+  if ch["held"]:
+    return {"k": None, "says": None, "why": mtp_held(ch, _measured_mtp(m, ch["at"])[ch["k"]]["value"], context, lim)}
+  return {"k": ch["k"], "why": None, "says": mtp_says(m, ch, context)}
+
+
+def mtp_says(m:dict[str, Any], ch:dict[str, Any], context:int | None) -> str:
+  """A measured pick in words: where, its speed and spread, the asked context when it was not measured, the best k per
+  measured context, the rule, a larger k with a higher median it did not take, and whether a larger k could still win."""
+  w, f = _mtp_words(), _measured_mtp(m, ch["at"])[ch["k"]]
+  out = w["at"].format(k=ch["k"], tok_s=f["value"], n=len(f["per_prompt"]), lo=f["range"][0], hi=f["range"][1], speedup=f["speedup"],
+                       ctx=f["context"], engine=_mtp_engine(m), date=m["measured_at"][:10])
+  picks = ", ".join(f"k={k} at {c:,.0f}" for c, k in sorted(ch["picks"].items()))
+  if ch["asked"] not in ("measured", None):
+    out += w["asked"].format(asked=context, picks=picks)
+  elif len(set(ch["picks"].values())) > 1:
+    out += w["picks"].format(picks=picks)
+  out += w["rule"] + (w["forgone"].format(**ch["forgone"]) if ch["forgone"] else "")
+  return out + (w["open"].format(top=max(int(k) for k in _measured_mtp(m, ch["at"]))) if ch["open"] else "") + (m.get("retired") or "")
+
+
+def mtp_held(ch:dict[str, Any], tok_s:float, context:int | None, limit:tuple[int, str] | None) -> str:
+  """Why the picked draft count is not used, in words."""
+  w = _mtp_words()["held"][ch["held"]]
+  return w.format(ctx=ch["at"], k=ch["k"], tok_s=tok_s, context=context, limit=limit and limit[0], why=limit and limit[1])
 
 
 def layout_key(path:str | None, layout:str, gpus:int) -> str:
@@ -394,7 +464,8 @@ def vllm_settings(profile:dict[str, Any], tb:dict[str, Any], *, kv:str, seqs:int
     (f"--max-num-seqs {seqs}", True, "the sequences the engine batches; capacity is in the layout row", "serving several users" if seqs > 1 else "one user"),
     ("--no-enable-prefix-caching", False, "'align' mode costs cache tokens on a hybrid model", "no shared prompts (not known here)"),
     (mtp_flag(mtp[0]) if mtp else "--speculative-config mtp", bool(mtp), f"MTP k={mtp[0]}: {mtp[1]['value']:.0f} tok/s, {mtp[1]['formula']}" if mtp else
-     mtp_held[0] if mtp_held else f"MTP: {MTP_NOTE}", "batch 1, the largest k that beats the next smaller one by more than the tie, prompt by prompt, and is slower at no measured depth by more than it; and beats one-token decode" + (f". {mtp[1]['envelope']}" if mtp[1].get("envelope") else "") if mtp else
+     mtp_held[0] if mtp_held else f"MTP: {MTP_NOTE}", "batch 1, the largest k faster than the next smaller one " + ("on the measured prompts with 95% confidence (paired)" if mtp[1].get("per_prompt") else
+     f"by more than {dc.FORMULA_TIE:.0%}, a stated default for formula figures (no per-prompt data)") + ", at the stated context's measured depth (between two, the smaller of their ks); and beats one-token decode the same way" + (f". {mtp[1]['envelope']}" if mtp[1].get("envelope") else "") if mtp else
      mtp_held[1] if mtp_held else "batch 1 and the checkpoint has an MTP head; accept lengths or the fixed cost are not measured for this model and chip"),
     (None, False, "4-bit lm_head checkpoint: -1.9 GB read per token and per MTP draft on the 27B; +1.8 GiB for KV. 2 x R9700 TP=2: "
      "56 to 61 tok/s, MTP k=2 92 to 116 (with a split-KV verify), 98.0% top-1 agreement, perplexity 1.228 to 1.242; vLLM 0.31's "
@@ -666,13 +737,17 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   fit = int(one["max_context"][kv]["value"] or 0) if one else 0
   started = next((r for r in rows if r["id"] == layout), {})
   speeds = {k: f for k, f in (started.get("mtp") or {}).items() if f["value"]}
-  best = best_k(speeds)
-  past = row.vllm_mtp_context if provider == "vllm" and row.vllm_mtp_context and context > row.vllm_mtp_context[0] and not split_kv_verify(_vllm_python()) else None
-  mtp = (best, speeds[best]) if best and seqs == 1 and not past and speeds[best]["value"] > started["batch1_expected"]["value"] * (1 + TIE) else None
-  if started.get("mtp") and past:
-    started["mtp_note"] = f"not recommended past {past[0]} tokens of context (stated {context}; --context {past[0]} turns it on): {past[1]}"
-  held = None if mtp or not best else (f"MTP k={best}: {speeds[best]['value']:.0f} tok/s at short context, {speeds[best]['formula']}",  # measured, held back
-    started.get("mtp_note") or ("batch > 1 (MTP pays at batch 1)" if seqs != 1 else "no draft count beats one-token decode by more than the tie"))
+  own = mtp_of(facts, provider, profile.get("source")) if started.get("id") == "one" else None
+  lim = mtp_limit(provider, row, _vllm_python())
+  ch = mtp_choice(own, context, seqs=seqs, limit=lim, figs=speeds, base=(started.get("batch1_expected") or {}).get("value")) if speeds else None
+  best = ch and ch["k"]
+  mtp = (best, speeds[best]) if ch and not ch["held"] else None
+  if mtp and own:
+    speeds[best]["envelope"] = mtp_says(own, ch, context)
+  if started.get("mtp") and lim and context > lim[0]:
+    started["mtp_note"] = mtp_held({**ch, "held": "context_limit"}, 0, context, lim) if ch else None
+  held = None if mtp or not best else (f"MTP k={best}: {speeds[best]['value']:.0f} tok/s at {ch['at']:,.0f} tokens of context, {speeds[best]['formula']}",  # measured, held back
+    mtp_held(ch, speeds[best]["value"], context, lim))
   dr = draft_cost(profile, tb, eng.kv[kv], context, mtp=bool(mtp), draft=draft)
   if dr:  # the draft is loaded beside the model and holds KV of its own: the model alone fitting is not the plan fitting
     per_gpu = started["weights_per_gpu"]["value"] + (dr["bytes"] + dr["kv_bytes"]) / max(started.get("gpus") or 1, 1)
@@ -711,8 +786,8 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
           "flags": argv, "env": env, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), eng.command(shlex.quote(profile["source"]), [shlex.quote(a) for a in argv])]) if argv else None,
           "arkey_vllm_args": arkey_args(argv) if argv and provider == "vllm" else None, "usable_bytes": usable, "reserve_bytes": eng.reserve, "scratch_per_token": extra,
           "measured_only": MEASURED.get(key) or "not measured here (MTP, throughput, prefill share)",
-          # Measure MTP: what it runs here (collectors/vllm_mtp.offer), and this checkpoint's measurement kept in the facts
-          "mtp_measure": vllm_mtp.offer(provider, tb["mtp"], facts=bool(facts)), "mtp_measured": mtp_of(facts, provider, profile.get("source"))}
+          # Measure MTP: what it runs here (collectors/mtp.offer, the engine's row), and this checkpoint's measurement kept in the facts
+          "mtp_measure": mtp_core.offer(provider, profile.get("source"), tb["mtp"], facts=bool(facts)), "mtp_measured": mtp_of(facts, provider, profile.get("source"))}
 
 
 CACHE_RAM_OFF = ["--cache-ram", "0"]
@@ -771,7 +846,8 @@ def mtp_speed(profile:dict[str, Any], tb:dict[str, Any], provider:str, chip:str 
   checkpoint's in-repo measurement on this machine (mtp_of), stands in on one GPU, which is what it ran on."""
   acc = MTP_ACCEPT.get((profile.get("hidden_size"), profile.get("layer_count"), profile.get("ffn_size")))
   fixed = MTP_FIXED.get((provider, chip))
-  own = _measured_mtp(measured, context) if measured and r["id"] == "one" else {}
+  ch = mtp_choice(measured, context) if measured and r["id"] == "one" else None
+  own = _measured_mtp(measured, ch["at"]) if ch else {}
   if not (acc and fixed and read_gbs and r["batch1_expected"]["value"]):
     return own or None
   g = r["gpus"] if r["id"] == "row" else 1
@@ -785,43 +861,21 @@ def mtp_speed(profile:dict[str, Any], tb:dict[str, Any], provider:str, chip:str 
          for k, a in acc[0].items()}
   for k, v in (seen[0] if seen else {}).items():  # a measured figure stands in for the derived one, which it keeps
     out[k] = {**fig(v, "measured", [seen[1]], "measured"), "derived": out.get(k, {}).get("value")}
-  for k, v in own.items():  # this checkpoint, this machine, in the repo: it stands in over both
-    out[k] = {**v, "derived": out.get(k, {}).get("derived", out.get(k, {}).get("value"))}
+  if own:  # this checkpoint, this machine, in the repo: it stands in over both, so the pick is mtp_choice's
+    return {k: {**v, "derived": out.get(k, {}).get("derived", out.get(k, {}).get("value"))} for k, v in own.items()}
   return out
 
 
-def mtp_envelope(contexts:dict[str, float], context:int | None) -> str | None:
-  """Where MTP was measured, said in words when the stated context lies outside it (beyond the deepest measured depth,
-  or under MTP_BELOW of the shallowest): a safeguard's operating envelope is part of what it claims. None inside it or with
-  no context stated. The one place this is computed; the figure carries it and the settings row and the setup read it."""
-  if not contexts or not context:
-    return None
-  lo, hi = min(contexts.values()), max(contexts.values())
-  if context > hi or context < lo * MTP_BELOW:
-    return f"measured at {lo:,.0f} to {hi:,.0f} tokens of context; not measured at the stated {context:,}"
-  return None
-
-
-def _measured_mtp(m:dict[str, Any], context:int | None = None) -> dict[int, dict[str, Any]]:
-  """An in-repo measurement's figures per k > 0 at the measured depth nearest the stated context (the short depth
-  with none stated): the median over the prompts, each prompt's speed, their spread and the acceptance. Acceptance
-  moves with depth (the 27B AWQ's k=3 tied k=2 at 75 tokens and beat it on 7 of 8 prompts at 2,120), so the depth is
-  chosen, not averaged."""
-  depths = {d: ks for d, ks in m["depths"].items() if ks}
-  if not depths:
-    return {}
-  at = lambda d: next(iter(depths[d].values()))["context"]  # noqa: E731
-  depth = min(depths, key=lambda d: abs(at(d) - context)) if context else ("short" if "short" in depths else next(iter(depths)))
+def _measured_mtp(m:dict[str, Any], at:float) -> dict[int, dict[str, Any]]:
+  """An in-repo measurement's figures per k > 0 at the measured context `at` (mtp_choice's): the median over the
+  prompts, each prompt's speed, their spread and the acceptance."""
+  per_k = next(ks for ks in m["depths"].values() if ks and next(iter(ks.values()))["context"] == at)
   where = (f"{len(m['prompts']['ids'])} natural prompts (set v{m['prompts']['version']}, sha256 {m['prompts']['sha256'][:12]}), "
-           f"{m['tokens']} tokens each at a {at(depth):.0f}-token context, vLLM {', '.join(m['vllm']) or 'unknown'}, {m['measured_at'][:10]}")
-  contexts = {d: at(d) for d in depths}
-  note = mtp_envelope(contexts, context)
+           f"{m['tokens']} tokens each at a {at:.0f}-token context, {_mtp_engine(m)}, {m['measured_at'][:10]}")
   return {int(k): {**fig(v["median_tok_s"], "measured: median over the prompts", [where], "measured"),
                    "per_prompt": v["per_prompt"], "spread": v["spread"], "range": [v["min_tok_s"], v["max_tok_s"]],
-                   "accept_length": v.get("accept_length"), "speedup": v["speedup"], "depth": depth, "context": at(depth), "contexts": contexts,
-                   "envelope": f"MTP k={int(k)} {note}" if note else None,
-                   "by_depth": {d: ks[k]["per_prompt"] for d, ks in depths.items() if k in ks and ks[k].get("per_prompt")}}
-          for k, v in depths[depth].items() if int(k) > 0}
+                   "accept_length": v.get("accept_length"), "speedup": v["speedup"], "context": at}
+          for k, v in per_k.items() if int(k) > 0}
 
 
 def predicted_context(rec:dict[str, Any], state:str | None = None, layout:str = "one") -> dict[str, Any]:

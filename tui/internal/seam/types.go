@@ -1291,11 +1291,13 @@ type Recommend struct {
 	Weights  struct {
 		Mtp float64 `json:"mtp"` // the checkpoint's draft-head bytes: 0 when it has none
 	} `json:"weights"`
-	// MtpMeasure is what Measure MTP runs here (collectors/vllm_mtp.offer): nil when the engine or the checkpoint
+	// MtpMeasure is what Measure MTP runs here (collectors/mtp.offer, the engine's row): nil when the engine or the checkpoint
 	// cannot; Blocked says why it cannot start yet.
 	MtpMeasure *struct {
 		Ks      []int   `json:"ks"`
 		Blocked *string `json:"blocked"`
+		Context *int    `json:"context"` // Setup's Context, the long depth it measures at; nil: the derived one
+		Says    *string `json:"says"`    // what it runs and its cost, said before it starts
 	} `json:"mtp_measure"`
 	// MtpMeasured is this checkpoint's MTP measurement kept in the machine facts (recommend.facts_with_mtp): per
 	// depth, per k (k=0 is the baseline).
@@ -1305,7 +1307,7 @@ type Recommend struct {
 	} `json:"mtp_measured"`
 }
 
-// MtpK is one draft count's decode on the prompt set (collectors/vllm_mtp.summarize); the acceptance is nil at k=0.
+// MtpK is one draft count's decode on the prompt set (collectors/mtp.summarize); the acceptance is nil at k=0.
 type MtpK struct {
 	MedianTokS   float64  `json:"median_tok_s"`
 	Context      float64  `json:"context"` // the median context the prompts decoded at

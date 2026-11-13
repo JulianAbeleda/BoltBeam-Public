@@ -4,18 +4,27 @@ One process per k (collectors/vllm_mtp.py runs them in turn): each k is its own 
 so no engine worker holds the GPU after the measurement. k=0 is the same engine with no speculation: the baseline
 every k is read against, on the same prompts.
 
-Each prompt (data/mtp_prompts.json, one user turn through the model's chat template) is generated greedily for
---tokens tokens, ignoring EOS, at two depths:
-  short  the prompt alone;
-  long   the prompt and the model's own greedy continuation of it, --long-tokens long, so the context is natural text
-         at depth. The k=0 process writes the continuations (--continuations); every k>0 process reads the same ids.
+Each prompt, one user turn through the model's chat template, is generated greedily for --tokens tokens, ignoring
+EOS, at two depths:
+  short  each prompt of data/mtp_prompts.json;
+  long   each document of --long-corpus (data/mtp_long_corpus.json, real text no model wrote) cut to --long-tokens
+         tokens by this tokenizer at a paragraph break, then its task (runtime/mtp_shared.long_prompts): every k reads
+         the same ids, made the same way.
 Decode speed is (tokens - 1) / (last token - first token), the engine's own timestamps, so prefill is not in it.
 Acceptance is vLLM's spec-decode counters read before and after each prompt: drafts, draft tokens, accepted tokens and
-accepted tokens per draft position. One JSON line per prompt and depth, then one line naming the engine."""
+accepted tokens per draft position; span_ns, the generate call's start and end on the host's CLOCK_MONOTONIC (the clock
+nsys keeps its session start on: collectors/time_budget.request_decode_budget cuts a trace to it), and first_token_ns, the
+engine core's first-token stamp (v1/metrics/stats.py: time.monotonic, the same clock) in ns. Each timed prompt waits for
+the quiet-CPU gate (runtime/mtp_shared.quiet). One JSON line per prompt and depth, with the token diversity of its context
+and its reply (mtp_shared.diversity), then one line naming the engine with the corpus's own diversity on this tokenizer
+(real_text), which collectors/mtp.guard holds them to."""
 from __future__ import annotations
 
-import argparse, hashlib, json, time
+import argparse, json, sys, time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # run by path or imported: the MTP drivers' shared module
+from mtp_shared import delta, diversity, long_prompts, quiet, reference, sha  # noqa: E402
 
 COUNTERS = {"vllm:spec_decode_num_drafts": "drafts", "vllm:spec_decode_num_draft_tokens": "draft_tokens",
             "vllm:spec_decode_num_accepted_tokens": "accepted_tokens"}
@@ -34,48 +43,20 @@ def spec_counters(llm) -> dict:
   return out
 
 
-def delta(after:dict, before:dict) -> dict:
-  per = [a - (before["accepted_per_position"][i] if i < len(before["accepted_per_position"]) else 0)
-         for i, a in enumerate(after["accepted_per_position"])]
-  return {**{k: after[k] - before[k] for k in COUNTERS.values()}, "accepted_per_position": per}
-
-
-def identity(model:str, tok, ids:dict) -> dict:
-  """What a continuation file is keyed to: the model's config without its quantization (an original and its Speed up copy
-  share it), the tokenizer (vocabulary and chat template) and the prompt token ids. Reuse is allowed for that pairing only."""
-  cfg = Path(model) / "config.json"
-  c = {k: v for k, v in (json.loads(cfg.read_text()) if cfg.is_file() else {"model": model}).items() if k != "quantization_config"}
-  h = lambda x: hashlib.sha256(json.dumps(x, sort_keys=True).encode()).hexdigest()  # noqa: E731
-  return {"model": h(c), "tokenizer": h([sorted(tok.get_vocab().items()), getattr(tok, "chat_template", None)]), "prompt_ids": h(ids)}
-
-
-def reuse(path:Path, ident:dict, long_tokens:int, ids:dict) -> dict:
-  """The saved continuations, or SystemExit saying what differs: another model, tokenizer, prompts or length."""
-  if not path.is_file():
-    raise SystemExit(f"{path} is missing: the k=0 run writes the continuations every other k reads")
-  saved = json.loads(path.read_text())
-  bad = [k for k in ident if saved.get("identity", {}).get(k) != ident[k]]
-  if bad or saved["long_tokens"] != long_tokens or set(saved["continuations"]) != set(ids):
-    raise SystemExit(f"{path} was written for another {', '.join(bad) or 'length or prompt set'}; reuse is only for the same source model and tokenizer "
-                     "(an original and its Speed up copy). Delete it, or give this run its own folder")
-  return saved
-
-
 def main() -> int:
   ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
   ap.add_argument("--model", required=True)
   ap.add_argument("--k", type=int, required=True, help="draft tokens per step; 0 is no speculation")
   ap.add_argument("--prompts", required=True, help="a boltbeam.mtp_prompts.v1 file")
   ap.add_argument("--tokens", type=int, required=True, help="tokens generated per prompt and depth")
-  ap.add_argument("--long-tokens", type=int, default=0, help="the long depth's continuation length; 0: short only")
-  ap.add_argument("--continuations", help="k=0 writes the long depth's continuation ids here; k>0 reads them")
+  ap.add_argument("--long-tokens", type=int, default=0, help="the long depth's document tokens; 0: short only")
+  ap.add_argument("--long-corpus", required=True, help="a boltbeam.mtp_long_corpus.v1 file (data/mtp_long_corpus.json)")
   ap.add_argument("--max-model-len", type=int, required=True)
   ap.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+  ap.add_argument("--quiet-s", type=float, default=600.0, help="how long to wait for no build or test runner before a timed prompt")
   a = ap.parse_args()
   if a.k < 0 or a.tokens < 2 or a.long_tokens < 0:
     ap.error("k must be 0 or more, tokens 2 or more, long tokens 0 or more")
-  if a.long_tokens and not a.continuations:
-    ap.error("--long-tokens needs --continuations: every k must read the same long context")
   from vllm import LLM, SamplingParams, __version__
   from vllm.inputs import TokensPrompt
   prompts = json.loads(Path(a.prompts).read_text())["prompts"]
@@ -85,38 +66,33 @@ def main() -> int:
   tok = llm.get_tokenizer()
   greedy = lambda n: SamplingParams(temperature=0.0, ignore_eos=True, max_tokens=n)  # noqa: E731
   llm.generate([TokensPrompt(prompt_token_ids=list(range(1000, 1064)))], greedy(32), use_tqdm=False)  # warm
-  ids = {}
-  for p in prompts:
-    got = tok.apply_chat_template([{"role": "user", "content": p["text"]}], tokenize=True, add_generation_prompt=True)
-    ids[p["id"]] = list(got["input_ids"] if isinstance(got, dict) or hasattr(got, "input_ids") else got)
-  long_ids, wrote = {}, False
-  if a.long_tokens:
-    path, ident = Path(a.continuations), identity(a.model, tok, ids)
-    wrote = a.k == 0 and not path.is_file()  # an existing file is another run's: reuse() refuses it unless it is this model's or its copy's
-    if wrote:
-      cont = {pid: list(llm.generate([TokensPrompt(prompt_token_ids=x)], greedy(a.long_tokens), use_tqdm=False)[0]
-                        .outputs[0].token_ids) for pid, x in ids.items()}
-      path.write_text(json.dumps({"long_tokens": a.long_tokens, "identity": ident, "written_by": a.model, "continuations": cont}))
-    saved = reuse(path, ident, a.long_tokens, ids)
-    long_ids = {pid: ids[pid] + saved["continuations"][pid] for pid in ids}
+  def chat(text:str) -> list[int]:
+    got = tok.apply_chat_template([{"role": "user", "content": text}], tokenize=True, add_generation_prompt=True)
+    return list(got["input_ids"] if isinstance(got, dict) or hasattr(got, "input_ids") else got)
+  ids = {p["id"]: chat(p["text"]) for p in prompts}
+  encode = lambda text: tok.encode(text, add_special_tokens=False)  # noqa: E731
+  decode = lambda ids: tok.decode(ids, clean_up_tokenization_spaces=False)  # noqa: E731  the text itself, for the cut
+  messages, docs = long_prompts(a.long_corpus, a.long_tokens, encode, decode)
+  long_ids = {d: chat(m) for d, m in messages.items()}
+  real = reference(docs, a.tokens)
   for depth, source in (("short", ids), ("long", long_ids)):
     for pid, prompt in source.items():
+      cpu = quiet(a.quiet_s)
       before = spec_counters(llm)
-      t0 = time.perf_counter()
+      m0, t0 = time.monotonic_ns(), time.perf_counter()
       out = llm.generate([TokensPrompt(prompt_token_ids=prompt)], greedy(a.tokens), use_tqdm=False)[0]
-      wall = time.perf_counter() - t0
+      wall, m1 = time.perf_counter() - t0, time.monotonic_ns()
       m, n = out.metrics, len(out.outputs[0].token_ids)
       decode_s = (m.last_token_ts - m.first_token_ts) if m and m.first_token_ts and m.last_token_ts else None
       if n != a.tokens or not decode_s or decode_s <= 0:
         raise SystemExit(f"{pid} {depth}: {n} of {a.tokens} tokens, decode window {decode_s}: not a measurement")
+      reply = list(out.outputs[0].token_ids)
       print(json.dumps({"k": a.k, "prompt": pid, "depth": depth, "context": len(prompt), "tokens": n,
-                        "decode_tok_s": (n - 1) / decode_s, "wall_s": wall, "spec": delta(spec_counters(llm), before),
-                        "token_ids_sha": hashlib.sha256(json.dumps(list(out.outputs[0].token_ids)).encode()).hexdigest()}),
-            flush=True)
-  print(json.dumps({"engine": {"vllm": __version__, "k": a.k, "max_model_len": a.max_model_len,
-                               "speculative_config": {"method": "mtp", "num_speculative_tokens": a.k} if a.k else None,
-                               "continuations": None if not a.long_tokens else "written" if wrote else "reused from " + saved["written_by"]}}),
-        flush=True)
+                        "decode_tok_s": (n - 1) / decode_s, "wall_s": wall, "spec": delta(spec_counters(llm), before), "cpu": cpu,
+                        "prompt_sha": sha(prompt), "token_ids_sha": sha(reply), "span_ns": [m0, m1], "first_token_ns": round(m.first_token_ts * 1e9),
+                        "text": {"context": diversity(prompt, a.tokens), "reply": diversity(prompt[-a.tokens:] + reply, a.tokens)}, "reply_ids": reply}), flush=True)
+  print(json.dumps({"engine": {"vllm": __version__, "k": a.k, "max_model_len": a.max_model_len, "real_text": real,
+                               "speculative_config": {"method": "mtp", "num_speculative_tokens": a.k} if a.k else None}}), flush=True)
   return 0
 
 

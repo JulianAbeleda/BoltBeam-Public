@@ -8,7 +8,7 @@
     "schema": {"const": "boltbeam.time_budget.v1"},
     "kind": {"const": "time_budget"},
     "what": {"type": ["string", "null"]},
-    "engine": {"type": ["string", "null"], "description": "the key of the engine's rows in data/kernel_families.json"},
+    "engine": {"type": ["string", "array", "null"], "items": {"type": "string"}, "description": "the key of the engine's rows in data/kernel_families.json, or the keys in order (a fork, then its root)"},
     "vendor": {"type": ["string", "null"], "description": "the GPU vendor key (target/vendors.py) of the vendor rows"},
     "source": {"type": "string"},
     "span_ns": {"type": ["array", "null"], "items": {"type": "integer"}, "minItems": 2, "maxItems": 2},
@@ -36,7 +36,26 @@
     "gaps": {"type": "object", "required": ["threshold_ms", "count", "ms", "small_count", "small_ms", "by_cause", "largest"],
       "properties": {
         "by_cause": {"type": "array", "items": {"type": "object", "required": ["cause", "words", "ms", "gaps", "calls"]}},
-        "largest": {"type": "array", "items": {"type": "object", "required": ["at_ms", "ms", "before", "after", "causes", "calls"]}}}}
+        "largest": {"type": "array", "items": {"type": "object", "required": ["at_ms", "ms", "before", "after", "causes", "calls"]}}}},
+    "decode": {"type": "object", "description": "a decode request (collectors/time_budget.decode_budget): the forwards told main or draft by the engine's own counts (refused, with the counts, when no cut gives them), one step per verify forward, what bounds a token, the capture overhead",
+      "properties": {
+        "check": {"type": "object", "required": ["steps_expected", "forwards_found", "prompt_forwards", "mains_expected", "drafts_expected", "drafted", "layers_found"],
+                  "description": "the engine's counts (its decode row and the request's spec-decode counters) against the forwards the trace holds"}},
+      "if": {"required": ["refused"]},
+      "then": {"required": ["refused"], "properties": {"refused": {"enum": ["no_decode_row", "no_first_token", "no_steps", "prompt_unmatched", "forwards_unmatched"]}},
+               "not": {"anyOf": [{"required": ["pct"]}, {"required": ["steps_list"]}]}},
+      "else": {"required": ["prompt_ms", "decode_ms", "tail_ms", "tokens", "out_tokens", "steps", "draft_passes", "check", "gaps", "layers_per_forward",
+                            "drafts_apart", "draft_forwards", "draft_forwards_holding_more", "input_rows", "input_element_bytes", "streaming", "constants", "per_token_ms", "step_ms", "input_copy", "pct", "bound", "bound_missing", "capture_overhead", "steps_list"],
+        "properties": {
+          "pct": {"type": "object", "required": ["families", "idle_by_cause", "exposed_copy", "verify", "draft"]},
+          "input_copy": {"type": "object", "description": "the forward rule's input copies by what they carry: an input table the engine keeps in host RAM (each copy a whole number of its rows, with the GPU idle right before it: the host gathering) or unidentified (no host_before_ms)",
+                         "additionalProperties": {"type": "object", "required": ["copies", "bytes", "busy_ms", "exposed_ms", "host_before_ms", "per_token_bytes", "per_token_ms", "pct"]}},
+          "bound": {"type": ["object", "null"], "required": ["weight_read_ms", "weight_share", "rest_ms", "per_token_weight_ms", "read"],
+                    "description": "the step's weight bytes (roofline/forward_read.py) at the GPU's measured read rate, against the step's wall"},
+          "bound_missing": {"enum": [null, "no_read", "no_draft_bytes", "not_all_on_gpu", "no_engine_line", "residency_not_read"]},
+          "capture_overhead": {"type": "object", "description": "the profiler's measured overhead: every prompt at this k and depth, traced against untraced (replay_overhead.overhead_words), or why it is not measured"},
+          "steps_list": {"type": "array", "items": {"type": "object", "required": ["at_ms", "wall_ms", "draft_passes", "draft_forwards", "verify_ms", "draft_ms", "families",
+                                                                                  "exposed_copy_ms", "idle_ms", "idle_by_cause", "input_copy", "weight_read_ms"]}}}}}
   },
   "if": {"required": ["refused"]},
   "else": {"required": ["window_ms", "kernels_ms", "exposed_copy_ms", "idle_ms", "host_outside_ms", "parts_ms", "unattributed_ms",

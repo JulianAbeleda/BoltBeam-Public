@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boltbeam"
-version = "0.3.23"
+version = "0.3.24"
 description = "Audit where inference time goes against a measured roofline."
 readme = "README.md"
 requires-python = ">=3.10"

@@ -24,7 +24,8 @@ type formState struct {
 	dest, port string
 	picked     []string
 	traces     bool
-	confirmed  bool // the confirm step's answer: Make the copy
+	confirmed  bool   // the confirm step's answer: Make the copy
+	part       string // the part the confirm step is for
 	settings   map[string]*string
 	env        map[string]*string // the environment set for the engine, by name
 	ctx        [3]string          // the Context form: prompt, reply, replies file
@@ -126,7 +127,7 @@ func (m Model) formStep(msg tea.Msg) (Model, tea.Cmd) {
 		return m.doFetch(action{"", "fetchgo", "picked"})
 	case "speedup":
 		if s.confirmed {
-			return m, m.startSpeed()
+			return m, m.startSpeed(s.part)
 		}
 	case "settings":
 		for _, set := range m.f.settingsOffered() {
