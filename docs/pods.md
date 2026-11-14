@@ -205,7 +205,8 @@ the wheels). Built (2026-11-09, no new image needed):
    compiles unless `LLAMA_PREBUILT_SHA256` is given. Without a compile the pod needs no `nvcc` for step 4.
    Expected: the llama.cpp part of step 4 from minutes (most of the 3090's 21) to the archive's download and checks.
 
-The archive (`tools/build-llama-prebuilt.sh`; for pin 097cf33d9, b11571, the engine pin: 797 MB, sha256 `2b5e75859f32f4f88e09139038e75d8e7196a160039ea5657653ec7ca7547f8e`, CUDA 12.8.93, built 2026-11-09 on an RTX 5090 machine; until then pods ran 50569eb87, b11433, older than the pin) holds `bin/`: `llama-bench`,
+The pin moved to b1b770d90 (b12359, v1.0.0) on 2026-11-14 and its archive is not built yet, so step 4 compiles it.
+The archive (`tools/build-llama-prebuilt.sh`; for the earlier pin 097cf33d9, b11571: 797 MB, sha256 `2b5e75859f32f4f88e09139038e75d8e7196a160039ea5657653ec7ca7547f8e`, CUDA 12.8.93, built 2026-11-09 on an RTX 5090 machine; until then pods ran 50569eb87, b11433, older than the pin) holds `bin/`: `llama-bench`,
 `llama-batched-bench`, `llama-server`, llama.cpp's shared libraries, and the CUDA runtime, cuBLAS and cuBLASLt it was
 built with, plus libgomp; every ELF has RUNPATH `$ORIGIN`, so it runs from any folder. `libcuda` is the pod's
 driver. It is built with CUDA 12.8 for `CMAKE_CUDA_ARCHITECTURES` 80;86;89;90;100;120 (A100, 3090, 4090, H100/H200,

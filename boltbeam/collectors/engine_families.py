@@ -48,6 +48,14 @@ def repo(family:str, fork:str) -> str:
   return next(f["repo"] for fam in families() if fam["family"] == family for f in fam["forks"] if f["fork"] == fork)
 
 
+def upstream_code(family:str, fork:str) -> bool:
+  """Whether a fork row is the family's own code at another branch or commit (its repo is the upstream row's, the row an
+  adapter runs: llama.cpp master), not another project's: its build is judged as upstream's, by its checkout."""
+  rows = [f for fam in families() if fam["family"] == family for f in fam["forks"]]
+  up = {f["repo"] for f in rows if f.get("provider") == family}
+  return any(f["fork"] == fork and f.get("repo") in up for f in rows)
+
+
 def find(fork:Mapping[str, Any], env:Mapping[str, str] | None = None, home:pathlib.Path | None = None) -> str | None:
   """Where a fork with no provider is on this machine, or None: its env var, its paths, then its binary on PATH."""
   env = os.environ if env is None else env

@@ -99,8 +99,15 @@ func copyLabel(path string) (string, bool) {
 	if _, err := os.Stat(record); err != nil {
 		return "", false
 	}
-	if given, ok := modelConfig(record)["name"].(string); ok && given != "" {
-		return given, true
+	rec := modelConfig(record)
+	if given, ok := rec["name"].(string); ok && given != "" {
+		name = given
+	}
+	switch rec["verdict"] { // quantization/speed_up.judge: a copy kept for its task eval, and one that failed it (delete it)
+	case "needs_eval":
+		name += " (waiting on task eval)"
+	case "fail":
+		name += " (failed task eval)"
 	}
 	return name, true
 }

@@ -9,14 +9,14 @@ profile. It is intentionally tinygrad-free so it can run before loading a model.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import collections, math, pathlib, struct
+import collections, math, pathlib
 from typing import Any
 
 # one classifier for every reader (profile/roles.py): a second copy here said `other` for the hybrid's
 # `attn_qkv`, `attn_gate` and ssm matrices, and the roofline inventory then held 5.9 GB per token under that word
 from boltbeam.profile.roles import role_from_tensor_name as _role_from_tensor_name
 
-from boltbeam.profile.gguf import GGML_TYPE_NAMES
+from boltbeam.profile.gguf import GGML_TYPE_NAMES, read_gguf_split
 from boltbeam.profile.ir import model_name
 
 # GGML's on-disk blocks.  Bits-per-weight is useful for rough display, but a
@@ -67,64 +67,10 @@ class DecodeRoleProfile:
     return {**asdict(self), "weights": [asdict(w) for w in self.weights]}
 
 
-class _GGUFReader:
-  def __init__(self, path:pathlib.Path):
-    self.f = path.open("rb")
-
-  def read(self, n:int) -> bytes:
-    data = self.f.read(n)
-    if len(data) != n: raise EOFError("truncated GGUF")
-    return data
-
-  def u32(self) -> int: return struct.unpack("<I", self.read(4))[0]
-  def i32(self) -> int: return struct.unpack("<i", self.read(4))[0]
-  def u64(self) -> int: return struct.unpack("<Q", self.read(8))[0]
-  def i64(self) -> int: return struct.unpack("<q", self.read(8))[0]
-  def f32(self) -> float: return struct.unpack("<f", self.read(4))[0]
-  def f64(self) -> float: return struct.unpack("<d", self.read(8))[0]
-  def string(self) -> str: return self.read(self.u64()).decode("utf-8")
-
-  def value(self, typ:int) -> Any:
-    if typ == 0: return self.read(1)
-    if typ == 1: return struct.unpack("<b", self.read(1))[0]
-    if typ == 2: return struct.unpack("<H", self.read(2))[0]
-    if typ == 3: return struct.unpack("<h", self.read(2))[0]
-    if typ == 4: return self.u32()
-    if typ == 5: return self.i32()
-    if typ == 6: return self.f32()
-    if typ == 7: return struct.unpack("<?", self.read(1))[0]
-    if typ == 8: return self.string()
-    if typ == 9:
-      elem_typ, n = self.i32(), self.u64()
-      # Token arrays are large but still tiny next to model load; reading them
-      # keeps parsing simple and gives exact vocab when needed.
-      return [self.value(elem_typ) for _ in range(n)]
-    if typ == 10: return self.u64()
-    if typ == 11: return self.i64()
-    if typ == 12: return self.f64()
-    raise ValueError(f"unsupported GGUF metadata type {typ}")
-
-
 def read_gguf_metadata(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tuple[str, tuple[int, ...], int, int]]]:
-  p = pathlib.Path(path).expanduser()
-  r = _GGUFReader(p)
-  try:
-    if r.read(4) != b"GGUF": raise ValueError(f"{p} is not a GGUF file")
-    version = r.i32()
-    if version not in (2, 3): raise ValueError(f"unsupported GGUF version {version}")
-    n_tensors, n_kv = r.i64(), r.i64()
-    kv: dict[str, Any] = {}
-    for _ in range(n_kv):
-      key, typ = r.string(), r.i32()
-      kv[key] = r.value(typ)
-    infos = []
-    for _ in range(n_tensors):
-      name = r.string()
-      dims = tuple(r.u64() for _ in range(r.u32()))
-      infos.append((name, dims, r.i32(), r.u64()))
-    return kv, infos
-  finally:
-    r.f.close()
+  """The metadata and every tensor of a GGUF, a split one read from its first file (profile/gguf.read_gguf_split)."""
+  kv, tensors, _ = read_gguf_split(pathlib.Path(path).expanduser())
+  return kv, tensors
 
 
 def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> DecodeRoleProfile:

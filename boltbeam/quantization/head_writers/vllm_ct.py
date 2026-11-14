@@ -41,6 +41,11 @@ def stock(python:str) -> dict:
   return {"engine_version": "vllm " + r["version"], "files_checked": r["checked"]}
 
 
+def build_id(python:str) -> str:
+  """The engine build a noise measurement is keyed on (quantization/speed_up.noise_key): the stock vLLM's version."""
+  return stock(python)["engine_version"]
+
+
 def _group(src:pathlib.Path) -> dict:
   q = json.loads((src / "config.json").read_text())["quantization_config"]
   groups = q.get("config_groups") or {}  # read for any model a screen offers Speed up on: a missing key refuses, never raises
@@ -163,7 +168,7 @@ def mtp(model:str, python:str, out:pathlib.Path, how:dict) -> dict:
   builds = {e.get("vllm") for e in rec["engines"]}
   if len(builds) != 1:
     raise Refused(f"the MTP measurement of {model} ran on several vLLM builds: {sorted(map(str, builds))}")
-  return {"depths": mtp_depths(rec), "engine": builds.pop(), "sweep": (rec.get("sweep") or [None])[-1]}
+  return {"depths": mtp_depths(rec), "engine": builds.pop(), "sweep": (rec.get("sweep") or [None])[-1], "size_check": rec.get("size_check")}
 
 
 def mtp_ks() -> list[int]:
@@ -185,20 +190,20 @@ def device(python:str) -> dict:
   """The GPU this machine's engine runs on: target id (target/hardware.py's, e.g. nvidia_sm120), name, memory, and the
   bytes the engine may use (total times BOLTBEAM_VLLM_GPU_MEMORY, default 0.85, the driver's gpu_memory_utilization)."""
   import os
-  out = subprocess.run(["nvidia-smi", "--query-gpu=name,compute_cap,memory.total", "--format=csv,noheader,nounits", "-i", "0"], capture_output=True, text=True)
-  if out.returncode or not out.stdout.strip():
-    raise Refused("nvidia-smi did not say what the GPU is")
-  name, cap, mib = (x.strip() for x in out.stdout.strip().splitlines()[0].split(","))
-  total = int(mib) * 2**20
-  return {"target": "nvidia_sm" + cap.replace(".", ""), "name": name, "backend": "CUDA", "memory_bytes": total,
-          "budget_bytes": int(total * float(os.environ.get("BOLTBEAM_VLLM_GPU_MEMORY", 0.85)))}
+  from boltbeam.target import hardware, targets
+  gpu = hardware.hardware_profile()["gpu"]
+  if gpu.get("status") != "detected" or not gpu.get("target_id") or not gpu.get("memory_bytes"):
+    raise Refused(f"the machine scan did not say what the GPU is: {'; '.join(gpu.get('notes') or []) or 'no GPU'}")
+  total = gpu["memory_bytes"]
+  return {"target": gpu["target_id"], "name": gpu.get("name"), "backend": targets.get_target(gpu["target_id"]).backend,
+          "memory_bytes": total, "budget_bytes": int(total * float(os.environ.get("BOLTBEAM_VLLM_GPU_MEMORY", 0.85)))}
 
 
 def speed(model:str, python:str, contexts:list[int], batches:list[int], tokens:int, reps:int) -> list[dict]:
   """The repo's own decode measurement (runtime/vllm_decode_drive.py, batches given; N tokens minus 1 token over N - 1) at each
   context, in the engine's python. Refuses to start while another program holds the GPU."""
   from boltbeam.collectors import engine_common as ec, providers, vllm_decode as vd
-  free = providers.gpu_free("CUDA")
+  free = providers.gpu_free_here()
   if not free["free"]:
     raise Refused(f"speed not measured: {free['reason']}; a GPU another program holds gives slower numbers that look real")
   argv = [python, str(vd.DRIVER), "--model", model, "--contexts", ",".join(map(str, contexts)), "--batches", ",".join(map(str, batches)),
@@ -209,7 +214,7 @@ def speed(model:str, python:str, contexts:list[int], batches:list[int], tokens:i
     rows = ec.run_driver(argv, env={**ec.venv_env(python), **vd.RUN_ENV}, log=log, timeout_s=7200)
   except ec.DriverFailed as exc:
     raise Refused(f"the decode measurement of {model} failed: {exc}")
-  after = providers.gpu_free("CUDA")
+  after = providers.gpu_free_here()
   if not after["free"]:
     raise Refused(f"the decode measurement left the GPU held: {after['reason']}")
   return [r for r in rows if "step_samples_ms" in r]

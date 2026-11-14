@@ -8,7 +8,7 @@ No tie constant: the prompts' own spread says what one measurement can tell apar
 so they keep a stated default margin, FORMULA_TIE, said as such."""
 from __future__ import annotations
 
-import random, statistics
+import math, random, statistics
 from typing import Any
 
 FORMULA_TIE = 0.05  # a stated default for figures with no per-prompt data (formula figures), never for measured ones
@@ -95,3 +95,16 @@ def forgone(speeds:dict[int, tuple], k:int) -> dict[str, Any] | None:
   j = max(more, key=lambda x: speeds[x][1])
   a, b = speeds[j][0] or {}, speeds[k][0] or {}
   return {"k": j, "tok_s": speeds[j][1], "wins": sum(a[p] > b[p] for p in a if p in b), "n": len(a)}
+
+
+def step_deviations(per_k:dict[int, dict[str, float]]) -> dict[str, list[float]]:
+  """{prompt: its steps between adjacent measured ks > 0 (log of k' over k), each less that step's median over the
+  prompts}: how far one prompt's step strays from the typical one, the spread that sizes the prompt set
+  (data/mtp_prompts.json size), kept per prompt so prompts of different kinds are seen apart."""
+  ks, out = sorted(k for k in per_k if k > 0), {}
+  for a, b in zip(ks, ks[1:]):
+    steps = {p: math.log(per_k[b][p] / per_k[a][p]) for p in sorted(per_k[a])}
+    m = statistics.median(steps.values())
+    for p, x in steps.items():
+      out.setdefault(p, []).append(x - m)
+  return out

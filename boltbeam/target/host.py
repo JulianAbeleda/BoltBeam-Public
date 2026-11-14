@@ -134,18 +134,10 @@ def _probe_child(pci_bus_id:str, what:str = "measure") -> dict[str, Any]:
 
 
 def gpu_busy(pci_bus_id:str) -> str | None:
-  """Why a GPU here is not idle (another program holds one: providers.gpu_free, per vendor whose management tool is
-  installed: target/vendors.py scan_tools), or None when every one is idle or no tool says. Any GPU in use counts:
-  the probe's copies share the host's memory and link."""
-  import shutil
+  """Why a GPU here is not idle (providers.gpu_free_here), or None. Any GPU in use counts: the probe's copies share the
+  host's memory and link."""
   from boltbeam.collectors import providers
-  from boltbeam.target import vendors
-  for v in vendors.VENDORS.values():
-    if v.profile is not None and v.scan_tools and shutil.which(v.scan_tools[0]):
-      free = providers.gpu_free(v.backend)
-      if not free["free"]:
-        return free["reason"]
-  return None
+  return None if (got := providers.gpu_free_here())["free"] else got["reason"]
 
 
 def _h2d_probe(pci_bus_id:str, *, child:Callable[[str], dict[str, Any]] = _probe_child,

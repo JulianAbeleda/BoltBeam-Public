@@ -21,14 +21,15 @@ def cmd_lighter_head(args, out=sys.stdout) -> int:
       for line in speed_up.progress_lines(args.checkpoint, not args.no_speed, getattr(args, "part", None)):
         print(line, file=sys.stderr, flush=True)
     rec = speed_up.derive(args.checkpoint, args.engine if named else None, args.out, None if named else args.engine, not args.no_speed,
-                          (lambda stage, event: print(f"stage {stage}: {event}", file=sys.stderr, flush=True)) if progress else None, want=getattr(args, "part", None))
+                          (lambda stage, event: print(f"stage {stage}: {event}", file=sys.stderr, flush=True)) if progress else None, want=getattr(args, "part", None),
+                          main=getattr(args, "main", None))
   except Refused as exc:
     print(json.dumps({"schema": speed_up.SCHEMA, "kind": "error", "error": str(exc)}) if args.json else f"speed up refused: {exc}", file=out)
     return 1
   if getattr(args, "progress", False):
     print("pipeline done: speed up", file=sys.stderr, flush=True)
   print(json.dumps({**rec, "lines": speed_up.words(rec)}, indent=2) if args.json else "\n".join(speed_up.words(rec)), file=out)
-  return 0 if rec["kept"] else 2  # kept: every gate of the part passed
+  return 0 if rec["kept"] and speed_up.verdict(rec) == "pass" else 2  # every gate of the part passed (a copy waiting on its task eval has not yet)
 
 
 def register(sub) -> None:
@@ -40,6 +41,7 @@ def register(sub) -> None:
   q.add_argument("--out", default=None, help="where the copy goes (default: <checkpoint>-boltbeam beside it)")
   q.add_argument("--part", choices=[r["part"] for r in speed_up.table()["parts"]], help="the part to lighten (data/speed_up.json parts): " + ", ".join(
     f"{r['part']} ({r['label']}{', the default' if r['default'] else ''}; gates: {', '.join(r['gates'])})" for r in speed_up.table()["parts"]) + "; on a copy, a copy of it with this part added, gated against it")
+  q.add_argument("--main", default=None, help="the main model's GGUF a llama.cpp MTP draft head (its own file, llama-server -md) drafts for: its speed is measured with it")
   q.add_argument("--no-speed", action="store_true", help="skip the decode-speed measurement (original vs copy, short and long context)")
   q.add_argument("--verify", action="store_true", help="CHECKPOINT is a copy: check its files, gate text, engine version and GPU against its speed_up.json; refuses on a mismatch")
   q.add_argument("--progress", action="store_true", help="print the stages to stderr as they start and finish (a screen draws its bar from them)")

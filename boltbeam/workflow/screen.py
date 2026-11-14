@@ -771,12 +771,12 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
     elif args.command == "engines" and args.update:
       target = _target_arg(args.target or chips.detect().get("target_id") or "")
       out = {"schema": SCHEMA, "kind": "engines-update", "file": str(engine_builds.state_file()),
-             "engines": engine_update.update(args.engine or list(engine_builds.rows()), backend=target.backend,
+             "engines": engine_update.update(args.engine or engine_builds.rows_for(target.backend), backend=target.backend,
                                              root=pathlib.Path(args.into) if args.into else None,
                                              say=lambda line: print(line, file=sys.stderr))}
     elif args.command == "engines" and args.latest:
       out = {"schema": SCHEMA, "kind": "engines-latest", "file": str(engine_builds.state_file()),
-             "engines": engine_update.latest(args.engine or list(engine_builds.rows()))}
+             "engines": engine_update.latest(args.engine or engine_builds.rows_for(_target_arg(here).backend if (here := args.target or chips.detect().get("target_id")) else None))}
     elif args.command == "update":
       out = {"schema": SCHEMA, **self_update.screen(args.skip)}
     elif args.command == "engines":
@@ -806,7 +806,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
       except RuntimeError as exc:  # an engine failed; its log is in --out
         sys.stdout.write(pretty_json({"schema": SCHEMA, "kind": "error", "error": str(exc), "logs": str(args.out)}))
         return 1
-      out = {k: record.get(k) for k in ("schema", "model", "prompts", "ks", "sweep", "long_why", "depths", "measured_at")}
+      out = {k: record.get(k) for k in ("schema", "model", "prompts", "ks", "sweep", "long_why", "depths", "measured_at", "size_check")}
       out["cached_in"] = str(found[0]) if found else "not cached: no machine facts for this chip under --facts-root"
       try:
         if found:

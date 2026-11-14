@@ -16,7 +16,7 @@
 │   [ Copy Arkey vllm_args ]                                                   │
 │   [ Check ] start the engine once with these flags and compare               │
 │   [ Speed up: the output layer ] Shrinks the word-picking layer, 18 min      │
-│   [ Speed up: the draft layer ] Shrinks the guess-ahead layer, 25 to 102 min │
+│   [ Speed up: the draft layer ] Shrinks the guess-ahead layer, 28 to 112 min │
 │   [ Measure MTP on the copy ]                                                │
 │   [ Compare with the original ]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯

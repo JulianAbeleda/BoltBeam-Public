@@ -3,13 +3,13 @@
   "about": "The one table of engine versions BoltBeam measures. A run records the build it ran; the engine-upgrade audit names both pins and says when a build differs from its pin. Changing a pin is its own [target] or [repo] commit that cites the upgrade audit justifying it (docs/engine-upgrade-audit.md).",
   "engines": {
     "llama.cpp": {
-      "tag": "b11571",
-      "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
-      "audit": "docs/engine-upgrade-llama-b11571-rtx5090-20261012.md",
+      "tag": "b12359",
+      "sha": "b1b770d90d94cad9e9ea5b993bdbc383a522fb28",
+      "audit": "docs/engine-upgrade-llama-b12359-rtx5090-20261114.md",
       "features": {
         "--moe-cache-mib": {"since": 11480, "release": "v0.7.0", "commit": "d6cf9acb2", "pr": "ggml-org/llama.cpp#29887"},
-        "--moe-cache-cpu-share": {"since": 12191, "release": null, "commit": "e95426f16", "pr": "ggml-org/llama.cpp#30966",
-                                  "why": "first build number found with git tag --contains in a llama.cpp master checkout, 2026-11-10; v0.9.0 does not have it"}
+        "--moe-cache-cpu-share": {"since": 12191, "release": "v1.0.0", "commit": "e95426f16", "pr": "ggml-org/llama.cpp#30966",
+                                  "why": "first build number found with git tag --contains in a llama.cpp master checkout, 2026-11-10; v0.9.0 does not have it, v1.0.0 does (git tag --contains, 2026-11-14)"}
       },
       "history": [
         {
@@ -35,6 +35,12 @@
           "tag": "b11571",
           "sha": "097cf33d9499b1eade67d51e16d7c75427e7b267",
           "doc": "docs/accuracy-fixes-20261012.md"
+        },
+        {
+          "date": "2026-11-14",
+          "tag": "b12359",
+          "sha": "b1b770d90d94cad9e9ea5b993bdbc383a522fb28",
+          "doc": "docs/engine-upgrade-llama-b12359-rtx5090-20261114.md"
         }
       ]
     },

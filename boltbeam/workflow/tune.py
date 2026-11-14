@@ -47,7 +47,8 @@ FACTS = {  # the engine-neutral names a formula may read: the fact and what it i
   "ram_available_bytes": "RAM available now (/proc/meminfo MemAvailable, macOS vm_stat)",
   "ram_total_bytes": "RAM installed", "ram_margin_bytes": "RAM kept free for the system and the engine (target/host.RAM_MARGIN_BYTES)",
   "l3_bytes": "one L3 instance (target/host.l3_cache)", "page_bytes": "the memory page size",
-  "gpu_total_bytes": "the GPU's memory", "gpu_free_bytes": "the GPU's memory free now",
+  "gpu_total_bytes": "the GPU's memory", "gpu_free_bytes": "the GPU's memory free now",  # over every card the engine splits over
+  "gpu_count": "the cards the engine splits its layers over", "gpu_free_min_bytes": "the tightest card's memory free now",
   "prompt_tokens": "the prompt length the setup is stated at", "context_tokens": "the context the setup must hold", "reply_tokens": "the reply length the context leaves room for, from measured replies (--replies; absent when not measured)",
   "shared_memory": "the GPU reads host memory directly (no copies)",
   "h2d_pinned_gbs": "the measured copy rate to the GPU from pinned host memory, GB/s (target/host.facts)",
@@ -56,15 +57,26 @@ FACTS = {  # the engine-neutral names a formula may read: the fact and what it i
   "cpu_l3_cores": "the physical cores that share one L3 (one core complex; target/host.cpu_cores)",
   "served_requests": "the requests the setup is stated for at once (SERVED)",
   "workload": "what the server will serve: one-shot (each prompt once) or chat (follow-ups that reuse earlier turns), --workload",
+  "gpu_after_load_bytes": "the GPU's memory free once the engine has loaded the model, with the rows that take GPU memory at their defaults: the engine's estimate (its after_load)",
+  "gpu_free_after_load_bytes": "--measure: the GPU's memory free right after the engine loaded the model, read in a run of the setup",
+  "gpu_free_lowest_bytes": "--measure: the least GPU memory free read after each of that run's replies, short and at the context (not during one)",
   "value": "the row's own value (in sets)"}
 FUNCS: dict[str, Callable[..., Any]] = {"min": min, "max": max, "pow2_floor": lambda x: 1 << (int(x).bit_length() - 1) if x >= 1 else 0,
                                          "gib_floor": lambda x: int(x // GiB), "gib_ceil": lambda x: int(-(-x // GiB)),
                                          "floor_to": lambda x, step: round(int(x / step) * step, 6),
                                          "ceil": lambda x: int(math.ceil(x)), "floor": lambda x: int(math.floor(x)),
                                          "has": lambda text, part: str(part).lower() in str(text).lower(),  # a name holds a part (a GPU, a model)
-                                         "len": len}
+                                         "len": len, "count": lambda x: _count(x), "at": lambda d, key: _at(d, key)}
 WORKLOADS = ("chat", "one-shot")
 BUDGET_PROMPT_TOLERANCE = 0.05  # a time budget stands for a prompt within this share of its own length (10k runs read 9,8xx tokens)
+SESSION_MARGIN = GiB  # GPU memory the memory fit keeps free beside a setup for what a session adds after load (the engine's pools grow
+# with the context, CUDA graphs are built later). An estimate, not measured: on an RTX 5090 a server ran out at turn 7 of a chat
+# with 0.77 GiB free after load, and a load with about 0.69 GiB projected free ran out at load; 1.08 GiB free after load held
+# through four sessions (~/storage/boltbeam-runs/replay-h2h-20261113 runs 8-10 and the -bs A/B they cite). Those readings were
+# taken after a load with no warm-up; under --measure the setup's own fall after its warmed load, over replies out to the
+# context, replaces it (budget), and each combination's own run is read too (fit_measure): ~/storage/boltbeam-runs/joint-fit-20261113 run 4 read 0.28 GiB free after a warmed load and 0.27 GiB of
+# fall for a setup that ran clean, which this estimate would have called over budget.
+CONFIRM = 3  # --measure confirms this many of the fastest predicted combinations that fit, on real text
 CONSTS = {"KiB": KiB, "MiB": MiB, "GiB": GiB, "True": True, "False": False, "None": None}
 
 
@@ -88,10 +100,30 @@ def knobs(engine:str, tab:dict[str, Any] | None = None) -> list[dict[str, Any]]:
   return [k for k in (tab or table())["knobs"] if k["engine"] == engine]
 
 
+def unchecked(engine:str, a:list[dict[str, Any]], b:list[dict[str, Any]], tab:dict[str, Any] | None = None) -> list[str]:
+  """The rows two setups differ in that the engine's output check cannot see (output_check false): a check of them is refused."""
+  blind, x, y = {k["name"] for k in knobs(engine, tab) if k.get("output_check") is False}, *({v["name"]: v["value"] for v in vals} for vals in (a, b))
+  return sorted(n for n in x.keys() | y.keys() if n in blind and x.get(n) != y.get(n))
+
+
 def fact_names(engine:str, tab:dict[str, Any] | None = None) -> set[str]:
   """The facts a row of this engine may read: the generic ones and its adapter's namespaced ones."""
-  ad = adapter(engine, tab)
-  return set(FACTS) | {f"{ad.NS}.{n}" for n in ad.FACTS}
+  ad, tab = adapter(engine, tab), tab or table()
+  return set(FACTS) | {f"{ad.NS}.{n}" for n in ad.FACTS} | {f"load.{n}" for n in (tab["engines"][engine].get("after_load") or {}).get("terms") or {}}
+
+
+def after_load(f:dict[str, Any], engine:str, tab:dict[str, Any]) -> dict[str, Any]:
+  """The engine's estimate of the GPU memory free once it has loaded the model (its table row's after_load: terms and a
+  formula over the facts), as gpu_after_load_bytes and its terms as load.<name>, for any row and the memory fit to read.
+  Unknown (None) when a fact it reads is."""
+  al = tab["engines"][engine].get("after_load")
+  if not al:
+    return {}
+  allowed = fact_names(engine, tab)
+  t = terms(al, f, allowed)
+  out = {f"load.{n[2:]}": v for n, v in t.items()}
+  out["gpu_after_load_bytes"] = _try(al["formula"], {**f, **t}, allowed | term_names(al))
+  return out
 
 
 # --- formulas: a restricted expression over named facts -------------------------------------------------------------------
@@ -104,6 +136,20 @@ _CMP = {ast.Lt: lambda a, b: a < b, ast.LtE: lambda a, b: a <= b, ast.Gt: lambda
 
 class Missing(Exception):
   """A formula read a fact this machine or model did not give (or divided by a zero one)."""
+
+
+def _count(x) -> int:
+  """A whole number given as a number or its digits; anything else (a word, a fraction) is unknown: Missing."""
+  if isinstance(x, bool) or not str(x).strip().isdigit():
+    raise Missing("a count")
+  return int(x)
+
+
+def _at(d, key):
+  """A mapping's entry; a key it lacks is unknown (Missing)."""
+  if not isinstance(d, dict) or key not in d:
+    raise Missing("an entry")
+  return d[key]
 
 
 def _div(a, b, floor:bool):
@@ -375,6 +421,7 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
   result per knob name ({value, ...} or {status: failed}), which overrides the facts value. into: given the facts as the
   rows leave them (each row's sets written), what a later row's sweep reads."""
   tab, measured, f = tab or table(), measured or {}, dict(f)
+  f = {**after_load(f, engine, tab), **f}
   allowed = fact_names(engine, tab)
   rows = []
   for k in knobs(engine, tab):
@@ -419,7 +466,10 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
     if k.get("measured") and _holds(k.get("measured_when"), f, ok):  # measured numbers only where their setup is this one
       reason += ("" if reason.endswith(".") else ".") + " Measured: " + say(k["measured"], f)
     got = measured.get(k["name"])
-    if got and got.get("value") is not None:
+    if got and got.get("fit"):  # the memory fit chose it with the other rows that take GPU memory (default: None)
+      value, source, reason = got["value"], got["source"], got["says"]
+      prov["fit"] = got.get("record")
+    elif got and got.get("value") is not None:
       value, source = got["value"], "measured"
       reason = got["says"]
       prov["sweep"] = got
@@ -443,7 +493,7 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
                  "reason": reason, "provenance": prov})
   for r, k in zip(rows, knobs(engine, tab)):  # a value measured with other rows at their defaults says when this setup moves them
     moved = [f"{x['name']} {x['value']}" for x in rows if x["name"] in (k.get("measured_with") or ()) and x["status"] == "set"]
-    if moved and r["status"] == "set":
+    if moved and r["status"] == "set" and r["source"] != "measured":  # measured here, it ran with them
       r["reason"] += _words()["tune"]["measured_with"].format(knobs=", ".join(k["measured_with"]), moved=", ".join(moved))
   if into is not None:
     into.update(f)
@@ -475,11 +525,163 @@ def _missing(fact:str, engine_facts:dict[str, str] | None = None) -> str:
 
 
 def values_of(rows:list[dict[str, Any]], **over:Any) -> list[dict[str, Any]]:
-  """The rows set away from their defaults as {name, kind, value, with}, with `over` (name -> value) replacing or adding."""
+  """The rows set away from their defaults as {name, kind, value, with}, with `over` (name -> value) replacing or adding
+  (None: back to its default, left off the command)."""
   kinds = {r["name"]: r for r in rows}
   out = {r["name"]: r["value"] for r in rows if r["status"] == "set"}
   out.update({k: str(v) for k, v in over.items()})
+  out = {k: v for k, v in out.items() if over.get(k, "") is not None}
   return [{"name": n, "kind": kinds[n]["kind"], "value": v, "with": kinds[n].get("with"), "with_draft": kinds[n].get("with_draft")} for n, v in out.items()]
+
+
+# --- the memory fit: the rows that take GPU memory, chosen together from one budget ------------------------------------------
+
+def memory_knobs(engine:str, tab:dict[str, Any], rows:list[dict[str, Any]]) -> list[dict[str, Any]]:
+  """The rows that declare the GPU memory they take (vram) and are on this build and setup: the memory fit's rows."""
+  st = {r["name"]: r["status"] for r in rows}
+  return [k for k in knobs(engine, tab) if k.get("vram") and st.get(k["name"]) in ("set", "default")]
+
+
+def candidates(k:dict[str, Any], row:dict[str, Any], f:dict[str, Any], allowed:set[str]) -> list[str | None]:
+  """A memory row's values for the fit, the setup's own first (None: the default): its fit candidates (a list, or a
+  formula over the facts), less those its sweep's keep rule rejects; a candidate equal to the default is the default."""
+  got, keep, ok = (k.get("fit") or {}).get("candidates"), (k.get("sweep") or {}).get("keep"), allowed | term_names(k) | {"point"}
+  out = [row["value"] if row["status"] == "set" else None]
+  for c in (got if isinstance(got, list) else _try(got, f, ok) or []) if got else []:
+    c = None if c is None or str(c) == str(row["default"]) else str(c)
+    if c not in out and (c is None or not keep or _holds(keep, {**f, "point": c}, ok)):
+      out.append(c)
+  return out
+
+
+def fit_facts(ks:list[dict[str, Any]], combo:dict[str, Any], f:dict[str, Any], allowed:set[str]) -> dict[str, Any]:
+  """The facts as the memory rows' sets leave them at these values."""
+  g = dict(f)
+  for k, (name, expr) in ((k, x) for k in ks for x in (k.get("sets") or {}).items()):
+    g[name] = _try(expr, {**g, "value": combo[k["name"]]}, allowed)
+  return g
+
+
+def costs(ks:list[dict[str, Any]], combo:dict[str, Any], f:dict[str, Any], allowed:set[str]) -> dict[str, float]:
+  """What each memory row takes of the GPU at these values (its vram over its terms); Missing when one is unknown."""
+  g = fit_facts(ks, combo, f, allowed)
+  return {k["name"]: evaluate(k["vram"], {**g, **terms(k, {**g, "value": combo[k["name"]]}, allowed), "value": combo[k["name"]]}, allowed | term_names(k))
+          for k in ks}
+
+
+def budget(ks:list[dict[str, Any]], ref:dict[str, Any], f:dict[str, Any], allowed:set[str], mem:dict[str, Any] | None = None) -> dict[str, Any]:
+  """The GPU memory the memory rows may take together: what is free after load (the engine's estimate with the rows at
+  their defaults, or `mem`: read in a run of the setup at `ref`), plus what the rows take there, less a margin for what a
+  session adds after load: the fall below the after-load reading measured over the run's replies, else SESSION_MARGIN
+  (an estimate). Missing when a figure is unknown."""
+  after, growth = (mem["loaded"], max(0, mem["loaded"] - mem["lowest"])) if mem else (evaluate("gpu_after_load_bytes", f), None)
+  held, margin = sum(costs(ks, ref, f, allowed).values()), SESSION_MARGIN if growth is None else growth
+  return {"bytes": after + held - margin, "after_load": after, "held": held, "margin": margin, "growth": growth, "measured": bool(mem)}
+
+
+def _bitwise(k:dict[str, Any], value:Any, f:dict[str, Any], allowed:set[str]) -> bool:
+  return bool(evaluate(b, {**f, "value": value}, allowed)) if isinstance(b := k.get("bitwise", True), str) else bool(b)
+
+
+def named(r:dict[str, Any], value:Any, w:dict[str, Any]) -> str:
+  """A row at a value (None: its default) as a reader reads it: name=value, name value, or a switch's bare flag (or not passed)."""
+  val = next((v for v in (value, r.get("default"), w["unset"]) if v is not None))
+  return (f"{r['name']}={val}" if r["kind"] in ("env", "config") else (r["name"] if val == "on" else w["switch_off"].format(name=r["name"]))
+          if r["kind"] == "switch" else f"{r['name']} {val}")
+
+
+def memory_fit(rows:list[dict[str, Any]], f:dict[str, Any], engine:str, tab:dict[str, Any], *, mem:dict[str, Any] | None = None,
+               checked:bool = False, only:list[str] | None = None) -> dict[str, Any] | None:
+  """The memory rows' values chosen together: every combination of their candidates, each costed (their vram summed),
+  kept when the sum is within the budget, ranked by the product of the rows' predicted gains (fit.gain; a row without
+  one counts 1), ties to the setup's own values. Unchecked (no --measure), a combination that changes the answers (a row
+  not bitwise at its value) is not taken: only the output check can let it count. One row alone is checked the same way.
+  only (--knob): the rows it may move; the others keep their values (kept). A combination whose cost is unknown is
+  named with why (uncosted), never chosen. None with no memory row; {why} when the budget is unknown (each row keeps its
+  own value). Engine-blind: it sums what the rows declare against one budget, and ranks."""
+  import itertools
+  allowed, by = fact_names(engine, tab), {r["name"]: r for r in rows}
+  ks = memory_knobs(engine, tab, rows)
+  cands = {k["name"]: candidates(k, by[k["name"]], f, allowed) for k in ks}
+  kept = [n for n in cands if only and n not in only and len(cands[n]) > 1]
+  cands = {n: c[:1] if n in kept else c for n, c in cands.items()}
+  if not ks:
+    return None
+  here = {n: c[0] for n, c in cands.items()}
+  try:
+    b = budget(ks, here if mem else dict.fromkeys(cands), f, allowed, mem)
+  except Missing as m:
+    return {"rows": list(cands), "why": fact_words(str(m), adapter(engine, tab).FACTS)}
+  out, uncosted = [], []
+
+  def label(combo:dict[str, Any]) -> str:
+    return ", ".join(named(by[n], v, _words()["tune"]) for n, v in combo.items())
+  for picks in itertools.product(*(list(enumerate(c)) for c in cands.values())):
+    combo = {n: v for n, (_, v) in zip(cands, picks)}
+    try:
+      cost = costs(ks, combo, f, allowed)
+    except Missing as m:  # a value whose memory cannot be known is never chosen, and said
+      uncosted.append((label(combo), fact_words(str(m), adapter(engine, tab).FACTS)))
+      continue
+    g = fit_facts(ks, combo, f, allowed)
+    said = [(_try((k.get("fit") or {}).get("gain") or "None", {**g, "value": combo[k["name"]]}, allowed),
+             _try((k.get("fit") or {}).get("gain_words") or "None", {**g, "value": combo[k["name"]]}, allowed)) for k in ks]
+    gain, how = math.prod(x for x, _ in said if x is not None), [h for x, h in said if x is not None and h]
+    out.append({"values": combo, "order": tuple(i for i, _ in picks), "bytes": sum(cost.values()), "costs": cost, "gain": gain, "how": how,
+                "bitwise": all(_bitwise(k, combo[k["name"]], g, allowed) for k in ks), "fits": sum(cost.values()) <= b["bytes"],
+                "label": label(combo)})
+  out.sort(key=lambda c: (-c["gain"], c["order"]))
+  pick = next((c for c in out if c["fits"] and (c["bitwise"] or checked)), None)
+  return {"rows": list(cands), "budget": b, "here": here, "pick": pick, "combos": out, "uncosted": uncosted, "kept": kept,
+          "choices": len(out) + len(uncosted) > 1}
+
+
+def fit_words(plan:dict[str, Any] | None) -> str | None:
+  """The memory fit in words: the rows, the budget and where it came from, the choice and its gain, and the faster
+  predicted combinations that did not fit or that only the output check could let count."""
+  w, rows = _words()["tune"]["memory"], ", ".join((plan or {}).get("rows") or [])
+  one = "_one" if len((plan or {}).get("rows") or []) == 1 else ""
+  if not plan or "why" in plan:
+    return plan and w["unknown" + one].format(rows=rows, what=plan["why"])
+  b, pick = plan["budget"], plan["pick"]
+  ref = next((c["label"] for c in plan["combos"] if c["values"] == plan["here"]), "the setup")
+  margin = (w["margin_estimate"] if b["growth"] is None else w["margin_measured"]).format(growth=(b["growth"] or 0) / GiB, ref=ref)
+  said = w["lead" + one].format(rows=rows) + w["budget"].format( after=b["after_load"] / GiB, how=w["measured"].format(ref=ref) if b["measured"] else w["estimated"], held=b["held"] / GiB,
+                            margin=b["margin"] / GiB, margin_how=margin, room=b["bytes"] / GiB)
+  why: dict[str, list[str]] = {}
+  for lab, what in plan.get("uncosted") or []:
+    why.setdefault(what, []).append(lab)
+  tail = "".join(w["uncosted"].format(n=len(labs), items="; ".join(labs[:3]), what=what) for what, labs in why.items()) + (w["kept"].format(rows=", ".join(plan["kept"])) if plan.get("kept") else "")
+  if pick is None:
+    return said + w["none" + one] + tail
+  swept = (plan.get("as") or {}).get("says", "")
+  said += w["pick"].format(label=pick["label"], gib=pick["bytes"] / GiB) + (w["gain"].format(gain=pick["gain"], how="; ".join(pick["how"])) if pick["how"] else w["no_gain"]) + \
+    (w["failed"].format(why=plan["failed"]) if plan.get("failed") else "") + (w["swept"].format(says=swept[:1].upper() + swept[1:].rstrip(".")) if swept else "")
+  better = [c for c in plan["combos"] if c["gain"] > pick["gain"]]
+  over = [w["item"].format(label=c["label"], gib=c["bytes"] / GiB) for c in better if not c["fits"]][:4]
+  unchecked = [c["label"] for c in better if c["fits"] and not c["bitwise"]][:3]
+  return said + (w["over"].format(items="; ".join(over)) if over else "") + (w["unchecked"].format(items="; ".join(unchecked)) if unchecked else "") + tail
+
+
+def fit_overrides(plan:dict[str, Any] | None, rows:list[dict[str, Any]], source:str = "derived", says:str | None = None) -> dict[str, Any]:
+  """The rows the memory fit moves, as derive's overrides: {name: {fit, value, source, says, record}}."""
+  pick, w, own = (plan or {}).get("pick"), _words()["tune"]["memory"], {r["name"]: r["value"] if r["status"] == "set" else None for r in rows}
+  one = "_one" if plan and len(plan["rows"]) == 1 else ""
+  why = pick and (w["row_measured" + one].format(label=pick["label"]) if says else w["row" + one].format(label=pick["label"], room=plan["budget"]["bytes"] / GiB, gain=pick["gain"]))
+  return {n: {"fit": True, "value": v, "source": source, "says": why, "record": {"label": pick["label"], "bytes": pick["bytes"], "gain": pick["gain"]}}
+          for n, v in (pick or {}).get("values", {}).items() if v != own[n]}
+
+
+def settle(f:dict[str, Any], feats:dict[str, Any], engine:str, tab:dict[str, Any], measured:dict[str, Any] | None = None,
+           into:dict[str, Any] | None = None, plan:dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+  """Every row (derive), then the memory fit over the rows that take GPU memory (plan: one already made, measured);
+  the rows it moves derived again with its values, so the facts their sets write follow. -> (rows, plan)."""
+  into = {} if into is None else into
+  rows = derive(f, feats, engine, tab, measured, into=into)
+  plan = plan or memory_fit(rows, into, engine, tab)
+  if over := fit_overrides(plan, rows, **(plan or {}).get("as", {})):
+    rows = derive(f, feats, engine, tab, {**(measured or {}), **over}, into=into)
+  return rows, plan
 
 
 # --- --measure: sweeps over a knob's axis --------------------------------------------------------------------------------
@@ -544,7 +746,9 @@ def choice_points(knob:dict[str, Any], rows:list[dict[str, Any]], facts:dict[str
 
 
 def choice(knob:dict[str, Any], run:Callable[..., Any], rows:list[dict[str, Any]], *, prompt:int, facts:dict[str, Any],
-           allowed:set[str], seed:int | None = None) -> dict[str, Any]:
+           allowed:set[str], seed:int | None = None, pts:dict[str, Any] | None = None, vals:Callable[[Any], list] | None = None,
+           check:Callable[[Any], tuple | None] | None = None, first:dict[str, Any] | None = None,
+           admit:Callable[[Any], str | None] | None = None) -> dict[str, Any]:
   """A choice sweep: decode speed at SERVED requests at a time (run(..., decode=True) -> {tokens, depths: {depth: {context, per_prompt}}},
   the engine's real-text prompts with their tasks, short and long, a reply each, held to the loop guard) of the setup's
   own value, run first and last, and of choice_points' candidates between, in a random order (seed, said). A candidate
@@ -553,19 +757,26 @@ def choice(knob:dict[str, Any], run:Callable[..., Any], rows:list[dict[str, Any]
   runs, at the level corrected for the candidates compared together (draft_count.corrected); of those, the one with the
   highest lower bound. A row with a gate checks the output too: the candidate against the setup's value, teacher-forced
   on the real-text long corpus at the setup's context (run(..., agree=setup values, texts=, context=) -> per-document
-  figures), judged by Speed up's own agreement and threshold (quantization/speed_up.agreement, passes); one that fails is
-  reported, not recommended."""
+  figures), judged by Speed up's own gate: its agreement, the engine's own noise floor at the values it is checked against
+  through the same function and cache (run(..., floor=True) -> quantization/speed_up.noise_floor, only for an engine that
+  declares a perturbation; none: no floor) and the same bar() and words, at Speed up's own confidence; one that does not
+  pass stage 1 would wait on a task eval in Speed up, and tune runs none, so it is reported, not picked. The memory fit
+  runs its combinations through it: pts (its points), vals (a point's values), check (a point's output check: (values,
+  against), or None when it needs none), first (the setup's first run) and admit (why a faster point's run is not kept
+  before its check, or None)."""
   import random
+  import re
   from boltbeam.collectors import mtp
   from boltbeam.core import draft_count as dc
   from boltbeam.quantization import speed_up
   s, name, w = knob["sweep"], knob["name"], _words()["tune"]["choice"]
-  pts = choice_points(knob, rows, facts, allowed)
-  vals = lambda p: values_of(rows, **({name: p} if p is not None else {}))  # noqa: E731  None: the setup as it is, its own value included
+  pts = pts or choice_points(knob, rows, facts, allowed)
+  vals = vals or (lambda p: values_of(rows, **({name: p} if p is not None else {})))  # None: the setup as it is, its own value included
+  pair = check or (lambda p: (vals(p), vals(pts["base"])) if s.get("gate") else None)
   seed = random.SystemRandom().getrandbits(SEED_BITS) if seed is None else seed
   order = random.Random(seed).sample(pts["points"][1:], len(pts["points"]) - 1)
-  timed = lambda p, tag: run(values=vals(p), prompt=prompt, reps=1, tag=f"{name}-{tag}", decode=True)  # noqa: E731
-  first, got, failed = timed(None, "setup"), {}, []
+  timed = lambda p, tag: run(values=vals(p), prompt=prompt, reps=1, tag=re.sub(r"[^\w.-]+", "_", f"{name}-{tag}"), decode=True)  # noqa: E731
+  first, got, failed = first or timed(None, "setup"), {}, []
   for p in order:
     try:
       got[p] = timed(p, p)
@@ -582,19 +793,30 @@ def choice(knob:dict[str, Any], run:Callable[..., Any], rows:list[dict[str, Any]
     lo = {d: dc.bounds((r["depths"][d]["per_prompt"], None), (base[d], None), level)[0] for d in depths}
     out.append({"point": p, "runs": [r], "median": {d: statistics.median(r["depths"][d]["per_prompt"].values()) for d in depths}, "lower": lo,
                 "beats": all(lo[d] > 1 + drift[d] for d in depths)})
-  gates, answer, th = [], None, speed_up.table()["threshold"]
+  gates, answer, th, floors = [], None, speed_up.table()["threshold"], {}
   for r in sorted((r for r in out[1:] if r["beats"]), key=lambda r: -min(r["lower"].values())):
-    if s.get("gate"):
+    if admit and (why := admit(r["runs"][0])):
+      gates.append({"point": r["point"], "passed": False, "held": why})
+      continue
+    if two := pair(r["point"]):
       try:
         mtp.long_corpus()  # hash-checked
         texts = [d["text"] for d in json.loads(mtp.LONG.read_text())["documents"]]
-        fig = speed_up.agreement(run(values=vals(r["point"]), agree=vals(pts["base"]), texts=texts, context=facts.get("context_tokens"), prompt=prompt,
-                                     reps=1, tag=f"{name}-{r['point']}-agree"), texts)
+        if blind := unchecked(knob["engine"], *two):
+          raise Refused(f"{getattr(adapter(knob['engine']), 'CHECK_TOOL', 'the output check')} cannot see {', '.join(blind)}, so its effect on the answers cannot be checked")
+        fig = speed_up.agreement(run(values=two[0], agree=two[1], texts=texts, context=facts.get("context_tokens"), prompt=prompt,
+                                     reps=1, tag=re.sub(r"[^\w.-]+", "_", f"{name}-{r['point']}-agree")), texts)
+        if (at := json.dumps(two[1], sort_keys=True)) not in floors and speed_up.perturbation(knob["engine"]):  # the engine's own noise at the values checked against: once each, cached across runs
+          floors[at] = run(values=two[1], floor=True, texts=texts, context=facts.get("context_tokens"), prompt=prompt, reps=1, tag=f"{name}-floor")
+        floor = floors.get(at)
+        gate = speed_up.bar(fig, floor)  # Speed up's own bar at its own confidence: a candidate's speed rule does not widen it
       except (Refused, mtp.MtpRefused) as exc:
         gates.append({"point": r["point"], "passed": False, "why": str(exc)})
         continue
       short = (fig.get("ctx") or 0) < (facts.get("context_tokens") or 0)  # a check at a shorter context says nothing past it
-      gates.append({"point": r["point"], "agrees": speed_up.passes(fig), "passed": speed_up.passes(fig) and not short, "agreement": fig[th["metric"]], "interval": fig["interval"], "figures": fig,
+      said = {"gate": gate, "noise_floor": floor, "accuracy": fig, "engine": knob["engine"]}  # read as Speed up's record is
+      gates.append({"point": r["point"], "agrees": gate["verdict"] == "pass", "passed": gate["verdict"] == "pass" and not short, "agreement": fig[th["metric"]], "interval": fig["interval"],
+                    "figures": fig, "gate": gate, "said": " ".join(speed_up.floor_words(said, r["point"])),
                     **({"short": True} if short else {})})
       if not gates[-1]["passed"]:
         continue
@@ -606,9 +828,9 @@ def choice(knob:dict[str, Any], run:Callable[..., Any], rows:list[dict[str, Any]
   setup = w["setup"].format(tokens=first["tokens"], served=facts["served_requests"], where=where, here=pts["here"], seed=seed, level=level, runs=runs)
   says = w["picked" if answer is not None else "none"].format(setup=setup, value=answer, here=pts["here"])
   for g in gates:
-    says += (w["gate_failed"].format(point=g["point"], here=pts["here"], why=g["why"]) if "why" in g else
+    says += (w["held"].format(point=g["point"], why=g["held"]) if "held" in g else w["gate_failed"].format(point=g["point"], here=pts["here"], why=g["why"]) if "why" in g else
              w["gate_passed" if g["agrees"] else "gate_below"].format(point=g["point"], here=pts["here"], agreement=g["agreement"], lo=g["interval"][0],
-                                                                       hi=g["interval"][1], min=th["min"], context=g["figures"]["ctx"],
+                                                                       hi=g["interval"][1], said=g["said"], context=g["figures"]["ctx"],
                                                                        scored=g["figures"]["scored"], docs=len(g["figures"]["per_doc"])))
     if g.get("short"):
       says += w["gate_short"].format(point=g["point"], checked=g["figures"]["ctx"], context=facts.get("context_tokens"))
@@ -618,6 +840,46 @@ def choice(knob:dict[str, Any], run:Callable[..., Any], rows:list[dict[str, Any]
     says += w["dropped"].format(points=", ".join(pts["dropped"]), why=say(s["keep_words"], facts))
   return {"value": answer, "points": out, "gates": gates, "failed": failed, "dropped": pts["dropped"], "seed": seed, "level": level, "drift": drift,
           "stop": s["stop"], "says": says}
+
+
+def fit_measure(plan:dict[str, Any], rows:list[dict[str, Any]], run:Callable[..., Any], f:dict[str, Any], engine:str, tab:dict[str, Any], *,
+                prompt:int, seed:int | None = None, only:list[str] | None = None) -> dict[str, Any]:
+  """--measure's memory fit: the setup (the unchecked fit's choice) runs first and last on choice's real-text replies, its
+  GPU memory read right after load and at its lowest while it writes (run(..., decode=True, facts=True)), and the budget
+  is set again from those readings; the CONFIRM fastest predicted combinations within it run between, kept by choice's
+  paired rule. One that changes the answers counts only past the output check, of its rows that change them against
+  the setup's values, with the rows the check cannot see (output_check false) left out of both sides. -> the plan, its
+  pick the measured winner (else the setup), with the sweep's words and record."""
+  allowed, ks = fact_names(engine, tab), memory_knobs(engine, tab, rows)
+
+  def read(**kw):  # every run reads the GPU's memory: a combination is kept only on its own reading too
+    return run(**kw, facts=True)
+  first = read(values=values_of(rows), prompt=prompt, reps=1, tag="memory-fit-setup", decode=True)
+  m = first.get("facts") or {}
+  mem = {"loaded": m["gpu_free_after_load_bytes"], "lowest": m["gpu_free_lowest_bytes"]} if None not in (m.get("gpu_free_after_load_bytes"), m.get("gpu_free_lowest_bytes")) else None
+  plan = memory_fit(rows, f, engine, tab, mem=mem, checked=True, only=only) or plan
+  if "why" in plan:
+    return plan
+  here, by = plan["here"], {k["name"]: k for k in ks}
+  top = [c for c in plan["combos"] if c["fits"] and c["values"] != here][:CONFIRM]
+  combos, blind = {c["label"]: c["values"] for c in top}, {k["name"] for k in knobs(engine, tab) if k.get("output_check") is False}
+  setup = next(c for c in plan["combos"] if c["values"] == here)
+  if not top:  # nothing else fits the measured budget: nothing to confirm
+    return {**plan, "pick": setup, "as": {"source": "measured", "says": _words()["tune"]["memory"]["nothing"]}}
+
+  def check(p):
+    c = combos[p]
+    moved = [n for n in c if c[n] != here[n] and not _bitwise(by[n], c[n], fit_facts(ks, c, f, allowed), allowed) and n not in blind]
+    return ([v for v in values_of(rows, **c) if v["name"] not in blind],
+            [v for v in values_of(rows, **{**c, **{n: here[n] for n in moved}}) if v["name"] not in blind]) if moved else None
+  def admit(got):  # its own run read: a faster one is kept only when its own memory was read and stayed above zero
+    lowest = (got.get("facts") or {}).get("gpu_free_lowest_bytes")
+    return _words()["tune"]["memory"]["unread"] if lowest is None else None if lowest > 0 else _words()["tune"]["memory"]["own"]
+  got = choice({"name": "memory fit", "engine": engine, "sweep": {"stop": _words()["tune"]["memory"]["stop"]}}, read, rows, prompt=prompt, facts=f,
+               allowed=allowed, seed=seed, pts={"base": None, "here": setup["label"], "points": [None, *combos], "dropped": []},
+               vals=lambda p: values_of(rows, **(combos[p] if p is not None else {})), check=check, first=first, admit=admit)
+  win = next((c for c in top if c["label"] == got["value"]), setup)  # measured, the setup fits: its own fall is the margin
+  return {**plan, "pick": win, "sweep": {k: v for k, v in got.items() if k != "points"}, "as": {"source": "measured", "says": got["says"]}}
 
 
 def sweep(knob:dict[str, Any], run:Callable[..., float], rows:list[dict[str, Any]], *, prompt:int, facts:dict[str, Any] | None = None,
@@ -683,6 +945,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
   """The setup: the build, the facts, every row, the rendered command, and (measure) the sweeps' records. A Refused when
   the engine, its build or the model cannot be read. options go to the adapter's facts (test stand-ins). say: --measure's
   progress as a screen's pipeline lines (a stage per swept knob, a progress line per point, at most the row's points)."""
+  from boltbeam.quantization import speed_up
   tab = tab or table()
   ad = adapter(engine, tab)
   if knobs_only and not measure:  # --knob picks what --measure sweeps; alone it would be silently ignored
@@ -696,42 +959,62 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
   f = host_facts(memory=memory, l3=l3, prompt=prompt, context=context, workload=workload, link=link, reply=reply, cpu=cpu)
   got = ad.facts(model, f, feats, {"experts_in_ram": experts_in_ram, "extra": extra, **options})
   f = {**f, **got, "model_file": pathlib.Path(model).name, "sources": {**f["sources"], **got.get("sources", {}), "model_file": "the model given"}}
-  rows = derive(f, feats, engine, tab)
+  if warn := speed_up.usable(model):  # a Speed up copy waiting on its task eval: tuned, and said; a failed one refused
+    f["notes"] = [*f.get("notes", []), warn]
+  first: dict[str, Any] = {}
+  rows, plan = settle(f, feats, engine, tab, into=first)
   measured: dict[str, Any] = {}
   if measure:
     out = out or pathlib.Path.home() / ".boltbeam" / "tune" / f"{engine}-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
     out.mkdir(parents=True, exist_ok=True)
     go = run or ad.launch_measure(model, feats, f, port=port, out=out, extra=extra)
+    scoped = memory_fit(rows, first, engine, tab, only=knobs_only) if plan and knobs_only else plan  # what --knob lets it move
+    fitted = {k["name"] for k in memory_knobs(engine, tab, rows)} if scoped and scoped.get("choices") else set()  # measured together, at the end
     todo = [k for k in knobs(engine, tab) if k["derive"] == "measured" and (not knobs_only or k["name"] in knobs_only)
-            and next(x for x in rows if x["name"] == k["name"])["status"] not in ("not_in_build", "not_applicable")]
+            and next(x for x in rows if x["name"] == k["name"])["status"] not in ("not_in_build", "not_applicable") and k["name"] not in fitted]
+    together = bool(fitted)
     say = say or (lambda _line: None)
-    say(f"pipeline steps: {len(todo)}")
+    say(f"pipeline steps: {len(todo) + together}")
     allowed = fact_names(engine, tab)
     for k in todo:
       now: dict[str, Any] = {}
-      rows = derive(f, feats, engine, tab, measured, into=now)  # a later sweep runs with the earlier ones' answers and reads the facts they set
+      rows, _ = settle(f, feats, engine, tab, measured, into=now)  # a later sweep runs with the earlier ones' answers and reads the facts they set
       s = k["sweep"]
       most = ((len(choice_points(k, rows, now, allowed)["points"]) + 1) * (2 if s.get("gate") else 1) if s["type"] == "choice" else
               (len(s["points"]) if s["type"] != "fit" else 1 + s["tries"]) * (2 if s["type"] == "crossover" else 1))
-      point = [0]
-      def timed(*a, _go=go, _most=most, _k=k["name"], _point=point, **kw):
-        _point[0] += 1
-        say(f"stage {_k}: progress {min(_point[0], _most) - 1}/{_most}")
-        return _go(*a, **kw)
       say(f"stage {k['name']}: start")
       try:
-        measured[k["name"]] = sweep(k, timed, rows, prompt=prompt, facts=now, allowed=allowed)
+        measured[k["name"]] = sweep(k, _counted(go, say, k["name"], most), rows, prompt=prompt, facts=now, allowed=allowed)
       except Exception as exc:  # noqa: BLE001  a failed sweep keeps the facts value and says why (in its row, not the stage)
         measured[k["name"]] = {"value": None, "status": "failed", "why": _words()["tune"]["sweep_failed"].format(out=short_path(str(out))),
                                "detail": f"{type(exc).__name__}: {str(exc)[-DETAIL_CHARS:]}"}  # the raw text: provenance, not the reason
       say(f"stage {k['name']}: done")
+    if together:
+      now = {}
+      rows, plan = settle(f, feats, engine, tab, measured, into=now)
+      say("stage memory fit: start")
+      try:
+        plan = fit_measure(plan, rows, _counted(go, say, "memory fit", 2 * (CONFIRM + 2)), now, engine, tab, prompt=prompt, only=knobs_only)
+      except Exception as exc:  # noqa: BLE001  a failed fit sweep keeps the unchecked choice and says why
+        plan = {**plan, "failed": _words()["tune"]["sweep_failed"].format(out=short_path(str(out))), "detail": f"{type(exc).__name__}: {str(exc)[-DETAIL_CHARS:]}"}
+      say("stage memory fit: done")
     say("pipeline done")
-    rows = derive(f, feats, engine, tab, measured)
-    (out / "tune.json").write_text(json.dumps({"engine": engine, "rows": rows, "measured": measured, "facts": f}, indent=1, default=str))
+    rows, plan = settle(f, feats, engine, tab, measured, plan=plan)
+    (out / "tune.json").write_text(json.dumps({"engine": engine, "rows": rows, "measured": measured, "memory_fit": plan, "facts": f}, indent=1, default=str))
   shown = ad.render(values_of(rows), f, feats, model, extra)
   return {"schema": "boltbeam.tune.v1", "engine": engine, "model": model, "build": {**{k: v for k, v in feats.items() if k != "features"},
           "groups": groups_in(engine, feats, tab), "feature_count": len(feats["features"])}, "facts": f, "rows": rows, **shown,
-          "measured": measured, "out": str(out) if out else None}
+          "measured": measured, "memory_fit": plan, "out": str(out) if out else None}
+
+
+def _counted(go:Callable[..., Any], say:Callable[[str], None], stage:str, most:int) -> Callable[..., Any]:
+  """go, saying each call as the stage's progress line (at most `most`)."""
+  n = [0]
+  def run(*a, **kw):
+    n[0] += 1
+    say(f"stage {stage}: progress {min(n[0], most) - 1}/{most}")
+    return go(*a, **kw)
+  return run
 
 
 # --- the words ---------------------------------------------------------------------------------------------------------
@@ -764,11 +1047,12 @@ def text(res:dict[str, Any], tab:dict[str, Any] | None = None) -> str:
   lines.append(w["host"].format(total=f["ram_total_bytes"] / GiB, usable=f["usable_ram_bytes"] / GiB,
                                 avail="unknown" if f["ram_available_bytes"] is None else f"{f['ram_available_bytes'] / GiB:.1f}",
                                 l3="unknown" if f["l3_bytes"] is None else f"{f['l3_bytes'] / MiB:.0f} MiB", l3_source=f["l3_source"]))
+  if fitted := fit_words(res.get("memory_fit")):
+    lines.append(fitted)
   lines += ["", w["setup"]]
   for r in rows:
     if r["status"] in ("set", "default"):
-      val = w["unset"] if r["value"] is None else r["value"]
-      name = f"{r['name']}={val}" if r["kind"] in ("env", "config") else f"{r['name']} {val}"
+      name = named(r, r["value"], w)
       tail = "" if r["bitwise"] else " " + w["not_bitwise"]
       lines.append(f"  {name:<34} {w['source_' + r['source']]}: {r['reason']}{tail}")
   na = [r for r in rows if r["status"] == "not_applicable"]

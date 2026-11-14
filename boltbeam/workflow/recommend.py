@@ -22,7 +22,6 @@ import os
 import pathlib
 import re
 import shlex
-import shutil
 import statistics
 import signal
 import struct
@@ -252,7 +251,7 @@ def facts_with_mtp(facts:dict[str, Any], engine:str, path:str, record:dict[str, 
   against its own session's k=0."""
   key = lambda e: (e["prompts"]["sha256"], e["tokens"], e.get(engine), e.get("gpu"), (e.get("long_text") or {}).get("sha256"), e.get("schema"))  # noqa: E731
   at, ctx = record["measured_at"], lambda per_k: f"{next(iter(per_k.values()))['context']:.0f}"  # noqa: E731
-  entry = {"prompts": record["prompts"], "tokens": record["tokens"], "gpu": ((facts.get("gpus") or [{}])[0]).get("name"), "long_text": record.get("long_text"), "schema": record.get("schema"),
+  entry = {"prompts": record["prompts"], "tokens": record["tokens"], "gpu": ((facts.get("gpus") or [{}])[0]).get("name"), "long_text": record.get("long_text"), "schema": record.get("schema"), "size_check": record.get("size_check"),
            "engine": engine, engine: sorted({e.get(engine) for e in record.get("engines", []) if e.get(engine)}), "depths": {}, "from": {}, "drift": {}}
   prior = mtp_of(facts, engine, path)
   if prior and key(prior) == key(entry) and prior.get("from"):
@@ -331,7 +330,8 @@ def mtp_tune(machine:dict[str, Any] | None, engine:str, model:str, context:int |
              seqs:int) -> dict[str, Any]:
   """tune's draft count for this context by the recommended setup's own rule and gates (mtp_choice: batch 1, one GPU,
   this vendor's MTP context limit, a beat over k=0 by more than its own paired bounds), read from this checkpoint's
-  measurement in the machine facts: {k (None when none is used), why (why not, in words), says (the pick in words)}.
+  measurement in the machine facts: {k (None when none is used), why (why not, in words), says (the pick in words),
+  gains (mtp_gains, when one is used)}.
   seqs: the sequences the setup serves at once (tune.SERVED)."""
   from boltbeam.target import vendors
   m = mtp_of(machine, engine, model)
@@ -344,7 +344,17 @@ def mtp_tune(machine:dict[str, Any] | None, engine:str, model:str, context:int |
     return {"k": None, "why": _mtp_words()["none"], "says": None}
   if ch["held"]:
     return {"k": None, "says": None, "why": mtp_held(ch, _measured_mtp(m, ch["at"])[ch["k"]]["value"], context, lim)}
-  return {"k": ch["k"], "why": None, "says": mtp_says(m, ch, context)}
+  return {"k": ch["k"], "why": None, "says": mtp_says(m, ch, context), "gains": mtp_gains(m, ch["at"])}
+
+
+def mtp_gains(m:dict[str, Any], at:float) -> dict[int, tuple[float, float]]:
+  """Each measured k's median speed over k=0's: {k: (speedup, the context it was measured at)}, at the depth `at` (the
+  pick's), or for a k not measured there at the measured depth nearest it."""
+  depths, out = mtp_core.by_context(m["depths"]), {}
+  for c in sorted(depths, key=lambda c: abs(c - at)):
+    base = (depths[c].get(0) or (None, None))[1]
+    out |= {k: (v[1] / base, c) for k, v in depths[c].items() if k > 0 and k not in out and base and v[1]}
+  return out
 
 
 def mtp_says(m:dict[str, Any], ch:dict[str, Any], context:int | None) -> str:
@@ -582,7 +592,8 @@ class Engine(NamedTuple):
 
 
 def _llama_binary() -> str | None:
-  return os.environ.get("BOLTBEAM_LLAMA_SERVER") or shutil.which("llama-server")
+  from boltbeam.collectors import llama_server_decode as lsd
+  return lsd.find()
 
 
 def _vllm_python() -> str | None:
@@ -661,7 +672,9 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   at the stated context count against the fit, as an MTP head the plan turns on does (draft_cost). probe_h2d: the offload
   page may measure the copy rate to the GPU (an idle GPU, a child process with a timeout); everything else reads the saved
   figure only."""
+  from boltbeam.quantization import speed_up
   from boltbeam.roofline import limit
+  warn = speed_up.usable(profile["source"])  # a failed Speed up copy refused; one waiting on its task eval said
   tb = tensor_bytes(profile["source"])
   resident = weights_resident(tb, text_only=text_only)
   ws = [g.get("working_set_bytes") for g in gpus]  # Metal's measured per-process limit replaces the vendor's assumed share
@@ -761,13 +774,15 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   moe = None
   if offload or not any(r["fits"]["value"] for r in rows):  # nothing holds the weights: say what offloading the experts gives
     kvb = ((pw.kv_bytes_per_token(profile, element_bytes=eng.kv[kv]) or 0.0) + extra.get(kv, 0.0)) * context
-    moe = off.for_setup(profile, provider, usable=usable - (dr["bytes"] if dr else 0), kv_bytes=kvb + (dr["kv_bytes"] if dr else 0), vram_gbs=(limit.read_bandwidth(facts) or {}).get("gbs") or target.memory_bandwidth_gbs,
+    split = next((r for r in rows if r["id"] == "layer" and r["available"]), None) if layout == "one" and not any(r["fits"]["value"] for r in rows) else None
+    olay, ogpus = (split["id"], split["gpus"]) if split else (layout, gcount)  # the offload spans the layout's GPUs: usable x GPUs
+    moe = off.for_setup(profile, provider, usable=usable * ogpus - (dr["bytes"] if dr else 0), kv_bytes=kvb + (dr["kv_bytes"] if dr else 0), vram_gbs=(limit.read_bandwidth(facts) or {}).get("gbs") or target.memory_bandwidth_gbs,
                         pci_bus_id=(gpus[0].get("pci_bus_id") if gpus else None), context=context, target=target, kv=kv, host=host, estimate=moe_estimate,
                         host_tables=tb.get("host", 0), fits=any(r["fits"]["value"] for r in rows), probe=probe_h2d, routing=routing)
     if moe["status"] == "recommended" and argv is not None:
-      argv = eng.flags(profile, kv=kv, seqs=seqs, layout="one", gpus=1, text_only=text_only, tb=tb, context=context, placement=moe["settings"], **opts)
+      argv = eng.flags(profile, kv=kv, seqs=seqs, layout=olay, gpus=ogpus, text_only=text_only, tb=tb, context=context, placement=moe["settings"], **opts)
       if (pre := moe.get("prefill") or {}).get("status") == "recommended":  # the setup for prompts: its own command
-        pre_argv = eng.flags(profile, kv=kv, seqs=seqs, layout="one", gpus=1, text_only=text_only, tb=tb, context=context, placement=pre["settings"], **opts)
+        pre_argv = eng.flags(profile, kv=kv, seqs=seqs, layout=olay, gpus=ogpus, text_only=text_only, tb=tb, context=context, placement=pre["settings"], **opts)
         pre["command"] = eng.command(shlex.quote(profile["source"]), [shlex.quote(a) for a in pre_argv])
   cram = cache_ram_row(moe) if provider == "llama.cpp" else None
   if cram and cram["recommended"] and argv is not None:
@@ -776,7 +791,7 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
       pre["command"] += " " + " ".join(CACHE_RAM_OFF)
   env = dict(row.vllm_env) if provider == "vllm" else {}
   key = (provider, (facts or {}).get("gpus", [{}])[0].get("target_id"), profile.get("hidden_size"), profile.get("layer_count"), profile.get("ffn_size"))
-  return {"schema": "boltbeam.recommended_setup.v1", "model": profile.get("source"), "provider": provider, "gpu_count": n,
+  return {"schema": "boltbeam.recommended_setup.v1", "model": profile.get("source"), "model_warning": warn, "provider": provider, "gpu_count": n,
           "weights": {"resident": resident, "total": tb["total"], "vision": tb["vision"], "mtp": tb["mtp"], "source": tb["source"]},
           "overhead": measured, "overhead_states": states, "overhead_note": missing, "context_is_upper_bound": measured is None, "stated_context": context, "seqs": seqs,
           "layouts": rows, "recommended_layout": chosen, "flags_layout": {"id": layout, "gpus": gcount}, "kv_dtype": kv, "kv_formats": list(eng.kv), "engine_note": eng.note,
@@ -872,7 +887,10 @@ def _measured_mtp(m:dict[str, Any], at:float) -> dict[int, dict[str, Any]]:
   per_k = next(ks for ks in m["depths"].values() if ks and next(iter(ks.values()))["context"] == at)
   where = (f"{len(m['prompts']['ids'])} natural prompts (set v{m['prompts']['version']}, sha256 {m['prompts']['sha256'][:12]}), "
            f"{m['tokens']} tokens each at a {at:.0f}-token context, {_mtp_engine(m)}, {m['measured_at'][:10]}")
-  return {int(k): {**fig(v["median_tok_s"], "measured: median over the prompts", [where], "measured"),
+  few = [mtp_core.underpowered(len(next(iter(per_k.values()))["per_prompt"])),  # a version 1 record (8 prompts) is said underpowered
+         (m.get("size_check") or {}).get("said")]  # steps wider than the count assumed: re-derive
+  few = [x for x in few if x]
+  return {int(k): {**fig(v["median_tok_s"], "measured: median over the prompts", [where, *few], "measured"),
                    "per_prompt": v["per_prompt"], "spread": v["spread"], "range": [v["min_tok_s"], v["max_tok_s"]],
                    "accept_length": v.get("accept_length"), "speedup": v["speedup"], "context": at}
           for k, v in per_k.items() if int(k) > 0}

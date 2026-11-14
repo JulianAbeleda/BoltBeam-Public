@@ -331,6 +331,10 @@ def tinygrad_root(args) -> pathlib.Path | None:
 def pipeline(args, out=sys.stdout) -> int:
   """Run the stages in order and say so, one line each. The run folder keeps whatever landed before a failure."""
   say = _say_to(out)
+  if getattr(args, "model", None):  # a failed Speed up copy is refused; one waiting on its task eval runs, and says so
+    from boltbeam.quantization import speed_up
+    if warn := speed_up.usable(args.model):
+      print(f"note: {warn}", file=out)
   os.environ.update(_engine_env(args))  # every engine this run starts inherits it
   steps = [
     ("load", lambda: _load(args)),
@@ -427,8 +431,10 @@ def pipeline_current(args, out=sys.stdout) -> int:
     return pipeline(args, out)
   if getattr(args, "update_engines", False):
     engine_update.update([provider], backend=get_target(args.target).backend, say=say)
-  e = engine_builds.entry(engine_builds.load(), provider)
-  cur, new = e.get("current"), e.get("pending")
+  got = engine_builds.usable(state := engine_builds.load(), provider, lambda w: say(f"engines {w}"))  # never a build not on disk
+  if got["changed"]:
+    engine_builds.save(state)
+  cur, new = got["current"], got["pending"]
   if not (new and cur and getattr(args, "analyze", False)):
     if new:
       say(f"engines {provider}: {new['version']} waits for its comparison (an --analyze run); this run uses {(cur or {}).get('version')}")

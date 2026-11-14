@@ -327,6 +327,16 @@ def gpu_free(backend:str, *, run=_run, uuids:set[str] | None = None, me:int | No
   return {"free": True, "holders": [], "reason": "no other program holds the GPU"}
 
 
+def gpu_free_here(*, probes:list[dict[str, Any]] | None = None, free=gpu_free) -> dict[str, Any]:
+  """gpu_free over every vendor with a GPU on this machine (hardware.detected_vendors): the first held one, else free.
+  For a check with no run target (a host probe, a writer before its run exists): any GPU in use counts."""
+  from boltbeam.target import hardware, vendors
+  for name in hardware.detected_vendors(probes):
+    if vendors.VENDORS[name].profile is not None and not (got := free(vendors.VENDORS[name].backend))["free"]:
+      return got
+  return {"free": True, "holders": [], "reason": "no other program holds a GPU here"}
+
+
 # --- step 4: whole step in tinygrad --------------------------------------------------------------------------
 
 def measure_tinygrad(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pathlib.Path:

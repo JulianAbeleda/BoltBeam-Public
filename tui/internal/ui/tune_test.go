@@ -322,3 +322,15 @@ func TestTunedDecodeRows(t *testing.T) {
 		}
 	}
 }
+
+// A switch row reads as the bare flag when on and "not passed" when off, never "-bs on" or "-bs (unset)".
+func TestTuneSettingSwitch(t *testing.T) {
+	for _, c := range []struct{ value, want string }{{"on", "-bs"}, {"(unset)", "-bs not passed"}} {
+		if got := tuneSetting(seam.TuneRow{Name: "-bs", Kind: "switch", Value: c.value}); got != c.want {
+			t.Errorf("switch %q: got %q, want %q", c.value, got, c.want)
+		}
+	}
+	if got := tuneSetting(seam.TuneRow{Name: "-ctk", Kind: "flag", Value: "q8_0"}); got != "-ctk q8_0" {
+		t.Errorf("flag: got %q", got)
+	}
+}

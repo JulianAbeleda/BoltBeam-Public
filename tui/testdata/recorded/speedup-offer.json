@@ -37,10 +37,10 @@
       "label": "Speed up: the draft layer",
       "enabled": true,
       "reason": null,
-      "helper": "Shrinks the guess-ahead layer, 25 to 102 min",
+      "helper": "Shrinks the guess-ahead layer, 28 to 112 min",
       "expect": {
         "speed_write": 68.4,
-        "speed_measure": 6023.8
+        "speed_measure": 6602.7
       },
       "confirm": {
         "title": "Make a faster copy of m?",
@@ -49,7 +49,7 @@
         "lines": [
           "Makes a faster copy. The original stays.",
           "Changes only the draft layer, which guesses a few words ahead for the model to check (MTP). The model checks every guess, so only the speed with drafts on is measured.",
-          "Takes about 25 to 102 minutes (an estimate), using the GPU the whole time.",
+          "Takes about 28 to 112 minutes (an estimate), using the GPU the whole time.",
           "The speed with drafts on is timed on the original, the copy and the original again, once for each number of drafts it tries; how many it tries decides where in that range it ends.",
           "Needs up to 12.1 GB of free disk space for the copy."
         ]

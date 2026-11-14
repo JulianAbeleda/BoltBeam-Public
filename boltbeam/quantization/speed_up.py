@@ -4,9 +4,10 @@ table has a row per engine and head_writers/<writer>.py the functions of that en
 accuracy, speed, mtp). One part per run, on the original or on a copy (a copy's copy, gated against it, its links into it
 hashed). Steps: plan (refuse unless the part is wider than the target and not already light in the source), write the copy
 (its name says the parts it carries: <source>-boltbeam, <source>-boltbeam-mtp), gates (agreement: pooled next-token
-agreement on data/gate_corpus.json against the table's threshold; decode: source then copy at a short and a long context,
+agreement on data/gate_corpus.json judged by bar() against the engine's own noise, else a paired task eval; decode: source then copy at a short and a long context,
 faster at every one by more than the spread; mtp: speed with MTP on, source, copy, source again, the copy's best k over the
-source's per prompt clearing the source's own change), record (speed_up.json in the copy). A copy that fails a gate is deleted.
+source's per prompt clearing the source's own change), record (speed_up.json in the copy). A copy that fails a gate is deleted;
+one that needs the task eval stays for it.
 """
 from __future__ import annotations
 
@@ -14,11 +15,14 @@ import datetime
 import functools
 import hashlib
 import importlib
+import inspect
 import json
 import math
 import pathlib
+import re
 import shutil
 import statistics
+import sys
 from typing import Any
 
 from boltbeam.core.refused import Refused
@@ -32,7 +36,7 @@ RECORD = "speed_up.json"
 TEXT = "speed_up_text.json"
 SUFFIX = "-boltbeam"
 PARTIAL = ".partial"  # beside a copy while it is written: still there after a crash
-MTP_LOGS = "speed_up_mtp"  # in the copy: the MTP measurement's logs, kept with a kept copy and deleted with any other
+MTP_LOGS = "speed_up_mtp"  # in the copy (beside a file copy): the MTP measurement's logs, kept with a kept copy and deleted with any other
 MTP_RUNS = ("source", "copy", "source again")  # measure_mtp's runs, in order (mtp_seconds counts them)
 SPEED_GATES = {"decode", "mtp"}  # the gates that measure speed: a part with no other gate is untested with speed off
 OLD_PARTS = ["output"]  # a record from before parts lightened the output layer only
@@ -44,6 +48,7 @@ WANT_LONG = 32768  # the long context asked for; the largest the model and the G
 SPEED_TOKENS, SPEED_REPS = 64, 3  # the decode driver's own (collectors/vllm_decode.py TOKENS, REPS)
 KV_ELEMENT_BYTES = 2  # the engine's default KV cache dtype is the model's 16 bit
 RESERVE_BYTES = 6 << 30  # graphs, activations, sampler and recurrent state beside weights and KV
+FLOORS = pathlib.Path.home() / ".boltbeam" / "noise_floor"  # noise_floor()'s cache
 
 
 @functools.lru_cache(maxsize=1)
@@ -82,15 +87,16 @@ def offer(checkpoint:str) -> dict[str, Any]:
   from boltbeam.report import plain, speed_up_plain
   say = plain.words()["speed_up"]
   src = pathlib.Path(checkpoint).expanduser().resolve()
-  beside = src / RECORD if src.is_dir() else src.with_name(src.name + "." + RECORD)
+  beside = own(src, RECORD)
   base = {"model": str(src), "name": display_name(src.stem if src.is_file() else src.name),
           "is_copy": beside.is_file(), "enabled": False, "reason": None, "copy_bytes": None, "gpu": True, "parts": []}
   if not src.exists():
     return {**base, "reason": say["missing"]}
   try:
+    usable(src)  # a copy that failed is not offered another part
     row = row_for(head_writers.detect(src))
   except Refused as exc:
-    return {**base, "reason": speed_up_plain.refusal(str(exc))["reason"] if "could not be read" in str(exc) else say["no_writer"]}
+    return {**base, "reason": speed_up_plain.refusal(str(exc))["reason"] if "could not be read" in str(exc) or "delete it" in str(exc) else say["no_writer"]}
   light, parts = light_parts(src, row), []
   for name in [r["part"] for r in table()["parts"] if r["part"] in row["parts"]]:
     p, words = part(name, row), {"part": name, "label": say["pick"].format(action=say["action"], part=say["parts"][name]["name"])}
@@ -136,9 +142,11 @@ def mtp_seconds(gib:float, row:dict[str, Any], p:dict[str, Any]) -> tuple[float,
   """measure_mtp's seconds, shortest and longest sweep: each of MTP_RUNS starts the engine at k=0 and once per k: the
   writer's first ks (the row's mtp_ks), and at most one more per k past the largest up to core/draft_count.K_MAX, at the
   table's seconds per start for this size."""
+  from boltbeam.collectors import mtp
   from boltbeam.core import draft_count
   e, first = table()["expect"]["mtp"], set(getattr(writer(row), row["mtp_ks"])())
-  start = e["per_start"]["floor"] + e["per_start"]["per_gib"] * gib
+  s = e["per_start"]  # each short prompt and each long document adds its decode to a start
+  start = s["floor"] + s["per_gib"] * gib + s["per_prompt"] * len(mtp.prompt_set()["ids"]) + s["per_document"] * len(mtp.long_corpus()["ids"])
   return tuple(len(MTP_RUNS) * (1 + len(ks)) * start for ks in (first, first | set(range(max(first) + 1, draft_count.K_MAX + 1))))
 
 
@@ -177,7 +185,7 @@ def default_out(src:pathlib.Path, carried:list[str] | None = None, had:list[str]
 def light_parts(src:pathlib.Path, row:dict[str, Any]) -> dict[str, str]:
   """{part: the file that shows it}: the parts a source already has light, from its record, or a part's file of the engine
   row in it (a hand-made copy, such as a -lmhead4 folder)."""
-  beside = src / RECORD if src.is_dir() else src.with_name(src.name + "." + RECORD)
+  beside = own(src, RECORD)
   files = {p: h[0].name for p, x in row["parts"].items() if src.is_dir() and "file" in x and (h := sorted(src.glob(x["file"].format(bits="[0-9]*"))))}
   return {**files, **(dict.fromkeys(json.loads(beside.read_text()).get("parts") or OLD_PARTS, beside.name) if beside.is_file() else {})}
 
@@ -194,16 +202,16 @@ def part(name:str | None, row:dict[str, Any]) -> dict[str, Any]:
   return {**rows[name], **row["parts"][name]}
 
 
-def check(src:pathlib.Path, row:dict[str, Any], p:dict[str, Any], light:dict[str, str]) -> dict[str, Any]:
-  """Part p planned on this checkpoint from its files alone (no engine), or Refused: already light in it, a tied output layer,
-  what the writer's plan refuses, not wider than the target."""
+def check(src:pathlib.Path, row:dict[str, Any], p:dict[str, Any], light:dict[str, str], path:str | None = None) -> dict[str, Any]:
+  """Part p planned on this checkpoint from its files (path None: no engine; path: the engine found, for what only it can
+  say), or Refused: already light in it, a tied output layer, what the writer's plan refuses, not wider than the target."""
   if p["part"] in light:  # a copy may get another part, never the same one twice
     raise Refused(f"{src.name} is already a lighter-head copy ({light[p['part']]} is in it): its {p['label']} is already light")
   try:  # the files are read here: a truncated file or a weight type no table knows refuses in words, never raises
     tied = src.is_dir() and (src / "config.json").is_file() and text_config(json.loads((src / "config.json").read_text())).get("tie_word_embeddings")
     if tied and p.get("untied"):
       raise Refused("tie_word_embeddings is true in config.json: the output layer is the 16 bit embedding, so there is no separate head to lighten")
-    pl = {**p, **getattr(writer(row), p["plan"])(str(src), None, target=row.get("target"), part=p)}  # the part's rows and what the writer planned
+    pl = {**p, **getattr(writer(row), p["plan"])(str(src), path, target=row.get("target"), part=p)}  # the part's rows and what the writer planned
   except (ValueError, KeyError, IndexError, EOFError, OSError) as exc:
     raise Refused(f"{src.name} could not be read: {type(exc).__name__} {exc}") from exc
   if not pl["bits_target"] < pl["bits_now"]:
@@ -211,20 +219,23 @@ def check(src:pathlib.Path, row:dict[str, Any], p:dict[str, Any], light:dict[str
   return pl
 
 
-def plan(checkpoint:str, engine:str | None = None, engine_path:str | None = None, want:str | None = None) -> dict[str, Any]:
-  """What a copy would do, or Refused. Steps: format, row, part, check (from the files), engine found, stock."""
+def plan(checkpoint:str, engine:str | None = None, engine_path:str | None = None, want:str | None = None, main:str | None = None) -> dict[str, Any]:
+  """What a copy would do, or Refused. Steps: format, row, part, check (from the files), engine found, stock, check with the
+  engine. main: the main model a draft head that is its own file runs with (llama.cpp's -md sidecar)."""
   src = pathlib.Path(checkpoint).expanduser().resolve()
   if not src.exists():
     raise Refused(f"{checkpoint} does not exist")
+  usable(src)  # a copy built on a failed copy is refused; one built on a copy waiting on its eval inherits the wait (base_verdict)
   row = row_for(fmt := head_writers.detect(src), engine)
-  p, light = part(want, row), light_parts(src, row)
-  pl = check(src, row, p, light)
+  p, light = {**part(want, row), **({"main": str(pathlib.Path(main).expanduser().resolve())} if main else {})}, light_parts(src, row)
+  check(src, row, p, light)
   w = writer(row)
   if not (path := getattr(w, row.get("find", "find"))(engine_path)):
     raise Refused(f"{row['label']} was not found: pass --engine or set ${row['env']}")
   facts = getattr(w, row["stock"])(path)
+  pl = check(src, row, p, light, path)
   out = default_out(src, [*light, p["part"]], list(light))
-  return {"source": str(src), "format": fmt, "row": row, "engine_path": path, "stock": facts, "layer": pl, "light": list(light),
+  return {"source": str(src), "format": fmt, "row": row, "engine_path": path, "stock": facts, "layer": pl, "light": list(light), "base_verdict": base_verdict(src),
           "copy": str(out), "name": display_name((out.stem if src.is_file() else out.name).replace(SUFFIX, "", 1))}
 
 
@@ -256,27 +267,172 @@ def agreement(figures:dict[str, Any], texts:list[str]) -> dict[str, Any]:
     raise Refused(f"the accuracy check scored {figures['n']} positions, fewer than the {th['min_positions']} it needs to decide")
   share = [d["hits"] / d["n"] for d in docs]
   return {**figures, th["metric"]: pooled(docs), "interval": bootstrap(docs, pooled), "interval_method": f"95% percentile, {BOOTSTRAPS} resamples of the {len(docs)} documents with replacement (seed 0)",
-          "doc_min": min(share), "doc_median": statistics.median(share), "docs_at_or_above": sum(x >= th["min"] for x in share)}
+          "doc_min": min(share), "doc_median": statistics.median(share)}
 
 
-def passes(figures:dict[str, Any] | None) -> bool:
-  """The gate: the pooled agreement (agreement()) at or above the table's threshold; no figures (a part with no agreement gate) passes."""
+def z(confidence:float | None = None, df:int | None = None) -> float:
+  """The one-sided quantile at confidence (threshold.confidence): normal, or Student t with df degrees of freedom by the
+  Cornish-Fisher series in 1/df (Abramowitz and Stegun 26.7.5; 1.8946 at df 7, 0.95)."""
+  x = statistics.NormalDist().inv_cdf(table()["threshold"]["confidence"] if confidence is None else confidence)
+  g = [(x**3 + x) / 4, (5 * x**5 + 16 * x**3 + 3 * x) / 96, (3 * x**7 + 19 * x**5 + 17 * x**3 - 15 * x) / 384,
+       (79 * x**9 + 776 * x**7 + 1482 * x**5 - 1920 * x**3 - 945 * x) / 92160]
+  return x + sum(c / df ** (i + 1) for i, c in enumerate(g)) if df else x
+
+
+def bar(figures:dict[str, Any], floor:dict[str, Any] | None = None) -> dict[str, Any]:
+  """Stage 1 of the agreement gate, the one place its rule is computed (Speed up's copies, tune's output-changing knobs).
+  d = 1 - pooled agreement; pass iff d_copy - d_floor <= t SE and every document holds, else needs_eval (a paired
+  downstream eval decides: noninferior). d_floor: the engine's own noise (noise_floor), paired by document and position.
+  SE: the document bootstrap SD of d_copy - d_floor (one SE, so a wider one never comes from a second estimate); t: Student
+  t at threshold.confidence, k - 1 df for k documents. Per document (it can only send a copy to the eval): copy_i -
+  floor_i <= z sqrt(var_c,i + var_f,i), var = d(1 - d) / n, z Sidak's for k documents together, the quantile at
+  confidence^(1/k). No floor (an engine that declares no change): nothing measured to credit, so needs_eval, never a
+  test against an invented SE; only a copy that agrees at every position passes, as no noise is smaller than none."""
+  th, docs = table()["threshold"], figures["per_doc"]
+  conf, m = th["confidence"], th["metric"]
+  if not floor:
+    return {"verdict": "pass" if figures[m] == 1 else "needs_eval", "d_copy": 1 - figures[m], "d_floor": None, "confidence": conf, "se_method": "no floor"}
+  if [d["n"] for d in floor["per_doc"]] != [d["n"] for d in docs]:
+    raise Refused("the noise floor and the check scored different positions per document, so they cannot be paired")
+  k, base, miss = len(docs), floor["per_doc"], lambda d: 1 - d["hits"] / d["n"]  # noqa: E731
+  d_copy, d_floor = 1 - pooled(docs), 1 - pooled(base)
+  se, t = statistics.stdev(draws(list(zip(base, docs)), lambda pairs: pooled([f for f, _ in pairs]) - pooled([c for _, c in pairs]))), z(conf, k - 1)
+  zs = z(conf ** (1 / k))
+  per = [(miss(c) - miss(f), zs * math.sqrt((miss(c) * (1 - miss(c)) + miss(f) * (1 - miss(f))) / c["n"])) for c, f in zip(docs, base)]
+  e, allowed = max(per, key=lambda x: x[0] - x[1])
+  doc = {"excess": e, "allowed": allowed, "z": zs, "holds": all(x <= a for x, a in per)}
+  return {"verdict": "pass" if d_copy - d_floor <= t * se and doc["holds"] else "needs_eval", "d_copy": d_copy, "d_floor": d_floor, "excess": d_copy - d_floor,
+          "se": se, "z": t, "df": k - 1, "confidence": conf, "allowed": t * se, "needs": 1 - d_floor - t * se, "worst": doc, "se_method": "the document bootstrap, paired"}
+
+
+def paired(a:list[dict], b:list[dict]) -> dict[str, Any]:
+  """Two arms of a paired eval (rows id, correct, finish): b items only a got right, c only b; refused unless both arms
+  answered the same items, each once, every row whole."""
+  for rows in (a, b):
+    if not rows or any(not isinstance(r, dict) or not isinstance(r.get("correct"), bool) or "id" not in r or "finish" not in r for r in rows):
+      raise Refused("an eval arm is empty or has a row without id, a true/false correct and finish")
+    if len({r["id"] for r in rows}) != len(rows):
+      raise Refused("an eval arm answers an item twice")
+  x, y = ({r["id"]: r for r in rows} for rows in (a, b))
+  if x.keys() != y.keys():
+    raise Refused(f"the two eval arms did not answer the same items: {len(x.keys() ^ y.keys())} are in one arm only")
+  return {"n": len(x), "b": sum(x[i]["correct"] > y[i]["correct"] for i in x), "c": sum(y[i]["correct"] > x[i]["correct"] for i in x),
+          "truncated": [sum(r["finish"] == "length" for r in rows) for rows in (a, b)]}
+
+
+def noninferior(original:list[dict], copy:list[dict], noise:list[dict], tolerance:str | float | None = None, how:str = "on its noise run") -> dict[str, Any]:
+  """Stage 2: the copy's paired eval loss against the engine's own eval noise (noise: the original run again under the
+  engine's declared change, perturbation(), or as it was when none is declared), on the same items. The two pairs share
+  the original, so L_copy - L_noise is exactly D = mean(noise_i - copy_i), each item 1 right, 0 wrong. The standard
+  non-inferiority rule against the tolerance, computed exactly per item: u_i = (noise_i - copy_i) - t_i, t_i = |noise_i -
+  orig_i| for "psi0" (so mean(u) = D - psi0, the allowance measured on the same items and its correlation with D carried
+  in u's own SE), t_i = the share for a fixed tolerance (0: shown no worse than the noise run). fail: mean(u) - z SE_u > 0
+  (proven worse than allowed); pass: mean(u) + z SE_u <= 0; else inconclusive, with the n at which an equal copy passes at
+  threshold.eval.power, (z_a + z_b)^2 var(u) / allowance^2, as a hint. SE_u = sqrt(var(u) / n). tolerance
+  (threshold.eval.tolerance): "psi0", the engine's own gross churn, the share of answers its noise run changes against
+  the original (refused when 0: nothing to measure the copy against); 0; or a fixed share. Truncation (finish=length)
+  over threshold.eval.max_truncation in any arm: inconclusive, BoltBeam's eval budget rule. A "run N more" hint re-rolls
+  all three arms if they are rerun: repeating the whole eval until it passes inflates the error rate, so run the noise
+  arm once and add the new items to all three arms together."""
   th = table()["threshold"]
-  return figures is None or figures[th["metric"]] >= th["min"]
+  ev, conf, tol = th["eval"], th["confidence"], th["eval"]["tolerance"] if tolerance is None else tolerance
+  p, p0, d = paired(original, copy), paired(original, noise), paired(noise, copy)
+  n, churn, za = d["n"], (p0["b"] + p0["c"]) / d["n"], z(conf)
+  if tol == "psi0" and not churn:
+    raise Refused("this engine shows no eval noise: its run of the original again changed no answer, so there is nothing to measure the copy "
+                  "against; declare a perturbation for it (threshold.noise.engines)")
+  o, c, y = ({r["id"]: int(r["correct"]) for r in rows} for rows in (original, copy, noise))
+  u = [y[i] - c[i] - (abs(y[i] - o[i]) if tol == "psi0" else float(tol)) for i in o]
+  allow, loss, mean = churn if tol == "psi0" else float(tol), (d["b"] - d["c"]) / n, sum(u) / n
+  var = sum((x - mean) ** 2 for x in u) / n
+  se, cut = math.sqrt(var / n), max(x / n for x in p["truncated"] + p0["truncated"])
+  need = math.ceil((za + z(ev["power"])) ** 2 * var / allow ** 2) if allow else None
+  verdict = ("inconclusive" if cut > ev["max_truncation"] else "fail" if mean - za * se > 0 else "pass" if mean + za * se <= 0 else "inconclusive")
+  said = (f"the engine's own churn, {allow * 100:.1f} points on this model (answers it changes against itself {how})" if tol == "psi0" else
+          "none: a pass is shown no worse than the noise run" if not allow else f"a fixed {allow * 100:.1f} points")
+  return {"verdict": verdict, "n": n, "copy": p, "noise": p0, "against_noise": d, "loss": loss, "margin": mean, "se": se, "z": za, "churn": churn, "tolerance": tol,
+          "allowed": allow, "allowed_said": said, "n_needed": need, "power": ev["power"], "confidence": conf,
+          "why": (f"truncation {cut:.1%} is over {ev['max_truncation']:.0%}" if cut > ev["max_truncation"] else None if verdict != "inconclusive" else
+                  f"underpowered: run {need - n} more items, added to all three arms (rerunning the whole eval until it passes inflates the error rate)" if need and need > n else "its loss is neither shown within the allowance nor shown beyond it")}
+
+
+def model_files(src:pathlib.Path) -> list[pathlib.Path]:
+  """The files an engine reads for a model: a folder's files, a file and the other shards of a split (<stem>-0000k-of-0000N)."""
+  if src.is_dir():
+    return sorted(f for f in src.rglob("*") if f.is_file())
+  m = re.fullmatch(r"(.*)-\d{5}-of-(\d{5})(\.\w+)", src.name)
+  shard = m and re.compile(re.escape(m[1]) + r"-\d{5}-of-" + m[2] + re.escape(m[3]))
+  return sorted(f for f in src.parent.iterdir() if shard.fullmatch(f.name)) if shard else [src]
+
+
+def perturbation(engine:str) -> dict[str, Any] | None:
+  """The change an engine declares must not matter (threshold.noise.engines): the one place Speed up and tune read it.
+  None: the engine declares none, so it has no floor, and its eval noise is the original run again unchanged."""
+  return table()["threshold"]["noise"]["engines"].get(engine)
+
+
+def stamp(f:pathlib.Path) -> list:
+  return [str(f), (st := f.stat()).st_size, st.st_mtime_ns]
+
+
+def noise_key(src:pathlib.Path, w, path:str, **more) -> dict[str, Any]:
+  """What a measurement of the engine's own noise on this model depends on, the key of its cache entry: the model's
+  files, the engine build and device (the writer's build_id and device: one identity, Speed up's and tune's), the
+  accuracy module, this gate's agreement code, and what the caller adds (the texts, the arguments, the eval items)."""
+  return {"model": [stamp(f) for f in model_files(src)], "build": w.build_id(path), "device": w.device(path)["target"],
+          "check": _sha(pathlib.Path(inspect.getfile(w.accuracy))), "gate": hashlib.sha256(inspect.getsource(agreement).encode()).hexdigest(), **more}
+
+
+def cached(key:dict[str, Any], measure, whole=lambda entry: True) -> dict[str, Any]:
+  """FLOORS' entry for key, read back only when its stored key is this key and whole(entry); else measure(), stored."""
+  key = json.loads(json.dumps(key))
+  f = FLOORS / (hashlib.sha256(json.dumps(key, sort_keys=True).encode()).hexdigest()[:32] + ".json")
+  try:
+    if (got := json.loads(f.read_text())).get("key") == key and whole(got):
+      return {**got, "cached": str(f)}
+  except (OSError, ValueError):
+    pass  # no entry, or one cut short: measure
+  got = {**measure(), "key": key}
+  f.parent.mkdir(parents=True, exist_ok=True)
+  f.with_suffix(".part").write_text(json.dumps(got, indent=2))
+  f.with_suffix(".part").replace(f)
+  return {**got, "cached": None}
+
+
+def noise_floor(src:pathlib.Path, engine:str, w, path:str, texts:list[str], **setup) -> dict[str, Any] | None:
+  """The engine's own noise on this model (threshold.noise): agreement() of the original against itself, w.accuracy(src,
+  src, path, texts, **setup) with the engine's perturbation() added (a list argument is extended, so the declared flags
+  come last and win); None for an engine without one. Speed up and tune both call it, and share its cache."""
+  if not (noise := perturbation(engine)):
+    return None
+  args = {**setup, **{k: [*setup.get(k, ()), *v] if isinstance(v, list) else v for k, v in noise["args"].items()}}
+  key = noise_key(src, w, path, texts_sha256=hashlib.sha256(json.dumps(texts).encode()).hexdigest(), args=args)
+  return cached(key, lambda: {**agreement(w.accuracy(str(src), str(src), path, texts, **args), texts), "says": noise["says"], "args": args},
+                lambda e: len(e.get("per_doc") or ()) == len(texts))
+
+
+def draws(items:list, stat, resamples:int = BOOTSTRAPS, seed:int = 0) -> list[float]:
+  """stat(items) over resamples of the items with replacement (seeded, so it repeats), sorted. The gate's documents:
+  positions inside one are not independent, so a Wilson interval over positions would be too narrow."""
+  import random
+  rng, k = random.Random(seed), len(items)
+  return sorted(stat([items[rng.randrange(k)] for _ in range(k)]) for _ in range(resamples))
 
 
 def bootstrap(items:list, stat, resamples:int = BOOTSTRAPS, seed:int = 0) -> list[float]:
-  """The 95% percentile interval of stat(items) when the items are resampled with replacement (seeded, so it repeats). The
-  gate's documents: positions inside one are not independent, so a Wilson interval over positions would be too narrow."""
-  import random
-  rng, k = random.Random(seed), len(items)
-  draws = sorted(stat([items[rng.randrange(k)] for _ in range(k)]) for _ in range(resamples))
-  return [draws[int(resamples * 0.025)], draws[int(resamples * 0.975) - 1]]
+  """The 95% percentile interval of draws()."""
+  d = draws(items, stat, resamples, seed)
+  return [d[int(resamples * 0.025)], d[int(resamples * 0.975) - 1]]
+
+
+def own(p:pathlib.Path, name:str) -> pathlib.Path:
+  """Where the core's file `name` (OWN) of copy p is: in a folder copy, beside a file copy as <file>.<name>."""
+  return p / name if p.is_dir() else p.with_name(p.name + "." + name)
 
 
 def keep_logs(dst:pathlib.Path, why:str) -> pathlib.Path | None:
   """A copy that goes keeps its MTP measurement's logs: moved beside it as <copy>.<why>-<time>.speed_up_mtp; None when it has none."""
-  logs = dst / MTP_LOGS
+  logs = own(dst, MTP_LOGS)
   if not logs.is_dir() or logs.is_symlink():
     return None
   kept = dst.with_name(f"{dst.name}.{why}-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.{MTP_LOGS}")
@@ -289,11 +445,11 @@ def _remove(p:pathlib.Path) -> None:
 
 
 def derive(checkpoint:str, engine:str | None = None, out:str | None = None, engine_path:str | None = None,
-           speed:bool = True, progress=None, want:str | None = None) -> dict[str, Any]:
+           speed:bool = True, progress=None, want:str | None = None, main:str | None = None) -> dict[str, Any]:
   """Plan, write, gate, record. Returns the record; "kept" says whether the copy stays. Refused if it cannot start.
   progress(stage, event) hears STAGES start and finish ("start", "done"); a screen draws its bar from them."""
   say = progress or (lambda stage, event: None)
-  pl = plan(checkpoint, engine, engine_path, want)
+  pl = plan(checkpoint, engine, engine_path, want, main)
   row, src, layer = pl["row"], pathlib.Path(pl["source"]), pl["layer"]
   gates = layer["gates"]
   if not speed and set(gates) <= SPEED_GATES:
@@ -313,18 +469,18 @@ def derive(checkpoint:str, engine:str | None = None, out:str | None = None, engi
     changed = getattr(w, row["write"])(str(src), str(dst), path, layer)
     _own(dst)
     say("speed_write", "done")
-    figures = None  # a part without the agreement gate: its row's note says why
+    figures = floor = None  # a part without the agreement gate: its row's note says why
     if "agreement" in gates:
       say("speed_check", "start")
       figures = getattr(w, row["accuracy"])(str(src), str(dst), path, texts)
-      say("speed_check", "done")
       if figures.get("engine_version", pl["stock"]["engine_version"]) != pl["stock"]["engine_version"]:
         raise Refused(f"the accuracy check ran on {figures['engine_version']}, not the {pl['stock']['engine_version']} found stock")
       figures = agreement(figures, texts)
-      docs = figures["per_doc"]
-    passed = passes(figures)
+      floor = noise_floor(src, row["engine"], w, path, texts)
+      say("speed_check", "done")
+    gate = bar(figures, floor) if figures else None
     timed = drafted = None
-    if passed and speed:
+    if speed:  # stage 1 passes or needs the task eval: the copy is worth its speed either way
       say("speed_measure", "start")
       timed = measure_speed(src, dst, row, w, path, layer) if "decode" in gates and row.get("speed") else None
       drafted = measure_mtp(src, dst, row, w, path, layer) if "mtp" in gates else None
@@ -342,22 +498,25 @@ def derive(checkpoint:str, engine:str | None = None, out:str | None = None, engi
   rec = {"schema": SCHEMA, "source": str(src), "copy": str(dst), "name": pl["name"], "format": pl["format"],
          "engine": row["engine"], "engine_version": pl["stock"]["engine_version"], "stock": pl["stock"], "parts": [*pl.get("light", []), layer["part"]],
          "changed": changed, "bytes_now": layer["bytes_now"], "bytes_after": layer["bytes_after"], "accuracy": figures, "accuracy_note": None if figures else layer.get("note"),
-         "threshold": th if figures else None, "passed": passed,  # a part with no agreement gate used no threshold and no gate text
+         "threshold": th if figures else None, "noise_floor": floor, "gate": gate,
+         "verdict": "needs_eval" if "needs_eval" in ((gate or {}).get("verdict"), pl.get("base_verdict")) else "pass",  # never better than its base
+         "base_verdict": pl.get("base_verdict"),  # a part with no agreement gate used no threshold and no gate text
          "text": {"file": TEXT, "sha256": digest, "positions": figures["n"], "corpus": CORPUS.name, "corpus_sha256": th["corpus_sha256"]} if figures else None,
          "speed": [timed] if timed else [], "mtp_speed": [drafted] if drafted else [],
-         "speed_note": None if timed or drafted else "not measured: " + ("switched off" if not speed else "the engine row has no speed measurement" if passed else "the accuracy check failed")}
-  rec["kept"] = passed and not slower(rec)
-  if passed and not rec["kept"]:
+         "speed_note": None if timed or drafted else "not measured: " + ("switched off" if not speed else "the engine row has no speed measurement")}
+  rec["kept"] = not slower(rec)  # a copy that needs the task eval stays for it
+  if not rec["kept"]:
     rec["deleted_because"] = "; ".join(e["why"] for e in measured(rec) if not e["passed"])
-  if not passed:
-    lo, hi = figures["interval"]
-    rec["deleted_because"] = (f"next-token agreement {figures[th['metric']]:.4f} on the natural-text gate corpus is below {th['min']} (documents {figures['doc_min']:.4f} to "
-                              f"{max(d['hits'] / d['n'] for d in docs):.4f}, interval {lo:.4f} to {hi:.4f})")
+  if (gate or {}).get("verdict") == "needs_eval" and rec["kept"]:  # its own eval's rows go beside the copy; the command says how
+    rec["eval"] = {k: str(own(dst, v)) for k, v in th["eval"]["files"].items()}
+    noise = perturbation(row["engine"])
+    rec["eval"]["command"] = th["eval"]["command"].format(source=src, copy=dst, **{f"{k}_rows": v for k, v in rec["eval"].items()},
+                                                          again=f"with {noise['says']}" if noise else th["eval"]["unchanged"])
   if "deleted_because" in rec:
     rec["logs_kept"] = str(kept) if (kept := keep_logs(dst, "not-kept")) else None
     dst.with_name(dst.name + ".speed_up.json").write_text(json.dumps(rec, indent=2))  # the copy goes; its reason (and the per-document figures) stay beside it
   if rec["kept"]:
-    beside = (lambda name: dst / name) if dst.is_dir() else (lambda name: dst.with_name(dst.name + "." + name))
+    beside = functools.partial(own, dst)
     rec["sha256"] = {f.name: _sha(f) for f in ([dst / x for x in changed["files"]] if dst.is_dir() else [dst])}  # verify() checks the copy against these
     if pl.get("light") and dst.is_dir():  # a copy's copy reads the files it links in the copy it was built on: those are hashed too
       rec["base"] = {"copy": str(src), "sha256": {f.name: _sha(f) for f in sorted(dst.iterdir()) if f.is_symlink() and f.resolve().parent == src}}
@@ -410,14 +569,14 @@ def verify(copy:str, engine:str | None = None, engine_path:str | None = None) ->
   """A copy against its record: it passed and was kept, its files and its gate text still hash to the record, this machine's
   stock engine is the record's version, and the record holds a speed for this GPU. Refused on the first mismatch."""
   p = pathlib.Path(copy).expanduser().resolve()
-  beside = (lambda name: p / name) if p.is_dir() else (lambda name: p.with_name(p.name + "." + name))
+  beside = functools.partial(own, p)
   if not beside(RECORD).is_file():
     raise Refused(f"{p} has no {RECORD}: it is not a BoltBeam copy, or the record was removed")
   rec = json.loads(beside(RECORD).read_text())
   if rec.get("schema") != SCHEMA or not rec.get("sha256"):
     raise Refused(f"{beside(RECORD).name} is not a {SCHEMA} record with file hashes")
-  if not (rec["kept"] and rec["passed"]) or slower(rec):
-    raise Refused("the record says this copy failed its gate or its speed check and was kept only as asked")
+  if verdict(rec) == "fail" or not rec["kept"] or slower(rec):
+    raise Refused("the record says this copy failed its gate or its speed check" + ("; delete it" if verdict(rec) == "fail" else " and was kept only as asked"))
   for name, want in rec["sha256"].items():
     f = p / name if p.is_dir() else p
     if not f.is_file() or _sha(f) != want:
@@ -431,6 +590,11 @@ def verify(copy:str, engine:str | None = None, engine_path:str | None = None) ->
   now = getattr(w, row["stock"])(path)["engine_version"] if path else None
   if now != rec["engine_version"]:
     raise Refused(f"the record was made on {rec['engine_version']}; this machine has {now or 'no ' + row['label']}")
+  if (bv := base_verdict(pathlib.Path(rec["source"]))) in ("fail", "needs_eval"):
+    raise Refused(f"the copy it was built on, {rec['source']}, " + ("failed: delete both" if bv == "fail" else "waits on its task eval: verify it first"))
+  if bv and rec.get("base_verdict") == "needs_eval" and verdict(rec) == "needs_eval" and (rec.get("gate") or {}).get("verdict", "pass") == "pass":
+    rec = {**rec, "verdict": "pass", "base_verdict": bv}  # it waited only on its base, which has passed since
+    own(p, RECORD).write_text(json.dumps(rec, indent=2))
   base = rec.get("base") or {}
   for name, want in base.get("sha256", {}).items():
     f = p / name
@@ -440,6 +604,76 @@ def verify(copy:str, engine:str | None = None, engine_path:str | None = None) ->
     gpu = getattr(w, row["device"])(path)
     if gpu["target"] not in {e["gpu"]["target"] for e in measured(rec)}:
       raise Refused(f"the speed was measured on {', '.join(e['gpu']['name'] for e in measured(rec))}, not on this {gpu['name']}")
+  for k, sha in (rec.get("stage2") or {}).get("rows_sha256", {}).items():  # the rows a verdict was judged on still say it
+    if not (f := pathlib.Path(rec["eval"][k])).is_file() or _sha(f) != sha:
+      raise Refused(f"{f.name}, an eval row file this copy was judged on, is missing or changed since")
+  return judge(rec, p, w, path) if verdict(rec) == "needs_eval" else rec
+
+
+def usable(path:str | pathlib.Path) -> str | None:
+  """Whether a model path may be used (tune, recommend, the pipeline consult it): a Speed up copy whose record says it
+  failed is refused, with the instruction to delete it; one waiting on its task eval is used with this warning; any other
+  path (an original, a copy that passed) None."""
+  p = pathlib.Path(path).expanduser().resolve()
+  try:
+    rec = json.loads(own(p, RECORD).read_text())
+  except (OSError, ValueError):
+    return None
+  if rec.get("schema") != SCHEMA or verdict(rec) == "pass":
+    return None
+  if verdict(rec) == "fail":
+    raise Refused(f"{p} is a Speed up copy that failed its " + ("task eval" if rec.get("stage2") else "accuracy check") + ": delete it")
+  return f"{p} is a Speed up copy waiting on its task eval: its answers differ beyond the engine's own noise, and no eval has judged them yet"
+
+
+def base_verdict(src:pathlib.Path) -> str | None:  # the verdict of the copy a copy is built on, None for an original
+  try:
+    return verdict(json.loads(own(src, RECORD).read_text()))
+  except (OSError, ValueError):
+    return None
+
+
+def verdict(rec:dict[str, Any]) -> str:  # pass, needs_eval or fail; a record from before the derived gate said passed
+  return rec.get("verdict") or ("pass" if rec.get("passed") else "fail")
+
+
+def judge(rec:dict[str, Any], p:pathlib.Path, w, path:str) -> dict[str, Any]:
+  """Stage 2 for a copy waiting on its task eval: the eval's rows beside it (original, copy, and noise: the original run
+  again as perturbation() says), each row naming the checkpoint it ran (model), judged by noninferior(). The engine's own
+  eval noise is cached as the floor is (noise_key, plus the original's rows and the eval's settings, every row's config,
+  one value for all), and refused when it is the original's rows again. The record takes the verdict, the figures, the
+  rows' sha256 and the models; a fail says to delete the copy, an inconclusive eval writes nothing."""
+  ev = rec["eval"]
+  want = {"original": rec["source"], "copy": rec["copy"], "noise": rec["source"]}
+  def rows(k:str) -> list[dict]:
+    f = pathlib.Path(ev[k])
+    if not f.is_file():
+      raise Refused(f"this copy waits on its task eval: {ev['command']}")
+    got = [json.loads(x) for x in f.read_text().splitlines() if x.strip()]
+    if bad := {str(r.get("model")) for r in got if not isinstance(r, dict) or pathlib.Path(str(r.get("model"))).expanduser().resolve() != pathlib.Path(want[k]).resolve()}:
+      raise Refused(f"{f.name} holds rows of {', '.join(sorted(bad))[:200]}, not of {want[k]}")
+    return got
+  def fresh() -> dict[str, Any]:
+    if (got := rows("noise")) == orig:
+      raise Refused(f"{pathlib.Path(ev['noise']).name} holds the original's rows again, not a second run of it")
+    if {json.dumps(r.get("config"), sort_keys=True) for r in got} != {cfg}:
+      raise Refused("the noise run's rows carry another config than the original's: it ran under other eval settings")
+    return {"rows": got}
+  paired(orig := rows("original"), copy := rows("copy"))  # whole rows, one per item, the same items, before they key anything
+  if len(config := {json.dumps(r.get("config"), sort_keys=True) for r in orig + copy}) > 1:
+    raise Refused("the eval rows carry more than one config: the arms ran under different eval settings")
+  noise = perturbation(rec["engine"])
+  key = noise_key(pathlib.Path(rec["source"]), w, path, args=noise and noise["args"], config=(cfg := config.pop()),
+                  original=hashlib.sha256(json.dumps(orig, sort_keys=True).encode()).hexdigest())
+  again = cached(key, fresh, lambda e: isinstance(e.get("rows"), list))
+  got = noninferior(orig, copy, again["rows"], how=f"under {noise['says']}" if noise else "run again unchanged")
+  if got["verdict"] == "inconclusive":
+    raise Refused("the task eval is inconclusive: " + eval_words(got))
+  rec = {**rec, "verdict": got["verdict"], "stage2": {**got, "noise_cached": again["cached"], "models": want,
+                                                      "rows_sha256": {k: _sha(pathlib.Path(ev[k])) for k in want if pathlib.Path(ev[k]).is_file()}}}
+  own(p, RECORD).write_text(json.dumps(rec, indent=2))
+  if got["verdict"] == "fail":
+    raise Refused(f"the task eval failed: {eval_words(got)}; delete the copy ({rec['copy']})")
   return rec
 
 
@@ -611,23 +845,28 @@ def measure_speed(src:pathlib.Path, dst:pathlib.Path, row:dict[str, Any], w, pat
           "passed": ok, "why": why, "engine": rows["copy"][0].get("engine", {}).get("build")}
 
 
-def compare_mtp(first:dict[str, Any], copy:dict[str, Any], again:dict[str, Any], min_prompts:int) -> dict[str, Any]:
+def compare_mtp(first:dict[str, Any], copy:dict[str, Any], again:dict[str, Any], needed:int, size:dict[str, Any] | None = None) -> dict[str, Any]:
   """{depth: ...} from three runs of the engine's MTP measurement ({depth: {context, base, ks, tokens}}; base: each prompt's
   tok/s without drafts): the source, the copy, the source again. Per prompt, the copy at its best k over the source at its
   best k (the source's two runs averaged); each arm's best k is the highest median tok/s, chosen again inside each bootstrap
   resample of the prompts. Faster if the lower end of the 95% interval of the median is above 1 plus the source's own change
   between its two runs (at its best k). Recorded: the factor with MTP over without (each arm over its own base: each arm
   compiles its own graph) and the factor without drafts (copy base over source base), each a median over the prompts; per
-  prompt their product is that prompt's ratio, whose median is the headline (change_pct)."""
+  prompt their product is that prompt's ratio, whose median is the headline (change_pct). needed: the short depth's
+  prompts (the set's derived count, collectors/mtp.prompt_set); a long depth with fewer documents is judged and said
+  underpowered (its corpus is not sized yet). The count was derived for steps between adjacent ks, not for copy against
+  source: the record says so (data/mtp_prompts.json size.population)."""
+  from boltbeam.collectors import mtp
   if not set(first) == set(copy) == set(again):
     raise Refused(f"the runs of the MTP measurement ran different depths: {sorted(first)}, {sorted(copy)}, {sorted(again)}")
   out:dict[str, Any] = {}
   for depth, f in first.items():
     runs, prompts = [{"base": x["base"], **{k: v["per_prompt"] for k, v in x["ks"].items()}} for x in (f, copy[depth], again[depth])], sorted(f["base"])
-    if any(not set(r) <= set(runs[2]) or any(sorted(v) != prompts for v in r.values()) for r in runs):  # the source again ran every k
+    bare = set(runs[0]) == set(runs[2]) == {"base"}  # the source's head did not fit: its baseline is the model without drafts
+    if any(not (set(r) <= set(runs[2]) or bare) or any(sorted(v) != prompts for v in r.values()) for r in runs):  # the source again ran every k
       raise Refused(f"the runs of the MTP measurement ran different prompts or draft counts at the {depth} depth")
-    if len(prompts) < min_prompts:
-      raise Refused(f"the MTP measurement ran {len(prompts)} prompts at the {depth} depth; the gate needs {min_prompts}")
+    if depth == "short" and len(prompts) < needed:
+      raise Refused(f"the MTP measurement ran {len(prompts)} prompts at the {depth} depth; the gate needs {needed}")
     reads = [x.get("read") for x in (f, copy[depth], again[depth])]
     if not all(reads) or any(None in x.values() for x in reads) or not reads[0] == reads[1] == reads[2]:
       raise Refused(f"the runs of the MTP measurement read different text at the {depth} depth, or did not say what they read (another tokenizer or chat template)")
@@ -635,20 +874,24 @@ def compare_mtp(first:dict[str, Any], copy:dict[str, Any], again:dict[str, Any],
     src = {k: {p: (s1[k][p] + s2[k][p]) / 2 if k in s1 else s2[k][p] for p in prompts} for k in s2}
     med = lambda t, k, ps: statistics.median(t[k][p] for p in ps)  # noqa: E731
     best = lambda t, ps: max((k for k in t if k != "base"), key=lambda k: med(t, k, ps))  # noqa: E731
-    lo, hi = bootstrap(prompts, lambda ps: statistics.median(c[best(c, ps)][p] / src[best(src, ps)][p] for p in ps))
-    kc, ks = best(c, prompts), best(src, prompts)
+    best_src = lambda ps: "base" if bare else best(src, ps)  # noqa: E731
+    lo, hi = bootstrap(prompts, lambda ps: statistics.median(c[best(c, ps)][p] / src[best_src(ps)][p] for p in ps))
+    kc, ks = best(c, prompts), best_src(prompts)
     shift = lambda k: statistics.median(s2[k][p] / s1[k][p] for p in prompts) - 1  # noqa: E731
     drift = shift(ks) if ks in s1 else max((shift(k) for k in s1 if k != "base"), key=abs)  # k past the first sweep: the largest shared change
     ratio = {p: c[kc][p] / src[ks][p] for p in prompts}
     has = lambda x: f if x == "base" or x in s1 else again[depth]  # noqa: E731  the source run that ran that k
     same = {x: sum(has(x).get("tokens", {}).get(x, {}).get(p) == copy[depth].get("tokens", {}).get(x, {}).get(p) is not None for p in prompts) for x in (kc, "base")}
     out[depth] = {"context": f["context"], "copy": {"k": int(kc), "tok_s": med(c, kc, prompts), "base_tok_s": med(c, "base", prompts), "accept_length": copy[depth]["ks"][kc].get("accept_length")},
-                  "source": {"k": int(ks), "tok_s": med(src, ks, prompts), "base_tok_s": med(src, "base", prompts), "accept_length": (f["ks"].get(ks) or again[depth]["ks"][ks]).get("accept_length")},
-                  "ratio": ratio, "change_pct": (statistics.median(ratio.values()) - 1) * 100, "interval_pct": [(lo - 1) * 100, (hi - 1) * 100], "source_change_pct": drift * 100, "source_change_at": int(ks) if ks in s1 else "largest shared",
+                  "source": {"k": 0 if bare else int(ks), "tok_s": med(src, ks, prompts), "base_tok_s": med(src, "base", prompts),
+                             "accept_length": None if bare else (f["ks"].get(ks) or again[depth]["ks"][ks]).get("accept_length")},
+                  "ratio": ratio, "change_pct": (statistics.median(ratio.values()) - 1) * 100, "interval_pct": [(lo - 1) * 100, (hi - 1) * 100], "source_change_pct": drift * 100,
+                  "source_change_at": 0 if bare else int(ks) if ks in s1 else "largest shared",
                   "single_run": None if ks in s1 else f"the source's k={ks} ran once, in its second run: the median may be off by about half the source's own change ({abs(drift) * 50:.2f}%)",
                   "mtp_factor_pct": (statistics.median(c[kc][p] / c["base"][p] / (src[ks][p] / src["base"][p]) for p in prompts) - 1) * 100,
                   "base_factor_pct": (statistics.median(c["base"][p] / src["base"][p] for p in prompts) - 1) * 100,
-                  "same_tokens": {"at_k": same[kc], "without_drafts": same["base"], "of": len(prompts), "gated": False}, "faster": lo > 1 + abs(drift)}
+                  "same_tokens": {"at_k": same[kc], "without_drafts": same["base"], "of": len(prompts), "gated": False}, "faster": lo > 1 + abs(drift),
+                  "underpowered": mtp.underpowered(len(prompts), size) if len(prompts) < needed else None}
   return out
 
 
@@ -657,29 +900,42 @@ def measure_mtp(src:pathlib.Path, dst:pathlib.Path, row:dict[str, Any], w, path:
   k either reached (all on the first run's long-context text), logs in the copy's MTP_LOGS, compared per depth; kept only if
   faster at every depth. sweeps: each run's ks and why its sweep stopped. long_text: the long depth's corpus (collectors/mtp.long_corpus):
   an entry without it is from before the long depth was real text (mtp_depths_valid)."""
-  folder, how, run = dst / MTP_LOGS, layer["measure"], getattr(w, row["mtp"])
+  from boltbeam.collectors import mtp as core
+  folder, how, run = own(dst, MTP_LOGS), {**layer["measure"], **({"main": layer["main"]} if layer.get("main") else {})}, getattr(w, row["mtp"])
   runs = {"source": run(str(src), path, folder / "source", {**how, "grow": True})}
   runs["copy"] = run(str(dst), path, folder / "copy", {**how, "grow": True})
   ks = {n: sorted({int(k) for d in r["depths"].values() for k in d["ks"]}) for n, r in runs.items()}
   runs["source_again"] = run(str(src), path, folder / "source_again", {**how, "ks": sorted(set(ks["source"]) | set(ks["copy"]))})
+  if runs["copy"].get("did_not_fit"):
+    raise Refused(f"the copy's MTP draft head did not fit on this GPU beside the model either ({runs['copy']['did_not_fit']})")
+  if len({bool(runs[n].get("did_not_fit")) for n in ("source", "source_again")}) != 1:
+    raise Refused("the source's MTP draft head fit in one of its two runs and not in the other, so the runs cannot be compared")
   if len({r["engine"] for r in runs.values()}) != 1:
     raise Refused(f"the runs with MTP on ran on different engine builds: {', '.join(str(r['engine']) for r in runs.values())}")
-  by = compare_mtp(*(r["depths"] for r in runs.values()), layer["min_prompts"])
+  ps = core.prompt_set()
+  by = compare_mtp(*(r["depths"] for r in runs.values()), ps["needed"], ps["size"])
   slow = [f"{d}: median {v['change_pct']:+.1f}%, 95% interval {v['interval_pct'][0]:+.1f} to {v['interval_pct'][1]:+.1f}%, the source's own change {v['source_change_pct']:+.2f}%"
           for d, v in by.items() if not v["faster"]]
   info = getattr(w, row["device"])(path)
   sweeps = {n: {"ks": sorted({int(k) for d in r["depths"].values() for k in d["ks"]}), "stopped": r.get("sweep")} for n, r in runs.items()}
-  from boltbeam.collectors import mtp as core
-  return {"gpu": {k: info[k] for k in GPU_KEYS}, **how, "schema": core.SCHEMA, "long_text": {k: core.long_corpus()[k] for k in ("version", "sha256")}, "sweeps": sweeps, "order": ", ".join(MTP_RUNS), "logs": MTP_LOGS, "depths": by, "runs": {k: r["depths"] for k, r in runs.items()},
+  from boltbeam.report import plain
+  bare = {"baseline": plain.words()["speed_up"]["kept"]["no_fit"], "did_not_fit": runs["source"]["did_not_fit"]} if runs["source"].get("did_not_fit") else {}
+  return {"gpu": {k: info[k] for k in GPU_KEYS}, **how, **bare, "schema": core.SCHEMA,
+          "prompts": {"version": ps["version"], "sha256": ps["sha256"], "needed": ps["needed"], "population": (ps["size"] or {}).get("population")}, "long_text": {k: core.long_corpus()[k] for k in ("version", "sha256")}, "sweeps": sweeps, "order": ", ".join(MTP_RUNS), "logs": folder.name, "depths": by, "runs": {k: r["depths"] for k, r in runs.items()},
           "engine": runs["copy"]["engine"], "passed": not slow,
-          "why": "with MTP on, faster than the source at every depth: the 95% interval of the median per-prompt ratio clears the source's own change between its two runs" if not slow
-          else "with MTP on, not shown faster than the source (the 95% interval of the median per-prompt ratio does not clear the source's own change) at " + "; ".join(slow)}
+          "why": (lambda was: f"with MTP on, faster than {was} at every depth: the 95% interval of the median per-prompt ratio clears {was}'s own change between its two runs" if not slow
+                  else f"with MTP on, not shown faster than {was} (the 95% interval of the median per-prompt ratio does not clear {was}'s own change) at " + "; ".join(slow))(
+                  "running the source without MTP (its head did not fit)" if bare else "the source"),
+          "size_said": [f"{n}: {said}" for n, r in runs.items() if (said := (r.get("size_check") or {}).get("said"))]}  # the count's assumption, checked per run
 
 
 def words(rec:dict[str, Any]) -> list[str]:
-  a, th, slow = rec["accuracy"], rec["threshold"], slower(rec)
-  head = (f"{rec['name']}: kept at {rec['copy']}" + ("" if measured(rec) else " (SPEED NOT MEASURED)") if rec["kept"] and rec["passed"] and not slow else
-          f"{rec['name']}: " + ("failed the accuracy check" if not rec["passed"] else "is not faster than the original") + (" (kept, as asked)" if rec["kept"] else " and was deleted"))
+  a, v, slow, kept = rec["accuracy"], verdict(rec), slower(rec), " (kept, as asked)" if rec["kept"] else " and was deleted"
+  head = (f"{rec['name']}: is not faster than the original{kept}" if slow else
+          f"{rec['name']}: failed " + ("the task eval: delete it" if rec.get("stage2") else f"the accuracy check{kept}") if v == "fail" else
+          f"{rec['name']}: kept at {rec['copy']}" + ("" if measured(rec) else " (SPEED NOT MEASURED)") + (", waiting on a task eval" if v == "needs_eval" else "") +
+          (f" (the copy it is built on, {rec['source']}, waits on its own)" if rec.get("base_verdict") == "needs_eval" else "") +
+          (", its task eval passed" if v == "pass" and rec.get("stage2") else ""))
   speed = [rec["speed_note"]] if not measured(rec) else [line for e in rec["speed"] for line in (
     f"speed on {e['gpu']['name']} ({e['gpu']['target']}), tok/s per stream, original -> copy: " + "; ".join(
       f"context {k} batch {n}: {v['original']['tok_s']:.1f} -> {v['copy']['tok_s']:.1f} ({v['change_pct']:+.1f}%)" for k, per in e["contexts"].items() for n, v in per.items()),
@@ -694,8 +950,38 @@ def words(rec:dict[str, Any]) -> list[str]:
       for d, v in depths.items()), *(["the long depth is not shown: it was measured before the replies were checked for repetition (before collectors/mtp's v3), and some measured repetition"] if gone else []),
     *(["draft counts measured: " + "; ".join(
       f"{n.replace('_', ' ')} k={','.join(map(str, x['ks']))}" + (f" (stopped: {x['stopped']})" if x.get("stopped") else "") for n, x in e["sweeps"].items())] if e.get("sweeps") else []),
-    e["why"])]
+    *([e["baseline"]] if e.get("baseline") else []), *(f"{d}: {v['underpowered']}" for d, v in depths.items() if v.get("underpowered")),
+    *e.get("size_said", []), e["why"])]
   ch = rec["changed"]
   return [head, *speed, f"changed: {ch['layer']} {ch['from']} -> {ch['to']}, everything else {ch['all_else']}", rec.get("accuracy_note") if not a else
-          f"gives the original's top answer {a['top1_agreement'] * 100:.1f} times in 100 (pooled; documents clustered interval {a['interval'][0] * 100:.1f} to {a['interval'][1] * 100:.1f} over {a['n']} words; worst document {a.get('doc_min', 0) * 100:.1f}, median {a.get('doc_median', 0) * 100:.1f}; needs {th['min'] * 100:.0f} pooled); perplexity "
-          f"{a.get('ppl_original') or 0:.3f} -> {a.get('ppl_copy') or 0:.3f}", f"engine: {rec['engine_version']}"]
+          f"gives the original's top answer {a['top1_agreement'] * 100:.1f} times in 100 (pooled; documents clustered interval {a['interval'][0] * 100:.1f} to {a['interval'][1] * 100:.1f} over {a['n']} words; worst document {a.get('doc_min', 0) * 100:.1f}, median {a.get('doc_median', 0) * 100:.1f}; " + (f"needs {n} pooled" if (n := need(rec)) else "no floor to judge it by") + "); perplexity "
+          f"{a.get('ppl_original') or 0:.3f} -> {a.get('ppl_copy') or 0:.3f}", *floor_words(rec), f"engine: {rec['engine_version']}"]
+
+
+def need(rec:dict[str, Any]) -> str | None:
+  """The pooled agreement stage 1 needs, per 100: its bar, or an older record's own (bar, else the threshold's min); None: no floor."""
+  x = rec["gate"].get("needs") if rec.get("gate") else rec.get("bar") or rec["threshold"]["min"]
+  return None if x is None else f"{x * 100:.1f}".removesuffix(".0")
+
+
+def floor_words(rec:dict[str, Any], who:str = "the copy") -> list[str]:
+  """bar()'s judgment in words (Speed up's record, and tune's knob as who); a record from before it says nothing more."""
+  g, f, a = rec.get("gate"), rec.get("noise_floor"), rec["accuracy"]
+  if not (g and a):
+    return []
+  if not f:
+    return [f"{rec['engine']} declares no change that must not matter, so it has no noise floor: every copy that changes any answer waits on a task eval"]
+  wd = g["worst"]
+  said = (f"the original against itself with {f['says']} gives its own top answer {(1 - g['d_floor']) * 100:.1f} times in 100 (the engine's noise on this "
+          f"model{', cached' if f.get('cached') else ''}); {who} diverges {g['excess'] * 100:+.2f} in 100 beyond that noise, {g['allowed'] * 100:.2f} allowed "
+          f"({g['confidence']:.0%} one-sided, t {g['z']:.3f} at {g['df']} df x SE {g['se'] * 100:.2f}, {g['se_method']}); the document furthest over "
+          f"its own floor {wd['excess'] * 100:+.1f}, {wd['allowed'] * 100:.1f} allowed (z {wd['z']:.2f}, Sidak over the documents)")
+  s2 = rec.get("stage2")
+  return [said + ("" if g["verdict"] == "pass" else f": beyond the engine's own noise; its task eval: {s2['verdict']}, {eval_words(s2)}" if s2 else
+                  f": beyond the engine's own noise, so {who} waits on a task eval" + (f": {rec['eval']['command']}" if rec.get("eval") else ""))]
+
+
+def eval_words(got:dict[str, Any]) -> str:
+  return (f"the copy's net loss against the engine's own noise run {got['loss'] * 100:+.2f} points over {got['n']} paired items, {got['margin'] * 100:+.2f} past the allowance, SE {got['se'] * 100:.2f}, "
+          f"{got['confidence']:.0%} one-sided (against the original: {got['copy']['b']} only it right, {got['copy']['c']} only the copy); allowed: "
+          f"{got['allowed_said']}" + (f"; {got['why']}" if got["why"] else ""))

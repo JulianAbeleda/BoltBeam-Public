@@ -38,7 +38,9 @@ HEADROOM = 64  # context cells past the prompt and the generated tokens
 
 
 def find(bench:str | None = None, env:dict[str, str] | None = None) -> str | None:
+  """$BOLTBEAM_LLAMA_SERVER, else the llama-server beside llama-bench (the one given, else $BOLTBEAM_LLAMA_BENCH's), else PATH."""
   env = os.environ if env is None else env
+  bench = bench or env.get("BOLTBEAM_LLAMA_BENCH")
   if env.get(ENV):
     return env[ENV] if pathlib.Path(env[ENV]).expanduser().is_file() else None
   beside = pathlib.Path(bench).expanduser().resolve().parent / TOOL if bench else None

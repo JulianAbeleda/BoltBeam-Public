@@ -57,6 +57,11 @@ read by `collectors/engine_builds.py`. Upstream release sources are one table, `
   previous one are deleted, only when BoltBeam installed them (its folder under the builds root, holding its mark);
   each deletion is recorded under `deleted`. Nothing is deleted after a refused or failed comparison, and a build
   found on the machine is never deleted.
+- A current or pending build whose recorded folder or path is not on disk is never handed to a run, and the update,
+  `engines --latest` and the pipeline say so. Gone (its folder's parent is here, the build is not): the update and
+  the pipeline move it to `missing` in `builds.json`, and put it back when its paths return. Unreachable (the parent
+  is not there either: a drive not mounted): the record is kept. `--latest` changes nothing. previous and older are
+  left alone (a folder that is not there is never deleted).
 - The next `pipeline --analyze` of that engine runs the previous current build once into `RUN-was-<version>`,
   then the new build into `RUN`, compares them with this audit, saves `RUN/engine_upgrade.json`, and makes the new
   build current. Without bands the comparison says "not checked"; it does not justify a pin. A failed new-build

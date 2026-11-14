@@ -76,10 +76,11 @@ MODEL_RANGE_MIN="${MODEL_RANGE_MIN:-67108864}"   # a file under 64 MiB is one cu
 BOLTBEAM_REPO="${BOLTBEAM_REPO:-https://github.com/JulianAbeleda/BoltBeam-Public}"
 BOLTBEAM_REF="${BOLTBEAM_REF:-main}"
 LLAMA_REPO="${LLAMA_REPO:-https://github.com/ggml-org/llama.cpp}"
-LLAMA_REF_PIN=097cf33d9
+LLAMA_REF_PIN=b1b770d90
 LLAMA_REF="${LLAMA_REF:-$LLAMA_REF_PIN}"
 # The prebuilt llama.cpp of the pin (tools/build-llama-prebuilt.sh, CUDA 12.8): the sha256 a fetched archive must have
-LLAMA_PREBUILT_SHA256_PIN=2b5e75859f32f4f88e09139038e75d8e7196a160039ea5657653ec7ca7547f8e
+# empty until the b12359 archive is built and uploaded (docs/pods.md "A new pin"): until then step 4 compiles the pin
+LLAMA_PREBUILT_SHA256_PIN=
 LLAMA_PREBUILT="${LLAMA_PREBUILT:-1}"
 LLAMA_PREBUILT_URL="${LLAMA_PREBUILT_URL:-https://github.com/JulianAbeleda/BoltBeam-Public/releases/download/llama-$LLAMA_REF/llama.cpp-$LLAMA_REF-cuda-linux-x86_64.tar.gz}"
 if [[ "$LLAMA_REF" == "$LLAMA_REF_PIN" ]]; then LLAMA_PREBUILT_SHA256="${LLAMA_PREBUILT_SHA256:-$LLAMA_PREBUILT_SHA256_PIN}"; else LLAMA_PREBUILT_SHA256="${LLAMA_PREBUILT_SHA256:-}"; fi

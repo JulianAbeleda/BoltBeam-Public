@@ -40,8 +40,12 @@ GUARD = ("every row must say how its text repeats (runtime/mtp_shared.diversity)
          "each reply with the context's last window before it (a reply exactly one window long). One is refused when it holds a loop "
          "longer than the shipped real-text corpus's longest (a stretch equal to itself one period back, at least a period long, "
          "periods up to the window), or a window with fewer distinct tokens than any of the corpus's, both as this model's tokenizer "
-         "reads it (reference). Acceptance never refuses (notes: a long reply accepting more than every short one is said). "
+         "reads it (reference). A reply that reached one of the model's end tokens (end_ids, the end-of-text tokens its tokenizer names) "
+         "before its last timed token is refused: the engines ignore the end, so the rest is text after the end. Acceptance never refuses (notes: a long reply accepting more than every short one is said). "
          "Not seen: a loop whose period is longer than the window, or a loop that drifts with no exact repeat")
+
+
+SIZE = ("effect", "effect_why", "power", "power_why", "count", "population", "step_sd", "tolerated_sd", "valid_from", "power_by_n", "derived")  # a set's size block
 
 
 class MtpRefused(RuntimeError):
@@ -96,19 +100,61 @@ def _group_alive(pgid:int) -> bool:
     return False
 
 
-def prompt_set(path:pathlib.Path = PROMPTS, long:pathlib.Path | None = None) -> dict[str, Any]:
-  """The short depth's prompts; room: the most tokens a prompt or a long document's task adds around the text (a token
-  is at least a byte), with the chat template's."""
+def prompt_set(path:pathlib.Path | None = None, long:pathlib.Path | None = None) -> dict[str, Any]:
+  """The short depth's prompts (default PROMPTS; an older version by its own file, data/mtp_prompts_v1.json); room: the
+  most tokens a prompt or a long document's task adds around the text (a token is at least a byte), with the chat
+  template's; needed: the count its size block derives (version 1 had none: its own 8); size: that block."""
+  path = path or PROMPTS
   raw = path.read_bytes()
   data = json.loads(raw)
   if data.get("schema") != "boltbeam.mtp_prompts.v1" or not data.get("prompts"):
     raise MtpRefused(f"{path} is not a boltbeam.mtp_prompts.v1 prompt set")
-  ids = [p["id"] for p in data["prompts"]]
+  ids, size = [p["id"] for p in data["prompts"]], data.get("size")
   if len(set(ids)) != len(ids):
     raise MtpRefused(f"{path}: prompt ids repeat")
+  if data["version"] > 1 and (not size or set(SIZE) - set(size)):
+    raise MtpRefused(f"{path}: version {data['version']} must say how its size was derived ({', '.join(sorted(set(SIZE) - set(size or {})))} missing)")
+  needed = size["count"] if size else len(ids)
+  if len(ids) < needed:
+    raise MtpRefused(f"{path} has {len(ids)} prompts; its size block derives {needed}")
   texts = [p["text"] for p in data["prompts"]] + ["\n\n" + t for t in long_corpus(long)["tasks"]]
-  return {"path": str(path), "version": data["version"], "sha256": hashlib.sha256(raw).hexdigest(), "ids": ids,
+  return {"path": str(path), "version": data["version"], "sha256": hashlib.sha256(raw).hexdigest(), "ids": ids, "needed": needed, "size": size,
           "room": max(len(t.encode()) for t in texts) + TEMPLATE_TOKENS}
+
+
+def underpowered(n:int, size:dict[str, Any] | None = None) -> str | None:
+  """Plain words when n prompts are fewer than the shipped set's size derives (a record of version 1, or a depth with
+  fewer prompts), else None."""
+  size = size or prompt_set()["size"]
+  if not size or n >= size["count"]:
+    return None
+  if n < size["valid_from"]:
+    return (f"{n} prompts are too few for the paired rule to bound a median: below {size['valid_from']} it calls even no change a gain "
+            f"far more often than its {1 - draft_count.LEVEL:.0%}; {size['count']} tell a {size['effect']:.0%} step apart {size['power']:.0%} of the time")
+  return (f"{n} prompts tell a {size['effect']:.0%} step between draft counts apart {size['power_by_n'][str(n)]:.0%} of the time; "
+          f"{size['count']} reach {size['power']:.0%} (data/mtp_prompts.json size): a real gain may have been missed")
+
+
+def size_check(depths:dict[str, Any], size:dict[str, Any] | None = None) -> dict[str, Any] | None:
+  """Whether this measurement's own steps (draft_count.step_deviations, every depth) spread no wider than the set's count
+  was derived for (size.tolerated_sd); None with fewer than two ks > 0 at every depth, or a set with no size (version 1).
+  Not holding is said: re-derive."""
+  size = size or prompt_set()["size"]
+  if not size:
+    return None
+  each = [draft_count.step_deviations({int(k): v["per_prompt"] for k, v in per_k.items()}) for per_k in depths.values()]
+  devs = [x for e in each for v in e.values() for x in v]
+  if len(devs) < 2:
+    return None
+  sd, by = statistics.stdev(devs), {}
+  for e in each:
+    for p, v in e.items():
+      by.setdefault(p, []).extend(v)
+  holds = sd <= size["tolerated_sd"]
+  return {"step_sd": sd, "assumed_sd": size["step_sd"], "tolerated_sd": size["tolerated_sd"], "steps": len(devs), "holds": holds,
+          "by_prompt_sd": {p: statistics.stdev(v) for p, v in sorted(by.items()) if len(v) > 1},  # kinds seen apart, not only pooled
+          "said": None if holds else f"these prompts' steps between draft counts spread {sd:.3f}, wider than the {size['tolerated_sd']:.3f} the set's "
+                                     f"{size['count']} prompts were derived for: re-derive the prompt count from this record (data/mtp_prompts.json size.derived says how)"}
 
 
 def long_corpus(path:pathlib.Path | None = None) -> dict[str, Any]:
@@ -128,9 +174,14 @@ def long_corpus(path:pathlib.Path | None = None) -> dict[str, Any]:
 def guard(rows:list[dict[str, Any]], ref:dict[str, Any]) -> list[str]:
   """Why these rows (one k's) cannot be trusted as text, in plain words; empty when all can (GUARD, the rule). Fails
   closed: a row that does not say how its text repeats is refused, never passed."""
-  out, w = [], ref["window"]
+  out, w, ends = [], ref["window"], set(ref.get("end_ids") or ())
+  if not ends:
+    return ["the driver did not say which tokens end a reply (end_ids), so a reply that ended early cannot be seen"]
+  gone = ended(rows, ref)
   for r in rows:
     at, text = f"at the {r['depth']} depth for {r['prompt']} (k={r['k']})", r.get("text") or {}
+    if (r["prompt"], r["depth"]) in gone:  # ended(): that prompt's row is dropped, not the measurement
+      continue
     if r.get("tokens") != w or not text.get("reply") or (r["depth"] != "short" and not text.get("context")):
       out.append(f"the reply {at} did not say how its text repeats ({r.get('tokens')} tokens, {w} needed), so it cannot be shown to be text")
       continue
@@ -142,6 +193,20 @@ def guard(rows:list[dict[str, Any]], ref:dict[str, Any]) -> list[str]:
         if d and d["distinct"] < ref["distinct"] else []
       if said:
         out.append(f"the {what} {at} repeated itself ({'; '.join(said)}), so its speed would measure repetition, not text")
+  return out
+
+
+def ended(rows:list[dict[str, Any]], ref:dict[str, Any]) -> dict[tuple[str, str], str]:
+  """{(prompt, depth): why} for each reply that reached one of the model's end tokens (ref's end_ids) before its last
+  timed token, or did not record its tokens: the engines ignore the end, so what is timed after it is not the answer."""
+  ends, out = set(ref.get("end_ids") or ()), {}
+  for r in rows:
+    end = next((i for i, t in enumerate(r.get("reply_ids") or []) if t in ends), None)
+    at = f"at the {r['depth']} depth for {r['prompt']} (k={r['k']})"
+    if not r.get("reply_ids"):
+      out[r["prompt"], r["depth"]] = f"the reply {at} did not record its tokens, so an early end cannot be seen"
+    elif end is not None and end < len(r["reply_ids"]) - 1:
+      out[r["prompt"], r["depth"]] = f"the reply {at} ended at token {end + 1}, so the rest timed text after the end"
   return out
 
 
@@ -220,7 +285,7 @@ def sweep(run_k:Callable[[int], list[dict[str, Any]]], ks:list[int], *, model:st
   if not free["free"]:
     raise MtpRefused(f"not started: {free['reason']}; a GPU another program holds gives slower numbers that look real")
   out.mkdir(parents=True, exist_ok=True)
-  rows, engines, todo, why, ref, said_too = [], [], [0, *ks], [], None, []
+  rows, engines, todo, why, ref, said_too, dropped, needed = [], [], [0, *ks], [], None, [], {}, prompt_set()["needed"]
   while todo:
     k = todo.pop(0)
     try:
@@ -239,14 +304,22 @@ def sweep(run_k:Callable[[int], list[dict[str, Any]]], ks:list[int], *, model:st
     ref = refs[0]
     if said := guard(new, ref):
       raise MtpRefused(f"k={k}: " + "; ".join(said[:3]) + (f"; and {len(said) - 3} more" if len(said) > 3 else "") + f". Its logs are in {out}")
+    dropped.update(ended(new, ref))  # that prompt's rows leave every k; the measurement stands while enough are left
     rows, engines, said_too = rows + new, engines + engine_line, said_too + notes(new)
+    left = {d: {r["prompt"] for r in rows if r["depth"] == d and (r["prompt"], d) not in dropped} for d in {r["depth"] for r in rows}}
+    if dropped and (len(left.get("short", ())) < needed or not all(left.values())):
+      raise MtpRefused(f"k={k}: {len(left.get('short', ()))} short-depth prompts are left, the measurement needs {needed} (and a long depth one): "
+                       + "; ".join(list(dropped.values())[:3]) + f". Its logs are in {out}")
+    rows = [r for r in rows if (r["prompt"], r["depth"]) not in dropped]
     if grow and not todo:
       more, said = draft_count.sweep_next(by_context(summarize(rows)))
       why.append(said)
       todo += [more] if more else []
   long = long_corpus()
   record = {"schema": SCHEMA, "model": model, "prompts": prompt_set(), "tokens": tokens, "long_tokens": long_tokens, "long_why": long_why,
-            "long_text": {k: long[k] for k in ("path", "version", "sha256", "ids")} if long_tokens else None, "guard": {"rule": GUARD, "reference": ref, "notes": said_too},
+            "long_text": {k: long[k] for k in ("path", "version", "sha256", "ids")} if long_tokens else None, "guard": {"rule": GUARD, "reference": ref, "notes": said_too,
+                                                                                         "dropped": {f"{d} {p}": why for (p, d), why in dropped.items()}},
+            "size_check": size_check(summarize(rows)),
             "ks": sorted({r["k"] for r in rows}), "sweep": why, "engines": engines, "measured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "decode_speed": decode_speed, "depths": summarize(rows), "rows": rows}
   (out / MEASUREMENT).write_text(json.dumps(record, indent=1))

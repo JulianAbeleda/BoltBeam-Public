@@ -185,7 +185,8 @@ def words(p:dict[str, Any] | None, asking:str | None = None) -> str:
     return UNIFORM
   eng = p["source"].get("engine")
   other = f"; measured on another engine ({eng})" if asking and eng and eng != asking else ""
-  return f"{MEASURED} ({eng}, {p['derived']['tokens']} tokens of {p['source'].get('corpus')}, {"measured on " if p["source"].get("phase") else ""}{phase_words(p)}{other})"
+  on = "measured on " if p["source"].get("phase") else ""  # outside the f-string: nested same quotes need 3.12, the floor is older
+  return f"{MEASURED} ({eng}, {p['derived']['tokens']} tokens of {p['source'].get('corpus')}, {on}{phase_words(p)}{other})"
 
 
 IN_SAMPLE = "in-sample, hottest-first: an upper estimate"

@@ -12,6 +12,7 @@ lives in ~/.boltbeam/builds.json (beside the engine scan, engine_scan.engines_fi
                    checked {latest, commit, checked_at, error} the last look at upstream (data/engine_releases.json)
                    not_installed {version, reason, at}        a release this machine did not install, and why
                    comparisons [...]                          each one-time comparison that moved current
+                   missing [...]                              a current or pending build whose folder is gone (usable)
 
 A build BoltBeam found already on the machine has folder None: it is the user's, recorded and never deleted. Only
 releases count (no rc, dev, alpha, beta, local or GitHub-prerelease builds). Only `screen engines --update`
@@ -39,6 +40,12 @@ _PRE = {"dev": 0, "a": 1, "b": 2, "rc": 3}
 
 def rows() -> dict[str, dict[str, Any]]:
   return json.loads(TABLE.read_text())["engines"]
+
+
+def rows_for(backend:str | None) -> list[str]:
+  """The engines this machine's GPU can run: a release row whose install names its backends lists this one (TensorRT-LLM
+  is CUDA's only); every engine when the backend is unknown."""
+  return [e for e, r in rows().items() if not backend or backend in (r.get("install") or {}).get("backends", [backend])]
 
 
 def row(engine:str) -> dict[str, Any]:
@@ -210,6 +217,36 @@ def compared(state:dict[str, Any], engine:str, record:dict[str, Any]) -> dict[st
   return e
 
 
+def _absent(build:dict[str, Any]) -> list[str]:
+  return [p for p in [build.get("folder"), *(build.get("paths") or {}).values()] if p and not os.path.exists(p)]
+
+
+def usable(state:dict[str, Any], engine:str, say:Callable[[str], None], *, record:bool = True) -> dict[str, Any]:
+  """The current and pending builds a run may be handed, each checked on disk: one with a recorded folder or path not
+  there is never handed to a run, and is said. Gone (the parent folder is here and listable, the build is not): moved
+  to `missing`. Unreachable (the parent is not there either: a drive not mounted): the record is kept. A `missing`
+  build whose paths are back returns to its empty slot. previous and older are left alone (deletable refuses a folder
+  that is not there). record=False changes nothing (engines --latest). {current, pending, changed}."""
+  e, out = entry(state, engine), {"changed": False}
+  for m in list(e.get("missing") or []):
+    if record and not e.get(m["was"]) and not _absent(m):
+      e["missing"].remove(m)
+      e[m["was"]], out["changed"] = {k: v for k, v in m.items() if k not in ("was", "gone", "at")}, True
+      say(f"{engine} {m.get('version')} is back ({m['gone'][0]}): {m['was']} again")
+  for slot in ("current", "pending"):
+    b = out[slot] = e.get(slot)
+    if b and (absent := _absent(b)):
+      up = pathlib.Path(absent[0]).parent
+      gone, out[slot] = up.is_dir() and os.access(up, os.R_OK | os.X_OK), None  # its folder is here and listable
+      if gone and record:
+        e.setdefault("missing", []).append({**b, "was": slot, "gone": absent, "at": now()})
+        e[slot], out["changed"] = None, True
+      say(f"{engine} {b.get('version')} ({slot}): {absent[0]} " + (
+        "is gone, its folder is here without it: moved to missing in builds.json, not used" if gone else
+        f"cannot be reached ({up} is not there: a drive not mounted?): kept, not used"))
+  return out
+
+
 def deletable(build:dict[str, Any], root:str | None) -> str | None:
   """Why this older build must stay, or None when BoltBeam made it and may delete it: a folder it recorded, inside
   its builds root, holding its mark. A build found on the machine (folder None) is the user's."""
@@ -253,7 +290,7 @@ def run_version(provider:str, run:pathlib.Path, state:dict[str, Any] | None = No
   from boltbeam.collectors import providers
   got = providers.run_build(run)
   e = entry(state if state is not None else load(), provider)
-  known = [b for b in (e.get("current"), e.get("pending"), e.get("previous"), *(e.get("older") or [])) if b]
+  known = [b for b in (e.get("current"), e.get("pending"), e.get("previous"), *(e.get("older") or []), *(e.get("missing") or [])) if b]
   checked = e.get("checked") or {}
   known.append({"version": checked.get("latest"), "commit": checked.get("commit")})
   return next((b["version"] for b in known if b.get("version") and (_same(got, b.get("commit")) or got == b["version"])), got)

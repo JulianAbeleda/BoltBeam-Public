@@ -11,8 +11,10 @@
                   "clone": ["--filter=tree:0"],
                   "why_clone": "the full commit history without trees: llama.cpp's cmake counts commits for the build number a run records (a one-commit clone counted 1)",
                   "cmake": ["-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF", "-DGGML_NATIVE=ON"],
-                  "targets": ["llama-bench", "llama-batched-bench"]},
+                  "targets": ["llama-bench", "llama-batched-bench", "llama-server", "llama-quantize", "llama-perplexity"],
+                  "why_targets": "the bench targets; llama-server: tune, Measure MTP, the offload setups and the MoE prefill run through it; llama-quantize and llama-perplexity: Speed up writes and gates its copies with them (head_writers/gguf_quantize.stock); all found beside llama-bench; tune's output check and the session replays run through llama-server and llama-perplexity too"},
       "paths": {"BOLTBEAM_LLAMA_BENCH": "build/bin/llama-bench", "BOLTBEAM_LLAMA_BATCHED_BENCH": "build/bin/llama-batched-bench",
+                "BOLTBEAM_LLAMA_SERVER": "build/bin/llama-server",
                 "BOLTBEAM_GGML_CUDA_SRC": "src/ggml/src/ggml-cuda"},
       "version": {"from": "BOLTBEAM_LLAMA_BENCH", "argv": ["{path}", "--version"], "pattern": ["version: (\\d+\\.\\d+\\.\\d+\\S*)"],
                   "commit": ["commit ([0-9a-f]{7,40})", "version: \\d+ \\(([0-9a-f]{7,40})\\)"]}
@@ -20,8 +22,10 @@
     "vllm": {
       "source": "pypi",
       "url": "https://pypi.org/pypi/vllm/json",
-      "install": {"kind": "venv", "backends": ["CUDA"],
+      "install": {"kind": "venv", "backends": ["CUDA", "AMD"],
                   "steps": [["--upgrade", "pip"], ["vllm=={version}"]],
+                  "index": {"AMD": ["--extra-index-url", "https://wheels.vllm.ai/rocm/{version}/rocm72"]},
+                  "why_index": "vLLM's ROCm wheels (vllm, torch, triton, aiter) per release and ROCm line; rocm72, the line the R9700 box's working 0.31.0+rocm723 came from (2026-11-13: 0.33.0 ships rocm72 and rocm100)",
                   "older_driver": [580, ["--extra-index-url", "https://wheels.vllm.ai/{version}/cu129", "--extra-index-url", "https://download.pytorch.org/whl/cu129"]],
                   "check": "import vllm, torch; print('vllm', vllm.__version__, 'torch', torch.__version__)"},
       "paths": {"BOLTBEAM_VLLM_PYTHON": "venv/bin/python"},

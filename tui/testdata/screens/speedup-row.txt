@@ -18,7 +18,7 @@
 │   [ Check ] start the engine once with these flags and compare               │
 │   [ Measure MTP ] decode with 1, 2, 3 draft tokens against none              │
 │   [ Speed up: the output layer ] Shrinks the word-picking layer, 18 min      │
-│   [ Speed up: the draft layer ] Shrinks the guess-ahead layer, 25 to 102 min │
+│   [ Speed up: the draft layer ] Shrinks the guess-ahead layer, 28 to 112 min │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 
  ↑↓ move · enter pick · esc setup · ? all keys · q quit

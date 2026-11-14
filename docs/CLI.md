@@ -40,7 +40,8 @@ boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECOR
   `-ctv`; vLLM: the weights plus the KV). With experts in RAM, the patched build's prefetch slot count is worked out
   from the copy rate, the compute time and the GPU memory left after load
   (`--time-budget` gives a measured compute time); `--measure` reads that memory from a running server and backs off
-  if a slot fails to allocate. `--workload one-shot` turns on one checkpoint per prompt (faster prompts; a follow-up
+  if a slot fails to allocate. llama.cpp's `-bs` (sampling on the GPU) is shown off, with the GPU memory its sampler
+  chains would take (from the model's vocabulary, the server's slots and the draft count) and why it is not set here. `--workload one-shot` turns on one checkpoint per prompt (faster prompts; a follow-up
   that changes an earlier turn re-reads the whole prompt). A measured number is quoted only on the GPU and model it
   was measured on.
 - `time-budget` splits one request's wall time from an nsys capture's sqlite export: GPU kernels by family, copies

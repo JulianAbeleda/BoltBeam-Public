@@ -108,17 +108,28 @@ def detect(build:str | None, *, target=None) -> dict[str, Any]:
           "source": f"vLLM {got['version']} source at {root} (arg parser and config classes, read; no model started)"}
 
 
-def gpu_memory() -> dict[str, Any]:
+def gpu_memory(*, every:bool = False, ggml_backend:str | None = None, tightest:bool = False) -> dict[str, Any]:
   """The first GPU's total and free memory, read through its vendor's telemetry source (NVML, amdgpu sysfs): no CUDA
-  context, no model; {} when it cannot say."""
+  context, no model; {} when it cannot say. every: each GPU a llama.cpp build of ggml_backend sees (a vendor row's; it
+  splits its layers over all of them and sees no other vendor's), summed, with "cards" and "free_min" (the tightest
+  card's free memory: what a cost that does not split, a draft head or the sampler, must fit in). tightest: that card's
+  reading as "free" (the driver's --memory-cmd reads "free")."""
   from boltbeam.collectors import gpu_telemetry
+  from boltbeam.target import vendors
   from boltbeam.target.hardware import hardware_profile
   try:
-    dev = (hardware_profile()["gpu"].get("devices") or [None])[0]
-    used, total = gpu_telemetry.source_for(dev).memory_mib()
+    devs = hardware_profile()["gpu"].get("devices") or [None]
+    devs = [d for d in devs if d and ggml_backend in (None, vendors.VENDORS[d["vendor"]].ggml_backend)] if every else devs[:1]
+    reads = [gpu_telemetry.source_for(d).memory_mib() for d in devs]
   except Exception:  # noqa: BLE001  no reading is a stated unknown, never a crash
     return {}
-  return {"free": (total - used) * 2**20, "total": total * 2**20} if used is not None and total else {}
+  if not reads or any(used is None or not total for used, total in reads):
+    return {}
+  free = [(total - used) * 2**20 for used, total in reads]
+  out = {"free": sum(free), "total": sum(total for _, total in reads) * 2**20}
+  if every:
+    out |= {"cards": len(free), "free_min": min(free)}
+  return {**out, "free": out["free_min"]} if tightest and every else out
 
 
 def _config(model:str) -> dict[str, Any]:
@@ -202,7 +213,7 @@ def engine_args(values:list[dict[str, Any]]) -> dict[str, Any]:
     elif v["name"] == "--cpu-offload-params":
       out["cpu_offload_params"] = v["value"].split()
     else:
-      out[v["name"].lstrip("-").replace("-", "_")] = _typed(v["value"])
+      out[v["name"].lstrip("-").replace("-", "_")] = v["value"] == "on" if v["kind"] == "switch" else _typed(v["value"])
   return out
 
 
@@ -214,7 +225,7 @@ def render(values:list[dict[str, Any]], f:dict[str, Any], b:dict[str, Any], mode
       top, _, key = v["name"].partition(".")
       config[top] = {**config.get(top, {}), **(v.get("with") or {}), key: _typed(v["value"])}
     else:
-      flags += [v["name"], *(v["value"].split() if v["name"] == "--cpu-offload-params" else [v["value"]])]
+      flags += [v["name"]] * (v["value"] == "on") if v["kind"] == "switch" else [v["name"], *(v["value"].split() if v["name"] == "--cpu-offload-params" else [v["value"]])]
   for top, d in config.items():
     flags += [f"--{top.replace('_', '-')}", json.dumps(d, separators=(",", ":"))]
   argv = ["vllm", "serve", model, *flags, *(extra or [])]

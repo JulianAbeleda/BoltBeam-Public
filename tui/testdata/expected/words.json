@@ -409,11 +409,11 @@
     "top_line": "{time}, {share} of the lost time"
   },
   "llama_server": {
-    "allocation": "a CUDA allocation failed",
-    "cublas": "cuBLAS could not allocate its handle (cublasCreate)",
+    "allocation": "a GPU allocation failed",
+    "cublas": "the GPU's BLAS library (cuBLAS, hipBLAS on AMD) could not allocate its handle (cublasCreate)",
     "fit_bound": "llama.cpp's own fit at k={k} with the draft head, {why}",
     "fit_refused": "the long context cannot be measured with the draft head here: llama.cpp's own fit at k={k}: {why}",
-    "no_fit": "llama-server's own fit (common_fit_params) says the context {ctx:,}{with} at k={k} leaves less GPU memory free than its target: the first request would run out of memory, so nothing was measured",
+    "no_fit": "; llama.cpp's fit did not run or failed: {why}",
     "out_of_memory": "llama-server ran out of GPU memory at k={k}: {what}; the context {ctx:,} does not fit{with}",
     "stopped": "llama-server stopped at k={k} without a reply (context {ctx:,}{with}); the last error in its log: {last}",
     "with_head": " with the draft head"
@@ -722,19 +722,27 @@
       "listed": "It shows in model lists as {name}.",
       "long": "Long prompt, {context} tokens",
       "mtp_line": "With MTP, {label}: {before} to {after} tok/s ({change} per prompt)",
+      "mtp_line_no_fit": "{label}: {before} tok/s without MTP to {after} tok/s with the copy's MTP ({change} per prompt)",
       "mtp_retired": "With MTP on a long prompt: not shown. That run was measured before BoltBeam checked that the replies did not repeat themselves, and some measured repetition. Measure again to see it.",
+      "no_fit": "The source head did not fit on this GPU beside the model (out of GPU memory when it loaded), so the copy is compared with running without MTP.",
       "not_measured": "SPEED NOT MEASURED: {reason}",
       "not_measured_off": "the speed step was switched off.",
       "not_measured_why": "the speed was not measured, so this copy is not known to be faster.",
       "short": "Short prompt, {context} tokens"
     },
     "missing": "This model was not found.",
+    "needs_eval": {
+      "answers": "Its answers matched the original's {pct}% of the time, more apart than the engine's own noise explains. Only a paired task eval can decide.",
+      "command": "To decide: {command}.",
+      "head": "WAITING ON A TASK EVAL: the copy's answers differ beyond the engine's own noise."
+    },
     "no_writer": "This model's format has no faster copy yet.",
     "not_kept": {
       "answers": "Its answers matched the original's {pct}% of the time; {need}% is needed.",
       "head": "NOT KEPT: the faster copy was deleted.",
       "logs_kept": "Its speed logs are kept in {where}.",
       "mtp_slower": "With MTP on, it was not clearly faster than {base} with a {context}-token prompt: {before} to {after} tok/s, within what {base} itself varied between two runs.",
+      "no_fit_base": "running without MTP",
       "original": "The original is untouched.",
       "slower": "It was not faster than the original with a {context}-token prompt: {before} to {after} tok/s."
     },
@@ -844,6 +852,80 @@
             "has no writer for the"
           ],
           "reason": "This engine cannot make that part of this model smaller yet."
+        },
+        {
+          "match": [
+            "no MTP measurement for"
+          ],
+          "reason": "This engine cannot yet measure the speed with drafts on, so a smaller draft head could not be checked."
+        },
+        {
+          "fix": "Pick the draft head's own file.",
+          "match": [
+            "holds the main model's layers too"
+          ],
+          "reason": "This file is the whole model. The draft head is made smaller as a file of its own."
+        },
+        {
+          "fix": "Pass --main with that model's file.",
+          "match": [
+            "pass --main"
+          ],
+          "reason": "A draft head is measured with the model it drafts for."
+        },
+        {
+          "match": [
+            "does not pair with this draft head"
+          ],
+          "reason": "That main model does not go with this draft head."
+        },
+        {
+          "fix": "Pass the main model's file (the first file of a split model).",
+          "match": [
+            "is not a file",
+            "later file of a split",
+            "cannot be read as a GGUF"
+          ],
+          "reason": "The main model given is not one model file that can be read."
+        },
+        {
+          "match": [
+            "the recipe puts",
+            "the recipe's"
+          ],
+          "reason": "The recipe for the draft head does not fit this file."
+        },
+        {
+          "match": [
+            "did not fit on this GPU beside the model either"
+          ],
+          "reason": "The smaller draft head did not fit on this GPU beside the model either."
+        },
+        {
+          "fix": "Try again.",
+          "match": [
+            "fit in one of its two runs"
+          ],
+          "reason": "The original draft head fit in one speed run and not in the other, so they cannot be compared."
+        },
+        {
+          "match": [
+            "llama-quantize changed"
+          ],
+          "reason": "The engine's tool changed more than it was asked to, so the copy was deleted."
+        },
+        {
+          "match": [
+            "did not write the planned types"
+          ],
+          "reason": "The engine's tool did not write the sizes it was asked for, so the copy was deleted."
+        },
+        {
+          "match": [
+            "has no file type",
+            "listed no file types"
+          ],
+          "reason": "The engine's tool cannot keep this model's file type, so a copy could not be made."
         },
         {
           "fix": "Try again.",
@@ -956,7 +1038,8 @@
             "ran on engine build",
             "the accuracy check ran on",
             "different engine builds",
-            "ran on several vLLM builds"
+            "ran on several vLLM builds",
+            "ran on several llama.cpp builds"
           ],
           "reason": "The engine changed while the copy was made."
         },
@@ -1251,10 +1334,11 @@
       "depth": "{n} {depth} prompts at about {context:,.0f} tokens (the setup moved {drift:.1%} between its runs)",
       "dropped": " Not run: {points}, because {why}.",
       "failed": " {point} did not run (its log is beside the record): left out.",
-      "gate_below": " {point} was faster but changes the answers: on the real-text long corpus, teacher-forced over the last {scored:,} positions of a {context:,}-token context in each of {docs} documents, the most likely next token agreed with {here} only {agreement:.1%} of the time (interval {lo:.1%} to {hi:.1%}), below Speed up's {min:.0%}: reported, not recommended.",
+      "gate_below": " {point} was faster but changes the answers: on the real-text long corpus, teacher-forced over the last {scored:,} positions of a {context:,}-token context in each of {docs} documents, the most likely next token agreed with {here} only {agreement:.1%} of the time (interval {lo:.1%} to {hi:.1%}); Speed up's gate: {said}. Speed up would keep such a copy waiting on a task eval; tune runs no task eval, so it does not pick {point}.",
       "gate_failed": " {point} was faster, but its answers could not be checked against {here} ({why}): not recommended. The check reads two contexts of each document, so a context longer than half the shortest one is not checked.",
-      "gate_passed": " Its answers checked against {here} on the real-text long corpus, teacher-forced: the last {scored:,} positions of a {context:,}-token context in each of {docs} documents; the most likely next token agreed {agreement:.1%} of the time (documents clustered interval {lo:.1%} to {hi:.1%}), at or above Speed up's {min:.0%}.",
+      "gate_passed": " Its answers checked against {here} on the real-text long corpus, teacher-forced: the last {scored:,} positions of a {context:,}-token context in each of {docs} documents; the most likely next token agreed {agreement:.1%} of the time (documents clustered interval {lo:.1%} to {hi:.1%}); Speed up's gate: {said}.",
       "gate_short": " {point} is not recommended: its answers were checked only to a {checked:,}-token context, short of the {context:,} tuned here.",
+      "held": " {point} was faster but is not kept: {why}.",
       "lower": " (at least {lower} faster)",
       "none": "{setup}: nothing was faster than {here} beyond that, so {here} stands",
       "picked": "{setup}: {value} is faster than {here}",
@@ -1267,6 +1351,37 @@
     "lacks": "This {engine} build lacks these knobs: {knobs}.",
     "measure_hint": "Rows marked derived or default for a chunk size, a crossover or a choice are the starting point; --measure confirms them with a short real-text sweep, of reading a prompt or of writing a reply (it starts the engine once per point).",
     "measured_with": " It was measured with {knobs} at the build's defaults, and this setup sets {moved}: it is not measured again here, so measure it again with them.",
+    "memory": {
+      "budget": "{after:.2f} GiB is free after the model loads ({how}); with the {held:.2f} GiB these rows take there, less a {margin:.2f} GiB margin kept free for what a session adds after load ({margin_how}), they have {room:.2f} GiB.",
+      "estimated": "estimated: the GPU's free memory now, less the model, its KV cache and the engine's own buffers, with these rows at their defaults",
+      "failed": " The measurement of the combinations stopped: {why}.",
+      "gain": ", predicted {gain:.2f}x ({how}).",
+      "item": "{label} ({gib:.2f} GiB)",
+      "kept": " --knob: only the rows named were measured; {rows} kept their values.",
+      "lead": "Memory: {rows} take GPU memory from one budget, so they are chosen together, not one at a time. ",
+      "lead_one": "Memory: {rows} takes GPU memory, so its value is checked against what the GPU has. ",
+      "margin_estimate": "an estimate, not measured here, from one RTX 5090 run of llama-server with -bs that ran out of GPU memory at turn 7 of a chat with 0.77 GiB free after load",
+      "margin_measured": "measured: the free memory read after each of {ref}'s replies fell {growth:.2f} GiB below its after-load reading",
+      "measured": "measured right after {ref} loaded",
+      "no_gain": ", predicted no faster than the defaults.",
+      "none": " No combination of their values fits it, so each keeps its own value, and the setup may run out of GPU memory.",
+      "none_one": " No value of it fits it, so it keeps its own, and the setup may run out of GPU memory.",
+      "nothing": "nothing else fits the measured budget, so the setup stands with nothing more to confirm",
+      "over": " Predicted faster but over the budget: {items}.",
+      "own": "its own run left no GPU memory free at its lowest",
+      "pick": " Chosen: {label}, {gib:.2f} GiB",
+      "row": "chosen with the other rows that take GPU memory, from one budget of {room:.2f} GiB (the Memory line above): {label}, the fastest predicted ({gain:.2f}x) that fits and keeps the answers",
+      "row_measured": "measured together with the other rows that take GPU memory (the Memory line above): {label}",
+      "row_measured_one": "measured against the GPU memory it takes (the Memory line above): {label}",
+      "row_one": "checked against the GPU memory it takes, a budget of {room:.2f} GiB (the Memory line above): {label}, the fastest predicted ({gain:.2f}x) that fits and keeps the answers",
+      "stop": "the setup first and last, the fastest predicted combinations that fit between; the output check only for a faster one that changes the answers",
+      "swept": " {says}.",
+      "unchecked": " Predicted faster and within the budget, but it changes the answers, so only --measure, which checks them, can choose it: {items}.",
+      "uncosted": " Not costed, so not chosen ({n}): {items}; {what} could not be read here.",
+      "unknown": "Memory: {rows} take GPU memory from one budget, but {what} could not be read here, so each keeps its own value and their fit is not checked.",
+      "unknown_one": "Memory: {rows} takes GPU memory, but {what} could not be read here, so it keeps its own value and its fit is not checked.",
+      "unread": "its own GPU memory was not read"
+    },
     "missing": "not checked: {fact} could not be read here",
     "none": "none",
     "not_applicable": "Not used with this model and placement:",
@@ -1306,6 +1421,7 @@
     "source_derived": "derived",
     "source_measured": "measured",
     "sweep_failed": "the measurement stopped without an answer (the engine did not start or did not answer); its log is in {out}",
+    "switch_off": "{name} not passed",
     "unlisted": "a build BoltBeam does not know by name",
     "unset": "(unset)"
   },
@@ -1315,6 +1431,7 @@
     "kv_size_unknown": "{type} (size unknown)",
     "model": "Model: {name}, {layers} expert layers of {experts} experts, {gib:.2f} GiB of experts; {host:.2f} GiB of them in host RAM ({placement}).",
     "model_dense": "Model: {name}, dense (no experts): there are no experts to place in host RAM.",
+    "mtp_gain": "k={k}: {speedup:.2f}x over no draft, measured at a {context:,.0f}-token context",
     "no_fit_context": "A {context:,}-token context does not fit this GPU: what the model keeps on the card and the KV cache for one request need at least {need:.1f} GiB (the compute buffers and the GPU context come on top), and the GPU has {gpu:.1f} GiB. Use a shorter context, keep more of the model in host RAM, or use a smaller model.",
     "no_head": "the MTP head {head} is not a file",
     "no_heads": "none was given (--draft) and none sits beside the model",

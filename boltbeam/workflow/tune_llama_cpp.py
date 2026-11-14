@@ -18,6 +18,7 @@ import sys
 from typing import Any, Callable
 
 from boltbeam.collectors import capture_settings as cs
+from boltbeam.collectors.replay import flag_value
 from boltbeam.core.refused import Refused
 from boltbeam.roofline import routing_profile as rp
 
@@ -58,7 +59,16 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "per_layer_embd_bytes": "the per-layer token embedding llama.cpp keeps in host RAM and gathers a row of per token and layer",
          "mtp_head": "the multi-token prediction head the command loads (--draft, else the one beside the model)",
          "mtp_k_measured": "the MTP draft count measured on this machine for this model", "mtp_why": "why there is no measured draft count",
-         "mtp_says": "where the measured draft count was measured, its speed and spread"}
+         "mtp_says": "where the measured draft count was measured, its speed and spread", "vocab_size": "the model's vocabulary, in tokens",
+         "server_slots": "llama-server's slots: -np in --flags, else the requests the setup is stated for (the command passes them as -np)", "draft_tokens": "the draft tokens per step the command runs (--flags' draft count, else the MTP draft count row's; 0 without)",
+         "draft_from_flags": "--flags give the draft count (the command's own wins over the row's)",
+         "kv_type_bytes": "bytes per element of each KV cache type this build takes (ggml's block layouts)",
+         "kv_elems_per_token": "the KV cache's elements one token adds: K and V of the attended layers (the model's profile)",
+         "draft_kv_elems_per_token": "those the draft head adds: its layers at the model's elements per attended layer",
+         "draft_weight_bytes": "the draft head's file: its weights on the GPU",
+         "mtp_ks": "the draft counts the memory fit may choose: none and each one measured, when a measured one is used",
+         "mtp_gains": "each measured draft count's speed over no draft (at the pick's depth, else the nearest it was measured at)",
+         "mtp_gain_words": "where each of those speeds was measured, in words"}
 NAMES = re.compile(rb"(?:LLAMA|GGML)_[A-Z0-9_]{2,}")  # getenv literals in the build
 READ_FROM = "llama.cpp b12257-19-g7592b61d3 (2026-11-10)"  # the build LITERALS and FA_KERNELS were read from: a later build that renames them reads as lacking them, said
 LITERALS = {"draft-mtp": rb"adding speculative implementation 'draft-mtp'",  # common/speculative.cpp: llama-server registers the MTP draft type
@@ -67,6 +77,8 @@ FA_KERNELS = (re.compile(rb"flash_attn_ext_vecILi\d+ELi\d+EL9ggml_type(\d+)ELS0_
               re.compile(rb"kernel_flash_attn_ext_vec_([a-z0-9]+(?:_[0-9])?)_dk\d+"))  # ggml-metal: one Metal kernel per type
 HELP_TIMEOUT_S = 60  # --help loads no model; a build that has not answered in a minute is hung, and its help is read as empty
 GiB = 1 << 30
+NP = ("-np", "--parallel")  # llama-server's slots: the command passes the requests the setup is stated for (tools/server/server.cpp:126-134)
+CHECK_TOOL = "llama-perplexity (it scores the logits)"  # the output check's tool, in tune's words
 GATE_CHUNKS = 1  # the output check reads one chunk of the tuned context per document: its second half is what is scored, the depth tune is for
 
 
@@ -299,6 +311,11 @@ def compute_time(plan:dict[str, Any], budget:dict[str, Any] | None, prompt:int) 
   return None, "no measured time budget and no prompt limit" + unused
 
 
+def gpu_backend(b:dict[str, Any]) -> str | None:
+  """The ggml backend whose GPUs the build runs on (its detect()), None for a CPU build or an unknown one: every GPU."""
+  return None if b.get("backend") in (None, "cpu") else b["backend"]
+
+
 def slot_facts(model:str, ex:dict[str, Any], tabs:dict[str, Any], host:dict[str, Any], *, in_ram:int, host_experts:int, plan:dict[str, Any],
                options:dict[str, Any], kv:tuple[float | None, str | None] = (None, None)) -> tuple[dict[str, Any], dict[str, str]]:
   """The facts the streamer's slot count reads, read and not combined (the rule is the row's, data/engine_knobs.json): the
@@ -322,9 +339,10 @@ def slot_facts(model:str, ex:dict[str, Any], tabs:dict[str, Any], host:dict[str,
   gpu = options.get("gpu")
   if gpu is None:
     from boltbeam.workflow.tune_vllm import gpu_memory
-    gpu = gpu_memory()
+    gpu = gpu_memory(every=True, ggml_backend=options.get("ggml_backend"))  # llama-server splits its layers over every GPU of its backend
   out["gpu_total_bytes"], out["gpu_free_bytes"] = gpu.get("total"), gpu.get("free")
-  src |= {"gpu_total_bytes": "the GPU's telemetry source (NVML / amdgpu sysfs)", "gpu_free_bytes": "the GPU's telemetry source (NVML / amdgpu sysfs)"}
+  out["gpu_count"], out["gpu_free_min_bytes"] = gpu.get("cards", 1 if gpu else None), gpu.get("free_min", gpu.get("free"))
+  src |= dict.fromkeys(("gpu_total_bytes", "gpu_free_bytes", "gpu_count", "gpu_free_min_bytes"), "the GPU's telemetry source (NVML / amdgpu sysfs)")
   profile = options.get("profile")
   try:
     if profile is None:
@@ -347,8 +365,8 @@ def slot_facts(model:str, ex:dict[str, Any], tabs:dict[str, Any], host:dict[str,
     out[f"{NS}.on_card_bytes"] = max(tabs["file_bytes"] - host_experts - tabs["bytes"], 0)
     src[f"{NS}.on_card_bytes"] = "the GGUF files' tensor data less the host experts and the host-mapped tables"
   total, on_card, kv_b = out.get("gpu_total_bytes"), out.get(f"{NS}.on_card_bytes"), out.get(f"{NS}.kv_cache_bytes")
-  sized = [x for x in options.get("extra") or [] if x in ("-c", "--ctx-size", "-ctk", "-ctv", "--cache-type-k", "--cache-type-v")]
-  if sized:  # the KV here is sized at f16 and the context given: flags that change either are not seen, so no fit is claimed
+  sized = [n[0] for n in (("-c", "--ctx-size"), ("-ctk", "--cache-type-k"), ("-ctv", "--cache-type-v"), NP) if flag_value([str(x) for x in options.get("extra") or []], n)]
+  if sized:  # the KV here is one slot's, at f16 and the context given: flags that change these (slots split the context, each its own state) are not seen, so no fit is claimed
     src[f"{NS}.kv_cache_bytes"] = src.get(f"{NS}.kv_cache_bytes", "") + f"; the fit of one request on the GPU is not checked: --flags sets {', '.join(sized)}"
   elif total and on_card is not None and kv_b is not None and on_card + kv_b > total:  # one request cannot fit this GPU: say so, never clamp the slots to 4 and go on
     from boltbeam.report.plain import words
@@ -412,7 +430,7 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
   dr, dsrc = decode_facts(model, host, b, options, tabs)
   out |= dr
   if not shared:  # the KV it sizes is at the build's own cache type (decode_facts)
-    vr, vsrc = slot_facts(model, ex, tabs, host, in_ram=in_ram, host_experts=host_experts, plan=plan, options=options,
+    vr, vsrc = slot_facts(model, ex, tabs, host, in_ram=in_ram, host_experts=host_experts, plan=plan, options={"ggml_backend": gpu_backend(b), **options},
                           kv=(dr["kv_bytes_per_token"], dr[f"{NS}.kv_default"]))
     out |= vr
   else:
@@ -441,6 +459,7 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
   text = options["help"] if "help" in options else build_help(b["build"])
   said = "llama-server --help" if text else "llama-server --help did not answer"
   kv_flag, fa_flag, t_flag = (_flag_of(x) for x in ("kv_default", "fa_default", "threads_default"))
+  np, dk = (flag_value([str(x) for x in options.get("extra") or []], n) for n in (NP, (_row()["draft"]["count"],)))  # the user's own, which win
   default = help_default(text, kv_flag)
   layout = {t: GGML_BLOCK_LAYOUTS.get(gguf.GGML_TYPE_IDS.get(t.upper(), -1)) for t in help_choices(text, kv_flag)}
   unknown = [t for t, lay in layout.items() if lay is None]  # a type ggml's block table here does not hold: its size is not known, so it is not a candidate
@@ -450,10 +469,14 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
                          f"{NS}.kv_default": default, f"{NS}.threads_default": help_default(text, t_flag),
                          f"{NS}.v_quant_needs_fa": "quantized-v-needs-flash-attention" in b["features"], f"{NS}.kv_types": kinds,
                          f"{NS}.kv_quantized_types": [t for t in kinds if layout[t][0] > 1], "kv_bytes_per_token": None, f"{NS}.kv_sizes": None,
-                         f"{NS}.per_layer_embd_bytes": (tabs.get("by_table") or {}).get(_row()["per_layer_table"], 0)}
+                         f"{NS}.per_layer_embd_bytes": (tabs.get("by_table") or {}).get(_row()["per_layer_table"], 0), f"{NS}.vocab_size": None,
+                         f"{NS}.server_slots": host["served_requests"] if np is None else int(np) if np.isdigit() and int(np) >= 1 else None,
+                         f"{NS}.draft_tokens": 0 if dk is None else int(dk) if dk.isdigit() else None, f"{NS}.draft_from_flags": dk is not None}
   src = {f"{NS}.fa_modes": said, f"{NS}.flash_attn": f"{said}: its default, until the -fa row sets it", f"{NS}.v_quant_needs_fa": b["source"],
          f"{NS}.kv_types": f"{said}, " + ("the flash attention kernels in the build's GPU library" if b.get("fa_kv_types") else "no flash attention kernels read in the build: every type it takes")
-         + (f"; not {', '.join(unknown)}: no block layout for them here" if unknown else ""), f"{NS}.per_layer_embd_bytes": "the GGUF tensor table"}
+         + (f"; not {', '.join(unknown)}: no block layout for them here" if unknown else ""), f"{NS}.per_layer_embd_bytes": "the GGUF tensor table",
+         f"{NS}.server_slots": "the requests the setup is stated for (the command passes -np)" if np is None else f"--flags -np {np}" + ("" if out[f"{NS}.server_slots"] else
+                                ": not a slot count of 1 or more (-1 is llama-server's auto: 4 slots, one KV), so the slots are unknown")}
   try:
     profile = options.get("profile")
     if profile is None:
@@ -461,9 +484,12 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
       profile = profile_from_model(model, None).to_json()
     from boltbeam.roofline import prefill_work as pw
     elems = pw.kv_bytes_per_token(profile, element_bytes=1)  # elements per token: K and V of every attended layer
+    per_layer = elems / pw.attention_layer_count(profile) if elems else None
+    out[f"{NS}.vocab_size"], src[f"{NS}.vocab_size"] = profile.get("vocab_size"), "the model's profile"
   except Exception as exc:  # noqa: BLE001  an unread shape is a stated unknown; the raw text is provenance
-    elems, src["kv_bytes_per_token"] = None, f"the model's shapes could not be read: {type(exc).__name__}: {exc}"
+    elems, per_layer, src["kv_bytes_per_token"] = None, None, f"the model's shapes could not be read: {type(exc).__name__}: {exc}"
   size = lambda t: elems * layout[t][1] / layout[t][0]  # noqa: E731  bytes per token at a type: its block's bytes over its block's elements
+  out[f"{NS}.kv_type_bytes"], out[f"{NS}.kv_elems_per_token"] = {t: layout[t][1] / layout[t][0] for t in kinds}, elems
   if elems and default in kinds:
     out["kv_bytes_per_token"] = size(default)
     out[f"{NS}.kv_sizes"] = ", ".join(w["kv_size"].format(type=t, bytes=size(t)) for t in kinds)
@@ -484,6 +510,10 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
                       seqs=host["served_requests"]) if head else \
     {"k": None, "says": None, "why": w["heads"].format(heads=", ".join(h.name for h in heads)) if heads else w["no_heads"]}
   out |= {"model_draft_layers": layers, f"{NS}.mtp_head": head, f"{NS}.mtp_k_measured": pick["k"], f"{NS}.mtp_why": pick["why"], f"{NS}.mtp_says": pick["says"]}
+  gains = {str(k): g for k, g in sorted((pick.get("gains") or {}).items())} if pick["k"] and dk is None else {}  # the fit's draft counts: only where one is used, never the flags' own
+  out |= {f"{NS}.draft_kv_elems_per_token": per_layer * layers if per_layer else None, f"{NS}.draft_weight_bytes": heads[0].stat().st_size if head else None,
+          f"{NS}.mtp_ks": [None, *gains] if gains else [], f"{NS}.mtp_gains": {k: g[0] for k, g in gains.items()},
+          f"{NS}.mtp_gain_words": {k: w["mtp_gain"].format(k=k, speedup=g[0], context=g[1]) for k, g in gains.items()}}
   src |= {"model_draft_layers": f"{heads[0].name}: its nextn_predict_layers" if head else "no MTP head (--draft, or one beside the model)",
           f"{NS}.mtp_head": "--draft (given)" if given else "the one MTP head beside the model (collectors/llama_mtp.heads)"}
   return out, src
@@ -513,13 +543,13 @@ def _env_flags(values:list[dict[str, Any]], f:dict[str, Any] | None = None) -> t
         flags += ["-b", v["value"]]
   if _row()["draft"]["model"] in flags:
     flags += [x for v in values if v["kind"] == "flag" for k, t in (v.get("with_draft") or {}).items() for x in (k, fill(t, v))]
-  return env, flags
+  return env, flags + [v["name"] for v in values if v["kind"] == "switch" and v["value"] == "on"]  # no value: after the pairs
 
 
 def render(values:list[dict[str, Any]], f:dict[str, Any], b:dict[str, Any], model:str, extra:list[str] | None = None) -> dict[str, Any]:
   env, flags = _env_flags(values, f)
-  asked = {x for x in extra or [] if x in ("-c", "--ctx-size")}
-  ctx = [] if asked or not f.get("context_tokens") else ["-c", str(f["context_tokens"])]  # the context the KV estimate used
+  ctx = [] if flag_value(extra or [], ("-c", "--ctx-size")) or not f.get("context_tokens") else ["-c", str(f["context_tokens"])]  # the context the KV estimate used
+  ctx += [] if flag_value(extra or [], NP) or not f.get("served_requests") else ["-np", str(f["served_requests"])]  # not llama-server's auto: 4 slots, KV shared
   argv = [b["build"], "-m", model, *cs.all_layers(extra), *_placement(f), *ctx, *flags, *(extra or [])]
   place = _placement(f)  # where the experts sit: a run takes it as a setting, so "use these" copies it with the values that assume it
   placement = [{"name": "--cpu-moe", "value": "on"}] if place == ["--cpu-moe"] else [{"name": place[0], "value": place[1]}] if place else []
@@ -528,8 +558,12 @@ def render(values:list[dict[str, Any]], f:dict[str, Any], b:dict[str, Any], mode
 
 
 SLOT_FAILED = re.compile(r"cudaMalloc of a [\d.]+ MiB slot failed")  # the streamer's log line (llama-pinned-copy-stream.patch)
-COMPUTE_BUFFER = re.compile(r"CUDA\d+ compute buffer size\s*=\s*([\d.]+) MiB")
-MEMORY_CMD = [sys.executable, "-c", "import json; from boltbeam.workflow.tune_vllm import gpu_memory; print(json.dumps(gpu_memory()))"]
+COMPUTE_BUFFER = re.compile(r"[A-Za-z]+\d+ compute buffer size\s*=\s*([\d.]+) MiB")  # any GPU backend: CUDA0, ROCm0, MTL0
+def memory_cmd(backend:str | None) -> list[str]:
+  """The driver's --memory-cmd: the tightest card of the build's backend, so a fit and its lowest reading are per card (a
+  sum over cards hides one card at zero behind another's free memory)."""
+  return [sys.executable, "-c", "import json; from boltbeam.workflow.tune_vllm import gpu_memory; "
+          f"print(json.dumps(gpu_memory(every=True, ggml_backend={backend!r}, tightest=True)))"]
 
 
 def server_log_facts(text:str) -> dict[str, Any]:
@@ -541,7 +575,7 @@ def server_log_facts(text:str) -> dict[str, Any]:
 
 
 def point(server:str, model:str, *, prompt:int, flags:list[str], env:dict[str, str], reps:int, port:int, log:pathlib.Path,
-          memory:bool = False, context:int | None = None) -> dict[str, Any]:
+          memory:bool = False, backend:str | None = None, context:int | None = None, slots:int = 1) -> dict[str, Any]:
   """One cold real-text prefill of `prompt` tokens in a fresh llama-server (the --prefill driver): {"ms" (the median client
   wall), "facts"}. memory: the driver also reads the GPU's free memory right after load and after the warm-up prompt, and
   the facts add those and what the server's log says (server_log_facts). context: the server's context, as the command
@@ -551,7 +585,7 @@ def point(server:str, model:str, *, prompt:int, flags:list[str], env:dict[str, s
   srv_log = log.with_suffix(".server.log")
   argv = [sys.executable, str(lsd.DRIVER), "--server", server, "--model", str(pathlib.Path(model).absolute()), "--port", str(port),
           "--ctx-size", str(max(prompt + lsd.HEADROOM, context or 0)), "--contexts", str(prompt), "--reps", str(reps), "--flags", json.dumps(flags),
-          "--log", str(srv_log), "--prefill", "--corpus", str(CORPUS)] + (["--memory-cmd", json.dumps(MEMORY_CMD)] if memory else [])
+          "--log", str(srv_log), "--prefill", "--corpus", str(CORPUS), "--slots", str(slots)] + (["--memory-cmd", json.dumps(memory_cmd(backend))] if memory else [])
   lines = ec.run_driver(argv, env=env, log=log)
   got = next(line for line in lines if line.get("prefill"))
   out: dict[str, Any] = {"ms": statistics.median(got.get("wall_samples_ms") or got["samples_ms"]), "facts": {}}
@@ -562,17 +596,14 @@ def point(server:str, model:str, *, prompt:int, flags:list[str], env:dict[str, s
   return out
 
 
-def point_ms(server:str, model:str, **kw) -> float:
-  """One cold real-text prefill of `prompt` tokens in a fresh llama-server (the --prefill driver), the median client wall ms."""
-  return point(server, model, **kw)["ms"]
-
-
-def decode_point(server:str, model:str, *, flags:list[str], env:dict[str, str], port:int, log:pathlib.Path, context:int | None = None) -> dict[str, Any]:
+def decode_point(server:str, model:str, *, flags:list[str], env:dict[str, str], port:int, log:pathlib.Path, context:int | None = None,
+                 slots:int = 1, memory:bool = False, backend:str | None = None) -> dict[str, Any]:
   """Decode speed at one request in a fresh llama-server, as the MTP measurement times it (the driver's --mtp-prompts
   mode, collectors/llama_mtp): the shipped short prompts and the real-text long corpus cut to the setup's context, each
   with its task, a reply of collectors/mtp.TOKENS each, the server's own tok/s, held to the loop guard (collectors/mtp.guard:
   a reply that repeats itself is refused). The draft count is the setup's (the engine row's draft count flag, else none). {tokens, depths:
-  {depth: {context, per_prompt}}}."""
+  {depth: {context, per_prompt}}}; memory: and facts, the GPU's free memory right after load and the least after any request (tune's
+  gpu_free_after_load_bytes, gpu_free_lowest_bytes: the memory fit's budget)."""
   from boltbeam.collectors import engine_common as ec, llama_mtp, llama_server_decode as lsd, mtp
   prompts = mtp.prompt_set()
   count = _row()["draft"]["count"]
@@ -581,14 +612,17 @@ def decode_point(server:str, model:str, *, flags:list[str], env:dict[str, str], 
   argv = [sys.executable, str(lsd.DRIVER), "--server", server, "--model", str(pathlib.Path(model).absolute()), "--port", str(port),
           "--ctx-size", str(max(prompts["room"] + long_tokens + mtp.TOKENS + lsd.HEADROOM, context or 0)), "--flags", json.dumps([*flags, "--metrics"]),
           "--mtp-prompts", prompts["path"], "--k", str(k), "--tokens", str(mtp.TOKENS), "--long-tokens", str(long_tokens), "--long-corpus", str(mtp.LONG),
-          "--log", str(log.with_suffix(".server.log")), "--deadline-s", str(llama_mtp.TIMEOUT_S)]
-  lines = ec.run_driver(argv, env=env, log=log, timeout_s=llama_mtp.TIMEOUT_S + llama_mtp.DRIVER_GRACE_S)
+          "--log", str(log.with_suffix(".server.log")), "--end-ids", json.dumps(llama_mtp.end_ids(model)), "--deadline-s", str(llama_mtp.deadline_s(prompts)), "--slots", str(slots)] + (["--memory-cmd", json.dumps(memory_cmd(backend))] if memory else [])
+  lines = ec.run_driver(argv, env=env, log=log, timeout_s=llama_mtp.deadline_s(prompts) + llama_mtp.DRIVER_GRACE_S)
   rows, eng = [x for x in lines if "decode_tok_s" in x], next(x["engine"] for x in lines if "engine" in x)
-  if why := mtp.guard(rows, eng["real_text"]):
+  if why := mtp.guard(rows, eng["real_text"]) + list(mtp.ended(rows, eng["real_text"]).values()):  # paired across settings: an early end refuses
     raise Refused("; ".join(why))
+  mem = next((x["memory"] for x in lines if "memory" in x), None) if memory else None
+  loaded = (mem or {}).get("loaded") or {}
   return {"tokens": mtp.TOKENS, "depths": {d: {"context": statistics.median(r["context"] for r in rows if r["depth"] == d),
                                                "per_prompt": {r["prompt"]: r["decode_tok_s"] for r in rows if r["depth"] == d}}
-                                           for d in sorted({r["depth"] for r in rows})}}
+                                           for d in sorted({r["depth"] for r in rows})},
+          **({"facts": {"gpu_free_after_load_bytes": loaded.get("free"), "gpu_free_lowest_bytes": (mem.get("lowest") or loaded).get("free")}} if mem else {})}
 
 
 def help_flags(text:str) -> set[str]:
@@ -599,12 +633,9 @@ def help_flags(text:str) -> set[str]:
 def gate_flags(values:list[dict[str, Any]], f:dict[str, Any], accepted:set[str]) -> tuple[dict[str, str], list[str]]:
   """The setup as the output check's tool runs it: the placement and each of the command's flags the tool accepts (its
   --help: the server's own and the draft model's are not its; a draft cache's flags only beside a draft model it loads)."""
-  def keep(vals):
-    env, fl = _env_flags(vals, f)
-    return env, [x for i in range(0, len(fl), 2) if fl[i] in accepted for x in fl[i:i + 2]]
-  env, flags = keep(values)
-  if _row()["draft"]["model"] not in flags:
-    env, flags = keep([{**v, "with_draft": None} for v in values])
+  took = lambda d: {k: t for k, t in (d or {}).items() if k in accepted}  # noqa: E731
+  env, flags = _env_flags([{**v, "with": took(v.get("with")), "with_draft": took(v.get("with_draft"))} for v in values
+                           if v["kind"] == "env" or v["name"] in accepted], f)
   return env, [*_placement(f), *flags]
 
 
@@ -613,28 +644,35 @@ def launch_measure(model:str, b:dict[str, Any], f:dict[str, Any], *, port:int, o
   "facts"} with the GPU's free memory after load and after one prompt, and the server log's slot failures (a fit sweep).
   decode=True: decode speed per real-text prompt at one request (decode_point). agree=setup values, texts=, context=:
   Speed up's accuracy check (llama-perplexity, one pair per document, one chunk of the context each) of these values
-  against those, on one model; refused when the two do not differ or the tool does not take a flag they differ in."""
-  def run(*, values, prompt, reps, tag, facts=False, decode=False, agree=None, texts=None, context=None):
+  against those, on one model; refused when the two do not differ or the tool does not take a flag they differ in.
+  floor=True, texts=, context=: the engine's own noise at these values (quantization/speed_up.noise_floor, Speed up's
+  function and cache: the same check of the values against themselves, with the engine's declared change)."""
+  def run(*, values, prompt, reps, tag, facts=False, decode=False, agree=None, texts=None, context=None, floor=False):
+    if floor:
+      from boltbeam.quantization import speed_up
+      from boltbeam.quantization.head_writers import gguf_quantize as gq
+      env, flags = gate_flags(values, f, help_flags(build_help(gq.tool(b["build"], "llama-perplexity"))))
+      return speed_up.noise_floor(pathlib.Path(model), ENGINE, gq, b["build"], texts, src_flags=flags, dst_flags=flags, env=env, ctx=context, chunks=GATE_CHUNKS)
     env, flags = _env_flags(values, f)
     if agree is not None:
       from boltbeam.quantization.head_writers import gguf_quantize as gq
       accepted = help_flags(build_help(gq.tool(b["build"], "llama-perplexity")))
-      main = (lambda vals: vals) if _row()["draft"]["model"] in accepted else (lambda vals: [{**v, "with_draft": None} for v in vals])  # noqa: E731  no draft model there: no draft cache
-      pairs = lambda vals: {tuple(fl[i:i + 2]) for fl in [_env_flags(main(vals), f)[1]] for i in range(0, len(fl), 2)}  # noqa: E731
-      differ = sorted({x for x, _ in pairs(agree) ^ pairs(values)})
+      a, c = ({v["name"]: v for v in vals} for vals in (agree, values))
+      differ = [a.get(n) or c[n] for n in sorted(a.keys() | c.keys()) if (a.get(n) or {}).get("value") != (c.get(n) or {}).get("value")]
       if not differ:
         raise Refused("the output check would compare a setting with itself")
-      if missing := [x for x in differ if x not in accepted]:
+      if any(r["kind"] == "env" for r in differ):
+        raise Refused("the output check runs both settings in one environment, and these two differ in their environment variables")
+      draft = _row()["draft"]["model"] in accepted  # no draft model there: no draft cache
+      if missing := [x for r in differ for x in (r["name"], *(r.get("with") or {}), *((r.get("with_draft") or {}) if draft else ())) if x not in accepted]:
         raise Refused(f"llama-perplexity does not take {', '.join(missing)}, so the answers with it cannot be checked")
       base_env, base = gate_flags(agree, f, accepted)
-      cand_env, cand = gate_flags(values, f, accepted)
-      if base_env != cand_env:
-        raise Refused("the output check runs both settings in one environment, and these two differ in their environment variables")
+      cand = gate_flags(values, f, accepted)[1]
       return gq.accuracy(model, model, b["build"], texts, src_flags=tuple(base), dst_flags=tuple(cand), env=base_env, ctx=context, chunks=GATE_CHUNKS)
     if decode:
       return decode_point(b["build"], model, flags=[*cs.all_layers(extra), *_placement(f), *flags, *(extra or [])], env=env, port=port,
-                          log=out / f"{tag}.driver.log", context=f.get("context_tokens"))
+                          log=out / f"{tag}.driver.log", context=f.get("context_tokens"), slots=f["served_requests"], memory=facts, backend=gpu_backend(b))
     got = point(b["build"], model, prompt=prompt, flags=[*cs.all_layers(extra), *_placement(f), *flags, *(extra or []), "--no-warmup"], env=env,
-                reps=reps, port=port, log=out / f"{tag}.driver.log", memory=facts, context=f.get("context_tokens"))
+                reps=reps, port=port, log=out / f"{tag}.driver.log", memory=facts, context=f.get("context_tokens"), slots=f["served_requests"], backend=gpu_backend(b))
     return got if facts else got["ms"]
   return run

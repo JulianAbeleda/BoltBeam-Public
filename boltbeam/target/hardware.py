@@ -384,6 +384,13 @@ def scan_gpus(tool_paths:dict[str, str | None], run_command, system:str,
   return [d for row in rows for d in devices.get(row["vendor"]) or []], [records[row["vendor"]] for row in rows]
 
 
+def detected_vendors(probes:list[dict[str, Any]] | None = None) -> list[str]:
+  """The vendors with a GPU on this machine, in row order: scan_gpus' probes that detected one (this machine's scan when
+  None). An installed tool that lists no GPU (nvidia-smi without a driver) is not a vendor here."""
+  probes = hardware_profile()["gpu"].get("probes") or [] if probes is None else probes
+  return [p["vendor"] for p in probes if p.get("status") == "detected"]
+
+
 def hardware_profile(*, run_command=run_tool, tool_resolver=None,
                       system_name:str | None = None) -> dict[str, Any]:
   mem = _meminfo()
@@ -396,7 +403,7 @@ def hardware_profile(*, run_command=run_tool, tool_resolver=None,
     "tool_paths": tool_paths,
   }
   devices, probes = scan_gpus(tool_paths, run_command, system_name or platform.system())
-  vendors = [p["vendor"] for p in probes if p["status"] == "detected"]
+  vendors = detected_vendors(probes)
   if devices:
     gpu = {**gpu, "status": "detected", **devices[0], "devices": devices, "notes": list(vendor_row(vendors[0], "notes"))}
     if len(vendors) > 1:  # stated, never by which tool answered first; a one-GPU run still refuses (gpu.first_gpu)

@@ -39,6 +39,11 @@ func TestRecommendedSetupLineAndPage(t *testing.T) {
 			t.Fatalf("page lacks %q:\n%s", want, body)
 		}
 	}
+	warn := "a Speed up copy waiting on its task eval"
+	f.Recommend.ModelWarning = &warn
+	if body := plain(recommendBody(f, 80)); !strings.Contains(body, warn) {
+		t.Fatalf("a copy waiting on its task eval is said on the page:\n%s", body)
+	}
 	acts := recommendActions(f)
 	if len(acts) != 3 || acts[0].arg != "command" || acts[1].arg != "arkey" || acts[2].do != "reccheck" {
 		t.Fatalf("actions: %+v", acts)

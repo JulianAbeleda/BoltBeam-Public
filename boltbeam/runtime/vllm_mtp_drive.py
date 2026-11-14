@@ -74,7 +74,9 @@ def main() -> int:
   decode = lambda ids: tok.decode(ids, clean_up_tokenization_spaces=False)  # noqa: E731  the text itself, for the cut
   messages, docs = long_prompts(a.long_corpus, a.long_tokens, encode, decode)
   long_ids = {d: chat(m) for d, m in messages.items()}
-  real = reference(docs, a.tokens)
+  gen = Path(a.model) / "generation_config.json"
+  said = json.loads(gen.read_text()).get("eos_token_id") if gen.is_file() else None
+  real = {**reference(docs, a.tokens), "end_ids": sorted({tok.eos_token_id, *(said if isinstance(said, list) else [said])} - {None})}  # the guard's end tokens
   for depth, source in (("short", ids), ("long", long_ids)):
     for pid, prompt in source.items():
       cpu = quiet(a.quiet_s)

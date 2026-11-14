@@ -40,7 +40,7 @@ type SpeedConfirm struct {
 	No    string   `json:"no"`
 }
 
-// SpeedPlain is `screen speedup-plain`: a job's layer 1. Outcome is kept, not_kept, refused or crashed; Lines go under
+// SpeedPlain is `screen speedup-plain`: a job's layer 1. Outcome is kept, needs_eval, not_kept, refused or crashed; Lines go under
 // Head in order; Fix is the one fix, already worded, when there is one.
 type SpeedPlain struct {
 	Kind          string   `json:"kind"`

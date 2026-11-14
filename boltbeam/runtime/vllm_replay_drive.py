@@ -4,7 +4,7 @@ Raw token content stays in the run directory. Public review output contains only
 script hashes, lengths and derived timing. The server context owns cleanup.
 """
 import hashlib,json,os,sys,time,urllib.request
-from boltbeam.collectors.providers import gpu_free
+from boltbeam.collectors.providers import gpu_free, gpu_free_here
 from pathlib import Path
 from boltbeam.adapters.llama_server_control import serve_argv,_json_post
 from boltbeam.collectors.replay import vllm_env,Words,REPLAY_ENGINES,flag_value
@@ -48,9 +48,9 @@ def drive(run:Path,mode:str,repeats:int=5):
   from boltbeam.trace.replay_trace import read
   if mode not in ('record','reference','paired','cost') or type(repeats) is not int or repeats<2:
     raise ValueError('replay needs a supported pass and at least two repeats')
-  from boltbeam.target.targets import get_target  # the run's GPU; a run with no manifest predates AMD (CUDA)
+  from boltbeam.target.targets import get_target  # the run's GPU; a run with no manifest: any GPU here
   facts=run/'run_manifest.json'
-  free=gpu_free(get_target(json.loads(facts.read_text())['target_id']).backend if facts.exists() else 'CUDA')
+  free=gpu_free(get_target(json.loads(facts.read_text())['target_id']).backend) if facts.exists() else gpu_free_here()
   if not free['free']:raise RuntimeError(free['reason'])
   if os.environ.get('VLLM_BATCH_INVARIANT') not in (None,'','0'):
     raise ValueError('forced replay requires production compilation, not VLLM_BATCH_INVARIANT')

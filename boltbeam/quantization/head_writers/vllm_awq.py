@@ -8,7 +8,7 @@ import pathlib
 
 from boltbeam.core.refused import Refused
 from boltbeam.quantization.head_writers import vllm_ct
-from boltbeam.quantization.head_writers.vllm_ct import accuracy, device, find, speed, stock  # noqa: F401
+from boltbeam.quantization.head_writers.vllm_ct import accuracy, build_id, device, find, speed, stock  # noqa: F401
 
 
 def plan(src:str, python:str, target:str | None = None, part:dict | None = None) -> dict:

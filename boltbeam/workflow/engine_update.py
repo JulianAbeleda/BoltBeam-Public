@@ -13,7 +13,7 @@ when asked: the TUI Engine picker's "Upgrade <engine> to <release>" (Upgrade eng
               installed and is recorded as such
     install   a newer release goes into its own folder, <root>/<engine>/<version>, never over a build:
               llama.cpp   git clone at the release tag (full history, no trees: the build number is counted), cmake
-                          with the vendor row's flags (target/vendors.py ggml_cmake, ggml_arch), the bench targets
+                          with the vendor row's flags (target/vendors.py ggml_cmake, ggml_arch), the table's targets
               vllm, tensorrt-llm   a venv named by the version, the table's pip steps
               ollama      the release archive for this platform, unpacked
               and is recorded as pending; the pipeline's next --analyze run compares it once with current
@@ -156,6 +156,7 @@ def _venv(spec:dict[str, Any], version:str, folder:pathlib.Path, vendor, log:pat
   steps = [list(s) for s in spec["steps"]]
   if (older := spec.get("older_driver")) and major is not None and major < older[0]:
     steps[-1] += older[1]
+  steps[-1] += (spec.get("index") or {}).get(vendor.backend, [])  # the backend's own wheels (vLLM's ROCm builds)
   for step in steps:
     fill = {**fill, "version": version}
     if any("{torch}" in a for a in step):
@@ -225,14 +226,17 @@ def look(state:dict[str, Any], engine:str, read:Callable[[str], Any] | None = No
 
 
 def latest(engines:list[str], read:Callable[[str], Any] | None = None,
-           seed:Callable[[str], dict | None] = here) -> list[dict[str, Any]]:
+           seed:Callable[[str], dict | None] = here, say:Callable[[str], None] = lambda w: print(w, file=sys.stderr)) -> list[dict[str, Any]]:
   """`engines --latest`, the TUI's look after the engine scan: each engine's standing (engine_builds.standing) after
   a look at upstream when the last one is stale. Nothing is installed; a build here that no update recorded is read
-  (seed) for its version only, not recorded."""
+  (seed) for its version only, not recorded. A recorded build not on disk is said (engine_builds.usable), never changed."""
   state = eb.load()
+  stale = [e for e in engines if not eb.fresh(eb.entry(state, e).get("checked"))]
   for engine in engines:
+    eb.usable(state, engine, lambda w: say(f"engines {w}"), record=False)  # said, the record left as it is
     look(state, engine, read)
-  eb.save(state)
+  if stale:  # only a new look at upstream is written; nothing else changes here
+    eb.save(state)
   return [eb.standing(e, state, None if eb.entry(state, e).get("current") else seed(e)) for e in engines]
 
 
@@ -248,6 +252,7 @@ def update(engines:list[str], *, backend:str, root:pathlib.Path | None = None, s
   state["root"] = str(root)
   out = []
   for engine in engines:
+    eb.usable(state, engine, lambda w: say(f"engines {w}"))
     e, got = eb.entry(state, engine), look(state, engine, read)
     if not e.get("current") and (found := seed(engine)):
       e["current"] = found

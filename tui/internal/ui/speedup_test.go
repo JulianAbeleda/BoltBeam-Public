@@ -85,7 +85,7 @@ func TestSpeedUpRowBesideMeasureMtp(t *testing.T) {
 	got := rows(m.actions())
 	if n := len(got); got[n-3] != "mtp|[ Measure MTP ] decode with 1, 2, 3 draft tokens against none" ||
 		got[n-2] != "speedup|[ Speed up: the output layer ] Shrinks the word-picking layer, 18 min" ||
-		got[n-1] != "speedup|[ Speed up: the draft layer ] Shrinks the guess-ahead layer, 25 to 102 min" {
+		got[n-1] != "speedup|[ Speed up: the draft layer ] Shrinks the guess-ahead layer, 28 to 112 min" {
 		t.Fatalf("both parts enabled, under Measure MTP:\n%s", strings.Join(got, "\n"))
 	}
 	golden(t, "speedup-row.txt", frame(m))
@@ -95,7 +95,7 @@ func TestSpeedUpRowBesideMeasureMtp(t *testing.T) {
 	}
 	m = speedProgram(t, func(o *seam.SpeedOffer) { only("mtp", "This model is already a faster copy.")(o); o.IsCopy = true })
 	got = rows(m.actions())
-	if n := len(got); got[n-2] != "speedup|[ Speed up: the draft layer ] Shrinks the guess-ahead layer, 25 to 102 min" || !strings.HasPrefix(got[n-1], "speedcheck|[ Check this copy ]") {
+	if n := len(got); got[n-2] != "speedup|[ Speed up: the draft layer ] Shrinks the guess-ahead layer, 28 to 112 min" || !strings.HasPrefix(got[n-1], "speedcheck|[ Check this copy ]") {
 		t.Fatalf("a copy is offered the part it lacks, and the check:\n%s", strings.Join(got, "\n"))
 	}
 
@@ -134,7 +134,7 @@ func TestSpeedUpConfirmStartsOnlyOnYes(t *testing.T) {
 	}
 	view := frame(m)
 	golden(t, "speedup-confirm.txt", view)
-	for _, want := range []string{"Make a faster copy of", "Makes a faster copy. The original stays.", "Changes only the draft layer", "Takes about 25 to 102 minutes (an estimate), using the GPU the whole time.",
+	for _, want := range []string{"Make a faster copy of", "Makes a faster copy. The original stays.", "Changes only the draft layer", "Takes about 28 to 112 minutes (an estimate), using the GPU the whole time.",
 		"once for each number of drafts it tries", "Needs up to 12.1 GB of free disk space", "Make the copy", "Not now"} {
 		if !strings.Contains(flat(view), want) {
 			t.Fatalf("the confirm lacks %q:\n%s", want, view)
@@ -380,13 +380,13 @@ func TestSpeedUpCopyShowsInModelLists(t *testing.T) {
 	}
 	_ = os.WriteFile(file, []byte("x"), 0o644)
 	for record, name := range map[string]string{filepath.Join(folder, "speed_up.json"): `{"name": "Qwen3-14B-AWQ · BoltBeam"}`, file + ".speed_up.json": `{"name": "tiny · BoltBeam"}`,
-		filepath.Join(mtp, "speed_up.json"): `{"name": "m-mtp · BoltBeam"}`, filepath.Join(unnamed, "speed_up.json"): "{}"} {
+		filepath.Join(mtp, "speed_up.json"): `{"name": "m-mtp · BoltBeam", "verdict": "needs_eval"}`, filepath.Join(unnamed, "speed_up.json"): `{"verdict": "fail"}`} {
 		if err := os.WriteFile(record, []byte(name), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// the record's name, as Python gave it: the screen never re-derives a copy's name from its path
-	for path, want := range map[string]string{folder: "Qwen3-14B-AWQ · BoltBeam", file: "tiny · BoltBeam", mtp: "m-mtp · BoltBeam", unnamed: "old-boltbeam"} {
+	for path, want := range map[string]string{folder: "Qwen3-14B-AWQ · BoltBeam", file: "tiny · BoltBeam", mtp: "m-mtp · BoltBeam (waiting on task eval)", unnamed: "old-boltbeam (failed task eval)"} {
 		if got := modelLabel(path); got != want {
 			t.Fatalf("%s: %q, want %q", path, got, want)
 		}

@@ -47,7 +47,8 @@ its reply read on the host's CLOCK_MONOTONIC (a trace is cut to it: collectors/t
 with --first-token-mark (each request streamed) first_token_ns, when its first generated token arrived, and with
 --stream-control the same request's decode tok/s unstreamed right after. Then one line naming the engine, with the
 corpus's own diversity on this tokenizer (real_text), which collectors/mtp.guard holds the rows to, and where the server
-put its weights when --residency-probe read them (residency).
+put its weights when --residency-probe read them (residency). With --memory-cmd, a last line {"memory": {"loaded", "lowest"}}:
+the GPU's memory right after load and the reading with the least free after any request (absent: none fell below load).
 """
 from __future__ import annotations
 
@@ -73,8 +74,8 @@ class Server:
   raises). A SIGKILL of this driver cannot be caught: pgid_file names the group, and the caller stops it
   (collectors/mtp.stop_group)."""
 
-  def __init__(self, argv:list[str], port:int, log:pathlib.Path, ready_s:float, pgid_file:str | None = None) -> None:
-    self.base, self.ready_s, self.path = f"http://127.0.0.1:{port}", ready_s, log
+  def __init__(self, argv:list[str], port:int, log:pathlib.Path, ready_s:float, pgid_file:str | None = None, where:tuple[int, int] | None = None) -> None:
+    self.base, self.ready_s, self.path, self.where = f"http://127.0.0.1:{port}", ready_s, log, where  # where: (k, context), to say a load's out of memory
     log.parent.mkdir(parents=True, exist_ok=True)
     self.log = open(log, "a")
     self.proc = subprocess.Popen([*argv, "--host", "127.0.0.1", "--port", str(port)], stdout=self.log, stderr=subprocess.STDOUT,
@@ -87,7 +88,9 @@ class Server:
       deadline = time.time() + self.ready_s
       while time.time() < deadline:
         if self.proc.poll() is not None:  # before /health: another server on the port must never answer for this one
-          raise SystemExit(f"llama-server exited {self.proc.returncode} before it was ready; see {self.log.name}")
+          said = self.said()
+          why = f": {failure(said, *self.where)}" if self.where and OUT_OF_MEMORY.search(said) else ""
+          raise SystemExit(f"llama-server exited {self.proc.returncode} before it was ready; see {self.log.name}{why}")
         try:
           if call(self.base, "/health", timeout=2).get("status") == "ok":
             return self
@@ -120,8 +123,11 @@ class Server:
 
 
 WORDS = pathlib.Path(__file__).resolve().parents[1] / "data" / "plain_words.json"
-NO_FIT = "common_fit_params: failed to fit params to free device memory"  # common/fit.cpp: its projection misses the free-memory target
-OUT_OF_MEMORY = re.compile(r"CUDA error: (out of memory|the resource allocation failed)|cudaMalloc failed|failed to allocate CUDA|ErrorOutOfDeviceMemory|hipErrorOutOfMemory")
+NO_FIT = "common_fit_params: failed to fit params to free device memory"  # common/fit.cpp: its fit did not run (-ngl given) or missed its target
+# any ggml GPU backend's words: its error prefix is the backend's name (GGML_CUDA_NAME: CUDA, ROCm, MUSA), the buffer's is the
+# device's (CUDA0, ROCm0, Vulkan0, MTL0); the HIP build keeps the source's "cudaMalloc failed" text
+OUT_OF_MEMORY = re.compile(r"\b[A-Za-z]+ error: (out of memory|the resource allocation failed)|cudaMalloc failed|failed to allocate (?!CPU)[A-Za-z]+\d* buffer"
+                           r"|ErrorOutOfDeviceMemory|hipErrorOutOfMemory")
 FIT_END = re.compile(r"(successfully fit params|failed to fit params|encountered an error while trying to fit params)")
 
 
@@ -139,9 +145,15 @@ def failure(log:str, k:int, ctx:int) -> str:
   w = words()
   if OUT_OF_MEMORY.search(log):
     what = w["cublas"] if "cublasCreate" in log else w["allocation"]
-    return w["out_of_memory"].format(what=what, **where(k, ctx))
-  errors = [ln.strip() for ln in log.splitlines() if " E " in ln or "error" in ln.lower()]
-  return w["stopped"].format(last=errors[-1] if errors else "nothing", **where(k, ctx))
+    return w["out_of_memory"].format(what=what, **where(k, ctx)) + fit_note(log)
+  errors = [ln.strip() for ln in log.splitlines() if (" E " in ln or "error" in ln.lower()) and NO_FIT not in ln]
+  return w["stopped"].format(last=errors[-1] if errors else "nothing", **where(k, ctx)) + fit_note(log)
+
+
+def fit_note(log:str) -> str:
+  """llama.cpp's fit warning at load, as a note on a failure: its own reason (-ngl set by the user, or a missed target)."""
+  m = re.search(re.escape(NO_FIT) + r":?\s*(.*)", log)
+  return words()["no_fit"].format(why=m.group(1).strip() or "no reason given") if m else ""
 
 
 def fit_outcome(log:str) -> dict:
@@ -270,10 +282,11 @@ def mtp_run(base:str, a, build:str | None, flags:list[str]) -> None:
   """--mtp-prompts: one draft count's rows (the module docstring) and the engine line."""
   chat = lambda text: template_ids(base, [{"role": "user", "content": text}])  # noqa: E731
   ids = {p["id"]: chat(p["text"]) for p in json.loads(pathlib.Path(a.mtp_prompts).read_text())["prompts"]}
+  memory = {"loaded": gpu_memory(a.memory_cmd)} if a.memory_cmd else None
   generate(base, list(range(1000, 1064)), 32)  # load and warm
   messages, docs = long_prompts(a.long_corpus, a.long_tokens, lambda text: call(base, "/tokenize", {"content": text})["tokens"],
                                 lambda x: call(base, "/detokenize", {"tokens": x})["content"])
-  long_ids, real = {d: chat(m) for d, m in messages.items()}, reference(docs, a.tokens)
+  long_ids, real = {d: chat(m) for d, m in messages.items()}, {**reference(docs, a.tokens), "end_ids": json.loads(a.end_ids)}  # the GGUF's, from the caller
   for depth, source in (("short", ids), ("long", long_ids)):
     for pid, prompt in source.items():
       cpu = quiet(a.quiet_s)
@@ -292,6 +305,8 @@ def mtp_run(base:str, a, build:str | None, flags:list[str]) -> None:
         c = complete(base, prompt, a.tokens, cold=True)["timings"]
         control = {"decode_tok_s": (c["predicted_n"] - 1) / (c["predicted_ms"] / 1000.0), "how": "the same request unstreamed, right after"}
       reply = list(got["tokens"])
+      if memory is not None and "free" in (now := gpu_memory(a.memory_cmd)) and now["free"] < (memory.get("lowest") or memory["loaded"]).get("free", float("inf")):
+        memory["lowest"] = now  # after the request: the server's pools and graphs as this context left them, the least free kept
       print(json.dumps({"k": a.k, "prompt": pid, "depth": depth, "context": len(prompt), "tokens": t["predicted_n"],
                         "decode_tok_s": (t["predicted_n"] - 1) / (t["predicted_ms"] / 1000.0), "wall_s": wall, "spec": spec, "cpu": cpu,
                         "prompt_sha": sha(prompt), "token_ids_sha": sha(reply), "span_ns": [m0, m1],
@@ -299,6 +314,8 @@ def mtp_run(base:str, a, build:str | None, flags:list[str]) -> None:
                         "text": {"context": diversity(prompt, a.tokens), "reply": diversity(prompt[-a.tokens:] + reply, a.tokens)}, "reply_ids": reply}), flush=True)
   print(json.dumps({"engine": {"llama.cpp": build, "server": "llama-server", "k": a.k, "ctx_size": a.ctx_size, "flags": flags, "real_text": real,
                                "residency": a.residency_read}}), flush=True)
+  if memory is not None:
+    print(json.dumps({"memory": memory}), flush=True)
 
 
 def engine(t:dict, build:str | None) -> dict:
@@ -432,9 +449,10 @@ def main() -> int:
   ap.add_argument("--corpus", default=None, help="--prefill: data/gate_corpus.json")
   ap.add_argument("--prompt-form", default="ids", choices=FORMS, help="--prefill: token ids to /completion, or a chat request")
   ap.add_argument("--flags", default="[]", help="the engine flags, a JSON list")
+  ap.add_argument("--slots", type=int, default=1, help="llama-server -np: the requests the measurement serves at once (its auto is 4, KV shared)")
   ap.add_argument("--log", default="llama-server.log")
   ap.add_argument("--ready-s", type=float, default=1800.0)
-  ap.add_argument("--memory-cmd", default=None, help="--prefill: a JSON argv that prints the GPU's memory as JSON; run after load and after the warm-up")
+  ap.add_argument("--memory-cmd", default=None, help="a JSON argv that prints the GPU's memory as JSON; --prefill: run after load and after the warm-up; --mtp-prompts: after load and after each request (its lowest kept)")
   ap.add_argument("--mtp-prompts", default=None, help="MTP's measurement on this boltbeam.mtp_prompts.v1 set (the module docstring)")
   ap.add_argument("--k", type=int, default=0, help="--mtp-prompts: the draft count the flags set (0: no draft head)")
   ap.add_argument("--long-tokens", type=int, default=0, help="--mtp-prompts: the long depth's document tokens; 0: short only")
@@ -445,6 +463,7 @@ def main() -> int:
                   "after and record its decode tok/s (unstreamed), so streaming's own cost is measured")
   ap.add_argument("--residency-probe", action="store_true", help="--mtp-prompts: load the server once first with the same flags at "
                   "the verbosity its weight buffers are printed at (PROBE_VERBOSITY), record where the weights went (residency), stop it, then measure")
+  ap.add_argument("--end-ids", default="[]", help="--mtp-prompts: the model's end tokens (its GGUF's eos, eot and eom), a JSON list")
   ap.add_argument("--quiet-s", type=float, default=600.0, help="--mtp-prompts: how long to wait for no build or test runner")
   ap.add_argument("--deadline-s", type=int, default=0, help="exit (stopping the server) after this many seconds; 0: none")
   ap.add_argument("--pgid-file", default=None, help="write the server's process group here, for a caller to stop it if this driver is killed")
@@ -461,23 +480,21 @@ def main() -> int:
     signal.signal(sig, stop)
   signal.alarm(a.deadline_s)
   if a.fit_probe:
-    s = Server([a.server, "-m", a.model, "-np", "1", "-fitc", str(a.fit_probe), "-lv", str(PROBE_VERBOSITY), *json.loads(a.flags)], a.port, pathlib.Path(a.log), a.ready_s, a.pgid_file)
+    s = Server([a.server, "-m", a.model, "-np", str(a.slots), "-fitc", str(a.fit_probe), "-lv", str(PROBE_VERBOSITY), *json.loads(a.flags)], a.port, pathlib.Path(a.log), a.ready_s, a.pgid_file)
     print(json.dumps({"fit": fit_probe(s)}), flush=True)
     return 0
-  argv = [a.server, "-m", a.model, "-c", str(a.ctx_size), "-np", "1", *json.loads(a.flags)]
+  argv = [a.server, "-m", a.model, "-c", str(a.ctx_size), "-np", str(a.slots), *json.loads(a.flags)]
   contexts = [int(x) for x in a.contexts.split(",") if x]
   if bool(contexts) == bool(a.mtp_prompts) or (a.mtp_prompts and not a.long_corpus):
     ap.error("give --contexts or --mtp-prompts, and --mtp-prompts with --long-corpus: its real text is what replies are held to")
   a.residency_read = {"target": None, "why": "not probed (--residency-probe)"}
   if a.mtp_prompts and a.residency_probe:
     a.residency_read = probe_residency(argv, a)
-  with Server(argv, a.port, pathlib.Path(a.log), a.ready_s, a.pgid_file) as s:
+  with Server(argv, a.port, pathlib.Path(a.log), a.ready_s, a.pgid_file, (a.k, a.ctx_size) if a.mtp_prompts else None) as s:
     the = call(s.base, "/tokenize", {"content": " the"})["tokens"][-1]
     build = call(s.base, "/props").get("build_info")
     if a.mtp_prompts:
-      if NO_FIT in s.said():  # its own projection misses its free-memory target: the first request would run out
-        raise SystemExit(words()["no_fit"].format(**where(a.k, a.ctx_size)))
-      try:
+      try:  # llama.cpp's own projection missing its target is a note on a failure, never a refusal: the GPU is read, not the projection
         mtp_run(s.base, a, build, json.loads(a.flags))
       except (OSError, http.client.HTTPException) as exc:  # the connection dropped: the log says why
         raise SystemExit(failure(s.said(), a.k, a.ctx_size)) from exc

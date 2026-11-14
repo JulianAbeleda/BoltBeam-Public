@@ -10,7 +10,6 @@ a batch of at most 32 tokens (get_slot_map, :693-695, max_batch :368): so the ca
 (--reps 0). Router choices do not depend on the chunk; only the speed does."""
 from __future__ import annotations
 
-import os
 import pathlib
 import struct
 import sys
@@ -18,6 +17,16 @@ from typing import Any
 
 MAGIC = b"MCT1"
 UBATCH = 32  # llama-moe-cache.cpp:368 max_batch: a larger batch is not looked up, so not traced
+SLOT_MARGIN = 1.5  # over the least cache that keeps lookups on (a GPU's share below n_expert_used slots turns it off,
+# llama-moe-cache.cpp:509-514): GPUs take shares by their layer split, not exactly. The cache size does not change routing.
+
+
+def cache_mib(model:str) -> int:
+  """The trace's --moe-cache-mib: n_expert_used + 2 slots (the end slot, rounding) of one expert across every layer, with
+  SLOT_MARGIN; derived from the model, not a card's free memory (no other run is sized by it)."""
+  from boltbeam.roofline.offload_shapes import moe_split
+  sh = moe_split(model)
+  return int((sh["top_k"] + 2) * sh["expert_total"] / sh["experts"] * SLOT_MARGIN / 2**20) + 1
 
 
 def read_trace(path:str | pathlib.Path) -> dict[str, Any]:
@@ -58,17 +67,17 @@ def profile(path:str | pathlib.Path, model:dict[str, Any], *, corpus:str, tokens
 
 
 def capture(model:str, out:pathlib.Path, *, tokens:int, ident:dict[str, Any], corpus:pathlib.Path, build:str | None = None,
-            port:int = 0, cache_mib:int = 18000) -> dict[str, Any]:
+            port:int = 0) -> dict[str, Any]:
   """Run the real-text prefill driver once with the trace on and read it. build: any program of the build, taken as its llama-server (default: as screen finds it)."""
   from boltbeam.collectors import engine_common as ec, llama_server_decode as lsd
   from boltbeam.workflow.tune_llama_cpp import server_of  # the build tune uses: any program of it maps to its llama-server
-  server = str(server_of(build)) if build else lsd.find(os.environ.get("BOLTBEAM_LLAMA_BENCH"))
+  server = str(server_of(build)) if build else lsd.find()
   if not server:
     raise FileNotFoundError("no llama-server found (beside llama-bench, $BOLTBEAM_LLAMA_SERVER or on PATH); pass --build")
   out.mkdir(parents=True, exist_ok=True)
   trace = out / "moe-cache-trace.bin"
   trace.unlink(missing_ok=True)
-  flags = ["-ngl", "99", "--cpu-moe", "--moe-cache-mib", str(cache_mib), "-b", str(UBATCH), "-ub", str(UBATCH), "--no-warmup"]
+  flags = ["-ngl", "99", "--cpu-moe", "--moe-cache-mib", str(cache_mib(model)), "-b", str(UBATCH), "-ub", str(UBATCH), "--no-warmup"]
   import json
   argv = [sys.executable, str(lsd.DRIVER), "--server", server, "--model", str(pathlib.Path(model).absolute()), "--port", str(port),
           "--ctx-size", str(tokens + lsd.HEADROOM), "--contexts", str(tokens), "--reps", "0", "--flags", json.dumps(flags),

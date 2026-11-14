@@ -134,6 +134,9 @@ func recommendMain(f Facts, width int) string {
 		return stMuted.Render(recommendHint + "\n\nChoose a model, a chip and an engine on Setup.")
 	}
 	var b strings.Builder
+	if r.ModelWarning != nil {
+		b.WriteString(stWarn.Render(*r.ModelWarning) + "\n\n")
+	}
 	if r.EngineNote != "" {
 		b.WriteString(stMuted.Render(r.Provider+": "+r.EngineNote) + "\n\n")
 	}

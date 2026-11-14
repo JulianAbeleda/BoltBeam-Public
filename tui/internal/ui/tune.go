@@ -267,11 +267,16 @@ func tuneActions(f Facts) []action {
 	return out
 }
 
-// tuneSetting is a row's value as the engine takes it: NAME=VALUE for the environment or a config key, else the
-// flag and its value.
+// tuneSetting is a row's value as the engine takes it: NAME=VALUE for the environment or a config key, a switch's
+// bare flag when it is on (off: not passed), else the flag and its value.
 func tuneSetting(r seam.TuneRow) string {
-	if r.Kind == "env" || r.Kind == "config" {
+	switch {
+	case r.Kind == "env" || r.Kind == "config":
 		return r.Name + "=" + r.Value
+	case r.Kind == "switch" && r.Value == "on":
+		return r.Name
+	case r.Kind == "switch":
+		return r.Name + " not passed"
 	}
 	return r.Name + " " + r.Value
 }

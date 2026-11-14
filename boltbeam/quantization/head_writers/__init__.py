@@ -1,6 +1,10 @@
 """One module per engine, named by a row of data/speed_up.json (quantization/speed_up.py is the engine-neutral core).
-A module holds the functions its row names: find(explicit), stock(engine), plan(src, engine), write(src, dst, engine, plan),
-accuracy(src, dst, engine, texts). Every one raises core.refused.Refused to say it cannot, in one sentence."""
+A module holds the functions its row names: find(explicit), stock(engine), a plan per part (src, engine, target=, part=),
+write(src, dst, engine, plan), accuracy(src, dst, engine, texts); with speed with MTP on, mtp(model, engine, out, how)
+returning {depths: {depth: {context, base, ks, tokens}}, engine: the build, sweep} from mtp_ks() when how names no ks (how: the part row's measure,
+ks or grow, and main for a draft head that is its own file) and device(engine) {target, name, backend, memory_bytes,
+budget_bytes}. Every one raises core.refused.Refused to say it cannot, in one sentence. What measures MTP on an engine is
+data/engine_knobs.json's (engines.<E>.mtp), called through collectors/mtp.measure."""
 from __future__ import annotations
 
 import json
@@ -24,3 +28,4 @@ def detect(path:str | pathlib.Path) -> str:
   if q.get("quant_method") == "compressed-tensors":
     return "compressed-tensors/" + str(q.get("format"))
   return str(q.get("quant_method") or "safetensors")
+

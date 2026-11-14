@@ -177,7 +177,7 @@ func (m Model) speedMsg(msg tea.Msg) (Model, tea.Cmd, bool) {
 			break
 		}
 		m.f.Speed.Result = msg.res
-		if msg.res.Outcome == "kept" { // the copy is a model now: lists show it
+		if msg.res.Outcome == "kept" || msg.res.Outcome == "needs_eval" { // the copy is a model now (waiting on its eval or not): lists show it
 			return m, m.findFiles(), true
 		}
 	case speedVerifyMsg:
@@ -274,7 +274,7 @@ func speedBody(f Facts, width int) string {
 		switch r.Outcome {
 		case "not_kept", "crashed":
 			style, glyph = stBad, glyphFail
-		case "refused":
+		case "refused", "needs_eval": // needs_eval: the copy is kept, waiting on its task eval
 			style, glyph = stWarn, glyphWarn
 		}
 		b.WriteString(stHeader.Render(w.Action) + "\n" + hang(style.Render(glyph+" "+r.Head), 2, width) + "\n")

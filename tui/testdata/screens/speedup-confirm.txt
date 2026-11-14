@@ -12,7 +12,7 @@
 │ ┃ Changes only the draft layer, which guesses a few words ahead for the      │
 │ ┃ model to check (MTP). The model checks every guess, so only the speed with │
 │ ┃ drafts on is measured.                                                     │
-│ ┃ Takes about 25 to 102 minutes (an estimate), using the GPU the whole time. │
+│ ┃ Takes about 28 to 112 minutes (an estimate), using the GPU the whole time. │
 │ ┃ The speed with drafts on is timed on the original, the copy and the        │
 │ ┃ original again, once for each number of drafts it tries; how many it tries │
 │ ┃ decides where in that range it ends.                                       │

@@ -49,7 +49,7 @@ def _gate(rec:dict[str, Any]) -> dict[str, Any]:
 
 
 def result(log:str) -> dict[str, Any]:
-  """kept, not_kept, refused or crashed, with the lines in the order layer 1 reads them."""
+  """kept, needs_eval (kept, waiting on its task eval), not_kept, refused or crashed, with the lines in the order layer 1 reads them."""
   say, rec = _say(), answer(log)
   out:dict[str, Any] = {"kind": "speedup_plain", "outcome": "crashed", "head": None, "lines": [], "fix": None,
                         "copy": None, "name": None, "speed_measured": None}
@@ -64,25 +64,33 @@ def result(log:str) -> dict[str, Any]:
   valid = [speed_up.mtp_depths_valid(e) for e in rec.get("mtp_speed", [])[:1]]
   drafted = {round(v["context"]): v for depths, _ in valid for v in depths.values()}  # the MTP gate's depths by context, a retired one left out
   measured = bool(speed_up.measured(rec))
-  if not (rec["kept"] and rec["passed"] and not speed_up.slower(rec)):
-    k = say["not_kept"]
-    why = (k["answers"].format(pct=f"{a[th['metric']] * 100:.1f}", need=f"{th['min'] * 100:.0f}") if not rec["passed"] else
+  v, slow = speed_up.verdict(rec), speed_up.slower(rec)
+  if v != "pass" or slow:  # deleted, failed, or kept waiting on its task eval
+    k, wait = say["needs_eval" if v == "needs_eval" and not slow else "not_kept"], v == "needs_eval" and not slow
+    why = (k["answers"].format(pct=f"{a[th['metric']] * 100:.1f}", need=speed_up.need(rec)) if v != "pass" and not slow else
            ([k["slower"].format(context=c, before=f"{v['original']['tok_s']:.1f}", after=f"{v['copy']['tok_s']:.1f}")
                  for c, v in sorted(_gate(rec).items()) if not v["faster"]] +
-                [k["mtp_slower"].format(base=pathlib.Path(rec["source"]).name, context=c, before=f"{v['source']['tok_s']:.1f}", after=f"{v['copy']['tok_s']:.1f}")
+                [k["mtp_slower"].format(base=k["no_fit_base"] if _baseline(rec) else pathlib.Path(rec["source"]).name, context=c, before=f"{v['source']['tok_s']:.1f}", after=f"{v['copy']['tok_s']:.1f}")
                  for c, v in sorted(drafted.items()) if not v["faster"]])[0])
-    kept_at = [k["logs_kept"].format(where=rec["logs_kept"])] if rec.get("logs_kept") else []
-    return {**out, "outcome": "not_kept", "head": k["head"], "lines": [why, *kept_at, k["original"]], "speed_measured": measured}
+    more = [k["command"].format(command=rec["eval"]["command"])] if wait else [k["logs_kept"].format(where=rec["logs_kept"])] if rec.get("logs_kept") else []
+    return {**out, "outcome": "needs_eval" if wait else "not_kept", "head": k["head"], "lines": [why, *more, *_baseline(rec), say["not_kept"]["original"]],
+            "copy": rec["copy"] if wait else None, "speed_measured": measured}
   k, lines = say["kept"], []
-  for key, rows, was in (("line", sorted(_gate(rec).items()), "original"), ("mtp_line", sorted(drafted.items()), "source")):
+  for key, rows, was in (("line", sorted(_gate(rec).items()), "original"), ("mtp_line_no_fit" if _baseline(rec) else "mtp_line", sorted(drafted.items()), "source")):
     for n, (c, v) in enumerate(rows):
       label = k["short" if n == 0 else "long"].format(context=c)
       lines.append(k[key].format(label=label, before=f"{v[was]['tok_s']:.1f}", after=f"{v['copy']['tok_s']:.1f}", change=_change(v["change_pct"])))
   lines += [k["mtp_retired"]] if any(gone for _, gone in valid) else []
+  lines += _baseline(rec)
   if not measured:
     lines.append(k["not_measured"].format(reason=k["not_measured_off"] if "switched off" in (rec["speed_note"] or "") else k["not_measured_why"]))
   lines += [k["answers"] if a else k["draft_answers"], k["listed"].format(name=name)]
   return {**out, "outcome": "kept", "head": k["head"].format(name=name), "lines": lines, "copy": rec["copy"], "speed_measured": measured}
+
+
+def _baseline(rec:dict[str, Any]) -> list[str]:
+  """The MTP gate's baseline when it was not the source with its own head (the record's words)."""
+  return [e["baseline"] for e in rec.get("mtp_speed", []) if e.get("baseline")]
 
 
 def verify(copy:str) -> dict[str, Any]:

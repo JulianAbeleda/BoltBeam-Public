@@ -24,7 +24,21 @@ PROVIDER = "llama.cpp"
 GPU_SHARE = 1.0  # llama.cpp takes no share of the card: the long context is sized on all of it, less RESERVE
 RESERVE = 1 << 30  # llama.cpp's own -fit target, 1024 MiB free (common_params_fit, -fitt), as workflow/recommend.ENGINES states it
 DRIVER_GRACE_S = 300  # how long past its own deadline the driver may take to stop its server before it is killed
-TIMEOUT_S = 2 * 3600  # one server start: a stated guard on a hung server, not a measured length (a start, 16 prompts, a corpus read)
+TIMEOUT_PER_PROMPT_S = 450  # one server start, per prompt at both depths: a stated guard on a hung server, not a measured length (2 h for 16 prompts until 2026-11-12)
+FIT_DEADLINE_S = TIMEOUT_PER_PROMPT_S  # the fit probe: a server start that stops before the weights load, no prompt timed; one prompt's guard covers it
+END_KEYS = ("tokenizer.ggml.eos_token_id", "tokenizer.ggml.eot_token_id", "tokenizer.ggml.eom_token_id")  # the GGUF's end tokens
+
+
+def deadline_s(prompts:dict[str, Any]) -> int:
+  """One server start's guard: TIMEOUT_PER_PROMPT_S for each prompt and long document it times."""
+  return TIMEOUT_PER_PROMPT_S * (len(prompts["ids"]) + len(mtp.long_corpus()["ids"]))
+
+
+def end_ids(model:str | pathlib.Path) -> list[int]:
+  """The model's end tokens as its GGUF names them (END_KEYS), for collectors/mtp.guard's early-end check."""
+  from boltbeam.profile import gguf
+  kv = gguf.read_gguf_layout(pathlib.Path(model).expanduser())[0]
+  return sorted({int(kv[k]) for k in END_KEYS if kv.get(k) is not None})
 
 
 def _blocks(names:list[str]) -> set[int]:
@@ -92,10 +106,10 @@ def fit_context(model:str, head:str | None, *, k:int, need:int, out:pathlib.Path
   w = words()["llama_server"]
   argv = [sys.executable, str(lsd.DRIVER), "--server", server, "--model", str(pathlib.Path(model).absolute()), "--port", "0", "--ctx-size", "0",
           "--flags", json.dumps(spec_flags(hd, k)), "--fit-probe", str(need + lsd.HEADROOM), "--log", str(out / "llama-server-fit.log"),
-          "--deadline-s", str(TIMEOUT_S), "--pgid-file", str(out / mtp.SERVER_GROUP.format(k="fit"))]
+          "--deadline-s", str(FIT_DEADLINE_S), "--pgid-file", str(out / mtp.SERVER_GROUP.format(k="fit"))]
   out.mkdir(parents=True, exist_ok=True)
   try:
-    got = next(x["fit"] for x in ec.run_driver(argv, log=out / "mtp-fit.log", timeout_s=TIMEOUT_S + DRIVER_GRACE_S) if "fit" in x)
+    got = next(x["fit"] for x in ec.run_driver(argv, log=out / "mtp-fit.log", timeout_s=FIT_DEADLINE_S + DRIVER_GRACE_S) if "fit" in x)
   finally:
     mtp.stop_group(out / mtp.SERVER_GROUP.format(k="fit"))
   if not got["fits"]:
@@ -109,6 +123,7 @@ def measure(model:str, ks:list[int], *, backend:str, out:pathlib.Path, tokens:in
   (default: $BOLTBEAM_LLAMA_SERVER, else llama-server on PATH)."""
   hd, server = resolve(model, head, server)
   prompts = mtp.prompt_set()
+  deadline, ends = deadline_s(prompts), json.dumps(end_ids(model))
 
   def run_k(k:int) -> list[dict[str, Any]]:
     flags = [*cs.all_layers(None), "--metrics", *spec_flags(hd, k)]
@@ -116,7 +131,7 @@ def measure(model:str, ks:list[int], *, backend:str, out:pathlib.Path, tokens:in
             "--ctx-size", str(prompts["room"] + long_tokens + tokens + lsd.HEADROOM), "--flags", json.dumps(flags),
             "--mtp-prompts", prompts["path"], "--k", str(k), "--tokens", str(tokens), "--long-tokens", str(long_tokens),
             "--long-corpus", str(mtp.LONG), "--log", str(out / f"llama-server-k{k}.log"),
-            "--deadline-s", str(TIMEOUT_S), "--pgid-file", str(out / mtp.SERVER_GROUP.format(k=k))]
-    return ec.run_driver(argv, log=out / f"mtp-k{k}.log", timeout_s=TIMEOUT_S + DRIVER_GRACE_S)  # the driver's own deadline first: it stops its server
+            "--end-ids", ends, "--deadline-s", str(deadline), "--pgid-file", str(out / mtp.SERVER_GROUP.format(k=k))]
+    return ec.run_driver(argv, log=out / f"mtp-k{k}.log", timeout_s=deadline + DRIVER_GRACE_S)  # the driver's own deadline first: it stops its server
   return mtp.sweep(run_k, ks, model=model, backend=backend, out=out, tokens=tokens, long_tokens=long_tokens, long_why=long_why, grow=grow,
                    decode_speed="(predicted_n - 1) / predicted_ms, llama-server's own timings: no prefill")

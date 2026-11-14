@@ -1278,6 +1278,7 @@ type Recommend struct {
 	KVDtype             string      `json:"kv_dtype"`
 	KVFormats           []string    `json:"kv_formats"`
 	EngineNote          string      `json:"engine_note"`
+	ModelWarning        *string     `json:"model_warning"` // a Speed up copy waiting on its task eval (quantization/speed_up.usable)
 	Layouts             []RecLayout `json:"layouts"`
 	Recommended         struct {
 		ID  *string `json:"id"`

@@ -234,6 +234,8 @@ _ROWS = (
     unrecorded_order="it lists amd-smi's order, scanned before BoltBeam put AMD GPUs in HIP's order",
     # ROCr hides GPUs first and HIP numbers what is left: the scan's first device is then the engine's device 0
     visible=("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES"),
+    ggml_cmake=("-DGGML_HIP=ON", "-DAMDGPU_TARGETS={arch}"),  # llama.cpp's HIP build (docs/build.md), as the R9700 box's own build
+    ggml_arch=(("rocminfo",), r"Name:\s+(gfx[0-9a-f]+)"),  # the first agent's gfx name, e.g. gfx1201
     ggml_backend="hip", telemetry=lambda device: resolve("boltbeam.collectors.gpu_telemetry:AmdSysfs")(device["pci_bus_id"]),
     clock_policy="boltbeam.collectors.gpu_telemetry:amd_clock_policy",
     profile=ProfileShape(
