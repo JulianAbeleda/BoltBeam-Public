@@ -31,13 +31,61 @@ It answers, per role and per kernel:
 - **Did an engine upgrade change anything?** The engine-upgrade audit compares two builds row by row and names what
   moved beyond run-to-run noise ([docs/engine-upgrade-audit.md](docs/engine-upgrade-audit.md)).
 
-Engines, by family (each a root and its forks, data/engine_families.json): llama.cpp (forks: Ollama, master;
-Strata, its own engine on llama.cpp's ggml, listed in the family, not run yet), vLLM, TensorRT-LLM and arkey (BoltBeam's own provider: the owner's tinygrad fork). Chips: Apple Metal and NVIDIA CUDA, measured
+Engines, by family (each a root and its forks, data/engine_families.json): llama.cpp (forks: Ollama, master), vLLM, TensorRT-LLM and arkey (BoltBeam's own provider: the owner's tinygrad fork). Chips: Apple Metal and NVIDIA CUDA, measured
 the same way. BoltBeam says where the time goes. Why a kernel is slow is the engine developer's question. On Metal, llama.cpp names no
 kernels in its capture. Qualified there: its whole decode token, its whole prefill at 512 tokens, and its
 session turn at depth 512. The prefill and turn qualify only with the GPU idled 60 s before each arm, because
 the M4's clock steps down under sustained load. Per-role time is the kernel timer's estimate
 ([docs/metal-qualification-20261023.md](docs/metal-qualification-20261023.md)).
+
+## New in 0.3.26: a 128k session on one RTX 5090, 2.92x stock
+
+Same engine, same model, same GPU: stock llama.cpp v1.0.0 against llama.cpp v1.0.0 set up by BoltBeam. Qwen3.8-Flash-Next
+IQ1_M with its MTP draft head, a 59-turn coding session growing to 129k tokens, one user, batch 1, temperature 0.
+RTX 5090 capped at 450 W, 31 GiB of RAM. Three paired runs; brackets are 95% intervals over the pairs.
+
+| | stock llama.cpp | BoltBeam setup | gain |
+|---|---|---|---|
+| whole session | 485 s | 166 s | 2.92x [2.89, 2.94] |
+| decode, whole session | 77 tok/s | 226 tok/s | 2.93x [2.90, 2.96] |
+| decode, 96-128k tokens | 61 tok/s | 208 tok/s | 3.39x [3.35, 3.43] |
+| prefill per turn | 2.61 s | 0.83 s | 3.14x [3.09, 3.18] |
+| time to first token per turn | 2.71 s | 0.94 s | 2.90x [2.86, 2.94] |
+
+Both setups draft 3 tokens a step with the same head and accept about the same. The gain is the step time.
+
+What does it:
+
+- **Engine mods.** `boltbeam screen mods` applies the opt-in llama.cpp mods of
+  [arkey_ie_mods](https://github.com/JulianAbeleda/arkey_ie_mods) (MIT, public) to your llama.cpp, a tree without
+  `.git` (a release archive) included. It builds the series, checks each mod is on, and refuses a build whose
+  generated kernels did not load. 13 mods for v1.0.0, each off unless its switch is set. 12 compute the same bits as
+  stock; 1 changes only the draft's proposals. One is the first generated kernel package: two BF16 GEMV kernels
+  written by arkey's scheduler, -0.56 ms a step, identical output.
+- **`tune` and `offload` derive the settings**: the prefill chunk (`-ub 1024`), the expert placement and cache size, and
+  `-lm none` when the model files are larger than RAM and the host experts fit in it. `-lm none` reads the host experts
+  into RAM at load; output identical. It fixed the cold first turn: 2.5 s of prefill against 5.3-6.8 s for stock.
+- **`context-audit`**: the long-context audit as checks. Each part of a decode step placed from measured GPU idle time,
+  host CPU time per host function, minimum memory per role on a ledger. Labels fail closed when an input is missing
+  ([docs/context-audit.md](docs/context-audit.md)).
+- **`kernel-ledger`**: every kernel in a decode step against its own limit ([docs/kernel-ledger.md](docs/kernel-ledger.md)).
+
+**Quality.** The mods are identical to stock but one (draft only). The settings change rounding, so the setup is not
+bit-identical and is gated instead, with every rule fixed before the run:
+
+1. Distribution gate: every next-token distribution of 18 replies (4,608 positions) against floor pairs that differ only
+   by rounding stock already accepts (CPU vs GPU, cache size, batch size). Fail at 2 replies past the widest floor
+   flip. Result: 0. Holds.
+2. MMLU-Pro, 150 items, non-inferiority: stock 103, BoltBeam setup 104. Pass.
+3. LiveCodeBench, 140 items, non-inferiority: stock 69, BoltBeam setup 73 (McNemar p = 0.66: no harm, no gain). Pass.
+
+Limits: one RTX 5090, one model, one session shape. Other cards and models are unverified until run. One user at a
+time. `-lm none` holds the host experts in RAM from load; with every expert in RAM they do not fit 31 GiB beside the
+checkpoint pool, so `tune` and `offload` leave that setup mapped.
+
+Test machine and per-mod numbers: [arkey_ie_mods#test-machine](https://github.com/JulianAbeleda/arkey_ie_mods#test-machine).
+Method, every run and the commands to reproduce:
+[arkey_ie_mods/benchmarks](https://github.com/JulianAbeleda/arkey_ie_mods/tree/master/benchmarks/llama.cpp-1.0.0-0.3.26).
 
 ## Install
 
