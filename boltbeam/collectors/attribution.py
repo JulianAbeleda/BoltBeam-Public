@@ -28,7 +28,7 @@ a stack no launch ties is unpaired with what is missing said (llama_mmq.untied).
 (roofline/moe.routing_basis): k distinct experts is exact for one token, a minimum at batch B.
 
 Time in groups no role takes is "not attributed". Nothing is guessed: a role with no matching group stays absent,
-and loss() (tinygrad_role_time.py) then applies the same floor rule as for every provider.
+and loss() (arkey_role_time.py) then applies the same floor rule as for every provider.
 """
 from __future__ import annotations
 

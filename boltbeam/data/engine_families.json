@@ -50,7 +50,7 @@
       "forks": [
         {"fork": "upstream", "label": "upstream", "repo": "https://github.com/tinygrad/tinygrad", "env": "BOLTBEAM_TINYGRAD_UPSTREAM",
          "runs": false, "why": "BoltBeam times tinygrad's roles through the fork's own timing and search provider"},
-        {"fork": "own", "label": "own fork", "repo": "https://github.com/JulianAbeleda/tinygrad-arkey", "provider": "tinygrad", "runs": true}
+        {"fork": "own", "label": "arkey", "repo": "https://github.com/JulianAbeleda/tinygrad-arkey", "provider": "arkey", "was": ["tinygrad"], "runs": true}
       ]
     }
   ]

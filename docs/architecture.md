@@ -65,8 +65,8 @@ fixtures (`synth/fixtures.py`); `report/markdown.py` reads the ledger
 (`ledger/`); `search/role_*` compare measured roles. They are not retired.
 Their contracts:
 
-- `data/quants.json` — quant behavior (block size, dequant family, route
-  families, refuted/pending routes). Unknown quant -> `unsupported_quant`.
+- `data/formats.json` — every weight, KV-cache and activation format (docs/formats.md): names, block size, bits, each component's status, and the quant capability (dequant family, route
+  families, refuted/pending routes). Unknown format -> refused in words; no capability -> `unsupported_quant`.
 - `data/targets.json` — target capability + `backend_status`. Only `complete`
   backends promote; `descriptor_only` targets defer.
 - `data/candidates.json` — route-family templates (arch-scoped, origin-tagged).

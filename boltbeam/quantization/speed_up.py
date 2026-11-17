@@ -365,10 +365,40 @@ def model_files(src:pathlib.Path) -> list[pathlib.Path]:
   return sorted(f for f in src.parent.iterdir() if shard.fullmatch(f.name)) if shard else [src]
 
 
-def perturbation(engine:str) -> dict[str, Any] | None:
+def setting(flags:list[str], env:dict | None, spec:dict[str, Any]) -> str | None:
+  """The value a setup gives one engine setting (spec: its flags, a '--' flag's '_' read as '-', and its env names): the
+  last flag given, else its env; spec accumulates: env then every flag, joined by ','. None: unset."""
+  flags = [f.replace("_", "-") if f.startswith("--") else f for f in flags]
+  got = [flags[i + 1] for i, f in enumerate(flags[:-1]) if f in spec["flags"]]
+  envs = [v for e in ([spec["env"]] if isinstance(spec["env"], str) else spec["env"]) if (v := (env or {}).get(e)) is not None]
+  return ",".join(envs + got) or None if spec.get("accumulates") else got[-1] if got else next(iter(envs), None)
+
+
+def drafted(row:dict[str, Any], text:str) -> list[str]:
+  """The draft flags and types of an engine's tail rule that text (an eval's config) names."""
+  t = row.get("tail") or {}
+  return [w for w in [*t.get("draft", {}).get("flags", ()), *t.get("types", {}).get("rollback", ())] if re.search(rf"(?<![\w-]){re.escape(w)}(?![\w-])", text)]
+
+
+def perturbation(engine:str, flags=None, env:dict | None = None) -> dict[str, Any] | None:
   """The change an engine declares must not matter (threshold.noise.engines): the one place Speed up and tune read it.
-  None: the engine declares none, so it has no floor, and its eval noise is the original run again unchanged."""
-  return table()["threshold"]["noise"]["engines"].get(engine)
+  None: none declared, so no floor, and its eval noise is the original run again unchanged. Derived for the setup it
+  changes (flags, env; flags None: not known): the batch, raised to the tail bound where the setup forces one; refused if
+  the setup runs at it."""
+  if not (row := table()["threshold"]["noise"]["engines"].get(engine)) or "batch" not in row:
+    return row
+  t, base, known, flags = row["tail"], row["batch"], flags is not None, [str(f) for f in flags or ()]
+  types = setting(flags, env, t["types"])
+  on = bool(set(types.split(",")) & set(t["types"]["rollback"])) if types else setting(flags, env, t["draft"]) is not None
+  n = int(setting(flags, env, t["n_max"]) or t["n_max"]["default"])
+  b, ub = (int(setting(flags, env, s) or s["default"]) for s in row["own"])  # -ub 0: -b; -b caps -ub
+  batch, own = max(base, n + t["plus"]) if on else base, min(b, ub or b) if known else row["unknown"]
+  fill = lambda x: x.format(batch=batch, own=own, base=base, n=n, plus=t["plus"])  # noqa: E731
+  if own == batch:
+    raise Refused(f"the setup already runs {engine} at a batch of {batch} tokens, so the declared change to {batch} would change nothing: "
+                  "no noise to measure; run the setup at its own batch, or declare another change (threshold.noise.engines)")
+  return {**row, "args": {k: [fill(x) for x in v] for k, v in row["args"].items()}, "batch": batch, "rule": fill(t["rule"]), "raised": batch != base,
+          "says": fill(row["says"]) + (f" ({fill(t['says'])})" if batch != base else "")}
 
 
 def stamp(f:pathlib.Path) -> list:
@@ -401,9 +431,9 @@ def cached(key:dict[str, Any], measure, whole=lambda entry: True) -> dict[str, A
 
 def noise_floor(src:pathlib.Path, engine:str, w, path:str, texts:list[str], **setup) -> dict[str, Any] | None:
   """The engine's own noise on this model (threshold.noise): agreement() of the original against itself, w.accuracy(src,
-  src, path, texts, **setup) with the engine's perturbation() added (a list argument is extended, so the declared flags
+  src, path, texts, **setup) with the engine's perturbation() for dst_flags added (a list argument is extended, so the declared flags
   come last and win); None for an engine without one. Speed up and tune both call it, and share its cache."""
-  if not (noise := perturbation(engine)):
+  if not (noise := perturbation(engine, setup.get("dst_flags", ()), setup.get("env"))):
     return None
   args = {**setup, **{k: [*setup.get(k, ()), *v] if isinstance(v, list) else v for k, v in noise["args"].items()}}
   key = noise_key(src, w, path, texts_sha256=hashlib.sha256(json.dumps(texts).encode()).hexdigest(), args=args)
@@ -511,7 +541,8 @@ def derive(checkpoint:str, engine:str | None = None, out:str | None = None, engi
     rec["eval"] = {k: str(own(dst, v)) for k, v in th["eval"]["files"].items()}
     noise = perturbation(row["engine"])
     rec["eval"]["command"] = th["eval"]["command"].format(source=src, copy=dst, **{f"{k}_rows": v for k, v in rec["eval"].items()},
-                                                          again=f"with {noise['says']}" if noise else th["eval"]["unchanged"])
+                                                          again=f"with {noise['says']}" + (f" ({noise['rule']})" if noise.get("raised") else "") if noise else th["eval"]["unchanged"])
+    rec["eval"]["noise_rule"] = (noise or {}).get("rule")  # the batch for a setup with a draft head: verify derives it from --eval-flags
   if "deleted_because" in rec:
     rec["logs_kept"] = str(kept) if (kept := keep_logs(dst, "not-kept")) else None
     dst.with_name(dst.name + ".speed_up.json").write_text(json.dumps(rec, indent=2))  # the copy goes; its reason (and the per-document figures) stay beside it
@@ -565,7 +596,7 @@ def _sha(p:pathlib.Path) -> str:
   return h.hexdigest()
 
 
-def verify(copy:str, engine:str | None = None, engine_path:str | None = None) -> dict[str, Any]:
+def verify(copy:str, engine:str | None = None, engine_path:str | None = None, eval_flags=None) -> dict[str, Any]:
   """A copy against its record: it passed and was kept, its files and its gate text still hash to the record, this machine's
   stock engine is the record's version, and the record holds a speed for this GPU. Refused on the first mismatch."""
   p = pathlib.Path(copy).expanduser().resolve()
@@ -607,7 +638,7 @@ def verify(copy:str, engine:str | None = None, engine_path:str | None = None) ->
   for k, sha in (rec.get("stage2") or {}).get("rows_sha256", {}).items():  # the rows a verdict was judged on still say it
     if not (f := pathlib.Path(rec["eval"][k])).is_file() or _sha(f) != sha:
       raise Refused(f"{f.name}, an eval row file this copy was judged on, is missing or changed since")
-  return judge(rec, p, w, path) if verdict(rec) == "needs_eval" else rec
+  return judge(rec, p, w, path, eval_flags) if verdict(rec) == "needs_eval" else rec
 
 
 def usable(path:str | pathlib.Path) -> str | None:
@@ -637,7 +668,7 @@ def verdict(rec:dict[str, Any]) -> str:  # pass, needs_eval or fail; a record fr
   return rec.get("verdict") or ("pass" if rec.get("passed") else "fail")
 
 
-def judge(rec:dict[str, Any], p:pathlib.Path, w, path:str) -> dict[str, Any]:
+def judge(rec:dict[str, Any], p:pathlib.Path, w, path:str, flags=None) -> dict[str, Any]:
   """Stage 2 for a copy waiting on its task eval: the eval's rows beside it (original, copy, and noise: the original run
   again as perturbation() says), each row naming the checkpoint it ran (model), judged by noninferior(). The engine's own
   eval noise is cached as the floor is (noise_key, plus the original's rows and the eval's settings, every row's config,
@@ -662,7 +693,10 @@ def judge(rec:dict[str, Any], p:pathlib.Path, w, path:str) -> dict[str, Any]:
   paired(orig := rows("original"), copy := rows("copy"))  # whole rows, one per item, the same items, before they key anything
   if len(config := {json.dumps(r.get("config"), sort_keys=True) for r in orig + copy}) > 1:
     raise Refused("the eval rows carry more than one config: the arms ran under different eval settings")
-  noise = perturbation(rec["engine"])
+  noise = perturbation(rec["engine"], flags)  # flags: the engine arguments the eval ran the original with
+  if flags is None and noise and (named := drafted(noise, cfg := next(iter(config)))):
+    raise Refused(f"the eval's config names a draft head ({', '.join(named)}) but --verify was not given the eval's engine flags (--eval-flags), "
+                  f"so the noise run's batch cannot be derived: {ev.get('noise_rule') or noise['rule']}")
   key = noise_key(pathlib.Path(rec["source"]), w, path, args=noise and noise["args"], config=(cfg := config.pop()),
                   original=hashlib.sha256(json.dumps(orig, sort_keys=True).encode()).hexdigest())
   again = cached(key, fresh, lambda e: isinstance(e.get("rows"), list))
@@ -695,7 +729,6 @@ def checkpoint_bytes(src:pathlib.Path) -> int:
   return src.stat().st_size if src.is_file() else sum(f.stat().st_size for f in src.glob("*.safetensors"))
 
 
-SAFETENSORS_DTYPE_BYTES = {"F64": 8, "I64": 8, "F32": 4, "I32": 4, "BF16": 2, "F16": 2, "I16": 2, "I8": 1, "U8": 1, "F8_E4M3": 1, "F8_E5M2": 1}
 NOT_READ_PER_TOKEN = ("visual.", "vision_tower", "vision_model", "multi_modal_projector", "mtp.", "nextn", "audio_tower")
 GPU_KEYS = ("target", "name", "backend", "memory_bytes")  # the GPU a speed entry was measured on (verify matches target)
 ENGINE_KEYS = ("build", "max_model_len", "compilation_config", "enforce_eager", "warm", "seed", "call_order", "speculative_config",

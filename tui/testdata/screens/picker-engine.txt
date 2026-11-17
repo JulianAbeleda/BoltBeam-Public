@@ -7,8 +7,8 @@
 │                                                                              │
 │ llama.cpp · can measure                                                      │
 │   roles: not possible here (metal-system-trace is not installed)             │
-│ tinygrad · can measure                                                       │
-│   roles: tinygrad's own timing                                               │
+│ arkey · can measure                                                          │
+│   roles: arkey's own timing                                                  │
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -17,7 +17,7 @@
 │ Choose                                                                       │
 │ llama.cpp · roles not timed here                                             │
 │ ▸ ● llama.cpp                                                                │
-│     tinygrad                                                                 │
+│     arkey                                                                    │
 │     [ Scan again ] look for engines in the usual folders                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 

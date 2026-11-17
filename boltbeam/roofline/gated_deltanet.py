@@ -22,8 +22,9 @@ kernel's window is not the speculative partition and is refused, never guessed.
 from __future__ import annotations
 
 from typing import Any
+from boltbeam import formats
 
-DTYPE_BYTES = {"float32": 4, "bfloat16": 2, "float16": 2}
+DTYPE_BYTES = {r["torch"]: r["block"][1] for r in formats.rows() if r["family"] == "float" and "torch" in r and 16 <= r["bits"] <= 32}
 
 
 def speculative_stages(profile:dict[str, Any], evidence:dict[str, Any], step:dict[str, Any]) -> list[dict[str, Any]]:

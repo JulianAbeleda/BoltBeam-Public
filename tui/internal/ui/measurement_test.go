@@ -15,7 +15,7 @@ import (
 // airMeasurement is `screen providers` on this Air (no Xcode): in-model cannot run, generic is the default.
 const airMeasurement = `{"default": "generic", "fallback": "in-model needs Xcode's Metal System Trace on this Mac", "options": [
  {"id": "in_model", "label": "in-model", "available": false, "reason": "in-model needs Xcode's Metal System Trace on this Mac",
-  "about": "the real token, split by role when the engine labels its kernels (tinygrad, nsys); llama.cpp on a Mac: whole step only"},
+  "about": "the real token, split by role when the engine labels its kernels (arkey, nsys); llama.cpp on a Mac: whole step only"},
  {"id": "generic", "label": "generic (kernel timer)", "available": true, "reason": null,
   "about": "each kernel alone, cold, any engine, any chip; compares kernels, the token split is an estimate"}]}`
 

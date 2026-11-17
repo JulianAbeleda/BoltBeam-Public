@@ -4,6 +4,7 @@ line (collectors/engine_args) and its engine settings (capture_settings.LLAMA_FL
 from __future__ import annotations
 
 import pathlib
+import re
 from typing import Any
 
 from boltbeam.core.refused import Refused
@@ -14,25 +15,40 @@ _LONELY = ("cpu_moe",)  # flags with no value
 PLACEMENT = ("cpu_moe", "n_cpu_moe", "override_tensor", "moe_cache_mib", "moe_cache_cpu_share")  # the engine settings that place experts in RAM
 
 
-def parse_flags(tokens:list[str]) -> dict[str, Any]:
-  """Offload flags in an engine command line: cpu_moe, n_cpu_moe, ot (the -ot patterns), cache_mib, cpu_share. A flag
-  given as --name=value is split first."""
+_FLAG = re.compile(r"-{1,2}[A-Za-z]")  # a flag; "-1" is a value
+
+
+def flag_pairs(tokens:list[str], switches:set[str] | tuple[str, ...] = ()) -> list[tuple[str, str | None]]:
+  """An engine command line as (flag, value) pairs, the one flag parser: --name=value is split first; a switch, and a
+  flag followed by another flag or by nothing, has the value None; a token that is no flag's value is left out."""
   toks = [t for tok in tokens for t in (tok.split("=", 1) if tok.startswith("--") and "=" in tok else [tok])]
+  out, i = [], 0
+  while i < len(toks):
+    t, nxt = toks[i], toks[i + 1] if i + 1 < len(toks) else None
+    value = None if t in switches or nxt is None or _FLAG.match(nxt) else nxt
+    if _FLAG.match(t):
+      out.append((t, value))
+    i += 2 if _FLAG.match(t) and value is not None else 1
+  return out
+
+
+def parse_flags(tokens:list[str]) -> dict[str, Any]:
+  """Offload flags in an engine command line: cpu_moe, n_cpu_moe, ot (the -ot patterns), cache_mib, cpu_share."""
   out: dict[str, Any] = {}
-  for i, t in enumerate(toks):
+  for t, value in flag_pairs(tokens, {f for f, k in _FLAGS.items() if k in _LONELY}):
     key = _FLAGS.get(t)
     if key is None:
       continue
     if key in _LONELY:
       out[key] = True
       continue
-    if i + 1 >= len(toks): raise Refused(f"{t} has no value in the run's recorded engine arguments")
-    if key == "ngl" and not toks[i + 1].lstrip("-").isdigit():
+    if value is None: raise Refused(f"{t} has no value in the run's recorded engine arguments")
+    if key == "ngl" and not value.lstrip("-").isdigit():
       continue  # "auto" and "all" put every layer on the GPU the model fits; only a count can leave layers behind
     try:
-      out[key] = (out.get(key, []) + [toks[i + 1]]) if key == "ot" else float(toks[i + 1]) if key == "cpu_share" else int(toks[i + 1])
+      out[key] = (out.get(key, []) + [value]) if key == "ot" else float(value) if key == "cpu_share" else int(value)
     except ValueError as exc:
-      raise Refused(f"{t} {toks[i + 1]!r} in the run's recorded engine arguments is not a number") from exc
+      raise Refused(f"{t} {value!r} in the run's recorded engine arguments is not a number") from exc
   return out
 
 

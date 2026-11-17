@@ -132,6 +132,8 @@
   "fits_card": "The whole model fits on the card, so nothing needs to go to RAM; this is what offloading would give.",
   "past_card": "The model does not fit on the card: part of it has to live in RAM.",
   "refused": "No offload plan here: {reason}.",
+  "output": "Output {label} with the expert cache: {why}.",
+  "placed": "{flags}: {says} (output {output}).",
   "where": "Where the weights go",
   "replies": "Setup for writing replies",
   "prompts": "Setup for reading prompts",
@@ -536,9 +538,9 @@
     "vLLM",
     "tensorrt-llm",
     "TensorRT-LLM",
-    "tinygrad"
+    "arkey"
    ],
-   "plain": "The program that runs the model (llama.cpp, vLLM, TensorRT-LLM or tinygrad)."
+   "plain": "The program that runs the model (llama.cpp, vLLM, TensorRT-LLM or arkey)."
   },
   {
    "term": "build",
@@ -795,7 +797,7 @@
   "llama.cpp": "llama.cpp",
   "vllm": "vLLM",
   "tensorrt-llm": "TensorRT-LLM",
-  "tinygrad": "tinygrad"
+  "arkey": "arkey"
  },
  "head_to_head": {
   "wall_rows": {
@@ -1004,6 +1006,7 @@
  "sweep_failed": "the measurement stopped without an answer (the engine did not start or did not answer); its log is in {out}",
   "not_applicable": "Not used with this model and placement:",
   "not_in_build": "Not in this build (no knobs from it): {groups}.",
+  "modded_unverified": "Modded build, {status}: {mods}. No check of these mods has run on this machine.",
   "older_group": "This build has an older version of a {noun}: these of its knobs are not in it: {knobs}.",
   "lacks": "This {engine} build lacks these knobs: {knobs}.",
   "command": "Command:",
@@ -1085,8 +1088,9 @@
   }
  },
  "tune_llama_cpp": {
+  "ubatch_tie": "the smallest chunk whose prompt limit is within the policy's tie of the best one's: the model's header could not be read, so the chunk was not derived from its crossover and fit",
   "no_fit_context": "A {context:,}-token context does not fit this GPU: what the model keeps on the card and the KV cache for one request need at least {need:.1f} GiB (the compute buffers and the GPU context come on top), and the GPU has {gpu:.1f} GiB. Use a shorter context, keep more of the model in host RAM, or use a smaller model.",
-  "no_patch": "This build has none of BoltBeam's local llama.cpp patches, so their knobs do not apply: only stock flags are recommended below.",
+  "no_patch": "This build has none of the llama.cpp mods (arkey_ie_mods) whose knobs tune sets, so only stock flags are recommended below.",
   "shared_memory": "The GPU shares memory with the CPU (unified memory): nothing is copied to it, so the knobs for copying experts (the pin budget, the staging ring) do not apply.",
   "model": "Model: {name}, {layers} expert layers of {experts} experts, {gib:.2f} GiB of experts; {host:.2f} GiB of them in host RAM ({placement}).",
   "no_plan": "the offload plan could not be worked out here",

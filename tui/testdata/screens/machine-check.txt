@@ -14,7 +14,7 @@
 │ ✓ llama.cpp · upstream: /opt/homebrew/bin/llama-bench (path); per-role time: metal-system-       │
 │   trace                                                                                          │
 │   forks not found: Ollama, Strata                                                                │
-│ ✓ tinygrad · own fork: /opt/tinygrad (scan: /opt); per-role time: metal-system-trace             │
+│ ✓ tinygrad · arkey: /opt/tinygrad (scan: /opt); per-role time: metal-system-trace                │
 │   forks not found: upstream                                                                      │
 │                                                                                                  │
 │ Measuring tools                                                                                  │

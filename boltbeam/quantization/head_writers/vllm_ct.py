@@ -10,6 +10,7 @@ import pathlib
 import subprocess
 import sys
 
+from boltbeam import formats
 from boltbeam.core.refused import Refused
 
 ENGINE_SCRIPT = pathlib.Path(__file__).with_name("vllm_engine.py")
@@ -110,7 +111,7 @@ def head(p:pathlib.Path, packed:str, g:int, module:str = "lm_head", wmap:dict[st
     raise Refused("the checkpoint has no lm_head.weight (tied to the embedding), so there is no separate output layer to lighten" if module == "lm_head"
                   else f"{what} has no weight in the checkpoint")
   shape, dtype = h["shape"], h["dtype"]
-  if (bits_now := {"BF16": 16, "F16": 16, "F32": 32}.get(dtype)) is None:
+  if (bits_now := int(r["bits"]) if (r := formats.row(dtype) or {}).get("family") == "float" and r["bits"] in (16, 32) else None) is None:
     raise Refused(f"{what} is {dtype}, not a 16 or 32 bit float")
   if len(shape) != 2 or shape[1] % g or shape[1] % 8 or shape[0] % 8:
     raise Refused(f"{what} {shape} does not divide into groups of {g}")

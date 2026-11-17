@@ -38,6 +38,7 @@ import sysconfig
 import time
 from typing import Any, Callable
 
+from boltbeam import formats
 from boltbeam.collectors import gpu_telemetry
 from boltbeam.collectors import prefill as pf
 from boltbeam.collectors.llama_bench_decode import fork_fact
@@ -194,7 +195,7 @@ def _fork_session(run, model, depth, target, root, mode, extra:list[str]) -> dic
   return pf.fork_exec(root, python, target, DRIVER, argv, mode, "session")
 
 
-def tinygrad_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) -> dict[str, Any]:
+def arkey_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:bool) -> dict[str, Any]:
   with gpu_telemetry.run_telemetry(run, 0) as tele:
     got = _fork_session(run, model, depth, target, root, "truth", ["--warm"] if warm else [])
   computed = got["computed"]
@@ -214,7 +215,7 @@ def tinygrad_turn(run:pathlib.Path, model:str, depth:int, target, root, warm:boo
                      "workload_reuse_default": got.get("workload_reuse_default")}}
 
 
-def tinygrad_capture(run:pathlib.Path, model:str, length:int, target, root, depth:int) -> dict[str, Any]:
+def arkey_capture(run:pathlib.Path, model:str, length:int, target, root, depth:int) -> dict[str, Any]:
   raw = run / pf.RAW / f"{length}-at-{depth}"
   raw.mkdir(parents=True, exist_ok=True)
   got = _fork_session(run, model, depth, target, root, "capture", ["--out", str(raw / "launches.json")])
@@ -224,7 +225,7 @@ def tinygrad_capture(run:pathlib.Path, model:str, length:int, target, root, dept
 ENGINES: dict[str, dict[str, Callable[..., dict[str, Any]]]] = {
   "llama.cpp": {"turn": llama_turn,
                 "capture": lambda run, model, length, target, root, depth: pf.llama_capture(run, model, length, target, depth)},
-  "tinygrad": {"turn": tinygrad_turn, "capture": tinygrad_capture},
+  "arkey": {"turn": arkey_turn, "capture": arkey_capture},
 }
 
 
@@ -293,7 +294,7 @@ def fixed_part(rows:list[dict[str, Any]], per_token:float) -> float | None:
   return max(got) if got else None
 
 
-CACHE_TYPES = ("f16", "q8_0")  # the KV cache types the context that fits is given for (formats in data/quants.json)
+CACHE_TYPES = tuple(formats.kv_offer("llama.cpp"))  # the KV cache types the context that fits is given for (data/formats.json offer)
 
 
 def cache_bytes(profile:dict[str, Any]) -> dict[str, float]:

@@ -104,13 +104,13 @@ shows the path each engine was found at and how.
 
 | engine | the usual place | the env var when elsewhere |
 |---|---|---|
-| tinygrad fork | `tinygrad-arkey-exp` next to the BoltBeam checkout, `~/tinygrad-arkey*`, `~/env/tinygrad*`, `~/storage/*/tinygrad*`, with a `.venv` inside it that has numpy | `BOLTBEAM_TINYGRAD_ROOT`, `BOLTBEAM_TINYGRAD_VENV` |
+| arkey (tinygrad fork) | `tinygrad-arkey-exp` next to the BoltBeam checkout, `~/tinygrad-arkey*`, `~/env/tinygrad*`, `~/storage/*/tinygrad*`, with a `.venv` inside it that has numpy | `BOLTBEAM_TINYGRAD_ROOT`, `BOLTBEAM_TINYGRAD_VENV` |
 | vLLM | a venv under `~/env`, `~/storage`, `~/venvs`, `~/.venvs` or `~/storage/*` whose python imports `vllm` | `BOLTBEAM_VLLM_PYTHON` |
 | Ollama (a llama.cpp fork) | `ollama` on PATH, `/usr/local/bin`, `~/.ollama`, `~/storage/*/ollama/bin` | `BOLTBEAM_OLLAMA` |
 | Strata (own engine on llama.cpp's ggml and MMQ kernels; listed, not run yet) | `strata` on PATH | `BOLTBEAM_STRATA` |
 | TensorRT-LLM | a venv as for vLLM whose python imports `tensorrt_llm` | `BOLTBEAM_TRTLLM_PYTHON` |
 
-The tinygrad fork:
+arkey (the tinygrad fork):
 
 ```bash
 git clone -b exp https://github.com/JulianAbeleda/tinygrad-arkey ../tinygrad-arkey-exp

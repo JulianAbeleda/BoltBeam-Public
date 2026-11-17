@@ -19,10 +19,10 @@ FLASH_STEM = "flash"
 def in_model_attention(run:pathlib.Path) -> dict[str, Any] | None:
   """The attention kernels' time per token in the model (the tie-out's attention row: tinygrad's role-time rows of
   kind attention), the context it was captured at, and the KV read at that context (the limit's part for it)."""
-  from boltbeam.collectors import tinygrad_role_time
+  from boltbeam.collectors import arkey_role_time
   from boltbeam.artifacts.run_io import read_json
   from boltbeam.workflow.tie_out import kv_ms
-  path = run / tinygrad_role_time.TRACE
+  path = run / arkey_role_time.TRACE
   if not path.is_file(): return None
   trace = read_json(path)
   whole = next((r for r in trace.get("rows") or [] if r.get("scope") == "whole_step"), None)
@@ -31,7 +31,7 @@ def in_model_attention(run:pathlib.Path) -> dict[str, Any] | None:
   ms = sum(float(r.get("wall_us") or 0.0) for r in trace.get("rows") or [] if r.get("scope") == "kernel" and r.get("kind") == flash_space_kind()) / tokens / 1000.0
   context = int((trace.get("contexts") or [whole.get("context") or 0])[0] or 0)
   profile = read_json(run / "model_profile.json") if (run / "model_profile.json").is_file() else {}
-  limit = kv_ms(profile, context, tinygrad_role_time.KV_ELEMENT[0], float(trace.get("peak_gbs") or 0.0))
+  limit = kv_ms(profile, context, arkey_role_time.KV_ELEMENT[0], float(trace.get("peak_gbs") or 0.0))
   return {"ms": ms, "context": context, "limit_ms": limit, "lost_ms": ms - limit}
 
 

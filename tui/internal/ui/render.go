@@ -37,7 +37,7 @@ var plainNeed = map[string]string{"probe_evidence": "the building-block tests", 
 
 // captureWords names how per-role time was taken, in the screen's words.
 var captureWords = map[string]string{
-	"tinygrad-profile-events": "tinygrad's own timing",
+	"tinygrad-profile-events": "arkey's own timing",
 	"nsys":                    "captured with nsys",
 	"rocprofv3":               "captured with rocprofv3",
 	"metal-system-trace":      "captured with Metal System Trace",

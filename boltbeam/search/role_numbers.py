@@ -69,8 +69,8 @@ def summarize_search(result:Mapping[str, Any], installed:Mapping[str, Any] | Non
 
 
 def time_roles(run:pathlib.Path, *, root:pathlib.Path | None = None) -> dict[str, Any]:
-  """Time every role inside a real decode in tinygrad's runtime (collectors/tinygrad_role_time.py)."""
-  from boltbeam.collectors import tinygrad_role_time
+  """Time every role inside a real decode in tinygrad's runtime (collectors/arkey_role_time.py)."""
+  from boltbeam.collectors import arkey_role_time
   from boltbeam.target.targets import get_target
   from boltbeam.artifacts.run_io import load_manifest
   root = pathlib.Path(root) if root else tinygrad_fork.default_fork_root()
@@ -81,12 +81,12 @@ def time_roles(run:pathlib.Path, *, root:pathlib.Path | None = None) -> dict[str
     raise RuntimeError(f"{ready['message']} Fix: {ready['fix']}" if ready.get("fix") else ready["message"])
   from boltbeam.collectors.capture_settings import selected_context, require_supported, decode_tokens
   require_supported(run)
-  trace = tinygrad_role_time.collect(run, root=root, python=tinygrad_fork.fork_python(root), model=model,
+  trace = arkey_role_time.collect(run, root=root, python=tinygrad_fork.fork_python(root), model=model,
                                      model_id=str(manifest.get("model_id")), target=get_target(manifest.get("target_id")), context=selected_context(run),
                                      tokens=decode_tokens(run, selected_context(run)))
   from boltbeam.roofline import limit
   ceil = limit.measured_vs_ceiling(manifest, optional(run, "model_profile.json"))
-  table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), for_decode(run, trace))
+  table = arkey_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), for_decode(run, trace))
   if table and table["status"] != "measured":  # say it where the job ends, not only on the next screen
     raise RuntimeError(table["reason"])
   return trace
@@ -94,14 +94,14 @@ def time_roles(run:pathlib.Path, *, root:pathlib.Path | None = None) -> dict[str
 
 def role_losses(run:pathlib.Path) -> dict[tuple[Any, ...], dict[str, Any]]:
   """The per-role loss rows of a run, by role_key (role, quant, rows, k); empty before the roles were timed."""
-  from boltbeam.collectors import tinygrad_role_time
+  from boltbeam.collectors import arkey_role_time
   from boltbeam.artifacts.run_io import read_json
   from boltbeam.roofline import limit
   from boltbeam.artifacts.run_io import load_manifest
-  path = run / tinygrad_role_time.TRACE
+  path = run / arkey_role_time.TRACE
   if not path.is_file(): return {}
   ceil = limit.measured_vs_ceiling(load_manifest(run), optional(run, "model_profile.json"))
-  table = tinygrad_role_time.loss(ceil.get("_roles") or [], read_json(path), ceil.get("floor_ms"), for_decode(run, read_json(path))) or {"roles": []}
+  table = arkey_role_time.loss(ceil.get("_roles") or [], read_json(path), ceil.get("floor_ms"), for_decode(run, read_json(path))) or {"roles": []}
   return {role_key(r): r for r in table["roles"]}  # an incomplete table has no roles
 
 

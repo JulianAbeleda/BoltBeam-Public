@@ -32,7 +32,7 @@ It answers, per role and per kernel:
   moved beyond run-to-run noise ([docs/engine-upgrade-audit.md](docs/engine-upgrade-audit.md)).
 
 Engines, by family (each a root and its forks, data/engine_families.json): llama.cpp (forks: Ollama, master;
-Strata, its own engine on llama.cpp's ggml, listed in the family, not run yet), vLLM, TensorRT-LLM and tinygrad (run through its fork). Chips: Apple Metal and NVIDIA CUDA, measured
+Strata, its own engine on llama.cpp's ggml, listed in the family, not run yet), vLLM, TensorRT-LLM and arkey (BoltBeam's own provider: the owner's tinygrad fork). Chips: Apple Metal and NVIDIA CUDA, measured
 the same way. BoltBeam says where the time goes. Why a kernel is slow is the engine developer's question. On Metal, llama.cpp names no
 kernels in its capture. Qualified there: its whole decode token, its whole prefill at 512 tokens, and its
 session turn at depth 512. The prefill and turn qualify only with the GPU idled 60 s before each arm, because
@@ -199,6 +199,7 @@ re-evaluation on recurrent models without rollback checkpoints.
 | compare two engines, or two builds of one engine | [docs/engine-upgrade-audit.md](docs/engine-upgrade-audit.md); on the screen, Saved runs, then Compare |
 | time your own kernel against the roofline | [docs/guide-time-your-kernel.md](docs/guide-time-your-kernel.md) |
 | add an engine | [docs/guide-add-an-engine.md](docs/guide-add-an-engine.md) |
+| engine mods: where they live (arkey_ie_mods), applying them to your build | [docs/engine-mods.md](docs/engine-mods.md) |
 | use the screen and its JSON mode for agents | [tui/README.md](tui/README.md) |
 | the command line end to end | [docs/CLI.md](docs/CLI.md) |
 | how the timer and its limits were measured | [docs/kernel-timer.md](docs/kernel-timer.md) |
@@ -213,7 +214,7 @@ Each cited number lives in one of these places:
 | what the article says | where it comes from |
 |---|---|
 | a chip's memory speed, matrix peak, SM count | `boltbeam/data/targets.json`, with the measurement in `bench/<target>-facts-<date>/README.md` |
-| how a weight format packs, and its refuted routes | `boltbeam/data/quants.json` |
+| every weight, KV-cache and activation format: how it packs, its refuted routes, each component's support | `boltbeam/data/formats.json` ([docs/formats.md](docs/formats.md)) |
 | a route was promoted or refuted, and why | `boltbeam/data/candidates.json` (the candidate registry) |
 | a closed experiment and its numbers | the cited record in `docs/`, for example `docs/14b-aggregate-fusion-closeout-20260702.md` |
 | the speed limit for a model on a chip | rerun it: `boltbeam roofline-theoretical MODEL.gguf --target TARGET --context 1` |

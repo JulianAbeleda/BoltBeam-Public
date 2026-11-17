@@ -21,9 +21,9 @@
     "whole": "a whole number above 0, or nothing"
   },
   "engines": {
+    "arkey": "arkey",
     "llama.cpp": "llama.cpp",
     "tensorrt-llm": "TensorRT-LLM",
-    "tinygrad": "tinygrad",
     "vllm": "vLLM"
   },
   "figures": {
@@ -289,9 +289,9 @@
         "vLLM",
         "tensorrt-llm",
         "TensorRT-LLM",
-        "tinygrad"
+        "arkey"
       ],
-      "plain": "The program that runs the model (llama.cpp, vLLM, TensorRT-LLM or tinygrad).",
+      "plain": "The program that runs the model (llama.cpp, vLLM, TensorRT-LLM or arkey).",
       "term": "engine"
     },
     {
@@ -555,6 +555,7 @@
     "machine": "This machine",
     "no_rate": "no copy to the GPU was measured and {the}'s speed was not read, so there is no rate for the experts it copies: run boltbeam host on an idle GPU",
     "notes": "Notes",
+    "output": "Output {label} with the expert cache: {why}.",
     "past_card": "The model does not fit on the card: part of it has to live in RAM.",
     "pinned": "What pinned memory would change",
     "pinned_caveat": "These are limits, not promises: llama.cpp copies from normal memory, and an engine with pinned copies still has to keep them busy.",
@@ -564,6 +565,7 @@
     "pinned_replies": "Writing replies with every miss copied (no processor share): at most {now} tok/s now, {then} tok/s with pinned copies.",
     "pinned_replies_none": "Writing replies with this setup copies nothing after loading (every expert is in the card's cache), so pinned copies would not change it.",
     "pinned_unmeasured": "No pinned copy rate was measured here ({why}), so the gap cannot be stated.",
+    "placed": "{flags}: {says} (output {output}).",
     "prompts": "Setup for reading prompts",
     "prompts_limit": "at most {tok_s} tok/s reading a {prompt}-token prompt; writing replies with this setup, at most {replies} tok/s",
     "ram_now": "{total} in all, {available} available now",
@@ -1313,7 +1315,7 @@
     "xctrace": "Xcode trace tool"
   },
   "trust": {
-    "checked": "Checked \u2713",
+    "checked": "Checked ✓",
     "checked_how": "the parts add up to the measured time",
     "estimate": "The split by part is an estimate: each part was timed alone, outside the engine.",
     "left_out": "Some parts are left out of the totals: {parts}.",
@@ -1387,6 +1389,7 @@
     "not_applicable": "Not used with this model and placement:",
     "not_bitwise": "[changes outputs: not bitwise identical]",
     "not_in_build": "Not in this build (no knobs from it): {groups}.",
+    "modded_unverified": "Modded build, {status}: {mods}. No check of these mods has run on this machine.",
     "older_group": "This build has an older version of a {noun}: these of its knobs are not in it: {knobs}.",
     "page": {
       "confirm": "to confirm: {how}",
@@ -1435,10 +1438,11 @@
     "no_fit_context": "A {context:,}-token context does not fit this GPU: what the model keeps on the card and the KV cache for one request need at least {need:.1f} GiB (the compute buffers and the GPU context come on top), and the GPU has {gpu:.1f} GiB. Use a shorter context, keep more of the model in host RAM, or use a smaller model.",
     "no_head": "the MTP head {head} is not a file",
     "no_heads": "none was given (--draft) and none sits beside the model",
-    "no_patch": "This build has none of BoltBeam's local llama.cpp patches, so their knobs do not apply: only stock flags are recommended below.",
+    "no_patch": "This build has none of the llama.cpp mods (arkey_ie_mods) whose knobs tune sets, so only stock flags are recommended below.",
     "no_plan": "the offload plan could not be worked out here",
     "routing_changed": "A saved routing profile ({what}) changed the chunk -ub from {before} to {after}.",
-    "shared_memory": "The GPU shares memory with the CPU (unified memory): nothing is copied to it, so the knobs for copying experts (the pin budget, the staging ring) do not apply."
+    "shared_memory": "The GPU shares memory with the CPU (unified memory): nothing is copied to it, so the knobs for copying experts (the pin budget, the staging ring) do not apply.",
+    "ubatch_tie": "the smallest chunk whose prompt limit is within the policy's tie of the best one's: the model's header could not be read, so the chunk was not derived from its crossover and fit"
   },
   "tune_vllm": {
     "busy": " Another program holds {held:.1f} of the GPU's {total:.1f} GiB (over {pct:.0f}%), so this share is lower than on an idle GPU.",

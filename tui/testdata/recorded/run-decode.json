@@ -546,7 +546,7 @@
           "us_per_call": 17.08942056451742,
           "us_per_call_less_floor": null,
           "verdict": "not_searched",
-          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "verdict_reason": "the kernel search runs in arkey only; this run used llama.cpp",
           "within_noise": false
         },
         {
@@ -594,7 +594,7 @@
           "us_per_call": 107.77443870968075,
           "us_per_call_less_floor": null,
           "verdict": "not_searched",
-          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "verdict_reason": "the kernel search runs in arkey only; this run used llama.cpp",
           "within_noise": false
         },
         {
@@ -642,7 +642,7 @@
           "us_per_call": 4.753645698926962,
           "us_per_call_less_floor": null,
           "verdict": "not_searched",
-          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "verdict_reason": "the kernel search runs in arkey only; this run used llama.cpp",
           "within_noise": false
         },
         {
@@ -690,7 +690,7 @@
           "us_per_call": 79.30655322579182,
           "us_per_call_less_floor": null,
           "verdict": "not_searched",
-          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "verdict_reason": "the kernel search runs in arkey only; this run used llama.cpp",
           "within_noise": false
         },
         {
@@ -738,7 +738,7 @@
           "us_per_call": 54.38926532257809,
           "us_per_call_less_floor": null,
           "verdict": "not_searched",
-          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "verdict_reason": "the kernel search runs in arkey only; this run used llama.cpp",
           "within_noise": false
         },
         {
@@ -786,7 +786,7 @@
           "us_per_call": 6.226120967733825,
           "us_per_call_less_floor": null,
           "verdict": "not_searched",
-          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "verdict_reason": "the kernel search runs in arkey only; this run used llama.cpp",
           "within_noise": false
         },
         {
@@ -834,7 +834,7 @@
           "us_per_call": 670.9576129032179,
           "us_per_call_less_floor": null,
           "verdict": "not_searched",
-          "verdict_reason": "the kernel search runs in tinygrad only; this run used llama.cpp",
+          "verdict_reason": "the kernel search runs in arkey only; this run used llama.cpp",
           "within_noise": false
         }
       ],

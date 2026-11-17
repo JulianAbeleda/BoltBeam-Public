@@ -216,7 +216,7 @@ func measureBody(f Facts, width int) string {
 	case (r == nil || r.Stages == nil) && f.alive():
 		b.WriteString(stMuted.Render("The run folder appears when the first stage finishes.") + "\n")
 	case r == nil:
-		return stMuted.Render("No run yet. Measure with llama.cpp or tinygrad: it plans the run, then measures on this GPU when this machine can.")
+		return stMuted.Render("No run yet. Measure with llama.cpp or arkey: it plans the run, then measures on this GPU when this machine can.")
 	default:
 		fmt.Fprintf(&b, "%s on %s · %s\n", r.ModelID, r.TargetID, runStatus(r.Status, r.Results.Measured))
 		events := seam.StageEvents(f.Tail)

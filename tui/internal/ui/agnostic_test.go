@@ -64,7 +64,7 @@ func engineTerms(t *testing.T) (names, flags []string) {
 			}
 		}
 	}
-	for _, s := range []string{"llama", "ggml", "vllm", "strata", "tensorrt", "trtllm", "sglang", "ollama", "tinygrad",
+	for _, s := range []string{"llama", "ggml", "vllm", "strata", "tensorrt", "trtllm", "sglang", "ollama", "tinygrad", "arkey",
 		"flashinfer", "cutlass", "cublas", "nvjet", "rocblas", "hipblaslt", "gguf", "awq", "gptq", "safetensors", "ggml_", "llama_"} {
 		add(s)
 	}

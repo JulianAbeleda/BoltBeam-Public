@@ -633,9 +633,9 @@ func othersBody(others []seam.OtherLoss, shown string, width int) string {
 }
 
 // compareNote says where every role and compare time comes from. Python names the runtime (compare-ready
-// "runtime", from tinygrad_role_time.runtime_name); the screen never names a backend itself.
+// "runtime", from arkey_role_time.runtime_name); the screen never names a backend itself.
 func compareNote(f Facts) string {
-	runtime := "tinygrad's runtime"
+	runtime := "arkey's runtime"
 	if f.Ready != nil && f.Ready.Runtime != nil {
 		runtime = *f.Ready.Runtime
 	}

@@ -1,0 +1,127 @@
+{
+ "schema": "boltbeam.host_functions.v1",
+ "about": "The engine functions the host-function timer can time (collectors/host_functions.py reads it), keyed by engine and release: a release whose symbols moved gets its own row. functions: symbol (as the build exports it; C++ names are mangled) and label (the name the records and the audit carry; two symbols may share one); off: why a function is listed but not timed (it would fill the record buffer); note: what a reader should know. A symbol a build does not have, or that no library reaches through a dynamic symbol, is named at launch with the reason and left out. scope: the label whose calls cut the steps and tell the engine's contexts apart by first argument; names, rarest caller first (the model's own context runs once a step, a draft's several times), and a step is one call on the first. start: the label a turn's decode starts at (the prompt pass before it is not decode). device_wait: labels whose own time is the thread waiting for the device, reported apart from host time. op: the step-operation class of the function's own work (data/step_ops.json; workflow/step_placement reads it): where that work may run.",
+ "engines": {
+  "llama.cpp": {
+   "v1.0.0": {
+    "scope": {
+     "label": "ctx_decode",
+     "names": [
+      "tgt",
+      "dft"
+     ]
+    },
+    "start": "spec_draft",
+    "device_wait": [
+     "sched_synchronize"
+    ],
+    "evidence": "boltbeam-runs/cpu-roles-20261114 (33 functions, 99.4% of GPU-idle time on the decode thread named), ctx-growth-20261114 (72), idle-growth-20261114 shim2 (76: the list that found the k-pool input build and kv_seq_rm at 128k); llama.cpp v1.0.0 src/llama-context.cpp (decode, process_ubatch), src/llama-kv-cache.cpp:519 (seq_rm), ggml/src/ggml-backend.cpp (sched_*, tensor_set)",
+    "functions": [
+     {"symbol": "llama_process", "label": "decode_api", "op": "bookkeeping"},
+     {"symbol": "llama_synchronize", "label": "sync_api", "op": "sync_read"},
+     {"symbol": "llama_get_logits_ith", "label": "logits_get", "op": "token_select"},
+     {"symbol": "_Z34common_sampler_sample_and_accept_nP14common_samplerP13llama_contextRKSt6vectorIiSaIiEES7_b", "label": "sample_accept_n", "op": "accept_compare"},
+     {"symbol": "_Z34common_sampler_sample_and_accept_nP14common_samplerP13llama_contextRKSt6vectorIiSaIiEEb", "label": "sample_accept_n", "op": "accept_compare"},
+     {"symbol": "_Z21common_sampler_sampleP14common_samplerP13llama_contextib", "label": "sampler_sample", "op": "token_select"},
+     {
+      "symbol": "_Z21common_sampler_acceptP14common_samplerib",
+      "label": "sampler_accept",
+      "op": "accept_compare",
+      "off": "a few calls per token with nothing inside; left out with moe_copy_experts for the run that reached 128k"
+     },
+     {"symbol": "_Z26common_speculative_processP18common_speculativeRK12common_batch", "label": "spec_process", "op": "bookkeeping"},
+     {"symbol": "_Z24common_speculative_draftP18common_speculative", "label": "spec_draft", "op": "bookkeeping"},
+     {"symbol": "_Z25common_speculative_acceptP18common_speculativeit", "label": "spec_accept", "op": "accept_compare"},
+     {"symbol": "_Z24common_speculative_beginP18common_speculativeiRKSt6vectorIiSaIiEE", "label": "spec_begin", "op": "bookkeeping"},
+     {"symbol": "_ZN12common_batch3addEiiib", "label": "batch_add", "op": "bookkeeping"},
+     {"symbol": "_ZN12common_batch3addEiiRKSt6vectorIiSaIiEEb", "label": "batch_add", "op": "bookkeeping"},
+     {"symbol": "_ZN12common_batch5clearEv", "label": "batch_clear", "op": "bookkeeping"},
+     {"symbol": "_ZN12server_queue14yield_to_queueEOSt8functionIFvvEE", "label": "yield_to_queue", "op": "detokenize_stream"},
+     {"symbol": "_ZN13llama_context6decodeERK15llama_batch_ext", "label": "ctx_decode", "op": "bookkeeping"},
+     {"symbol": "_ZN13llama_context14process_ubatchERK12llama_ubatch14llm_graph_typeP22llama_memory_context_iR11ggml_status", "label": "process_ubatch", "op": "bookkeeping"},
+     {"symbol": "_ZN13llama_context13graph_computeEP11ggml_cgraphb", "label": "graph_compute", "op": "graph_launch"},
+     {"symbol": "_ZN13llama_context11synchronizeEv", "label": "ctx_synchronize", "op": "sync_read"},
+     {"symbol": "_ZN13llama_context13memory_updateEb", "label": "memory_update", "op": "bookkeeping"},
+     {"symbol": "_ZN13llama_context14output_reserveEi", "label": "output_reserve", "op": "graph_build"},
+     {"symbol": "_ZNK11llama_model11build_graphERK16llm_graph_params", "label": "build_graph", "op": "graph_build"},
+     {"symbol": "_ZN16llm_graph_result9can_reuseERK16llm_graph_params", "label": "can_reuse", "op": "graph_build"},
+     {"symbol": "_ZN16llm_graph_result10set_inputsEPK12llama_ubatch", "label": "set_inputs", "op": "step_inputs"},
+     {"symbol": "_ZN16llm_graph_result11set_outputsERK16llm_graph_params", "label": "set_outputs", "op": "graph_build"},
+     {"symbol": "_ZN16llm_graph_result5resetEv", "label": "graph_reset", "op": "graph_build"},
+     {"symbol": "_ZN18llama_batch_allocr4initERK15llama_batch_extRK11llama_vocabb", "label": "batch_allocr_init", "op": "bookkeeping"},
+     {"symbol": "ggml_backend_sched_alloc_graph", "label": "sched_alloc_graph", "op": "graph_build"},
+     {"symbol": "ggml_backend_sched_reset", "label": "sched_reset", "op": "graph_build"},
+     {"symbol": "ggml_backend_sched_synchronize", "label": "sched_synchronize", "op": "sync_read"},
+     {"symbol": "ggml_backend_sched_graph_compute_async", "label": "sched_compute_async", "op": "graph_launch", "note": "runs the split loop: per split its input copies and one backend graph_compute (CUDA: a cudaGraphLaunch per captured 512-node chunk, about 31 a step at 33-39 us host each in boltbeam-runs/graph-reuse-20261116). Its own time also holds the per-split node compare and, on a step whose graph changed, the eager run and the capture/instantiate (graph_build work the label cannot separate; rare in steady decode)"},
+     {"symbol": "ggml_backend_tensor_get", "label": "tensor_get", "op": "sync_read"},
+     {"symbol": "ggml_backend_tensor_get_async", "label": "tensor_get_async", "op": "sync_read"},
+     {"symbol": "_ZN14llama_kv_cache10init_batchER18llama_batch_allocrjb", "label": "kv_init_batch", "op": "bookkeeping"},
+     {"symbol": "_ZN14llama_kv_cache12apply_ubatchERKNS_9slot_infoERK12llama_ubatch", "label": "kv_apply_ubatch", "op": "bookkeeping"},
+     {"symbol": "_ZN14llama_kv_cache6seq_rmEiii", "label": "kv_seq_rm", "op": "kv_rollback"},
+     {"symbol": "_ZN14llama_kv_cache7prepareERKSt6vectorI12llama_ubatchSaIS1_EE", "label": "kv_prepare", "op": "bookkeeping"},
+     {"symbol": "_ZN16llm_graph_result10set_paramsERK16llm_graph_params", "label": "set_params", "op": "graph_build"},
+     {"symbol": "_ZN18llama_batch_allocr11split_equalEjbj", "label": "split_equal", "op": "bookkeeping"},
+     {"symbol": "_ZN18llm_graph_input_rs9set_inputEPK12llama_ubatch", "label": "inp_rs_set", "op": "step_inputs"},
+     {"symbol": "_ZN19llama_memory_hybrid6seq_rmEiii", "label": "hyb_seq_rm", "op": "kv_rollback"},
+     {"symbol": "_ZN19llm_graph_input_pos9set_inputEPK12llama_ubatch", "label": "inp_pos_set", "op": "step_inputs"},
+     {"symbol": "_ZN20llama_model_qwen4exp21llm_graph_input_kpool9set_inputEPK12llama_ubatch", "label": "inp_kpool_set", "op": "step_inputs"},
+     {"symbol": "_ZN20llm_graph_input_embd9set_inputEPK12llama_ubatch", "label": "inp_embd_set", "op": "step_inputs"},
+     {"symbol": "_ZN22llama_kv_cache_context5applyEv", "label": "kvctx_apply", "op": "bookkeeping"},
+     {"symbol": "_ZN22llama_memory_recurrent6seq_rmEiii", "label": "rs_seq_rm", "op": "kv_rollback"},
+     {"symbol": "_ZN22llama_memory_recurrent7prepareERKSt6vectorI12llama_ubatchSaIS1_EE", "label": "rs_prepare", "op": "bookkeeping"},
+     {"symbol": "_ZN22llama_memory_recurrent9find_slotERK12llama_ubatch", "label": "rs_find_slot", "op": "bookkeeping"},
+     {"symbol": "_ZN23llama_memory_hybrid_idx10init_batchER18llama_batch_allocrjb", "label": "hidx_init_batch", "op": "bookkeeping"},
+     {"symbol": "_ZN23llama_memory_hybrid_idx17mem_idx_stale_setEii", "label": "mem_idx_stale_set", "op": "kv_rollback"},
+     {"symbol": "_ZN23llama_memory_hybrid_idx19kpool_layout_updateEv", "label": "kpool_layout_update", "op": "bookkeeping"},
+     {"symbol": "_ZN23llama_memory_hybrid_idx6seq_rmEiii", "label": "hidx_seq_rm", "op": "kv_rollback"},
+     {"symbol": "_ZN23llm_graph_input_attn_kv9set_inputEPK12llama_ubatch", "label": "inp_attn_kv_set", "op": "step_inputs"},
+     {"symbol": "_ZN23llm_graph_input_out_ids9set_inputEPK12llama_ubatch", "label": "inp_out_ids_set", "op": "step_inputs"},
+     {"symbol": "_ZN24llm_graph_input_sampling9set_inputEPK12llama_ubatch", "label": "inp_sampling_set", "op": "step_inputs"},
+     {"symbol": "_ZN26llm_graph_input_mem_hybrid9set_inputEPK12llama_ubatch", "label": "inp_mem_hybrid_set", "op": "step_inputs"},
+     {"symbol": "_ZN27llama_memory_hybrid_context5applyEv", "label": "hyb_ctx_apply", "op": "bookkeeping"},
+     {"symbol": "_ZN28llm_graph_input_mem_hybrid_k9set_inputEPK12llama_ubatch", "label": "inp_mem_hybrid_k_set", "op": "step_inputs"},
+     {"symbol": "_ZN28llm_graph_input_qwen4exp_ple9set_inputEPK12llama_ubatch", "label": "inp_ple_set", "op": "step_inputs"},
+     {"symbol": "_ZN30llama_memory_recurrent_context5applyEv", "label": "rsctx_apply", "op": "bookkeeping"},
+     {"symbol": "_ZN31llama_memory_hybrid_idx_context17kpool_build_stateERK12llama_ubatch", "label": "kpool_build_state", "op": "step_inputs"},
+     {"symbol": "_ZN31llama_memory_hybrid_idx_context4nextEv", "label": "hidx_ctx_next", "op": "bookkeeping"},
+     {"symbol": "_ZN31llama_memory_hybrid_idx_context5applyEv", "label": "hidx_ctx_apply", "op": "bookkeeping"},
+     {"symbol": "_ZNK13llama_context12graph_paramsEP16llm_graph_resultRK12llama_ubatchPK22llama_memory_context_i14llm_graph_type", "label": "graph_params", "op": "graph_build"},
+     {"symbol": "_ZNK14llama_kv_cache16set_input_k_idxsEP11ggml_tensorPK12llama_ubatchRKNS_9slot_infoE", "label": "kv_k_idxs", "op": "step_inputs"},
+     {"symbol": "_ZNK14llama_kv_cache16set_input_v_idxsEP11ggml_tensorPK12llama_ubatchRKNS_9slot_infoE", "label": "kv_v_idxs", "op": "step_inputs"},
+     {"symbol": "_ZNK14llama_kv_cache19set_input_attn_maskERK13llm_attn_maskPK12llama_ubatchb", "label": "kv_attn_mask", "op": "step_inputs"},
+     {"symbol": "_ZNK14llama_kv_cache9find_slotERK12llama_ubatchb", "label": "kv_find_slot", "op": "bookkeeping"},
+     {"symbol": "_ZNK22llama_kv_cache_context16set_input_k_idxsEP11ggml_tensorPK12llama_ubatch", "label": "kvctx_k_idxs", "op": "step_inputs"},
+     {"symbol": "_ZNK22llama_kv_cache_context16set_input_v_idxsEP11ggml_tensorPK12llama_ubatch", "label": "kvctx_v_idxs", "op": "step_inputs"},
+     {"symbol": "_ZNK22llama_kv_cache_context19set_input_attn_maskERK13llm_attn_maskPK12llama_ubatchb", "label": "kvctx_attn_mask", "op": "step_inputs"},
+     {
+      "symbol": "_ZNK31llama_memory_hybrid_idx_context15set_input_kpoolEP11ggml_tensorS1_S1_S1_S1_S1_S1_PK12llama_ubatchS1_",
+      "label": "set_input_kpool",
+      "op": "step_inputs",
+      "note": "two signatures: stock v1.0.0 and the k-pool patches differ by one argument"
+     },
+     {
+      "symbol": "_ZNK31llama_memory_hybrid_idx_context15set_input_kpoolEP11ggml_tensorS1_S1_S1_S1_S1_S1_PK12llama_ubatchS1_S1_",
+      "label": "set_input_kpool",
+      "op": "step_inputs",
+      "note": "two signatures: stock v1.0.0 and the k-pool patches differ by one argument"
+     },
+     {
+      "symbol": "_ZNK31llama_memory_hybrid_idx_context10kpool_fillERKNS_9kpool_outEPK12llama_ubatch",
+      "label": "kpool_fill",
+      "op": "step_inputs",
+      "note": "only in a build with the k-pool input patch (idle-growth-20261114 llama-kpool-input-device); on stock v1.0.0 its time is set_input_kpool's own"
+     },
+     {"symbol": "ggml_backend_tensor_set", "label": "tensor_set", "op": "step_inputs"},
+     {"symbol": "ggml_backend_tensor_copy", "label": "tensor_copy", "op": "step_inputs"},
+     {
+      "symbol": "_ZN15llama_moe_cache12copy_expertsEP12ggml_backendPK11ggml_tensorPS2_ll",
+      "label": "moe_copy_experts",
+      "op": "expert_fetch",
+      "off": "about 640 calls a step: 4.7M of the 8.4M records that filled the buffer at 71k of a 128k session (idle-growth-20261114 SS)"
+     },
+     {"symbol": "_ZN15llama_moe_cache4copyEP12ggml_backendPK11ggml_tensorPS2_P11ggml_cgraph", "label": "moe_copy", "op": "expert_slot_lookup"}
+    ]
+   }
+  }
+ }
+}

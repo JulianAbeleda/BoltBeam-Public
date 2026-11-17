@@ -70,7 +70,7 @@ func TestReadCompare(t *testing.T) {
 // While the job runs, step 5 shows n of N and a row per role; once it ends, the per-role table with times.
 func TestCompareProgressAndTable(t *testing.T) {
 	run := measuredRun(t)
-	f := Facts{Path: "m.gguf", Run: run, Ready: &seam.CompareReady{Applies: true, Ready: true, Runtime: sp("tinygrad's Metal runtime")},
+	f := Facts{Path: "m.gguf", Run: run, Ready: &seam.CompareReady{Applies: true, Ready: true, Runtime: sp("arkey's Metal runtime")},
 		CJob: &jobs.Job{ID: compareID(run.ID), Alive: true},
 		CTail: []string{"compare roles: 7", "role attn_kv Q4_K: search", "role attn_kv Q4_K: done refuted",
 			"role attn_kv Q6_K: ab"}}
@@ -78,7 +78,7 @@ func TestCompareProgressAndTable(t *testing.T) {
 		t.Fatalf("progress line: %s %q", mk, text)
 	}
 	body := plain(resultBody(f, 100))
-	for _, want := range []string{"ruled out", "timing the whole model…", "waiting", "Times are from tinygrad's Metal runtime, not llama.cpp."} {
+	for _, want := range []string{"ruled out", "timing the whole model…", "waiting", "Times are from arkey's Metal runtime, not llama.cpp."} {
 		if !strings.Contains(body, want) {
 			t.Errorf("progress body misses %q:\n%s", want, body)
 		}
@@ -109,11 +109,11 @@ func TestLossBodyNamesProviderAndCapture(t *testing.T) {
 	l := seam.Loss{Status: "modeled", LimitTokS: fp(19.2), LimitMs: fp(52.0), Provider: "llama.cpp",
 		Capture: &seam.Capture{Method: &method}, RolesProvider: sp("llama.cpp"), Source: sp("measured in llama.cpp, captured with nsys"),
 		Roles: []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 10.58, LostMs: 2.30, Share: 1}},
-		Others: []seam.OtherLoss{{Provider: "tinygrad", Capture: seam.Capture{Method: sp("tinygrad-profile-events")},
+		Others: []seam.OtherLoss{{Provider: "arkey", Capture: seam.Capture{Method: sp("tinygrad-profile-events")},
 			Roles: []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 9.0, LostMs: 0.73, Share: 1}}}}}
 	body := plain(lossBody(l, wide))
 	for _, want := range []string{"Measured with llama.cpp · captured with nsys", "Where llama.cpp loses time, measured in llama.cpp, captured with nsys",
-		"Beside it, tinygrad · tinygrad's own timing: not measured.", "9.00"} {
+		"Beside it, arkey · arkey's own timing: not measured.", "9.00"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)
 		}
@@ -125,15 +125,15 @@ func TestLossBodyNamesProviderAndCapture(t *testing.T) {
 func TestEngineActions(t *testing.T) {
 	f := Facts{Path: "m.gguf", ByFlag: true, Engine: "llama.cpp", Providers: &seam.Providers{Providers: []seam.ProviderRow{
 		{Provider: "llama.cpp", Available: true, State: "available", Capture: seam.Capture{Reason: sp("metal-system-trace is not installed")}},
-		{Provider: "tinygrad", State: "not_here", Reason: sp("The tinygrad fork is not at /x.")},
+		{Provider: "arkey", State: "not_here", Reason: sp("The tinygrad fork is not at /x.")},
 		{Provider: "vllm", State: "not_compatible", Reason: sp("BoltBeam runs vLLM on NVIDIA GPUs only")}}}}
 	got := rows(engineActions(f))
-	want := []string{"engine|● llama.cpp", "note|tinygrad       not here", "note|vllm           not compatible",
+	want := []string{"engine|● llama.cpp", "note|arkey          not here", "note|vllm           not compatible",
 		"engines-scan|[ Scan again ] look for engines in the usual folders"}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("got\n%s", strings.Join(got, "\n"))
 	}
-	if body := plain(engineBody(f, 100)); strings.Contains(body, "tinygrad") || strings.Contains(body, "NVIDIA") {
+	if body := plain(engineBody(f, 100)); strings.Contains(body, "arkey") || strings.Contains(body, "NVIDIA") {
 		t.Fatalf("no sentence for an engine that cannot run here:\n%s", body)
 	}
 	f.Run = measuredRun(t)
@@ -150,12 +150,12 @@ func TestEngineActions(t *testing.T) {
 func TestLossBody(t *testing.T) {
 	l := seam.Loss{Status: "modeled", LimitTokS: fp(19.2), LimitMs: fp(52.0),
 		Runtimes: []seam.Runtime{{Provider: "llama.cpp", TokS: 17.9, Ms: 55.8, LostMs: 3.8, Note: "Per role for llama.cpp needs Instruments."},
-			{Provider: "tinygrad", TokS: 15.2, Ms: 65.9, LostMs: 13.8, PerRole: true}},
+			{Provider: "arkey", TokS: 15.2, Ms: 65.9, LostMs: 13.8, PerRole: true}},
 		Roles:           []seam.RoleLoss{{Role: "ffn_down", Quant: "Q6_K", IdealMs: 8.27, ActualMs: 10.58, LostMs: 2.30, Share: 0.25, CallsPerToken: 18}},
-		NotAttributedMs: fp(4.46), Source: sp("measured in tinygrad's Metal runtime")}
+		NotAttributedMs: fp(4.46), Source: sp("measured in arkey's Metal runtime")}
 	body := plain(lossBody(l, wide))
 	for _, want := range []string{"Modeled roofline: 52.0 ms per token at context 1.", "llama.cpp: 17.9 tok/s · 55.8 ms per token · 3.8 ms above roofline.",
-		"needs Instruments", "tinygrad per role: 65.9 ms of GPU time per token · 13.8 ms above roofline.", "Measured with llama.cpp · roles not timed", "measured in tinygrad's Metal runtime",
+		"needs Instruments", "arkey per role: 65.9 ms of GPU time per token · 13.8 ms above roofline.", "Measured with llama.cpp · roles not timed", "measured in arkey's Metal runtime",
 		"feed-forward out", "8.27", "10.58", "2.30", "25%", "not attributed", "4.46"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in:\n%s", want, body)
@@ -177,7 +177,7 @@ func TestLossRefusedShowsTheReasonOnly(t *testing.T) {
 			t.Errorf("missing %q in:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, "IDEAL ms") || strings.Contains(body, "tinygrad:") {
+	if strings.Contains(body, "IDEAL ms") || strings.Contains(body, "arkey:") {
 		t.Errorf("a refused table must show no numbers:\n%s", body)
 	}
 }
@@ -185,10 +185,10 @@ func TestLossRefusedShowsTheReasonOnly(t *testing.T) {
 // The footer names the runtime Python names: CUDA on the RTX 5090, never a fixed Metal sentence.
 func TestRoleTimeNoteNamesTheRuntimeFromPython(t *testing.T) {
 	run := measuredRun(t)
-	f := Facts{Path: "m.gguf", Run: run, Ready: &seam.CompareReady{Ready: true, Runtime: sp("tinygrad's CUDA runtime")},
+	f := Facts{Path: "m.gguf", Run: run, Ready: &seam.CompareReady{Ready: true, Runtime: sp("arkey's CUDA runtime")},
 		CJob: &jobs.Job{ID: compareID(run.ID), Alive: true}, CTail: []string{"role-time: start"}}
 	body := plain(resultBody(f, 100))
-	if !strings.Contains(body, "Times are from tinygrad's CUDA runtime, not llama.cpp.") || strings.Contains(body, "Metal") {
+	if !strings.Contains(body, "Times are from arkey's CUDA runtime, not llama.cpp.") || strings.Contains(body, "Metal") {
 		t.Errorf("the footer must name CUDA only:\n%s", body)
 	}
 }
@@ -346,13 +346,13 @@ func twoGpuEngines(t *testing.T) *seam.Providers {
 	one := `{"id":"one","label":"one GPU","available":true,"reason":null,"gpus":1,"speed":"one GPU reads every weight"}`
 	layer := `{"id":"layer","label":"split by layer","available":%s,"reason":%s,"gpus":2,"speed":"holds a bigger model; the GPUs take turns, so no decode speedup"}`
 	row := `{"id":"row","label":"split by rows","available":%s,"reason":%s,"gpus":2,"speed":"the GPUs read their shares at once; joins cost per layer"}`
-	tiny := `"the tinygrad fork decodes on one device: its LLM decode has no sharded path"`
+	tiny := `"arkey decodes on one device: its LLM decode has no sharded path"`
 	raw := `{"providers":[` +
 		`{"provider":"llama.cpp","available":true,"capture":{"method":null,"reason":"x"},"layouts":[` + one + `,` + fmt.Sprintf(layer, "true", "null") + `,` +
 		fmt.Sprintf(row, "false", `"llama.cpp's HIP build refuses it at model load: \"device ROCm0 does not support split buffers\" (llama.cpp 7182ef7, 2 x R9700)"`) + `]},` +
 		`{"provider":"vllm","available":true,"capture":{"method":null,"reason":"x"},"layouts":[` + one + `,` +
 		fmt.Sprintf(layer, "false", `"BoltBeam runs vLLM split by rows (tensor parallel); its pipeline split is not measured"`) + `,` + fmt.Sprintf(row, "true", "null") + `]},` +
-		`{"provider":"tinygrad","available":true,"capture":{"method":"tinygrad-profile-events"},"layouts":[` + one + `,` + fmt.Sprintf(layer, "false", tiny) + `,` + fmt.Sprintf(row, "false", tiny) + `]}]}`
+		`{"provider":"arkey","available":true,"capture":{"method":"tinygrad-profile-events"},"layouts":[` + one + `,` + fmt.Sprintf(layer, "false", tiny) + `,` + fmt.Sprintf(row, "false", tiny) + `]}]}`
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestKernelSearchInTheRoleTable(t *testing.T) {
 	if !strings.Contains(next, "~2.1 ms per token if applied") || !strings.Contains(next, "reached 0 of 36 calls") {
 		t.Errorf("next step:\n%s", next)
 	}
-	if s := plain(searchBody(&seam.Search{Status: "skipped", Reason: sp("the kernel search runs in tinygrad only; this run used llama.cpp")})); !strings.Contains(s, "Kernel search: skipped. the kernel search runs in tinygrad only") {
+	if s := plain(searchBody(&seam.Search{Status: "skipped", Reason: sp("the kernel search runs in arkey only; this run used llama.cpp")})); !strings.Contains(s, "Kernel search: skipped. the kernel search runs in arkey only") {
 		t.Errorf("skip:\n%s", s)
 	}
 	if stageWord("search") != "Search faster kernels" {

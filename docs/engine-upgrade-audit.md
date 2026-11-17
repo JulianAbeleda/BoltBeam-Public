@@ -10,7 +10,7 @@ Every engine BoltBeam measures has one pinned version, in one table:
 
 - llama.cpp: a release build tag (`bNNNNN`) and its full commit sha. Never moving master.
 - vLLM and TensorRT-LLM: their release versions.
-- The tinygrad fork: its checked-out commit.
+- arkey (the tinygrad fork): its checked-out commit.
 - Ollama: its version, or `unknown` with the reason when the binary reports none.
 
 Each entry keeps a `history` of measured versions, with date and evidence document.

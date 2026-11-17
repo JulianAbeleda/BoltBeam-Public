@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
-import pathlib
+import json, pathlib
 
 from boltbeam.cli._common import _write, _fail, _load_json, _run_manifest_defaults
 from boltbeam.target.targets import need_target_id
+from boltbeam.collectors.engine_families import provider_name
 
 def _register_schedule_trace(sub) -> None:
   p = sub.add_parser("schedule-trace", help="ingest a scheduler trace -> diagnose occupancy_starved/materialization/fused_ok + fix")
@@ -22,7 +22,7 @@ def cmd_schedule_trace(args) -> int:
 def _register_import_hw_trace(sub) -> None:
   p = sub.add_parser("import-hw-trace", help="convert a provider/backend kernel CSV into boltbeam.hw_trace.v1")
   p.add_argument("csv", help="kernel stats/trace CSV from a BoltBeam-supported backend adapter")
-  p.add_argument("--provider", required=True, choices=["llama", "tinygrad"],
+  p.add_argument("--provider", required=True, choices=["llama", "arkey"], type=provider_name,
                  help="runtime provider that produced the trace")
   p.add_argument("--run", default=None, help="optional run directory; fills model/target/workload and defaults --out to hw_trace.json")
   p.add_argument("--model-id", default=None, help="BoltBeam model id for the trace; required unless --run supplies it")
@@ -79,7 +79,7 @@ def cmd_import_hw_trace(args) -> int:
         rocprof_json=args.backend_json,
         memory_copy_csv=args.memory_copy_csv,
       )
-    elif args.provider == "tinygrad":
+    elif args.provider == "arkey":
       timing = timing_trace_from_tinygrad_rocprof_csv(
         args.csv, **common,
         tinygrad_trace_json=args.tinygrad_trace_json,
@@ -141,7 +141,7 @@ def cmd_import_ncu(args) -> int:
 
 def _register_collect_hw_trace(sub) -> None:
   p = sub.add_parser("collect-hw-trace", help="run a BoltBeam provider trace collector and emit boltbeam.hw_trace.v1")
-  p.add_argument("--provider", required=True, choices=["llama", "tinygrad"], help="runtime provider to trace")
+  p.add_argument("--provider", required=True, choices=["llama", "arkey"], type=provider_name, help="runtime provider to trace")
   p.add_argument("--run", default=None, help="optional run directory; fills model/target/workload and defaults --out to hw_trace.json")
   p.add_argument("--model", default=None, help="GGUF model path; required unless --run supplies one")
   p.add_argument("--model-id", default=None)
@@ -529,8 +529,81 @@ def _decode_overhead(row:dict, traced:list[dict], untraced:list[dict] | None) ->
           "how": "the engine's own decode tok/s per prompt at this draft count and depth, traced against untraced"}
 
 
+def cmd_context_audit(args) -> int:
+  from boltbeam.collectors import time_budget as tb
+  from boltbeam.core.refused import Refused
+  from boltbeam.workflow import context_audit as ca
+  from boltbeam.workflow.diff import DiffRefused
+  path = pathlib.Path(args.record)
+  if (row := tb.decode_row(args.engine)) is None:
+    return _fail(f"BoltBeam has no decode row for {', '.join(args.engine)} (data/kernel_families.json): the step rule comes from it")
+  try:
+    out = ca.audit({"source": path.name, **json.loads(path.read_text())}, engine=args.engine[-1], row=row, base=path.parent)
+  except (Refused, DiffRefused) as exc:
+    return _fail(f"context-audit: {exc}")
+  except (KeyError, TypeError, ValueError, AttributeError) as exc:  # a record that lacks or mistypes a field: said, never a traceback
+    return _fail(f"context-audit: the record is malformed ({type(exc).__name__}: {exc}); docs/context-audit.md lists its fields")
+  if args.out:
+    pathlib.Path(args.out).write_text(json.dumps(out, indent=1) + "\n")
+  print("\n".join(ca.lines(out)))
+  return 0 if out["ok"] else 1
+
+
+def cmd_kernel_ledger(args) -> int:
+  from boltbeam.collectors import time_budget as tb
+  from boltbeam.roofline import limit
+  from boltbeam.workflow import kernel_ledger as kl
+  paths = [c.partition("@")[0] for c in args.capture] + [p for p in (args.model, args.draft, args.lowering, *(args.counters or [])) if p]
+  if missing := [p for p in paths if not pathlib.Path(p).is_file()]:
+    return _fail(f"kernel-ledger: no such file: {', '.join(missing)}")
+  if bad := tb.unknown_engines(args.engine):
+    return _fail(f"kernel-ledger: data/kernel_families.json has no rows for {', '.join(bad)}: the steps and the join come from them")
+  if (target := next((t for t in limit.targets()["targets"] if t["id"] == args.target), None)) is None:
+    return _fail(f"kernel-ledger: no target {args.target} (boltbeam targets lists them)")
+  if not kl.shape_rows(args.engine, args.target):
+    return _fail(f"kernel-ledger: {', '.join(args.engine)} has no shapes rows (data/kernel_families.json): no output layer to cut steps by, no join")
+  if len(args.untraced_ms or []) not in (0, len(args.capture)) or len(args.counters or []) not in (0, len(args.capture)):
+    return _fail("kernel-ledger: give --untraced-ms and --counters once per capture, in the captures' order, or not at all")
+  load = lambda p: json.loads(pathlib.Path(p).read_text()) if p else None  # noqa: E731
+  low = None
+  if args.lowering:
+    from boltbeam.search.gemm_strategy import GemmLowering
+    low = GemmLowering.from_json(load(args.lowering))
+  caps = [{"cap": kl.read(p), "depth": int(d) if d else None, "untraced_ms": (args.untraced_ms or [None] * len(args.capture))[i],
+           "counters": load((args.counters or [None] * len(args.capture))[i])} for i, (p, _, d) in enumerate(c.partition("@") for c in args.capture)]
+  out = kl.ledger(caps, main=load(args.model), draft=load(args.draft), engine=args.engine, vendor=args.vendor, target=target, k=args.k, kv_type=args.kv_type,
+                  selection={"verify": args.selection} if args.selection else None, lowering=low)
+  if args.out:
+    pathlib.Path(args.out).write_text(json.dumps(out, indent=1, default=list) + "\n")
+  print("\n".join(kl.lines(out, args.top)))
+  return 0 if out.get("ok") else 1
+
+
 def register(sub) -> None:
   _register_time_budget(sub)
+  p = sub.add_parser("kernel-ledger", help="every kernel of a decode step by shape: launches, exclusive time, bytes, limit, distance, in two rankings (bytes known, "
+                     "bound unknown), with search and install coverage (boltbeam.kernel_ledger.v1; docs/kernel-ledger.md); exits 1 when a check fails")
+  p.add_argument("capture", nargs="+", help="an nsys sqlite export or its extract (JSON[.gz]), as PATH or PATH@DEPTH (tokens of context); two depths give slopes")
+  p.add_argument("--model", required=True, help="the main model's header table ({meta, tensors: [name, dims, type id]})")
+  p.add_argument("--draft", default=None, help="the draft head's header table, for the draft passes' join")
+  p.add_argument("--engine", action="append", required=True, help="the engine's rows (data/kernel_families.json): a fork, then its root; repeatable")
+  p.add_argument("--vendor", default=None, help="the GPU vendor's family rows (nvidia, amd)")
+  p.add_argument("--target", required=True, help="the chip (boltbeam targets): its measured bandwidth and its shapes facts")
+  p.add_argument("--k", type=int, required=True, help="draft tokens a step: the verify runs k + 1 columns (0 without a draft)")
+  p.add_argument("--kv-type", default=None, help="the KV cache's format (Q8_0, F16, ...): attention bytes and flash_space's coverage")
+  p.add_argument("--selection", type=int, default=None, help="the KV cells a verify attention launch reads when the engine runs sparse attention")
+  p.add_argument("--untraced-ms", type=float, action="append", help="the same turns' step untraced, ms, once per capture: discloses the trace's overhead")
+  p.add_argument("--counters", action="append", help="JSON [{tokens, accepted, drafted}] of the capture's turns (the engine's counters), once per capture")
+  p.add_argument("--lowering", default=None, help="gemm-space's lowering facts (boltbeam.gemm_lowering_facts.v1): whether it admits a float row's shape")
+  p.add_argument("--top", type=int, default=20, help="rows shown per ranking (the record holds all)")
+  p.add_argument("--out", default=None, help="write the record here (JSON)")
+  p.set_defaults(fn=cmd_kernel_ledger)
+  p = sub.add_parser("context-audit", help="a session by context depth, host time as a role, the memory margin and ledger, each setting's output label, "
+                     "and the checks that must reconcile (boltbeam.context_audit.v1); exits 1 when one fails")
+  p.add_argument("record", help="the audit's input (JSON): context, turns, configuration, repeats and any of memory, ledger, host_points, host_functions (the host-function timer's records, optional captures), roles, arms (run folders), expert_cache (docs/context-audit.md)")
+  p.add_argument("--engine", action="append", required=True, help="the engine's rows (data/kernel_families.json, data/engine_knobs.json): a fork, then its root; repeatable")
+  p.add_argument("--out", default=None, help="write the record here (JSON)")
+  p.set_defaults(fn=cmd_context_audit)
   _register_schedule_trace(sub)
   _register_import_hw_trace(sub)
   _register_import_ncu(sub)

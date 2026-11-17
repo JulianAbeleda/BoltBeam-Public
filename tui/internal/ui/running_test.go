@@ -77,7 +77,7 @@ func TestFailedScreenKeepsTheTracebackBehindDetails(t *testing.T) {
 	dead := *s.job
 	dead.Alive = false
 	tail := append(append([]string{}, s.tail...),
-		"stage measure_timing: failed: tinygrad decode failed: ffn_down_resadd epilogue requires rows=4096, got rows=5120 (ValueError inside the tinygrad fork at tinygrad/llm/decode_kernels.py:223)",
+		"stage measure_timing: failed: arkey decode failed: ffn_down_resadd epilogue requires rows=4096, got rows=5120 (ValueError inside the tinygrad fork at tinygrad/llm/decode_kernels.py:223)",
 		"stage measure_timing: detail: Traceback (most recent call last):",
 		"stage measure_timing: detail:   File \"tinygrad/llm/decode_kernels.py\", line 223, in validate",
 		"stage measure_timing: detail:     raise ValueError(f\"{self.kind} epilogue requires rows=4096, got rows={rows}\")",
@@ -206,14 +206,14 @@ func TestBatchPicker(t *testing.T) {
 		t.Fatalf("typed batch %d", got)
 	}
 	tg := typed.(Model)
-	tg.f.Engine = "tinygrad"
+	tg.f.Engine = "arkey"
 	no, yes := false, true
 	tg.f.Providers = &seam.Providers{Providers: []seam.ProviderRow{{Provider: "llama.cpp", Available: true, BatchOverOne: &yes},
-		{Provider: "tinygrad", Available: true, BatchOverOne: &no}}}
+		{Provider: "arkey", Available: true, BatchOverOne: &no}}}
 	if tg.f.batch() != 1 {
-		t.Fatal("tinygrad runs batch 1")
+		t.Fatal("arkey runs batch 1")
 	}
-	golden(t, "picker-batch-tinygrad.txt", frame(page(tg, pageBatch)))
+	golden(t, "picker-batch-arkey.txt", frame(page(tg, pageBatch)))
 	argv := seam.Client{Python: "py"}.PipelineArgv(seam.Pipeline{Model: "m", RunDir: "r", Target: "t", Batch: "16"})
 	if !strings.Contains(strings.Join(argv, " "), "--batch 16") {
 		t.Fatalf("argv %v", argv)

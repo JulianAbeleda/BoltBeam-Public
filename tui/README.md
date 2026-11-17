@@ -118,7 +118,7 @@ machine, detected (autoscan: a known profile is used, a new GPU is measured into
 `BOLTBEAM_CHIPS_DIR` moves that folder). A model BoltBeam cannot read keeps its line, with why under it (a weight
 format with no block layout is named, from `inspect`'s `formats`); when only a fork reads that format (`needs`), Run
 and Recommended setup name the fork, and the engine is never switched for you. Engine is one row per family
-(`screen providers` `families`, data/engine_families.json): llama.cpp, vLLM, TensorRT-LLM and tinygrad. ↑↓ moves
+(`screen providers` `families`, data/engine_families.json): llama.cpp, vLLM, TensorRT-LLM and tinygrad (its fork arkey is the one run). ↑↓ moves
 between families, ←→ between a family's root and its forks (llama.cpp: upstream, Ollama, Strata; tinygrad:
 upstream and its own fork), each with its state under the row: found, or not found with its one fix. The root is the
 default; enter picks the fork in brackets when it runs here, and Setup then says it ("llama.cpp · Ollama fork"). An
@@ -153,7 +153,7 @@ Gameplan screen. It changes no kernels or engine settings.
 
 **Run.** One press runs the pipeline: read the model, check the machine, the speed limit, the GPU free check, the
 building-block probe (BoltBeam's own kernels on the model's real bytes), the real decode with the engine, per-role
-time, the kernel search (tinygrad on Metal), the report. A bar shows `n of N` for the counted (slow) stages,
+time, the kernel search (arkey on Metal), the report. A bar shows `n of N` for the counted (slow) stages,
 weighted by the last run's seconds for this chip and engine; on a first run the weights are a default table and the
 percent is marked an estimate (`~37%`). When the run ends the top box shows:
 
@@ -165,7 +165,7 @@ percent is marked an estimate (`~37%`). When the run ends the top box shows:
 - per role: ideal, actual, lost ms, share of peak, µs per call and the reason word (at the limit, too small to fill
   memory, slow kernel, compute bound, inconclusive cache, unexplained). The reason rule states its numbers, with the
   dispatch floor the probe measured on this GPU when it has one;
-- how the roles were timed: tinygrad's own timing, a vendor capture (nsys, rocprofv3, Metal System Trace), or
+- how the roles were timed: arkey's own timing, a vendor capture (nsys, rocprofv3, Metal System Trace), or
   "isolated, timed by BoltBeam's kernel timer" (the engine's own kernels compiled from its shipped source, no Xcode;
   [docs/kernel-timer.md](../docs/kernel-timer.md));
 - the findings the run's own facts give: launch heavy, a failed graph replay the engine reported, KV dominated,

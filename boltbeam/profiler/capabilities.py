@@ -146,8 +146,7 @@ def capabilities_for_tool(tool: str, path: str | pathlib.Path | None = None) -> 
   return tuple(cap for cap in reg.values() if cap.tool == tool)
 
 
-_PROVIDER_ALIASES = {"llama": "llama.cpp", "llama-cpp": "llama.cpp", "llama.cpp": "llama.cpp",
-                     "tinygrad": "tinygrad"}
+_PROVIDER_ALIASES = {"llama": "llama.cpp", "llama-cpp": "llama.cpp", "arkey": "tinygrad"}  # arkey's profiler rows keep their recorded id tinygrad; any other id is its own name
 _COLLECTOR_ALIASES = {"backend-csv": "rocprofv3"}
 
 

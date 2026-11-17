@@ -3,14 +3,14 @@ measured with, and the files every reader opens. Nothing here computes a number;
 the results are workflow/results.py. The seam that prints these is `python -m boltbeam.workflow.screen`."""
 from __future__ import annotations
 
-import pathlib
-import shutil
+import pathlib, shutil
 from typing import Any
 
 from boltbeam.core.refused import Refused
 from boltbeam.report.html import STAGES, stage_state
 from boltbeam.workflow import fetch
 from boltbeam.artifacts.run_io import MEASURE_STATUS, load_manifest, optional
+from boltbeam.collectors.engine_families import provider_name
 from boltbeam.vocab import SCHEMA_TUI as SCHEMA
 from boltbeam.workflow.layout import LAYOUTS
 
@@ -58,7 +58,7 @@ def summary(run:pathlib.Path) -> dict[str, Any]:
     "stages": stage_rows(manifest, optional(run, MEASURE_STATUS)), "blocked": blocked(plan, run),
     "measured": {"probe": (run / "primitive_profile.json").exists(), "timing": (run / "timing_profile.json").exists()},
     "report": "report.html" if (run / "report.html").exists() else None,
-    "measure": optional(run, MEASURE_STATUS) or None,
+    "measure": ({**m, "provider": provider_name(m["provider"])} if "provider" in m else m) if (m := optional(run, MEASURE_STATUS)) else None,  # an old record's name reads as today's
     **({"fetched": f} if (f := fetch.provenance(run)) else {}),  # a run brought home by `boltbeam fetch`: from where
   }
 

@@ -23,11 +23,11 @@ ADAPTERS, one row per (engine, backend):
                              the bridge gives ggml's cc (ggml_cc), the build macros (GGML_MACROS: GGML_USE_HIP on
                              HIP), its API for the engine's name, and the warp size.
 tinygrad has no adapter: the fork generates its kernels per shape at run time inside a model graph, so there is no
-shipped source to compile; it keeps its own timing (collectors/tinygrad_role_time.py). Not cheap, so not built.
+shipped source to compile; it keeps its own timing (collectors/arkey_role_time.py). Not cheap, so not built.
 
 Weight formats: the block layouts gemv_reference.BLOCK_ELEMS/BLOCK_BYTES and its reference know (the formats in gemv_reference.GGML_TYPES). A
 role in another format is a not_measured row saying "no <quant> adapter"; the table shows it as not timed, with the
-reason, and leaves it out of the floor rule and the sums (tinygrad_role_time.loss), so the roles that were timed
+reason, and leaves it out of the floor rule and the sums (arkey_role_time.loss), so the roles that were timed
 are still measured.
 
 A result is labelled with the adapter and the kernel: "isolated, timed by BoltBeam's kernel timer: llama.cpp
@@ -47,6 +47,7 @@ import re
 import struct
 from typing import Any, Callable
 
+from boltbeam import formats
 from boltbeam.collectors import capture_settings, kernel_timer
 from boltbeam.collectors.kernel_timer import Check, KernelSpec
 
@@ -228,8 +229,8 @@ GGML_MACROS = {"GGML_METAL_EMBED_LIBRARY": "1", "GGML_METAL_HAS_BF16": "1"}
 # nr0 rows: ceil(ne01 / (nr0 x nsg)) threadgroups, no threadgroup memory. F32, F16, BF16 and Q8_0 split one row set
 # across the simdgroups: ceil(ne01 / nr0) threadgroups, reduced through 32 floats per row of threadgroup memory
 # (ggml-metal-device.cpp: smem = 32 x sizeof(float) x nr0). Neither file is in the shipped library, so the rule is
-# data here, keyed by the type, and recorded on the row (geometry.rule).
-METAL_ROWS_SHARED = ("F32", "F16", "BF16", "Q8_0")  # one row set per threadgroup, shared by its simdgroups
+# data (data/formats.json metal_rows_shared), keyed by the type, and recorded on the row (geometry.rule).
+METAL_ROWS_SHARED = tuple(formats.field("metal_rows_shared"))  # one row set per threadgroup, shared by its simdgroups
 
 
 def ggml_metal_spec(text:str, quant:str, rows:int, cols:int, weights:bytes, x:list[float]) -> KernelSpec:
@@ -598,7 +599,7 @@ def mmvq_spec(src_dir:pathlib.Path, quant:str, rows:int, cols:int, weights:bytes
 # --- the adapters, one row per (engine, backend) --------------------------------------------------------------------------
 
 # the formats whose mul_mv METAL_RULE mirrors; ggml's Metal IQ kernels also take threadgroup memory it does not set
-METAL_FORMATS = ("Q4_K", "Q6_K", "Q8_0", "Q5_0", "Q4_0", "Q5_K")
+METAL_FORMATS = tuple(formats.field("metal_mul_mv"))  # data/formats.json
 
 
 def _metal_setup(bench:str | None) -> dict[str, Any]:

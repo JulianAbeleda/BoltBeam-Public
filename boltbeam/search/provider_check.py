@@ -24,6 +24,7 @@ import struct
 from collections.abc import Mapping
 from typing import Any
 
+from boltbeam import formats
 from boltbeam.collectors import kernel_timer
 from boltbeam.collectors.kernel_timer import Check, KernelSpec
 
@@ -32,7 +33,7 @@ REPRODUCED = "reproduced"
 # a provider fact and the key BoltBeam's bridge reports the same quantity under
 IDENTITY_KEYS = (("sm_count", "sm_count"), ("l2_bytes", "l2_cache_bytes"), ("compute_capability", "compute_capability"),
                  ("name", "name"))
-DTYPES = {"float": ("f", 4), "float32": ("f", 4), "half": ("e", 2), "float16": ("e", 2)}
+DTYPES = {k: (r["struct"], r["block"][1]) for r in formats.rows() if "struct" in r for k in (r["metal"], r["torch"])}  # data/formats.json
 
 
 def bridge_facts(bridge) -> dict[str, Any]:

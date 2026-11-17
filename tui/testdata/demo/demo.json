@@ -6,7 +6,7 @@
                "profile": {"status": "known", "id": "apple_m3_10c"}},
     "engines": {"file": "engines.json", "scanned_at": "2026-10-09T10:00:00", "seconds": 0.4, "engines": []},
     "engines --latest": {"engines": [{"engine": "llama.cpp", "state": "up_to_date", "words": "up to date"},
-                                     {"engine": "tinygrad", "state": "up_to_date", "words": "up to date"}]},
+                                     {"engine": "arkey", "state": "up_to_date", "words": "up to date"}]},
     "update": {"status": "off", "prompt": false, "install": "checkout", "words": ""},
     "doctor": "doctor.json",
     "inspect": "../expected/inspect.json",

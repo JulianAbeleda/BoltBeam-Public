@@ -12,6 +12,7 @@ import math
 import re
 from pathlib import Path
 
+from boltbeam import formats
 from boltbeam.collectors.instruction_path import template
 from boltbeam.profile.loaders import _quant_config, _safetensors_specs
 from boltbeam.profile.roles import role_from_tensor_name, classify_tensor_role
@@ -177,7 +178,7 @@ def _attach(launches, *, cfg, profile, registry, tensors, expected_tensors,
       # CUTLASS's grouped GEMM takes the experts' format as its input; Marlin's dequantizes the weights to bf16 inside
       marlin_moe=all('marlin_moe_wna16::' in l['key'] for l in matrix)
       if len(matrix)!=2 or not (marlin_moe or all('GroupProblemShape' in l['key'] for l in matrix)):
-        raise ValueError(f'{name}: expected two grouped expert GEMMs from vLLM MoERunner')
+        raise ValueError(f"{name}: vLLM's MoERunner ran {', '.join(sorted({l['key'].split('<')[0][:80] for l in matrix})) or 'no matrix kernel'}; BoltBeam models its experts only as two grouped GEMMs (CUTLASS or Marlin), so this MoE's work is refused, not guessed")
       topk=cfg['num_experts_per_tok'];length=s['inputs'][0]['shape'][0]
       selected=topk
       if routing is not None:
@@ -219,13 +220,13 @@ def _attach(launches, *, cfg, profile, registry, tensors, expected_tensors,
       raise ValueError(f'{name}: runtime logical shape disagrees with checkpoint')
     inputs=s['inputs'];length=math.prod(inputs[0]['shape'][:-1])
     q=parts[0].quant
-    runtime_quant={'float32':'F32','bfloat16':'BF16','float16':'F16','float8_e4m3fn':'FP8_E4M3'}.get(s.get('weight_dtype'))
+    runtime_quant=q2 if (q2:=formats.canonical(s.get('weight_dtype'))) in registry else None
     if runtime_quant and runtime_quant!=q:
       # GateLinear can promote BF16 checkpoint router weights to FP32 in memory.
       q=runtime_quant
     roles=sorted({role_from_tensor_name(t.name,t.shape) for t in parts})
     wb=n*k*registry[q].bytes_per_elem if runtime_quant and q!=parts[0].quant else sum(weight(t) for t in parts)
-    w=prefill_work.gemm(length,n,k,wb,{'in':q if q in ('NVFP4_G16','FP8_E4M3','F32') else 'BF16','out':'F32' if q=='F32' else 'BF16'})
+    w=prefill_work.gemm(length,n,k,wb,{'in':q if q=='F32' or (formats.row(q) or {}).get('act_in_own_format') else 'BF16','out':'F32' if q=='F32' else 'BF16'})
     if s.get('draft'):  # the draft head's own weights, or the target's lm_head read again for each draft
       roles=[r if r!='other' else module_leaf(name) for r in roles]
       roles[0]='draft '+roles[0]
@@ -293,8 +294,8 @@ def speculative_work(groups:dict, profile:dict, step:dict):
       depth,expected=step['context'],step['query_tokens']
     if tokens!=expected:
       raise ValueError(f'{name}: {tokens} query tokens where the speculative step holds {expected}')
-    kv={'bfloat16':'BF16','float16':'F16','float8_e4m3fn':'FP8_E4M3'}.get(inputs[1]['dtype'])
-    act={'bfloat16':'BF16','float16':'F16'}.get(inputs[0]['dtype'])
+    kv=q2 if (q2:=formats.canonical(inputs[1]['dtype'])) in formats.kv_words('vllm').values() else None
+    act=formats.half(inputs[0]['dtype'])
     if kv is None or act is None:raise ValueError(f'{name}: attention formats {inputs[1]["dtype"]}, {inputs[0]["dtype"]} are not modeled')
     w=prefill_work.attention(profile,tokens,[tokens],kv,{'in':act,'out':act},depth=depth)
     if w is None:raise ValueError(f'{name}: the profile does not say its attention shape (heads, KV heads, head size)')

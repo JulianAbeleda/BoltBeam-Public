@@ -141,7 +141,7 @@ func engines() *seam.Providers {
 	method := "tinygrad-profile-events"
 	return &seam.Providers{Providers: []seam.ProviderRow{
 		{Provider: "llama.cpp", Available: true, Capture: seam.Capture{Reason: sp("metal-system-trace is not installed")}},
-		{Provider: "tinygrad", Available: true, Capture: seam.Capture{Method: &method}}}}
+		{Provider: "arkey", Available: true, Capture: seam.Capture{Method: &method}}}}
 }
 
 // page puts the model on one page, as enter on a Setup row does.
@@ -157,7 +157,7 @@ func facts(m tea.Model) Facts { return m.(Model).f }
 func savedSample() *seam.Saved {
 	var sv seam.Saved
 	_ = json.Unmarshal([]byte(`{"root":"/home/u/runs/saved","runs":[
-	{"id":"qwen3-8b-apple_m3_10c-002","model_id":"Qwen3-8B","target_id":"apple_m3_10c","provider":"tinygrad","saved_at":"2026-10-09T12:10:00","tok_s":12.6,"pct_of_limit":60.4},
+	{"id":"qwen3-8b-apple_m3_10c-002","model_id":"Qwen3-8B","target_id":"apple_m3_10c","provider":"arkey","saved_at":"2026-10-09T12:10:00","tok_s":12.6,"pct_of_limit":60.4},
 	{"id":"qwen3-8b-apple_m3_10c-001","model_id":"Qwen3-8B","target_id":"apple_m3_10c","provider":"llama.cpp","saved_at":"2026-10-09T11:20:00","tok_s":17.0,"pct_of_limit":81.7}]}`), &sv)
 	return &sv
 }
@@ -174,7 +174,7 @@ func TestScreensPlain(t *testing.T) {
 	ready, _ = ready.Update(savedListMsg{savedSample(), nil})
 	greyed, _ := ready.Update(providersMsg{"apple_m3_10c", &seam.Providers{Providers: []seam.ProviderRow{
 		{Provider: "llama.cpp", Reason: sp("llama-bench was not found"), Capture: seam.Capture{Reason: sp("x")}},
-		{Provider: "tinygrad", Reason: sp("The tinygrad fork is not at /x."), Capture: seam.Capture{Reason: sp("x")}}}}})
+		{Provider: "arkey", Reason: sp("The tinygrad fork is not at /x."), Capture: seam.Capture{Reason: sp("x")}}}}})
 	running := page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun)
 	measured := page(program(s, &s.measured, nil, nil, 80, 24), pageRun)
 	saved, _ := page(program(s, nil, nil, nil, 80, 24), pageSaved).Update(savedListMsg{savedSample(), nil})
@@ -283,7 +283,7 @@ func TestPickersOpenPickAndGoBack(t *testing.T) {
 		t.Fatalf("esc: page %d row %d engine %q", got.cursor, got.row, got.f.Engine)
 	}
 	m = press(press(press(m, "enter"), "j"), "enter")
-	if got := m.(Model); got.cursor != pageSetup || got.row != 4 || got.f.Engine != "tinygrad" {
+	if got := m.(Model); got.cursor != pageSetup || got.row != 4 || got.f.Engine != "arkey" {
 		t.Fatalf("pick: page %d row %d engine %q", got.cursor, got.row, got.f.Engine)
 	}
 }
@@ -300,11 +300,11 @@ func TestKeys(t *testing.T) {
 		t.Fatal("the cursor must not rest on a heading")
 	}
 	m = page(m, pageEngine)
-	for i := 0; i < 40 && m.(Model).actions()[m.(Model).row].arg != "tinygrad"; i++ {
+	for i := 0; i < 40 && m.(Model).actions()[m.(Model).row].arg != "arkey"; i++ {
 		m = press(m, "j")
 	}
 	m = press(m, "enter")
-	if got := m.(Model); got.f.Engine != "tinygrad" || got.cursor != pageSetup {
+	if got := m.(Model); got.f.Engine != "arkey" || got.cursor != pageSetup {
 		t.Fatalf("engine %q cursor %d", got.f.Engine, got.cursor)
 	}
 	m = page(m, pageRun)
@@ -407,7 +407,7 @@ func TestSavedRunsListAndDeleteAsksTwice(t *testing.T) {
 	f := Facts{Saved: savedSample()}
 	acts := savedActions(f)
 	first := plain(acts[0].label)
-	if first != "Qwen3-8B · apple_m3_10c · tinygrad · 2026-10-09 12:10 · 60% of limit" || acts[0].do != "opensaved" {
+	if first != "Qwen3-8B · apple_m3_10c · arkey · 2026-10-09 12:10 · 60% of limit" || acts[0].do != "opensaved" {
 		t.Fatalf("first row %q", first)
 	}
 	f.Confirm = "qwen3-8b-apple_m3_10c-002"

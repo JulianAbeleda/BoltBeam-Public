@@ -16,7 +16,7 @@ number for the chip. A kernel whose instructions are on several paths (flash att
 accumulate) has its operations split over its paths by its instruction sites, each part at its own path's peak
 (`compute_ms`). MFU is operations over (time x the peak those parts make together).
 
-Bytes come from the formats the engine reads and writes (the engine adapter names them, data/quants.json sizes
+Bytes come from the formats the engine reads and writes (the engine adapter names them, data/formats.json sizes
 them): a GEMM reads its weight once, M x K activations in the engine's activation-in format and writes M x N in its
 activation-out format. A stream-k fixup (`stream_k_fixup`) moves the partial tiles its GEMM left (stream_k_partials).
 """
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from boltbeam import formats
 from boltbeam.quantization.quant import load_quant_registry
 from boltbeam.roofline.mamba2 import FORMULA_REFUSED, FormulaRefused, formula_cannot_limit
 
@@ -31,11 +32,10 @@ DEFAULT_ACTIVATIONS = {"in": "F16", "out": "F16"}  # an engine adapter that name
 
 
 def elem_bytes(fmt:str) -> float:
-  """Bytes per element of a format in data/quants.json (Q8_1 1.125, F32 4, F16 2); an absent format is refused."""
-  q = load_quant_registry(activations=True).get(str(fmt).upper())
-  if q is None:
-    raise KeyError(f"format {fmt} is not in data/quants.json: its bytes per element are not known")
-  return q.bytes_per_elem
+  """Bytes per element of a format (data/formats.json: Q8_1 1.125, F32 4, F16 2, a -ctk or vLLM word too); an unknown
+  format is refused in words."""
+  if (b := formats.elem_bytes(fmt) or formats.elem_bytes(str(fmt).upper())) is None: raise KeyError(formats.unknown(fmt, "bytes per element"))
+  return b
 
 
 def gemm(m:float, n:int, k:int, weight_bytes:float, activations:dict[str, str] | None = None) -> dict[str, float]:
@@ -229,7 +229,7 @@ def attention_layer_count(profile:dict[str, Any]) -> int | None:
   return ((profile.get("metadata") or {}).get("attention") or {}).get("layer_count") or profile.get("layer_count")
 
 
-def kv_bytes_per_token(profile:dict[str, Any], kv_format:str = "F16", element_bytes:float | None = None) -> float | None:
+def kv_bytes_per_token(profile:dict[str, Any], kv_format:str = "F16", element_bytes:float | None = None, v_format:str | None = None) -> float | None:
   """The KV cache one token adds: K and V, kv heads x head dim, in the layers that attend, in the cache's format (or
   at element_bytes, when the caller knows only the element's size). The one rule for KV bytes."""
   att = (profile.get("metadata") or {}).get("attention") or {}
@@ -237,7 +237,8 @@ def kv_bytes_per_token(profile:dict[str, Any], kv_format:str = "F16", element_by
   if not (layers and att.get("head_count_kv") and att.get("head_dim")):
     return None
   k, v = att["head_dim"], att.get("value_dim") or att["head_dim"]  # a latent attention's V head is narrower than its K
-  return float(att["head_count_kv"] * (k + v) * layers * (element_bytes or elem_bytes(kv_format)))
+  ek, ev = (element_bytes or elem_bytes(f) for f in (kv_format, v_format or kv_format))
+  return float(att["head_count_kv"] * (k * ek + v * ev) * layers)
 
 
 def sweep(profile:dict[str, Any], *, memory_bytes:float | None, weight_bytes:float | None,
@@ -287,9 +288,8 @@ def compute_ms(flops:float, paths:dict[str, int], peaks:dict[str, float]) -> flo
 # Integer weights of at most 8 bits (block quants, INTn) are exact as int8, fp16 or bf16 operands, their scales applied
 # outside the product; a float weight only on its own type. fp16 with fp16 accumulation, tf32 and fp8 round.
 # A warpgroup path (Hopper's wgmma) holds what its warp-wide sibling holds.
-HALF_PATHS = ("fp16", "bf16", "fp16_wgmma", "bf16_wgmma")
-FLOAT_WEIGHT_PATHS = {"F16": ("fp16", "fp16_wgmma"), "BF16": ("bf16", "bf16_wgmma"), "F32": (FP32_PATH,),
-                      "FP8_E4M3": ("fp8", *HALF_PATHS), "NVFP4_G16": ("nvfp4", *HALF_PATHS)}
+HALF_PATHS = tuple(p for pair in zip(*(r["weight_paths"] for r in formats.rows() if r.get("half_path"))) for p in pair)  # data/formats.json
+FLOAT_WEIGHT_PATHS = {q: (*p, *(HALF_PATHS if formats.row(q).get("exact_on_half") else ())) for q, p in formats.field("weight_paths").items()}
 INTEGER_WEIGHT_PATHS = ("int8", *HALF_PATHS)
 CHIP_BEST_WORDS = ("ms at chip best is the same bytes at the bandwidth, with the operations at the fastest path this "
                    "chip measured that holds the row's weights exactly (fp32 or int32 accumulate), or the engine's own "

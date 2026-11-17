@@ -292,7 +292,7 @@ type MeasureStatus struct {
 	// Probe is "measured" or "absent": whether this collector takes the building-block tests at all.
 	Probe       *string `json:"probe"`
 	ProbeReason *string `json:"probe_reason"`
-	// Provider is the runtime step 4 measured with: "llama.cpp" or "tinygrad". Older runs leave it out.
+	// Provider is the runtime step 4 measured with: "llama.cpp" or "arkey". Older runs leave it out.
 	Provider *string `json:"provider"`
 	// Batches are the batch sizes timed; 1 is always among them.
 	Batches []int `json:"batches"`
@@ -478,7 +478,7 @@ type Route struct {
 }
 
 // RouteCompare is one role's kernel comparison (boltbeam/search/role_compare.py), nil before any ran. Its kernel
-// times are BoltBeam's kernel timer on the provider's source; its whole-model times are tinygrad runtime times.
+// times are BoltBeam's kernel timer on the provider's source; its whole-model times are arkey runtime times.
 type RouteCompare struct {
 	PlanID          *string      `json:"plan_id"`
 	Plan            *string      `json:"plan"`
@@ -524,7 +524,7 @@ type CompareReady struct {
 	Fork    *string `json:"fork"`
 	// CompareMessage says why kernels cannot be compared here even when the fork is ready (not Metal).
 	CompareMessage *string `json:"compare_message"`
-	// Runtime names where role times come from, for example "tinygrad's CUDA runtime". Python builds it.
+	// Runtime names where role times come from, for example "arkey's CUDA runtime". Python builds it.
 	Runtime *string `json:"runtime"`
 }
 
@@ -735,7 +735,7 @@ type Run struct {
 
 // Loss is the end result: measured vs the speed limit in ms per token, and per role where the run's provider
 // loses time. Roles come from that provider's capture, attributed to roles by bytes and count, or from
-// tinygrad's own timing.
+// arkey's own timing.
 type Loss struct {
 	TimingScope     *string  `json:"timing_scope"`
 	SemanticCapture bool     `json:"semantic_capture"`
@@ -1025,7 +1025,7 @@ type UnpairedRole struct {
 }
 
 // NotTimedRole is a limit role the kernel timer had no adapter for: shown with its reason, left out of the floor
-// rule and the sums (collectors/tinygrad_role_time.py loss).
+// rule and the sums (collectors/arkey_role_time.py loss).
 type NotTimedRole struct {
 	Role   string  `json:"role"`
 	Quant  string  `json:"quant"`
@@ -1034,7 +1034,7 @@ type NotTimedRole struct {
 }
 
 // CeilingRefusedRole is a row measured below its own floor beyond its repeat spread and the floor's uncertainty: its
-// time is measured, its ceiling is in doubt, so it is out of the losses and shares (collectors/tinygrad_role_time.py loss).
+// time is measured, its ceiling is in doubt, so it is out of the losses and shares (collectors/arkey_role_time.py loss).
 type CeilingRefusedRole struct {
 	Role     string  `json:"role"`
 	Quant    string  `json:"quant"`

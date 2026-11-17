@@ -5,7 +5,7 @@ the time actually goes. The [README](../README.md) has the five-minute first run
 underneath it: the audit pipeline first, then the model-only commands, then the older campaign commands.
 
 Everything below was run on a MacBook Air (M3) against an 8B Q4_K GGUF unless it says otherwise. Commands that need a
-GPU or the tinygrad fork are marked.
+GPU or the arkey fork (tinygrad-arkey) are marked.
 
 ## The audit pipeline
 
@@ -25,6 +25,7 @@ python -m boltbeam.workflow.screen recommend MODEL --target TARGET --engine ENGI
 boltbeam offload MODEL --target TARGET [--engine ENGINE]       # the offload page: what goes to the card and to RAM (the same as screen offload)
 boltbeam tune MODEL --engine llama.cpp|vllm [--build BIN] [--experts-in-ram all|N] [--prompt N] [--context N] [--replies REPLIES.jsonl] [--workload chat|one-shot] [--time-budget BUDGET.json] [--measure]
 boltbeam time-budget capture.sqlite --engine ENGINE [--driver LINE.json | --wall-ms MS] [--out budget.json]
+boltbeam context-audit RECORD.json --engine ENGINE [--out audit.json]
 boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECORD] [--compare OTHER.json]
 ```
 
@@ -48,14 +49,18 @@ boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECOR
   no kernel hides, GPU idle by its cause, and host time outside the GPU work. Give the client's wall time with
   `--wall-ms`, or the prefill driver's JSON line with `--driver`. The screen shows the same split as "Where the time
   went" on Results and Compare.
+- `context-audit` reads one session's records and reports it by context depth (tok/s, ms per step, tokens per step,
+  acceptance, prompt ms per turn), host time per step with its growth per 1k of context, the memory margin and
+  ledger, and each setting's output label. Its checks must reconcile; it exits 1 when one fails
+  ([context-audit.md](context-audit.md)).
 - `routing` records which experts an MoE model's router picks per layer on real text (the in-tree corpus), and saves
   it to `~/.boltbeam/routing/`, where the prompt limit, the offload plan and `tune` then read it instead of assuming
   uniform routing. `--from` reads a record the engine already wrote. A profile is in-sample: it describes the text it
   was measured on, and a hottest-first cache's hit rate is an upper estimate for llama.cpp's LRU cache.
 
-`--provider` is `llama.cpp` (default), `tinygrad`, `vllm`, `ollama` or `tensorrt-llm`. Engines come in families, a root
+`--provider` is `llama.cpp` (default), `arkey`, `vllm`, `ollama` or `tensorrt-llm` (`tinygrad`, arkey's former name, is still read). Engines come in families, a root
 and its forks ([data/engine_families.json](../boltbeam/data/engine_families.json)): `ollama` is llama.cpp's Ollama fork,
-`tinygrad` runs tinygrad's own fork; Strata (its own engine built on llama.cpp's ggml library and MMQ kernels, listed in the llama.cpp family) is not run yet. A run
+`arkey` runs the tinygrad family's own fork (tinygrad-arkey); Strata (its own engine built on llama.cpp's ggml library and MMQ kernels, listed in the llama.cpp family) is not run yet. A run
 records its `engine_family` and `fork` in measure_status.json. `--role-time` picks
 `in-model` (a capture of the real token), `generic` (the engine's kernels timed alone) or `auto`. `python -m
 boltbeam.workflow.screen --help` lists every subcommand; the screen (`boltbeam tui`) reads the same ones.
@@ -93,6 +98,8 @@ boltbeam host        # RAM, RAM reads, PCIe link and copies to the GPU; measures
 boltbeam tui         # the screen; builds boltbeam-tui into ~/.cache/boltbeam first when needed
 boltbeam update      # is a newer BoltBeam released, and how this install upgrades; --yes runs it (the screen asks at start;
                      # BOLTBEAM_NO_UPDATE_CHECK=1 turns that off)
+boltbeam screen mods --engine llama.cpp   # the arkey_ie_mods mods that fit the build here; --apply builds them into a
+                                          # clone of its checkout, recorded as not verified (engine-mods.md)
 ```
 
 `doctor` looks for the engines in the usual folders and remembers them (`~/.boltbeam/engines.json`); set an env var
@@ -236,7 +243,7 @@ where they came from; raw traces stay behind unless `--with-traces`; a run alrea
 run under the same id is refused. [pods.md](pods.md#bring-results-home) has the pod side.
 
 BoltBeam does not time anything itself. You measure with the vendor's profiler or the
-tinygrad fork, then hand it the result.
+arkey fork, then hand it the result.
 
 ```
 python3 -m boltbeam.cli import-ncu ncu.csv --run run/                      # Nsight Compute
@@ -294,7 +301,7 @@ chip, the run stages with live status, and the results with measured speed again
 |---|---|
 | this repo and a model file | `inspect`, `roofline-theoretical`, `emit-search`, `vocab`, `analyze`, `load`, `autoscan`, `boundary-plan` |
 | a profiler trace from any vendor | `import-ncu`, `import-hw-trace`, `compare-hw-trace`, `profiler-report`, `roofline`, `evaluate`, `ledger` |
-| the tinygrad fork and a GPU | `collect-hw-trace`, the screen's `compare` |
+| the arkey fork and a GPU | `collect-hw-trace`, the screen's `compare` |
 
 `python3 -m boltbeam.cli --help` lists every command; each one takes `--help` too.
 

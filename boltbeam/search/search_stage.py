@@ -27,7 +27,7 @@ def detect(backend:str | None) -> str | None:
   return None
 
 
-TINYGRAD_ONLY = "the kernel search runs in tinygrad only"  # search_applies' answer for another engine; Emit reads it
+ARKEY_ONLY = "the kernel search runs in arkey only"  # search_applies' answer for another engine; Emit reads it
 
 
 def search_applies(backend:str | None, provider:str, *, root:pathlib.Path | None = None,
@@ -37,8 +37,8 @@ def search_applies(backend:str | None, provider:str, *, root:pathlib.Path | None
   the provider's own capability (the devices it can run, asked with its capability action) and BoltBeam's own
   detection of the GPU (its bridge opens one), never a list of backend names. Without the fork checked out the
   provider cannot be asked; readiness() names the fix for that."""
-  if provider != "tinygrad":
-    return f"{TINYGRAD_ONLY}; this run used {provider}"
+  if provider != "arkey":
+    return f"{ARKEY_ONLY}; this run used {provider}"
   row = tinygrad_fork.runtime_row(backend)
   if row is None:
     return f"the search runtime table (data/search_runtime.json) has no row for {backend or 'an unknown backend'}"
@@ -61,7 +61,8 @@ def write_status(run:pathlib.Path, status:str, reason:str | None = None, seconds
 def read_status(run:pathlib.Path) -> dict[str, Any] | None:
   path = run / compare_record.FOLDER / compare_record.STATUS_FILE
   try:
-    return json.loads(path.read_text()) if path.is_file() else None
+    # an older run's status says "runs in tinygrad only" (arkey's former name): read as ARKEY_ONLY, which Emit matches
+    return json.loads(path.read_text().replace("runs in tinygrad only", "runs in arkey only")) if path.is_file() else None
   except (OSError, ValueError):
     return None
 

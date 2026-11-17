@@ -40,7 +40,7 @@ type Facts struct {
 	Others      *seam.Ceilings // this model's limit on every registered chip, read-only (step 3)
 	GpuCount    int            // every GPU the driver lists (detect)
 	MultiGpu    string         // "4 x NAME (limited support...)" when more than one; Python words it
-	Engine      string         // the chosen provider: "llama.cpp" or "tinygrad" (called engine on screen)
+	Engine      string         // the chosen provider: "llama.cpp" or "arkey" (called engine on screen)
 	Layout      string         // how the engine uses the GPUs: one, layer or row
 	Saved       *seam.Saved    // the saved runs (screen saved)
 	SavedID     string         // the run on screen was saved, as this id

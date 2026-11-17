@@ -467,7 +467,7 @@ class BackendStatus(str, Enum):
 
 
 class QuantSupport(str, Enum):
-  """How far the quant capability registry (data/quants.json) can reason about a quant (audit A3)."""
+  """How far the quant capability rows (data/formats.json) can reason about a quant (audit A3)."""
   SUPPORTED = "supported"                 # in the registry AND has at least one route family
   KNOWN_NO_ROUTE = "known_no_route"       # in the registry but no route family emitted yet (pending)
   UNSUPPORTED = "unsupported_quant"       # not in the registry -> search-space-incomplete, never silent
@@ -490,7 +490,7 @@ SCHEMA_ROUTE_LEDGER_SUMMARY = "boltbeam.route_ledger_summary.v1"
 SCHEMA_ARTIFACT_CACHE = "boltbeam.artifact_cache.v1"
 SCHEMA_CEILING_REPORT = "boltbeam.ceiling_report.v1"
 SCHEMA_CANDIDATE_MANIFEST = "boltbeam.candidate_manifest.v1"
-SCHEMA_QUANT_REGISTRY = "boltbeam.quant_registry.v1"
+SCHEMA_QUANT_REGISTRY = "boltbeam.formats.v1"  # the capabilities live in data/formats.json
 SCHEMA_TARGET_REGISTRY = "boltbeam.target_registry.v1"
 SCHEMA_REACHABILITY_REPORT = "boltbeam.reachability_report.v1"
 SCHEMA_EVIDENCE_BUNDLE = "boltbeam.evidence_bundle.v1"

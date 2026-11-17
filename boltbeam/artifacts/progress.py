@@ -16,9 +16,9 @@ SCHEMA = "boltbeam.stage_times.v1"
 # is weighted by time from the start and the percent is marked an estimate. A key may hold one figure or one per
 # engine. Anything not listed is quick: DEFAULT_SECONDS.
 DEFAULTS:dict[str, float | dict[str, float]] = {
-  "measure_timing": {"tinygrad": 130.0, "llama.cpp": 22.0},
-  "role_time": {"tinygrad": 40.0, "llama.cpp": 25.0},
-  "search": {"tinygrad": 350.0, "llama.cpp": 1.0},  # the kernel search exists for tinygrad on Metal; others skip it
+  "measure_timing": {"arkey": 130.0, "llama.cpp": 22.0},
+  "role_time": {"arkey": 40.0, "llama.cpp": 25.0},
+  "search": {"arkey": 350.0, "llama.cpp": 1.0},  # the kernel search exists for arkey on Metal; others skip it
 }
 DEFAULT_SECONDS = 1.0
 

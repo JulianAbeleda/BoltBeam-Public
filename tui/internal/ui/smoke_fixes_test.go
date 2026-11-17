@@ -68,7 +68,7 @@ func TestOneGpuLayoutNamesItsInputAndSource(t *testing.T) {
 // A run beside this one that never measured says why; 0.0 is never printed for absent data.
 func TestBesideRunThatNeverMeasuredSaysWhy(t *testing.T) {
 	why := "not measured: the GPU is busy: llama-server (pid 4242) holds it"
-	l := seam.Loss{Status: "modeled", LimitTokS: fp(362.4), LimitMs: fp(2.759), Provider: "tinygrad",
+	l := seam.Loss{Status: "modeled", LimitTokS: fp(362.4), LimitMs: fp(2.759), Provider: "arkey",
 		Missing: sp("no per-role time yet"),
 		Others: []seam.OtherLoss{{Provider: "llama.cpp", Run: sp("qwen3-8b-q4-k-m-nvidia_sm120-001"), Missing: &why},
 			{Provider: "llama.cpp", Run: sp("qwen3-8b-q4-k-m-nvidia_sm120-003"), TokS: fp(301.25)}}}
@@ -87,14 +87,14 @@ func TestBesideRunThatNeverMeasuredSaysWhy(t *testing.T) {
 func TestEngineIsRememberedFromTheNewestRun(t *testing.T) {
 	m := New(seam.Client{}, jobs.Store{}, "/models/Qwen3-8B.gguf", "", 512)
 	m.f.Targets = &seam.Targets{Targets: []seam.Target{{ID: "nvidia_sm120", HasCeiling: true}}}
-	tg := "tinygrad"
+	tg := "arkey"
 	runs := &seam.Runs{Runs: []seam.Summary{{ID: "a-001", TargetID: "nvidia_sm120"},
 		{ID: "a-002", TargetID: "nvidia_sm120", Measure: &seam.MeasureStatus{Provider: &tg}}}}
-	rows := &seam.Providers{Providers: []seam.ProviderRow{{Provider: "llama.cpp", Available: true}, {Provider: "tinygrad", Available: true}}}
+	rows := &seam.Providers{Providers: []seam.ProviderRow{{Provider: "llama.cpp", Available: true}, {Provider: "arkey", Available: true}}}
 	m, _ = m.update(runsMsg{runs: runs})
 	m, _ = m.update(providersMsg{target: "nvidia_sm120", providers: rows})
-	if m.f.Engine != "tinygrad" {
-		t.Fatalf("engine %q, want tinygrad", m.f.Engine)
+	if m.f.Engine != "arkey" {
+		t.Fatalf("engine %q, want arkey", m.f.Engine)
 	}
 	m.f.Engine, m.engineSet = "llama.cpp", true
 	m, _ = m.update(runsMsg{runs: runs})

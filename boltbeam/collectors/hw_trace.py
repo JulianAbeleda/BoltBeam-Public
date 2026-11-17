@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import pathlib
-import sys
+import pathlib, sys
 from typing import Any
 
 from boltbeam.runtime.gpu_health import assert_gpu_health
 from boltbeam.trace.hw_trace import timing_trace_to_hw_trace
 from boltbeam.profiler.capabilities import normalize_collector_id, normalize_provider_id, resolve_profiler_capability
 from boltbeam.artifacts.run_io import load_manifest, run_dir
+from boltbeam.collectors.engine_families import provider_name
 from boltbeam.core.canonical import pretty_json
 
 
@@ -56,7 +56,7 @@ def _default_sampler(provider:str, target_id:str) -> str:
 
 
 def collect_hw_trace(args:argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], pathlib.Path, pathlib.Path]:
-  target_id = _target_id(args)
+  target_id, args.provider = _target_id(args), provider_name(args.provider)  # old callers may still say tinygrad
   sampler = normalize_collector_id(getattr(args, "sampler", None) or _default_sampler(args.provider, target_id))
   capability = resolve_profiler_capability(normalize_provider_id(args.provider), target_id, collector_id=sampler)
   if getattr(args, "backend_tool", None) is None: args.backend_tool = capability.tool
@@ -74,7 +74,7 @@ def collect_hw_trace(args:argparse.Namespace) -> tuple[dict[str, Any], dict[str,
     cfg = _resolve(args)
     timing = capture_llama_rocprof(cfg)
     out = cfg.out
-  elif args.provider == "tinygrad":
+  elif args.provider == "arkey":
     from boltbeam.collectors.tinygrad_rocprof import _resolve, capture_tinygrad_rocprof
     args.rocprofv3 = args.backend_tool
     if sampler == "rocprofv3":
@@ -125,7 +125,7 @@ def collect_hw_trace(args:argparse.Namespace) -> tuple[dict[str, Any], dict[str,
 
 def main(argv:list[str] | None = None) -> int:
   ap = argparse.ArgumentParser(description="Collect a provider trace and emit boltbeam.hw_trace.v1")
-  ap.add_argument("--provider", required=True, choices=["llama", "tinygrad"])
+  ap.add_argument("--provider", required=True, choices=["llama", "arkey"], type=provider_name)
   ap.add_argument("--run", default=None, help="optional BoltBeam run directory")
   ap.add_argument("--model", default=None, help="GGUF model path; required unless --run supplies one")
   ap.add_argument("--model-id", default=None)

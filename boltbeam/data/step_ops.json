@@ -1,0 +1,65 @@
+{
+ "schema": "boltbeam.step_ops.v1",
+ "about": "Where each class of a decode step's host operations may run (workflow/step_placement reads it; docs/step-placement-design-20261115.md section 1). Engine-blind: an engine's function rows name their class (data/host_functions.json `op`). device_ok: the class's work can be done on the device (or vanishes there) once every precondition holds. host_only: it must run on the host (I/O, text, streaming); it leaves the critical path only by running after the step is launched. lag_ok: a step of lag is harmless, so it may run on the host after the step (a late result is slower, not wrong). boundary: the class is the read that ends a GPU stage; it bounds a cut and is not one of its operations (the one read a step's math needs stays). scales_with: what the class's host time grows with. preconditions: what must hold before device_ok counts, each with the test that settles it; an untested precondition leaves the decision unknown, never pass.",
+ "classes": {
+  "token_select": {
+   "device_ok": true, "host_only": false, "lag_ok": false,
+   "preconditions": [{"what": "the token is chosen by argmax on the device (backend sampling on, temperature 0)", "test": "the run's sampling flags: backend sampling and temperature 0"}],
+   "why": "the draft token is already chosen on the device; reading it back to re-add it to the next pass's batch is a round trip whose inputs and consumer are both on the device (R1)"
+  },
+  "accept_compare": {
+   "device_ok": true, "host_only": false, "lag_ok": false,
+   "preconditions": [{"what": "the sampler chain is pure argmax: no penalties, no grammar, not the rejection-sampling variant", "test": "the run's sampler flags"}],
+   "why": "comparing the verify argmax with the drafts reads device outputs and feeds the next step's positions (R1, R3: per token)"
+  },
+  "kv_rollback": {
+   "device_ok": true, "host_only": false, "lag_ok": false,
+   "preconditions": [{"what": "cache length, pool count and positions advance on the device by the accepted count; the recurrent snapshot is chosen by it (draft depth no deeper than the snapshots kept)", "test": "the engine's snapshot count against the draft depth, and the device-side rollback's identity check"}],
+   "why": "rejected cells need not be erased, only overwritten later: a position counter on the device replaces the host walk (R1, R3)"
+  },
+  "step_inputs": {
+   "device_ok": true, "host_only": false, "lag_ok": false,
+   "preconditions": [{"what": "every input the host builds per forward is a function of device state (positions, counts, the accepted tokens)", "test": "the engine's input builders, one by one, against a device-built copy (bit-identical inputs)"}],
+   "why": "per-forward inputs built on the host and uploaded cost a copy and a launch on the path; built on the device they cost a small kernel in the graph (R2)"
+  },
+  "graph_build": {
+   "device_ok": true, "host_only": false, "lag_ok": false,
+   "preconditions": [{"what": "the graph is shape-invariant: every kernel whose size follows the cache length reads it from a device scalar, or runs at the maximum", "test": "the capture's graph rebuilds and instantiations per step after the change: zero"}],
+   "why": "a graph built, allocated, updated or re-instantiated because a count changed is host work that vanishes once the counts live on the device (R3: per step); launching the built graphs is graph_launch"
+  },
+  "graph_launch": {
+   "device_ok": true, "host_only": false, "lag_ok": false,
+   "scales_with": "graph splits per forward: one launch per split's graph (more when a split's graph is cut into 512-node chunks); its change rate is per forward, every step",
+   "preconditions": [{"what": "the step's splits merge into one graph: no host cut between them (the expert cache's per-layer slot lookups on the device, or every expert resident)", "test": "the capture's cudaGraphLaunch calls per forward after the change: one per graph chunk of a single split"}],
+   "why": "launching a forward's graphs is host time on the path, one launch per split (boltbeam-runs/graph-reuse-20261116: about 31 cudaGraphLaunch a step at 33-39 us each behind the expert cache's per-layer splits); it shrinks only with the split count, and one launch per graph stays (R2, R3: per forward)"
+  },
+  "bookkeeping": {
+   "device_ok": false, "host_only": false, "lag_ok": true,
+   "preconditions": [],
+   "why": "batch and cache bookkeeping, stats and the accepted-token record are O(accepted) host work whose consumer is the host; after the step's one read they need not hold the next launch (R3, R5)"
+  },
+  "expert_slot_lookup": {
+   "device_ok": true, "host_only": false, "lag_ok": false,
+   "preconditions": [
+    {"what": "the slot table lives on the device and the expert kernel reads a slot or a mapped host address", "test": "the generated expert kernel bit-identical to the engine's at the step's shapes (the hook's check mode)"},
+    {"what": "or every expert is resident (no cache)", "test": "the memory plan on the run's flags: a load probe with no host expert layers"}
+   ],
+   "why": "the routed ids are on the device and the expert kernel consumes the slot: a read-back, a sync and a slot-map upload per host layer is a round trip with both ends on the device (R1, R3)"
+  },
+  "expert_fetch": {
+   "device_ok": true, "host_only": false, "lag_ok": false,
+   "preconditions": [{"what": "the host experts are registered as mapped pinned memory, so a kernel can read a missing expert in place", "test": "a load probe registering the host expert tensors: resident set, time, failure"}],
+   "why": "a miss read through a mapped address needs no host-issued copy on the path; the fill into a slot for later steps runs on a copy stream (R1)"
+  },
+  "sync_read": {
+   "device_ok": false, "host_only": false, "lag_ok": false, "boundary": true,
+   "preconditions": [],
+   "why": "the read that ends a GPU stage: it bounds a cut. One per step stays (the accepted tokens out, R4); the others go with the cuts they bound"
+  },
+  "detokenize_stream": {
+   "device_ok": false, "host_only": true, "lag_ok": true,
+   "preconditions": [{"what": "the next step is launched before this one's text is streamed (launch-ahead)", "test": "the engine's loop order in a capture: the next launch precedes this work"}],
+   "why": "text, stop checks and the network are host work (R4); they leave the path only by running after the next launch"
+  }
+ }
+}

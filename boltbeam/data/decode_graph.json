@@ -1,6 +1,8 @@
 {
   "schema": "boltbeam.decode_graph.v1",
   "note": "The dataflow of one decoder layer at decode, as nodes and the values each reads. A weight node is named by its tensor's fine role (boltbeam/vocab.py RoleClass) and reads one value through its matrix; every other node is named by what it computes. A value is named by the node that produces it, or is the layer's input stream (residual). The fusion search (search/fusion_space.py) reads this table to say which nodes are adjacent, which values a set of nodes reads from outside, and how BoltBeam computes their output itself (the op column). A node whose op BoltBeam has no reference for (rms_norm, attention) cannot be inside a fusion BoltBeam checks.",
+  "kinds": {"why": "Which node ops a captured kernel of a kind (collectors/kernel_kind.py) can be, for the kernel ledger's search-coverage column only (a label, never attribution): a kind with no row here is no node of this graph.",
+    "norm": ["rms_norm"], "elementwise": ["add", "silu_mul"], "KV cache write": ["cast_fp16"], "attention": ["attention"]},
   "inputs": {"residual": "the residual stream entering the layer"},
   "nodes": {
     "attn_norm": {"op": "rms_norm", "reads": ["residual"]},

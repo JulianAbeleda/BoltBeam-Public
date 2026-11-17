@@ -1,7 +1,7 @@
 # Guide: add an engine
 
 BoltBeam measures a model in an engine and shows where the engine's time goes against the roofline. Five engines
-have adapters today: llama.cpp, vLLM, Ollama, TensorRT-LLM and the tinygrad fork. This guide says what a new
+have adapters today: llama.cpp, vLLM, Ollama, TensorRT-LLM and arkey (the tinygrad fork). This guide says what a new
 adapter must return, and points at the code that does each part for the existing five. Every engine is also a row of
 [data/engine_families.json](../boltbeam/data/engine_families.json): a family's root or one of its forks (Ollama is a
 llama.cpp fork); an adapter is that row's `provider`, and Setup's Engine picker moves between a family's forks with ←→.
@@ -36,9 +36,9 @@ end-to-end check is judged against this number.
   per point. vLLM and TensorRT-LLM time N tokens and 1 token with the same prefill and divide the difference by
   N minus 1 (`runtime/vllm_decode_drive.py` docstring). Ollama reads its API's `eval_count` and `eval_duration`
   (`ollama_decode.py`). llama.cpp runs `llama-bench -p 0 -n N -d CTX` (`llama_bench_decode.bench_decode`). The fork
-  runs its decode with no profiling (`tinygrad_role_time.whole_step`).
+  runs its decode with no profiling (`arkey_role_time.whole_step`).
 - Prefill: a `truth(run, model, length, target, root)` entry in `prefill.ENGINES`: `llama_truth`, `vllm_truth`,
-  `tinygrad_truth`. Each returns the median ms, the samples, the chunk record (below), GPU telemetry and the engine
+  `arkey_truth`. Each returns the median ms, the samples, the chunk record (below), GPU telemetry and the engine
   settings it actually used.
 - Record the token window. The row must carry `decode_tokens`: the matching-capture check
   (`capture_settings.decode_tokens`) refuses a capture without it.
@@ -55,7 +55,7 @@ The per-role time comes from a vendor capture of the same engine, at the same co
 - Capture settings must equal the untraced settings. Read them back from the run (`capture_settings.context_limit`,
   `capture_settings.vllm_flags`). Never let the capture pick its own allocation.
 - llama.cpp captures `llama-bench` itself (`llama_bench_decode.role_time`). The fork uses its own GPU timestamps
-  where CUDA's tools cannot see it (`tinygrad_role_time.collect`).
+  where CUDA's tools cannot see it (`arkey_role_time.collect`).
 - `TRACE` names the per-role trace file the adapter writes (`vllm_timing_trace.json`, ...). `providers.TRACES`
   reads it from the adapter.
 

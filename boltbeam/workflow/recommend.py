@@ -30,6 +30,7 @@ import tempfile
 import time
 from typing import Any, NamedTuple
 
+from boltbeam import formats
 from boltbeam.collectors import engine_common as ec, mtp as mtp_core
 from boltbeam.core import draft_count as dc
 from boltbeam.core.refused import Refused
@@ -601,22 +602,23 @@ def _vllm_python() -> str | None:
   return vllm_decode.python()
 
 
-def split_kv_verify(py:str | None) -> bool:  # tools/patches/split-kv-verify.patch in this python's vLLM: no MTP context limit
-  return any("MAX_3D_QUERY_LEN" in f.read_text(errors="ignore") for f in pathlib.Path(py).parent.parent.glob(
-    "lib/python3*/site-packages/vllm/v1/attention/ops/triton_unified_attention.py")) if py else False
+def split_kv_verify(py:str | None) -> bool:  # the arkey_ie_mods split-kv-verify mod in this python's vLLM: no MTP context limit
+  from boltbeam.workflow import mods
+  return bool(py) and any(m["marker"] in f.read_text(errors="ignore") for m in mods.named("vllm", "split-kv-verify")
+                          for f in pathlib.Path(py).parent.parent.glob(f"lib/python3*/site-packages/{m['files'][0]}"))
 
 
 ENGINES = {
-  "vllm": Engine({"bf16": 2, "fp8": 1}, UTILIZATION, vllm_flags, vllm_settings, lambda m, a: " ".join(["vllm", "serve", m, *a]),
+  "vllm": Engine(formats.kv_offer("vllm"), UTILIZATION, vllm_flags, vllm_settings, lambda m, a: " ".join(["vllm", "serve", m, *a]),
                  _vllm_python, lambda b, m, a, port: [b, "-m", "vllm.entrypoints.openai.api_server", "--model", m, "--host", "127.0.0.1",
                                                       "--port", str(port), "--served-model-name", "recommend-check", *a],
                  "GPU KV cache size", parse_vllm),
-  "llama.cpp": Engine({"f16": 2, "q8_0": 34 / 32}, 1.0, llama_flags, llama_settings, lambda m, a: " ".join(["llama-server", "-m", m, *a]),
+  "llama.cpp": Engine(formats.kv_offer("llama.cpp"), 1.0, llama_flags, llama_settings, lambda m, a: " ".join(["llama-server", "-m", m, *a]),
                       _llama_binary, lambda b, m, a, port: [b, "-m", m, "--host", "127.0.0.1", "--port", str(port), "-lv", "4", *a],
                       "listening on", parse_llama, "Check hook: llama-server's n_ctx and KV size lines", llama_scratch,
                       1024 * 2**20),  # llama.cpp's own -fit target: 1024 MiB free (common_params_fit, -fitt)
-  "tinygrad": Engine({"f16": 2}, 1.0, None, None, None, lambda: None, None, None, None,
-                     "one GPU only; tinygrad prints no KV fit figure, so Check has nothing to read"),
+  "arkey": Engine({"f16": 2}, 1.0, None, None, None, lambda: None, None, None, None,
+                  "one GPU only; arkey prints no KV fit figure, so Check has nothing to read"),
 }
 
 
@@ -663,7 +665,8 @@ def pick(rows:list[dict[str, Any]], *, seqs:int, fits_one:bool) -> dict[str, Any
 
 def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpus:list[dict[str, Any]], *, target,
           seqs:int = 1, context:int = CONTEXT, text_only:bool = True, host:dict[str, Any] | None = None,
-          moe_estimate:dict[str, Any] | None = None, offload:bool = False, draft:str | None = None, probe_h2d:bool = False, routing:bool = True) -> dict[str, Any]:
+          moe_estimate:dict[str, Any] | None = None, offload:bool = False, draft:str | None = None, probe_h2d:bool = False, routing:bool = True,
+          turn:int | None = None, build_features=None) -> dict[str, Any]:
   """The recommended setup for this model on these GPUs with this engine: one row per layout, the settings, the
   recommended layout and the command lines. facts: machine facts (read bandwidth, join, cached engine overhead).
   When no layout holds the weights (or offload=True), `offload` is the experts-in-RAM setup with its limit band, or the
@@ -778,11 +781,14 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
     olay, ogpus = (split["id"], split["gpus"]) if split else (layout, gcount)  # the offload spans the layout's GPUs: usable x GPUs
     moe = off.for_setup(profile, provider, usable=usable * ogpus - (dr["bytes"] if dr else 0), kv_bytes=kvb + (dr["kv_bytes"] if dr else 0), vram_gbs=(limit.read_bandwidth(facts) or {}).get("gbs") or target.memory_bandwidth_gbs,
                         pci_bus_id=(gpus[0].get("pci_bus_id") if gpus else None), context=context, target=target, kv=kv, host=host, estimate=moe_estimate,
-                        host_tables=tb.get("host", 0), fits=any(r["fits"]["value"] for r in rows), probe=probe_h2d, routing=routing)
-    if moe["status"] == "recommended" and argv is not None:
-      argv = eng.flags(profile, kv=kv, seqs=seqs, layout=olay, gpus=ogpus, text_only=text_only, tb=tb, context=context, placement=moe["settings"], **opts)
+                        host_tables=tb.get("host", 0), fits=any(r["fits"]["value"] for r in rows), probe=probe_h2d, routing=routing,
+                        device_bytes=mem * ogpus, draft=draft, turn=turn, features=build_features)
+    if moe["status"] == "recommended" and argv is not None:  # each placement's flags, then the rows that hang on it (offload: placed)
+      argv = eng.flags(profile, kv=kv, seqs=seqs, layout=olay, gpus=ogpus, text_only=text_only, tb=tb, context=context, placement=moe["settings"], **opts) \
+             + [x for r in moe.get("placed") or [] for x in r["flags"]]
       if (pre := moe.get("prefill") or {}).get("status") == "recommended":  # the setup for prompts: its own command
-        pre_argv = eng.flags(profile, kv=kv, seqs=seqs, layout=olay, gpus=ogpus, text_only=text_only, tb=tb, context=context, placement=pre["settings"], **opts)
+        pre_argv = eng.flags(profile, kv=kv, seqs=seqs, layout=olay, gpus=ogpus, text_only=text_only, tb=tb, context=context, placement=pre["settings"], **opts) \
+                   + [x for r in pre.get("placed") or [] for x in r["flags"]]
         pre["command"] = eng.command(shlex.quote(profile["source"]), [shlex.quote(a) for a in pre_argv])
   cram = cache_ram_row(moe) if provider == "llama.cpp" else None
   if cram and cram["recommended"] and argv is not None:

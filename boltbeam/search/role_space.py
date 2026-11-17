@@ -24,6 +24,7 @@ import pathlib
 from collections.abc import Mapping
 from typing import Any
 
+from boltbeam import formats
 from boltbeam.search.spec import EMITTER_PLAN_KIND
 
 HEURISTIC, OPT_SEQUENCE = "tinygrad_heuristic.v1", "tinygrad_opt_sequence.v1"
@@ -43,7 +44,9 @@ _KINDS = pathlib.Path(__file__).resolve().parent.parent / "data" / "emitter_kind
 @functools.lru_cache(maxsize=1)
 def emitter_kinds() -> dict[str, dict[str, Any]]:
   """The emitter families BoltBeam proposes rows for itself, by family (data/emitter_kinds.json)."""
-  return {k["family"]: dict(k) for k in json.loads(_KINDS.read_text(encoding="utf-8"))["kinds"]}
+  caps = formats.field("capability")  # a family's formats: the rows whose capability names it (data/formats.json)
+  return {k["family"]: {**k, "quants": [q for q, c in caps.items() if c.get("emitter_kind") == k["family"]]}
+          for k in json.loads(_KINDS.read_text(encoding="utf-8"))["kinds"]}
 
 
 def _norm(quant:str) -> str:

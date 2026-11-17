@@ -11,7 +11,7 @@ from typing import Any
 FOLDER = "kernel_compare"
 STATUS_FILE = "search_status.json"
 FUSIONS_FILE = "fusions.json"
-TIMING_SOURCE = "tinygrad runtime (whole model) and BoltBeam's kernel timer (each kernel alone)"
+TIMING_SOURCE = "arkey runtime (whole model) and BoltBeam's kernel timer (each kernel alone)"
 
 
 def sha256_file(path:pathlib.Path) -> str:

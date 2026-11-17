@@ -54,7 +54,7 @@ def _pct_delta(candidate:float | None, baseline:float | None) -> float | None:
 
 
 def _is_tinygrad_prefill(candidate:dict[str, Any]) -> bool:
-  return "tinygrad" in str(candidate.get("provider_id") or "").lower() and candidate.get("workload") == "prefill"
+  return any(n in str(candidate.get("provider_id") or "").lower() for n in ("tinygrad", "arkey")) and candidate.get("workload") == "prefill"
 
 
 def _row_kernels(row:dict[str, Any]) -> list[str]:

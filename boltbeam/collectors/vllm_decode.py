@@ -19,6 +19,7 @@ import json
 import pathlib
 from typing import Any
 
+from boltbeam import formats
 from boltbeam.collectors import engine_common as ec
 
 PROVIDER = "vllm"
@@ -49,8 +50,7 @@ def state_element(run, profile) -> tuple[tuple[float, float] | None, str]:
   if not r["ssm_dtype"] and not engine.get("mamba_ssm_cache_dtype"):
     return None, "vLLM's state dtype needs the engine's resolved mamba_ssm_cache_dtype, which this run's driver did not record"
   ssm = r["ssm_dtype"] or (conv if engine["mamba_ssm_cache_dtype"] == "auto" else engine["mamba_ssm_cache_dtype"])
-  name = {"bfloat16": "BF16", "float16": "F16", "float32": "F32"}
-  return ((elem_bytes(name.get(conv, conv)), elem_bytes(name.get(ssm, ssm))),
+  return ((elem_bytes(formats.canonical(conv) or conv), elem_bytes(formats.canonical(ssm) or ssm)),
           f"vLLM keeps the conv state in the model's {conv} and the recurrent state in {ssm}")
 # FlashInfer's sampler is a run-time kernel build that needs curand.h; a system CUDA without it (the 5090 box's
 # /usr/local/cuda 13.2) fails the engine at start, and FlashInfer's own headers refuse pip's newer CUDA. vLLM's own

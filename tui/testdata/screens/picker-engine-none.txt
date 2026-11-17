@@ -17,7 +17,7 @@
 │ Choose                                                                       │
 │ pick an engine                                                               │
 │     llama.cpp      not here                                                  │
-│     tinygrad       not here                                                  │
+│     arkey          not here                                                  │
 │     [ Scan again ] look for engines in the usual folders                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 

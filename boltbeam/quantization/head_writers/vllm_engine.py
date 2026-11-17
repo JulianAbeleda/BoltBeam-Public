@@ -2,6 +2,10 @@
 prints one JSON object. It imports nothing from boltbeam. Commands: stock, write, logprobs."""
 import base64, hashlib, json, os, sys
 
+# bytes per element of each safetensors dtype: data/formats.json, read as data (this script imports nothing from boltbeam)
+_DT = {r["safetensors"]: r["block"][1] for g in json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data",
+       "formats.json")))["weights"].values() for r in g if "safetensors" in r and "block" in r}
+
 
 def stock(a):
   from importlib import metadata
@@ -21,10 +25,6 @@ def stock(a):
       out["changed"] = str(f)
       break
   return out
-
-
-_DT = {"F64": 8, "I64": 8, "F32": 4, "I32": 4, "U32": 4, "BF16": 2, "F16": 2, "I16": 2, "U16": 2, "I8": 1, "U8": 1, "BOOL": 1,
-       "F8_E4M3": 1, "F8_E5M2": 1}
 
 
 AWQ_ORDER = (0, 2, 4, 6, 1, 3, 5, 7)  # AWQ gemm: nibble i of a packed int32 holds column AWQ_ORDER[i] of its 8
@@ -126,7 +126,7 @@ def write(a):
         if k in gone:
           continue
         sl = f.get_slice(k)
-        nbytes = _DT[sl.get_dtype()]  # real bytes from the header: 4 GiB parts of bf16-assumed int32 came out at 6-8 GiB
+        nbytes = _DT.get(sl.get_dtype()) or sys.exit(f"unknown format {sl.get_dtype()} in {k}: add a row to data/formats.json")  # real bytes from the header: 4 GiB parts of bf16-assumed int32 came out at 6-8 GiB
         for d in sl.get_shape():
           nbytes *= d
         part.append(k)

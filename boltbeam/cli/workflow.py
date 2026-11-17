@@ -35,11 +35,10 @@ def _register_inspect(sub) -> None:
 
 
 def cmd_inspect(args) -> int:
-  from boltbeam.profile.weight_ledger import WeightLedgerError
   try:
     profile, _target = _profile(args, need_target=False)
-  except WeightLedgerError as exc:
-    if not exc.formats:
+  except ValueError as exc:  # weight_ledger.WeightLedgerError or formats.UnknownFormat, when it names formats
+    if not getattr(exc, "formats", None):
       raise
     # a format with no block layout: one JSON line a screen reads (formats, and the fork that reads them), the long
     # message on stderr
@@ -301,7 +300,7 @@ def _register_runner_plan(sub) -> None:
   p = sub.add_parser("runner-plan", help="prepare an audit-tracer handoff bundle for a tinygrad-side runtime executor")
   p.add_argument("--run", required=True, help="run directory created by `boltbeam load` and `boltbeam analyze`")
   p.add_argument("--provider", action="append", default=[],
-                 help="runtime executor hint, usually tinygrad or tinygrad=/path (repeatable)")
+                 help="runtime executor hint, usually arkey or arkey=/path (repeatable)")
   p.add_argument("--bundle-dir", default=None,
                  help="optional bundle directory; defaults to <run>/runner_bundle")
   p.add_argument("--out", default=None, help="write runner plan JSON here instead of stdout")

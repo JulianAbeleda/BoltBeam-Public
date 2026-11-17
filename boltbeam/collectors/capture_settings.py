@@ -6,6 +6,7 @@ import pathlib
 from typing import Any
 
 from boltbeam.artifacts.run_io import read_json
+from boltbeam.collectors.engine_families import provider_name
 
 # The engine settings the vLLM adapter can honor: the one list every vLLM run and capture checks a request against.
 MTP_CONTEXT = "mtp_context.json"  # a speculative run's natural context ids, the same for every process of the run
@@ -63,7 +64,7 @@ ASKED = {
   "cache_type_k_draft": (str, "draft K cache type", "llama.cpp -ctkd (llama-server): the draft head's K cache type (q8_0, f16)"),
   "cache_ram": (int, "prompt cache in RAM MiB", "llama.cpp --cache-ram (llama-server): MiB of host RAM for the prompt cache; 0 "
                 "turns it off (llama-bench keeps none, so it is not passed there)")}
-TINYGRAD_WARM = 3  # warm tokens before the measured window (runtime/tinygrad_decode_profile.py --warm)
+ARKEY_WARM = 3  # warm tokens before the measured window (runtime/tinygrad_decode_profile.py --warm)
 ACCEPTED = {"vllm": VLLM_SETTINGS, "llama.cpp": tuple(LLAMA_FLAGS)}  # per engine (collectors/providers.ENGINES)
 
 
@@ -87,9 +88,9 @@ def window_context(row:dict[str, Any]) -> float | None:
 
 def attended_context(trace:dict[str, Any], provider:str) -> float | None:
   """The mean context the measured tokens attended to. Captures subtract a 1-token run from an N-token run at the
-  same depth, so the window is tokens 2..N; tinygrad's own timing measures tokens 1..N after its warm tokens."""
+  same depth, so the window is tokens 2..N; arkey's own timing measures tokens 1..N after its warm tokens."""
   from boltbeam.collectors.engine_kernels import METHOD as ISOLATED  # the engine's kernels timed alone
-  from boltbeam.collectors.tinygrad_role_time import OWN_TIMING
+  from boltbeam.collectors.arkey_role_time import OWN_TIMING
   whole = next((r for r in trace.get("rows", []) if r.get("scope") == "whole_step"), None)
   if not whole or whole.get("context") is None:
     return None
@@ -100,9 +101,9 @@ def attended_context(trace:dict[str, Any], provider:str) -> float | None:
     return float(whole["context"])
   n = whole.get("decode_tokens") or 1
   engine = whole.get("engine") or {}
-  if provider == "tinygrad" and method == OWN_TIMING and all(engine.get(k) is not None for k in ("context_start", "context_end")):
+  if provider == "arkey" and method == OWN_TIMING and all(engine.get(k) is not None for k in ("context_start", "context_end")):
     return (engine["context_start"] + engine["context_end"]) / 2
-  base = float(whole["context"]) + (TINYGRAD_WARM if provider == "tinygrad" else 0)
+  base = float(whole["context"]) + (ARKEY_WARM if provider == "arkey" else 0)
   captured = method not in (None, OWN_TIMING)
   return base + ((n + 3) / 2 if captured else (n + 1) / 2)
 
@@ -115,9 +116,8 @@ def measured_step(trace:dict[str, Any] | None, provider:str, near:float | None =
   are "also measured", labelled, never the headline."""
   if not trace:
     return None
-  measured_by = trace.get("provider") or ("tinygrad" if str(trace.get("provider_id", "")).startswith("tinygrad")
-                                          else "llama.cpp")
-  if measured_by != provider:
+  measured_by = provider_name(trace.get("provider") or "") or ("arkey" if str(trace.get("provider_id", "")).startswith(("tinygrad", "arkey")) else "llama.cpp")
+  if measured_by != provider_name(provider):  # a caller's raw name from an old record too
     return None
   rows = [r for r in trace.get("rows", []) if r.get("scope") == "whole_step" and r.get("tok_s")]
   if not rows:

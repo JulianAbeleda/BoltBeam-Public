@@ -10,8 +10,9 @@ Tri Dao, State Space Duality, Part III (2024), four-stage SSD decomposition.
 """
 from __future__ import annotations
 import math
+from boltbeam import formats
 
-DTYPE_BYTES = {'float32':4, 'bfloat16':2, 'float16':2}
+DTYPE_BYTES = {r["torch"]: r["block"][1] for r in formats.rows() if r["family"] == "float" and "torch" in r and 16 <= r["bits"] <= 32}
 
 
 FORMULA_REFUSED = ('Mamba2 state traffic and SSD work are not validated against engine evidence; the Gated DeltaNet '
@@ -147,4 +148,4 @@ def ssd(profile: dict, length: int, engine_chunks: list[int], ssd_chunk: int,
 
 
 def activation_dtype_to_path(dtype):
-  return {'bfloat16':'bf16','float16':'fp16'}[dtype]
+  return formats.row(dtype)['half_path']  # data/formats.json: a 16-bit float's matrix path

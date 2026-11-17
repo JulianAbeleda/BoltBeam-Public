@@ -2,7 +2,7 @@
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ Saved runs                                                                   │
 │ 2 saved runs in /home/u/runs/saved                                           │
-│ ▸ Qwen3-8B · apple_m3_10c · tinygrad · 2026-10-09 12:10 · 60% of limit       │
+│ ▸ Qwen3-8B · apple_m3_10c · arkey · 2026-10-09 12:10 · 60% of limit          │
 │   Qwen3-8B · apple_m3_10c · llama.cpp · 2026-10-09 11:20 · 82% of limit      │
 │                                                                              │
 │   Compare two saved runs                                                   › │

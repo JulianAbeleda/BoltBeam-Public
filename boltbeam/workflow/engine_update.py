@@ -129,7 +129,7 @@ def _arch(vendor) -> str:
   return "".join(m.groups())
 
 
-def _llama(spec:dict[str, Any], version:str, folder:pathlib.Path, vendor, log:pathlib.Path, fill:dict[str, str]) -> None:
+def _llama(spec:dict[str, Any], version:str, folder:pathlib.Path, vendor, log:pathlib.Path, fill:dict[str, Any]) -> None:
   from boltbeam.target import toolkits
   if not vendor.ggml_cmake:
     raise CannotInstall(f"BoltBeam has no llama.cpp build recipe for {vendor.vendor} GPUs (target/vendors.py ggml_cmake)")
@@ -140,7 +140,7 @@ def _llama(spec:dict[str, Any], version:str, folder:pathlib.Path, vendor, log:pa
   if not (src / ".git").is_dir():
     sh(["git", "clone", *spec["clone"], "--branch", spec["ref"].format(version=version), spec["repo"], str(src)], log)
   flags = [f.format(arch=_arch(vendor)) if "{arch}" in f else f for f in vendor.ggml_cmake]
-  sh(["cmake", "-S", str(src), "-B", str(build), *spec["cmake"], *flags], log, env=env)
+  sh(["cmake", "-S", str(src), "-B", str(build), *spec["cmake"], *flags, *fill.get("cmake", ())], log, env=env)
   sh(["cmake", "--build", str(build), "--config", "Release", "--parallel", str(os.cpu_count() or 1),
       "--target", *spec["targets"]], log, env=env)
 
@@ -181,7 +181,7 @@ def _archive(spec:dict[str, Any], version:str, folder:pathlib.Path, vendor, log:
 INSTALL = {"llama": _llama, "venv": _venv, "archive": _archive}
 
 
-def install(engine:str, version:str, folder:pathlib.Path, vendor, fill:dict[str, str] | None = None) -> dict[str, Any]:
+def install(engine:str, version:str, folder:pathlib.Path, vendor, fill:dict[str, Any] | None = None) -> dict[str, Any]:
   """One release into its own folder (a rerun after a failure reuses what it finished), marked as BoltBeam's; the
   build record: version, commit, folder, and the path each env var selects."""
   r = eb.row(engine)

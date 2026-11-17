@@ -3,6 +3,7 @@ output layer by default), kept only if it passes the part's gates (quantization/
 from __future__ import annotations
 
 import json
+import shlex
 import sys
 
 from boltbeam.core.refused import Refused
@@ -13,7 +14,7 @@ def cmd_lighter_head(args, out=sys.stdout) -> int:
   try:
     named = args.engine in {r["engine"] for r in speed_up.table()["engines"]}  # an engine row, else the engine's own path
     if args.verify:
-      rec = speed_up.verify(args.checkpoint, args.engine if named else None, None if named else args.engine)
+      rec = speed_up.verify(args.checkpoint, args.engine if named else None, None if named else args.engine, None if getattr(args, "eval_flags", None) is None else shlex.split(args.eval_flags))
       print(json.dumps(rec, indent=2) if args.json else f"verified: {rec['name']} matches its record: files, gate text, {rec['engine_version']}, " + ("speed measured on this GPU" if speed_up.measured(rec) else "SPEED WAS NOT MEASURED"), file=out)
       return 0
     progress = getattr(args, "progress", False)
@@ -44,6 +45,7 @@ def register(sub) -> None:
   q.add_argument("--main", default=None, help="the main model's GGUF a llama.cpp MTP draft head (its own file, llama-server -md) drafts for: its speed is measured with it")
   q.add_argument("--no-speed", action="store_true", help="skip the decode-speed measurement (original vs copy, short and long context)")
   q.add_argument("--verify", action="store_true", help="CHECKPOINT is a copy: check its files, gate text, engine version and GPU against its speed_up.json; refuses on a mismatch")
+  q.add_argument("--eval-flags", default=None, help="with --verify: the engine arguments the task eval ran the original with (llama-server's), so the noise run's change is derived for that setup (threshold.noise.engines tail); env is not read, so put LLAMA_ARG_* settings here as flags")
   q.add_argument("--progress", action="store_true", help="print the stages to stderr as they start and finish (a screen draws its bar from them)")
   q.add_argument("--json", action="store_true")
   q.set_defaults(fn=cmd_lighter_head)

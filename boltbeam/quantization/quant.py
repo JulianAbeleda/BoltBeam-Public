@@ -1,12 +1,8 @@
-"""Quant capability registry loader (audit A3).
+"""Quant capability loader (audit A3): the `capability` of each weights row in data/formats.json, the one format table.
 
-Quant BEHAVIOR is DATA (`data/quants.json`), not code branches. Search emission, priority ranking, and
-reachability all ask this module instead of hardcoding `if quant == "Q6_K"`. A quant absent from the registry
-is `unsupported_quant` (search-space-incomplete) — surfaced explicitly, never silently dropped.
-
-Note the separation of concerns: `profile/gguf.py` still owns decoding a raw GGML type id into a quant NAME
-for any GGUF (broad). This registry adds the capability facts for the subset BoltBeam can actually reason
-about (narrow, extended by a data edit).
+Quant BEHAVIOR is DATA, not code branches. Search emission, priority ranking, and reachability all ask this module
+instead of hardcoding `if quant == "Q6_K"`. A quant without a capability is `unsupported_quant`
+(search-space-incomplete): surfaced explicitly, never silently dropped.
 """
 from __future__ import annotations
 
@@ -16,9 +12,10 @@ import pathlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from boltbeam import formats
 from boltbeam.vocab import QuantSupport, SCHEMA_QUANT_REGISTRY
 
-_DEFAULT_PATH = pathlib.Path(__file__).resolve().parent.parent / "data" / "quants.json"
+_DEFAULT_PATH = formats.PATH
 
 
 @dataclass(frozen=True)
@@ -50,16 +47,11 @@ class QuantCapability:
 
 
 def _from_row(d:dict[str, Any]) -> QuantCapability:
-  from boltbeam.profile.gguf import GGML_TYPE_IDS
-  from boltbeam.profile.decode_roles import GGML_BLOCK_LAYOUTS
-  kind = GGML_TYPE_IDS.get(d["name"], -1)
-  elems, size = (int(d["block_elems"]), int(d["block_bytes"])) if "block_elems" in d else GGML_BLOCK_LAYOUTS[kind]
-  return QuantCapability(name=d["name"], ggml_type=kind, block_elems=elems,
-                         block_bytes=size, dequant_family=d["dequant_family"],
-                         route_families=tuple(d.get("route_families", ())),
-                         refuted_routes=tuple(d.get("refuted_routes", ())),
-                         pending_routes=tuple(d.get("pending_routes", ())),
-                         packed_word_bits=d.get("packed_word_bits"))
+  c = d["capability"]
+  return QuantCapability(name=d["name"], ggml_type=d.get("ggml", -1), block_elems=d["block"][0], block_bytes=d["block"][1],
+                         dequant_family=c["dequant_family"], route_families=tuple(c.get("route_families", ())),
+                         refuted_routes=tuple(c.get("refuted_routes", ())), pending_routes=tuple(c.get("pending_routes", ())),
+                         packed_word_bits=c.get("packed_word_bits"))
 
 
 def load_quant_registry(path:str | pathlib.Path | None = None, *, activations:bool = False) -> dict[str, QuantCapability]:
@@ -75,7 +67,8 @@ def _registry(p:str, _mtime:int, activations:bool) -> dict[str, QuantCapability]
   data = json.loads(pathlib.Path(p).read_text())
   if data.get("schema") != SCHEMA_QUANT_REGISTRY:
     raise ValueError(f"{p} is not a {SCHEMA_QUANT_REGISTRY} registry")
-  return {row["name"]: _from_row(row) for row in data["quants"] if activations or not row.get("activation_only")}
+  rows = [r for group in data["weights"].values() for r in group if "capability" in r]
+  return {r["name"]: _from_row(r) for r in rows if activations or not r["capability"].get("activation_only")}
 
 
 def quant_capability(name:str, path:str | pathlib.Path | None = None) -> QuantCapability | None:

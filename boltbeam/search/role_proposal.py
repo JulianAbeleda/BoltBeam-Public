@@ -16,16 +16,19 @@ def tolerances() -> dict[str, float]:
   return {"atol": TOLERANCE, "rtol": TOLERANCE}
 
 
+LOGICAL_M = 1  # the one column count (tokens a forward) the decode workload states: a one-token GEMV; readers ask this, not the workload
+
+
 def semantic_workload(route:Mapping[str, Any], *, tensor_name:str, model_sha:str, target:Mapping[str, Any]) -> dict[str, Any]:
   """The exact semantic workload of one role: the recorded tensor, its shape and packed format, the one-token GEMV."""
   role, quant = str(route["role"]), str(route["quant"]).upper()
   n, k = (int(x) for x in route["shape"])
   module = tensor_name[:-len(".weight")] if tensor_name.endswith(".weight") else tensor_name
-  identity = {"phase": "decode", "tensor_name": tensor_name, "module_path": module, "role": role, "logical_m": 1,
+  identity = {"phase": "decode", "tensor_name": tensor_name, "module_path": module, "role": role, "logical_m": LOGICAL_M,
               "logical_n": n, "logical_k": k, "source_quant_storage": quant, "source_layout": "transposed_row_major",
               "module_representation": "gguf_packed", "input_dtype": "fp16", "output_dtype": "fp16", "accumulator_dtype": "fp32"}
   return {"schema": "tinygrad.semantic_provider_workload.v1", "model_hash": model_sha, "target": dict(target),
-          "semantic_identity": identity, "operation": "matmul", "shape": {"m": 1, "n": n, "k": k},
+          "semantic_identity": identity, "operation": "matmul", "shape": {"m": LOGICAL_M, "n": n, "k": k},
           "operands": {"a": {"dtype": "fp16"}, "b": {"quantization": quant, "layout": "transposed_row_major"}, "c": {"dtype": "fp16"}},
           "tolerance": tolerances(), "fixture_shape_substitution": "forbidden"}
 

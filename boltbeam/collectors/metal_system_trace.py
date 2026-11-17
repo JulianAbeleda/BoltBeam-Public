@@ -5,14 +5,14 @@ import argparse
 import json
 import pathlib
 import re
-import shutil
-import subprocess
+import shutil, subprocess
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from boltbeam.target.tinygrad_root import resolve_tinygrad_root
 from boltbeam.vocab import SCHEMA_TIMING_TRACE
+from boltbeam.profiler.capabilities import normalize_provider_id
 from boltbeam.artifacts.run_io import load_manifest, run_dir
 
 
@@ -22,7 +22,7 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _provider_id(value:str) -> str:
-  return "llama.cpp" if value in {"llama", "llama.cpp", "llama-cpp"} else value
+  return normalize_provider_id(value)  # llama -> llama.cpp; arkey keeps its recorded id tinygrad
 
 
 def _configured_run(args:argparse.Namespace) -> tuple[dict[str, Any], pathlib.Path, str, str, str, int]:

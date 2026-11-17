@@ -73,7 +73,7 @@ def standard(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
   eng = rp.engine(trace.get("provider") or "llama.cpp")
   settings = server.get("settings") or {}
   bw, bw_source = run_bandwidth(run, target)
-  type_k = str(settings.get("type_k") or "f16").upper()
+  type_k, type_v = (str(settings.get(t) or "f16").upper() for t in ("type_k", "type_v"))
   return {"profile": profile, "roles": pf.prefill_roles(profile, ceil.get("_roles") or []),
           "formats": eng["formats"](settings, pf.weight_quants(run)), "weight_path": eng["weight_path"],
           # a chunk the server did not say: one per turn, the fewest weight reads, so the ceiling never overstates
@@ -82,7 +82,7 @@ def standard(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | None:
           "bandwidth_gbs": bw, "bandwidth_source": bw_source,
           "peaks": dict(target.matrix_tflops or {}),
           "peaks_source": ((target.capabilities or {}).get("fact_sources") or {}).get("matrix_tflops"),
-          "limit_bytes": float(ceil["bytes_moved"]), "kv_per_token": kv_bytes_per_token(profile, type_k) or 0.0,
+          "limit_bytes": float(ceil["bytes_moved"]), "kv_per_token": kv_bytes_per_token(profile, type_k, v_format=type_v) or 0.0,
           "kv_type": type_k, "state_bytes": recurrent_state_bytes(profile) or 0.0}
 
 
@@ -309,7 +309,7 @@ def decode_where(run:pathlib.Path, trace:dict[str, Any]) -> dict[str, Any] | Non
   """The deepest turn's decode, captured, per role against each role's limit, and the KV and state read at that
   depth beside what no role took."""
   from boltbeam.collectors import replay as rp
-  from boltbeam.collectors.tinygrad_role_time import loss
+  from boltbeam.collectors.arkey_role_time import loss
   from boltbeam.artifacts.run_io import load_manifest
   from boltbeam.roofline import limit
   d = _read(run / rp.CAPTURE).get("decode")

@@ -36,8 +36,8 @@ from boltbeam.target.gpu import LIMITED
 
 LAYOUTS = {"one": "one GPU", "layer": "split by layer", "row": "split by rows"}
 DEFAULT = "one"
-ENGINE_LAYOUTS = {"llama.cpp": ("one", "layer", "row"), "tinygrad": ("one",), "vllm": ("one", "row")}
-NOT_OFFERED = {"tinygrad": "the tinygrad fork decodes on one device: its LLM decode has no sharded path",
+ENGINE_LAYOUTS = {"llama.cpp": ("one", "layer", "row"), "arkey": ("one",), "vllm": ("one", "row")}
+NOT_OFFERED = {"arkey": "arkey decodes on one device: its LLM decode has no sharded path",
                "vllm": "BoltBeam runs vLLM split by rows (tensor parallel); its pipeline split is not measured"}
 # a layout an engine offers only where its GPUs' vendor row allows it: (engine, layout) -> the field of
 # target/vendors.Vendor that, when set, is why it cannot run there (the engine's own refusal, quoted)

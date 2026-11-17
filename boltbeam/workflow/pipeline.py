@@ -16,7 +16,7 @@ from typing import Any
 
 from boltbeam.cli._common import _parse_ctxs
 from boltbeam.collectors import (boltbeam_gemv, capture_settings, engine_builds, gpu_telemetry, llama_bench_decode, metal_native,
-                                 multi_gpu, providers, tinygrad_role_time, vendor_capture)
+                                 multi_gpu, providers, arkey_role_time, vendor_capture)
 from boltbeam.collectors import capture_scope, engine_families, prefill as pf, replay as rp, session as ss
 from boltbeam.collectors.attribution import NotSplitByRole
 from boltbeam.collectors.llama_bench_decode import CannotMeasure
@@ -104,11 +104,11 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
       return out | {"reason": f"the model's head counts {multi_gpu.heads(model)} divide across none of this machine's "
                               f"{len(devs)} GPUs, so vLLM cannot split it", "command": "pick one GPU"}
     out["gpus"], devs = n, devs[:n]
-  if provider == tinygrad_role_time.PROVIDER:
+  if provider == arkey_role_time.PROVIDER:
     here = this_machine_target()
     if here != target_id and not (target_id == "apple_metal" and target.backend == "Metal" and sys.platform == "darwin"):
       return out | _not_this_machine(here, target_id, run, provider)
-    if why := tinygrad_role_time.available(target, tinygrad_root):
+    if why := arkey_role_time.available(target, tinygrad_root):
       return out | {"reason": why, "command": "set BOLTBEAM_TINYGRAD_ROOT to the tinygrad fork, then measure again"}
   if why := providers.reads(provider, model):
     return out | {"reason": why, "command": f"pick a {' or '.join(providers.FORMATS[provider])} model for {provider}"}
@@ -118,7 +118,7 @@ def measure_plan(target_id:str, model:str, run:str, provider:str = providers.DEF
       return out | _not_this_machine(here, target_id, run, provider)
     if why := providers.ENGINES[provider].available(target):
       return out | {"reason": why, "command": f"install {provider}, then measure again"}
-  elif provider != tinygrad_role_time.PROVIDER:
+  elif provider != arkey_role_time.PROVIDER:
     try:
       _collectors()[cid].preflight(target_id, model, run=run)
     except CannotMeasure as exc:
@@ -203,8 +203,8 @@ def _measure_steps(args, plan:dict[str, Any], say=lambda _: None) -> list[tuple[
     timing = guarded("timing", lambda: mod.measure(out_dir(), provider, root=root, say=say), probe="absent",
                      probe_reason=llama_bench_decode.PROBE_ABSENT)
     return [timing]
-  if provider == tinygrad_role_time.PROVIDER:
-    timing = guarded("timing", lambda: providers.measure_tinygrad(out_dir(), root=root),
+  if provider == arkey_role_time.PROVIDER:
+    timing = guarded("timing", lambda: providers.measure_arkey(out_dir(), root=root),
                      probe="measured" if is_metal else "absent",
                      probe_reason=None if is_metal else llama_bench_decode.PROBE_ABSENT)
   elif provider in providers.DRIVEN:
@@ -544,7 +544,7 @@ def _not_split(run:pathlib.Path, why:str, key:str = "not_split") -> None:
 
 
 def failure_details(exc:BaseException) -> str | None:
-  """What stands behind a stage's one-line failure: an engine's own traceback (tinygrad_role_time.DecodeFailed
+  """What stands behind a stage's one-line failure: an engine's own traceback (arkey_role_time.DecodeFailed
   carries it as details). None when the exception's message is all there is."""
   details = getattr(exc, "details", None)
   return str(details) if details else None

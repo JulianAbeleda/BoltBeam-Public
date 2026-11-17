@@ -34,6 +34,7 @@ import time
 import urllib.request
 from typing import Any, Callable
 
+from boltbeam import formats
 from boltbeam.collectors import gpu_telemetry
 from boltbeam.collectors import prefill as pf
 from boltbeam.collectors.replay_overhead import ORDER, PAIRS
@@ -147,10 +148,9 @@ def llama_settings(argv:list[str], log:str) -> dict[str, Any]:
 
 
 # ggml types llama.cpp's CUDA backend runs through mul_mat_q (ggml_cuda_should_use_mmq, ggml-cuda/mmq.cu 364-382 at b11571;
-# the same list in master): weights in their block format, activations quantized to q8_1, int8 products. MXFP4 and NVFP4
-# take a native fp4 path on Blackwell when the activations are q4 (mmq.cu 64-77); their q8 path is int8 too.
-LLAMA_MMQ = ("Q1_0", "Q2_0", "Q4_0", "Q4_1", "Q5_0", "Q5_1", "Q8_0", "Q2_K", "Q3_K", "Q4_K", "Q5_K", "Q6_K",
-             "IQ1_S", "IQ2_XXS", "IQ2_XS", "IQ2_S", "IQ3_XXS", "IQ3_S", "IQ4_XS", "IQ4_NL", "MXFP4", "NVFP4")
+# the same list in master; data/formats.json llama_mmq): weights in their block format, activations quantized to q8_1,
+# int8 products. MXFP4 and NVFP4 take a native fp4 path on Blackwell when the activations are q4 (mmq.cu 64-77); their q8 path is int8 too.
+LLAMA_MMQ = tuple(formats.field("llama_mmq"))
 
 
 def llama_weight_path(quant:str) -> str | None:
@@ -158,7 +158,7 @@ def llama_weight_path(quant:str) -> str | None:
   (activations quantized to q8_1); F16 and BF16 run cuBLAS on their own type. None for any other type (F32, IQ1_M,
   TQ1_0 ...: cuBLAS after a conversion BoltBeam does not model): weight_path_note says which."""
   name = str(quant).upper()
-  return "int8" if name in LLAMA_MMQ else {"F16": "fp16", "BF16": "bf16"}.get(name)
+  return "int8" if name in LLAMA_MMQ else (formats.row(name) or {}).get("half_path")
 
 
 def weight_path_note(role:str, quant:str) -> str:
@@ -294,7 +294,7 @@ REPLAY_ENGINES: dict[str, dict[str, Callable[..., Any]]] = {
                 "gpus": lambda argv: [int(flag_value(argv, ("-mg", "--main-gpu")) or 0)]
                 if flag_value(argv, ("-sm", "--split-mode")) == "none" else None},
   "vllm": {"chat": vllm_chat, "tokenize": vllm_tokenize, "detokenize": vllm_detokenize, "settings": vllm_settings,
-           "weight_path": lambda quant: {"NVFP4_G16": "nvfp4", "FP8_E4M3": "fp8", "F32": "fp32_fma"}.get(quant, "bf16"),
+           "weight_path": lambda quant: (formats.row(quant) or {}).get("vllm_path", "bf16"),
            "attention_paths": vllm_attention_paths, "formats": lambda s, weights: pf.vllm_formats(weights, {"kv_cache_dtype": s.get("type_k")}),
            "env": vllm_env,
            "gpus": lambda argv: [0] if int(flag_value(argv, ("-tp", "--tensor-parallel-size")) or 1) == 1 else None},

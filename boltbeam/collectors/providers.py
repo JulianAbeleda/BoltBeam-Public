@@ -3,13 +3,13 @@
 A provider (an engine on screen) is a runtime that decodes the model. Each adapter knows only how to find its
 runtime, which weight files it reads, how to run N decode tokens at a context and batch, and how its per-role time
 is taken. Everything after that is shared: the vendor capture (vendor_capture.py), the attribution by bytes and
-count (attribution.py), and the floor rule (tinygrad_role_time.loss).
+count (attribution.py), and the floor rule (arkey_role_time.loss).
 
     provider      weights       whole step (step 4)                    per role (step 5)
     llama.cpp     GGUF          llama-bench decode; batch > 1 with     the vendor's capture of llama-bench
                                 llama-batched-bench; llama-server      (of llama-server for those settings,
                                 for settings llama-bench lacks         llama_server_decode.py)
-    tinygrad      GGUF          the fork's decode, no profiling        the vendor's capture where it sees tinygrad
+    arkey         GGUF          the fork's decode, no profiling        the vendor's capture where it sees tinygrad
                                                                        (Metal), else tinygrad's own profile events
     vllm          safetensors   offline LLM API, N minus 1 tokens      nsys of the same driver, CUDA graphs on
     ollama        GGUF          its API's eval_count / eval_duration   nsys of `ollama serve` and its runner
@@ -26,17 +26,18 @@ import re
 import subprocess
 import sys
 import time
+from boltbeam import formats
 from boltbeam.collectors.capture_scope import for_decode
 from typing import Any, Callable
 
-from boltbeam.collectors import (llama_bench_decode, ollama_decode, tinygrad_role_time, trtllm_decode, vendor_capture,
+from boltbeam.collectors import (engine_families, llama_bench_decode, ollama_decode, arkey_role_time, trtllm_decode, vendor_capture,
                                  vllm_decode, work_evidence)
 from boltbeam.roofline import limit
 from boltbeam.target import vendors
 from boltbeam.artifacts.run_io import MEASURE_STATUS, load_manifest, optional, read_json, write_json, write_manifest
 
 # name -> adapter module; the order is the order Setup lists them
-ENGINES = {m.PROVIDER: m for m in (llama_bench_decode, tinygrad_role_time, vllm_decode, ollama_decode, trtllm_decode)}
+ENGINES = {m.PROVIDER: m for m in (llama_bench_decode, arkey_role_time, vllm_decode, ollama_decode, trtllm_decode)}
 NAMES = tuple(ENGINES)
 DEFAULT = llama_bench_decode.PROVIDER  # a run measured before providers existed was measured with llama-bench
 # the per-role trace each provider writes into the run folder
@@ -45,10 +46,10 @@ TRACES = {name: m.TRACE for name, m in ENGINES.items()}
 DRIVEN = (vllm_decode.PROVIDER, ollama_decode.PROVIDER, trtllm_decode.PROVIDER)
 # the run's step-4 collector per provider and backend; "*" is any backend
 COLLECTORS = {(llama_bench_decode.PROVIDER, "Metal"): "metal-native", (llama_bench_decode.PROVIDER, "*"): "llama-bench-decode",
-              (tinygrad_role_time.PROVIDER, "*"): "tinygrad-decode",
+              (arkey_role_time.PROVIDER, "*"): "tinygrad-decode",
               **{(name, "*"): f"{name}-decode" for name in DRIVEN}}
-TINYGRAD_TOKENS = 16
-FORMATS = {llama_bench_decode.PROVIDER: ("gguf",), tinygrad_role_time.PROVIDER: ("gguf",),
+ARKEY_TOKENS = 16
+FORMATS = {llama_bench_decode.PROVIDER: ("gguf",), arkey_role_time.PROVIDER: ("gguf",),
            **{name: ENGINES[name].FORMATS for name in DRIVEN}}
 
 
@@ -57,7 +58,7 @@ def collector(provider:str, backend:str) -> str:
 
 
 def check(provider:str) -> str:
-  if provider not in NAMES:
+  if (provider := engine_families.provider_name(provider)) not in NAMES:
     raise ValueError(f"unknown provider {provider!r}; one of {', '.join(NAMES)}")
   return provider
 
@@ -74,8 +75,7 @@ def kv_element(provider:str, run:pathlib.Path | None = None) -> tuple[float, str
         dtype = engine.get('kv_cache_dtype') or engine.get('type_k')
         if dtype:
           from boltbeam.roofline.prefill_work import elem_bytes
-          normalized = {'bfloat16': 'BF16', 'float16': 'F16', 'float32': 'F32',
-                        'fp8': 'FP8_E4M3', 'fp8_e4m3': 'FP8_E4M3'}.get(dtype, dtype.upper())
+          normalized = formats.canonical(dtype) or dtype.upper()
           return elem_bytes(normalized), f'{name}: resolved engine KV cache dtype {dtype}'
   m = ENGINES.get(provider)
   return getattr(m, "KV_ELEMENT", None) or (2, "f16 assumed")
@@ -127,7 +127,7 @@ MEASUREMENTS = ("in_model", "generic")
 MEASUREMENT_LABEL = {"in_model": "in-model", "generic": "generic (kernel timer)"}
 MEASUREMENT_ABOUT = {
   # {capture}: the backend's outside capture (target/vendors.py)
-  "in_model": "the real token, split by role when the engine labels its kernels (tinygrad, {capture}); llama.cpp on a Mac: whole step only",
+  "in_model": "the real token, split by role when the engine labels its kernels (arkey, {capture}); llama.cpp on a Mac: whole step only",
   "generic": "each kernel alone, cold, any engine, any chip; compares kernels, the token split is an estimate"}
 GENERIC_NEEDS = "generic needs the engine's kernel source"
 
@@ -140,8 +140,8 @@ def measurement_options(provider:str, backend:str) -> dict[str, Any]:
   row = vendors.BY_BACKEND.get(backend)
   about = {**MEASUREMENT_ABOUT, "in_model": MEASUREMENT_ABOUT["in_model"].format(
     capture=row.capture.tool_word if row else "a vendor capture")}
-  if provider == tinygrad_role_time.PROVIDER:  # tinygrad's own events are in-model; it ships no kernel source
-    in_model, generic = None, f"{GENERIC_NEEDS}: tinygrad generates its kernels at run time"
+  if provider == arkey_role_time.PROVIDER:  # arkey's own events are in-model; it ships no kernel source
+    in_model, generic = None, f"{GENERIC_NEEDS}: arkey generates its kernels at run time"
   else:
     in_model = None if p["tool"] else (row.capture.in_model_needs if row else f"in-model needs a capture tool: {p['reason']}")
     why = engine_kernels.available(provider, backend, llama_bench_decode.find(llama_bench_decode.DEFAULT))
@@ -178,10 +178,10 @@ def capture_method(provider:str, backend:str, measurement:str = "auto") -> dict[
     if got["chosen"] == "generic":
       return {"method": engine_kernels.METHOD, "reason": None, "cross_check": None}
     return capture_method(provider, backend)
-  if provider == tinygrad_role_time.PROVIDER:
-    if backend in tinygrad_role_time.CAPTURED_BACKENDS and p["tool"]:
+  if provider == arkey_role_time.PROVIDER:
+    if backend in arkey_role_time.CAPTURED_BACKENDS and p["tool"]:
       return {"method": p["method"], "reason": None, "cross_check": None}
-    return {"method": tinygrad_role_time.OWN_TIMING, "reason": tinygrad_role_time.own_timing_reason(backend), "cross_check": None}
+    return {"method": arkey_role_time.OWN_TIMING, "reason": arkey_role_time.own_timing_reason(backend), "cross_check": None}
   isolated = engine_kernels.available(provider, backend, llama_bench_decode.find(llama_bench_decode.DEFAULT))
   if p["tool"] is None:
     if isolated is None:
@@ -193,8 +193,8 @@ def capture_method(provider:str, backend:str, measurement:str = "auto") -> dict[
 def _why(name:str, target, tinygrad_root:pathlib.Path | None, *, cached:bool = False) -> str | None:
   if name == llama_bench_decode.PROVIDER:
     return llama_bench_decode.available()
-  if name == tinygrad_role_time.PROVIDER:
-    return tinygrad_role_time.available(target, tinygrad_root)
+  if name == arkey_role_time.PROVIDER:
+    return arkey_role_time.available(target, tinygrad_root)
   if cached and name == trtllm_decode.PROVIDER:
     return trtllm_decode.available(target, cached=True)
   return ENGINES[name].available(target)
@@ -205,8 +205,8 @@ def state(name:str, target, why:str | None) -> str:
   not_here (it could, but it is not installed or not set up). The sentence stays in `reason`."""
   if why is None:
     return "available"
-  if name == tinygrad_role_time.PROVIDER:
-    return "not_here" if tinygrad_role_time.device_for(target) else "not_compatible"
+  if name == arkey_role_time.PROVIDER:
+    return "not_here" if arkey_role_time.device_for(target) else "not_compatible"
   backends = getattr(ENGINES[name], "BACKENDS", None)
   return "not_compatible" if backends is not None and target.backend not in backends else "not_here"
 
@@ -220,7 +220,7 @@ def available(target, *, tinygrad_root:pathlib.Path | None = None, cached:bool =
     out.append({"provider": name, "available": why is None, "state": state(name, target, why), "reason": why, "formats": list(FORMATS[name]),
                 "capture": capture_method(name, target.backend),
                 "measurement": measurement_options(name, target.backend),
-                "batch_over_one": name != tinygrad_role_time.PROVIDER})  # tinygrad's decode runs one stream
+                "batch_over_one": name != arkey_role_time.PROVIDER})  # arkey's decode runs one stream
   return out
 
 
@@ -337,10 +337,10 @@ def gpu_free_here(*, probes:list[dict[str, Any]] | None = None, free=gpu_free) -
   return {"free": True, "holders": [], "reason": "no other program holds a GPU here"}
 
 
-# --- step 4: whole step in tinygrad --------------------------------------------------------------------------
+# --- step 4: whole step in arkey -----------------------------------------------------------------------------
 
-def measure_tinygrad(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pathlib.Path:
-  """trace_request.json answered with tinygrad decodes: one whole_step row per requested context."""
+def measure_arkey(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pathlib.Path:
+  """trace_request.json answered with arkey decodes: one whole_step row per requested context."""
   from boltbeam.core.canonical import pretty_json
   from boltbeam.search import tinygrad_fork
   from boltbeam.target.targets import get_target
@@ -348,24 +348,24 @@ def measure_tinygrad(run:pathlib.Path, *, root:pathlib.Path | None = None) -> pa
   root = pathlib.Path(root) if root else tinygrad_fork.default_fork_root()
   manifest = load_manifest(run)
   target = get_target(manifest.get("target_id"))
-  if why := tinygrad_role_time.available(target, root):
+  if why := arkey_role_time.available(target, root):
     raise RuntimeError(why)
   request = read_json(run / "trace_request.json")
   rows = []
   from boltbeam.collectors.capture_settings import contexts, require_supported
   require_supported(run)
   for ctx in contexts(run):
-    got = tinygrad_role_time.whole_step(root=root, python=tinygrad_fork.fork_python(root), model=str(manifest["model_path"]),
-                                        target=target, context=int(ctx), tokens=TINYGRAD_TOKENS)
+    got = arkey_role_time.whole_step(root=root, python=tinygrad_fork.fork_python(root), model=str(manifest["model_path"]),
+                                        target=target, context=int(ctx), tokens=ARKEY_TOKENS)
     rows.append({"scope": "whole_step", "context": int(ctx), "wall_us": 1e6 / got["tok_s"], "tok_s": got["tok_s"],
-                 "decode_tokens": got["tokens"], "source": f"tinygrad decode on {got['device']}, JIT with {got['jit']}, no profiling",
+                 "decode_tokens": got["tokens"], "source": f"arkey decode on {got['device']}, JIT with {got['jit']}, no profiling",
                  # the engine's own account of its graph state: a reader shows it, never infers it (TH: hidden failure)
                  "jit": got["jit"], "graph_error": got.get("graph_error"), "engine": got.get("engine", {})})
   peak_gbs, peak_source = limit.run_bandwidth(run, target)
   trace = {"schema": SCHEMA_TIMING_TRACE, "model_id": manifest["model_id"], "target_id": manifest["target_id"],
-           "workload": manifest["workload"], "provider_id": tinygrad_role_time.PROVIDER, "collector_id": "tinygrad-decode",
-           "timing_source": "tinygrad whole step", "contexts": [r["context"] for r in rows], "rows": rows,
-           "measured": ["whole_step.tok_s (tinygrad decode, wall clock over the decode tokens)"],
+           "workload": manifest["workload"], "provider_id": arkey_role_time.PROVIDER, "collector_id": "tinygrad-decode",
+           "timing_source": "arkey whole step", "contexts": [r["context"] for r in rows], "rows": rows,
+           "measured": ["whole_step.tok_s (arkey decode, wall clock over the decode tokens)"],
            "absent": ["kernel rows: per role is step 5"], "peak_source": peak_source}
   if peak_gbs:
     trace["peak_gbs"] = peak_gbs
@@ -446,17 +446,17 @@ CROSS_CHECK = "isolated_timing_trace.json"  # the engine's kernels timed alone, 
 
 def _captured(run:pathlib.Path, provider:str, *, target, root, model:str, model_id:str, context:int, batch:int,
               tokens:int) -> dict[str, Any]:
-  """The per-role trace from a vendor capture of the engine's own run (or tinygrad's)."""
+  """The per-role trace from a vendor capture of the engine's own run (or arkey's)."""
   from boltbeam.search import tinygrad_fork
   if provider in DRIVEN:
     if why := ENGINES[provider].available(target) or reads(provider, model):
       raise RuntimeError(why)
     return ENGINES[provider].role_time(run, target=target, model=model, model_id=model_id, context=context, batch=batch, tokens=tokens)
-  if provider == tinygrad_role_time.PROVIDER:
+  if provider == arkey_role_time.PROVIDER:
     root = pathlib.Path(root) if root else tinygrad_fork.default_fork_root()
-    if why := tinygrad_role_time.available(target, root):
+    if why := arkey_role_time.available(target, root):
       raise RuntimeError(why)
-    return tinygrad_role_time.role_time_captured(run, root=root, python=tinygrad_fork.fork_python(root), model=model,
+    return arkey_role_time.role_time_captured(run, root=root, python=tinygrad_fork.fork_python(root), model=model,
                                                  model_id=model_id, target=target, context=context, tokens=tokens)
   layout, gpus = _layout(run)
   return llama_bench_decode.role_time(run, target=target, model=model, model_id=model_id, layout=layout, gpus=gpus,
@@ -471,7 +471,7 @@ def run_provider(run:pathlib.Path) -> str:
   """
   status = optional(run, MEASURE_STATUS).get("provider")
   trace = optional(run, "timing_trace.json").get("provider")
-  if status and trace and status != trace:
+  if status and trace and engine_families.provider_name(status) != engine_families.provider_name(trace):  # an old record's name too
     raise ValueError(f"measurement provider {status!r} differs from timing trace {trace!r}")
   return check(trace or status or DEFAULT)
 
@@ -508,7 +508,7 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
   if not gpu["free"]:
     raise RuntimeError(f"not measured: {gpu['reason']}")
   how = capture_method(provider, target.backend, measurement)
-  if provider == tinygrad_role_time.PROVIDER and how["method"] == tinygrad_role_time.OWN_TIMING:
+  if provider == arkey_role_time.PROVIDER and how["method"] == arkey_role_time.OWN_TIMING:
     return role_numbers.time_roles(run, root=root)
   if how["method"] is None:
     raise RuntimeError(f"{provider} per role is not possible here: {how['reason']}")
@@ -543,7 +543,7 @@ def role_time(run:pathlib.Path, provider:str, *, root:pathlib.Path | None = None
       work_evidence.verify(run,capture)
     return trace
   ceil = limit.measured_vs_ceiling(manifest, optional(run, "model_profile.json"))
-  table = tinygrad_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), for_decode(run, trace))
+  table = arkey_role_time.loss(ceil.get("_roles") or [], trace, ceil.get("floor_ms"), for_decode(run, trace))
   if table and table["status"] != "measured":
     raise RuntimeError(table["reason"])
   return trace

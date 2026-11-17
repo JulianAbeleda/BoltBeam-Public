@@ -11,14 +11,9 @@ from boltbeam.profile.ir import ModelProfile, TensorRole, model_name
 from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
 from boltbeam.profile.architecture import classify_architecture, recurrent_kind
 from boltbeam.vocab import is_ssm_role
+from boltbeam import formats
 
-GGML_TYPE_NAMES = {
-  0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1", 8: "Q8_0", 9: "Q8_1",
-  10: "Q2_K", 11: "Q3_K", 12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 15: "Q8_K", 16: "IQ2_XXS", 17: "IQ2_XS",
-  18: "IQ3_XXS", 19: "IQ1_S", 20: "IQ4_NL", 21: "IQ3_S", 22: "IQ2_S",
-  23: "IQ4_XS", 24: "I8", 25: "I16", 26: "I32", 27: "I64", 28: "F64", 29: "IQ1_M", 30: "BF16",
-  34: "TQ1_0", 35: "TQ2_0", 39: "MXFP4", 41: "Q1_0", 42: "Q2_0",
-}
+GGML_TYPE_NAMES = formats.ggml_names()  # the one table (data/formats.json); a view, kept for its importers
 
 GGML_TYPE_IDS = {name: value for value, name in GGML_TYPE_NAMES.items()}
 
@@ -82,6 +77,9 @@ def read_gguf_layout(path:str | pathlib.Path) -> tuple[dict[str, Any], list[tupl
       name = r.string()
       dims = tuple(r.u64() for _ in range(r.u32()))
       tensors.append((name, dims, r.i32(), r.u64()))
+    # an unknown type id is refused here, for every reader, naming each type (data/formats.json)
+    if bad := sorted({f"GGML type {t}": n for n, _, t, _ in tensors if formats.row(("ggml", t)) is None}.items()):
+      raise formats.UnknownFormat(formats.unknown(", ".join(k for k, _ in bad), f"{p.name} {', '.join(n for _, n in bad)}"), [k for k, _ in bad])
     alignment = int(kv.get("general.alignment", 32))
     data_start = (r.f.tell() + alignment - 1) // alignment * alignment
   return kv, tensors, data_start
@@ -229,7 +227,7 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
                                                      if n.startswith(f"blk.{b}.")))
                              for b in sorted({int(n.split(".")[1]) for n in names if n.startswith("blk.")})} or None
   roles = tuple(TensorRole(role=role, tensor_name=names[0], rows=rows, cols=cols,
-                           ggml_type=typ, quant=GGML_TYPE_NAMES.get(typ, f"GGML_{typ}"), count=len(names),
+                           ggml_type=typ, quant=GGML_TYPE_NAMES[typ], count=len(names),
                            role_class=classify_tensor_role(names[0], shapes[names[0]]).value, n_expert=n_expert,
                            experts_read=weight_ledger.experts_read(kv, arch, n_expert) if n_expert else 0,
                            last_layer=sum(n.startswith(f"blk.{layers - 1}.") for n in names) if layers else None,
@@ -243,7 +241,7 @@ def profile_from_gguf(path:str | pathlib.Path, model_id:str | None=None) -> Mode
   metadata = {
     "gguf_architecture": arch,
     "tensor_count": len(all_tensors),
-    "quant_types": sorted({GGML_TYPE_NAMES.get(typ, f"GGML_{typ}") for _, _, typ, _ in all_tensors}),
+    "quant_types": sorted({GGML_TYPE_NAMES[typ] for _, _, typ, _ in all_tensors}),
     "architecture_signals": arch_signals,
     "weights": ledger,
     "attention": {k: v for k, v in {

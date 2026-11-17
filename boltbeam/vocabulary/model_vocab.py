@@ -12,6 +12,7 @@ import json, pathlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from boltbeam import formats
 from boltbeam.profile.ir import ModelProfile, TargetProfile
 
 _VOCAB_PATH = pathlib.Path(__file__).resolve().parent.parent / "data" / "primitive_vocab.json"
@@ -26,16 +27,10 @@ def load_primitive_vocab(path: str | pathlib.Path | None = None) -> dict[str, di
 # op-class -> the ISA primitives it decomposes into. Weight ops are keyed by quant; arch ops are fixed for a
 # decoder transformer (qwen3-family). "dot" is resolved to a concrete lowered dot per quant at extraction time.
 # ---------------------------------------------------------------------------
-_WEIGHT_OP = {
-  "Q4_K": ("q4k_gemv", ["global_load", "dequant_bitunpack", "dequant_convert", "dot", "xlane_reduce"]),
-  "Q6_K": ("q6k_gemv", ["global_load", "dequant_bitunpack", "dequant_convert", "dot", "xlane_reduce"]),
-  "Q8_0": ("q8_gemv",  ["global_load", "dequant_convert", "dot", "xlane_reduce"]),
-}
-# The dot CLASSES each quant's GEMV could use — semantics, not instruction names: dequant to f16 and use an
-# f16 dot, or quantize x to q8_1 and use an int8 dot. Which concrete instruction serves a class is a property
-# of the TARGET (target.dot_primitives x the registry's dot_class), never of this module. Naming AMD opcodes
-# here is what made `--target nvidia_sm89` confidently report v_dot2_f32_f16.
-_QUANT_DOT_CLASS = {"Q4_K": ("f16", "int8"), "Q6_K": ("f16",), "Q8_0": ("int8",)}
+# Weight ops are keyed by quant (data/formats.json capability gemv_op). The dot CLASSES each quant's GEMV could use
+# (capability dot_classes) are semantics, not instruction names: dequant to f16 and use an f16 dot, or quantize x to
+# q8_1 and use an int8 dot. Which concrete instruction serves a class is a property of the TARGET (target.dot_primitives
+# x the registry's dot_class), never of this module: naming AMD opcodes here made `--target nvidia_sm89` report v_dot2_f32_f16.
 _DEFAULT_DOT_CLASS = ("f16",)
 
 _ARCH_DECODER_OPS = [
@@ -137,7 +132,7 @@ def _dots_for_quant(quant: str | None, target: TargetProfile,
   target's instruction — the whole point of failing closed is that a missing capability reads as missing.
   """
   out: list[str] = []
-  for cls in _QUANT_DOT_CLASS.get(quant or "", _DEFAULT_DOT_CLASS):
+  for cls in (formats.field("capability").get(quant or "") or {}).get("dot_classes") or _DEFAULT_DOT_CLASS:
     served = [p for p in getattr(target, "dot_primitives", ())
               if (registry.get(p) or {}).get("dot_class") == cls]
     out.extend(served or [f"dot:{cls}"])
@@ -190,7 +185,7 @@ def extract_model_vocabulary(model: ModelProfile, target: TargetProfile,
     key = (r.role, r.quant)
     if key in seen: continue
     seen.add(key)
-    opname, prims = _WEIGHT_OP.get(r.quant, ("unknown_gemv", ["global_load", "dot"]))
+    opname, prims = ((formats.field("capability").get(r.quant) or {}).get("gemv_op") or ("unknown_gemv", ["global_load", "dot"]))
     add(opname, f"weight:{r.role}", prims, quant=r.quant)
   # 2) arch-derived decoder ops (fixed for the transformer)
   for opname, prims in _ARCH_DECODER_OPS:

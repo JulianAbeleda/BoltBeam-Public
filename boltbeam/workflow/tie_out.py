@@ -42,10 +42,10 @@ ROLE_RULE = {
 }
 LATENCY_ASSUMED = "assumed"
 LATENCY_MEASURED = "the dispatch floor the probe measured on this GPU"
-from boltbeam.collectors.tinygrad_role_time import OWN_TIMING  # the engine's own profiling, not an outside capture
+from boltbeam.collectors.arkey_role_time import OWN_TIMING  # the engine's own profiling, not an outside capture
 from boltbeam.collectors.engine_kernels import METHOD as ISOLATED  # the engine's kernels timed alone by BoltBeam's kernel timer
 # each engine's own decode timing window, recorded alike by its untraced run and its outside capture (another engine's never matches)
-WINDOWS = {"llama.cpp": ("long_minus_short", "differential decode window"), "tinygrad": ("engine_decode_loop", "decode-loop window")}
+WINDOWS = {"llama.cpp": ("long_minus_short", "differential decode window"), "arkey": ("engine_decode_loop", "decode-loop window")}
 REASONS = {"at_limit": "at the limit", "small": "too small to fill memory", "slow": "slow kernel",
            "compute": "compute bound", "unexplained": "unexplained"}
 # a role timed alone whose reading is not firm gets this suffix after its reason word: the word is the rule's
@@ -178,7 +178,7 @@ def role_why(roles:list[dict[str, Any]], bandwidth_gbs:float, *, regimes:dict[tu
     rule_ms = r["less_floor_ms"] if isolated else r["actual_ms"]  # the time the rule judges
     pct = 100.0 * r["ideal_ms"] / rule_ms if rule_ms > 0 else None
     per_call_bytes = r["ideal_ms"] * 1e-3 * bandwidth_gbs * 1e9 / calls if calls else None
-    if r.get("within_noise"):  # below its floor, inside the chip's plausibility band (tinygrad_role_time.loss)
+    if r.get("within_noise"):  # below its floor, inside the chip's plausibility band (arkey_role_time.loss)
       why = r.get("label") or REASONS["at_limit"]
     elif pct is not None and round(pct, 1) >= ROLE_RULE["at_limit_pct"]:
       why = REASONS["at_limit"]
@@ -323,7 +323,7 @@ def tie_out(run:pathlib.Path, *, provider:str, table:dict[str, Any] | None, trac
         parts[k] = parts.get(k, 0.0) + ms
     loose_ms = sum(l["ms"] for l in loose)
     lines.append({"label": "weight kernels above their ideal", "ms": weight_above, "how": "measured"})
-    if doubted:  # a row below its own floor: its time is measured, its ceiling refused (tinygrad_role_time.loss)
+    if doubted:  # a row below its own floor: its time is measured, its ceiling refused (arkey_role_time.loss)
       lines.append({"label": "ceiling refused: " + ", ".join(f"{r['role']} {r['quant']}" for r in doubted),
                     "ms": sum(r["actual_ms"] - r["ideal_ms"] for r in doubted), "how": "measured, below its floor"})
     if loose:

@@ -19,6 +19,8 @@ from __future__ import annotations
 import pathlib
 from typing import Any
 
+from boltbeam.collectors.engine_families import provider_name
+
 MATERIAL = 0.01  # a row losing less than this share of the untraced prefill is collapsed into the one line
 TITLE = "Prefill audit"
 FIELDS = ("claim", "standard", "evidence", "re-performance", "tie-out", "materiality", "finding")
@@ -91,10 +93,9 @@ def entry(row:dict[str, Any], *, length:int, wall:float, base:float, bw:float | 
 def audit(run:pathlib.Path, where:dict[str, Any] | None, length:int, trace:dict[str, Any], *,
           backend:str | None = None) -> dict[str, Any] | None:
   """The where table at `length` as an audit: entries worst first, rows under MATERIAL collapsed into one line."""
-  if not where or not where.get("rows"):
-    return None
+  if not where or not where.get("rows"): return None
   wall, base = float(where["token_ms"]), float(where["base_ms"])
-  provider = str(trace.get("provider") or "")
+  provider = provider_name(str(trace.get("provider") or ""))  # an old record's name reads as today's
   bw = trace.get("bandwidth_gbs")
   rows = sorted(where["rows"], key=lambda r: (-r["lost_ms"], r["name"]))
   big = [r for r in rows if base and r["lost_ms"] / base >= MATERIAL]

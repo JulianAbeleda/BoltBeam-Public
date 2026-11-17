@@ -95,7 +95,7 @@ Keep distinct concerns independent:
 - candidate search is separate from promotion;
 - synthetic fixtures are separate from real model gates;
 - measuring is separate from analysis: the collectors run the engines
-  (tinygrad's profile scripts too, `collectors/tinygrad_role_time.py`) and
+  (tinygrad's profile scripts too, `collectors/arkey_role_time.py`) and
   record how each run was set up; the tie-out reads only what they recorded;
 - target capability data is separate from model profile data.
 
@@ -286,7 +286,7 @@ quant, role, and context that the candidate claims.
 BoltBeam handles new dense/MoE GGUFs, quants, and targets by profile facts, not
 by model-specific assumptions (audit A0–A10). The load-bearing rules:
 
-- Quant behavior is DATA (`data/quants.json`), not `if quant == "Q6_K"` branches.
+- Quant behavior is DATA (`data/formats.json`, docs/formats.md), not `if quant == "Q6_K"` branches.
   A quant absent from the registry is `unsupported_quant` (search-space-incomplete),
   never silently omitted.
 - Target capability is DATA (`data/targets.json`) with a `backend_status`. Only a

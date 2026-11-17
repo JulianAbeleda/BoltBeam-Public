@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from boltbeam import formats
 from boltbeam.artifacts.run_io import read_json
 from boltbeam.profile.architecture import classify_architecture
 from boltbeam.profile.gguf import GGML_TYPE_NAMES, profile_from_gguf
@@ -16,17 +17,6 @@ from boltbeam.profile.ir import ModelProfile, TensorRole, model_name, profile_fr
 from boltbeam.profile.roles import classify_tensor_role, role_from_tensor_name
 from boltbeam.profile.weight_ledger import experts_read
 from boltbeam.vocab import HYBRID_PATTERN, LAYER_KIND_OF_BLOCK, RoleClass, is_ssm_role
-
-_DTYPE_TO_QUANT = {
-  "F64": "F64", "F32": "F32", "F16": "F16", "BF16": "BF16",
-  "I64": "I64", "I32": "I32", "I16": "I16", "I8": "I8",
-  "U8": "U8", "BOOL": "BOOL",
-}
-
-_ONNX_DTYPE = {
-  1: "F32", 2: "U8", 3: "I8", 6: "I32", 7: "I64", 10: "F16", 16: "BF16",
-}
-
 
 @dataclass(frozen=True)
 class TensorSpec:
@@ -167,7 +157,7 @@ def _group_quant(qcfg:dict[str, Any], names:set[str] | frozenset[str] = frozense
                         packed_axis=0 if qm == "gptq" else 1)
   q = (qcfg.get("global_quant_config") or {}).get("weight") or {}
   export = qcfg.get("export") or {}
-  bits = {"int4": 4, "uint4": 4, "int8": 8, "uint8": 8}.get(str(q.get("dtype")))
+  bits = int(r["bits"]) if (r := formats.row(str(q.get("dtype"))) or {}).get("family") == "int" and r["bits"] in (4, 8) else None
   if (str(qcfg.get("quant_method")).lower() == "quark" and export.get("weight_format") == "real_quantized"
       and q.get("qscheme") == "per_group" and bits and q.get("group_size")):
     zp = any(n.endswith(".weight_zero_point") for n in names)
@@ -205,10 +195,10 @@ def _safetensors_specs(path:pathlib.Path, default_quant:str | None = None,
         shape = (shape[0], shape[1] * 2)
         quant = "NVFP4_G16"
         scale = header.get(module + ".weight_scale") or {}
-        if scale and (scale.get("dtype") not in ("F8_E4M3", "F8_E4M3FN") or
+        if scale and (formats.canonical(scale.get("dtype")) != "F8_E4M3" or
                       tuple(scale.get("shape", [])) != (shape[0], math.ceil(shape[1] / 16))):
           raise ValueError(f"{name}: NVFP4 scale packing disagrees with the declared matrix")
-      elif bits == 8 and dtype in ("F8_E4M3", "F8_E4M3FN"):
+      elif bits == 8 and formats.canonical(dtype) == "F8_E4M3":
         quant = "FP8_E4M3"
       else:
         raise ValueError(f"{name}: declared float quantization {bits} bits disagrees with {dtype}")
@@ -219,7 +209,7 @@ def _safetensors_specs(path:pathlib.Path, default_quant:str | None = None,
       stored = sum(int(p["data_offsets"][1]) - int(p["data_offsets"][0]) for p in parts)
       specs.append(TensorSpec(name=module + ".weight", shape=shape, quant=quant, weight_bytes=stored))
       continue
-    if group and name.endswith(group.suffix) and len(shape) == 2 and (group.suffix == _PACKED or dtype in ("I32", "U32")):
+    if group and name.endswith(group.suffix) and len(shape) == 2 and (group.suffix == _PACKED or formats.require(dtype, name).get("packed_word")):
       # int32 words of `bits`-bit integers along the second axis; the weight is [out, in] either way. Quark's suffix
       # is plain .weight, so there the int32 dtype is what marks a packed tensor
       module, per = name[:-len(group.suffix)], 32 // group.bits
@@ -238,7 +228,7 @@ def _safetensors_specs(path:pathlib.Path, default_quant:str | None = None,
       if dtype == "U8" and name.endswith(".weight") and len(shape) == 2:
         raise ValueError(f"{name}: packed U8 weight has no supported declared quantization scheme")
       # in an AWQ/GPTQ file only qweight is packed; lm_head and the rest are stored as they are (fp16, not 4-bit)
-      quant = (None if group and group.suffix == ".qweight" else default_quant) or _DTYPE_TO_QUANT.get(dtype, dtype)
+      quant = (None if group and group.suffix == ".qweight" else default_quant) or formats.require(dtype, f"{path.name} {name}") and dtype
     specs.append(TensorSpec(name=name, shape=shape, quant=quant))
   return specs
 
@@ -273,6 +263,8 @@ def _config_for(path:pathlib.Path) -> dict[str, Any]:
 def _profile_from_hf_tensors(path:pathlib.Path, fmt:str, model_id:str | None) -> ModelProfile:
   cfg = _config_for(path)
   qcfg = _quant_config(path if path.is_dir() else path.parent, cfg)
+  if (said := str(qcfg.get("quant_method") or "")) and said.lower() not in formats.quant_methods():  # data/formats.json quant_method
+    raise ValueError(formats.unknown(f"quant_method {said}", f"{path} quantization_config"))
   qmethod = str(qcfg.get("quant_method", fmt if fmt in {"awq", "gptq"} else "")).upper()
   bits = qcfg.get("bits") or qcfg.get("w_bit")
   default_quant = f"{qmethod}_INT{bits}" if qmethod in {"AWQ", "GPTQ"} and bits else None
@@ -295,7 +287,7 @@ def _profile_from_mlx(path:pathlib.Path, model_id:str | None) -> ModelProfile:
         raise ValueError("MLX .npz profiling requires numpy; use safetensors export or install numpy") from exc
       with np.load(npz) as data:
         specs = [TensorSpec(name=k, shape=tuple(int(x) for x in data[k].shape),
-                            quant=_DTYPE_TO_QUANT.get(str(data[k].dtype).upper(), str(data[k].dtype).upper()))
+                            quant=formats.require(str(data[k].dtype), f"{path.name} {k}")["name"])
                  for k in data.files]
   return _profile_from_specs(path, "mlx", cfg, specs, model_id)
 
@@ -526,5 +518,5 @@ def _onnx_specs(path:pathlib.Path) -> list[TensorSpec]:
       elif tf == 8 and isinstance(tv, bytes):
         name = tv.decode("utf-8")
     if name:
-      specs.append(TensorSpec(name=name, shape=tuple(dims), quant=_ONNX_DTYPE.get(data_type, f"ONNX_{data_type}")))
+      specs.append(TensorSpec(name=name, shape=tuple(dims), quant=formats.require(("onnx", data_type), f"{path.name} {name}")["name"]))
   return specs

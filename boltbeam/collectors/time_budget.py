@@ -60,6 +60,13 @@ class Timeline:
   calls: list[tuple[int, int, str]] = field(default_factory=list)
   monotonic_origin_ns: int | None = None  # host CLOCK_MONOTONIC at trace ns 0, when the reader knows it
   source: str = ""
+  grids: list[tuple[int, int, int]] = field(default_factory=list)  # each kernel's launch grid, aligned with kernels, when the reader has it
+  # parallel lists, when the reader has them: the launching call of each kernel and copy (correlation id), and each
+  # call's thread and correlation id (aligned with calls, after their sort): a launch -> its work, a thread's own order
+  kernel_correlations: list[int] = field(default_factory=list)
+  copy_correlations: list[int] = field(default_factory=list)
+  call_threads: list[int] = field(default_factory=list)
+  call_correlations: list[int] = field(default_factory=list)
 
 
 _COPY_KINDS = {1: "HtoD", 2: "DtoH", 8: "DtoD", 10: "PtoP"}
@@ -77,23 +84,28 @@ def timeline_from_nsys(db:str | pathlib.Path) -> Timeline:
     enum = lambda t, d: {i: n for i, _, n in con.execute(f"select * from {t}")} if has(t) else d  # noqa: E731
     oper, mem = enum("ENUM_CUDA_MEMCPY_OPER", _COPY_KINDS), enum("ENUM_CUDA_MEM_KIND", _MEM_KINDS)
     mk = lambda m: str(mem.get(m, m)).lower().replace("cuda_memopr_memory_kind_", "")  # noqa: E731
-    kernels = [(a, e, str(strings.get(n, n)), st) for a, e, n, st in
-               con.execute("select start, end, shortName, streamId from CUPTI_ACTIVITY_KIND_KERNEL")] if has("CUPTI_ACTIVITY_KIND_KERNEL") else []
-    copies = [{"start_ns": a, "end_ns": e, "bytes": b, "kind": _SHORT.get(oper.get(k), oper.get(k, str(k))), "memory": mk(src), "stream": st}
-              for a, e, b, k, src, st in con.execute("select start, end, bytes, copyKind, srcKind, streamId from CUPTI_ACTIVITY_KIND_MEMCPY")] \
-             if has("CUPTI_ACTIVITY_KIND_MEMCPY") else []
-    copies += [{"start_ns": a, "end_ns": e, "bytes": b, "kind": "memset", "memory": "device", "stream": st}
-               for a, e, b, st in con.execute("select start, end, bytes, streamId from CUPTI_ACTIVITY_KIND_MEMSET")] \
-              if has("CUPTI_ACTIVITY_KIND_MEMSET") else []
-    calls = [(a, e, re.sub(r"_v\d+$", "", str(strings.get(n, n)))) for a, e, n in
-             con.execute("select start, end, nameId from CUPTI_ACTIVITY_KIND_RUNTIME")] if has("CUPTI_ACTIVITY_KIND_RUNTIME") else []
+    columns = lambda t: {r[1] for r in con.execute(f"pragma table_info({t})")}  # noqa: E731
+    opt = lambda t, c: c if c in columns(t) else "null"  # noqa: E731  (an older export, or a hand-made one, lacks the column)
+    grid = ", gridX, gridY, gridZ" if has("CUPTI_ACTIVITY_KIND_KERNEL") and "gridX" in columns("CUPTI_ACTIVITY_KIND_KERNEL") else ""
+    rows = list(con.execute(f"select start, end, shortName, streamId, {opt('CUPTI_ACTIVITY_KIND_KERNEL', 'correlationId')}{grid} from CUPTI_ACTIVITY_KIND_KERNEL")) if has("CUPTI_ACTIVITY_KIND_KERNEL") else []
+    kernels = [(a, e, str(strings.get(n, n)), st) for a, e, n, st, *_ in rows]
+    cps = [(a, e, b, _SHORT.get(oper.get(k), oper.get(k, str(k))), mk(src), st, c, mk(dst)) for a, e, b, k, src, st, c, dst in
+           con.execute(f"select start, end, bytes, copyKind, srcKind, streamId, {opt('CUPTI_ACTIVITY_KIND_MEMCPY', 'correlationId')}, "
+                       f"{opt('CUPTI_ACTIVITY_KIND_MEMCPY', 'dstKind')} from CUPTI_ACTIVITY_KIND_MEMCPY")] if has("CUPTI_ACTIVITY_KIND_MEMCPY") else []
+    cps += [(a, e, b, "memset", "device", st, c, "device") for a, e, b, st, c in
+            con.execute(f"select start, end, bytes, streamId, {opt('CUPTI_ACTIVITY_KIND_MEMSET', 'correlationId')} from CUPTI_ACTIVITY_KIND_MEMSET")] if has("CUPTI_ACTIVITY_KIND_MEMSET") else []
+    copies = [{"start_ns": a, "end_ns": e, "bytes": b, "kind": k, "memory": m, "stream": st, **({"dst_memory": d} if d != "none" else {})}
+              for a, e, b, k, m, st, _, d in cps]
+    calls = sorted([(a, e, re.sub(r"_v\d+$", "", str(strings.get(n, n))), t, c) for a, e, n, t, c in
+                   con.execute(f"select start, end, nameId, {opt('CUPTI_ACTIVITY_KIND_RUNTIME', 'globalTid')}, {opt('CUPTI_ACTIVITY_KIND_RUNTIME', 'correlationId')} from CUPTI_ACTIVITY_KIND_RUNTIME")], key=lambda c: c[:3]) if has("CUPTI_ACTIVITY_KIND_RUNTIME") else []
     origin = None
     if has("TARGET_INFO_SESSION_START_TIME"):
       cols = [d[0] for d in con.execute("select * from TARGET_INFO_SESSION_START_TIME").description]
       row = con.execute("select * from TARGET_INFO_SESSION_START_TIME").fetchone()
       if row and "systemClockNs" in cols:
         origin = int(row[cols.index("systemClockNs")])  # the session's start on the host's CLOCK_MONOTONIC
-  return Timeline(kernels, copies, sorted(calls), origin, str(db))
+  return Timeline(kernels, copies, [c[:3] for c in calls], origin, str(db), [tuple(r[5:]) for r in rows] if grid else [],
+                  [r[4] for r in rows], [c[6] for c in cps], [c[3] for c in calls], [c[4] for c in calls])
 
 
 # --- the data tables ----------------------------------------------------------------------------------------------
@@ -230,11 +242,15 @@ def clip(tl:Timeline, span:tuple[int, int] | None) -> Timeline:
     return tl
   a, b = span
   c = lambda s, e: (max(s, a), min(e, b))  # noqa: E731
-  kernels = [(*c(s, e), n, st) for s, e, n, st in (tl.kernels[i] for i in inside(tl.kernels, span))]
-  copies = [{**x, "start_ns": c(x["start_ns"], x["end_ns"])[0], "end_ns": c(x["start_ns"], x["end_ns"])[1]}
-            for x in tl.copies if x["end_ns"] > a and x["start_ns"] < b]
-  calls = [(*c(s, e), n) for s, e, n in tl.calls if e > a and s < b]
-  return Timeline(kernels, copies, calls, tl.monotonic_origin_ns, tl.source)
+  ki = inside(tl.kernels, span)
+  xi = [i for i, x in enumerate(tl.copies) if x["end_ns"] > a and x["start_ns"] < b]
+  ci = [i for i, (s, e, _) in enumerate(tl.calls) if e > a and s < b]
+  pick = lambda xs, idx: [xs[i] for i in idx] if xs else []  # noqa: E731  (the parallel lists follow their rows)
+  kernels = [(*c(s, e), n, st) for s, e, n, st in (tl.kernels[i] for i in ki)]
+  copies = [{**x, "start_ns": c(x["start_ns"], x["end_ns"])[0], "end_ns": c(x["start_ns"], x["end_ns"])[1]} for x in (tl.copies[i] for i in xi)]
+  calls = [(*c(s, e), n) for s, e, n in (tl.calls[i] for i in ci)]
+  return Timeline(kernels, copies, calls, tl.monotonic_origin_ns, tl.source, pick(tl.grids, ki), pick(tl.kernel_correlations, ki),
+                  pick(tl.copy_correlations, xi), pick(tl.call_threads, ci), pick(tl.call_correlations, ci))
 
 
 def span_from_monotonic(tl:Timeline, start_ns:int, end_ns:int) -> tuple[int, int] | None:
@@ -453,6 +469,12 @@ def decode_row(engine:str | list[str] | None, table:dict[str, Any] | None = None
   return None
 
 
+def decode_steps(tokens:int, accepted:int, row:dict[str, Any] | None) -> int:
+  """The step rule, stated once: a decode's verify steps are its tokens less the ones its prompt pass made (the engine's
+  decode row, tokens_from_prompt) less the accepted drafts. With accepted 0: the tokens made inside the decode window."""
+  return tokens - (row or {}).get("tokens_from_prompt", 0) - accepted
+
+
 def forwards(tl:Timeline, fams:list[str], rule:dict[str, Any]) -> list[dict[str, Any]]:
   """The trace's forwards in order: the kernels between two reads of a result (copies of rule["result_read"]; no other
   copy cuts one); a run of kernels with no per-layer launch (a sampler) joins the forward before it, or the one after it
@@ -606,7 +628,7 @@ def decode_budget(tl:Timeline, *, tokens:int, accepted:int = 0, drafted:int = 0,
   fams = launch_families(tl.kernels, families_for(engine, vendor, t, True))
   segs = forwards(tl, fams, rule)
   kw = dict(engine=engine, vendor=vendor, families_table=t, causes_table=causes_table, gap_ms=0.0, decode=True)
-  steps_expected = tokens - (row or {}).get("tokens_from_prompt", 0) - accepted
+  steps_expected = decode_steps(tokens, accepted, row)
   per = (row or {}).get("draft_forwards") if k else None
   catchups = per["per_main_forward"] * steps_expected if per else 0
   lo = per["per_draft_token"] * drafted if per else 0
@@ -653,7 +675,7 @@ def decode_budget(tl:Timeline, *, tokens:int, accepted:int = 0, drafted:int = 0,
                   "idle_ms": got["idle_ms"], "idle_by_cause": {c["cause"]: c["ms"] for c in got["gaps"]["by_cause"]},
                   "input_copy": input_copies(tl, rule["input_copy"], a, b, ku, input_rows or {}), "weight_read_ms": weight})
   decode_ms = sum(x["wall_ms"] for x in steps)
-  out_tokens = tokens - row["tokens_from_prompt"]
+  out_tokens = decode_steps(tokens, 0, row)
   add = lambda key: {n: sum(x[key].get(n, 0.0) for x in steps) for n in dict.fromkeys(n for x in steps for n in x[key])}  # noqa: E731
   pct = lambda d: {n: 100.0 * v / decode_ms for n, v in sorted(d.items(), key=lambda x: -x[1])}  # noqa: E731
   one = lambda v: 100.0 * v / decode_ms  # noqa: E731

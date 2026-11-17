@@ -19,7 +19,7 @@ func familyProviders(t *testing.T) *seam.Providers {
 	var p seam.Providers
 	err := json.Unmarshal([]byte(`{"target_id": "apple_m3_10c", "default": "llama.cpp", "providers": [
 	  {"provider": "llama.cpp", "available": true, "state": "available", "formats": ["gguf"], "capture": {"method": null}},
-	  {"provider": "tinygrad", "available": true, "state": "available", "formats": ["gguf"], "capture": {"method": "tinygrad-profile-events"}},
+	  {"provider": "arkey", "available": true, "state": "available", "formats": ["gguf"], "capture": {"method": "tinygrad-profile-events"}},
 	  {"provider": "vllm", "available": false, "state": "not_compatible", "reason": "BoltBeam runs vLLM on CUDA or AMD GPUs", "formats": ["safetensors"], "capture": {"method": null}},
 	  {"provider": "ollama", "available": false, "state": "not_here", "reason": "ollama was not found", "formats": ["gguf"], "capture": {"method": null}}],
 	 "families": [
@@ -37,7 +37,7 @@ func familyProviders(t *testing.T) *seam.Providers {
 	  {"family": "tinygrad", "label": "tinygrad", "forks": [
 	    {"fork": "upstream", "label": "upstream", "repo": "https://github.com/tinygrad/tinygrad", "provider": null, "runs": false, "state": "not_here",
 	     "fix": "get it from https://github.com/tinygrad/tinygrad, then export BOLTBEAM_TINYGRAD_UPSTREAM=<its path>"},
-	    {"fork": "own", "label": "own fork", "repo": "https://example.invalid/tinygrad-fork", "provider": "tinygrad", "runs": true, "state": "available"}]}]}`), &p)
+	    {"fork": "own", "label": "arkey", "repo": "https://example.invalid/tinygrad-fork", "provider": "arkey", "runs": true, "state": "available"}]}]}`), &p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestEnginePickerIsByFamily(t *testing.T) {
 	m = page(m, pageEngine)
 	acts := rows(engineActions(facts(m)))
 	if acts[0] != "fork|● llama.cpp     ‹ [upstream] · TestFork · Ollama · Strata ›" || acts[1] != "note|upstream · found" ||
-		!strings.HasPrefix(acts[2], "note|vLLM          not on this GPU type") || acts[3] != "fork|tinygrad      ‹ [upstream] · own fork ›" { // the root is the default, found or not
+		!strings.HasPrefix(acts[2], "note|vLLM          not on this GPU type") || acts[3] != "fork|tinygrad      ‹ [upstream] · arkey ›" { // the root is the default, found or not
 		t.Fatalf("families:\n%s", strings.Join(acts, "\n"))
 	}
 	if !strings.Contains(plain(m.(Model).footer()), "←→ fork") {
@@ -81,7 +81,7 @@ func TestEnginePickerIsByFamily(t *testing.T) {
 	}
 	// the tinygrad family: → then enter picks its own fork; Setup says the family and the fork
 	picked := press(arrow(press(m, "j"), tea.KeyRight), "enter").(Model)
-	if picked.cursor != pageSetup || picked.f.Engine != "tinygrad" || plain(engineValue(picked.f)) != "tinygrad · own fork" {
+	if picked.cursor != pageSetup || picked.f.Engine != "arkey" || plain(engineValue(picked.f)) != "tinygrad · arkey fork" {
 		t.Fatalf("pick: page %d engine %q value %q", picked.cursor, picked.f.Engine, plain(engineValue(picked.f)))
 	}
 	if got := plain(familyValue(picked.f, "ollama")); got != "llama.cpp · Ollama fork" {

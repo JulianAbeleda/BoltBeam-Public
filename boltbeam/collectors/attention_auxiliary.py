@@ -12,6 +12,7 @@ every token reads its int64 slot; a negative slot skips the K/V transfer.
 """
 import math
 import re
+from boltbeam import formats as format_table
 from boltbeam.collectors.instruction_path import template
 from boltbeam.roofline.prefill_work import elem_bytes
 
@@ -31,11 +32,10 @@ def work(group):
   if semantic.get('class')!='Attention':return
   inputs=semantic.get('inputs') or []
   operator=semantic.get('operator')
-  formats={'bfloat16':'BF16','float16':'F16'}
   if operator=='vllm.unified_kv_cache_update.default':
     if len(group)!=1 or len(inputs)!=2:return
     key=template(group[0]['key'])
-    dtype=inputs[0].get('dtype');scalar={'bfloat16':'__nv_bfloat16','float16':'__half'}.get(dtype)
+    dtype=inputs[0].get('dtype');scalar=(format_table.row(format_table.half(dtype)) or {}).get('cuda_c')
     if key!=f'vllm::reshape_and_cache_flash_kernel<{scalar},{scalar},(vllm::Fp8KVCacheDataType)0>':return
     shape=inputs[0]['shape']
     if inputs[1]!=inputs[0] or len(shape)!=3 or any(type(n) is not int or n<=0 for n in shape):return
@@ -45,7 +45,7 @@ def work(group):
     # block reads one slot, but negative slots skip the data transfer. Actual
     # K/V traffic must come from matched counters, not assumed valid slots.
     yield group[0],{'name':'KV cache write','flops':0.,'bytes':8.*grid[0],'path':'memory_only',
-                   'quant':formats[dtype],'basis':'unquantized copy and one int64 slot read per launched token block',
+                   'quant':format_table.half(dtype),'basis':'unquantized copy and one int64 slot read per launched token block',
                    'limitations':['Logical bytes count mandatory slot reads only; conditional K/V transfers require measured memory traffic. Integer indexing is excluded; no floating-point throughput or MFU is claimed.']}
   elif operator=='vllm.unified_attention_with_output.default':
     combine=[l for l in group if template(l['key']).startswith('flash::flash_fwd_splitkv_combine_kernel<')]
@@ -55,7 +55,7 @@ def work(group):
     if len(inputs)<4:return
     q,k,v,o=inputs[:4];shape=q.get('shape',[])
     if (len(shape)!=3 or shape[0]!=1 or o!=q or k!=v or len(k['shape'])!=3 or k['shape'][0]!=1 or
-        q['dtype'] not in formats or k['dtype']!=q['dtype'] or k['shape'][2]!=shape[2]):return
+        not format_table.half(q['dtype']) or k['dtype']!=q['dtype'] or k['shape'][2]!=shape[2]):return
     _,heads,dim=shape;kvheads=k['shape'][1]
     if min(heads,dim,kvheads)<=0 or heads%kvheads:raise ValueError('invalid grouped attention operands')
     key=template(combine[0]['key'])
@@ -72,7 +72,7 @@ def work(group):
     # Each FP32 partial vector is scaled and accumulated. FP32 LSE partials
     # are read; the final LSE and output vector are written.
     yield combine[0],{'name':'attention split-KV combine','flops':2.*heads*dim*splits,
-      'bytes':4*heads*splits*(dim+1)+4*heads+elem_bytes(formats[q['dtype']])*heads*dim,
-      'quant':formats[q['dtype']],'splits':splits,
+      'bytes':4*heads*splits*(dim+1)+4*heads+elem_bytes(format_table.half(q['dtype']))*heads*dim,
+      'quant':format_table.half(q['dtype']),'splits':splits,
       'basis':'FA2 split-KV scalar accumulation from observed Q/K/output shapes and producer split grid',
       'limitations':['Compute is a lower bound from scalar multiply-adds; softmax transcendental, reduction and address work are excluded.']}

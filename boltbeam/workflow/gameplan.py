@@ -28,6 +28,7 @@ import pathlib
 from collections import Counter
 from typing import Any
 
+from boltbeam import formats
 from boltbeam.core.canonical import pretty_json
 from boltbeam.report import plain
 from boltbeam.report.html import PLAIN_VERDICT
@@ -43,7 +44,7 @@ LAYERS = ("bubblebeam", "futuresight", "measured", "promotion")
 LAYER_TITLE = {"bubblebeam": "BubbleBeam", "futuresight": "FutureSight", "measured": "Measured", "promotion": "Promotion"}
 AT_LIMIT = "at the limit, nothing to gain"
 NOT_SEARCHED = "not searched: run with the kernel search on"
-NOT_SEARCHED_ENGINE = "not searched: run with --provider tinygrad (the tinygrad fork, BOLTBEAM_TINYGRAD_ROOT)"
+NOT_SEARCHED_ENGINE = "not searched: run with --provider arkey (the tinygrad fork, BOLTBEAM_TINYGRAD_ROOT)"
 TOP_REASONS = 2  # rejection reasons named per layer
 FIRST_ORDER = 3  # candidates named from FutureSight's measurement order
 
@@ -68,7 +69,7 @@ EMITTERS: tuple[tuple[str, tuple[str, ...] | None, str, str, str], ...] = (
       'BlockQuantGEMVRouteSpec(rows={rows}, k={k}, quant=QUANT_FORMATS["' + q + '"], wave_size=<the device wave size>, '
       'lanes_per_block=<the winner\'s code bytes / memory.b.vector_width>, warps_per_cta=<the winner\'s tile.n>)',
       "k % block_elems == 0, rows >= 1, lanes_per_block divides the block's code units and the wave size, wave size a power of "
-      "two (BlockQuantGEMVRouteSpec.validate)") for q in ("Q8_0", "Q5_0", "Q4_0", "Q5_K"))),
+      "two (BlockQuantGEMVRouteSpec.validate)") for q, c in formats.field("capability").items() if c.get("emitter_kind") == "block_quant_gemv.v1")),
   ("*", NORM_ROLES, "emit_decode_rmsnorm_kernel", "DecodeRMSNormSpec(rows={rows}, dim={k}, eps=<the model's rms epsilon>)",
    "dim % 32 == 0, eps > 0 (DecodeRMSNormSpec.validate)"),
 )
@@ -308,7 +309,7 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
     return _layer("promotion", True, lines, {**facts, "plan": "nothing to emit"}, ptrs)
   if verdict == "not_searched":
     why = (status or {}).get("reason") or reason
-    hint = NOT_SEARCHED_ENGINE if (why or "").startswith(search_stage.TINYGRAD_ONLY) else NOT_SEARCHED
+    hint = NOT_SEARCHED_ENGINE if (why or "").startswith(search_stage.ARKEY_ONLY) else NOT_SEARCHED
     lines.append(hint + (f" ({why})" if why and why != reason else ""))  # the verdict line said it once
     return _layer("promotion", True, lines, {**facts, "plan": NOT_SEARCHED, "why_off": why}, ptrs + ([_ptr(STATUS, "reason")] if status else []))
   # applied or found, not applied: the plan, its gain, the emitter, the record, the check
@@ -481,7 +482,7 @@ def _gameplan(run:pathlib.Path, res:dict[str, Any], *, now:_dt.date | None = Non
   manifest = load_manifest(run)
   files.read.append("run_manifest.json")
   policy = files.get(POLICY) or {}
-  status = files.get(STATUS)
+  status = files.get(STATUS) and search_stage.read_status(run)  # the one reader: an older run's words read as today's
   compare = files.get(ev.COMPARE)
   est = loss.get("estimate")
   t = loss.get("tie_out") or {}

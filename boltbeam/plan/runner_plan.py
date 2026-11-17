@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import pathlib
-import shutil
+import pathlib, shutil
 
 from boltbeam.core.canonical import sha256_hex
 from typing import Any
@@ -11,6 +10,7 @@ from boltbeam.target import vendors
 from boltbeam.target.targets import TARGETS
 from boltbeam.target.tinygrad_root import resolve_tinygrad_root
 from boltbeam.profiler.trace_profile import resolve_trace_execution_profile
+from boltbeam.profiler.capabilities import normalize_provider_id
 
 from boltbeam.vocab import (
   SCHEMA_EXECUTION_BRIDGE_REQUEST, SCHEMA_EXECUTION_BRIDGE_RESULT, SCHEMA_HW_TRACE,
@@ -43,7 +43,7 @@ def build_runner_plan(run:pathlib.Path, *, providers:tuple[str, ...] = (),
   manifest = load_manifest(run)
   bundle = pathlib.Path(bundle_dir).expanduser() if bundle_dir else run / "runner_bundle"
   provider_rows = [_provider_row(p) for p in providers] or [{"provider_id": "tinygrad", "configured_path": None}]
-  executor_hint = "tinygrad" if any(p["provider_id"] == "tinygrad" for p in provider_rows) else provider_rows[0]["provider_id"]
+  executor_hint = "tinygrad" if any(normalize_provider_id(p["provider_id"]) == "tinygrad" for p in provider_rows) else provider_rows[0]["provider_id"]  # arkey's recorded executor id
   inputs = [_input_row(run, bundle, name, required=True) for name in _REQUIRED_INPUTS]
   inputs += [_input_row(run, bundle, name, required=False) for name in _OPTIONAL_INPUTS]
   existing = [row for row in inputs if row["status"] == "present"]
@@ -161,7 +161,7 @@ def _provider_commands(manifest:dict[str, Any], providers:list[dict[str, Any]], 
   operand_request_path = run / "operand_path_request.json"
   operand_request = parse_operand_execution_request(read_json(operand_request_path)) if operand_request_path.exists() else None
   for provider, trace_profile in zip(providers, trace_profiles):
-    pid = provider["provider_id"]
+    pid = normalize_provider_id(provider["provider_id"])  # an arkey hint reads as its recorded id tinygrad
     if trace_profile.get("status") != "ready":
       if pid == "tinygrad" and operand_request is not None:
         rows.append(_tinygrad_operand_path_command(manifest, provider, run))
@@ -243,7 +243,7 @@ def _tinygrad_trace_commands(manifest:dict[str, Any], provider:dict[str, Any], t
   runtime = _tinygrad_target_runtime(target_id)
   collector_cmd = [
     "boltbeam", "collect-hw-trace",
-    "--provider", "tinygrad",
+    "--provider", "arkey",
     "--run", str(run),
     "--model", str(model),
     "--context", str(ctx),

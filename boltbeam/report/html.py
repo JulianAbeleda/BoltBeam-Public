@@ -338,7 +338,7 @@ PLAIN_VERDICT = {"applied": "applied", "found_not_applied": "found, not applied"
 VERDICT_CLASS = {"applied": "r-ok", "found_not_applied": "r-slow", "none_faster": "", "not_reproduced": "r-slow", "not_searched": ""}
 
 # Where every compare time comes from; boltbeam-tui prints the same sentence (render.go compareNote).
-COMPARE_NOTE = "Times are from tinygrad's Metal runtime, not llama.cpp."
+COMPARE_NOTE = "Times are from arkey's Metal runtime, not llama.cpp."
 
 
 def _compare_card(policy:dict[str, Any]) -> str:

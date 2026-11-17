@@ -5,11 +5,11 @@ Only the listed operator ABIs and kernel families are admitted. Memory counters
 remain mandatory; integer arithmetic, comparisons and conversions are excluded.
 """
 import math
+from boltbeam import formats
 from boltbeam.collectors.instruction_path import template
 from boltbeam.collectors.attention_auxiliary import geometry
 
-TYPES={'bool':(1,'bool'),'int32':(4,'int'),'int64':(8,'long'),
-       'float32':(4,'float'),'bfloat16':(2,'__nv_bfloat16')}
+TYPES={r['torch']:(r['block'][1],r['cuda_c']) for r in formats.rows() if 'cuda_c' in r and 'torch' in r and r['name']!='F16'}  # data/formats.json; F16's kernels not yet reviewed here
 
 
 def shape(value):

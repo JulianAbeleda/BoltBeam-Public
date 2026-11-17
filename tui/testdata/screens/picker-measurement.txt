@@ -14,7 +14,7 @@
 │ Choose                                                                       │
 │     in-model · in-model needs Xcode's Metal System Trace on this Mac         │
 │       the real token, split by role when the engine labels its kernels       │
-│       (tinygrad, nsys); llama.cpp on a Mac: whole step only                  │
+│       (arkey, nsys); llama.cpp on a Mac: whole step only                     │
 │                                                                              │
 │   ● generic (kernel timer)                                                   │
 │       each kernel alone, cold, any engine, any chip; compares kernels,       │

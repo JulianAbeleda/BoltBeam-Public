@@ -11,13 +11,14 @@ from typing import Any
 from boltbeam.artifacts.run_io import read_json, write_json
 
 TRACE_ENV = "LLAMA_MOE_CACHE_TRACE"  # llama.cpp's routing trace, for a simulator of the cache; recorded when set, never read as a rate
-DECODE_STATS = re.compile(r"llama_moe_cache: ubatch <= 8: hits = (\d+), misses = (\d+)")  # the decode batches' line of the stats the cache logs at exit (-lv 4)
+# the stats the cache logs at exit (-lv 4): the pattern is its audit_flags row's (data/engine_knobs.json), read here for the decode batches' line
+DECODE_STATS = re.compile(next(r["log"]["hits"] for r in read_json(pathlib.Path(__file__).resolve().parents[1] / "data" / "engine_knobs.json")["audit_flags"] if r.get("role") == "expert_cache"))
 
 
 def moe_cache_hit_rate(log:str) -> float | None:
   """The expert cache's decode hit rate from llama.cpp's own exit statistics (hits over hits + misses, summed over its lines);
   None when the log has none (no cache, or the log level hides them)."""
-  rows = [(int(h), int(m)) for h, m in DECODE_STATS.findall(log)]
+  rows = [(int(m["hits"]), int(m["misses"])) for m in DECODE_STATS.finditer(log) if m["batch"] == "<="]
   hits = sum(h for h, _ in rows)
   return hits / (hits + sum(m for _, m in rows)) if hits + sum(m for _, m in rows) else None
 

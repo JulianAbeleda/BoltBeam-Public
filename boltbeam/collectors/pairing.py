@@ -39,6 +39,7 @@ import re
 import statistics
 from typing import Any, Callable
 
+from boltbeam import formats
 from boltbeam.collectors import llama_mmq
 from boltbeam.collectors.instruction_path import template
 from boltbeam.core.policy import value
@@ -689,10 +690,12 @@ def _facts(r:dict[str, Any]) -> dict[str, Any]:
 
 
 # A weight format a kernel's name states: tinygrad's q4k_g3_lanemap_gemv, llama.cpp's kernel_mul_mv_q6_K_f32. Only the
-# GGUF block formats are read (an f16/f32 in a name is the activation's type, not the weights'); a name stating two
-# formats (a weight and an activation quant, mul_mat_q4_K_q8_1) or none states nothing. llama.cpp's CUDA templates
-# state the weight's type as a number (mul_mat_vec_q<(ggml_type)14, ...>: Q6_K), the importance formats too (23: IQ4_XS).
-_FORMAT_WORD = re.compile(r"(?<![a-z0-9])(q[2-8]|iq[1-4])_?(k|0|1|xxs|xs|s|m|nl)(?![a-z0-9])")
+# GGUF block formats (data/formats.json: a ggml type of more than one value a block) are read (an f16/f32 in a name is
+# the activation's type, not the weights'); a name stating two formats (a weight and an activation quant,
+# mul_mat_q4_K_q8_1) or none states nothing. llama.cpp's CUDA templates state the weight's type as a number
+# (mul_mat_vec_q<(ggml_type)14, ...>: Q6_K), the importance formats too (23: IQ4_XS).
+_BLOCK_FORMATS = {q.replace("_", "").lower(): q for q, b in formats.field("block").items() if b[0] > 1 and q in GGML_TYPE_NAMES.values()}
+_FORMAT_WORD = re.compile(r"(?<![a-z0-9])(" + "|".join(sorted((q.lower().replace("_", "_?") for q in _BLOCK_FORMATS.values()), key=len, reverse=True)) + r")(?![a-z0-9])")
 _GGML_TYPE = re.compile(r"\(ggml_type\)(\d+)")
 
 
@@ -700,7 +703,7 @@ _GGML_TYPE = re.compile(r"\(ggml_type\)(\d+)")
 def stated_format(name:str) -> str | None:
   """The GGUF weight format a kernel name states (Q4_K, Q6_K, Q8_0, IQ4_XS), or None."""
   words = name.lower() + "".join(f" {GGML_TYPE_NAMES.get(int(n), '')} " for n in _GGML_TYPE.findall(name)).lower()
-  got = {f"{q.upper()}_{b.upper()}" for q, b in _FORMAT_WORD.findall(words) if q.startswith("i") != (b in ("k", "0", "1"))}
+  got = {_BLOCK_FORMATS[w.replace("_", "")] for w in _FORMAT_WORD.findall(words)}
   return got.pop() if len(got) == 1 else None
 
 

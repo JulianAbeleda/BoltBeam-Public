@@ -11,7 +11,7 @@
    "reason": null
   },
   {
-   "provider": "tinygrad",
+   "provider": "arkey",
    "available": true,
    "state": "available",
    "capture": {
@@ -138,9 +138,9 @@
     },
     {
      "fork": "own",
-     "label": "own fork",
+     "label": "arkey",
      "repo": "https://example.invalid/tinygrad-fork",
-     "provider": "tinygrad",
+     "provider": "arkey",
      "runs": true,
      "state": "available",
      "path": null,

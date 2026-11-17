@@ -273,7 +273,7 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 		fs.StringVar(&p.Probe, "probe", "", "probe_evidence.v1 JSON to ingest")
 		fs.StringVar(&p.Timing, "timing", "", "timing_trace.v1 JSON to ingest")
 		fs.StringVar(&p.Measure, "measure", "auto", "auto: measure here when this machine can; none: plan only")
-		fs.StringVar(&p.Provider, "provider", "", "llama.cpp or tinygrad: the runtime that decodes in step 4 (default llama.cpp)")
+		fs.StringVar(&p.Provider, "provider", "", "llama.cpp or arkey: the runtime that decodes in step 4 (default llama.cpp)")
 		fs.StringVar(&p.Batch, "batch", "", "batch sizes to time beside 1, as 8 or 8,32")
 		fs.StringVar(&p.RoleTime, "role-time", "", "how roles are timed: in-model, generic or auto (default auto)")
 		fs.BoolVar(&p.Analyze, "analyze", false, "one press like the Run screen: measure, time each role, search faster kernels")

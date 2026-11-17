@@ -3,7 +3,7 @@
 │ Batch                                                                        │
 │ Batch is how many streams the engine decodes at once. Batch 1 is always      │
 │ timed too, so the two can be compared.                                       │
-│ tinygrad decodes one stream only.                                            │
+│ arkey decodes one stream only.                                               │
 │                                                                              │
 │                                                                              │
 │                                                                              │

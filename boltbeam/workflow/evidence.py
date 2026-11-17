@@ -27,7 +27,7 @@ LEVERS = {
   "graph_failed": "Fix the graph path first: graph replay failed on this run, so the token ran as single launches.",
   "kv_dominated": "Read less KV cache: a smaller KV type (8 or 4 bit) or a shorter context.",
   "throttled": "Measure again with the chip cool and on power; the bandwidth limit moves while it throttles.",
-  "cannot_split": "Split them first: a capture that names each kernel's role (tinygrad's own timing does).",
+  "cannot_split": "Split them first: a capture that names each kernel's role (arkey's own timing does).",
   "compute_bound": "Use the chip's matrix units for it, or fewer flops per byte.",
   "unexplained": "Look at the kernel rows in the evidence: no rule here assigns this time.",
   # counted in the limit already (profile/weight_ledger.py); the lever is a name, so its kernel gets a per-role row

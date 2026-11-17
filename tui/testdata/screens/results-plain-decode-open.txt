@@ -112,7 +112,7 @@ Checked ✓: the parts add up to the measured time; 3 recordings agree within
   • feed-forward: The largest part of each layer: two big matrix steps on
     every token.
   • engine: The program that runs the model (llama.cpp, vLLM, TensorRT-LLM
-    or tinygrad).
+    or arkey).
   • build: The engine's version. The pin is the version BoltBeam was last
     checked against; upstream is the newest release.
   • toolchain: The GPU driver and libraries the engine was built with.

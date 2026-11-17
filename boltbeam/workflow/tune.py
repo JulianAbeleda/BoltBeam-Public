@@ -29,6 +29,7 @@ import statistics
 from typing import Any, Callable
 
 from boltbeam.core.refused import Refused
+from boltbeam.workflow import mods
 
 TABLE = pathlib.Path(__file__).resolve().parents[1] / "data" / "engine_knobs.json"
 KiB, MiB, GiB = 1 << 10, 1 << 20, 1 << 30
@@ -365,8 +366,13 @@ def _shown(v:Any) -> Any:
 
 
 def groups_in(engine:str, features:dict[str, Any], tab:dict[str, Any]) -> dict[str, bool]:
-  """The engine's named extras (local patches) and whether the build has each (its marker is a feature)."""
-  return {g: v["marker"] in features["features"] for g, v in tab["engines"][engine]["groups"].items()}
+  """The engine's named extras (mods) and whether the build has each (its marker is a feature)."""
+  return {g: bool(group_markers(engine, v) & set(features["features"])) for g, v in tab["engines"][engine]["groups"].items()}
+
+
+def group_markers(engine:str, group:dict[str, Any]) -> set[str]:
+  """A group's markers: the arkey_ie_mods index's for its mod, in every version that has it."""
+  return {m["marker"] for m in mods.named(engine, group["mod"])}
 
 
 def _holds(expr:str | None, f:dict[str, Any], allowed:set[str]) -> bool:
@@ -414,6 +420,31 @@ def budget_unusable(budget:dict[str, Any], prompt:int) -> str | None:
   return None
 
 
+def placed(engine:str, model:str, *, host_expert_bytes:float, ram:dict[str, Any], features=None, profile:dict[str, Any] | None = None,
+           draft:str | None = None, tab:dict[str, Any] | None = None) -> list[dict[str, Any]]:
+  """The engine's rows that hang only on where the experts sit and on RAM (knob rows marked placed), at one placement:
+  what the offload page sets beside that placement's flags. ram: target/host.usable_ram's figure. features: the build's
+  (None: not read, so the row's `needs` is said beside it; a row whose requires a read build lacks is left out). Each
+  row that derives a value: name, value, flags, says (its reason) and output (its label). A row whose facts are missing keeps its default and is left out."""
+  tab = tab or table()
+  rows = [k for k in knobs(engine, tab) if k.get("placed") and (features is None or all(r in features for r in k["requires"]))]
+  ad = adapter(engine, tab)
+  if not rows or not hasattr(ad, "placed_facts"):
+    return []
+  got, _ = ad.placed_facts(model, host_expert_bytes, features, profile=profile, draft=draft)
+  f = {**got, "host_expert_bytes": host_expert_bytes, "usable_ram_bytes": ram.get("usable_bytes"), "ram_available_bytes": ram.get("available_bytes")}
+  ok, out = fact_names(engine, tab), []
+  for k in rows:
+    try:
+      value = evaluate(k["formula"], f, ok) if evaluate(k.get("applies", "True"), f, ok) else None
+    except Missing:
+      value = None
+    if value is not None:
+      out.append({"name": k["name"], "value": str(value), "flags": [k["name"], str(value)] if k["kind"] == "flag" else [k["name"]],
+                  "says": say(k["reason"], f) + ("; " + k["needs"] if features is None and k.get("needs") else ""), "output": output_of(k, value)["output"]})
+  return out
+
+
 def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, Any] | None = None,
            measured:dict[str, Any] | None = None, into:dict[str, Any] | None = None) -> list[dict[str, Any]]:
   """Every row of the engine on this build and these facts: {name, kind, group, status (set | default | not_applicable |
@@ -432,7 +463,7 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
     if lacks:
       rows.append({**row, "status": "not_in_build", "value": None, "source": None, "reason": None,
                    "provenance": {"build": features["source"], "lacks": lacks,
-                                  **({"group": tab["engines"][engine]["groups"][k["group"]]["file"]} if k.get("group") else {})}})
+                                  **({"group": tab["engines"][engine]["groups"][k["group"]]["mod"]} if k.get("group") else {})}})
       continue
     unread = None
     try:
@@ -489,6 +520,7 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
     shown = str(value) if value is not None else default
     if isinstance(row["bitwise"], str):  # whether outputs stay bitwise identical can hang on the value (only at the default, say)
       row["bitwise"] = bool(evaluate(row["bitwise"], {**f, "value": value}, allowed))
+    row["output"] = output_of(k, value, f, allowed)["output"]
     rows.append({**row, "status": "set" if value is not None and shown != default else "default", "value": shown, "source": source,
                  "reason": reason, "provenance": prov})
   for r, k in zip(rows, knobs(engine, tab)):  # a value measured with other rows at their defaults says when this setup moves them
@@ -574,13 +606,39 @@ def budget(ks:list[dict[str, Any]], ref:dict[str, Any], f:dict[str, Any], allowe
   their defaults, or `mem`: read in a run of the setup at `ref`), plus what the rows take there, less a margin for what a
   session adds after load: the fall below the after-load reading measured over the run's replies, else SESSION_MARGIN
   (an estimate). Missing when a figure is unknown."""
-  after, growth = (mem["loaded"], max(0, mem["loaded"] - mem["lowest"])) if mem else (evaluate("gpu_after_load_bytes", f), None)
-  held, margin = sum(costs(ks, ref, f, allowed).values()), SESSION_MARGIN if growth is None else growth
+  after = mem["loaded"] if mem else evaluate("gpu_after_load_bytes", f)
+  m = session_margin(mem)
+  held, margin, growth = sum(costs(ks, ref, f, allowed).values()), m["value"], m["growth"]
   return {"bytes": after + held - margin, "after_load": after, "held": held, "margin": margin, "growth": growth, "measured": bool(mem)}
+
+
+def session_margin(mem:dict[str, Any] | None) -> dict[str, Any]:
+  """The one margin rule for what a session adds after load: the fall from the free memory at load to the lowest free
+  over a run of the setup (mem {loaded, lowest}, bytes: measured), else SESSION_MARGIN (an estimate)."""
+  if mem:
+    g = max(0, mem["loaded"] - mem["lowest"])
+    return {"value": g, "growth": g, "label": "measured", "why": "the fall from free at load to the lowest free over a run of the setup"}
+  return {"value": SESSION_MARGIN, "growth": None, "label": "estimate", "why": "SESSION_MARGIN: no run of the setup measured; test: one session's device samples"}
 
 
 def _bitwise(k:dict[str, Any], value:Any, f:dict[str, Any], allowed:set[str]) -> bool:
   return bool(evaluate(b, {**f, "value": value}, allowed)) if isinstance(b := k.get("bitwise", True), str) else bool(b)
+
+
+def output_of(k:dict[str, Any] | None, value:Any = None, f:dict[str, Any] | None = None, allowed:set[str] | None = None) -> dict[str, str]:
+  """A row's output label at a value (data/engine_knobs.json knobs and audit_flags, an arkey_ie_mods switch): identical
+  where the row states `bitwise` and it holds there; else the row's own `output`. The one statement of the default: a
+  row that says neither, or no row, is untested (the bitwise default above is tune's own gating, not a label)."""
+  k = k or {}
+  try:
+    same = "bitwise" in k and _bitwise(k, value, f or {}, allowed or {"value"})
+  except Missing:  # a fact the rule needs is unknown: not shown identical
+    same = False
+  if same:
+    return {"output": "identical", "why": "its row: bitwise at this value"}
+  if (src := k.get("output_from")) and (f or {}).get(src) and value is not None and str(value) == str((f or {}).get(src.rsplit("_output", 1)[0])):
+    return {"output": f[src], "why": f.get(src + "_why") or k.get("output_why", "")}  # a derived value's own label (its evidence), at that value only
+  return {"output": k.get("output", "untested"), "why": k.get("output_why", "its row states no output" if k else "no data row names this setting")}
 
 
 def named(r:dict[str, Any], value:Any, w:dict[str, Any]) -> str:
@@ -1003,7 +1061,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
     (out / "tune.json").write_text(json.dumps({"engine": engine, "rows": rows, "measured": measured, "memory_fit": plan, "facts": f}, indent=1, default=str))
   shown = ad.render(values_of(rows), f, feats, model, extra)
   return {"schema": "boltbeam.tune.v1", "engine": engine, "model": model, "build": {**{k: v for k, v in feats.items() if k != "features"},
-          "groups": groups_in(engine, feats, tab), "feature_count": len(feats["features"])}, "facts": f, "rows": rows, **shown,
+          "groups": groups_in(engine, feats, tab), "feature_count": len(feats["features"]), "modded": mods.modded(engine, feats.get("build"))}, "facts": f, "rows": rows, **shown,
           "measured": measured, "memory_fit": plan, "out": str(out) if out else None}
 
 
@@ -1043,6 +1101,8 @@ def text(res:dict[str, Any], tab:dict[str, Any] | None = None) -> str:
                              fork=b.get("fork") or w["unlisted"])]
   if eng["groups"]:
     lines[-1] += " " + w["groups"].format(what=eng["groups_words"], groups=", ".join(have) if have else w["none"])
+  if md := b.get("modded"):
+    lines.append(w["modded_unverified"].format(status=md.get("status"), mods=", ".join(m["id"] for m in md.get("mods", []))))
   lines += list(b.get("notes") or []) + list(f.get("notes") or [])
   lines.append(w["host"].format(total=f["ram_total_bytes"] / GiB, usable=f["usable_ram_bytes"] / GiB,
                                 avail="unknown" if f["ram_available_bytes"] is None else f"{f['ram_available_bytes'] / GiB:.1f}",
@@ -1053,7 +1113,7 @@ def text(res:dict[str, Any], tab:dict[str, Any] | None = None) -> str:
   for r in rows:
     if r["status"] in ("set", "default"):
       name = named(r, r["value"], w)
-      tail = "" if r["bitwise"] else " " + w["not_bitwise"]
+      tail = ("" if r["bitwise"] else " " + w["not_bitwise"]) + ("" if r["output"] == "identical" else f" [output {r['output']}]")
       lines.append(f"  {name:<34} {w['source_' + r['source']]}: {r['reason']}{tail}")
   na = [r for r in rows if r["status"] == "not_applicable"]
   if na:
@@ -1104,7 +1164,7 @@ def page(res:dict[str, Any], setting_of:Callable[[dict[str, Any]], str | None] |
   for r in res["rows"]:
     if r["status"] not in ("set", "default"):
       continue
-    tags = [] if r["bitwise"] else [w["not_bitwise"].strip("[]")]
+    tags = ([] if r["bitwise"] else [w["not_bitwise"].strip("[]")]) + ([] if r["output"] == "identical" else [f"output {r['output']}"])
     use = None if r["name"] in held else uses.get(r["name"])
     if use and "env" in use:
       env[use["env"]] = use["value"]

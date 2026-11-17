@@ -1,0 +1,74 @@
+{
+  "schema": "boltbeam.engine_patches.v2",
+  "about": "A pointer, not a registry: BoltBeam holds no engine patch and no engine kernel artifact. Engine mods (patches and kernels) live in the arkey_ie_mods repo; every mod fact (switch, check, output label, marker, lines, budget, archive) is that repo's index.json at mods_repo.pin, shipped as data/ie_mods_index.json and read by workflow/mods.py only. This file keeps BoltBeam-side facts: where the repo is (read only for a patch's text when applying), the pin, which BoltBeam features use which mod (uses, by engine/name), how a kernel gets into an engine (install_paths), how mods are applied per engine (apply), BoltBeam's own patches (own_patches) and the evidence records that are patch files (evidence_patches). sz.py fails on any other tracked or untracked *.patch or *.diff file in the repo.",
+  "mods_repo": {
+    "default_path": "~/arkey_ie_mods",
+    "env": "BOLTBEAM_IE_MODS",
+    "pin": "c62d009bf3d43e91057f3900e876d5b6b1e901ce",
+    "url": "https://github.com/JulianAbeleda/arkey_ie_mods",
+    "url_why": "metadata only: BoltBeam reads the repo from a local path"
+  },
+  "uses": {
+    "llama.cpp/moe-prefill": [
+      "tune"
+    ],
+    "llama.cpp/pinned-copy-stream": [
+      "tune",
+      "tune_llama_cpp.SLOT_FAILED"
+    ],
+    "llama.cpp/server-ckpt-min-head": [
+      "tune"
+    ],
+    "llama.cpp/server-ckpt-tail-only": [
+      "tune"
+    ],
+    "llama.cpp/ext-kernels": [
+      "kernel_ledger install_paths",
+      "context_audit.output_label"
+    ],
+    "vllm/split-kv-verify": [
+      "recommend.split_kv_verify"
+    ]
+  },
+  "uses_why": "by engine/name (the mod in any version); every mod with a switch is also read by results.engine_mods, context_audit.output_label and tune.output_of",
+  "install_paths": {
+    "why": "How a kernel the search finds gets into an engine's decode, per engine (the kernel ledger's install_path column reads this; an engine with no row has none). status proven: a run showed an outside kernel launched in place of the engine's own at no measured cost; the evidence names it. mod: the arkey_ie_mods mod (by name) whose switch turns it on; a run with it on reads untested until arkey_ie_mods has kernel rows a manifest entry maps to (context_audit.output_label).",
+    "llama.cpp": {
+      "status": "proven",
+      "mod": "ext-kernels",
+      "manifest": "boltbeam.kernel_manifest.v1 (schemas/kernel_manifest.schema.json)",
+      "window": "one op a manifest entry (v0)",
+      "missing": "a manifest writer in BoltBeam",
+      "manifest_file": "manifest.json",
+      "loaded_line": "ext_load: loaded {id}",
+      "commit_match": {"min_prefix": 7, "suffix_sep": "-",
+                       "why": "the hook's rule (09 ext_load, ggml/src/ggml-cuda/ext-kernels.cpp:155-168): the build's ggml commit cut at its first suffix_sep (a -dirty marker), never a manifest entry, then equal to one of the manifest's engine.builds on their common prefix of min_prefix or more characters"},
+      "loaded_why": "the hook takes a manifest only on a build whose commit matches one of its engine.builds (commit_match), then writes this WARN line per entry it loads; llama-server drops ggml INFO lines (common/log.cpp:551/563), so a load is confirmed only by this line",
+      "evidence": "boltbeam-runs/ext-kernel-hook-20261115: an identity cubin through the hook on X16 at 128k: 71,425 checks past 98.6k bit-identical, 59/59 replies identical, session step +0.069 ms against 0.158 ms off-vs-off, PDL and graph capture kept"
+    }
+  },
+  "apply": {
+    "why": "screen mods per engine: the applier its mods use and where a build's source checkout is in its folder; an engine with no row lists nothing (vLLM: patch_p1 into a venv copy is not wired yet)",
+    "llama.cpp": {
+      "applier": "git_apply",
+      "source": "src",
+      "copy_skip": ["build*"],
+      "copy_skip_why": "a tree without .git is copied whole: its top-level build directories are not source",
+      "commit_cmake": ["-DLLAMA_BUILD_COMMIT={commit}", "-DGGML_BUILD_COMMIT={commit}", "-DGIT_EXE=OFF"],
+      "commit_cmake_why": "every mods build is configured with the base commit: in a tree without .git ggml says \"unknown\" and the ext-kernels hook refuses every manifest (09 ext_load: \"this build (unknown) is not one the manifest was checked on\"), silently running stock kernels. GGML_BUILD_COMMIT alone is not enough: the top-level CMakeLists.txt:158-160 and :224 set it from LLAMA_BUILD_COMMIT, and ggml/CMakeLists.txt:14-20 runs git rev-parse, whose empty output shadows the cache value, unless GIT_EXE is off (boltbeam-runs/decode-topk-fused-20261115 Round 2, measured 2026-11-16)",
+      "commit_header": {"path": "build/ggml/src/ggml-version.h", "pattern": "GGML_COMMIT\\s+\"([^\"]*)\"",
+                        "why": "the commit ggml_commit() returns, the one the ext-kernels hook compares with a manifest's engine.builds"}
+    }
+  },
+  "own_patches": [
+    "tools/patches/arkey-capture-support.patch"
+  ],
+  "own_patches_why": "the arkey capture patch belongs to arkey, BoltBeam's own provider and search machinery, not a target inference engine: it stays in tools/patches",
+  "evidence_patches": {
+    "paths": [
+      "docs/evidence/mtp-27b-rtx5090-r9700-20261027/r9700/patches/split-kv-verify.patch",
+      "docs/evidence/mtp-27b-rtx5090-r9700-20261027/r9700/patches/quark-lm-head.patch"
+    ],
+    "why": "evidence records: the files the 2026-10-27 R9700 runs applied, kept verbatim beside their sources.md; the mods themselves live in arkey_ie_mods"
+  }
+}

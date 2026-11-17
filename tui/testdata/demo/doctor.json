@@ -64,7 +64,7 @@
     {
       "item": "tinygrad",
       "found": true,
-      "detail": "own fork: /opt/tinygrad (scan: /opt); per-role time: metal-system-trace",
+      "detail": "arkey: /opt/tinygrad (scan: /opt); per-role time: metal-system-trace",
       "fix": null,
       "blocks": false,
       "forks_missing": [
@@ -156,7 +156,7 @@
     {
       "item": "tinygrad fork",
       "env": "BOLTBEAM_TINYGRAD_ROOT",
-      "engine": "tinygrad",
+      "engine": "arkey",
       "path": "/opt/tinygrad",
       "how": "scan: /opt",
       "found_at": "2026-11-10T15:49:01Z",

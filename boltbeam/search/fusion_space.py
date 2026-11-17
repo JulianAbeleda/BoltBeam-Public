@@ -26,12 +26,13 @@ from __future__ import annotations
 import functools, json, math, pathlib, re, struct
 from collections.abc import Mapping
 from typing import Any
+from boltbeam import formats
 
 GRAPH_TABLE = pathlib.Path(__file__).resolve().parents[1] / "data" / "decode_graph.json"
 # the ops BoltBeam computes itself (reference): a node with any other op cannot be inside a fusion BoltBeam checks
 REFERENCE_OPS = ("gemv", "silu_mul", "add", "cast_fp16")
 LAYER = re.compile(r"^blk\.(\d+)\.")  # GGUF's per-layer tensor names (blk.N.<role>.weight)
-DTYPES = {"float": ("f", 4), "float32": ("f", 4), "half": ("e", 2), "float16": ("e", 2)}
+DTYPES = {k: (r["struct"], r["block"][1]) for r in formats.rows() if "struct" in r for k in (r["metal"], r["torch"])}  # data/formats.json
 NOT_IN_MODEL = ("has no kernel of its own in the model's capture: counted as 0 ms, which favours the model's "
                 "side of the comparison")
 

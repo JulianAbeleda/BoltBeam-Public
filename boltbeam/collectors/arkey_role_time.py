@@ -1,4 +1,5 @@
-"""Where the time goes, per role, in tinygrad's own runtime, and how much of it is lost against the roofline.
+"""Where the time goes, per role, in arkey's own runtime, and how much of it is lost against the roofline. arkey is
+BoltBeam's provider for the owner's tinygrad fork; "tinygrad" below is the Python package, its devices and its fork.
 
 `collect` runs boltbeam/runtime/tinygrad_decode_profile.py under the tinygrad fork's python, on the target's own
 tinygrad device (METAL, NV, ...) with the measured JIT mode and PROFILE=1, so every kernel carries its own GPU timestamps. BoltBeam's
@@ -31,8 +32,8 @@ ROLE_SOURCE = "captured_program_semantics"
 ROLE_SOURCES = (ROLE_SOURCE, "attributed_by_bytes_and_count", "isolated_by_shape")  # the last: engine_kernels.py
 
 
-PROVIDER = "tinygrad"  # the provider adapter's name (collectors/providers.py)
-KV_ELEMENT = (2, "tinygrad's fp16 KV cache on its generated decode path")
+PROVIDER = "arkey"  # the provider adapter's name (collectors/providers.py)
+KV_ELEMENT = (2, "arkey's fp16 KV cache on its generated decode path")
 OWN_TIMING = "tinygrad-profile-events"
 # backends whose vendor capture sees tinygrad's kernels: on Metal each command buffer is labelled with its kernel
 # when graphs are off (JIT=2, tinygrad/runtime/ops_metal.py), so Metal System Trace splits time per kernel
@@ -50,7 +51,7 @@ def own_timing_reason(backend:str) -> str | None:
 
 
 def available(target, root:pathlib.Path | None = None) -> str | None:
-  """Why tinygrad cannot measure this target here, or None when it can."""
+  """Why arkey cannot measure this target here, or None when it can."""
   from boltbeam.search import tinygrad_fork
   if not device_for(target):
     return f"{target.target_id} names no tinygrad device"
@@ -60,7 +61,7 @@ def available(target, root:pathlib.Path | None = None) -> str | None:
 
 def whole_step(*, root:pathlib.Path, python:pathlib.Path, model:str, target, context:int, tokens:int = 16,
                timeout_s:float = 1800.0) -> dict[str, Any]:
-  """Tokens per second of a real decode in tinygrad, as a user runs it: JIT with graphs, no profiling."""
+  """Tokens per second of a real decode in arkey, as a user runs it: JIT with graphs, no profiling."""
   device = device_for(target)
   if not device:
     raise RuntimeError(f"target {target.target_id} names no tinygrad device")
@@ -84,12 +85,12 @@ def whole_step(*, root:pathlib.Path, python:pathlib.Path, model:str, target, con
       break
     # the engine's own words for why the graph did not replay (the last GraphException line), kept with the row
     graph_error = next((l.strip()[-240:] for l in reversed(proc.stderr.splitlines()) if "GraphException" in l), None)
-  raise DecodeFailed("tinygrad decode failed", proc.stderr or proc.stdout, root)
+  raise DecodeFailed("arkey decode failed", proc.stderr or proc.stdout, root)
 
 
 class DecodeFailed(RuntimeError):
   """The fork's decode did not run. str() is one sentence: the engine's own last line (the exception's message)
-  and where inside the fork it was raised, e.g. "tinygrad decode failed: ffn_down_resadd epilogue requires
+  and where inside the fork it was raised, e.g. "arkey decode failed: ffn_down_resadd epilogue requires
   rows=4096, got rows=5120 (ValueError inside the tinygrad fork at tinygrad/llm/decode_kernels.py:246)".
   details is the traceback, the fork's stderr tail, for a reader who asks for it; a screen keeps it behind
   "Show details" and the run's measure_status.json carries it."""
@@ -131,7 +132,7 @@ def role_time_captured(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Pa
   from boltbeam.collectors.capture_settings import observed
   settings = observed(run, context)
   if settings.get("jit_mode") != 2 or type(settings.get("max_context")) is not int:
-    raise ValueError("outside tinygrad capture requires an untraced non-graph run with recorded allocation")
+    raise ValueError("outside arkey capture requires an untraced non-graph run with recorded allocation")
   env = {"PYTHONPATH": ".", "DEV": device, "JIT": "2", "PROFILE": "0", "VIZ": "0"}
   got = {}
   for name, n in (("long", tokens), ("short", 1)):
@@ -148,7 +149,7 @@ def role_time_captured(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Pa
 
 def runtime_name(target) -> str:
   """The runtime every role time comes from, as a screen names it. The one place this sentence is built."""
-  return f"tinygrad's {target.backend} runtime"
+  return f"arkey's {target.backend} runtime"
 
 
 def device_for(target) -> str | None:
@@ -160,7 +161,7 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
             context:int = 128, tokens:int = 10, timeout_s:float = 1800.0) -> dict[str, Any]:
   device = device_for(target)
   if not device:
-    raise RuntimeError(f"target {target.target_id} names no tinygrad device, so its roles cannot be timed in tinygrad")
+    raise RuntimeError(f"target {target.target_id} names no tinygrad device, so its roles cannot be timed in arkey")
   raw = run / RAW
   raw.mkdir(parents=True, exist_ok=True)
   events, census = raw / "events.pkl", raw / "census.json"
@@ -170,7 +171,7 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
   settings = observed(run, context)
   jit = settings.get("jit_mode")
   if jit not in (1, 2):
-    raise ValueError("tinygrad capture requires the untraced jit_mode; rerun whole-step measurement")
+    raise ValueError("arkey capture requires the untraced jit_mode; rerun whole-step measurement")
   proc = subprocess.run(argv, cwd=root, capture_output=True, text=True, timeout=timeout_s,
                         env={**os.environ, "PYTHONPATH": ".", "DEV": device, "JIT": str(jit), "PROFILE": "1", "VIZ": "0"})
   lines = [x for x in proc.stdout.splitlines() if x.startswith("{")]
@@ -179,7 +180,7 @@ def collect(run:pathlib.Path, *, root:pathlib.Path, python:pathlib.Path, model:s
   summary = json.loads(lines[-1])
   for key in ("jit_mode", "warm_tokens", "context_start", "context_end", "max_context", "build"):
     if summary.get(key) != settings.get(key):
-      raise ValueError(f"tinygrad captured {key} differs from the untraced run")
+      raise ValueError(f"arkey captured {key} differs from the untraced run")
   # the peak is the run's one read bandwidth (workflow/screen.py run_bandwidth): the limit's number, one source
   from boltbeam.roofline.limit import run_bandwidth
   peak_gbs, peak_source = run_bandwidth(run, target)
@@ -303,7 +304,7 @@ def loss(ceiling_roles:list[dict[str, Any]], trace:dict[str, Any] | None,
   for r in out: r["share"] = (max(r["lost_ms"], 0.0) / total_lost) if total_lost > 0 else 0.0
   out.sort(key=lambda r: -r["lost_ms"])
   whole_ms = whole["wall_us"] / tokens / 1000.0
-  table = {"status": "measured", "source": "measured in tinygrad's runtime", "device": trace.get("target_id"),
+  table = {"status": "measured", "source": "measured in arkey's runtime", "device": trace.get("target_id"),
            "tokens": tokens, "kernel_ms": whole_ms, "tok_s": whole.get("wall_tok_s", whole["tok_s"]), "roles": out,
            "isolated": whole.get("measurement_scope") == "summed_isolated_kernels", "floor_us": floor_us,
            "floor_uncertainty": next((c.get("floor_uncertainty") for c in ceiling_roles), None),

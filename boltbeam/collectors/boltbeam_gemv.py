@@ -18,6 +18,7 @@ import random
 import struct
 from typing import Any, Callable
 
+from boltbeam import formats
 from boltbeam.collectors import gemv_reference as reference
 from boltbeam.collectors import kernel_timer
 from boltbeam.collectors.kernel_timer import Check, KernelSpec
@@ -29,7 +30,7 @@ COLLECTOR_ID = "boltbeam-gemv"
 PROVIDER_ID = "boltbeam/gemv"
 WORKING_SET_SHARE = 0.8  # never ask for more than this share of the GPU's working set (the bridge's working_set_bytes)
 ROWS_PER_GROUP = 4  # simdgroups (warps) per threadgroup (block); one simdgroup owns one output row
-KERNELS = {"Q4_K": "gemv_q4_k", "Q6_K": "gemv_q6_k"}
+KERNELS = {q: f"gemv_{q.lower()}" for q in formats.capable("packed_linear")}  # data/formats.json
 # the kernel's source-level facts: what BoltBeam wrote, not what the compiler emitted
 KERNEL_SOURCE = {"loads": "Q4_K: one 32-bit load per lane per block; Q6_K: bytes", "rows_per_simdgroup": 1, "reduction": "simd_sum"}
 

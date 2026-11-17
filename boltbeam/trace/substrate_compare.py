@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from boltbeam import formats
 from boltbeam.vocab import SCHEMA_HW_TRACE, SCHEMA_SUBSTRATE_COMPARE, SCHEMA_TIMING_TRACE
 
 
@@ -84,7 +85,7 @@ def _is_candidate_packed(row:dict[str, Any]) -> bool:
 
 
 def _is_baseline_quantized_matmul(row:dict[str, Any]) -> bool:
-  return row.get("role") in {"quantized_matmul", "quantized_matvec"} and row.get("quant") in {"Q4_K", "Q6_K"}
+  return row.get("role") in {"quantized_matmul", "quantized_matvec"} and row.get("quant") in formats.capable("packed_linear")
 
 
 def _shape(row:dict[str, Any]) -> list[int]:
@@ -111,7 +112,7 @@ def _substrate(row:dict[str, Any], provider_id:str | None) -> str:
     return "tinygrad generated fp16 graph GEMM"
   if provider_id and "llama" in provider_id:
     return "llama provider kernel"
-  if provider_id and "tinygrad" in provider_id:
+  if provider_id and ("tinygrad" in provider_id or "arkey" in provider_id):  # arkey's former id
     return "tinygrad provider kernel"
   return "provider kernel"
 

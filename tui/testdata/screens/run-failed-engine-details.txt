@@ -4,7 +4,7 @@
 │ Qwen3-8B on apple_m3_10c with llama.cpp                                      │
 │                                                                              │
 │ ✗ Time the real run failed                                                   │
-│ tinygrad decode failed: ffn_down_resadd epilogue requires rows=4096, got     │
+│ arkey decode failed: ffn_down_resadd epilogue requires rows=4096, got        │
 │ rows=5120 (ValueError inside the tinygrad fork at                            │
 │ tinygrad/llm/decode_kernels.py:223)                                          │
 │                                                                              │

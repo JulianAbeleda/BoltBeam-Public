@@ -31,7 +31,7 @@
 │         one GPU                                                              │
 │         split by rows (2 GPUs)                                               │
 │         split by layer: not here                                             │
-│     tinygrad                                                                 │
+│     arkey                                                                    │
 │         one GPU                                                              │
 │         split by layer, split by rows: not here                              │
 │     [ Scan again ] look for engines in the usual folders                     │

@@ -25,6 +25,11 @@ def families() -> tuple[dict[str, Any], ...]:
   return tuple(json.loads(TABLE.read_text())["families"])
 
 
+# A provider's name now. A fork row's `was` lists its former names (arkey was "tinygrad"), so an old run record or a
+# command line that says one reads as the row's provider. The one alias: providers.check and the screen's flags use it.
+def provider_name(name): return next((f["provider"] for fam in families() for f in fam["forks"] if name in f.get("was", ())), name)
+
+
 def fork_of(provider:str) -> dict[str, str | None]:
   """The family and fork an adapter runs, as a run records them (engine_family, fork); None for one not listed."""
   for fam in families():

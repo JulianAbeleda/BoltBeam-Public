@@ -49,7 +49,7 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
                                                llama-bench decode, collectors/llama_bench_decode.py) and writes
                                                measure_status.json either way: measured, skipped or failed, with
                                                the reason and the command to run instead. --provider llama.cpp
-                                               (default), tinygrad, vllm, ollama or tensorrt-llm picks the engine;
+                                               (default), arkey, vllm, ollama or tensorrt-llm picks the engine;
                                                an engine that cannot read the model's weight format is refused, and
                                                so is a busy GPU. --batch 1,32 also times a decode step of 32 streams.
     engines                                    look for every engine on this machine now and save what was found
@@ -61,6 +61,12 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
                                                (RUN/engine_upgrade.json), then makes it current; --upgrade-engines first
     engines --latest                           each engine's build against upstream's newest release (a look at most
                                                once per engine_latest_max_age_h); the screen runs it after the scan
+    mods --engine E [--src DIR] [--base V] [--apply] [--label L] [--mod ID]
+                                               the arkey_ie_mods mods that fit the build you run (workflow/mods.py):
+                                               --apply builds them into a clone of its checkout (yours is untouched),
+                                               identical ones unless --label or --mod, configured with the base commit
+                                               (a tree without .git: the mods' base, or --base) and checked against it;
+                                               recorded as not verified
     update [--skip V]                          is a newer BoltBeam released: the installed and newest versions, how to
                                                upgrade this install; --skip V keeps V from prompting (cli/self_update.py)
     providers --target T                       the engines that can measure here (collectors/providers.ENGINES),
@@ -102,7 +108,7 @@ import sys
 from typing import Any
 
 from boltbeam.cli import self_update
-from boltbeam.collectors import capture_settings, engine_builds, engine_families, engine_scan, mtp, providers, tinygrad_role_time
+from boltbeam.collectors import capture_settings, engine_builds, engine_families, engine_scan, mtp, providers, arkey_role_time
 from boltbeam.collectors import replay as rp
 from boltbeam.core import draft_count
 from boltbeam.core.canonical import pretty_json
@@ -130,8 +136,8 @@ def compare_ready(run:pathlib.Path, root:pathlib.Path | None = None) -> dict[str
   manifest, policy = load_manifest(run), optional(run, "route_policy.json")
   out = {"schema": SCHEMA, "kind": "compare_ready", "id": run.name}
   backend = str((policy.get("target") or {}).get("backend") or "")
-  try:  # the runtime role times come from, named once (tinygrad_role_time.runtime_name)
-    out["runtime"] = tinygrad_role_time.runtime_name(get_target(manifest.get("target_id")))
+  try:  # the runtime role times come from, named once (arkey_role_time.runtime_name)
+    out["runtime"] = arkey_role_time.runtime_name(get_target(manifest.get("target_id")))
   except SystemExit:
     out["runtime"] = None
   ready = tinygrad_fork.readiness(root, model=manifest.get("model_path"))
@@ -531,7 +537,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p.add_argument("--peak-tflops", type=float, default=None)
   p.add_argument("--facts-root", action="append", default=[],
                  help="a runs folder: the newest machine facts there for this chip set the memory speed (one GPU)")
-  p.add_argument("--engine", default="llama.cpp", choices=list(providers.NAMES), help="with --offload: the engine whose flags are given")
+  p.add_argument("--engine", default="llama.cpp", choices=list(providers.NAMES), type=engine_families.provider_name, help="with --offload: the engine whose flags are given")
   _offload_args(p)
   p = sub.add_parser("ceilings")
   p.add_argument("model", nargs="?")
@@ -583,7 +589,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p.add_argument("--timing", default=None, help="boltbeam.timing_trace.v1 JSON to ingest after analyze")
   p.add_argument("--measure", default="none", choices=["none", "auto"],
                  help="auto: measure with the target's BoltBeam collector when this machine can, then ingest")
-  p.add_argument("--provider", default=providers.DEFAULT, choices=list(providers.NAMES),
+  p.add_argument("--provider", default=providers.DEFAULT, choices=list(providers.NAMES), type=engine_families.provider_name,
                  help="the runtime that decodes the model in step 4")
   p.add_argument("--layout", default="one", choices=["one", "layer", "row"],
                  help="how the engine uses this machine's GPUs (more than one GPU is limited support)")
@@ -646,7 +652,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p.add_argument("--id", default=None)
   p.add_argument("--target", required=True)
   p.add_argument("--gpus", type=int, default=None, help="use the first N GPUs (default: every GPU found)")
-  p.add_argument("--engine", default="vllm", choices=list(providers.NAMES))
+  p.add_argument("--engine", default="vllm", choices=list(providers.NAMES), type=engine_families.provider_name)
   p.add_argument("--seqs", type=int, default=1, help="sequences served together (1: one user)")
   p.add_argument("--context", type=int, default=None, help="the context the sequence count and the speed are stated at")
   _context_args(p)
@@ -657,8 +663,9 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   q.add_argument("--profile", help="a model_profile.json instead of the model file")
   q.add_argument("--id", default=None)
   q.add_argument("--target", required=True)
-  q.add_argument("--engine", default="llama.cpp", choices=list(providers.NAMES))
+  q.add_argument("--engine", default="llama.cpp", choices=list(providers.NAMES), type=engine_families.provider_name)
   q.add_argument("--context", type=int, default=None, help="the context the KV and the prompt are stated at")
+  q.add_argument("--draft", help="the draft model loaded beside it (its weights, KV and rows are in the fit)")
   _context_args(q)
   q.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest machine facts there")
   p.add_argument("--check", action="store_true", help="start the engine once with these flags (a free GPU, a minute or two), "
@@ -698,6 +705,15 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p = sub.add_parser("speedup-verify", help="check a Speed up copy against its record, in plain words (derive lighter-head --verify)")
   p.add_argument("copy")
   sub.add_parser("update", help="is a newer BoltBeam released (cli/self_update.py)").add_argument("--skip", help="skip this version")
+  p = sub.add_parser("mods", help="the arkey_ie_mods mods that fit the engine build here; --apply builds them into a clone")
+  p.add_argument("--engine", required=True, choices=list(engine_builds.rows()))
+  p.add_argument("--src", help="the source of the build you run (default: the current build's src)")
+  p.add_argument("--base", help="a source without .git: the mods version or base commit it is (default: the newest released one's)")
+  p.add_argument("--apply", action="store_true", help="apply the chosen mods to a clone of it and build it (yours is never changed)")
+  from boltbeam.workflow.context_audit import OUTPUTS
+  p.add_argument("--label", action="append", default=[], choices=list(OUTPUTS[1:3]), help="also take mods with this output label")
+  p.add_argument("--mod", action="append", help="exactly these mod ids (engine/version/name)")
+  p.add_argument("--target", default=None, help="with --apply: the chip the build is for (default: this machine's)")
   p = sub.add_parser("engines", help="look for every engine on this machine now and save what was found")
   p.add_argument("--cached", action="store_true", help="reuse saved discovery when settings and paths still match")
   p.add_argument("--update", action="store_true", help="look at upstream releases and install newer builds beside "
@@ -711,7 +727,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
     p.add_argument("--run", required=True)
     p.add_argument("--tinygrad-root", default=None, help="the tinygrad fork; default $BOLTBEAM_TINYGRAD_ROOT or ../tinygrad-arkey-exp")
     if name == "role-time":
-      p.add_argument("--provider", default=None, choices=list(providers.NAMES),
+      p.add_argument("--provider", default=None, choices=list(providers.NAMES), type=engine_families.provider_name,
                      help="default: the provider step 4 measured the run with")
       p.add_argument("--batch", type=int, default=1, help="capture one decode step of this many streams")
       p.add_argument("--role-time", default="auto", choices=["auto", "in-model", "generic"])
@@ -763,7 +779,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
       target = _target_arg(args.target)
       roots = [pathlib.Path(r).expanduser() for r in args.facts_root]
       got = recommended(_profile_arg(args), target, engine=args.engine, context=_context(args), facts=lay.newest_facts(roots, target.target_id), offload=True,
-                        probe_h2d=True)  # the offload page may measure the copy rate (an idle GPU only); recommend reads the saved one
+                        probe_h2d=True, draft=args.draft)  # the offload page may measure the copy rate (an idle GPU only); recommend reads the saved one
       moe = got.get("offload") or {}
       from boltbeam.workflow import routing  # Measure routing is offered where there are experts to place and the engine captures a profile
       out = {"schema": SCHEMA, "kind": "offload", "target_id": target.target_id, "model": got.get("model"), "status": moe.get("status"), "page": moe.get("page"),
@@ -777,6 +793,13 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
     elif args.command == "engines" and args.latest:
       out = {"schema": SCHEMA, "kind": "engines-latest", "file": str(engine_builds.state_file()),
              "engines": engine_update.latest(args.engine or engine_builds.rows_for(_target_arg(here).backend if (here := args.target or chips.detect().get("target_id")) else None))}
+    elif args.command == "mods":
+      from boltbeam.workflow import mods
+      backend = _target_arg(args.target or chips.detect().get("target_id") or "").backend if args.apply else None
+      out = {"schema": SCHEMA, "kind": "mods", **mods.run(args.engine, src=args.src, labels=("identical", *args.label),
+                                                           only=args.mod, base=args.base, apply_them=args.apply, backend=backend,
+                                                           say=lambda line: print(line, file=sys.stderr))}
+      code = 1 if out.get("refused") else code
     elif args.command == "update":
       out = {"schema": SCHEMA, **self_update.screen(args.skip)}
     elif args.command == "engines":

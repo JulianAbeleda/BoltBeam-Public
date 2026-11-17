@@ -50,7 +50,7 @@ def snapshot(provider:str | None = None, vendor:str | None = None) -> dict:
   rt = row.torch_runtime
   adapter = providers.ENGINES.get(provider)
   python = adapter.python() if adapter and hasattr(adapter, "python") else sys.executable
-  if provider == "tinygrad":
+  if provider == "arkey":
     from boltbeam.search.tinygrad_fork import default_fork_root, fork_python
     python = str(fork_python(default_fork_root()))
   field = f", '{rt}': torch.version.{rt}" if rt else ""

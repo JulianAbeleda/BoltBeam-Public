@@ -54,7 +54,7 @@ ITEMS: tuple[tuple[str, str, str], ...] = (
   ("BOLTBEAM_LLAMA_BATCHED_BENCH", "llama-batched-bench", "llama.cpp"),
   ("BOLTBEAM_GGML_METAL", "ggml Metal library", "llama.cpp"),
   ("BOLTBEAM_GGML_CUDA_SRC", "ggml-cuda source", "llama.cpp"),
-  ("BOLTBEAM_TINYGRAD_ROOT", "tinygrad fork", "tinygrad"),
+  ("BOLTBEAM_TINYGRAD_ROOT", "tinygrad fork", "arkey"),
   ("BOLTBEAM_VLLM_PYTHON", "vLLM python", "vllm"),
   ("BOLTBEAM_OLLAMA", "ollama", "ollama"),
   ("BOLTBEAM_TRTLLM_PYTHON", "TensorRT-LLM python", "tensorrt-llm"),

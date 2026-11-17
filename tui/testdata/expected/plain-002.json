@@ -107,7 +107,7 @@
         "term": "quant"
       },
       {
-        "plain": "The program that runs the model (llama.cpp, vLLM, TensorRT-LLM or tinygrad).",
+        "plain": "The program that runs the model (llama.cpp, vLLM, TensorRT-LLM or arkey).",
         "term": "engine"
       }
     ],

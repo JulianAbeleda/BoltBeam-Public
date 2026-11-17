@@ -4,10 +4,11 @@ next-step ladder and the hot-kernel pick are the report's (report/html.py); the 
 workflow/tie_out.py's. Nothing here computes a new kind of fact."""
 from __future__ import annotations
 
+import json
 import pathlib
 from typing import Any
 
-from boltbeam.collectors import capture_settings, engine_builds, engine_kernels, gpu_telemetry, providers, tinygrad_role_time
+from boltbeam.collectors import capture_settings, engine_builds, engine_families, engine_kernels, gpu_telemetry, providers, arkey_role_time
 from boltbeam.collectors.pairing import ambiguity_kind
 from boltbeam.collectors.vllm_speculation import measured_words
 from boltbeam.report.html import next_step, roofline_kernels
@@ -18,8 +19,8 @@ from boltbeam.target import gpu as tgpu, vendors
 from boltbeam.target.targets import get_target
 from boltbeam.roofline import limit
 from boltbeam.roofline.limit import resolve_peak_flops
-from boltbeam.workflow import captured_decode, evidence as ev, layout as lay, offload, tie_out as tie
-from boltbeam.workflow import prefill as pf, replay as rw, session as ss
+from boltbeam.workflow import captured_decode, context_audit, evidence as ev, layout as lay, offload, tie_out as tie
+from boltbeam.workflow import mods as _mods, prefill as pf, replay as rw, session as ss
 from boltbeam.artifacts.run_io import DECODE_CAPTURE, MACHINE, MEASURE_STATUS, load_manifest, optional
 from boltbeam.collectors.capture_scope import for_decode
 from boltbeam.workflow.repeat_bands import summary as repeat_summary
@@ -34,8 +35,8 @@ def _provider_table(run:pathlib.Path, provider:str, ceil:dict[str, Any], limit_m
   trace = optional(run, providers.TRACES[provider])
   if not trace:
     return None, {}
-  capture = trace.get("capture") or {"method": tinygrad_role_time.OWN_TIMING, "reason": None}
-  return tinygrad_role_time.loss(ceil.get("_roles") or [], trace, limit_ms, None if repeat_evidence else for_decode(run, trace)), capture
+  capture = trace.get("capture") or {"method": arkey_role_time.OWN_TIMING, "reason": None}
+  return arkey_role_time.loss(ceil.get("_roles") or [], trace, limit_ms, None if repeat_evidence else for_decode(run, trace)), capture
 
 
 def _no_table() -> dict[str, Any]:
@@ -49,7 +50,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
                beside:bool = False, repeat_evidence:bool = False) -> dict[str, Any]:
   """The end result for the provider step 4 measured with: its speed against the limit, ms per token lost, and per
   role where it loses it. Another provider's per-role table, when the run holds one, is shown beside it, labelled.
-  The floor rule (tinygrad_role_time.refusal) holds for every provider's table."""
+  The floor rule (arkey_role_time.refusal) holds for every provider's table."""
   provider = run_provider(run)
   target = get_target(manifest.get("target_id"))
   if manifest.get('workload') == 'decode' and (run/DECODE_CAPTURE).is_file():
@@ -147,7 +148,7 @@ def loss_block(run:pathlib.Path, manifest:dict[str, Any], ceil:dict[str, Any], t
     out["search"] = search_block(run, shown)
     state = out["search"].pop("state")
   by_key = {role_key(r): r for r in optional(run, "route_policy.json").get("routes", []) or []}
-  if shown != tinygrad_role_time.PROVIDER:  # the search compares tinygrad kernels; this table is another engine's
+  if shown != arkey_role_time.PROVIDER:  # the search compares arkey kernels; this table is another engine's
     state, by_key = {"status": "skipped", "reason": search_stage.search_applies(None, shown)}, {}
   roles = [{**r, **search_stage.role_verdict(by_key.get(role_key(r)), state)} for r in roles]
   out.update(roles=roles, role_rule=rule, not_attributed_ms=table["not_attributed_ms"], capture=capture,
@@ -191,7 +192,7 @@ def search_block(run:pathlib.Path, provider:str) -> dict[str, Any]:
     state = {"status": "not_run", "reason": "the kernel search did not run for this run", "seconds": None}
   out = {"status": state["status"], "reason": state.get("reason"), "seconds": state.get("seconds"), "next": None,
          "state": state}
-  if state["status"] == "searched" and provider == tinygrad_role_time.PROVIDER and (f := search_stage.found_summary(routes)):
+  if state["status"] == "searched" and provider == arkey_role_time.PROVIDER and (f := search_stage.found_summary(routes)):
     n = len(f["roles"])
     what = f"{n} {'role has' if n == 1 else 'roles have'} a faster kernel found: ~{f['ms']:.1f} ms per token if applied"
     if f["calls"] is not None:
@@ -222,8 +223,8 @@ def _layout_limit(run:pathlib.Path, profile:dict[str, Any], ceil:dict[str, Any])
 
 
 def _source(provider:str, capture:dict[str, Any], target) -> str:
-  if capture.get("method") == tinygrad_role_time.OWN_TIMING:
-    return "measured in " + tinygrad_role_time.runtime_name(target)
+  if capture.get("method") == arkey_role_time.OWN_TIMING:
+    return "measured in " + arkey_role_time.runtime_name(target)
   return f"measured in {provider}, {_capture_words(capture.get('method'))}"
 
 
@@ -250,12 +251,12 @@ def sibling_runs(run:pathlib.Path, manifest:dict[str, Any], provider:str) -> lis
 
 # how per-role time was taken, in the screen's words: tinygrad's own events, each vendor's capture
 # (target/vendors.py), and the engine's kernels timed alone
-CAPTURE_WORDS = {tinygrad_role_time.OWN_TIMING: "tinygrad's own timing",
+CAPTURE_WORDS = {arkey_role_time.OWN_TIMING: "arkey's own timing",
                  **{v.capture.method: v.capture.words for v in vendors.VENDORS.values()},
                  engine_kernels.METHOD: engine_kernels.WORDS}
 
 
-IN_MODEL_TOOL = {tinygrad_role_time.OWN_TIMING: "tinygrad events",
+IN_MODEL_TOOL = {arkey_role_time.OWN_TIMING: "arkey events",
                  **{v.capture.method: v.capture.tool_word for v in vendors.VENDORS.values()}}
 
 
@@ -269,7 +270,7 @@ def _kernel_names(trace:dict[str, Any]) -> list[str]:
 
 def role_source(trace:dict[str, Any], capture:dict[str, Any]) -> tuple[str | None, str | None]:
   """Which kind of per-role measurement this is, and its words for the Facts: "isolated (BoltBeam kernel timer,
-  llama.cpp kernels from ggml 0.19.0 at <path>)" or "in-model (xctrace|nsys|tinygrad events)"."""
+  llama.cpp kernels from ggml 0.19.0 at <path>)" or "in-model (xctrace|nsys|arkey events)"."""
   method = (capture or {}).get("method")
   if method == engine_kernels.METHOD:
     src = (trace.get("engine") or {}).get("source") or {}
@@ -277,7 +278,7 @@ def role_source(trace:dict[str, Any], capture:dict[str, Any]) -> tuple[str | Non
     return "isolated", f"isolated (BoltBeam kernel timer, {trace.get('provider_id') or 'engine'} kernels{where})"
   if method is None and not trace:
     return None, None
-  return "in_model", f"in-model ({IN_MODEL_TOOL.get(method or tinygrad_role_time.OWN_TIMING, method)})"
+  return "in_model", f"in-model ({IN_MODEL_TOOL.get(method or arkey_role_time.OWN_TIMING, method)})"
 
 def measurement_words(m:dict[str, Any] | None) -> str | None:
   """"Measurement: generic (kernel timer), chosen in Setup." or, after a fallback, "(in-model not available here: ...)"."""
@@ -334,7 +335,7 @@ def missing_reason(provider:str, target, manifest:dict[str, Any], measure:dict[s
   that recorded "no capture here" is told what is missing, not to Run again."""
   if (measure or {}).get("not_split_by_role"):  # 2 x RTX 3090, vLLM split by rows read "Run with vllm times each role"
     return measure.get("not_split_key") or "not_split", f"not split by role: {measure['not_split_by_role']}"
-  if provider == tinygrad_role_time.PROVIDER and not tinygrad_role_time.device_for(target):
+  if provider == arkey_role_time.PROVIDER and not arkey_role_time.device_for(target):
     return "no_device", f"{manifest.get('target_id')} names no tinygrad device, so no per-role time can be taken here"
   cap = (measure or {}).get("capture") or {}
   if cap and cap.get("method") is None and cap.get("reason"):
@@ -455,7 +456,7 @@ def the_token(run:pathlib.Path) -> dict[str, Any] | None:
 def batch_step(trace:dict[str, Any], provider:str, context:int, batch:int) -> dict[str, Any] | None:
   """The measured step a batched capture ties out against: step 4's point of `batch` streams at the capture's
   context (providers.engine_trace keeps every batch under "batches"), its time per step; None when there is none."""
-  if (trace.get("provider") or "llama.cpp") != provider:
+  if engine_families.provider_name(trace.get("provider") or "llama.cpp") != provider:
     return None
   points = [(i, p) for i, p in enumerate(trace.get("batches") or []) if p.get("context") == context and p.get("batch") == batch]
   if len(points) != 1:
@@ -627,7 +628,7 @@ def batch_rows(run:pathlib.Path, manifest:dict[str, Any], profile:dict[str, Any]
   points = trace.get("batches") or []
   if not points or ceil.get("status") != "modeled":
     return []
-  provider = trace.get("provider") or run_provider(run)
+  provider = engine_families.provider_name(trace.get("provider")) or run_provider(run)
   element, _ = providers.kv_element(provider, run)
   state = tie.state_ms(profile, provider, run, ceil.get("peak_bandwidth_gbs") or 0.0)
   params = sum(float(r.get("rows") or 0) * float(r.get("cols") or 0) * float(r.get("count") or 1)
@@ -675,11 +676,33 @@ def show(run:pathlib.Path) -> dict[str, Any]:
   })
   if env := optional(run, "workload_profile.json").get("engine_env"):
     out["engine_env"] = dict(env)  # only a run that set some, so a record without any is as it was
+    out["engine_env_outputs"] = env_outputs(run, env)  # what each does to the answers: a switch no row names is untested, never stock
+    if mods := engine_mods(env):
+      out["engine_mods"] = mods  # a mod run: its figures are never a stock engine's
   return out
+
+
+def engine_mods(env:dict[str, str]) -> list[str]:
+  """The opt-in engine mods a run turned on: the mods (arkey_ie_mods index, workflow/mods) whose switch its engine
+  environment sets to anything but empty or 0, by id."""
+  return [m["id"] for m in _mods.mods() if _mods.switch(m) and str(env.get(_mods.switch(m), "")).strip() not in ("", "0")]
+
+def env_outputs(run:pathlib.Path, env:dict[str, str]) -> dict[str, str]:
+  """Each engine environment variable's output label (context_audit.output_label, by the run's engine); one no row names,
+  and every one of a run whose engine cannot be told, is untested (tune.output_of)."""
+  from boltbeam.workflow.tune import output_of
+  try:
+    engine = run_provider(run)
+  except (OSError, ValueError):  # a run that records two engines: no row can be read for it
+    engine = None
+  return {k: (engine and context_audit.output_label(engine, k, v) or output_of(None))["output"] for k, v in env.items()}
+
 
 def setting_words(run:pathlib.Path) -> list[str]:
   """The settings a run asked its engine for, and the environment it set for it (pipeline --engine-env), as NAME=VALUE."""
-  env = [f"{k}={v}" for k, v in (optional(run, "workload_profile.json").get("engine_env") or {}).items()]
+  raw = optional(run, "workload_profile.json").get("engine_env") or {}
+  labels = env_outputs(run, raw) if raw else {}
+  env = [f"{k}={v}" + ("" if labels[k] == context_audit.IDENTICAL else f" (output {labels[k]})") for k, v in raw.items()] + [f"with the engine mod {m}" for m in engine_mods(raw)]
   try:
     return capture_settings.setting_words(capture_settings.requested(run)) + env
   except (OSError, ValueError):

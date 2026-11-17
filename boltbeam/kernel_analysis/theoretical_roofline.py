@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import math
 from typing import Any, Mapping
 
+from boltbeam import formats
 from boltbeam.math.roofline import amdahl_whole_gain
 from boltbeam.perf.mem_tier import effective_bandwidth_gbs
 from boltbeam.profile.decode_roles import GGML_BITS_PER_WEIGHT
@@ -20,10 +21,6 @@ from boltbeam.vocab import SCHEMA_THEORETICAL_ROOFLINE, is_weight_gemv_role
 from boltbeam.target.targets import target_peak_gbs
 
 _ACT_BYTES = 2.0  # fp16 activations
-
-
-# float storage labels a reader writes for unquantized tensors, by their width
-_FLOAT_BITS = {"F64": 64.0, "F32": 32.0, "F16": 16.0, "BF16": 16.0, "F8_E4M3": 8.0, "F8_E5M2": 8.0}
 
 
 def bits_per_weight(role: Mapping[str, Any]) -> float:
@@ -43,10 +40,8 @@ def bits_per_weight(role: Mapping[str, Any]) -> float:
   quant = str(role.get("quant") or "")
   if not quant:
     return 16.0
-  if quant in {"NVFP4_G16", "FP8_E4M3"}:
-    return {"NVFP4_G16": 4.5, "FP8_E4M3": 8.0}[quant]
-  if quant.upper() in _FLOAT_BITS:
-    return _FLOAT_BITS[quant.upper()]
+  if (r := formats.row(quant) or formats.row(quant.upper())) and r["status"]["roofline"] == "supported":  # data/formats.json
+    return float(r["bits"])
   tokens = quant.replace("-", "_").split("_")
   for token in tokens:
     if token.startswith("INT") and token[3:].isdigit():
@@ -69,8 +64,7 @@ def execution_bits_per_weight(role: Mapping[str, Any], execution: Mapping[str, A
   """Physical weight width used by this execution route, not necessarily the model-file storage width."""
   value = _execution_setting(execution, str(role.get("role") or ""), "weight_bits", "model")
   if value in (None, "model"): return bits_per_weight(role)
-  aliases = {"fp16": 16.0, "f16": 16.0, "fp32": 32.0, "f32": 32.0}
-  if isinstance(value, str): value = aliases.get(value.lower(), value)
+  if isinstance(value, str) and (q := formats.canonical(value.lower())): value = formats.row(q)["bits"]
   try: bits = float(value)
   except (TypeError, ValueError) as exc: raise ValueError(f"invalid execution weight_bits {value!r}") from exc
   if bits <= 0: raise ValueError("execution weight_bits must be positive")

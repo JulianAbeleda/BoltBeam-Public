@@ -1,0 +1,222 @@
+{
+ "schema": "boltbeam.prefill_chunk.v1",
+ "about": "What the prefill chunk derivation (roofline/chunk_size.py) reads beyond a model's header and the chip's peaks: per engine, how it stages the experts of layers kept in RAM (cache_copy: a cached expert is copied device to device into a scratch tensor before its GEMM; copy_calls: host calls per reached expert per expert tensor; serial: the staging runs between the GPU's kernels, not beside them); and measured rows of one setup, keyed by the model and draft (header ids, roofline/routing_profile.identity), target, engine, context, KV type and the build's features (switches compiled in; a row applies to a build that has them all, the most specific wins). A row may hold: staging (its build's own staging row), the experts a chunk reaches, the expert cache's hit share at a layout, copy rates and per-call cost, used memory at load per chunk (load probes or timed arms), the margin's terms (free at load and lowest free over a session: tune.session_margin), the non-expert rows a loaded run held at held_at (each [MiB, label]), measured layouts (a timed arm per chunk) and quality gates per chunk (result passed or failed). Elsewhere every figure is derived or an estimate, labelled.",
+ "engines": {
+  "llama.cpp": {
+   "cache_copy": true,
+   "copy_calls": 1,
+   "serial": true,
+   "why": "ggml-cuda copy_experts stages every expert a chunk reaches of a layer kept in RAM into a scratch tensor, one copy per expert tensor, from the expert cache (device to device) or host RAM (upload), issued by the host between the layer's kernels (the GPU waits)",
+   "evidence": "boltbeam-runs/prefill-audit-128k-20261115 sections 2-4: 7,781 device copies + 291 uploads per 128-token chunk, 168 experts x 48 layer-tensors, GPU idle 20.7 ms a chunk at the splits"
+  }
+ },
+ "rows": [
+  {
+   "model_id": "f9b488ad4ec8ce95",
+   "model": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M (+ tuned-A draft)",
+   "draft_id": "d6e51ec08f8bdd6a",
+   "target_id": "nvidia_sm120",
+   "engine": "llama.cpp",
+   "context": 131072,
+   "kv": "q8_0",
+   "features": [
+    "LLAMA_KPOOL_INCREMENTAL",
+    "LLAMA_SPARSE_DIRECT",
+    "LLAMA_IDX_POOLED",
+    "LLAMA_MTP_SHARE_HEAD",
+    "LLAMA_KPOOL_INPUT_DEVICE",
+    "LLAMA_FATTN_VEC_SKIP",
+    "LLAMA_SEQ_RM_INDEXED",
+    "LLAMA_FATTN_COMPACT_PAR",
+    "LLAMA_IDX_INPLACE"
+   ],
+   "build": "mask-indexer-20261115 llama-server b71f933c234c, libggml-cuda 80d218d5762f; the nine switches on, no expert-in-place",
+   "reach": {
+    "128": 168,
+    "512": 228
+   },
+   "reach_evidence": "prefill-audit-128k-20261115 limits.out: distinct experts staged per layer-tensor per full chunk (16 host layers)",
+   "cache_hit": {
+    "128": 0.962,
+    "512": 0.921
+   },
+   "cache_hit_layout": {
+    "layers_in_ram": 16,
+    "cache_mib": 6400
+   },
+   "cache_hit_evidence": "prefill-audit-128k-20261115 limits.out: share of staged bytes copied from the device cache (D2D / (D2D + H2D)) at 100k",
+   "d2d_gbs": 429,
+   "h2d_gbs": 25.4,
+   "call_us": 1.9,
+   "rates_evidence": "prefill-audit-128k-20261115 copies.out and section 2: D2D 73.9 GB at 429 GB/s, expert uploads at 25.4 GB/s, 161k copy calls a turn at 1.9 us untraced",
+   "held_mib": {
+    "dense weights": [
+     3425.31,
+     "derived"
+    ],
+    "unclassified tensors": [
+     0.35,
+     "derived"
+    ],
+    "output head": [
+     497.31,
+     "derived"
+    ],
+    "KV": [
+     1632.0,
+     "measured"
+    ],
+    "indexer keys": [
+     408.0,
+     "measured"
+    ],
+    "recurrent state": [
+     450.28,
+     "measured"
+    ],
+    "draft input rows": [
+     80.04,
+     "measured"
+    ],
+    "compute buffers": [
+     156.47,
+     "estimate"
+    ],
+    "compute reserve for host expert layers": [
+     357.45,
+     "estimate"
+    ],
+    "draft: experts": [
+     975.01,
+     "derived"
+    ],
+    "draft: dense weights": [
+     83.7,
+     "derived"
+    ],
+    "draft: unclassified tensors": [
+     13.34,
+     "derived"
+    ],
+    "draft: copies of the other file's tensors": [
+     341.02,
+     "derived"
+    ],
+    "draft: KV": [
+     256.0,
+     "measured"
+    ],
+    "draft: indexer keys": [
+     64.0,
+     "measured"
+    ],
+    "draft: compute buffers": [
+     101.46,
+     "measured"
+    ],
+    "rotation buffers": [
+     6.19,
+     "measured"
+    ],
+    "other processes on the device": [
+     41.0,
+     "measured"
+    ],
+    "device context": [
+     506.0,
+     "measured"
+    ],
+    "device reserved": [
+     498.0,
+     "measured"
+    ]
+   },
+   "held_at": {
+    "ubatch": 128
+   },
+   "held_evidence": "the 128k memory ledger (tests/fixtures/context_audit/ledger_128k_shapes.json; llama-128k-20261114 F5v: -ncmoe 5 -ub 128, own draft head, f16 draft KV; device reserved: total - used - free over 675 samples, stack-margin-20261114) (an older setup on this build line: -ncmoe 5, own draft head, f16 draft KV)",
+   "gated": []
+  },
+  {
+   "model_id": "f9b488ad4ec8ce95",
+   "model": "Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M (+ tuned-A draft)",
+   "draft_id": "d6e51ec08f8bdd6a",
+   "target_id": "nvidia_sm120",
+   "engine": "llama.cpp",
+   "context": 131072,
+   "kv": "q8_0",
+   "features": [
+    "LLAMA_KPOOL_INCREMENTAL",
+    "LLAMA_SPARSE_DIRECT",
+    "LLAMA_IDX_POOLED",
+    "LLAMA_MTP_SHARE_HEAD",
+    "LLAMA_KPOOL_INPUT_DEVICE",
+    "LLAMA_FATTN_VEC_SKIP",
+    "LLAMA_SEQ_RM_INDEXED",
+    "LLAMA_FATTN_COMPACT_PAR",
+    "LLAMA_IDX_INPLACE",
+    "LLAMA_MOE_INPLACE"
+   ],
+   "build": "prefill-chunk-20261115/bin (llama-server b13fbb731122, libggml-cuda 3f2d7d672437, libllama db217436d9d3): the nine switches + LLAMA_MOE_INPLACE=1",
+   "staging": {
+    "cache_copy": false
+   },
+   "used_at_load_mib": {
+    "128": 31599,
+    "512": 31679,
+    "1024": 31815
+   },
+   "used_evidence": "boltbeam-runs/prefill-chunk-20261115 Memory: used at load at equal cache 6,400 (U128, U512, U1024; 1024 = 31,815, ana.out)",
+   "margin_mib": {
+    "free_at_load": 294,
+    "lowest_free": 4
+   },
+   "margin_evidence": "prefill-chunk-20261115 U1024 at 6,400: free 294 MiB at load, lowest 4 over 59 turns (growth after load 290; 288-338 in every arm)",
+   "held_mib": {
+    "non-expert rows (used at load less the experts on the card)": [
+     8771.25,
+     "derived"
+    ],
+    "device reserved": [
+     498.0,
+     "measured"
+    ]
+   },
+   "held_at": {
+    "ubatch": 1024
+   },
+   "held_evidence": "prefill-chunk-20261115 U1024: used at load 31,815 MiB less the experts of layers 16-47 (16,643.75, header) and the 6,400 MiB cache; device reserved: total - used - free (stack-margin-20261114)",
+   "layouts": [
+    {
+     "ubatch": 512,
+     "layers_in_ram": 16,
+     "cache_mib": 6400,
+     "evidence": "prefill-chunk-20261115 U512/U512b: 1,137-1,159 ms a turn, lowest free 142 MiB (need 8)"
+    },
+    {
+     "ubatch": 1024,
+     "layers_in_ram": 16,
+     "cache_mib": 6336,
+     "evidence": "prefill-chunk-20261115 U1024k: 1,059 ms a turn, lowest free 66 MiB"
+    }
+   ],
+   "gated": [
+    {
+     "value": 512,
+     "result": "passed",
+     "evidence": "boltbeam-runs/quality-gate-ub512-20261115 (this build): -ub 512 against 128 inside the distribution floor (KL median 1.9e-4 vs line 1.0e-2, p99 0.17 vs 1.95, largest top-2 gap at a flip 0.84 vs 5.37)"
+    },
+    {
+     "value": 1024,
+     "result": "passed",
+     "evidence": "boltbeam-runs/gate-eot-line-20261115 (derived per-reply rule, pre-registered): -ub 1024 against 128, 0 of 18 replies above the floor line g* = 5.919 (largest reply gap over 18 rounding-only floor arms); the earlier single-sample line (5.370, prefill-chunk-20261115 qgate) is superseded; KL median 2.1e-4 and p99 0.21 inside their lines"
+    }
+   ],
+   "reach": {
+    "128": 168,
+    "512": 228
+   },
+   "reach_evidence": "prefill-audit-128k-20261115 limits.out: distinct experts staged per layer-tensor per full chunk (16 host layers) (routing is the model's: the same reach on either build)"
+  }
+ ]
+}

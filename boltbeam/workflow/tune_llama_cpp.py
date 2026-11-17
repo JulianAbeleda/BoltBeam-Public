@@ -17,6 +17,7 @@ import statistics
 import sys
 from typing import Any, Callable
 
+from boltbeam import formats
 from boltbeam.collectors import capture_settings as cs
 from boltbeam.collectors.replay import flag_value
 from boltbeam.core.refused import Refused
@@ -29,7 +30,9 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "prompt_cache_default_bytes": "llama-server's prompt cache in RAM by default (recommend.CACHE_RAM_DEFAULT)",
          "prompt_cache_bytes": "the prompt cache this setup keeps (set by the --cache-ram row)",
          "plan_ubatch": "the chunk the offload plan's prompt limit picks (workflow/offload.prefill_plan)",
-         "plan_ubatch_why": "where the chunk came from, or why there is none",
+         "plan_ubatch_why": "why the plan's chunk: the bytes = compute crossover and the fit (roofline/chunk_size), or why there is none",
+         "plan_ubatch_output": "the plan chunk's output label: quality-gated only with gate evidence for that chunk on this model, else untested",
+         "plan_ubatch_output_why": "the evidence behind that label, or why there is none",
          "routing_note": "a clause from the saved routing profile of this model (how concentrated its expert use is), or empty when there is none",
          "host_tables_resident_bytes": "the host-mapped input tables' rows one prompt reads (one row per token, at least a page each): an estimate",
          "on_card_bytes": "the model's weights on the GPU: the GGUF's tensor bytes less the host experts and the host-mapped tables",
@@ -68,7 +71,10 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "draft_weight_bytes": "the draft head's file: its weights on the GPU",
          "mtp_ks": "the draft counts the memory fit may choose: none and each one measured, when a measured one is used",
          "mtp_gains": "each measured draft count's speed over no draft (at the pick's depth, else the nearest it was measured at)",
-         "mtp_gain_words": "where each of those speeds was measured, in words"}
+         "mtp_gain_words": "where each of those speeds was measured, in words",
+         "model_file_bytes": "the model's GGUF files on disk, every shard: what the engine maps when it maps the model",
+         "load_none_ram_bytes": "what --load-mode none reads into RAM at load: the host experts and the host tables it does not leave mapped (engines.llama.cpp.load_none)",
+         "ckpt_pool_bytes": "the pinned context-checkpoint pool of the ckpt-pinned mod: checkpoints + 1 buffers of one slot's recurrent state (an estimate); 0 when the build lacks the mod"}
 NAMES = re.compile(rb"(?:LLAMA|GGML)_[A-Z0-9_]{2,}")  # getenv literals in the build
 READ_FROM = "llama.cpp b12257-19-g7592b61d3 (2026-11-10)"  # the build LITERALS and FA_KERNELS were read from: a later build that renames them reads as lacking them, said
 LITERALS = {"draft-mtp": rb"adding speculative implementation 'draft-mtp'",  # common/speculative.cpp: llama-server registers the MTP draft type
@@ -240,10 +246,13 @@ def cpu_moe_layers(ids:list[int], expert_layers:int) -> int:
 
 def host_tables(source:str | pathlib.Path, prompt:int, page:int) -> dict[str, Any]:
   """The input tables llama.cpp keeps mapped in host RAM (recommend.HOST_ONLY: token_embd, per_layer_token_embd): their bytes
-  and the rows one prompt reads, one row per token and table, at least a page each (rows sit apart): an estimate."""
+  and the rows one prompt reads, one row per token and table, at least a page each (rows sit apart): an estimate.
+  lazy_bytes: those that stay mapped even under --load-mode none (engines.llama.cpp.load_none)."""
   from boltbeam.profile import gguf
+  from boltbeam.workflow import tune
   from boltbeam.workflow.recommend import HOST_ONLY, _gguf_files
-  total = resident = data = 0
+  rule = tune.table()["engines"][ENGINE]["load_none"]
+  total = resident = data = lazy = 0
   by: dict[str, int] = {}
   for f in _gguf_files(pathlib.Path(source).expanduser()):
     _, ts, start = gguf.read_gguf_layout(f)
@@ -253,12 +262,13 @@ def host_tables(source:str | pathlib.Path, prompt:int, page:int) -> dict[str, An
       if name.split(".")[0] in HOST_ONLY:
         rows = max(1, math.prod(dims[1:]))
         total += nxt - o
+        lazy += nxt - o if name.split(".")[0] in rule["lazy_tables"] and nxt - o > rule["lazy_min_bytes"] else 0
         by[name.split(".")[0]] = by.get(name.split(".")[0], 0) + nxt - o
         resident += min(nxt - o, prompt * max((nxt - o) // rows, page))
-  return {"bytes": total, "resident_bytes": resident, "file_bytes": data, "by_table": by}
+  return {"bytes": total, "resident_bytes": resident, "file_bytes": data, "by_table": by, "lazy_bytes": lazy}
 
 
-def offload_plan(model:str, prompt:int) -> dict[str, Any]:
+def offload_plan(model:str, prompt:int, draft:str | None = None, context:int | None = None, features=None) -> dict[str, Any]:
   """The offload page's setup for prompts on this machine's GPU (workflow/offload.prefill_plan through recommend): the
   layers whose experts it keeps in RAM and the chunk its prompt limit picks; {"why"} when there is none."""
   try:
@@ -269,7 +279,7 @@ def offload_plan(model:str, prompt:int) -> dict[str, Any]:
     if not tid:
       return {"why": "no GPU target detected"}
     prof, tgt = profile_from_model(model, None).to_json(), get_target(tid)
-    got = screen.recommended(prof, tgt, engine=ENGINE, context=prompt, offload=True)
+    got = screen.recommended(prof, tgt, engine=ENGINE, context=context or prompt, offload=True, draft=draft, turn=prompt, build_features=features)
     saved = rp.find(model, engine=ENGINE)
     flat = screen.recommended(prof, tgt, engine=ENGINE, context=prompt, offload=True, routing=False) if saved else None
   except Refused as exc:  # a refusal is already in words
@@ -281,6 +291,13 @@ def offload_plan(model:str, prompt:int) -> dict[str, Any]:
   if pre.get("status") != "recommended":
     return {"why": pre.get("reason") or (got.get("offload") or {}).get("reason") or "no prompt setup"}
   out = {"layers_in_ram": int(pre["layers_in_ram"]), "ubatch": int(pre["ubatch"]), "source": f"the offload plan on {tid} (boltbeam offload)"}
+  if ch := pre.get("chunk"):  # the derived chunk (roofline/chunk_size): its words and its output label
+    out |= {"why": "; ".join(n for n in pre["notes"] if n.startswith(("chunk ", "fit: ", "placement "))), "output": ch["output"]}
+    if ch["placement"]["label"] != "measured":  # an unmeasured placement is said, never put in the session command
+      out.pop("layers_in_ram")
+      out["placement_why"] = "the derived placement is an estimate with no timed arm"
+  else:
+    out["why"] = words_of_tie()
   chunk = next((c for c in pre.get("chunks") or [] if c.get("ubatch") == out["ubatch"]), None)
   if chunk and (chunk.get("ms") or {}).get("gpu"):
     out["gpu_ms"] = float(chunk["ms"]["gpu"])  # the prompt limit's GPU time at that chunk: compute, the copy apart
@@ -288,6 +305,11 @@ def offload_plan(model:str, prompt:int) -> dict[str, Any]:
   if saved and flat_pre.get("status") == "recommended":
     out |= {"ubatch_uniform": int(flat_pre["ubatch"]), "routing_profile": saved}
   return out
+
+
+def words_of_tie() -> str:
+  from boltbeam.report.plain import words
+  return words()["tune_llama_cpp"]["ubatch_tie"]
 
 
 def routing_note(p:dict[str, Any] | None) -> str:
@@ -398,7 +420,8 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
   top = ids[-1] + 1 if ids else 0  # --n-cpu-moe at least this keeps every expert in RAM (--cpu-moe)
   plan = options.get("plan")
   if plan is None:
-    plan = offload_plan(model, host["prompt_tokens"]) if not shared else {"why": "shared memory: no offload plan"}
+    plan = offload_plan(model, int(host["prompt_tokens"]), options.get("draft"), int(host.get("context_tokens") or host["prompt_tokens"]),
+                        b.get("features")) if not shared else {"why": "shared memory: no offload plan"}
   given = options.get("experts_in_ram")
   # in_ram: --n-cpu-moe's N, the model's layers 0..N-1 (dense layers count); the plan counts expert layers
   if given == "all":
@@ -408,12 +431,12 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
   elif "layers_in_ram" in plan:
     in_ram, where = cpu_moe_layers(ids, plan["layers_in_ram"]), plan["source"]
   else:
-    in_ram, where = 0, f"none given and no offload plan ({plan.get('why')}): every expert on the GPU"
+    in_ram, where = 0, f"none given and no offload plan ({plan.get('placement_why') or plan.get('why')}): every expert on the GPU"
   host_experts = 0 if shared else sum(b_ for l, b_ in zip(ids, ex["per_layer"]) if l < in_ram)
   tabs = host_tables(model, host["prompt_tokens"], host["page_bytes"])
   placement = "shared memory: the GPU reads the experts where they are, nothing is copied" if shared else where
   from boltbeam.workflow import tune
-  have = [g for g in tune.table()["engines"][ENGINE]["groups"].values() if g["marker"] in b["features"]]
+  have = [g for g in tune.table()["engines"][ENGINE]["groups"].values() if tune.group_markers(ENGINE, g) & set(b["features"])]
   notes = ([] if have else [w["no_patch"]]) + ([w["shared_memory"]] if shared else [])
   name = pathlib.Path(model).name
   if plan.get("ubatch_uniform") is not None and plan.get("ubatch") != plan["ubatch_uniform"] and plan.get("routing_profile"):
@@ -425,8 +448,11 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
          "shared_memory": shared, f"{NS}.prompt_cache_default_bytes": CACHE_RAM_DEFAULT, f"{NS}.prompt_cache_bytes": CACHE_RAM_DEFAULT,
          f"{NS}.routing_note": routing_note(options.get("routing_profile", plan.get("routing_profile") or rp.find(model, engine=ENGINE))),
          f"{NS}.plan_ubatch": plan.get("ubatch"), f"{NS}.plan_ubatch_why": plan.get("why") or plan.get("source"),
+         f"{NS}.plan_ubatch_output": (plan.get("output") or {}).get("output"), f"{NS}.plan_ubatch_output_why": (plan.get("output") or {}).get("why"),
          f"{NS}.pin_in_build": "LLAMA_WS_PIN_GIB" in b["features"], "layers": top, "layers_in_ram": 0 if shared else in_ram,
          "expert_bytes_total": sum(ex["per_layer"]), "host_tables_bytes": tabs["bytes"], "placement": placement, "notes": notes}
+  lf, lsrc = placed_facts(model, host_experts, b["features"], tabs=tabs, draft=options.get("draft"))
+  out |= lf
   dr, dsrc = decode_facts(model, host, b, options, tabs)
   out |= dr
   if not shared:  # the KV it sizes is at the build's own cache type (decode_facts)
@@ -440,8 +466,44 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
                     "model_experts": ex["source"], f"{NS}.host_tables_resident_bytes": f"estimate: {host['prompt_tokens']} tokens x one row (at least a {host['page_bytes']} B page) per host table",
                     f"{NS}.prompt_cache_default_bytes": "llama-server --cache-ram default (8192 MiB)", f"{NS}.prompt_cache_bytes": "the --cache-ram row",
                     f"{NS}.plan_ubatch": plan.get("source") or plan.get("detail") or plan.get("why"), f"{NS}.pin_in_build": b["source"],
-                    "shared_memory": f"build backend {b['backend']}, {system}"}
+                    "shared_memory": f"build backend {b['backend']}, {system}", **lsrc}
   return out
+
+
+def placed_facts(model:str, host_experts:float, features=None, *, tabs:dict[str, Any] | None = None,
+                 profile:dict[str, Any] | None = None, draft:str | None = None) -> tuple[dict[str, Any], dict[str, str]]:
+  """The facts of the rows that hang on where the experts sit and on RAM alone (knob rows marked placed: tune.placed, the
+  offload page): the model's files on disk (and the draft's: -lm applies to -md too), what --load-mode none reads into
+  RAM at that placement (the host experts, the host tables of both files it does not leave mapped), the pinned
+  checkpoint pool, the prompt cache at its default (the --cache-ram row sets it in tune) and whether the build pins a
+  second copy of the host experts. The engine's rules are engines.llama.cpp.load_none. features: the build's (None: not
+  read: no pin, the pool counted). A fact that cannot be read is None (the row keeps its default), said in its source."""
+  from boltbeam.workflow import tune
+  from boltbeam.workflow.recommend import _gguf_files, CACHE_RAM_DEFAULT
+  from boltbeam.roofline import prefill_work as pw
+  from boltbeam.profile.loaders import profile_from_model
+  rule = tune.table()["engines"][ENGINE]["load_none"]
+  files = [model, *([draft] if draft else [])]
+  out: dict[str, Any] = {f"{NS}.model_file_bytes": None, f"{NS}.load_none_ram_bytes": None, f"{NS}.prompt_cache_bytes": CACHE_RAM_DEFAULT,
+                         f"{NS}.pin_in_build": features is not None and "LLAMA_WS_PIN_GIB" in features,
+                         f"{NS}.ckpt_pool_bytes": 0 if features is not None and rule["ckpt_pool_marker"] not in features else None}
+  src = {f"{NS}.model_file_bytes": "the GGUF files' sizes, the draft's included",
+         f"{NS}.load_none_ram_bytes": "the host experts + the host tables (the draft's too) under the lazy floor (engines.llama.cpp.load_none)",
+         f"{NS}.ckpt_pool_bytes": "(n_ctx_checkpoints + 1) x the profile's recurrent state (engines.llama.cpp.load_none)"}
+  try:  # an unread fact is a stated unknown (None: the row keeps its default), never a crash
+    out[f"{NS}.model_file_bytes"] = sum(f.stat().st_size for m in files for f in _gguf_files(pathlib.Path(m).expanduser()))
+    ts = [tabs if tabs is not None and m == model else host_tables(m, 1, 4096) for m in files]
+    if all(t.get("lazy_bytes") is not None for t in ts):
+      out[f"{NS}.load_none_ram_bytes"] = int(host_experts + sum(t["bytes"] - t["lazy_bytes"] for t in ts))
+  except Exception as exc:  # noqa: BLE001
+    src[f"{NS}.model_file_bytes"] += f"; not read: {type(exc).__name__}: {exc}"
+  if out[f"{NS}.ckpt_pool_bytes"] is None:
+    try:  # a model with no recurrent state may still checkpoint (sliding-window attention): unknown, not 0
+      state = pw.recurrent_state_bytes(profile or profile_from_model(model, None).to_json())
+      out[f"{NS}.ckpt_pool_bytes"] = int((rule["ctx_checkpoints"] + 1) * state) if state else None
+    except Exception as exc:  # noqa: BLE001
+      src[f"{NS}.ckpt_pool_bytes"] += f"; not read: {type(exc).__name__}: {exc}"
+  return out, src
 
 
 def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, Any], tabs:dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
@@ -452,7 +514,6 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
   draft, the head file; machine_facts, where the measurement is kept)."""
   from boltbeam.collectors import llama_mtp
   from boltbeam.profile import gguf
-  from boltbeam.profile.decode_roles import GGML_BLOCK_LAYOUTS
   from boltbeam.report.plain import words
   from boltbeam.workflow import recommend as rec
   w = words()["tune_llama_cpp"]
@@ -461,7 +522,7 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
   kv_flag, fa_flag, t_flag = (_flag_of(x) for x in ("kv_default", "fa_default", "threads_default"))
   np, dk = (flag_value([str(x) for x in options.get("extra") or []], n) for n in (NP, (_row()["draft"]["count"],)))  # the user's own, which win
   default = help_default(text, kv_flag)
-  layout = {t: GGML_BLOCK_LAYOUTS.get(gguf.GGML_TYPE_IDS.get(t.upper(), -1)) for t in help_choices(text, kv_flag)}
+  layout = {t: tuple(r["block"]) if (r := formats.row(formats.canonical(t))) else None for t in help_choices(text, kv_flag)}
   unknown = [t for t, lay in layout.items() if lay is None]  # a type ggml's block table here does not hold: its size is not known, so it is not a candidate
   kinds = [t for t, lay in layout.items() if lay and (b.get("fa_kv_types") is None or t in b["fa_kv_types"])]
   kinds = ([default] if default in kinds else []) + [t for t in kinds if t != default]
@@ -557,7 +618,7 @@ def render(values:list[dict[str, Any]], f:dict[str, Any], b:dict[str, Any], mode
           "placement": placement}
 
 
-SLOT_FAILED = re.compile(r"cudaMalloc of a [\d.]+ MiB slot failed")  # the streamer's log line (llama-pinned-copy-stream.patch)
+SLOT_FAILED = re.compile(r"cudaMalloc of a [\d.]+ MiB slot failed")  # the streamer's log line (arkey_ie_mods llama.cpp/7592b61d3/pinned-copy-stream)
 COMPUTE_BUFFER = re.compile(r"[A-Za-z]+\d+ compute buffer size\s*=\s*([\d.]+) MiB")  # any GPU backend: CUDA0, ROCm0, MTL0
 def memory_cmd(backend:str | None) -> list[str]:
   """The driver's --memory-cmd: the tightest card of the build's backend, so a fit and its lowest reading are per card (a

@@ -157,7 +157,140 @@ def _ubatches() -> list[int]:
   return [1 << i for i in range(lo.bit_length() - 1, hi.bit_length()) if lo <= 1 << i <= hi]
 
 
-LLAMA_BATCH = 2048  # llama.cpp's logical batch (-b) by default (common/common.h:472); it bounds the chunk (-ub)
+def header_table(source:str) -> dict[str, Any]:
+  """A model file's header as min_memory reads it: {meta, tensors: [name, dims, type id]} (every shard's tensors)."""
+  from boltbeam.profile.gguf import read_gguf_split
+  kv, tensors, _ = read_gguf_split(source)
+  return {"meta": kv, "tensors": [[n, list(d), t] for n, d, t, _ in tensors]}
+
+
+def _sizing(engine:str, meta:dict[str, Any], tensors:list):
+  """The engine's compute-buffer sizing formula (data/engine_knobs.json after_load) as a function of the chunk, over the
+  header's shapes; None when the engine states none or the shapes lack one it reads."""
+  from boltbeam.workflow import tune
+  expr = ((tune.table()["engines"].get(engine) or {}).get("after_load") or {}).get("terms", {}).get("compute_buffer_bytes")
+  arch = meta.get("general.architecture")
+  ffn = next((d[1] for n, d, _ in tensors if n.endswith("ffn_gate_exps.weight")), None)
+  have = {"experts_used": meta.get(f"{arch}.expert_used_count"), "expert_ffn": ffn, "hidden_size": meta.get(f"{arch}.embedding_length")}
+  if not expr or None in have.values():
+    return None
+  names = tune.names_in(expr)
+  facts = lambda c: {n: c if n.endswith(".chunk_tokens") else have.get(n.split(".")[-1]) for n in names}  # noqa: E731
+  return lambda c: float(tune.evaluate(expr, facts(c), set(names)))
+
+
+def knob_default(engine:str, name:str) -> int:
+  """An engine flag's own default, read from its knob row (data/engine_knobs.json): the one place it is stated."""
+  from boltbeam.workflow import tune
+  return int(next(k["default"] for k in tune.knobs(engine) if k["name"] == name))
+
+
+def chunk_plan(table:dict[str, Any], *, peaks:dict[str, float], bandwidth_gbs:float, device_bytes:float, engine:str, context:int,
+               kv:str, weight_path=None, target_id:str | None = None, model_id:str | None = None, draft:dict[str, Any] | None = None,
+               draft_id:str | None = None, features=None, routing:dict[str, Any] | None = None, kv_bytes:float | None = None,
+               usable:float | None = None) -> dict[str, Any]:
+  """The prefill chunk and the expert placement (roofline/chunk_size.py) for a header table on this device: the curve over
+  the policy's chunks; the room for experts = the device's memory less the non-expert rows (a measured row's held rows,
+  each with its own label, else min_memory's minimum for the model and the draft) less the session margin
+  (tune.session_margin); the chosen chunk (none at or above a failed gate) with its output label; the placement at it: a
+  measured layout at that chunk when the row has one (the derived one beside it, an unmeasured estimate), else the
+  derived one, labelled so. draft / draft_id: the draft's header table / header id; features: the build's (None: unread)."""
+  from boltbeam.core.policy import value
+  from boltbeam.roofline import chunk_size as cs
+  from boltbeam.workflow import min_memory as mm
+  from boltbeam.workflow.tune import session_margin
+  ev = cs.measured_row(model_id, target_id, engine, context, kv, draft_id, features)
+  er = cs.engine_row(engine, ev)
+  ref = int((ev.get("held_at") or {}).get("ubatch") or knob_default(engine, "-ub"))
+  w = cs.weights(table["meta"], table["tensors"], kind=mm.kind, nbytes=mm.nbytes, peaks=peaks, path_of=weight_path)
+  if ev.get("held_mib"):
+    rows = {k: cs.fig(v * cs.MiB, lab, ev["held_evidence"]) for k, (v, lab) in ev["held_mib"].items()}
+  else:
+    s = {"context": context, "kv_type": kv, "state_type": "F32", "act_type": "F32", "ubatch": ref, "draft_depth": 0}
+    least = mm.minimum(table["meta"], table["tensors"], s, unit=1.0)
+    if draft:
+      least |= mm.minimum(draft["meta"], draft["tensors"], s, other=table["tensors"], prefix="draft: ", unit=1.0)
+    rows = {k: cs.fig(m["value"], "unknown" if m["value"] is None else "derived", m.get("test") or m.get("formula", ""))
+            for k, m in least.items() if k != "experts"}
+    rows = {k: v for k, v in rows.items() if not (v["value"] == 0 and v["label"] == "derived")}
+    if "dense weights" not in rows:  # min_memory has no block for this architecture: the header's weights and the setup's KV
+      rows |= {"dense weights": cs.fig(w["dense_bytes"] + w["head_bytes"], "derived", "the header's dense and head bytes"),
+               "KV": cs.fig(kv_bytes, "derived" if kv_bytes is not None else "unknown", "the setup's KV at the context (recommend)")}
+  m = session_margin({"loaded": ev["margin_mib"]["free_at_load"] * cs.MiB, "lowest": ev["margin_mib"]["lowest_free"] * cs.MiB} if ev.get("margin_mib") else None)
+  margin = cs.fig(m["value"], m["label"], ev.get("margin_evidence") or m["why"])
+  device = cs.fig(device_bytes, "measured", "the device's total memory (its telemetry); what it reserves is a row")
+  if not ev.get("held_mib") and usable is not None:  # no measured device rows: the vendor's usable share stands for the reserve and context
+    device = cs.fig(usable, "estimate", "the vendor's usable share of the device (assumed); test: the device's reserve and context, measured")
+    rows = {k: v for k, v in rows.items() if k not in ("device reserved", "device context")}
+  rm = cs.room(device, rows, margin)
+  used = {int(c): v * cs.MiB for c, v in (ev.get("used_at_load_mib") or {}).items()}
+  reach_m = {int(c): v for c, v in (ev.get("reach") or {}).items()}
+  rows_c = cs.curve(_ubatches(), w, peaks=peaks, bandwidth_gbs=bandwidth_gbs, ref=ref, room_bytes=rm["value"], reach_measured=reach_m,
+                    routing=(routing or {}).get("layers"), buffer_measured=used or None, sizing=_sizing(engine, table["meta"], table["tensors"]))
+  gated = ev.get("gated") or []
+  pick = cs.choose(rows_c, value("prefill_ubatch_tie_pct"), cs.failed_gate(gated))
+  if pick["row"] is None:
+    raise Refused(pick["why"])
+  c = pick["row"]["chunk"]
+  derived = {**cs.placement(w, pick["row"]["room_for_experts"]), "label": "estimate, unmeasured"}
+  lay = next((x for x in ev.get("layouts") or [] if x["ubatch"] == c), None)
+  place = derived if lay is None else {"layers_in_ram": lay["layers_in_ram"], "cache_bytes": lay["cache_mib"] * cs.MiB, "host_bytes": sum(w["per_layer"][:lay["layers_in_ram"]]),
+                                       "on_card_bytes": sum(w["per_layer"][lay["layers_in_ram"]:]), "label": "measured", "why": lay["evidence"]}
+  return {"chunk": c, "why": pick["why"], "crossover": pick.get("crossover"), "curve": rows_c, "room": rm, "ref": ref, "weights": w,
+          "placement": place, "derived_placement": derived, "output": cs.output_label(c, gated), "evidence": ev, "engine_row": er, "reach_measured": reach_m,
+          "crossover_bound": cs.crossover_tokens(w, peaks=peaks, bandwidth_gbs=bandwidth_gbs, share=1.0)}
+
+
+def _draft_bytes(draft:str) -> float:
+  """recommend takes the draft's weights off `usable`; the fit counts them as rows, so they are given back."""
+  from boltbeam.workflow.recommend import tensor_bytes
+  t = tensor_bytes(draft)
+  return float(t["total"] - t["host"])
+
+
+def cache_hit(plan:dict[str, Any], layers_in_ram:int, cache_bytes:float, chunk:int, routing:dict[str, Any] | None) -> dict[str, Any]:
+  """The expert cache's share of the staged bytes of the layers in RAM: measured on this setup's layout at this chunk,
+  else the hottest experts a cache this size holds under a routing profile (in-sample: an upper estimate), else the
+  cache's share of those layers' experts (uniform routing: an estimate)."""
+  from boltbeam.roofline import chunk_size as cs
+  ev, w = plan["evidence"], plan["weights"]
+  host = sum(w["per_layer"][:layers_in_ram])
+  lay = ev.get("cache_hit_layout") or {}
+  if (lay.get("layers_in_ram"), lay.get("cache_mib")) == (layers_in_ram, round(cache_bytes / cs.MiB)) and str(chunk) in (ev.get("cache_hit") or {}):
+    return cs.fig(ev["cache_hit"][str(chunk)], "measured", ev["cache_hit_evidence"])
+  if not host or not cache_bytes:
+    return cs.fig(0.0, "derived", "no cache for the layers in RAM" if host else "no layer in RAM")
+  if routing:
+    per = host / (layers_in_ram * w["n_expert"])
+    want = {x["layer"] for x in routing["layers"] if x["layer"] < w["layer_ids"][layers_in_ram - 1] + 1}
+    sub = {**routing, "layers": [x for x in routing["layers"] if x["layer"] in want]}
+    return cs.fig(round(rp.hit_rate(sub, int(cache_bytes // per)), 4), "estimate", "the hottest experts of the layers in RAM under the routing profile (in-sample: an upper estimate)")
+  return cs.fig(min(cache_bytes / host, 1.0), "estimate", "the cache's share of the layers in RAM (uniform routing); test: the engine's cache trace")
+
+
+def staged(plan:dict[str, Any], *, layers_in_ram:int, cache_bytes:float, chunk:int, vram_gbs:float, h2d_gbs:float,
+           routing:dict[str, Any] | None = None) -> dict[str, Any]:
+  """The staging inputs prompt_limit needs for a layout (chunk_size.staging's), measured rates where this setup's row has them."""
+  ev = plan["evidence"]
+  return {"plan": plan, "layers_in_ram": layers_in_ram, "hit": cache_hit(plan, layers_in_ram, cache_bytes, chunk, routing),
+          "vram_gbs": vram_gbs, "h2d_gbs": ev.get("h2d_gbs") or h2d_gbs, "d2d_gbs": ev.get("d2d_gbs"), "call_us": ev.get("call_us"),
+          "routing": (routing or {}).get("layers")}
+
+
+def predict_turn(plan:dict[str, Any], *, tokens:int, chunk:int, layers_in_ram:int, cache_bytes:float, peaks:dict[str, float], vram_gbs:float,
+                 h2d_gbs:float, routing:dict[str, Any] | None = None, outside:dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+  """One prefill turn of `tokens` new tokens at a layout (chunk_size.turn): the GPU rows at their limit from the header,
+  the staging by source, serial or not by the engine's row; a lower bound that names what it leaves out."""
+  from boltbeam.roofline import chunk_size as cs
+  w = plan["weights"]
+  st = staged(plan, layers_in_ram=layers_in_ram, cache_bytes=cache_bytes, chunk=chunk, vram_gbs=vram_gbs, h2d_gbs=h2d_gbs, routing=routing)
+  share = cs.reach(chunk, w, measured=plan["reach_measured"], routing=st["routing"])
+  s = cs.staging(chunk, w, layers_in_ram=layers_in_ram, share=share["value"], cache_hit=st["hit"], engine=plan["engine_row"], vram_gbs=vram_gbs,
+                 h2d_gbs=st["h2d_gbs"], d2d_gbs=st["d2d_gbs"], call_us=st["call_us"])
+  return {**cs.turn(tokens, chunk, w, peaks=peaks, bandwidth_gbs=vram_gbs, share=share["value"], stage=s, serial=bool(plan["engine_row"].get("serial")),
+                    outside=outside), "reach": share, "hit": st["hit"], "staging": s}
+
+
 # llama.cpp's prompt attention is the MMA flash-attention kernel, which takes K and V as fp16 and converts a quantized
 # cache first (ggml-cuda/fattn-mma-f16.cuh:2113-2114 need_f16_K/V, fattn-common.cuh:1042; master 7592b61d3): its products
 # run on the fp16 path. Its instruction sites are read from the engine's binary when a capture has it; a setup has none.
@@ -180,7 +313,44 @@ def prompt_work(profile:dict[str, Any], target, *, vram_gbs:float, kv:str, routi
 
 
 def prompt_limit(work:dict[str, Any], *, layers:int, in_ram:int, ubatch:int, prompt:int, h2d_gbs:float, ram_gbs:float,
-                 estimated:bool, link:dict[str, Any] | None = None) -> dict[str, Any]:
+                 estimated:bool, link:dict[str, Any] | None = None, stage:dict[str, Any] | None = None) -> dict[str, Any]:
+  """The limit of one prompt in chunks of `ubatch`: staged (stage: staged()'s inputs) or every reached expert of the
+  layers in RAM uploaded (_uploaded_limit)."""
+  if stage is not None:
+    return _staged_limit(work, ubatch=ubatch, prompt=prompt, stage=stage)
+  return _uploaded_limit(work, layers=layers, in_ram=in_ram, ubatch=ubatch, prompt=prompt, h2d_gbs=h2d_gbs, ram_gbs=ram_gbs, estimated=estimated, link=link)
+
+
+def _staged_limit(work:dict[str, Any], *, ubatch:int, prompt:int, stage:dict[str, Any]) -> dict[str, Any]:
+  """The prompt limit with the experts of the layers in RAM counted where they come from (chunk_size.staging, per chunk):
+  the GPU rows read every reached expert in place (prefill_work.turn_ceiling, nothing offloaded), and the staging adds,
+  serially when the engine stages between its kernels (its row), else overlapped."""
+  from boltbeam.roofline import chunk_size as cs
+  from boltbeam.roofline.prefill_work import turn_ceiling
+  plan = stage["plan"]
+  w, er = plan["weights"], plan["engine_row"]
+  try:
+    c = turn_ceiling(work["profile"], work["roles"], prompt, 0, ubatch=ubatch, batch=max(ubatch, knob_default(work.get("engine") or "llama.cpp", "-b")), formats=work["formats"],
+                     weight_path=work["weight_path"], attention_paths=work["attention_paths"], peaks=work["peaks"],
+                     bandwidth_gbs=work["bandwidth_gbs"], routing=(work.get("routing") or {}).get("layers"))
+  except ValueError as exc:
+    raise Refused(str(exc)) from exc
+  sizes = {n: [min(ubatch, prompt - i) for i in range(0, prompt, ubatch)].count(n) for n in {ubatch, prompt % ubatch} if n}
+  parts = [(cs.staging(n, w, layers_in_ram=stage["layers_in_ram"], share=cs.reach(n, w, measured=plan["reach_measured"], routing=stage["routing"])["value"],
+                       cache_hit=stage["hit"], engine=er, vram_gbs=stage["vram_gbs"], h2d_gbs=stage["h2d_gbs"], d2d_gbs=stage["d2d_gbs"], call_us=stage["call_us"]), k)
+           for n, k in sizes.items()]
+  terms = {t: sum(p["ms"][t] * k for p, k in parts) for t in parts[0][0]["ms"]}
+  gpu, st = sum(r["ms"] or 0.0 for r in c["rows"]), sum(terms.values())
+  total = gpu + st if er.get("serial") else max(gpu, st)
+  ms = {"gpu": gpu, "link": terms["upload"], "cache_copy": terms["cache_copy"], "host_calls": terms["host_calls"]}
+  return {"ubatch": ubatch, "flops": sum(r["flops"] for r in c["rows"]), "ms": ms, "total_ms": total, "serial": bool(er.get("serial")),
+          "bytes": {"link": sum(p["bytes"]["upload"] * k for p, k in parts), "cache": sum(p["bytes"]["cache"] * k for p, k in parts), "gpu_vram": sum(r["bytes"] for r in c["rows"])},
+          "bound_by": max(ms, key=ms.get), "tok_s": prompt * 1000.0 / total, "unmodelled": c["unmodelled"], "hit": stage["hit"],
+          "routing": rp.words(work.get("routing"), work.get("engine"))}
+
+
+def _uploaded_limit(work:dict[str, Any], *, layers:int, in_ram:int, ubatch:int, prompt:int, h2d_gbs:float, ram_gbs:float,
+                    estimated:bool, link:dict[str, Any] | None = None) -> dict[str, Any]:
   """The limit of reading one prompt of `prompt` tokens in chunks of `ubatch` with the experts of `in_ram` of the
   model's `layers` expert layers in host RAM: prefill_work.turn_ceiling, the one prompt limit (each weight once per
   chunk, the experts the chunk reaches, attention and the recurrent block, each at its path's measured peak or the
@@ -192,7 +362,7 @@ def prompt_limit(work:dict[str, Any], *, layers:int, in_ram:int, ubatch:int, pro
   prof = work.get("routing")
   try:
     off = {"hit_rate": card_share(work, in_ram, layers, ubatch), "cpu_share": 0.0, "link_gbs": h2d_gbs, "ram_gbs": ram_gbs, "estimated": estimated, "link": link} if in_ram else None
-    c = turn_ceiling(work["profile"], work["roles"], prompt, 0, ubatch=ubatch, batch=max(ubatch, LLAMA_BATCH), formats=work["formats"],
+    c = turn_ceiling(work["profile"], work["roles"], prompt, 0, ubatch=ubatch, batch=max(ubatch, knob_default(work.get("engine") or "llama.cpp", "-b")), formats=work["formats"],
                      weight_path=work["weight_path"], attention_paths=work["attention_paths"], peaks=work["peaks"],
                      bandwidth_gbs=work["bandwidth_gbs"], offload=off, routing=prof["layers"] if prof else None)
   except ValueError as exc:  # FormulaRefused (a Mamba2 hybrid), a routing profile that does not fit
@@ -221,13 +391,15 @@ def card_share(work:dict[str, Any], in_ram:int, layers:int, ubatch:int) -> float
 
 
 def prefill_plan(sh:dict[str, Any], work:dict[str, Any], *, usable_vram:float, kv_bytes:float, host:dict[str, Any], prompt:int,
-                 engine:str = "llama.cpp", ram:dict[str, Any] | None = None, fits:bool = False) -> dict[str, Any]:
+                 engine:str = "llama.cpp", ram:dict[str, Any] | None = None, fits:bool = False, chunk:dict[str, Any] | None = None) -> dict[str, Any]:
   """The setup for reading prompts when the weights do not fit: derived from the prompt limit (prompt_limit, which is
   prefill_work.turn_ceiling), apart from the decode setup (plan), because what is fast for one is slow for the other.
   The memory the decode setup gives a cache, which a prompt never hits, holds whole layers' experts instead
   (--n-cpu-moe: the rest stay in RAM; every layer moved to RAM adds uploads and saves the GPU no work, so the limit is
   highest with the most layers that fit); the chunk (-ub) is the smallest whose prompt limit is within the policy's tie
-  of the best one's. Both setups' prompt and reply limits are given, so the reader sees what each costs the other workload."""
+  of the best one's. Both setups' prompt and reply limits are given, so the reader sees what each costs the other workload.
+  chunk: chunk_plan's derivation; with it the chunk is the curve's, the placement its room's (whole layers on the card,
+  the rest an expert cache) and the experts of the layers in RAM are counted where they come from (_staged_limit)."""
   from boltbeam.core.policy import value
   if not any(r.get("routed") for r in work["roles"]):
     raise Refused("the model's profile names no routed experts, so the experts a prompt uploads cannot be limited")
@@ -237,46 +409,91 @@ def prefill_plan(sh:dict[str, Any], work:dict[str, Any], *, usable_vram:float, k
   if room <= 0:
     raise Refused(f"the dense parts ({_gb(sh['dense_bytes'])}) and the KV cache ({_gb(kv_bytes)}) do not fit the usable GPU memory ({_gb(usable_vram)})")
   in_ram = layers - min(layers, int(room // per_layer))
+  cache = 0.0
+  if chunk:
+    in_ram, cache = chunk["placement"]["layers_in_ram"], chunk["placement"]["cache_bytes"]
   ram = ram or ram_figure(host)
   spill = max(in_ram * per_layer - ram["usable_bytes"], 0.0)
   rate, memory = _rate(host)
   hl = host_links.of(host)
   h2d = rate if memory else None
   at = dict(layers=layers, prompt=prompt, h2d_gbs=rate, ram_gbs=host["ram_gbs"], estimated=sh["estimated"], link=hl)
-  rows = [prompt_limit(work, in_ram=in_ram, ubatch=u, **at) for u in _ubatches()]
+  stage = (lambda u: {"stage": staged(chunk, layers_in_ram=in_ram, cache_bytes=cache, chunk=u, vram_gbs=work["bandwidth_gbs"], h2d_gbs=rate,
+                                      routing=work.get("routing"))}) if chunk else (lambda u: {})
+  rows = [prompt_limit(work, in_ram=in_ram, ubatch=u, **at, **stage(u)) for u in _ubatches()]
   best = max(r["tok_s"] for r in rows)
-  chosen = next(r for r in rows if r["tok_s"] >= best * (1 - value("prefill_ubatch_tie_pct") / 100))
+  chosen = next(r for r in rows if r["ubatch"] == chunk["chunk"]) if chunk else \
+           next(r for r in rows if r["tok_s"] >= best * (1 - value("prefill_ubatch_tie_pct") / 100))
   pinned_gbs = (host.get("h2d_gbs") or {}).get("pinned")
-  pinned = prompt_limit(work, in_ram=in_ram, ubatch=chosen["ubatch"], **{**at, "h2d_gbs": pinned_gbs}) if pinned_gbs and in_ram else None
-  decode_setup = prompt_limit(work, in_ram=layers, ubatch=int(value("prefill_ubatch_min")), **at)
+  pin = {"stage": {**stage(chosen["ubatch"])["stage"], "h2d_gbs": pinned_gbs}} if chunk and pinned_gbs else {}
+  pinned = prompt_limit(work, in_ram=in_ram, ubatch=chosen["ubatch"], **{**at, "h2d_gbs": pinned_gbs}, **pin) if pinned_gbs and in_ram else None
+  decode_setup = prompt_limit(work, in_ram=layers, ubatch=knob_default(engine, "-ub"), **at)
   replies = ol.offload_limit(dense_bytes=sh["dense_bytes"], expert_bytes=sh["expert_bytes"], hit_rate=1 - in_ram / layers, cpu_share=1.0,
                              vram_gbs=work["bandwidth_gbs"], ram_gbs=host["ram_gbs"], link_gbs=(hl or {}).get("gbs"), link=hl, estimated=sh["estimated"], cpu_gbs=host.get("cpu_gbs"))
   from boltbeam.collectors.capture_settings import render_llama
-  placed = ({"n_cpu_moe": shapes.n_cpu_moe(sh, in_ram)} if in_ram else {}) | {"chunk_size": chosen["ubatch"]} \
-           | ({"batch_size": chosen["ubatch"]} if chosen["ubatch"] > LLAMA_BATCH else {})  # llama.cpp's batch bounds the chunk
+  placed = ({"n_cpu_moe": shapes.n_cpu_moe(sh, in_ram)} if in_ram else {}) | ({"moe_cache_mib": int(cache // 2**20)} if cache >= 2**20 else {}) \
+           | {"chunk_size": chosen["ubatch"]} \
+           | ({"batch_size": chosen["ubatch"]} if chosen["ubatch"] > knob_default(engine, "-b") else {})  # llama.cpp's batch bounds the chunk
   w = plain_words()["offload"]
   say = (f"at most {chosen['tok_s']:.0f} tokens a second reading a {prompt}-token prompt (the setup for replies: at most "
          f"{decode_setup['tok_s']:.0f}); writing replies, at most {replies['overlap']['tok_s']:.0f} tokens a second. " + w["prefill_tuned"])
   return {"schema": "boltbeam.offload_setup.v1", "status": "recommended", "workload": "prefill", "for": w["for_prefill"], "engine": engine,
           "estimated": True, "notes": [("routing: " + rp.words(work.get("routing"), work.get("engine") or engine)) if work.get("routing") else "routing assumed uniform: no measured routing profile",
                                        "attention on llama.cpp's fp16 flash-attention path: its instruction sites were not read for a setup",
-                                       "the compute buffer a larger chunk needs is not in the fit"] + (["shapes estimated, not read from a header"] if sh["estimated"] else [])
+                                       *(chunk_words(chunk) if chunk else ["the compute buffer a larger chunk needs is not in the fit"])]
+                                      + (["shapes estimated, not read from a header"] if sh["estimated"] else [])
                                       + ([] if h2d else [_unmeasured(hl)]) + host_links.unverified(hl)
                                       + ([_w("direct_read_prompts")] if (hl or {}).get("semantics") == "direct_read" else []) + list(chosen["unmodelled"])
                                       + ([("only if you choose to offload: " if fits else "") + f"the experts kept in RAM ({_gb(in_ram * per_layer)}) are more than the usable RAM ({_gb(ram['usable_bytes'])}): "
                                           f"{_gb(spill)} would be read from disk, which this limit does not cover"] if spill else []),
           "prompt": prompt, "layers_in_ram": in_ram, "ubatch": chosen["ubatch"], "chunks": rows, "h2d_gbs": rate, "h2d_memory": memory,
-          "experts_in_ram_bytes": in_ram * per_layer, "experts_on_card_bytes": (layers - in_ram) * per_layer, "spill_bytes": spill, "ram": ram,
-          "tok_s_pinned": pinned["tok_s"] if pinned else None, "bound_by": chosen["bound_by"],
+          "experts_in_ram_bytes": chunk["placement"]["host_bytes"] if chunk else in_ram * per_layer,
+          "experts_on_card_bytes": chunk["placement"]["on_card_bytes"] + cache if chunk else (layers - in_ram) * per_layer, "spill_bytes": spill, "ram": ram,
+          "tok_s_pinned": pinned["tok_s"] if pinned else None, "bound_by": chosen["bound_by"], "cache_bytes": cache,
+          **({"chunk": chunk_record(chunk, chosen)} if chunk else {}),
           "tok_s": chosen["tok_s"], "tok_s_decode_setup": decode_setup["tok_s"], "replies_tok_s": replies["overlap"]["tok_s"],
           "settings": placed if engine == "llama.cpp" else None, "flags": render_llama(placed) if engine == "llama.cpp" else None, "says": say,
           "arithmetic": [f"GPU, per chunk of {chosen['ubatch']}: every weight once (the dense parts, the experts the chunk reaches, the uploaded ones), "
                          f"attention and the recurrent block, each at its path's measured peak or {work['bandwidth_gbs']:.0f} GB/s, the slower "
                          f"(prefill_work.turn_ceiling): {chosen['ms']['gpu']:.0f} ms for the prompt",
-                         f"{host_links.words(hl, 'short')}, per chunk: the experts the chunk reaches in the {in_ram} layers kept in RAM, at {rate:.1f} GB/s"
-                         + (f" (measured copies from {memory} memory)" if memory else " (" + _w("rate_" + _basis(hl)) + ")")
-                         + f": {chosen['ms']['link']:.0f} ms",
-                         "the prompt limit is the slower of the two; chunks: " + ", ".join(f"{r['ubatch']}: {r['tok_s']:.0f} tok/s" for r in rows)]}
+                         f"{host_links.words(hl, 'short')}, per chunk: the experts the chunk reaches in the {in_ram} layers kept in RAM"
+                         + ((f", the cache's misses, at {stage(chosen['ubatch'])['stage']['h2d_gbs']:.1f} GB/s" + (" (measured on this setup)" if chunk["evidence"].get("h2d_gbs") else ""))
+                            if chunk else f", at {rate:.1f} GB/s" + (f" (measured copies from {memory} memory)" if memory else " (" + _w("rate_" + _basis(hl)) + ")"))
+                         + f": {chosen['ms']['link']:.0f} ms" + (f"; the {_gb(chosen['bytes']['cache'])} its cache holds ({chosen['hit']['value']:.1%} of them, "
+                         f"{chosen['hit']['label']}): copied on the card, {chosen['ms']['cache_copy']:.0f} ms, and {chosen['ms']['host_calls']:.0f} ms of host copy calls" if chunk else ""),
+                         ("the prompt time is the sum: the engine stages between its kernels" if chosen.get("serial") else "the prompt limit is the slower of the two") + "; chunks: " + ", ".join(f"{r['ubatch']}: {r['tok_s']:.0f} tok/s" for r in rows)]}
+
+
+def chunk_words(chunk:dict[str, Any]) -> list[str]:
+  """The chunk derivation in words: the crossover, the fit, the output label."""
+  r = next(x for x in chunk["curve"] if x["chunk"] == chunk["chunk"])
+  rm, out = chunk["room"], chunk["output"]
+  return [f"chunk {chunk['chunk']}: {chunk['why']}; bytes = compute at about {chunk['crossover_bound']:.0f} tokens with every expert reached "
+          f"(at most: attention is not counted); at {chunk['chunk']}: {r['bytes_ms']:.1f} ms of bytes against {r['compute_ms']:.1f} ms of compute, "
+          f"reach {r['reach']['value']:.0%} ({r['reach']['label']})",
+          f"fit: {rm['value'] / 2**20:,.0f} MiB for experts at -ub {chunk['ref']} ({rm['label']}: device less the non-expert rows, the draft's included, "
+          f"less the margin{'; unknown: ' + ', '.join(rm['unknown']) if rm['unknown'] else ''}); the chunk's compute buffers take "
+          f"{abs(r['buffer']['value']) / 2**20:,.0f} MiB {'more' if r['buffer']['value'] >= 0 else 'less'} ({r['buffer']['label']})",
+          placement_words(chunk), f"output {out['output']}: {out['why']}"]
+
+
+def placement_words(chunk:dict[str, Any]) -> str:
+  """The placement and its label: a measured layout, with the derived one beside it when they differ (an estimate, unmeasured)."""
+  p, d = chunk["placement"], chunk["derived_placement"]
+  say = lambda x: f"{x['layers_in_ram']} expert layers in RAM, a {x['cache_bytes'] / 2**20:,.0f} MiB cache"  # noqa: E731
+  if p["label"] != "measured":
+    return f"placement ({p['label']}): {say(p)}; test: one timed arm at it"
+  other = "" if (d["layers_in_ram"], round(d["cache_bytes"] / 2**20)) == (p["layers_in_ram"], round(p["cache_bytes"] / 2**20)) else f"; derived: {say(d)} ({d['label']})"
+  return f"placement (measured, {p['why']}): {say(p)}{other}"
+
+
+def chunk_record(chunk:dict[str, Any], chosen:dict[str, Any]) -> dict[str, Any]:
+  """What the setup keeps of the derivation: the curve, the choice and its labels."""
+  return {"chunk": chunk["chunk"], "why": chunk["why"], "crossover": chunk["crossover"], "crossover_bound": chunk["crossover_bound"],
+          "output": chunk["output"], "room_bytes": chunk["room"]["value"], "room_label": chunk["room"]["label"], "placement": chunk["placement"],
+          "derived_placement": chunk["derived_placement"], "hit": chosen.get("hit"), "curve": [{k: r[k] for k in ("chunk", "bytes_ms", "compute_ms", "us_per_token", "bound", "room_for_experts", "fits")}
+                                               | {"reach": r["reach"]["value"], "reach_label": r["reach"]["label"], "buffer_bytes": r["buffer"]["value"],
+                                                  "buffer_label": r["buffer"]["label"]} for r in chunk["curve"]]}
 
 
 def _w(key:str, **kw) -> str:
@@ -350,7 +567,7 @@ def page(out:dict[str, Any], *, usable_vram:float, kv_bytes:float, fits:bool = F
     where.append({"label": "Mapped from disk", "value": _w("tables", tables=_gb(ram["host_tables_bytes"]))})
   rows_r = [{"label": "Settings", "value": _w("set_replies_cached", mib=f"{out['cache_mib']:,}") if all_cached else
                                            _w("set_replies", mib=f"{out['cache_mib']:,}", pct=f"{100 * out['cpu_share']:.0f}")},
-            {"label": "Flags", "value": " ".join(out.get("flags") or [])},
+            {"label": "Flags", "value": " ".join(out.get("flags") or [])}, *([{"label": "Output", "value": said}] if (said := output_words(out)[1]) else []),
             {"label": "Replies", "value": replies_words(out["tok_s"], all_cached=all_cached)},
             {"label": "Limited by", "value": _bound(out["band"][0]["bound_by"], vram_gbs=vram_gbs, host=host, rate=rate, memory=memory)}]
   sections = [{"title": _w("where"), "rows": where, "lines": [ram["says"]]}, {"title": _w("replies"), "rows": rows_r, "lines": []}]
@@ -386,13 +603,16 @@ def refusal(reason:str) -> dict[str, Any]:
 
 def for_setup(profile:dict[str, Any], provider:str, *, usable:float, kv_bytes:float, vram_gbs:float | None, pci_bus_id:str | None,
               context:int, target, kv:str = "f16", host:dict[str, Any] | None = None, estimate:dict[str, Any] | None = None,
-              host_tables:float = 0.0, fits:bool = False, probe:bool = False, routing:bool = True) -> dict[str, Any]:
+              host_tables:float = 0.0, fits:bool = False, probe:bool = False, routing:bool = True, device_bytes:float | None = None,
+              draft:str | None = None, turn:int | None = None, features=None) -> dict[str, Any]:
   """recommend.setup's offload block: the plan, or the plain reason there is none, and the offload page (page()).
   kv: the setup's KV cache type, which the prompt limit's attention reads. host_tables: the model's bytes the engine
   maps from disk whatever the plan (a GGUF's input embeddings, recommend.tensor_bytes' host): not taken from the RAM
   for the experts (only the rows read are resident), said on the page. probe: measure the copy rate to the GPU when
   none is saved (the offload page only; an idle GPU, target/host._h2d_probe); else the saved figure or the link's.
-  Nothing here raises."""
+  device_bytes: the GPUs' memory as the runtime states it, and draft: the draft model file, for the prompt setup's
+  chunk and fit (chunk_plan); turn: the new tokens of one prefill the prompt limit is stated for (default the context);
+  features: the engine build's (its measured rows apply only to a build that has theirs; None: not read). Nothing here raises."""
   from boltbeam.target import host as hostmod
   try:
     if provider != "llama.cpp":
@@ -411,17 +631,44 @@ def for_setup(profile:dict[str, Any], provider:str, *, usable:float, kv_bytes:fl
     return {**refusal(str(exc)), "page": page(refusal(str(exc)), usable_vram=usable, kv_bytes=kv_bytes, host=host)}
   try:  # the setup for prompts, apart: what is tuned for replies reads a long prompt 5 to 18 times slower
     work = prompt_work(profile, target, vram_gbs=vram_gbs, kv=kv, routing=routing, engine=provider)
-    out["prefill"] = prefill_plan(sh, work, usable_vram=usable, kv_bytes=kv_bytes, host=host, prompt=context, engine=provider, ram=ram, fits=fits)
+    try:
+      chunk = chunk_plan(header_table(profile["source"]), peaks=work["peaks"], bandwidth_gbs=vram_gbs, device_bytes=device_bytes or usable, engine=provider,
+                         context=context, kv=kv, weight_path=work["weight_path"], target_id=target.target_id, model_id=rp.identity(profile["source"])["id"],
+                         draft=header_table(draft) if draft else None, draft_id=rp.identity(draft)["id"] if draft else None,
+                         features=features, routing=work["routing"], kv_bytes=kv_bytes,
+                         usable=usable + (_draft_bytes(draft) if draft else 0.0))
+    except (OSError, ValueError, KeyError, TypeError) as exc:  # no derivation is said and the old rule stands, never a crash
+      chunk, out["chunk_why"] = None, f"the chunk could not be derived from the header ({type(exc).__name__}: {exc})"
+    out["prefill"] = prefill_plan(sh, work, usable_vram=usable, kv_bytes=kv_bytes, host=host, prompt=turn or context, engine=provider, ram=ram, fits=fits, chunk=chunk)
   except Refused as exc:
     out["prefill"] = refusal(str(exc))
+  for p, held in ((out, sh["expert_total"]), (out.get("prefill") or {}, (out.get("prefill") or {}).get("experts_in_ram_bytes"))):
+    if p.get("status") == "recommended" and held is not None:  # the engine's rows that hang on this placement and RAM (tune.placed)
+      from boltbeam.workflow import tune
+      try:
+        p["placed"] = tune.placed(provider, profile["source"], host_expert_bytes=held, ram=ram, features=features, profile=profile, draft=draft)
+      except (OSError, ValueError, KeyError, TypeError, Refused) as exc:  # never a crash: the placement's own flags stand, said
+        p["placed"], p["notes"] = [], [*p.get("notes", []), f"the settings that hang on this placement were not derived ({type(exc).__name__}: {exc})"]
+      p["flags"] = [*(p.get("flags") or []), *(x for r in p["placed"] for x in r["flags"])]
+      p["notes"] = [*p.get("notes", []), *(_w("placed", flags=" ".join(r["flags"]), says=r["says"], output=r["output"]) for r in p["placed"])]
   out["page"] = page(out, usable_vram=usable, kv_bytes=kv_bytes, fits=fits)
   return out
+
+
+def output_words(moe:dict[str, Any]) -> tuple[str, str]:
+  """The expert cache's output label for the setup's engine (its audit_flags row, data/engine_knobs.json) and what it
+  does to the answers in words, said beside its recommendation; no words for an identical output."""
+  from boltbeam.workflow import context_audit as ca
+  from boltbeam.workflow.tune import output_of
+  got = ca.expert_cache(moe["engine"]) or output_of(None)
+  return got["output"], "" if got["output"] == ca.IDENTICAL else _w("output", label=got["output"], why=got["why"])
 
 
 def settings(moe:dict[str, Any]) -> list[dict[str, Any]]:
   """The offload flags as setup rows (flag, why, when), beside the engine's own."""
   return [{"flag": "--cpu-moe", "recommended": True, "changes": "every expert stays in host RAM (the dense parts stay on the card). " + plain_words()["offload"]["decode_tuned"], "when": "the weights do not fit GPU memory"},
-          {"flag": f"--moe-cache-mib {moe['cache_mib']}", "recommended": True, "changes": "the card keeps this many MiB of the experts already used: the free memory after the dense parts and the KV",
+          {"flag": f"--moe-cache-mib {moe['cache_mib']}", "recommended": True, "changes": "the card keeps this many MiB of the experts already used: the free memory after the dense parts and the KV. " + output_words(moe)[1],
+           "output": output_words(moe)[0],
            "when": "the weights do not fit GPU memory"},
           {"flag": f"--moe-cache-cpu-share {moe['cpu_share']:g}", "recommended": True, "changes": "the share of cache misses the CPU computes instead of uploading; this balances RAM against " + host_links.words(host_links.of(moe.get("host") or {}), "short"),
            "when": "the weights do not fit GPU memory" + ("; " + moe["build_gaps"][0] if moe["build_gaps"] else "")}]

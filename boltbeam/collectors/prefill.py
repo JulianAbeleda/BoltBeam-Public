@@ -28,7 +28,8 @@ import subprocess
 import time
 from typing import Any, Callable
 
-from boltbeam.collectors import gpu_telemetry, replay_overhead, tinygrad_role_time
+from boltbeam import formats
+from boltbeam.collectors import gpu_telemetry, replay_overhead, arkey_role_time
 from boltbeam.collectors.llama_bench_decode import fork_fact
 from boltbeam.core.policy import value
 from boltbeam.roofline.prefill_work import peaks_at
@@ -479,7 +480,7 @@ EAGER_SAMPLES = 1  # an eager prefill schedules its graph again: minutes at long
 def _fork_run(root, python, target, model, length, mode, out:pathlib.Path | None = None) -> dict[str, Any]:
   """The driver, replaying the captured graph; when the captured graphs do not fit in GPU memory, again in the
   fork's default eager mode, and the result says so (replay False, why)."""
-  from boltbeam.collectors.tinygrad_role_time import DecodeFailed
+  from boltbeam.collectors.arkey_role_time import DecodeFailed
   try:
     return _fork_once(root, python, target, model, length, mode, out, eager=False)
   except DecodeFailed as exc:
@@ -502,17 +503,17 @@ def _fork_once(root, python, target, model, length, mode, out, *, eager:bool) ->
 def fork_exec(root, python, target, driver:pathlib.Path, argv:list[str], mode:str, what:str) -> dict[str, Any]:
   """A fork driver run by the fork's python in the fork's folder: untraced (truth) or with every launch timed
   (capture); its last JSON line."""
-  from boltbeam.collectors.tinygrad_role_time import DecodeFailed, device_for
+  from boltbeam.collectors.arkey_role_time import DecodeFailed, device_for
   env = {**os.environ, "PYTHONPATH": ".", "DEV": device_for(target), "VIZ": "0",
          **({"JIT": "1", "PROFILE": "0"} if mode == "truth" else {"JIT": "2", "PROFILE": "1"})}
   proc = subprocess.run([str(python), str(driver), *argv], cwd=root, capture_output=True, text=True, timeout=7200, env=env)
   lines = [x for x in proc.stdout.splitlines() if x.startswith("{")]
   if proc.returncode != 0 or not lines:
-    raise DecodeFailed(f"tinygrad {what} ({mode}) failed", proc.stderr or proc.stdout, root)
+    raise DecodeFailed(f"arkey {what} ({mode}) failed", proc.stderr or proc.stdout, root)
   return json.loads(lines[-1])
 
 
-def tinygrad_truth(run:pathlib.Path, model:str, length:int, *, target, root=None, device:int = 0) -> dict[str, Any]:
+def arkey_truth(run:pathlib.Path, model:str, length:int, *, target, root=None, device:int = 0) -> dict[str, Any]:
   root, python = _fork(root)
   with gpu_telemetry.run_telemetry(run, device) as tele:
     got = _fork_run(root, python, target, model, length, "truth")
@@ -532,7 +533,7 @@ def tinygrad_truth(run:pathlib.Path, model:str, length:int, *, target, root=None
                                      "with compiles")}}
 
 
-def tinygrad_capture(run:pathlib.Path, model:str, length:int, target, *, root=None) -> dict[str, Any]:
+def arkey_capture(run:pathlib.Path, model:str, length:int, target, *, root=None) -> dict[str, Any]:
   root, python = _fork(root)
   raw = run / RAW / str(length)
   raw.mkdir(parents=True, exist_ok=True)
@@ -553,7 +554,7 @@ def fork_capture(raw:pathlib.Path, got:dict[str, Any]) -> dict[str, Any]:
           if binary is None and info.get("role") not in (None, "mixed") and info.get("shape")}
   widths = [w for w in data["chunks"] if isinstance(w, int)]
   return {"launches": data["launches"], "chunk": widths, "outputs": len(widths), "warmup": False,
-          "method": tinygrad_role_time.OWN_TIMING, "captured_ms": got["wall_s"] * 1e3, "program_roles": meta, "own_timing": True,
+          "method": arkey_role_time.OWN_TIMING, "captured_ms": got["wall_s"] * 1e3, "program_roles": meta, "own_timing": True,
           "paths": {"kernels": kernels, "libraries": [], "how": "each program's own source, as the fork's JIT captured it"}}
 
 
@@ -622,9 +623,9 @@ def vllm_truth(run:pathlib.Path, model:str, length:int, *, device:int = 0) -> di
 def vllm_formats(weights:set[str], resolved:dict[str, Any] | None = None, *, require_resolved:bool = False) -> dict[str, Any]:
   """vLLM on a float checkpoint: activations, attention and the cache in the weights' type (the KV cache dtype
   auto), GEMMs writing that type; no stream-k fixups."""
-  fmt = next(iter(weights)) if len(weights) == 1 and weights <= {"F16", "BF16"} else "BF16"
+  fmt = next(iter(weights)) if len(weights) == 1 and all(map(formats.half, weights)) else "BF16"
   resolved = resolved or {}
-  names = {"bfloat16": "BF16", "float16": "F16", "fp8_e4m3": "FP8_E4M3", "fp8": "FP8_E4M3"}
+  names = formats.kv_words("vllm")  # the activation and KV words vLLM records (data/formats.json)
   if require_resolved and (resolved.get('activation_dtype') not in names or
                           resolved.get('kv_cache_dtype') not in (*names, 'auto')):
     raise ValueError('attention work requires recorded supported activation and KV cache formats')
@@ -632,7 +633,7 @@ def vllm_formats(weights:set[str], resolved:dict[str, Any] | None = None, *, req
   kv = names.get(resolved.get('kv_cache_dtype'), fmt)
   return {"activations": {"in": fmt, "out": fmt}, "attention_activations": {"in": fmt, "out": fmt}, "kv": kv,
           "recurrent_form": VLLM_RECURRENT_FORM,  # how vLLM runs a gated delta net's prefill; the profile says whether the model has one
-          "activations_by_quant": {q: {"in": q, "out": fmt} for q in weights if q in {"NVFP4_G16", "FP8_E4M3"}},
+          "activations_by_quant": {q: {"in": q, "out": fmt} for q in weights if (formats.row(q) or {}).get("act_in_own_format")},
           "words": f"{fmt.lower()} activations in and out; KV cache {kv.lower()} " + ("(resolved by engine)" if resolved else "(dtype auto assumed)")}
 
 
@@ -766,8 +767,8 @@ def llama_prefill(run:pathlib.Path, model:str, length:int, target, *, capture:bo
 ENGINES: dict[str, dict[str, Callable[..., dict[str, Any]]]] = {
   "llama.cpp": {"truth": lambda run, model, length, target, root: llama_prefill(run, model, length, target, capture=False),
                 "capture": lambda run, model, length, target, root: llama_prefill(run, model, length, target, capture=True)},
-  "tinygrad": {"truth": lambda run, model, length, target, root: tinygrad_truth(run, model, length, target=target, root=root),
-               "capture": lambda run, model, length, target, root: tinygrad_capture(run, model, length, target, root=root)},
+  "arkey": {"truth": lambda run, model, length, target, root: arkey_truth(run, model, length, target=target, root=root),
+            "capture": lambda run, model, length, target, root: arkey_capture(run, model, length, target, root=root)},
   "vllm": {"truth": lambda run, model, length, target, root: vllm_truth(run, model, length),
            "capture": lambda run, model, length, target, root: vllm_capture(run, model, length, target)},
 }

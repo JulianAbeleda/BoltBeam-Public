@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from typing import Any
+from boltbeam import formats
 from boltbeam.math.roofline import effective_gbs, floor_us
 from boltbeam.target.targets import need_peak_gbs
 from boltbeam.trace.substrate_compare import _context, _whole
@@ -30,7 +31,7 @@ def _is_packed_prefill(row:dict[str, Any]) -> bool:
   kernel = str(row.get("kernel") or "")
   if "direct_packed" in kernel or "prefill_q4k" in kernel or "prefill_q6k" in kernel:
     return True
-  return row.get("role") in {"ffn_gate_up", "ffn_down", "attn_qo", "attn_kv", "quantized_matmul"} and row.get("quant") in {"Q4_K", "Q6_K"}
+  return row.get("role") in {"ffn_gate_up", "ffn_down", "attn_qo", "attn_kv", "quantized_matmul"} and row.get("quant") in formats.capable("packed_linear")
 
 
 def _scale_candidate(candidate:dict[str, Any], wall_trace:dict[str, Any] | None, context:int | None) -> dict[str, Any]:
@@ -159,7 +160,7 @@ def prefill_roofline_report(baseline:dict[str, Any], candidate:dict[str, Any], *
       "all_packed_at_llama_q4_rate_speedup": ctotal / optimistic_wall if optimistic_wall else None,
       "packed_pct_step": sum(float(r.get("pct_step") or 0.0) for r in rows),
     },
-    "baseline_rates": {"Q4_K": q4_rate, "Q6_K": {"trusted": False, "reason": "baseline trace maps Q6_K to mul_mat_vec_q rows above raw HBM peak; excluded from trusted ceiling"}},
+    "baseline_rates": {**rates, "Q6_K": {"trusted": False, "reason": "baseline trace maps Q6_K to mul_mat_vec_q rows above raw HBM peak; excluded from trusted ceiling"}},
     "hot_rows": rows,
     "next_work": _next_work(rows),
   }

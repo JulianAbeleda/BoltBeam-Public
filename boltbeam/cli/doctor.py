@@ -27,7 +27,7 @@ import sys
 from typing import Any
 
 from boltbeam.cli import tui
-from boltbeam.collectors import engine_common as ec, engine_families, engine_scan, providers, tinygrad_role_time, vendor_capture
+from boltbeam.collectors import engine_common as ec, engine_families, engine_scan, providers, arkey_role_time, vendor_capture
 from boltbeam.search import tinygrad_fork
 from boltbeam.target import targets as reg
 from boltbeam.vocab import SCHEMA_DOCTOR as SCHEMA
@@ -106,7 +106,7 @@ def _engines(target, scanned:dict[str, Any], root) -> list[dict[str, Any]]:
     name = e["provider"]
     if e["state"] == "not_compatible":
       out.append(row(fam["label"], None, e["reason"]))
-    elif name == tinygrad_role_time.PROVIDER:
+    elif name == arkey_role_time.PROVIDER:
       ready = tinygrad_fork.readiness(root)
       out.append(row(fam["label"], False, ready["message"] or e["reason"], ready["fix"]))
     elif getattr(providers.ENGINES[name], "python", lambda: None)():
