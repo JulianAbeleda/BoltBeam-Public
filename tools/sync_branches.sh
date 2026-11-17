@@ -17,7 +17,14 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 trunk="${TRUNK_BRANCH:-main}"
 dry_run=0
-[[ "${1:-}" == "--dry-run" ]] && dry_run=1
+full=0  # --full: run the whole suite on each merged tree, whatever the selector says (a release candidate does)
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) dry_run=1 ;;
+    --full) full=1 ;;
+    *) echo "usage: $0 [--dry-run] [--full]" >&2; exit 64 ;;
+  esac
+done
 # sz.py and the suite run under $BOLTBEAM_PYTHON, the interpreter the TUI and its Go seam test
 # also use; it needs the dev extras (pip install -e '.[dev]').
 py="${BOLTBEAM_PYTHON:-python3}"
@@ -68,10 +75,34 @@ sync_one() {
     if [[ "$into" == exp ]]; then echo "  sz.py FAILS on exp — reported only (run python3 sz.py there)"
     else echo "  sz.py FAILS on $into after the merge: run python3 sz.py there." >&2; exit 4; fi
   fi
-  local rc=0
-  "$py" -m pytest -q >/dev/null 2>&1 || rc=$?
+  # Test only what this merge can affect (tools/impacted_tests.py; docs/branch-flow.md): a tree that already passed on
+  # this interpreter is skipped, else the tests that can observe what changed since the last tree that passed. Anything
+  # the selector does not map, or a selector that fails, runs the whole suite.
+  local sel verdict go_too tests=() rc=0
+  if [[ -f tools/impacted_tests.py ]] && sel="$("$py" tools/impacted_tests.py $( (( full )) && echo --full))"; then
+    grep -E '^(base|changed|reason) ' <<<"$sel" | sed 's/^/  /' || true
+    verdict="$(awk '$1=="verdict"{print $2}' <<<"$sel")"
+    go_too="$(awk '$1=="go"{print $2}' <<<"$sel")"
+    mapfile -t tests < <(awk '$1=="test"{print $2}' <<<"$sel")
+    case "$verdict" in SKIP|NONE|SELECT) ;; *) verdict=FULL; go_too=yes ;; esac  # no verdict: unknown is not pass
+    [[ "$verdict" != SELECT || ${#tests[@]} -gt 0 ]] || { verdict=FULL; go_too=yes; }
+    go_too="${go_too:-yes}"
+  else
+    echo "  no selector result on $into: the whole suite runs"; verdict=FULL; go_too=yes
+  fi
+  case "$verdict" in
+    SKIP|NONE) echo "  pytest: nothing to run ($verdict)" ;;
+    SELECT) echo "  pytest: ${#tests[@]} test files"; "$py" -m pytest -q "${tests[@]}" >/dev/null 2>&1 || rc=$? ;;
+    *) echo "  pytest: the whole suite"; "$py" -m pytest -q >/dev/null 2>&1 || rc=$? ;;
+  esac
+  if [[ "$go_too" == yes && "$rc" == 0 ]]; then
+    (cd tui && go test -count=1 ./... >/dev/null 2>&1) || { echo "  go test ./... FAILS in tui on $into"; rc=1; }
+  fi
+  if [[ "$rc" == 0 && "$verdict" != SKIP ]]; then
+    "$py" tools/impacted_tests.py --record --how "$verdict" | sed 's/^/  /' || echo "  (could not record the pass; the next sync tests this tree again)"
+  fi
   case "$rc" in
-    0) echo "  merged, suite green" ;;
+    0) echo "  merged, tests green ($verdict)" ;;
     5) echo "  merged, but NO TESTS COLLECTED on $into."
        echo "  Expected only mid-prune, before the apparatus layer is restored. If $into is"
        echo "  meant to hold the suite, restore it now and commit as apparatus." ;;

@@ -30,7 +30,7 @@ no kernel rows yet to label what a manifest installs.
 
 ## Applying mods to the build you run
 
-`boltbeam screen mods --engine llama.cpp [--src DIR]` lists the mods that fit the build: base = its commit, or for
+`boltbeam mods [--engine llama.cpp] [--src DIR]` lists the mods that fit the build: base = its commit, or for
 another commit each mod tried in series order in a scratch clone, applies or conflicts by name, never forced. It names
 a mod left out because an apply dependency is not chosen, and the uncommitted or untracked changes in the checkout
 that a clone does not carry. `--apply` takes the identical ones (`--label quality-gated|untested` or `--mod ID` for

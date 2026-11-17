@@ -484,6 +484,19 @@ def _run_arg(args) -> pathlib.Path:
   adopt_run_chip(run)
   return run
 
+
+def mods_page(args, say) -> dict[str, Any]:
+  """The mods that fit (workflow/mods.run); with --apply, the modded build. No --engine: the one engine with mods here."""
+  from boltbeam.workflow import mods
+  need = args.apply or not args.engine  # listing with --engine reads no chip
+  here = (args.target or chips.detect().get("target_id")) if need else None
+  backend = _target_arg(here or "").backend if args.apply or here else None
+  engine = args.engine or mods.only_engine(backend)
+  return {"schema": SCHEMA, "kind": "mods", "engine": engine, **mods.run(engine, src=args.src, labels=("identical", *args.label),
+                                                                          only=args.mod, base=args.base, apply_them=args.apply,
+                                                                          backend=backend, say=say)}
+
+
 def _offload_args(p) -> None:
   p.add_argument("--offload", action="store_true", help="state the offload setup and speed limit (experts in RAM, a cache on the card) even when the model fits")
   p.add_argument("--experts", type=int, help="with --offload: re-size the experts to N per layer (a file not on disk; the result is an estimate)")
@@ -705,15 +718,8 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p = sub.add_parser("speedup-verify", help="check a Speed up copy against its record, in plain words (derive lighter-head --verify)")
   p.add_argument("copy")
   sub.add_parser("update", help="is a newer BoltBeam released (cli/self_update.py)").add_argument("--skip", help="skip this version")
-  p = sub.add_parser("mods", help="the arkey_ie_mods mods that fit the engine build here; --apply builds them into a clone")
-  p.add_argument("--engine", required=True, choices=list(engine_builds.rows()))
-  p.add_argument("--src", help="the source of the build you run (default: the current build's src)")
-  p.add_argument("--base", help="a source without .git: the mods version or base commit it is (default: the newest released one's)")
-  p.add_argument("--apply", action="store_true", help="apply the chosen mods to a clone of it and build it (yours is never changed)")
-  from boltbeam.workflow.context_audit import OUTPUTS
-  p.add_argument("--label", action="append", default=[], choices=list(OUTPUTS[1:3]), help="also take mods with this output label")
-  p.add_argument("--mod", action="append", help="exactly these mod ids (engine/version/name)")
-  p.add_argument("--target", default=None, help="with --apply: the chip the build is for (default: this machine's)")
+  from boltbeam.workflow import mods
+  mods.arguments(sub.add_parser("mods", help=mods.HELP))
   p = sub.add_parser("engines", help="look for every engine on this machine now and save what was found")
   p.add_argument("--cached", action="store_true", help="reuse saved discovery when settings and paths still match")
   p.add_argument("--update", action="store_true", help="look at upstream releases and install newer builds beside "
@@ -794,11 +800,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
       out = {"schema": SCHEMA, "kind": "engines-latest", "file": str(engine_builds.state_file()),
              "engines": engine_update.latest(args.engine or engine_builds.rows_for(_target_arg(here).backend if (here := args.target or chips.detect().get("target_id")) else None))}
     elif args.command == "mods":
-      from boltbeam.workflow import mods
-      backend = _target_arg(args.target or chips.detect().get("target_id") or "").backend if args.apply else None
-      out = {"schema": SCHEMA, "kind": "mods", **mods.run(args.engine, src=args.src, labels=("identical", *args.label),
-                                                           only=args.mod, base=args.base, apply_them=args.apply, backend=backend,
-                                                           say=lambda line: print(line, file=sys.stderr))}
+      out = mods_page(args, say=lambda line: print(line, file=sys.stderr))
       code = 1 if out.get("refused") else code
     elif args.command == "update":
       out = {"schema": SCHEMA, **self_update.screen(args.skip)}

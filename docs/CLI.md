@@ -98,8 +98,8 @@ boltbeam host        # RAM, RAM reads, PCIe link and copies to the GPU; measures
 boltbeam tui         # the screen; builds boltbeam-tui into ~/.cache/boltbeam first when needed
 boltbeam update      # is a newer BoltBeam released, and how this install upgrades; --yes runs it (the screen asks at start;
                      # BOLTBEAM_NO_UPDATE_CHECK=1 turns that off)
-boltbeam screen mods --engine llama.cpp   # the arkey_ie_mods mods that fit the build here; --apply builds them into a
-                                          # clone of its checkout, recorded as not verified (engine-mods.md)
+boltbeam mods        # the arkey_ie_mods mods that fit the engine build here (llama.cpp); --apply builds them into a
+                     # clone of its checkout, recorded as not verified (engine-mods.md); --json for the record
 ```
 
 `doctor` looks for the engines in the usual folders and remembers them (`~/.boltbeam/engines.json`); set an env var

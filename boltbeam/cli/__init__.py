@@ -4,9 +4,9 @@ import argparse
 import sys
 import textwrap
 
-from boltbeam.cli import analysis, doctor, fetch, gemm, ncu, offload, profile, roofline, routing, selfcheck, self_update, speed_up, tui, tune, workflow
+from boltbeam.cli import analysis, doctor, fetch, gemm, mods, ncu, offload, profile, roofline, routing, selfcheck, self_update, speed_up, tui, tune, workflow
 
-_MODULES = (analysis, profile, roofline, workflow, gemm, ncu, selfcheck, doctor, self_update, fetch, speed_up, tui, offload, tune, routing)
+_MODULES = (analysis, profile, roofline, workflow, gemm, ncu, selfcheck, doctor, self_update, fetch, speed_up, tui, offload, tune, routing, mods)
 
 # The core group `boltbeam --help` shows first, in the order a reader uses them.
 # Every other command still runs. Scripts and papers call them by name. --help lists them after the core group.

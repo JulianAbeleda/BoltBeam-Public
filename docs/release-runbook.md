@@ -16,7 +16,8 @@ installs a `boltbeam` that opens it. A release is four steps, in this order. 0.2
 ## 1. Bump the version on main and carry it outward
 
 Set `version` in `pyproject.toml` (for example `0.3.0`) and commit it on `main` as `[repo] version 0.3.0`. Then merge
-it into `dev` and `exp` (`tools/sync_branches.sh`, or merge by hand with the suite green on `dev`), and push all three:
+it into `dev` and `exp` (`tools/sync_branches.sh --full`: a release candidate runs the whole suite, not the selected
+tests; or merge by hand with the suite green on `dev`), and push all three:
 
 ```bash
 git push origin main dev exp

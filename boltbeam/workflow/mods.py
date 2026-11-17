@@ -1,4 +1,4 @@
-"""Engine mods: stored in the arkey_ie_mods repo, applied here (`screen mods`). BoltBeam holds no engine patch.
+"""Engine mods: stored in the arkey_ie_mods repo, applied here (`boltbeam mods`, `screen mods`). BoltBeam holds no engine patch.
 
 data/engine_patches.json is the pointer: where the mods repo is ($BOLTBEAM_IE_MODS, else mods_repo.default_path), the
 commit it pins and BoltBeam's own uses of a mod. data/ie_mods_index.json is that repo's index.json at the pin, shipped
@@ -229,6 +229,49 @@ def _kernel(engine:str, k:dict[str, Any], built:str, hook:dict[str, Any], ip:dic
   differs = "" if wt.is_file() and wt.read_text() == text else " (not the pinned file checked here: check out the pin first)"
   return {"id": k["id"], "builds": builds, "loaded": f"not confirmed: the manifest matches this build, no load check runs "
           f"here; with {switch(hook)}={wt}{differs} its log must say {'; '.join(lines)}"}
+
+
+HELP = "the arkey_ie_mods mods that fit the engine build here; --apply builds them into a clone"
+
+
+def arguments(p) -> None:
+  """The flags of `screen mods` and `boltbeam mods` (cli/mods.py), one set."""
+  from boltbeam.collectors import engine_builds
+  from boltbeam.workflow.context_audit import OUTPUTS
+  p.add_argument("--engine", choices=list(engine_builds.rows()), help="default: the one engine with mods for this machine's build")
+  p.add_argument("--src", help="the source of the build you run (default: the current build's src)")
+  p.add_argument("--base", help="a source without .git: the mods version or base commit it is (default: the newest released one's)")
+  p.add_argument("--apply", action="store_true", help="apply the chosen mods to a clone of it and build it (yours is never changed)")
+  p.add_argument("--label", action="append", default=[], choices=list(OUTPUTS[1:3]), help="also take mods with this output label")
+  p.add_argument("--mod", action="append", help="exactly these mod ids (engine/version/name)")
+  p.add_argument("--target", default=None, help="with --apply or no --engine: the chip the build is for (default: this machine's)")
+
+
+def only_engine(backend:str | None) -> str:
+  """The engine `boltbeam mods` takes without --engine: the one with an applier (apply row) this machine's build can run."""
+  from boltbeam.collectors import engine_builds as eb
+  got = [e for e in pointer()["apply"] if e != "why" and e in eb.rows_for(backend)]
+  if len(got) != 1:
+    raise Refused(f"pass --engine: {len(got)} engines have mods for this machine ({', '.join(got) or 'none'})")
+  return got[0]
+
+
+def text(res:dict[str, Any]) -> str:
+  """`boltbeam mods` in plain lines; --json prints the record itself."""
+  out = [f"mods {res.get('engine', '')}".rstrip() + f": {res['refused']}"] if res.get("refused") else []
+  if "fits" in res:
+    out.append(f"{res['engine']} source: {res['fits']}")
+    out += [f"  mods that fit ({len(res['chosen'])}):", *(f"    {m}" for m in res["chosen"] or ["none"])]
+    out += [f"  conflicts, left out: {', '.join(res['conflicts'])}"] * bool(res["conflicts"])
+    out += [f"  left out, a mod it needs is not taken: {m} needs {', '.join(d)}" for m, d in res["missing_dependencies"].items()]
+    out += [f"  not chosen: {m}" for m in res["not_chosen"]]
+    out += [f"  not carried into the clone: {len(res['not_carried'])} uncommitted changes in your tree"] * bool(res["not_carried"])
+  if b := res.get("build"):
+    out += [f"built: {b['folder']} ({b['key']})", f"  commit {b['checks']['commit']}",
+            *(f"  kernel {k['id']}: {k['loaded']}" for k in b["checks"].get("kernels", []))]
+  elif res.get("chosen") and not res.get("refused"):
+    out.append("`boltbeam mods --apply` builds them into a clone (yours is never changed)")
+  return "\n".join(out)
 
 
 def modded(engine:str, path:str | None) -> dict[str, Any] | None:
