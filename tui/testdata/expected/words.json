@@ -1435,6 +1435,7 @@
       "unread": "its own GPU memory was not read"
     },
     "missing": "not checked: {fact} could not be read here",
+    "modded_build": "the modded build {key} that BoltBeam built (Apply mods)",
     "modded_unverified": "Modded build, {status}: {mods}. No check of these mods has run on this machine.",
     "none": "none",
     "not_applicable": "Not used with this model and placement:",
@@ -1466,7 +1467,7 @@
       "title": "Tuned for this machine",
       "use": "Use these",
       "use_helper": "copy into Engine settings for the next run",
-      "use_none": "Nothing to copy: every row is at its default.",
+      "use_none": "Nothing to copy: no value in this command is one a run takes from Engine settings.",
       "used": "Copied {n} values into Engine settings; the next run passes them."
     },
     "setup": "Setup (value, where it came from, why):",
@@ -1488,7 +1489,7 @@
     "mtp_gain": "k={k}: {speedup:.2f}x over no draft, measured at a {context:,.0f}-token context",
     "no_fit_context": "A {context:,}-token context does not fit this GPU: what the model keeps on the card and the KV cache for one request need at least {need:.1f} GiB (the compute buffers and the GPU context come on top), and the GPU has {gpu:.1f} GiB. Use a shorter context, keep more of the model in host RAM, or use a smaller model.",
     "no_head": "the MTP head {head} is not a file",
-    "no_heads": "none was given (--draft) and none sits beside the model",
+    "no_heads": "none was given (--draft) and none sits beside the model. To add one, put the model's MTP head (a GGUF) in the model's folder, where the TUI and tune find it, or pass --draft HEAD to boltbeam tune",
     "no_patch": "This build has none of the llama.cpp mods whose knobs tune sets (arkey_ie_mods {mods}), so only stock flags are recommended below.",
     "no_patch_modded": "This modded build has none of the llama.cpp mods whose knobs tune sets (arkey_ie_mods {mods}), so those knobs are not tuned; the switches of the mods it has are set in the command below, as a run on it sets them.",
     "no_plan": "the offload plan could not be worked out here",

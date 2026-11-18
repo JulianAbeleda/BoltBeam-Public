@@ -333,8 +333,12 @@ func tuneBody(f Facts, width int) string {
 		return "\n" + paint(stMuted, hangHard("Tuned for this machine could not be read: "+t.Err, 0, width)) + "\n"
 	case f.tunePage() == nil && t.Page != nil && t.Key == f.tuneKey() && t.Page.Refused != nil:
 		return "\n" + paint(stMuted, hangHard(*t.Page.Refused, 0, width)) + "\n"
-	case f.tunePage() == nil:
-		return "\n" + stMuted.Render(strings.TrimSpace(f.Spin+" reading this machine and the build…")) + "\n"
+	case f.tunePage() == nil: // the recommendation's command meanwhile; this page's replaces it when it comes
+		loading := "\n" + stMuted.Render(strings.TrimSpace(f.Spin+" reading this machine and the build…")) + "\n"
+		if c := f.copyOf("command"); c != "" && f.RecKey == f.recommendKey() {
+			loading += "\n" + paint(stMuted, wrapCommand(c, 4, width)[2:]) + "\n"
+		}
+		return loading
 	}
 	p := f.tunePage()
 	var b strings.Builder
@@ -370,8 +374,66 @@ func tuneBody(f Facts, width int) string {
 	if p.Use.NotPassed != nil {
 		b.WriteString("\n" + paint(stMuted, hangHard(*p.Use.NotPassed, 2, width)) + "\n")
 	}
-	b.WriteString("\n" + paint(stMuted, hangHard(p.Command, 4, width)[2:]) + "\n")
+	b.WriteString("\n" + paint(stMuted, wrapCommand(p.Command, 4, width)[2:]) + "\n")
 	return b.String()
+}
+
+// wrapCommand is a command line hung at indent: it breaks only between words, a flag kept with its value on one line
+// where they fit; a single word longer than the line (a long path) is the one thing cut, at the width.
+func wrapCommand(cmd string, indent, width int) string {
+	room, pad := max(width-indent, 10), strings.Repeat(" ", indent)
+	words := strings.Fields(cmd)
+	var units []string // a flag and its value, or a word alone
+	for i := 0; i < len(words); i++ {
+		if strings.HasPrefix(words[i], "-") && i+1 < len(words) && !strings.HasPrefix(words[i+1], "-") {
+			units = append(units, words[i]+" "+words[i+1])
+			i++
+			continue
+		}
+		units = append(units, words[i])
+	}
+	var lines []string
+	line := ""
+	put := func(u string) {
+		switch {
+		case line == "":
+			line = u
+		case ansi.StringWidth(line)+1+ansi.StringWidth(u) <= room:
+			line += " " + u
+		default:
+			lines, line = append(lines, line), u
+		}
+	}
+	for _, u := range units {
+		if ansi.StringWidth(u) > room && strings.Contains(u, " ") { // a flag and its value too long together: apart
+			f, v, _ := strings.Cut(u, " ")
+			put(f)
+			u = v
+		}
+		if ansi.StringWidth(u) <= room {
+			put(u)
+			continue
+		}
+		if line != "" { // a word longer than any line: its own lines, cut at the width (never just after a dash)
+			lines = append(lines, line)
+		}
+		r := []rune(u)
+		for len(r) > room {
+			n := room
+			if r[n-1] == '-' {
+				n--
+			}
+			lines, r = append(lines, string(r[:n])), r[n:]
+		}
+		line = string(r)
+	}
+	if line != "" || len(lines) == 0 {
+		lines = append(lines, line)
+	}
+	for i := range lines {
+		lines[i] = pad + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // hangHard is hang that also breaks a word longer than the line (a path, a command): nothing runs past the width.

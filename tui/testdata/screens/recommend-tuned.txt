@@ -144,6 +144,6 @@ Tuned for this machine
     lost its restore point (2,215 cached tokens -> 0)
 
   LLAMA_WS_PIN_GIB=12 GGML_CUDA_WS_SLOTS=17 LLAMA_SERVER_CKPT_MIN_HEAD=256
-    ~/llama.cpp/build/bin/llama-server -m /models/Qwen3.8-Flash-Next-GSQ-
-    RCO-IQ1_M-00001-of-00002.gguf -ngl 99 --n-cpu-moe 24 -c 10000 --cache-
-    ram 0 -ub 4096 -b 4096
+    ~/llama.cpp/build/bin/llama-server
+    -m /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf -ngl 99
+    --n-cpu-moe 24 -c 10000 --cache-ram 0 -ub 4096 -b 4096

@@ -996,6 +996,7 @@
   "unset": "(unset)",
   "switch_off": "{name} not passed",
   "unlisted": "a build BoltBeam does not know by name",
+  "modded_build": "the modded build {key} that BoltBeam built (Apply mods)",
   "host": "Host: {total:.1f} GiB RAM, {avail} GiB available now, {usable:.0f} GiB usable for the model; L3 {l3} ({l3_source}).",
   "setup": "Setup (value, where it came from, why):",
   "source_derived": "derived",
@@ -1079,7 +1080,7 @@
    "failed": "The measurement stopped without an answer: the values read from facts stand. Its log: {log}",
    "use": "Use these",
    "use_helper": "copy into Engine settings for the next run",
-   "use_none": "Nothing to copy: every row is at its default.",
+   "use_none": "Nothing to copy: no value in this command is one a run takes from Engine settings.",
    "used": "Copied {n} values into Engine settings; the next run passes them.",
    "not_passed": "A run does not pass these yet, so they are not copied: {knobs}.",
   "held": "{knob} is not copied: its value assumes {needs}, which a run does not pass yet.",
@@ -1105,7 +1106,7 @@
   "kv_size_unknown": "{type} (size unknown)",
   "no_head": "the MTP head {head} is not a file",
   "heads": "several MTP heads sit beside the model ({heads}): name the one to load with --draft",
-  "no_heads": "none was given (--draft) and none sits beside the model"
+  "no_heads": "none was given (--draft) and none sits beside the model. To add one, put the model's MTP head (a GGUF) in the model's folder, where the TUI and tune find it, or pass --draft HEAD to boltbeam tune"
  },
  "mtp_pick": {
   "at": "k={k}: {tok_s:.0f} tok/s, the median over {n} prompts (they ranged {lo:.0f} to {hi:.0f}), {speedup:.2f}x k=0, measured at a {ctx:,.0f}-token context on {engine}, {date}",

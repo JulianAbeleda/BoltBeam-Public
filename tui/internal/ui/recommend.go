@@ -220,11 +220,11 @@ func recommendRows(f Facts) []action {
 	if f.RecChecking {
 		check = note("  " + f.Spin + " checking: one engine start, a minute or two…")
 	}
-	return append([]action{
-		{"[ Copy engine command line ]", "reccopy", "command"},
-		{"[ Copy Arkey vllm_args ]", "reccopy", "arkey"},
-		check,
-	}, append(mtpAction(f), speedActions(f)...)...)
+	rows := []action{{"[ Copy engine command line ]", "reccopy", "command"}}
+	if len(r.Arkey) > 0 { // Python gives Arkey args only for an engine Arkey serves, and none when every flag is Arkey's own: no row then
+		rows = append(rows, action{"[ Copy Arkey vllm_args ]", "reccopy", "arkey"})
+	}
+	return append(append(rows, check), append(mtpAction(f), speedActions(f)...)...)
 }
 
 // copyText puts text on the clipboard: the system's where there is one, and the terminal's own (OSC 52) always,

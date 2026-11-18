@@ -334,3 +334,101 @@ func TestTuneSettingSwitch(t *testing.T) {
 		t.Errorf("flag: got %q", got)
 	}
 }
+
+// longCommand is the 120x40 screenshot's command: a modded build's environment, long paths, flags with their values.
+const longCommand = "LLAMA_KPOOL_INCREMENTAL=1 LLAMA_SPARSE_DIRECT=1 LLAMA_IDX_POOLED=1 LLAMA_MTP_SHARE_HEAD=1 LLAMA_KPOOL_INPUT_DEVICE=1 " +
+	"LLAMA_SEQ_RM_INDEXED=1 GGML_CUDA_EXT_KERNELS=/home/u/storage/boltbeam-engines/llama.cpp/b1b770d90-mods-b8a03a1a/kernels/bf16-smallm-gemv-k10240/manifest.json " +
+	"/home/u/storage/boltbeam-engines/llama.cpp/b1b770d90-mods-b8a03a1a/build/bin/llama-server " +
+	"-m /home/u/storage/models/flash-next/ista-coder/IQ1_M/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf -ngl 99 -c 103936 -np 1 -ctk q8_0 -ctv q8_0"
+
+// tunedWithNothingToUse is the tuned page whose last row (Use these) is a note: nothing below Measure takes the cursor.
+func tunedWithNothingToUse(t *testing.T) Model {
+	m := tunedProgram(t, "tune-experts-in-ram.json")
+	tp, pg := *m.f.Tune.Page, *m.f.Tune.Page.Page
+	none := "Nothing to copy."
+	pg.Use.None, pg.Command, tp.Page = &none, longCommand, &pg
+	m.f.Tune.Page = &tp
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	return next.(Model)
+}
+
+// At 120x40 the page ends in the command, below a last row that is a note: Down, End and PageDown still reach it (the
+// page scrolls when no row below takes the cursor).
+func TestRecommendedPageScrollsToItsCommand(t *testing.T) {
+	setProfile(colorprofile.NoTTY)
+	lines := strings.Split(wrapCommand(longCommand, 4, 116), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if m := tunedWithNothingToUse(t); strings.Contains(frame(m), last) {
+		t.Fatal("the command is in view before any key: the test proves nothing")
+	}
+	press := func(m Model, code rune, n int) Model {
+		for range n {
+			next, cmd := m.Update(tea.KeyPressMsg{Code: code})
+			m = settle(next.(Model), cmd)
+		}
+		return m
+	}
+	for name, m := range map[string]Model{
+		"down": press(tunedWithNothingToUse(t), tea.KeyDown, 400), "end": press(tunedWithNothingToUse(t), tea.KeyEnd, 1),
+		"pgdown": press(tunedWithNothingToUse(t), tea.KeyPgDown, 40),
+	} {
+		got := frame(m)
+		if !strings.Contains(got, last) {
+			t.Errorf("%s: the command's last line %q is not reached:\n%s", name, last, got)
+		}
+		for _, l := range strings.Split(got, "\n") {
+			if l = strings.TrimRight(strings.Trim(strings.TrimSpace(l), "│"), " "); strings.HasSuffix(l, " -") || strings.HasSuffix(l, "-") && strings.Contains(longCommand, strings.TrimSpace(l)+"-") {
+				t.Errorf("%s: a line ends mid-token: %q", name, l)
+			}
+		}
+	}
+}
+
+// The command breaks only between words, a flag with its value; a word longer than the line is the one thing cut.
+func TestCommandWrapsBetweenFlags(t *testing.T) {
+	words := strings.Fields(longCommand)
+	for width := 40; width <= 140; width++ {
+		got := wrapCommand(longCommand, 4, width)
+		var fields []string
+		for i, l := range strings.Split(got, "\n") {
+			if ansi.StringWidth(l) > width {
+				t.Fatalf("width %d: a line of %d cells: %q", width, ansi.StringWidth(l), l)
+			}
+			if strings.HasSuffix(l, "-") {
+				t.Fatalf("width %d: line %d ends in a dash: %q", width, i, l)
+			}
+			fields = append(fields, strings.Fields(l)...)
+		}
+		joined, j := strings.Join(fields, " "), 0
+		for _, w := range words { // every word whole, in order, unless it is wider than any line
+			if ansi.StringWidth(w) > width-4 {
+				j += len(w) + 1
+				continue
+			}
+			k := strings.Index(joined[j:], w)
+			if k < 0 || (j+k > 0 && joined[j+k-1] != ' ') {
+				t.Fatalf("width %d: %q is split:\n%s", width, w, got)
+			}
+			j += k + len(w)
+		}
+		if width >= 60 && strings.Contains(got, "-ngl\n") {
+			t.Fatalf("width %d: -ngl apart from its value:\n%s", width, got)
+		}
+	}
+}
+
+// While Tuned for this machine reads (30-60 s), the Recommended command is shown; the tuned page's replaces it.
+func TestRecommendedCommandShowsWhileTunedLoads(t *testing.T) {
+	setProfile(colorprofile.NoTTY)
+	m := speedProgram(t, nil)
+	m.f.Tune = TuneState{Key: m.f.tuneKey()}
+	squash := func(s string) string { return strings.Join(strings.Fields(ansi.Strip(s)), "") }
+	rec := *m.f.Recommend.Command
+	if got := tuneBody(m.f, 76); !strings.Contains(squash(got), squash(rec)) {
+		t.Fatalf("loading shows no command:\n%s", got)
+	}
+	m = tunedProgram(t, "tune-experts-in-ram.json")
+	if got := tuneBody(m.f, 76); !strings.Contains(squash(got), squash(m.f.tunePage().Command)) || strings.Contains(squash(got), squash(rec)) {
+		t.Fatalf("the tuned command replaces it:\n%s", got)
+	}
+}

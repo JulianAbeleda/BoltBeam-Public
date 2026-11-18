@@ -1148,11 +1148,12 @@ def text(res:dict[str, Any], tab:dict[str, Any] | None = None) -> str:
   w, b, f, rows, eng = words()["tune"], res["build"], res["facts"], res["rows"], tab["engines"][res["engine"]]
   have = [k for k, v in b["groups"].items() if v]
   ver = f", {b['version']}" if b.get("version") else ""
+  md = b.get("modded")  # a modded build BoltBeam built is named as one; its mods are the line under it, not "none"
   lines = [w["build"].format(engine=res["engine"], path=short_path(b["build"]), backend=(b.get("backend") or "?").upper(), version=ver,
-                             fork=b.get("fork") or w["unlisted"])]
-  if eng["groups"]:
+                             fork=w["modded_build"].format(key=md.get("key")) if md else b.get("fork") or w["unlisted"])]
+  if eng["groups"] and (have or not md):
     lines[-1] += " " + w["groups"].format(what=eng["groups_words"], groups=", ".join(have) if have else w["none"])
-  if md := b.get("modded"):
+  if md:
     lines.append(w["modded_unverified"].format(status=md.get("status"), mods=", ".join(m["id"] for m in md.get("mods", []))))
   lines += list(b.get("notes") or []) + list(f.get("notes") or [])
   lines.append(w["host"].format(total=f["ram_total_bytes"] / GiB, usable=f["usable_ram_bytes"] / GiB,
@@ -1175,7 +1176,7 @@ def text(res:dict[str, Any], tab:dict[str, Any] | None = None) -> str:
   lacks = [r["name"] for r in absent if not r["group"]]
   if older:
     lines += ["", w["older_group"].format(noun=eng["group_noun"], knobs=", ".join(older))]
-  if gone:
+  if gone and have:  # a build with none of the groups: its notes say so once (the adapter's), naming the build's own mods apart
     lines += ["", w["not_in_build"].format(groups=", ".join(gone))]
   if lacks:
     lines += ["", w["lacks"].format(engine=res["engine"], knobs=", ".join(lacks))]

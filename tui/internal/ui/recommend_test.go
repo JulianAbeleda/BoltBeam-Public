@@ -50,6 +50,23 @@ func TestRecommendedSetupLineAndPage(t *testing.T) {
 	}
 }
 
+// A page shows only the actions its engine has: Python gives Arkey's args for an engine Arkey serves and none for
+// another (a llama.cpp page), so that page has no "Copy Arkey vllm_args" row, and the rows after it keep their order.
+func TestAnEngineWithNoArkeyArgsHasNoArkeyRow(t *testing.T) {
+	f := Facts{Recommend: sampleRecommend()}
+	cmd := "llama-server -m /m.gguf -ngl 99 -c 4096"
+	f.Recommend.Provider, f.Recommend.Command, f.Recommend.Arkey = "llama.cpp", &cmd, nil
+	acts := recommendActions(f)
+	for _, a := range acts {
+		if a.arg == "arkey" || strings.Contains(a.label, "Arkey") {
+			t.Fatalf("a page with no Arkey args offers %q", a.label)
+		}
+	}
+	if len(acts) != 2 || acts[0].arg != "command" || acts[1].do != "reccheck" {
+		t.Fatalf("actions: %+v", acts)
+	}
+}
+
 func TestCopiedArkeyArgsHoldNoReservedFlag(t *testing.T) {
 	f := Facts{Recommend: sampleRecommend()}
 	for _, bad := range []string{"--model", "--host", "--port", "--served-model-name", "--max-model-len", "-m"} {

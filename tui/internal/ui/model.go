@@ -719,10 +719,12 @@ const PageRows = 10
 // The rows are shown windowed around the cursor (DetailActions), so this is the list's scrolling.
 func (m *Model) moveDown(n int) {
 	for ; n > 0; n-- {
+		was := m.row
 		if m.row < len(m.actions())-1 {
 			m.row++
 			m.skipHeads(1)
-		} else {
+		}
+		if m.row == was { // no row below to rest on (the last ones may be notes): the page scrolls instead
 			m.view.ScrollDown(1)
 		}
 	}
@@ -895,8 +897,9 @@ func (m Model) key(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 		m.moveDown(PageRows)
 	case key.Matches(msg, keyPgUp):
 		m.moveUp(PageRows)
-	case key.Matches(msg, keyEnd):
+	case key.Matches(msg, keyEnd): // the last row, and the page's end
 		m.moveDown(len(m.actions()))
+		m.view.GotoBottom()
 	case key.Matches(msg, keyHome):
 		m.view.GotoTop()
 		m.row = 0

@@ -43,8 +43,6 @@ Tuned for this machine
     sharing one L3, the physical cores and the logical CPUs)
     to confirm: choice over -t 8, 16
 
-  Not in this build (no knobs from it): llama-moe-prefill, llama-pinned-
-  copy-stream, llama-server-ckpt-min-head, llama-server-ckpt-tail-only.
-
-  ~/llama.cpp/build/bin/llama-server -m /models/Qwen3.8-Flash-Next-GSQ-
-    RCO-IQ1_M-00001-of-00002.gguf -ngl 99 --n-cpu-moe 12 -c 12048
+  ~/llama.cpp/build/bin/llama-server
+    -m /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf -ngl 99
+    --n-cpu-moe 12 -c 12048

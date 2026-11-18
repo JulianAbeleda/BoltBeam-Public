@@ -5,9 +5,7 @@
  "model": "/models/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf",
  "out": null,
  "page": {
-  "absent": [
-   "Not in this build (no knobs from it): llama-moe-prefill, llama-pinned-copy-stream, llama-server-ckpt-min-head, llama-server-ckpt-tail-only."
-  ],
+  "absent": [],
   "command": "~/llama.cpp/build/bin/llama-server -m /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf -ngl 99 --n-cpu-moe 12 -c 12048",
   "head": "llama.cpp build: master, at ~/llama.cpp/build/bin/llama-server (CUDA). Its local patches: none.",
   "measure": {
