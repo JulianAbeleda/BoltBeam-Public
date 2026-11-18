@@ -20,7 +20,7 @@ ceilings, the floor rule and the tie-out. One table lists the engines. Nothing e
 | `FORMATS` | same | the weight files each engine reads (`gguf`, `safetensors`) |
 | `DRIVEN` | same | engines that run as their own program through a driver script |
 | `ENGINES` | `boltbeam/collectors/prefill.py` | per engine: how to time one prefill (`truth`) and capture one (`capture`) |
-| `ITEMS`, `PRIMARY` | `boltbeam/collectors/engine_scan.py` | where `doctor` and the screen look for the engine, and its env var |
+| `ITEMS`, `PRIMARY` | `boltbeam/collectors/engine_saved.py` | where `doctor` and the screen look for the engine, and its env var |
 | `engines` | `boltbeam/data/engine_pins.json` | the one pinned version per engine, with its history |
 
 ## What an adapter must return
@@ -135,7 +135,7 @@ def role_time(run, *, target, model, model_id, context, batch=1, tokens=...): ..
 Then:
 
 1. Add the module to `ENGINES` in `providers.py`, and to `DRIVEN` when it runs through a driver.
-2. Add its env var and search places to `engine_scan.ITEMS`, so `doctor` finds it.
+2. Add its env var and search places to `engine_saved.ITEMS`, so `doctor` finds it.
 3. For prefill, add `truth` and `capture` to `prefill.ENGINES` (step 3, 4, 5 above).
 4. Add its pin to `engine_pins.json`.
 5. Run it twice on one model and derive repeat bands (below). Until then every verdict reads "not checked".

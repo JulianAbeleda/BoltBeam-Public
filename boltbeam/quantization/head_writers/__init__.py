@@ -4,7 +4,7 @@ write(src, dst, engine, plan), accuracy(src, dst, engine, texts); with speed wit
 returning {depths: {depth: {context, base, ks, tokens}}, engine: the build, sweep} from mtp_ks() when how names no ks (how: the part row's measure,
 ks or grow, and main for a draft head that is its own file) and device(engine) {target, name, backend, memory_bytes,
 budget_bytes}. Every one raises core.refused.Refused to say it cannot, in one sentence. What measures MTP on an engine is
-data/engine_knobs.json's (engines.<E>.mtp), called through collectors/mtp.measure."""
+data/engine_adapters.json's (engines.<E>.mtp), called through collectors/mtp.measure."""
 from __future__ import annotations
 
 import json

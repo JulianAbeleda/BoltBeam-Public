@@ -135,3 +135,35 @@ func TestContextRepliesTildeIsHome(t *testing.T) {
 		t.Fatalf("%q", m.f.Context.Replies)
 	}
 }
+
+// Context unset, the two command lines on Recommended setup (the recommendation's and Tuned for this machine's) are one
+// context and one KV type: Python's recommend launch. Tuned waits for the recommendation rather than read twice; a
+// recommendation that failed leaves it its own defaults; a typed Context is the user's, with the recommendation's KV
+// type and experts in RAM for that context.
+func TestTuneIsStatedAtTheRecommendationsContextAndKV(t *testing.T) {
+	m := contextProgram(t)
+	m.f.RecKey, m.f.Recommend, m.f.RecErr = m.f.recommendKey(), nil, ""
+	if m.f.tuneKey() != "" || !strings.Contains(tuneBody(m.f, 80), "reading the recommendation") {
+		t.Fatal("the recommendation is being read: Tuned waits for its launch, and says so")
+	}
+	m.f.RecErr = "refused"
+	if m.f.tuneKey() == "" || slices.Contains(m.f.tuneAsk(), "--kv") {
+		t.Fatalf("no recommendation: Tuned keeps its own defaults: %v", m.f.tuneAsk())
+	}
+	ctx := 247552
+	m.f.Recommend, m.f.RecErr = &seam.Recommend{Launch: &seam.RecLaunch{Context: &ctx, KV: "q8_0"}}, ""
+	if got := strings.Join(m.f.tuneAsk(), " "); got != "--context 247552 --kv q8_0 --workload one-shot --target apple_m3_10c" {
+		t.Fatalf("unset Context: %q", got)
+	}
+	m.f.Context = Context{Prompt: 8000, Reply: 1000}
+	m.f.RecKey = m.f.recommendKey()
+	n := 7
+	m.f.Recommend.Launch.NCpuMoe = &n
+	if got := strings.Join(m.f.tuneAsk(), " "); got != "--prompt 8000 --context 9000 --kv q8_0 --experts-in-ram 7 --workload one-shot --target apple_m3_10c" {
+		t.Fatalf("typed Context: the recommendation's KV type and placement, the context the user's: %q", got)
+	}
+	m.f.Context, m.f.RecKey = Context{}, "another model"
+	if slices.Contains(m.f.tuneAsk(), "--kv") {
+		t.Fatal("a recommendation for something else is not this page's source")
+	}
+}

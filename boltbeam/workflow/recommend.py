@@ -457,6 +457,83 @@ def max_seqs(profile:dict[str, Any], *, weights:float, share:float, usable:float
              [f"context {context}", f"{per / 2**20:.1f} MiB per sequence"], "derived" if overhead is not None else "upper bound")
 
 
+def llama_load(source:str | None) -> dict[str, Any] | None:
+  """What llama.cpp's fit reads from the model file besides its profile: the header (indexer keys) and the expert shapes
+  (tune_llama_cpp.expert_layers); None when the file cannot be read (the derived upper bound stands)."""
+  from boltbeam.workflow import tune_llama_cpp as lc
+  try:
+    return {"header": lc.header_of(source), "ex": lc.expert_layers(source)} if source else None
+  except Refused:
+    return None
+
+
+def llama_after_load(profile:dict[str, Any], load:dict[str, Any], *, kv:str, cells:int, weights:float, share:float, free:float,
+                     seqs:int, target, chunk:int | None = None) -> float | None:
+  """GPU memory free once llama-server has loaded the model with this command, on one GPU of a layout: the engine's
+  after_load formula (data/engine_knobs.json) over tune_llama_cpp.load_facts, the one estimate tune's memory fit reads.
+  free: the GPU's free memory before the start; weights: the weights it holds; share: its share of the KV and state."""
+  from boltbeam.workflow import tune_llama_cpp as lc
+  f = lc.load_facts(profile, load["header"], load["ex"], kv_type=kv, context=cells, chunk=chunk or off.knob_default("llama.cpp", "-ub"),
+                    backend=vendors.for_backend(target.backend).ggml_backend, slots=seqs)
+  f[f"{lc.NS}.kv_cache_bytes"] *= share
+  return lc.after_load({**f, "gpu_free_bytes": free, "gpu_free_min_bytes": free, "gpu_count": 1, f"{lc.NS}.on_card_bytes": weights})
+
+
+def llama_fit(profile:dict[str, Any], load:dict[str, Any], *, weights:float, share:float, free:float, seqs:int, kvs:dict[str, float],
+              target, margin:float, chunk:int | None = None) -> dict[str, Any] | None:
+  """The most cells llama-server holds per KV type with the after-load estimate still at least the margin (affine in the
+  cells, so solved from two points), capped at the model's context; None when the estimate is unknown."""
+  cap = ((profile.get("metadata") or {}).get("context") or {}).get("length")
+  out = {}
+  for label in kvs:
+    at = lambda c: llama_after_load(profile, load, kv=label, cells=c, weights=weights, share=share, free=free, seqs=seqs, target=target, chunk=chunk)  # noqa: E731
+    a0, a1 = at(0), at(1 << 16)
+    if a0 is None or a1 is None:
+      return None
+    per = (a0 - a1) / (1 << 16)
+    tokens = int((a0 - margin) // per) if per > 0 and a0 > margin else (0 if a0 <= margin else cap or 0)
+    capped = llama_cells(min(tokens, cap) if cap else tokens)
+    out[label] = fig(capped, "the most cells (a multiple of 256) at which llama.cpp's after-load estimate leaves the margin free, capped at the model's context",
+                     [f"free {free / 2**30:.2f} GiB before the start", f"weights {weights / 2**30:.2f} GiB", f"{per:,.0f} bytes per {label} cell (KV, indexer keys, dequant copy, masks)",
+                      f"{(free - weights - a0) / 2**30:.2f} GiB fixed (state, compute buffer, llama-server's runtime)", f"{margin / 2**30:.2f} GiB margin", f"model cap {cap}"])
+    out[label]["uncapped"] = tokens
+  return out
+
+
+def llama_placement(profile:dict[str, Any], load:dict[str, Any], *, kv:str, cells:int, weights:float, free:float, seqs:int,
+                    target, margin:float) -> int | None:
+  """--n-cpu-moe N: the fewest model layers whose experts go to host RAM (layers 0..N-1, as llama.cpp's own -fit fills
+  from the front) for the after-load estimate at these cells to keep the margin; None when even every expert in RAM does not."""
+  from boltbeam.workflow import tune_llama_cpp as lc
+  ids, per = load["ex"].get("ids") or [], load["ex"].get("per_layer") or []
+  moved = 0.0
+  for i, b in [(None, 0)] + list(zip(ids, per)):
+    moved += b
+    got = llama_after_load(profile, load, kv=kv, cells=cells, weights=weights - moved, share=1.0, free=free, seqs=seqs, target=target)
+    if got is not None and got >= margin:
+      return 0 if i is None else lc.cpu_moe_layers(ids, ids.index(i) + 1)
+  return None
+
+
+def llama_chunk(profile:dict[str, Any], load:dict[str, Any], *, kv:str, cells:int, weights:float, free:float, seqs:int,
+                target, margin:float) -> int | None:
+  """-ub: the chunk the rest of the after-load room buys, by the same rule as tune's memory fit (the -ub row): the plan's
+  chunks (tune_llama_cpp.chunk_fit) by predicted prompt speed, the fastest whose after-load estimate at these cells keeps
+  the margin; None (llama-server's default) when no larger one fits. The plan is read only when the next chunk up fits."""
+  from boltbeam.workflow import tune, tune_llama_cpp as lc
+  low = int(off.knob_default("llama.cpp", "-ub"))
+  left = lambda u: llama_after_load(profile, load, kv=kv, cells=cells, weights=weights, share=1.0, free=free, seqs=seqs, target=target, chunk=u)  # noqa: E731
+  if (left(2 * low) or -1) < margin:
+    return None
+  from boltbeam.workflow import chips
+  if chips.detect().get("target_id") != target.target_id:  # the plan reads this machine's GPU: another chip's chunk is not derived here
+    return None
+  cf = lc.chunk_fit(lc.offload_plan(profile["source"], tune.prompt_at(cells), context=cells))
+  gains = cf[f"{lc.NS}.plan_ubatch_gains"] or {}
+  best = next((int(u) for u in sorted(gains, key=lambda u: -gains[u]) if (left(int(u)) or -1) >= margin), low)  # stable: ties keep the larger
+  return best if best > low else None
+
+
 # --- the settings ----------------------------------------------------------------------------------------------------
 
 def vllm_settings(profile:dict[str, Any], tb:dict[str, Any], *, kv:str, seqs:int, layout:str, gpus:int, text_only:bool,
@@ -552,11 +629,16 @@ def llama_flags(profile:dict[str, Any], *, kv:str, seqs:int, layout:str, gpus:in
   placed = render_llama(placement) if placement else []
   if placement:
     check_llama(placement)
-  out = ["-c", str(context // 256 * 256), "-np", str(seqs), *all_layers(placed), "-fa", "on"]  # it rounds -c up to 256 cells
+  out = ["-c", str(llama_cells(context)), "-np", str(seqs), *all_layers(placed), "-fa", "on"]
   if kv == "q8_0":
     out += ["-ctk", "q8_0", "-ctv", "q8_0"]
   return out + (tgpu.engine_args(layout, "llama.cpp", _llama_bench())[0] if layout in ("row", "layer") else
                 tgpu.engine_args("one", "llama.cpp")[0] if machine_gpus > 1 else []) + placed
+
+
+def llama_cells(context:int) -> int:
+  """The -c the command passes: llama-server rounds -c up to 256 cells, so the context is rounded down to stay in the fit."""
+  return context // 256 * 256
 
 
 def _llama_bench() -> str | None:
@@ -568,10 +650,9 @@ def llama_scratch(profile:dict[str, Any], kv:str, target) -> float:
   """Where ggml's flash attention on a quantized KV dequantizes one attention layer's K and V to f16 across the whole
   context (the vendor row's ggml_kv_dequant), that buffer is per token, not overhead: CUDA, 1,007 MiB more compute
   buffer at 257,792 q8_0 cells than f16 (b11571, the 27B on the 5090, equal fixed overhead within 17 MiB); Metal reads
-  the quantized KV in place (the 8B on the M4: q8_0 and f16 fixed overhead both 300 MiB)."""
-  layers = pw.attention_layer_count(profile)
-  dequant = vendors.for_backend(target.backend).ggml_kv_dequant
-  return (pw.kv_bytes_per_token(profile, element_bytes=2) or 0.0) / layers if dequant and kv != "f16" and layers else 0.0
+  the quantized KV in place (the 8B on the M4: q8_0 and f16 fixed overhead both 300 MiB). The rule is tune_llama_cpp.kv_shape's."""
+  from boltbeam.workflow import tune_llama_cpp as lc
+  return lc.kv_shape(profile, {"meta": {}, "tensors": []})["dequant"] * 2 if vendors.for_backend(target.backend).ggml_kv_dequant and kv != "f16" else 0.0
 
 
 class Engine(NamedTuple):
@@ -590,6 +671,9 @@ class Engine(NamedTuple):
   note: str = ""
   scratch: Any = None  # (profile, KV label, target) -> bytes one token adds besides its KV, else none
   reserve: float = 0.0  # memory the engine keeps free by its own rule, off the usable memory
+  cells: Any = None  # context -> the context its command passes (llama.cpp's -c, rounded to 256 cells); None: its command passes none (vLLM: auto)
+  fit: Any = None  # the engine's own after-load estimate (llama_fit): max context per KV type, the one tune's memory fit reads; None: the upper bound
+  chunk: Any = None  # the chunk the after-load room left at the command's context buys (llama_chunk), tune's -ub rule; None: the engine's default
 
 
 def _llama_binary() -> str | None:
@@ -616,7 +700,7 @@ ENGINES = {
   "llama.cpp": Engine(formats.kv_offer("llama.cpp"), 1.0, llama_flags, llama_settings, lambda m, a: " ".join(["llama-server", "-m", m, *a]),
                       _llama_binary, lambda b, m, a, port: [b, "-m", m, "--host", "127.0.0.1", "--port", str(port), "-lv", "4", *a],
                       "listening on", parse_llama, "Check hook: llama-server's n_ctx and KV size lines", llama_scratch,
-                      1024 * 2**20),  # llama.cpp's own -fit target: 1024 MiB free (common_params_fit, -fitt)
+                      1024 * 2**20, llama_cells, llama_fit, llama_chunk),  # llama.cpp's own -fit target: 1024 MiB free (common_params_fit, -fitt)
   "arkey": Engine({"f16": 2}, 1.0, None, None, None, lambda: None, None, None, None,
                   "one GPU only; arkey prints no KV fit figure, so Check has nothing to read"),
 }
@@ -666,7 +750,7 @@ def pick(rows:list[dict[str, Any]], *, seqs:int, fits_one:bool) -> dict[str, Any
 def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpus:list[dict[str, Any]], *, target,
           seqs:int = 1, context:int = CONTEXT, text_only:bool = True, host:dict[str, Any] | None = None,
           moe_estimate:dict[str, Any] | None = None, offload:bool = False, draft:str | None = None, probe_h2d:bool = False, routing:bool = True,
-          turn:int | None = None, build_features=None) -> dict[str, Any]:
+          turn:int | None = None, build_features=None, free_bytes:float | None = None, typed:bool = False) -> dict[str, Any]:
   """The recommended setup for this model on these GPUs with this engine: one row per layout, the settings, the
   recommended layout and the command lines. facts: machine facts (read bandwidth, join, cached engine overhead).
   When no layout holds the weights (or offload=True), `offload` is the experts-in-RAM setup with its limit band, or the
@@ -674,8 +758,11 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   bits_per_weight) stand in for a probe or a header. draft: a draft model's file (an MTP head kept apart): its bytes and its KV
   at the stated context count against the fit, as an MTP head the plan turns on does (draft_cost). probe_h2d: the offload
   page may measure the copy rate to the GPU (an idle GPU, a child process with a timeout); everything else reads the saved
-  figure only."""
+  figure only. free_bytes: the GPU's free memory now (the engine's fit reads it, as tune's does; None: the usable
+  share of its memory). typed: the context was given (Setup's Context): the command holds it, placing experts in RAM if
+  it must, rather than the most that fits."""
   from boltbeam.quantization import speed_up
+  from boltbeam.workflow.tune import session_margin
   from boltbeam.roofline import limit
   warn = speed_up.usable(profile["source"])  # a failed Speed up copy refused; one waiting on its task eval said
   tb = tensor_bytes(profile["source"])
@@ -687,6 +774,8 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   share_of_mem = eng.utilization * (1.0 if ws and all(ws) else row.usable_memory)
   usable = share_of_mem * mem - eng.reserve
   extra = {k: eng.scratch(profile, k, target) for k in eng.kv} if eng.scratch else {}
+  load = llama_load(profile.get("source")) if eng.fit else None
+  margin, free = session_margin(None)["value"], free_bytes if free_bytes is not None else share_of_mem * mem
   full, reduced = next(iter(eng.kv)), list(eng.kv)[-1]
   states = overhead_of(facts, provider, profile.get("source"))
   measured, missing = guaranteed(states)
@@ -702,20 +791,24 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
     rows.insert(1, {"id": "replica", "label": "one replica per GPU", "available": True, "reason": None, "gpus": n,
                     "speed": "one GPU's speed per user, one copy per GPU"})
   cap = ((profile.get("metadata") or {}).get("context") or {}).get("length")
-  full_ctx = None
+  full_ctx, fitted = None, set()  # fitted: the layouts whose context is the engine's own after-load estimate (llama_fit)
   for r in rows:
     layout = "one" if r["id"] == "replica" else r["id"]
     g = 1 if layout == "one" else r["gpus"]
     w, share, how = _split(layout, g, tb, resident)
     r["weights_per_gpu"] = fig(w, how, [f"{resident / 2**30:.2f} GiB resident", f"{tb['one_dim'] / 2**20:.1f} MiB one-dimensional"] if layout == "row" else [f"{resident / 2**30:.2f} GiB resident"])
-    r["fits"] = fig(w <= usable, "resident weights per GPU <= usable VRAM", [f"usable {usable / 2**30:.2f} GiB = {share_of_mem:g} x {mem / 2**30:.2f} GiB" + (" (the vendor's usable share of memory, assumed)" if share_of_mem != eng.utilization else
-   " (Metal's recommendedMaxWorkingSetSize, measured)" if ws and all(ws) else "") +
-   (f", less the engine's {eng.reserve / 2**20:.0f} MiB reserve" if eng.reserve else "")])
-    if not r["available"] or w > usable:
-      continue
     own = by_key.get(layout_key(profile.get("source"), layout, g)) if layout != "one" else None  # else one GPU's: more per GPU
     ro, rwarm = cached(own) if own else (measured, warm)
-    r["max_context"] = context_figures(profile, weights=w, share=share, usable=usable, overhead=ro and ro["bytes"], seqs=seqs, kvs=eng.kv, extra=extra)
+    lf = eng.fit(profile, load, weights=w, share=share, free=free, seqs=seqs, kvs=eng.kv, target=target, margin=margin) if load and not ro else None
+    r["fits"] = fig(w <= usable, "resident weights per GPU <= usable VRAM", [f"usable {usable / 2**30:.2f} GiB = {share_of_mem:g} x {mem / 2**30:.2f} GiB" + (" (the vendor's usable share of memory, assumed)" if share_of_mem != eng.utilization else
+   " (Metal's recommendedMaxWorkingSetSize, measured)" if ws and all(ws) else "") +
+   (f", less the engine's {eng.reserve / 2**20:.0f} MiB reserve" if eng.reserve else "")]) if lf is None else \
+      fig(lf[full]["uncapped"] >= 256 or lf[reduced]["uncapped"] >= 256, "the engine's after-load estimate keeps the margin with the weights and one block of cells",
+          lf[reduced]["inputs"][:2] + lf[reduced]["inputs"][3:5])
+    if not r["available"] or not r["fits"]["value"]:
+      continue
+    fitted |= {r["id"]} if lf else set()
+    r["max_context"] = lf or context_figures(profile, weights=w, share=share, usable=usable, overhead=ro and ro["bytes"], seqs=seqs, kvs=eng.kv, extra=extra)
     if rwarm:
       r["max_context_warm"] = context_figures(profile, weights=w, share=share, usable=usable, overhead=rwarm["bytes"], seqs=seqs, kvs=eng.kv, extra=extra)
     r["_w"], r["_share"], r["_o"] = w, share, ro and ro["bytes"]
@@ -768,14 +861,33 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   if dr:  # the draft is loaded beside the model and holds KV of its own: the model alone fitting is not the plan fitting
     per_gpu = started["weights_per_gpu"]["value"] + (dr["bytes"] + dr["kv_bytes"]) / max(started.get("gpus") or 1, 1)
     started["draft"] = dr
-    if started["fits"]["value"] and per_gpu > usable:
+    over = per_gpu > usable
+    if started.get("id") in fitted:  # the engine's own estimate at the context with the draft on the card, against its margin
+      left = llama_after_load(profile, load, kv=kv, cells=eng.cells(context if typed else fit or context), weights=per_gpu, share=1.0 / max(started.get("gpus") or 1, 1),
+                              free=free, seqs=seqs, target=target)
+      over = over if left is None else left < margin
+    if started["fits"]["value"] and over:
       started["fits"] = fig(False, "resident weights + the draft's weights and KV per GPU <= usable VRAM",
                             [f"{started['weights_per_gpu']['value'] / 2**30:.2f} GiB weights", f"{dr['bytes'] / 2**30:.2f} GiB draft weights ({dr['what']})",
                              f"{dr['kv_bytes'] / 2**30:.2f} GiB draft KV at {context} tokens", f"usable {usable / 2**30:.2f} GiB"])
   opts = dict(machine_gpus=n, attention=row.vllm_attention, mtp=mtp, mtp_held=held)
-  argv = eng.flags(profile, kv=kv, seqs=seqs, layout=layout, gpus=gcount, text_only=text_only, tb=tb, context=fit or context, **opts) if eng.flags else None
+  # the context the command holds: the one given (past the fit only where the engine's own estimate places experts for it), else the fit, else the stated one
+  launch = context if typed and ("one" in fitted or not fit) else min(context, fit) if typed else fit or context
+  placed, short = None, False  # a given context past the fit: the fewest expert layers in RAM that make it fit (the engine's own estimate)
+  if typed and "one" in fitted and one and layout == "one" and eng.cells(context) > fit:
+    n = llama_placement(profile, load, kv=kv, cells=eng.cells(context), weights=one["weights_per_gpu"]["value"] + (dr["bytes"] + dr["kv_bytes"] if dr else 0), free=free, seqs=seqs, target=target, margin=margin)
+    placed, short = ({"n_cpu_moe": n} if n else None), n is None
+    if short:  # the fit judges the command shown: its -c does not fit on the GPU, wherever the experts sit
+      left = llama_after_load(profile, load, kv=kv, cells=eng.cells(context), weights=one["weights_per_gpu"]["value"], share=1.0, free=free, seqs=seqs, target=target)
+      one["fits"] = fig(False, "the engine's after-load estimate at the context given keeps the margin" + (", even with every expert in host RAM" if (load["ex"].get("ids")) else ""),
+                        [f"context given {eng.cells(context)} cells, past the {fit} that fit", f"{(left or 0) / 2**30:.2f} GiB left after load with every weight on the GPU",
+                         f"{margin / 2**30:.2f} GiB margin", "it does not fit on this GPU: give a smaller Context"])
+  if eng.chunk and "one" in fitted and one and layout == "one" and not placed and not short and not offload and not dr:  # the room left buys a chunk
+    if u := eng.chunk(profile, load, kv=kv, cells=eng.cells(launch), weights=one["weights_per_gpu"]["value"], free=free, seqs=seqs, target=target, margin=margin):
+      placed = {"chunk_size": u}
+  argv = eng.flags(profile, kv=kv, seqs=seqs, layout=layout, gpus=gcount, text_only=text_only, tb=tb, context=launch, placement=placed, **opts) if eng.flags else None
   moe = None
-  if offload or not any(r["fits"]["value"] for r in rows):  # nothing holds the weights: say what offloading the experts gives
+  if offload or short or not any(r["fits"]["value"] for r in rows):  # nothing holds the weights: say what offloading the experts gives
     kvb = ((pw.kv_bytes_per_token(profile, element_bytes=eng.kv[kv]) or 0.0) + extra.get(kv, 0.0)) * context
     split = next((r for r in rows if r["id"] == "layer" and r["available"]), None) if layout == "one" and not any(r["fits"]["value"] for r in rows) else None
     olay, ogpus = (split["id"], split["gpus"]) if split else (layout, gcount)  # the offload spans the layout's GPUs: usable x GPUs
@@ -784,7 +896,8 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
                         host_tables=tb.get("host", 0), fits=any(r["fits"]["value"] for r in rows), probe=probe_h2d, routing=routing,
                         device_bytes=mem * ogpus, draft=draft, turn=turn, features=build_features)
     if moe["status"] == "recommended" and argv is not None:  # each placement's flags, then the rows that hang on it (offload: placed)
-      argv = eng.flags(profile, kv=kv, seqs=seqs, layout=olay, gpus=ogpus, text_only=text_only, tb=tb, context=context, placement=moe["settings"], **opts) \
+      launch = context
+      argv = eng.flags(profile, kv=kv, seqs=seqs, layout=olay, gpus=ogpus, text_only=text_only, tb=tb, context=launch, placement=moe["settings"], **opts) \
              + [x for r in moe.get("placed") or [] for x in r["flags"]]
       if (pre := moe.get("prefill") or {}).get("status") == "recommended":  # the setup for prompts: its own command
         pre_argv = eng.flags(profile, kv=kv, seqs=seqs, layout=olay, gpus=ogpus, text_only=text_only, tb=tb, context=context, placement=pre["settings"], **opts) \
@@ -799,11 +912,17 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
   key = (provider, (facts or {}).get("gpus", [{}])[0].get("target_id"), profile.get("hidden_size"), profile.get("layer_count"), profile.get("ffn_size"))
   return {"schema": "boltbeam.recommended_setup.v1", "model": profile.get("source"), "model_warning": warn, "provider": provider, "gpu_count": n,
           "weights": {"resident": resident, "total": tb["total"], "vision": tb["vision"], "mtp": tb["mtp"], "source": tb["source"]},
-          "overhead": measured, "overhead_states": states, "overhead_note": missing, "context_is_upper_bound": measured is None, "stated_context": context, "seqs": seqs,
+          "overhead": measured, "overhead_states": states, "overhead_note": missing, "context_is_upper_bound": measured is None and "one" not in fitted, "stated_context": context, "seqs": seqs,
           "layouts": rows, "recommended_layout": chosen, "flags_layout": {"id": layout, "gpus": gcount}, "kv_dtype": kv, "kv_formats": list(eng.kv), "engine_note": eng.note,
           "offload": moe, "draft": dr,
           "settings": (eng.settings(profile, tb, kv=kv, seqs=seqs, layout=layout, gpus=gcount, text_only=text_only, full_context=full_ctx, **opts) if eng.settings else [])
+                      + ([{"flag": f"--n-cpu-moe {placed['n_cpu_moe']}", "recommended": True, "when": f"the context given, {eng.cells(context)}, is past the {fit} that fit with every expert on the GPU",
+                           "changes": f"the experts of layers 0-{placed['n_cpu_moe'] - 1} in host RAM, the fewest that leave the margin free at that context (slower replies)"}] if placed and placed.get("n_cpu_moe") and not (moe and moe["status"] == "recommended") else [])
+                      + ([{"flag": f"-ub {placed['chunk_size']}", "recommended": True, "when": "the GPU memory left after load at this context holds a larger chunk",
+                           "changes": "reads prompts in larger chunks: the fastest of the offload plan's chunks (predicted) that still leaves the margin free, as Tuned picks it"}] if placed and placed.get("chunk_size") else [])
                       + (off.settings(moe) if moe and moe["status"] == "recommended" else []) + ([cram] if cram else []),
+          # the command's context, KV type and experts in RAM: the one source Tuned for this machine is stated at (the context only when Setup's Context is unset)
+          "launch": {"context": eng.cells(launch) if eng.cells else None, "kv": kv, "n_cpu_moe": (placed or {}).get("n_cpu_moe") or (0 if "one" in fitted and load and load["ex"].get("ids") and not moe else None)} if argv else None,
           "flags": argv, "env": env, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), eng.command(shlex.quote(profile["source"]), [shlex.quote(a) for a in argv])]) if argv else None,
           "arkey_vllm_args": arkey_args(argv) if argv and provider == "vllm" else None, "usable_bytes": usable, "reserve_bytes": eng.reserve, "scratch_per_token": extra,
           "measured_only": MEASURED.get(key) or "not measured here (MTP, throughput, prefill share)",

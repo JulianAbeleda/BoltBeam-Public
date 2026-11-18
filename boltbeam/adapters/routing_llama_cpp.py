@@ -73,7 +73,7 @@ def capture(model:str, out:pathlib.Path, *, tokens:int, ident:dict[str, Any], co
   from boltbeam.workflow.tune_llama_cpp import server_of  # the build tune uses: any program of it maps to its llama-server
   server = str(server_of(build)) if build else lsd.find()
   if not server:
-    raise FileNotFoundError("no llama-server found (beside llama-bench, $BOLTBEAM_LLAMA_SERVER or on PATH); pass --build")
+    raise FileNotFoundError(f"no llama-server found ({lsd.WHERE}); pass --build")
   out.mkdir(parents=True, exist_ok=True)
   trace = out / "moe-cache-trace.bin"
   trace.unlink(missing_ok=True)

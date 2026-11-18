@@ -18,11 +18,12 @@ LLAMA_FLAGS = {"chunk_size": "-ub", "batch_size": "-b", "cache_type_k": "-ctk",
                "cache_type_v": "-ctv", "flash_attention": "-fa",
                "n_gpu_layers": "-ngl", "n_cpu_moe": "-ncmoe", "override_tensor": "-ot", "cpu_moe": "--cpu-moe",
                "moe_cache_mib": "--moe-cache-mib", "moe_cache_cpu_share": "--moe-cache-cpu-share",
-               "spec_type": "--spec-type", "draft_model": "-md", "cache_type_k_draft": "-ctkd", "cache_ram": "--cache-ram"}
-SERVER_ONLY = ("cache_ram",)  # llama-server's own: llama-bench keeps no prompt cache, so it is not passed there
+               "spec_type": "--spec-type", "draft_model": "-md", "cache_type_k_draft": "-ctkd", "cache_ram": "--cache-ram",
+               "load_mode": "-lm"}
+SERVER_ONLY = ("cache_ram", "load_mode")  # llama-server's own: llama-bench keeps no prompt cache and has no -lm, so they are not passed there
 LLAMA_SWITCHES = ("cpu_moe",)  # a flag with no value: the setting is true
 LLAMA_WHOLE = {"chunk_size": 1, "batch_size": 1, "n_gpu_layers": 0, "n_cpu_moe": 0, "moe_cache_mib": 1, "cache_ram": 0}  # whole numbers, at least this
-LLAMA_TEXT = ("override_tensor", "spec_type", "draft_model", "cache_type_k_draft")  # passed as written
+LLAMA_TEXT = ("override_tensor", "spec_type", "draft_model", "cache_type_k_draft", "load_mode")  # passed as written
 LLAMA_FIELDS = {"n_ubatch": "chunk_size", "n_batch": "batch_size", "type_k": "cache_type_k",
                 "type_v": "cache_type_v", "flash_attn": "flash_attention"}
 GEMM_BACKENDS = ("ATEN", "TRITON", "CUTLASS", "CPP")  # Inductor's matrix backends; a request is a comma list of these
@@ -63,7 +64,9 @@ ASKED = {
   "draft_model": (str, "draft model", "llama.cpp -md (llama-server): the draft or MTP head file"),
   "cache_type_k_draft": (str, "draft K cache type", "llama.cpp -ctkd (llama-server): the draft head's K cache type (q8_0, f16)"),
   "cache_ram": (int, "prompt cache in RAM MiB", "llama.cpp --cache-ram (llama-server): MiB of host RAM for the prompt cache; 0 "
-                "turns it off (llama-bench keeps none, so it is not passed there)")}
+                "turns it off (llama-bench keeps none, so it is not passed there)"),
+  "load_mode": (str, "model load mode", "llama.cpp -lm (llama-server): none reads the tensors placed in host RAM into a buffer "
+                "at load, auto maps the file (llama-bench has no -lm, so it is not passed there)")}
 ARKEY_WARM = 3  # warm tokens before the measured window (runtime/tinygrad_decode_profile.py --warm)
 ACCEPTED = {"vllm": VLLM_SETTINGS, "llama.cpp": tuple(LLAMA_FLAGS)}  # per engine (collectors/providers.ENGINES)
 
@@ -213,7 +216,8 @@ def setting_words(settings:dict[str, Any]) -> list[str]:
            "moe_cache_cpu_share": lambda v: f"the CPU computes {v:g} of the cache misses",
            "spec_type": lambda v: f"speculative decoding {v}",
            "draft_model": lambda v: f"draft {pathlib.Path(str(v)).name}",
-           "cache_ram": lambda v: "prompt cache in RAM off" if not v else f"prompt cache in RAM {v} MiB"}
+           "cache_ram": lambda v: "prompt cache in RAM off" if not v else f"prompt cache in RAM {v} MiB",
+           "load_mode": lambda v: "model read into RAM at load (-lm none)" if v == "none" else f"model load mode {v}"}
   return [words[k](v) if k in words else f"{k} {v}" for k, v in settings.items() if v is not None]
 
 

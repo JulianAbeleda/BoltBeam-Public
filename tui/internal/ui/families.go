@@ -61,6 +61,9 @@ func (f Facts) familyOf(engine string) (*seam.Family, *seam.Fork) {
 func forkWords(k seam.Fork) string {
 	switch k.State {
 	case "available":
+		if k.Modded != nil && k.Reason != nil { // a modded build: what it holds (Python's words)
+			return k.Label + " · " + *k.Reason
+		}
 		return k.Label + " · found"
 	case "found":
 		where := ""
@@ -117,6 +120,7 @@ func familyActions(f Facts) []action {
 			}
 			out = append(out, upgradeAction(f, *k.Provider)...)
 		}
+		out = append(out, familyModsAction(f, fam)...)
 	}
 	return append(out, action{"  [ Scan again ] look for engines in the usual folders", "engines-scan", ""})
 }
@@ -208,6 +212,8 @@ func familyValue(f Facts, engine string) string {
 	switch {
 	case fam == nil:
 		return engine
+	case engine == f.Engine && f.moddedFork() != nil:
+		return fam.Label + " · " + f.moddedFork().Label
 	case k.Fork == "upstream":
 		return fam.Label
 	}

@@ -6,8 +6,36 @@
     "env": "BOLTBEAM_IE_MODS",
     "pin": "c62d009bf3d43e91057f3900e876d5b6b1e901ce",
     "url": "https://github.com/JulianAbeleda/arkey_ie_mods",
-    "url_why": "metadata only: BoltBeam reads the repo from a local path"
+    "url_why": "where `boltbeam mods` clones the repo from (into ~/.boltbeam/arkey_ie_mods, workflow/mods.ensure) when no local clone is configured; a configured clone is used as it is"
   },
+  "benchmarks": {
+    "llama.cpp/1.0.0": "benchmarks/llama.cpp-1.0.0-0.3.26"
+  },
+  "benchmarks_why": "where a mods version's published benchmark (speed and the quality gate) is in arkey_ie_mods, keyed engine/version; `boltbeam mods` names it beside each quality-gated mod it takes (workflow/mods.evidence). A path in the repo's master, not at the pin: the benchmark came after the pinned index",
+  "titles": {
+    "llama.cpp/1.0.0/kpool-incremental": "k-pool layout updated from the edit point",
+    "llama.cpp/1.0.0/sparse-direct": "sparse attention reads q8_0 K/V rows by index",
+    "llama.cpp/1.0.0/idx-pooled": "indexer cache keeps pooled keys only",
+    "llama.cpp/1.0.0/mtp-share-head": "draft head reads the target's output projection",
+    "llama.cpp/1.0.0/kpool-input-device": "k-pool inputs live on the device",
+    "llama.cpp/1.0.0/seq-rm-indexed": "seq_rm walks an index, not the cache",
+    "llama.cpp/1.0.0/fattn-vec-skip": "vector attention kernel skips masked rows",
+    "llama.cpp/1.0.0/idx-inplace": "indexer scores pooled q8_0 keys in place",
+    "llama.cpp/1.0.0/ext-kernels": "external kernel hook",
+    "llama.cpp/1.0.0/moe-inplace": "prefill reads cached experts in place",
+    "llama.cpp/1.0.0/ckpt-pinned": "context checkpoints in a pinned pool",
+    "llama.cpp/1.0.0/topk-fused": "radix top-k of a few rows in one launch",
+    "llama.cpp/1.0.0/graph-slots": "draft context keeps a graph per small ubatch size",
+    "llama.cpp/7592b61d3/moe-prefill": "MoE routing sort, MMQ tile knob, pinned staging",
+    "llama.cpp/7592b61d3/pinned-copy-stream": "host-RAM experts on a pinned copy stream",
+    "llama.cpp/7592b61d3/server-ckpt-min-head": "no checkpoint at a user start in the prompt head",
+    "llama.cpp/7592b61d3/server-ckpt-tail-only": "keep only the tail checkpoint",
+    "llama.cpp/7592b61d3/ple-prefetch-async": "PLE row prefetch on a thread",
+    "llama.cpp/7592b61d3/mtp-sidecar-subfolder": "MTP sidecar found in an `mtp/` subfolder",
+    "vllm/0.31.0/split-kv-verify": "TRITON_ATTN keeps the split-KV kernel for a verify of up to 8 tokens",
+    "vllm/0.31.0/quark-lm-head": "Quark quantizes an lm_head the config does not exclude"
+  },
+  "titles_why": "each series mod's one-line title, keyed by mod id: the per-version table's mod column in arkey_ie_mods README.md at the pin (the index has no title field); the Apply mods page and `screen mods` rows say it first. tests/test_engine_patches.py keeps it equal to that README",
   "uses": {
     "llama.cpp/moe-prefill": [
       "tune"
@@ -51,6 +79,9 @@
     "why": "screen mods per engine: the applier its mods use and where a build's source checkout is in its folder; an engine with no row lists nothing (vLLM: patch_p1 into a venv copy is not wired yet)",
     "llama.cpp": {
       "applier": "git_apply",
+      "backends": ["CUDA"],
+      "backends_words": "CUDA patches (NVIDIA GPUs)",
+      "backends_why": "the GPU backends (data/targets.json backend) the mods do something on: the arkey_ie_mods llama.cpp mods were built and measured on CUDA (sm_120, an RTX 5090), their kernels and the ext-kernels hook are CUDA files, and a run sets switches only CUDA code reads; on Metal or HIP a modded copy would build and every switch would do nothing, so screen mods and the Engine picker say so instead",
       "source": "src",
       "copy_skip": ["build*"],
       "copy_skip_why": "a tree without .git is copied whole: its top-level build directories are not source",

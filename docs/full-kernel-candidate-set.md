@@ -4,8 +4,11 @@ BoltBeam can persist the admitted two-buffer `qwen3_8b` gate/up schedule as four
 Tinygrad candidates for `ffn_gate_up`, `ffn_down`, `attn_qo`, and `attn_kv`:
 
 ```sh
-boltbeam build-full-kernel-candidate-set proven-gate-up.json --out candidate-set.json
+build-full-kernel-candidate-set proven-gate-up.json --out candidate-set.json
 ```
+
+That command and its module (`full_kernel_candidate_set.py`) were removed on 2026-11-09 (41c211e3: nothing called
+them); this page is their record.
 
 The input may be a raw `boltbeam.full_kernel_candidate.v1` payload, a
 `canonical_identity`/`payload` wrapper, a search row containing

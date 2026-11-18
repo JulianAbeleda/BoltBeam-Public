@@ -169,6 +169,9 @@ type Words struct {
 	} `json:"glossary"`
 	SpeedUp SpeedWords        `json:"speed_up"`
 	Context map[string]string `json:"context"` // the Context form and line (plain_words.json context)
+	Mods    struct {
+		Page map[string]string `json:"page"` // the Apply mods page's own sentences and actions (plain_words.json mods.page)
+	} `json:"mods"`
 	Measure struct {
 		Stop        string      `json:"stop"`
 		Stopped     string      `json:"stopped"`

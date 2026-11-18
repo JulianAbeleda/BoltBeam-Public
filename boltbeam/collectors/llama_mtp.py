@@ -87,7 +87,7 @@ def resolve(model:str, head:str | None, server:str | None) -> tuple[pathlib.Path
     said = ", ".join(f.name for f in found) + " are all MTP heads" if found else "no MTP head is"
     raise mtp.MtpRefused(f"{said} beside {pathlib.Path(model).name}: name the one to measure (--draft HEAD)")
   if (server := server or lsd.find()) is None:
-    raise mtp.MtpRefused(f"llama-server was not found: set ${lsd.ENV}")
+    raise mtp.MtpRefused(f"llama-server was not found ({lsd.WHERE}): set ${lsd.ENV}")
   return found[0], server
 
 
@@ -120,7 +120,7 @@ def fit_context(model:str, head:str | None, *, k:int, need:int, out:pathlib.Path
 def measure(model:str, ks:list[int], *, backend:str, out:pathlib.Path, tokens:int = mtp.TOKENS, long_tokens:int = 2048,
             long_why:str = "asked (--long-tokens)", grow:bool = False, head:str | None = None, server:str | None = None) -> dict[str, Any]:
   """collectors/mtp.sweep on llama-server. head: the draft head (default: the one heads() finds); server: the binary
-  (default: $BOLTBEAM_LLAMA_SERVER, else llama-server on PATH)."""
+  (default: llama_server_decode.find)."""
   hd, server = resolve(model, head, server)
   prompts = mtp.prompt_set()
   deadline, ends = deadline_s(prompts), json.dumps(end_ids(model))

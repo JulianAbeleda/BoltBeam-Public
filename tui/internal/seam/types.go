@@ -353,6 +353,11 @@ type ProviderRow struct {
 	Measurement *MeasurementOptions `json:"measurement"`
 	// Settings are what a run on this engine may ask it for (capture_settings.offered); none from an older Python.
 	Settings []EngineSetting `json:"settings"`
+	// Mods says Python can apply engine mods (arkey_ie_mods) to this engine's build here: the Engine picker offers Apply mods.
+	Mods bool `json:"mods"`
+	// ModsNote is why Apply mods does nothing here though the engine has mods (this machine's GPU backend is not one
+	// they are for), in Python's words; the Engine picker shows it in the row's place. nil otherwise.
+	ModsNote *string `json:"mods_note"`
 }
 
 // EngineSetting is one setting a run may ask the engine for: its pipeline flag, whole number or text, its values
@@ -408,6 +413,9 @@ type Fork struct {
 	Path     *string `json:"path"`
 	Reason   *string `json:"reason"`
 	Fix      *string `json:"fix"`
+	// Modded is the key of a modded build (screen mods --apply, builds.json modded) this fork is; a run on it passes
+	// --modded KEY, so Python hands the run that build with its mods' switches set. nil for every other fork.
+	Modded *string `json:"modded"`
 }
 
 // OtherLoss is another provider's per-role table for the same run, shown beside the chosen one, labelled.
@@ -1267,6 +1275,13 @@ type RecCheck struct {
 	CachedIn *string `json:"cached_in"`
 }
 
+// RecLaunch is the recommendation's command context (nil: the command passes none) and KV type.
+type RecLaunch struct {
+	Context *int   `json:"context"`
+	KV      string `json:"kv"`
+	NCpuMoe *int   `json:"n_cpu_moe"` // the experts of layers 0..N-1 in RAM that the command places (a typed Context past the fit)
+}
+
 // Recommend is `screen recommend`: the engine settings for this model on this machine's GPUs.
 type Recommend struct {
 	Provider            string      `json:"provider"`
@@ -1285,11 +1300,14 @@ type Recommend struct {
 		Why string  `json:"why"`
 	} `json:"recommended_layout"`
 	Settings []RecSetting `json:"settings"`
-	Flags    []string     `json:"flags"`
-	Command  *string      `json:"command"`
-	Arkey    []string     `json:"arkey_vllm_args"`
-	Check    *RecCheck    `json:"check"`
-	Weights  struct {
+	// Launch is the command's context and KV type (nil: no command): the one source Tuned for this machine is stated at,
+	// so the two command lines on the page agree. Context is nil where the command passes none (vLLM's auto).
+	Launch  *RecLaunch `json:"launch"`
+	Flags   []string   `json:"flags"`
+	Command *string    `json:"command"`
+	Arkey   []string   `json:"arkey_vllm_args"`
+	Check   *RecCheck  `json:"check"`
+	Weights struct {
 		Mtp float64 `json:"mtp"` // the checkpoint's draft-head bytes: 0 when it has none
 	} `json:"weights"`
 	// MtpMeasure is what Measure MTP runs here (collectors/mtp.offer, the engine's row): nil when the engine or the checkpoint

@@ -64,7 +64,8 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
     mods --engine E [--src DIR] [--base V] [--apply] [--label L] [--mod ID]
                                                the arkey_ie_mods mods that fit the build you run (workflow/mods.py):
                                                --apply builds them into a clone of its checkout (yours is untouched),
-                                               identical ones unless --label or --mod, configured with the base commit
+                                               the series' identical and quality-gated ones (the benchmarked set)
+                                               unless --label or --mod narrow it, configured with the base commit
                                                (a tree without .git: the mods' base, or --base) and checked against it;
                                                recorded as not verified
     update [--skip V]                          is a newer BoltBeam released: the installed and newest versions, how to
@@ -208,7 +209,11 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
   fits one GPU; a layout whose limit cannot be derived keeps its words."""
   devs = tgpu.devices(hardware_profile()["gpu"])
   n = gpu_count if gpu_count is not None else len(devs)
-  rows = [{**p, "layouts": lay.layouts(n, p["provider"], target.backend), "settings": capture_settings.offered(p["provider"])}
+  from boltbeam.workflow import mods
+  rows = [{**p, "layouts": lay.layouts(n, p["provider"], target.backend), "settings": capture_settings.offered(p["provider"]),
+           # the Engine picker offers Apply mods (screen mods); mods_note: why it does not on this GPU backend, said in its place
+           "mods": p["provider"] in mods.pointer()["apply"] and not mods.not_here(p["provider"], target.backend),
+           "mods_note": mods.not_here(p["provider"], target.backend) if p["provider"] in mods.pointer()["apply"] else None}
           for p in providers.available(target, tinygrad_root=root, cached=True)]
   note = None
   if n > 1 and profile and facts:
@@ -222,7 +227,7 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
                                    hidden_size=profile.get("hidden_size"), layers=profile.get("layer_count"))
       note = lay.recommend([l for r in rows for l in r["layouts"]], model_bytes, devs)
   return {"schema": SCHEMA, "kind": "providers", "target_id": target.target_id, "default": providers.DEFAULT,
-          "gpu_count": n, "providers": rows, "families": engine_families.rows(rows), "note": note,
+          "gpu_count": n, "providers": rows, "families": mods.with_forks(engine_families.rows(rows), rows), "note": note,
           "repeat_runs": PIN_RUNS}  # Setup's Repeats offers this n; the Engine picker shows families (engine_families)
 
 
@@ -232,7 +237,10 @@ def recommended(profile:dict[str, Any], target, *, engine:str = "vllm", gpus:int
   check_in (run folders): also start the engine once with the recommended flags, read its own KV figures, cache its
   overhead in the newest machine facts there and add predicted against measured as `check`."""
   devs = tgpu.devices(hardware_profile()["gpu"])[:gpus or None]
-  args = dict(target=target, seqs=seqs, context=context or rec.CONTEXT, **offload)
+  args = dict(target=target, seqs=seqs, context=context or rec.CONTEXT, typed=context is not None, **offload)
+  if engine == "llama.cpp" and devs:  # the engine's fit reads the GPU's free memory now, as tune's does (one reading, one estimate)
+    from boltbeam.workflow.tune_vllm import gpu_memory
+    args["free_bytes"] = gpu_memory(every=True, ggml_backend=rec.vendors.for_backend(target.backend).ggml_backend).get("free_min")
   out = {"schema": SCHEMA, "kind": "recommend", "target_id": target.target_id, **rec.setup(profile, facts, engine, devs, **args)}
   out["mtp_measure"] = mtp_offer(out.get("mtp_measure"), profile["source"], context, engine)
   if check_in is None:
@@ -306,7 +314,7 @@ def mtp_long(model:pathlib.Path, long_tokens:int | None, context:int | None, tok
     raise mtp.MtpRefused("the GPU's memory could not be read, so the long context cannot be sized: pass --long-tokens")
   cfg, weights = mtp_sized(model, head)
   if (m := mtp.engine(engine)) is None:
-    raise mtp.MtpRefused(f"{engine} has no MTP measurement in its engine row (data/engine_knobs.json)")
+    raise mtp.MtpRefused(f"{engine} has no MTP measurement in its engine row (data/engine_adapters.json)")
   fit = None
   if fit_in is not None and hasattr(m, "fit_context"):
     got, said = m.fit_context(str(model), head, k=k_top, need=context or room + tokens + 1, out=fit_in)
@@ -356,12 +364,13 @@ def setting_flags(engine:str, settings:list[str]) -> tuple[list[str] | None, lis
 def tuned(model:str, engine:str, build:str | None = None, *, measure:bool = False, knobs:list[str] | None = None,
           experts_in_ram:str | None = None, say=None, prompt:int | None = None, context:int | None = None, replies:str | None = None,
           workload:str | None = None, settings:list[str] | None = None, roots:list[pathlib.Path] | None = None,
-          target:str | None = None, draft:str | None = None) -> dict[str, Any]:
+          target:str | None = None, draft:str | None = None, kv:str | None = None) -> dict[str, Any]:
   """Tuned for this machine (workflow/tune.py): the engine's knob rows as the Recommended setup page lays them out, and what
   a run passes of them (capture_settings.knob_setting; env rows as environment). Facts only unless measure, which writes
   its progress through say as pipeline lines. prompt, context, replies, workload, settings (NAME=VALUE: the pipeline's
   names, turned into the engine's flags here) and experts_in_ram are Setup's
-  (the screen passes what the user set; unset keeps tune's own); the time budget is the newest run's under roots. An
+  (the screen passes what the user set; unset keeps tune's own); kv is the Recommended setup's KV type (its `launch`), which
+  the KV row starts from, as that command does; the time budget is the newest run's under roots. An
   engine with no knob table, or a build or model the adapter cannot read, is a refusal in plain words, with no page."""
   from boltbeam.core.refused import Refused
   from boltbeam.workflow import tune
@@ -370,21 +379,27 @@ def tuned(model:str, engine:str, build:str | None = None, *, measure:bool = Fals
   if engine not in tune.engines():
     return {**out, "refused": refused.format(reason=f"BoltBeam has no knob table for {engine} yet")}
   try:
-    kw: dict[str, Any] = {"prompt": prompt or tune.PROMPT, "context": context, "workload": workload or "chat",
+    # below tune's own prompt (the offload command's), the prompt the context holds less tune's room for the reply
+    kw: dict[str, Any] = {"prompt": prompt or tune.prompt_at(context), "context": context, "workload": workload or "chat",
                           "reply": tune.reply_budget(replies) if replies else None}
     kw["extra"], tuned_here = setting_flags(engine, settings or [])
     if budget := run_time_budget(model, engine, roots or [], kw["prompt"], target):
       kw["time_budget"] = budget
     if target and roots:  # this chip's facts: an MTP measurement kept there gives the draft count (recommend.mtp_pick)
       kw["machine_facts"] = lay.newest_facts(roots, target)
-    res = tune.tune(model, engine, build, measure=measure, knobs_only=knobs, experts_in_ram=experts_in_ram, say=say, draft=draft, **kw)
+    from boltbeam.workflow import mods
+    with mods.switched(mods.run_env(mods.modded(engine, build) or {})):  # a modded build is tuned as it runs
+      res = tune.tune(model, engine, build, measure=measure, knobs_only=knobs, experts_in_ram=experts_in_ram, say=say, draft=draft,
+                      **({"kv": kv} if kv else {}), **kw)
   except Refused as exc:
     return {**out, "refused": refused.format(reason=str(exc))}
   if workload:
     res["facts"]["sources"]["workload"] = plain.words()["tune"]["page"]["setup_workload"]
   if tuned_here:
     res["facts"].setdefault("notes", []).append(plain.words()["tune"]["page"]["settings_tuned"].format(knobs=", ".join(tuned_here)))
-  return {**out, "build": res["build"].get("build"), "out": res.get("out"),
+  modded = (res["build"].get("modded") or {}).get("key")
+  return {**out, "build": res["build"].get("build"), "out": res.get("out"),  # none: no series mod in the build: Apply mods' link
+          "mods": {"none": not modded and not res["build"].get("series"), "modded": modded},
           "page": tune.page(res, lambda r: capture_settings.knob_setting(engine, r["name"]))}
 
 
@@ -488,13 +503,12 @@ def _run_arg(args) -> pathlib.Path:
 def mods_page(args, say) -> dict[str, Any]:
   """The mods that fit (workflow/mods.run); with --apply, the modded build. No --engine: the one engine with mods here."""
   from boltbeam.workflow import mods
-  need = args.apply or not args.engine  # listing with --engine reads no chip
-  here = (args.target or chips.detect().get("target_id")) if need else None
-  backend = _target_arg(here or "").backend if args.apply or here else None
+  here = args.target or chips.detect().get("target_id")  # the backend: the mods refuse one they are not for (apply row backends)
+  backend = _target_arg(here).backend if here else None
   engine = args.engine or mods.only_engine(backend)
-  return {"schema": SCHEMA, "kind": "mods", "engine": engine, **mods.run(engine, src=args.src, labels=("identical", *args.label),
-                                                                          only=args.mod, base=args.base, apply_them=args.apply,
-                                                                          backend=backend, say=say)}
+  got = mods.run(engine, src=args.src, labels=tuple(args.label) or None, only=args.mod, base=args.base,
+                 apply_them=args.apply, backend=backend, rebuild=getattr(args, "rebuild", False), say=say)
+  return {"schema": SCHEMA, "kind": "mods", "engine": engine, **got, **({"rows": mods.rows(engine, got, args.mod)} if "fits" in got else {})}
 
 
 def _offload_args(p) -> None:
@@ -618,6 +632,8 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p.add_argument("--upgrade-engines", "--update-engines", dest="update_engines", action="store_true", help="Upgrade "
                  "engines first: `engines --update` for this engine installs a newer release beside the current build; "
                  "the run itself never installs (--update-engines is the old name)")
+  p.add_argument("--modded", default=None, metavar="KEY", help="run on this modded build of the provider (screen mods --apply, "
+                 "builds.json modded) with its mods' switches set (recorded as --engine-env); the Engine picker's \"with mods\" fork")
   p.add_argument("--forced-replay", action="store_true", help="vLLM replay on a backend whose capture records a marked window (vendor_capture.windowed): scripted production capture, exact pairing and forced native repeats")
   p.add_argument("--replay-trace", default=None, help="a replay: a boltbeam.replay_trace.v1 file or a shape's name "
                                                       "(default: the default shape in data/replay_shapes.json)")
@@ -698,6 +714,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p.add_argument("--setting", action="append", default=[], help="NAME=VALUE: an engine setting Setup holds, passed as the engine's flag unless this page tunes it")
   p.add_argument("--target", help="the chip: only a run on it gives the time budget")
   p.add_argument("--draft", help="the multi-token prediction head file (default: the one beside the model)")
+  p.add_argument("--kv", help="the Recommended setup's KV cache type (screen recommend's launch.kv): the KV row starts from it")
   p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the newest run there with a measured time budget is used")
   p = sub.add_parser("mtp", help="multi-token prediction per draft count on natural prompts, on the engine's row (collectors/mtp)")
   p.add_argument("model")
@@ -753,6 +770,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   if args.command == "pipeline":
     try:
       pipeline.check_engine_env(args)
+      pipeline.check_modded(args)
     except ValueError as exc:
       parser.error(str(exc))
     return pipeline.pipeline_repeated(args) if args.repeats else pipeline.pipeline_current(args)
@@ -811,7 +829,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
       out = tuned(str(pathlib.Path(args.model).expanduser()), args.engine, args.build, measure=args.measure, knobs=args.knob,
                   experts_in_ram=args.experts_in_ram, say=say, prompt=args.prompt, context=args.context, replies=args.replies,
                   workload=args.workload, settings=args.setting, roots=[pathlib.Path(r).expanduser() for r in args.facts_root],
-                  target=args.target, draft=args.draft)
+                  target=args.target, draft=args.draft, kv=args.kv)
     elif args.command == "gpu-free":
       out = gpu_free(_target_arg(args.target))
     elif args.command == "mtp":

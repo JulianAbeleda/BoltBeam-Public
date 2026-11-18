@@ -104,6 +104,9 @@ func (m Model) keys() keyMap {
 	del := offer(keyDel, "d", "delete", saved) // short words: the Saved runs footer holds compare too, in 80 columns
 	cmp := offer(keyCompare, "", "", m.canPickCompare())
 	back := offer(keyBack, "", "", m.cursor != pageSetup)
+	if m.cursor == pageMods { // esc on Apply mods goes back to Engine, where it opened
+		back = offer(keyBack, "esc", modsWord("back_key"), true)
+	}
 	batch := m.cursor == pageBatch
 	fork := offer(keyFork, "", "", m.cursor == pageEngine && m.f.Providers != nil && m.f.Providers.Families != nil)
 	full := [][]key.Binding{{keyUp, keyDown, keyPgUp, keyPgDn, keyHome, keyEnd},

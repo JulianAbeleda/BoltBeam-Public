@@ -9,14 +9,16 @@ read only for a patch's text or a kernel manifest, at the pin.
     plan     the mods that fit a checkout (--src, else the current build's source, engine_patches.json apply): base =
              its commit (HEAD checked against the mods' base and said), or else each in series order applied in a
              scratch clone; a tree without .git cannot say its commit: it is taken, unchecked and said so, as the base
-             of the newest released mods version (or --base); the chosen ones (identical by default) checked the
+             of the newest released mods version (or --base); the chosen ones (by default the series: its identical
+             and quality-gated mods, the set the benchmarks measured; parked never) checked the
              same way, a mod whose apply dependency is not chosen named and left out, changes in the checkout that a
              clone does not carry named
     apply    a clone of the checkout at its commit (theirs is never changed; a rerun resets the clone), every chosen
              mod applied or none (a tree without .git: a copy, made a repo of its own), built with the engine's
              install recipe (engine_update.install) configured with the base commit (apply row commit_cmake) and
              recorded in builds.json under `modded`, replaced by its key on a rerun (a taken tree's key marked -copy),
-             as applied, not verified (a taken tree: base unchecked too)
+             as applied, not verified (a taken tree: base unchecked too); each kernel the build matches installed in
+             its folder (kernels/), its manifest the value a run gives the hook's switch (run_env)
     verify   after the build: the commit it says (apply row commit_header) is the base, else refused and not recorded;
              with the kernel hook among the mods (install_paths mod), each kernel row's manifest at the pin against
              that commit by the hook's own rule (install_paths commit_match), and its load said as not confirmed with
@@ -24,6 +26,7 @@ read only for a patch's text or a kernel manifest, at the pin.
 """
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import functools
 import hashlib
@@ -68,17 +71,86 @@ def _git(where:pathlib.Path, *argv:str, stdin:str | None = None) -> subprocess.C
   return subprocess.run(["git", "-C", str(where), *argv], capture_output=True, text=True, input=stdin)
 
 
+def _own() -> pathlib.Path:  # BoltBeam's own clone, beside its engine scan, when no clone is configured
+  from boltbeam.collectors import engine_saved
+  return engine_saved.engines_file().parent / "arkey_ie_mods"
+
+
 def _repo() -> pathlib.Path:
+  """The mods repo: $<env>, else the default path when a clone is there, else BoltBeam's own clone (ensure fetches it)."""
   repo = pointer()["mods_repo"]
-  return pathlib.Path(os.path.expanduser(os.environ.get(repo["env"]) or repo["default_path"]))
+  given = pathlib.Path(os.path.expanduser(os.environ.get(repo["env"]) or repo["default_path"]))
+  return given if os.environ.get(repo["env"]) or given.exists() else _own()
+
+
+def _get() -> str:  # what fixes a missing mods repo, or one without the pin
+  r, w = pointer()["mods_repo"], _repo()
+  return f"fetch it: git -C {w} fetch origin" if (w / ".git").exists() else f"clone it: git clone {r['url']} {w} (or set ${r['env']})"
+
+
+def _has_pin(w:pathlib.Path) -> bool:
+  return w.is_dir() and _git(w, "cat-file", "-e", pointer()["mods_repo"]["pin"] + "^{commit}").returncode == 0
+
+
+def ensure(say:Callable[[str], None] = print) -> pathlib.Path:
+  """The mods repo with the pinned commit in it. A configured clone ($<env>, or the default path) is used as it is and
+  never fetched into; with none, BoltBeam clones the repo's url into its own folder (~/.boltbeam/arkey_ie_mods) and
+  fetches the pin, saying what it fetches and from where first. Refused when the pin is still not there."""
+  r, w = pointer()["mods_repo"], _repo()
+  if _has_pin(w):
+    return w
+  if w != _own():
+    raise Refused(f"the mods repo {w} does not have the pinned commit {r['pin'][:9]}; {_get()}")
+  say(f"mods: fetching arkey_ie_mods at {r['pin'][:9]} from {r['url']} into {w}")
+  if not (w / ".git").exists():
+    w.parent.mkdir(parents=True, exist_ok=True)
+    got = subprocess.run(["git", "clone", "-q", "--no-checkout", r["url"], str(w)], capture_output=True, text=True)
+    if got.returncode:
+      raise Refused(f"arkey_ie_mods could not be cloned from {r['url']}: {got.stderr.strip()[-200:]}")
+  if not _has_pin(w):
+    _git(w, "fetch", "-q", "origin", r["pin"])  # a pin no branch holds: by its id (a server that refuses that leaves it missing, said below)
+  if not _has_pin(w):
+    raise Refused(f"the pinned commit {r['pin'][:9]} is not in {r['url']} (cloned into {w})")
+  return w
 
 
 def at_pin(rel:str, what:str) -> str:
   """A file of the mods repo at the pin: the one way the repo itself is read (a patch's text, a kernel manifest)."""
   got = _git(_repo(), "show", f"{pointer()['mods_repo']['pin']}:{rel}")
   if got.returncode:
-    raise Refused(f"{what}: {rel} is not readable at the pin in {_repo()} ({got.stderr.strip()[-120:]})")
+    raise Refused(f"{what}: {rel} is not readable at the pin in {_repo()}; {_get()} ({got.stderr.strip()[-120:]})")
   return got.stdout
+
+
+def pin_bytes(rel:str, what:str, sha256:str) -> bytes:
+  """A file of the mods repo at the pin as bytes (a kernel's cubin too), refused unless it hashes to the index's sha256."""
+  got = subprocess.run(["git", "-C", str(_repo()), "show", f"{pointer()['mods_repo']['pin']}:{rel}"], capture_output=True)
+  if got.returncode or hashlib.sha256(got.stdout).hexdigest() != sha256:
+    raise Refused(f"{what}: {rel} at the pin in {_repo()} is not the file the index names "
+                  f"({got.stderr.decode(errors='replace').strip()[-120:] or 'sha256 differs'})")
+  return got.stdout
+
+
+def kernel_dir(folder:pathlib.Path, k:dict[str, Any]) -> pathlib.Path:
+  """Where a modded build keeps a kernel row's files (its manifest names its cubins beside it)."""
+  return pathlib.Path(folder) / "kernels" / k["dir"].rstrip("/").rsplit("/", 1)[-1]
+
+
+def install_kernels(engine:str, folder:pathlib.Path, checks:dict[str, Any]) -> list[str]:
+  """Each kernel the build matches (verify said so), its files at the pin copied into the build folder; their manifests.
+  A run on the build points the hook's switch at the one manifest (run_env), so the kernel the benchmarks ran runs."""
+  ip, rows, out = pointer()["install_paths"][engine], {k["id"]: k for k in index().get("kernels", [])}, []
+  for got in checks.get("kernels", []):
+    if not got.get("matches"):
+      continue
+    k = rows[got["id"]]
+    dest = kernel_dir(folder, k)
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True)
+    for name, sha in k["files"].items():
+      (dest / name).write_bytes(pin_bytes(k["dir"] + name, k["id"], sha))
+    out.append(str(dest / ip["manifest_file"]))
+  return out
 
 
 def head_of(where:pathlib.Path) -> str | None:
@@ -139,8 +211,21 @@ def _series(copy:pathlib.Path, rows:list[dict[str, Any]]) -> list[str]:
   return [m["id"] for m in rows if _git(copy, "apply", "-", stdin=at_pin(m["patch"], m["id"])).returncode]
 
 
-def plan(engine:str, src:pathlib.Path, labels:tuple[str, ...] = ("identical",), only:list[str] | None = None,
+def default_labels() -> tuple[str, ...]:  # identical and quality-gated: the series the benchmarks measured
+  from boltbeam.workflow.context_audit import GATED, IDENTICAL
+  return IDENTICAL, GATED
+
+
+def evidence(mod_id:str) -> str | None:  # a mod version's benchmark (engine_patches.json benchmarks, keyed engine/version)
+  rel = pointer().get("benchmarks", {}).get(mod_id.rsplit("/", 1)[0])
+  return f"{pointer()['mods_repo']['url'].replace('https://', '')}/tree/master/{rel}" if rel else None
+
+
+def plan(engine:str, src:pathlib.Path, labels:tuple[str, ...] | None = None, only:list[str] | None = None,
          base:str | None = None) -> dict[str, Any]:
+  if only and labels:
+    raise Refused("--label and --mod both choose the mods: give one or the other")
+  labels = labels or default_labels()
   head = head_of(src)
   if head and base and head != _base(engine, base):
     raise Refused(f"the checkout {src} is at {head[:9]}, not --base {base}")
@@ -169,7 +254,10 @@ def plan(engine:str, src:pathlib.Path, labels:tuple[str, ...] = ("identical",), 
           "fits": (f"base, taken: the tree has no .git, so it is taken to be the mods' base {head[:9]} (unchecked)" if taken
                    else f"base: HEAD {head[:9]} is the mods' base" if exact else f"another commit: HEAD {head[:9]} is not "
                    f"a mods base ({', '.join(bases)}); applied in series order in a clone"),
-          "chosen": [m["id"] for m in pick], "conflicts": conflicts, "missing_dependencies": missing,
+          "chosen": [m["id"] for m in pick], "conflicts": conflicts, "labels": None if only else list(labels),
+          "quality_gated": {m["id"]: [switch(m), evidence(m["id"])] for m in pick if m["output"] == "quality-gated"},
+          "marks": {m["id"]: m["output"] if m["state"] == "series" else m["state"] for m in pick
+                    if m["output"] != "identical" or m["state"] != "series"}, "missing_dependencies": missing,
           "not_carried": [] if taken else _git(src, "status", "--porcelain").stdout.splitlines(),
           "not_chosen": [f"{m['id']} ({m['output']}, {m['state']})" for m in (exact or rows) if m["id"] not in ids]}
 
@@ -187,7 +275,8 @@ def apply(engine:str, src:pathlib.Path, chosen:list[str], into:pathlib.Path, hea
     raise Refused(f"{', '.join(failed)} did not apply on {head[:9]} in series order; nothing was applied")
   build = engine_update.install(engine, f"{head[:9]}-mods", into, vendor,
                                 {"cmake": [f.format(commit=head) for f in row.get("commit_cmake", [])]})
-  return {**build, "base_commit": head, "checks": verify(engine, into, head, rows, taken),
+  checks = verify(engine, into, head, rows, taken)
+  return {**build, "base_commit": head, "checks": checks, "kernel_manifests": install_kernels(engine, into, checks),
           "status": "applied, not verified; base unchecked (no .git)" if taken else "applied, not verified",
           "mods": [{k: m[k] for k in ("id", "switch", "output")} for m in rows]}
 
@@ -207,13 +296,13 @@ def verify(engine:str, folder:pathlib.Path, head:str, rows:list[dict[str, Any]],
   ip = pointer()["install_paths"].get(engine) or {}
   if hook := next((m for m in rows if m["name"] == ip.get("mod")), None):
     out["kernels"] = [{**k, "loaded": f"{told}; {k['loaded']}" if told else k["loaded"]}
-                      for k in (_kernel(engine, k, got, hook, ip) for k in index().get("kernels", []) if k["hook"] == hook["id"])]
+                      for k in (_kernel(engine, k, got, hook, ip, folder) for k in index().get("kernels", []) if k["hook"] == hook["id"])]
   return out
 
 
-def _kernel(engine:str, k:dict[str, Any], built:str, hook:dict[str, Any], ip:dict[str, Any]) -> dict[str, Any]:
+def _kernel(engine:str, k:dict[str, Any], built:str, hook:dict[str, Any], ip:dict[str, Any], folder:pathlib.Path) -> dict[str, Any]:
   """One kernel row's manifest at the pin against the built commit; a manifest that cannot be read says unknown (the
-  build is still recorded). The path printed is the working tree's, said when it is not the pinned content checked."""
+  build is still recorded). matches: the hook would take it on this build, so apply installs it beside the build."""
   rel = k["dir"] + ip["manifest_file"]
   try:
     text = at_pin(rel, k["id"])
@@ -221,30 +310,33 @@ def _kernel(engine:str, k:dict[str, Any], built:str, hook:dict[str, Any], ip:dic
     builds = [str(b) for b in man["engine"]["builds"]]
     lines = [ip["loaded_line"].format(id=e["id"]) for e in man["entries"]]
   except (Refused, ValueError, KeyError, TypeError) as exc:
-    return {"id": k["id"], "builds": [], "loaded": f"unknown: the manifest {rel} at the pin is not readable ({type(exc).__name__}: {exc})"}
+    return {"id": k["id"], "builds": [], "matches": False, "loaded": f"unknown: the manifest {rel} at the pin is not readable ({type(exc).__name__}: {exc})"}
   if not any(same_commit(engine, built, b) for b in builds):
-    return {"id": k["id"], "builds": builds, "loaded": f"will not load: the manifest was checked on {', '.join(builds)}, "
-                                                        f"this build is {built}; the engine's own kernels run"}
-  wt = _repo() / rel
-  differs = "" if wt.is_file() and wt.read_text() == text else " (not the pinned file checked here: check out the pin first)"
-  return {"id": k["id"], "builds": builds, "loaded": f"not confirmed: the manifest matches this build, no load check runs "
-          f"here; with {switch(hook)}={wt}{differs} its log must say {'; '.join(lines)}"}
+    return {"id": k["id"], "builds": builds, "matches": False, "loaded": f"will not load: the manifest was checked on "
+            f"{', '.join(builds)}, this build is {built}; the engine's own kernels run"}
+  return {"id": k["id"], "builds": builds, "matches": True, "loaded": f"not confirmed: the manifest matches this build and is "
+          f"installed with it; a run on the build sets {switch(hook)}={kernel_dir(folder, k) / ip['manifest_file']}, and its "
+          f"log must say {'; '.join(lines)}"}
 
 
-HELP = "the arkey_ie_mods mods that fit the engine build here; --apply builds them into a clone"
+HELP = "the arkey_ie_mods mods that fit the engine build here; apply builds them into a clone"
 
 
-def arguments(p) -> None:
+def arguments(p, hide_apply:bool = False) -> None:
   """The flags of `screen mods` and `boltbeam mods` (cli/mods.py), one set."""
+  import argparse
   from boltbeam.collectors import engine_builds
   from boltbeam.workflow.context_audit import OUTPUTS
   p.add_argument("--engine", choices=list(engine_builds.rows()), help="default: the one engine with mods for this machine's build")
   p.add_argument("--src", help="the source of the build you run (default: the current build's src)")
   p.add_argument("--base", help="a source without .git: the mods version or base commit it is (default: the newest released one's)")
-  p.add_argument("--apply", action="store_true", help="apply the chosen mods to a clone of it and build it (yours is never changed)")
-  p.add_argument("--label", action="append", default=[], choices=list(OUTPUTS[1:3]), help="also take mods with this output label")
+  p.add_argument("--apply", action="store_true", help=argparse.SUPPRESS if hide_apply else  # `boltbeam mods apply`
+                 "apply the chosen mods to a clone of it and build it (yours is never changed)")
+  p.add_argument("--label", action="append", default=[], choices=list(OUTPUTS[:3]),
+                 help="only series mods with this output label (default: identical and quality-gated, the benchmarked series)")
   p.add_argument("--mod", action="append", help="exactly these mod ids (engine/version/name)")
-  p.add_argument("--target", default=None, help="with --apply or no --engine: the chip the build is for (default: this machine's)")
+  p.add_argument("--target", default=None, help="the chip the build is for (default: this machine's); the mods refuse a GPU backend they are not for")
+  p.add_argument("--rebuild", action="store_true", help="with apply: build the chosen mods again even when that build is already on disk")
 
 
 def only_engine(backend:str | None) -> str:
@@ -261,16 +353,22 @@ def text(res:dict[str, Any]) -> str:
   out = [f"mods {res.get('engine', '')}".rstrip() + f": {res['refused']}"] if res.get("refused") else []
   if "fits" in res:
     out.append(f"{res['engine']} source: {res['fits']}")
-    out += [f"  mods that fit ({len(res['chosen'])}):", *(f"    {m}" for m in res["chosen"] or ["none"])]
+    qg = res.get("quality_gated") or {}
+    out += [f"  mods that fit ({len(res['chosen'])}; " + (f"series, output {' or '.join(res['labels'])}):" if res.get("labels") else "named by --mod):"),
+            *(f"    {m}" + (f" ({res['marks'][m]})" if m in (res.get("marks") or {}) else "") for m in res["chosen"] or ["none"])]
+    out += [f"  quality-gated: {m}, its output may differ from stock with {sw or 'it'} on; evidence: {e or 'none recorded'}"
+            for m, (sw, e) in qg.items()]
     out += [f"  conflicts, left out: {', '.join(res['conflicts'])}"] * bool(res["conflicts"])
     out += [f"  left out, a mod it needs is not taken: {m} needs {', '.join(d)}" for m, d in res["missing_dependencies"].items()]
     out += [f"  not chosen: {m}" for m in res["not_chosen"]]
     out += [f"  not carried into the clone: {len(res['not_carried'])} uncommitted changes in your tree"] * bool(res["not_carried"])
   if b := res.get("build"):
-    out += [f"built: {b['folder']} ({b['key']})", f"  commit {b['checks']['commit']}",
-            *(f"  kernel {k['id']}: {k['loaded']}" for k in b["checks"].get("kernels", []))]
+    out += [f"{'already built, not rebuilt (--rebuild builds it again)' if res.get('reused') else 'built'}: {b['folder']} ({b['key']})",
+            f"  commit {(b.get('checks') or {}).get('commit')}", *(f"  kernel {k['id']}: {k['loaded']}" for k in (b.get("checks") or {}).get("kernels", []))]
+  elif res.get("already_built") and not res.get("refused"):
+    out.append(f"already built as {res['key']}: `boltbeam mods apply` offers it as it is (--rebuild builds it again)")
   elif res.get("chosen") and not res.get("refused"):
-    out.append("`boltbeam mods --apply` builds them into a clone (yours is never changed)")
+    out.append("`boltbeam mods apply` builds them into a clone (yours is never changed)")
   return "\n".join(out)
 
 
@@ -282,28 +380,53 @@ def modded(engine:str, path:str | None) -> dict[str, Any] | None:
                if real and real in {os.path.realpath(p) for p in (b.get("paths") or {}).values()}), None)
 
 
-def run(engine:str, *, src:str | None = None, labels:tuple[str, ...] = ("identical",), only:list[str] | None = None,
-        base:str | None = None, apply_them:bool = False, backend:str | None = None,
+def not_here(engine:str, backend:str | None) -> str | None:
+  """Why the engine's mods do nothing on this machine's GPU backend (the apply row's backends), or None: they apply, or
+  the backend is not known."""
+  row = pointer()["apply"].get(engine) or {}
+  if not backend or not row.get("backends") or backend.lower() in {b.lower() for b in row["backends"]}:
+    return None
+  from boltbeam.report import plain
+  return plain.words()["mods"]["backend"].format(engine=engine, what=row.get("backends_words") or "/".join(row["backends"]), backend=backend)
+
+
+def key_of(got:dict[str, Any]) -> str:
+  """The modded build's key for a plan's chosen set: its base, -copy for a taken tree (so it never replaces a checked
+  checkout's build at the same base), and the chosen ids' hash."""
+  return f"{got['head'][:9]}{'-copy' * got['taken']}-mods-{hashlib.sha256(' '.join(sorted(got['chosen'])).encode()).hexdigest()[:8]}"
+
+
+def run(engine:str, *, src:str | None = None, labels:tuple[str, ...] | None = None, only:list[str] | None = None,
+        base:str | None = None, apply_them:bool = False, backend:str | None = None, rebuild:bool = False,
         say:Callable[[str], None] = print) -> dict[str, Any]:
-  """`screen mods`: the plan; with apply_them, the modded build, recorded."""
+  """`screen mods`: the plan, with the chosen set's key and whether that build is already on disk; with apply_them, the
+  modded build, recorded (one already on disk is offered as it is unless rebuild)."""
   from boltbeam.collectors import engine_builds as eb
   from boltbeam.target import vendors
   if engine not in pointer()["apply"]:
     return {"refused": f"no applier is wired for {engine} mods yet (engine_patches.json apply)"}
+  if why := not_here(engine, backend):
+    return {"refused": why}
   state = eb.load()
   cur = eb.entry(state, engine).get("current") or {}
   where = pathlib.Path(src).expanduser() if src else (pathlib.Path(cur["folder"]) / pointer()["apply"][engine]["source"] if cur.get("folder") else None)
   if where is None or not where.is_dir():
     return {"refused": f"no source tree for {engine}: pass --src (the source of the build you run)"}
   try:
+    ensure(say)
     got = plan(engine, where, labels, only, base)
     say(f"mods {engine}: {got['fits']}")
+    if got["chosen"]:
+      key = key_of(got)
+      have = next((b for b in built(engine, state) if b.get("key") == key), None)
+      got = {**got, "key": key, "already_built": have is not None}
     if not apply_them:
       return got
     if not got["chosen"]:
       return {**got, "refused": "no mod to apply on this commit with the labels allowed"}
-    # a taken tree's key is marked, so it never replaces a checked checkout's build at the same base
-    key = f"{got['head'][:9]}{'-copy' * got['taken']}-mods-{hashlib.sha256(' '.join(sorted(got['chosen'])).encode()).hexdigest()[:8]}"
+    if have and not rebuild:
+      say(f"mods {engine}: these mods are already built as {key} in {have['folder']}; nothing was rebuilt (--rebuild builds it again)")
+      return {**got, "build": have, "reused": True}
     into = pathlib.Path(state.get("root") or eb.state_file().with_name("engines")).expanduser() / engine / key
     say(f"mods {engine}: {len(got['chosen'])} mods onto a clone of {where} at {got['head'][:9]}, built in {into}")
     build = {**apply(engine, where, got["chosen"], into, got["head"], vendors.for_backend(backend), got["taken"]), "key": key}
@@ -311,7 +434,123 @@ def run(engine:str, *, src:str | None = None, labels:tuple[str, ...] = ("identic
       say(f"mods {engine}: {line}")
   except (Refused, RuntimeError, OSError, subprocess.SubprocessError) as exc:  # engine_update.CannotInstall is a RuntimeError
     return {"refused": str(exc) if isinstance(exc, Refused) else f"{type(exc).__name__}: {exc}"}
+  state = eb.load()  # read again: a build takes minutes, and another writer (an engine update, another apply) may have saved
   e = eb.entry(state, engine)
   e["modded"] = [b for b in e.get("modded") or [] if b.get("key") != key] + [build]
   eb.save(state)
-  return {**got, "build": build}
+  return {**got, "build": build, "already_built": True}
+
+
+def with_switches(shown:dict[str, Any], build:dict[str, Any] | None) -> dict[str, Any]:
+  """A rendered command (env, argv, command) on a modded build with its mods' switches (run_env) set, as a run on it
+  sets them; a switch the render already sets keeps its value."""
+  env = {k: v for k, v in run_env(build or {}).items() if k not in (shown.get("env") or {})}
+  if not env or "argv" not in shown:
+    return shown
+  env = {**env, **(shown.get("env") or {})}
+  return {**shown, "env": env, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), *map(str, shown["argv"])])}
+
+
+# --- the screens' rows (screen mods, the Engine picker's modded fork, a run on it) ---------------------------------------
+
+def run_on(m:dict[str, Any]) -> str | None:
+  """The value a run on a modded build sets the mod's switch to: its `on` when that is one plain value (1). None when it
+  is not one value a run can set alone (a manifest's path, a count to pick, `unset or 1`: on by default)."""
+  sw = m.get("switch") or {}
+  on = str(sw.get("on") or "")
+  return on if sw.get("kind") == "env" and re.fullmatch(r"[A-Za-z0-9_.-]+", on) else None
+
+
+def run_env(build:dict[str, Any]) -> dict[str, str]:
+  """The switches a run on this modded build sets: each of its mods' (index rows by id) that run_on can set, and the
+  kernel hook's (install_paths mod) set to the one kernel manifest installed with the build (install_kernels)."""
+  by = {m["id"]: m for m in mods()}
+  out = {switch(m): on for b in build.get("mods") or [] if (m := by.get(b["id"])) and (on := run_on(m))}
+  hook = next((by[b["id"]] for b in build.get("mods") or [] if b["id"] in by and by[b["id"]]["name"] ==
+               (pointer()["install_paths"].get(by[b["id"]]["engine"]) or {}).get("mod")), None)
+  if hook and switch(hook) and len(got := [p for p in build.get("kernel_manifests") or [] if os.path.isfile(p)]) == 1:
+    out[switch(hook)] = got[0]
+  return out
+
+
+@contextlib.contextmanager
+def switched(env:dict[str, str]):
+  """These switches set in this process (and the engines it starts) for the block; one the user set stays theirs."""
+  sets = {k: v for k, v in env.items() if k not in os.environ}
+  try:
+    os.environ.update(sets)
+    yield
+  finally:
+    for k in sets:
+      os.environ.pop(k, None)
+
+
+def rows(engine:str, got:dict[str, Any], only:list[str] | None = None) -> list[dict[str, Any]]:
+  """Every mod the plan weighed, in series order, as the screens show it: what it changes, its switch, its output label
+  in words, and chosen or not with why (data/plain_words.json mods). only: the --mod ids asked, when given."""
+  from boltbeam.report import plain
+  w = plain.words()["mods"]
+  ids = {*got["chosen"], *got["conflicts"], *got["missing_dependencies"], *(n.split(" ")[0] for n in got["not_chosen"])}
+  out = []
+  for m in mods(engine):
+    if m["id"] not in ids:
+      continue
+    sw, on = m.get("switch") or {}, run_on(m)
+    hooked = m["name"] == (pointer()["install_paths"].get(engine) or {}).get("mod")
+    if m["id"] in got["chosen"] and m["id"] in (got.get("quality_gated") or {}):
+      why = w["chosen_gated"].format(evidence=got["quality_gated"][m["id"]][1] or w["no_evidence"])
+    elif m["id"] in got["chosen"]:
+      why = w["chosen"]
+    elif m["id"] in got["conflicts"]:
+      why = w["conflict"].format(commit=got["head"][:9])
+    elif m["id"] in got["missing_dependencies"]:
+      why = w["needs"].format(needs=", ".join(got["missing_dependencies"][m["id"]]))
+    elif only and m["id"] not in only:
+      why = w["not_asked"]
+    elif m["state"] != "series":
+      why = w["parked"].format(state=m["state"])
+    else:
+      why = w["label"].format(label=m["output"], labels=" or ".join(got.get("labels") or default_labels()))
+    files, title = m.get("files") or [], (pointer().get("titles") or {}).get(m["id"])
+    out.append({"id": m["id"], "name": m["name"], "chosen": m["id"] in got["chosen"], "why": why,
+                "about": w["about_titled" if title else "about"].format(title=title, files=", ".join(files) if len(files) <= 2 else f"{len(files)} files ({', '.join(files[:2])}, …)",
+                                           added=m["lines"]["added"], removed=m["lines"]["removed"]),
+                "switch": f"{sw['name']}={on}" if on else sw.get("name"),
+                "switch_why": m.get("switch_null_why") if not sw else None if on else w["switch_manifest"] if hooked else
+                              w["switch_default_on"] if sw.get("default") == "on" else w["switch_unset"].format(on=sw.get("on")),
+                "output": m["output"], "output_words": w["output"].get(m["output"], m["output"])})
+  return out
+
+
+def built(engine:str, state:dict[str, Any] | None = None) -> list[dict[str, Any]]:
+  """The modded builds recorded for the engine (builds.json modded) whose folder and paths are all on disk."""
+  from boltbeam.collectors import engine_builds as eb
+  return [b for b in eb.entry(state if state is not None else eb.load(), engine).get("modded") or []
+          if b.get("folder") and os.path.isdir(b["folder"]) and all(os.path.exists(p) for p in (b.get("paths") or {}).values())]
+
+
+def with_forks(families:list[dict[str, Any]], provider_rows:list[dict[str, Any]], state:dict[str, Any] | None = None) -> list[dict[str, Any]]:
+  """engine_families.rows with each family's root engine's modded builds after its forks (screen providers)."""
+  by = {r["provider"]: r for r in provider_rows}
+  return [{**fam, "forks": fam["forks"] + fork_rows(fam["family"], by[fam["family"]], state)} if fam["family"] in by else fam
+          for fam in families]
+
+
+def fork_rows(engine:str, provider_row:dict[str, Any] | None, state:dict[str, Any] | None = None) -> list[dict[str, Any]]:
+  """Each modded build of the engine as a fork of its family: run by the engine's own adapter, its program the path
+  tune and the engine picker name; offered only when the engine runs here."""
+  from boltbeam.collectors import engine_builds as eb
+  from boltbeam.report import plain
+  w, got = plain.words()["mods"], built(engine, state)
+  try:
+    prog = eb.row(engine)["version"]["from"]
+  except (ValueError, KeyError):
+    prog = None
+  if not (provider_row or {}).get("available"):  # the engine does not run here: nothing to offer its builds on
+    return []
+  return [{"fork": b["key"], "label": w["fork"] + (f" {b['key']}" if len(got) > 1 else ""), "repo": pointer()["mods_repo"]["url"],
+           "provider": engine, "runs": True, "state": "available", "fix": None, "modded": b["key"],
+           "path": (b.get("paths") or {}).get(prog) or next(iter((b.get("paths") or {}).values()), None),
+           "reason": w["fork_reason"].format(n=len(b.get("mods") or []), status=b.get("status") or "applied, not verified",
+                                             at=b.get("installed_at") or "?")}
+          for b in got]

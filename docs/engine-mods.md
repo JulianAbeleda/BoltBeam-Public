@@ -33,9 +33,13 @@ no kernel rows yet to label what a manifest installs.
 `boltbeam mods [--engine llama.cpp] [--src DIR]` lists the mods that fit the build: base = its commit, or for
 another commit each mod tried in series order in a scratch clone, applies or conflicts by name, never forced. It names
 a mod left out because an apply dependency is not chosen, and the uncommitted or untracked changes in the checkout
-that a clone does not carry. `--apply` takes the identical ones (`--label quality-gated|untested` or `--mod ID` for
-others), applies all of them or none to a clone of the checkout at its commit (yours is never changed; a rerun resets
-the clone), builds it with the engine's install recipe (workflow/engine_update.install) and records it in
+that a clone does not carry. By default it takes the series for the base: its identical and quality-gated mods, the
+set the published benchmark measured (llama.cpp 1.0.0: all 13, 04 mtp-share-head quality-gated; never a parked one).
+The list marks the quality-gated ones and names their evidence (`engine_patches.json` `benchmarks`, keyed
+engine/version: arkey_ie_mods benchmarks/llama.cpp-1.0.0-0.3.26). `--label identical|quality-gated|untested` takes
+only the series mods with those labels, `--mod ID` exactly those mods. `boltbeam mods apply` (the 0.3.26 `--apply`
+still works) applies all of them or none to a clone of the checkout at its commit (yours is never changed; a rerun
+resets the clone), builds it with the engine's install recipe (workflow/engine_update.install) and records it in
 `~/.boltbeam/builds.json` under `modded`, once per set of mods, as "applied, not verified". tune names such a build
 "Modded build, applied, not verified" beside its setup.
 

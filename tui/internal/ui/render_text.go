@@ -28,8 +28,9 @@ func found(r seam.RoleLoss) (string, string) {
 
 // vocab is the plain vocabulary (`screen words`, data/plain_words.json), read once when the screen starts: stage, role
 // and part names, layer 1's labels, the glossary. Until it answers, a stage or role shows its own key. Like
-// darkBackground, there is one per program.
-var vocab *seam.Words
+// darkBackground, there is one per program. Empty, not nil, until then: the first frame is drawn before it answers,
+// and a page that reads a field of it (Setup's Context line) must not panic.
+var vocab = &seam.Words{}
 
 // stageWord is the plain name of any pipeline stage key, the report's and the measuring ones.
 func stageWord(key string) string { return vocab.Stage(key, here()) }

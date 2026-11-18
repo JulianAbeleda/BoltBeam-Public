@@ -41,8 +41,10 @@ def run(model:str, engine:str, *, tokens:int = TOKENS, source:str | None = None,
     if source:
       p = mod.profile(source, ident, n_expert=sh["experts"], corpus=corpus or "the text the source run read", tokens=tokens)
     elif row["captures"]:
-      p = mod.capture(model, work or pathlib.Path.home() / ".boltbeam" / "routing" / f"capture-{ident['id']}", tokens=tokens,
-                      ident=ident, corpus=CORPUS, build=build, port=port)
+      from boltbeam.workflow import mods
+      with mods.switched(mods.run_env(mods.modded(engine, build) or {})):  # a modded build is captured as it runs
+        p = mod.capture(model, work or pathlib.Path.home() / ".boltbeam" / "routing" / f"capture-{ident['id']}", tokens=tokens,
+                        ident=ident, corpus=CORPUS, build=build, port=port)
     else:
       raise Refused(f"{engine}: BoltBeam reads its record but does not start it; pass --from ({row['from']})")
   except (OSError, ValueError, struct.error) as exc:

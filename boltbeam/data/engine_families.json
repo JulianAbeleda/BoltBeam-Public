@@ -7,7 +7,7 @@
       "label": "llama.cpp",
       "forks": [
         {"fork": "upstream", "label": "upstream", "repo": "https://github.com/ggml-org/llama.cpp", "provider": "llama.cpp", "runs": true,
-         "flags": {"llama-bench": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot"], "llama-server": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot", "--cpu-moe", "--moe-cache-mib", "--spec-type", "-md", "-ctkd", "--cache-ram"]}},
+         "flags": {"llama-bench": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot"], "llama-server": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot", "--cpu-moe", "--moe-cache-mib", "--spec-type", "-md", "-ctkd", "--cache-ram", "-lm"]}},
         {
          "fork": "master",
          "label": "master",
@@ -19,7 +19,7 @@
           "~/env/llama.cpp-master/build*/bin/llama-bench"
          ],
          "runs": true,
-         "flags": {"llama-bench": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot"], "llama-server": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot", "--cpu-moe", "--moe-cache-mib", "--spec-type", "-md", "-ctkd", "--cache-ram", "--moe-cache-cpu-share"]},
+         "flags": {"llama-bench": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot"], "llama-server": ["-ub", "-b", "-ctk", "-ctv", "-fa", "-ngl", "-ncmoe", "-ot", "--cpu-moe", "--moe-cache-mib", "--spec-type", "-md", "-ctkd", "--cache-ram", "--moe-cache-cpu-share", "-lm"]},
          "why": "upstream master pinned at a commit, ahead of the latest release (5193ef1d, 2026-11-13, built with HIP on the R9700 box; the NV box built 7592b61d3. 1.0.0 now carries the MoE cache's CPU-computed misses #30966, #31233, #31888 and the MTP fixes #31497, #31927 that v0.9.0 lacked; owner 2026-11-13: tune on master); run it with BOLTBEAM_LLAMA_BENCH set to its llama-bench; Setup cannot pick it yet"
         },
         {"fork": "ollama", "label": "Ollama", "repo": "https://github.com/ollama/ollama", "provider": "ollama", "runs": true},

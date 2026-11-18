@@ -7,7 +7,7 @@ model's tokenizer, each with a task at the end, runtime/mtp_shared.long_prompts)
 measurement. The long depth was the model's own greedy continuation until 2026-11-12, when those continuations were
 found to loop (boltbeam-runs/mtp-layer-27b-20261112/README.md, CORRECTION): records before SCHEMA's v2 keep only their
 short depth (workflow/recommend.mtp_of, quantization/speed_up.mtp_depths_valid). The engine's row in
-data/engine_knobs.json (engines.<E>.mtp) names the module that measures it: its offer(), what Measure MTP runs for a
+data/engine_adapters.json (engines.<E>.mtp) names the module that measures it: its offer(), what Measure MTP runs for a
 checkpoint, and its measure(), which hands sweep() one function that runs one k. sweep() refuses to start while
 another program holds the GPU, runs k=0 first and every k after it, checks the GPU is free again after each (no engine
 left behind), refuses a k whose contexts or replies repeat themselves (guard), grows the sweep while core/draft_count
@@ -30,7 +30,7 @@ from boltbeam.core import draft_count
 SCHEMA = "boltbeam.mtp_measurement.v3"  # v2: the long depth is real text (LONG); v3: its replies held to the loop statistic (guard). Older long depths are not read
 PROMPTS = pathlib.Path(__file__).resolve().parent.parent / "data" / "mtp_prompts.json"
 LONG = PROMPTS.parent / "mtp_long_corpus.json"  # the long depth's documents and their tasks
-TABLE = PROMPTS.parent / "engine_knobs.json"  # engines.<E>.mtp: the module that measures MTP on E
+TABLE = PROMPTS.parent / "engine_adapters.json"  # engines.<E>.mtp: the module that measures MTP on E
 MEASUREMENT = "mtp_measurement.json"
 SERVER_GROUP = "engine-k{k}.pgid"  # the process group a k's server runs in, for sweep() to stop
 KS = (1, 2, 3)  # the draft counts a measurement starts from (screen mtp --ks); the sweep goes on (core/draft_count.sweep_next)
@@ -69,7 +69,7 @@ def measure(provider:str, model:str, ks:list[int], *, backend:str, out:pathlib.P
   """The measurement on this engine (its row's module); head: a draft head file, where the engine takes one."""
   m = engine(provider)
   if m is None:
-    raise MtpRefused(f"{provider} has no MTP measurement in its engine row (data/engine_knobs.json)")
+    raise MtpRefused(f"{provider} has no MTP measurement in its engine row (data/engine_adapters.json)")
   return m.measure(model, ks, backend=backend, out=out, tokens=tokens, long_tokens=long_tokens, long_why=long_why, grow=grow, head=head, **engine_kw)
 
 

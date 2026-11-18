@@ -42,51 +42,18 @@ from typing import Any, Callable, Iterable, Mapping
 
 from boltbeam.vocab import SCHEMA_ENGINES as SCHEMA
 from boltbeam.target.gpu import first_gpu
+from boltbeam.collectors.engine_saved import FILE_ENV, ITEMS, PRIMARY, engines_file, load, saved  # noqa: F401  read apart from the scan
+from boltbeam.collectors.engine_saved import _is_dir, _is_file, _scan_error
 
-FILE_ENV = "BOLTBEAM_ENGINES_FILE"
 VENV_CAP = 40  # pythons started in one scan, at most
 PYTHON_TIMEOUT_S = 5.0
 _PREFIXES = ("/opt/homebrew", "/usr/local")
 
-# env var -> (short name, the engine it belongs to). The order is the order rows are shown.
-ITEMS: tuple[tuple[str, str, str], ...] = (
-  ("BOLTBEAM_LLAMA_BENCH", "llama-bench", "llama.cpp"),
-  ("BOLTBEAM_LLAMA_BATCHED_BENCH", "llama-batched-bench", "llama.cpp"),
-  ("BOLTBEAM_GGML_METAL", "ggml Metal library", "llama.cpp"),
-  ("BOLTBEAM_GGML_CUDA_SRC", "ggml-cuda source", "llama.cpp"),
-  ("BOLTBEAM_TINYGRAD_ROOT", "tinygrad fork", "arkey"),
-  ("BOLTBEAM_VLLM_PYTHON", "vLLM python", "vllm"),
-  ("BOLTBEAM_OLLAMA", "ollama", "ollama"),
-  ("BOLTBEAM_TRTLLM_PYTHON", "TensorRT-LLM python", "tensorrt-llm"),
-)
-PRIMARY = {engine: env for env, _, engine in reversed(ITEMS)}  # the one item that says the engine is here
 CUDA_ONLY = ("BOLTBEAM_VLLM_PYTHON", "BOLTBEAM_TRTLLM_PYTHON")  # not looked for on a Mac
 _MODULES = {"BOLTBEAM_VLLM_PYTHON": "vllm", "BOLTBEAM_TRTLLM_PYTHON": "tensorrt_llm"}
 
 
 # --- the saved file ---------------------------------------------------------------------------------------------
-
-def engines_file() -> pathlib.Path:
-  """Where this machine keeps its scan: $BOLTBEAM_ENGINES_FILE, else ~/.boltbeam/engines.json. A machine setting, read
-  from the process environment (the finders' `env` argument is the engine settings a caller fakes, not this)."""
-  return pathlib.Path(os.environ.get(FILE_ENV) or pathlib.Path.home() / ".boltbeam" / "engines.json").expanduser()
-
-
-def load() -> dict[str, Any]:
-  """The saved scan, or {} when there is none or it is not a scan."""
-  try:
-    data = json.loads(engines_file().read_text())
-  except (OSError, ValueError):
-    return {}
-  return data if isinstance(data, dict) and data.get("schema") == SCHEMA else {}
-
-
-def saved(env_var:str) -> str | None:
-  """The path the last scan found for this env var, when it is still on the disk. The finders' last fallback."""
-  row = (load().get("found") or {}).get(env_var) or {}
-  path = row.get("path")
-  return path if path and (_is_file(pathlib.Path(path)) or _is_dir(pathlib.Path(path))) else None
-
 
 def save(result:dict[str, Any]) -> pathlib.Path:
   """The engines file's one writer: `boltbeam doctor`, the screen's scan and a stale cache all come here through
@@ -104,32 +71,6 @@ def save(result:dict[str, Any]) -> pathlib.Path:
 
 # Every look at the disk tolerates a folder that cannot be read (a root-owned lost+found under ~/storage): it is
 # simply not there for the scan. A permission error must never end the scan.
-
-def _scan_error(exc:OSError, path:pathlib.Path) -> None:
-  """Absent paths are ordinary; inaccessible paths are reported; I/O faults remain errors."""
-  import warnings
-  if isinstance(exc, (FileNotFoundError, NotADirectoryError)): return
-  if isinstance(exc, PermissionError):
-    warnings.warn(f"engine scan skipped {path}: {exc}", RuntimeWarning)
-    return
-  raise exc
-
-
-def _is_dir(p:pathlib.Path) -> bool:
-  try:
-    return p.is_dir()
-  except OSError as exc:
-    _scan_error(exc, p)
-    return False
-
-
-def _is_file(p:pathlib.Path) -> bool:
-  try:
-    return p.is_file()
-  except OSError as exc:
-    _scan_error(exc, p)
-    return False
-
 
 def _is_exe(p:pathlib.Path) -> bool:
   return _is_file(p) and os.access(p, os.X_OK)
@@ -235,10 +176,10 @@ def default_checkout() -> pathlib.Path | None:
   the folder this package was imported from (an editable install), else none (a plain pip install)."""
   here = pathlib.Path.cwd().resolve()
   for d in (here, *here.parents):
-    if (d / "boltbeam" / "__init__.py").is_file():
+    if (d / "boltbeam/__init__.py").is_file():
       return d
   pkg = pathlib.Path(__file__).resolve().parents[2]
-  return pkg if (pkg / "boltbeam" / "__init__.py").is_file() and pkg.name != "site-packages" else None
+  return pkg if (pkg / "boltbeam/__init__.py").is_file() and pkg.name != "site-packages" else None
 
 
 def fork_candidates(home:pathlib.Path, checkout:pathlib.Path | None) -> list[pathlib.Path]:

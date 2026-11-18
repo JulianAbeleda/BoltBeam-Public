@@ -559,7 +559,7 @@ def cmd_kernel_ledger(args) -> int:
   if bad := tb.unknown_engines(args.engine):
     return _fail(f"kernel-ledger: data/kernel_families.json has no rows for {', '.join(bad)}: the steps and the join come from them")
   if (target := next((t for t in limit.targets()["targets"] if t["id"] == args.target), None)) is None:
-    return _fail(f"kernel-ledger: no target {args.target} (boltbeam targets lists them)")
+    return _fail(f"kernel-ledger: no target {args.target} (python -m boltbeam.workflow.screen targets lists them)")
   if not kl.shape_rows(args.engine, args.target):
     return _fail(f"kernel-ledger: {', '.join(args.engine)} has no shapes rows (data/kernel_families.json): no output layer to cut steps by, no join")
   if len(args.untraced_ms or []) not in (0, len(args.capture)) or len(args.counters or []) not in (0, len(args.capture)):
@@ -588,7 +588,7 @@ def register(sub) -> None:
   p.add_argument("--draft", default=None, help="the draft head's header table, for the draft passes' join")
   p.add_argument("--engine", action="append", required=True, help="the engine's rows (data/kernel_families.json): a fork, then its root; repeatable")
   p.add_argument("--vendor", default=None, help="the GPU vendor's family rows (nvidia, amd)")
-  p.add_argument("--target", required=True, help="the chip (boltbeam targets): its measured bandwidth and its shapes facts")
+  p.add_argument("--target", required=True, help="the chip (python -m boltbeam.workflow.screen targets): its measured bandwidth and its shapes facts")
   p.add_argument("--k", type=int, required=True, help="draft tokens a step: the verify runs k + 1 columns (0 without a draft)")
   p.add_argument("--kv-type", default=None, help="the KV cache's format (Q8_0, F16, ...): attention bytes and flash_space's coverage")
   p.add_argument("--selection", type=int, default=None, help="the KV cells a verify attention launch reads when the engine runs sparse attention")

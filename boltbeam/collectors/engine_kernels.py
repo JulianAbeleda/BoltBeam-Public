@@ -50,17 +50,13 @@ from typing import Any, Callable
 from boltbeam import formats
 from boltbeam.collectors import capture_settings, kernel_timer
 from boltbeam.collectors.kernel_timer import Check, KernelSpec
+from boltbeam.collectors.engine_source import GGML_CUDA_ENV, NoEngineSource, _file_record, _mtime, mmvq_source_dir  # noqa: F401
 
 CLOCK_INTERVAL_S = 0.005  # fine enough that each kernel's timed window holds samples of the clock it ran at
 METHOD = "boltbeam-kernel-timer-isolated"  # the capture method id every reader keys on (providers.capture_method)
 WORDS = "isolated, timed by BoltBeam's kernel timer"  # a row adds ": <engine> <kernel>"
 ROLE_SOURCE = "isolated_by_shape"  # the kernel row's role_source: the role is the shape it was run at
 GGML_LIBRARY_ENV = "BOLTBEAM_GGML_METAL"  # a ggml Metal library or ggml-metal.metal file, when not under Homebrew
-GGML_CUDA_ENV = "BOLTBEAM_GGML_CUDA_SRC"  # the ggml-cuda source folder (llama.cpp/ggml/src/ggml-cuda)
-
-
-class NoEngineSource(RuntimeError):
-  """The engine's shader source is not on this machine, so its kernels cannot be timed here."""
 
 
 def _reference(quant:str, rows:int, cols:int, weights:bytes, x:list[float], words:str | None = None) -> Check:
@@ -105,27 +101,11 @@ def ggml_library(bench:str | None = None) -> dict[str, Any]:
       tried.append(str(p))
       if p.is_file():
         return _file_record(p)
-  from boltbeam.collectors import engine_scan
-  if kept := engine_scan.saved(GGML_LIBRARY_ENV):  # what the engine scan found and saved (engine_scan.py)
+  from boltbeam.collectors import engine_saved
+  if kept := engine_saved.saved(GGML_LIBRARY_ENV):  # what the engine scan found and saved (engine_scan.py)
     return _file_record(pathlib.Path(kept))
   raise NoEngineSource("ggml's Metal shader source was not found (libggml-metal or ggml-metal.metal); looked in "
                        + ", ".join(tried[:4]) + f", ... Set {GGML_LIBRARY_ENV} to the file")
-
-
-def _file_record(path:pathlib.Path) -> dict[str, Any]:
-  real = path.resolve()
-  version = None
-  parts = real.parts
-  if "Cellar" in parts:  # /opt/homebrew/Cellar/ggml/0.19.0/libexec/...: the formula and its version
-    i = parts.index("Cellar")
-    version = f"{parts[i + 1]} {parts[i + 2]}" if len(parts) > i + 2 else None
-  return {"path": str(path), "real_path": str(real), "version": version, "bytes": real.stat().st_size,
-          "sha256": hashlib.sha256(real.read_bytes()).hexdigest(), "mtime": _mtime(real)}
-
-
-def _mtime(path:pathlib.Path) -> str:
-  import datetime
-  return datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def source_vs_binary(source:dict[str, Any], bench:str | None) -> dict[str, Any]:
@@ -262,7 +242,6 @@ def ggml_metal_spec(text:str, quant:str, rows:int, cols:int, weights:bytes, x:li
 
 # --- llama.cpp's mmvq: ggml-cuda's source, built for CUDA or HIP ----------------------------------------------------
 
-_MMVQ_CANDIDATES = ("~/env/llama.cpp/ggml/src/ggml-cuda", "~/llama.cpp/ggml/src/ggml-cuda", "/usr/local/src/llama.cpp/ggml/src/ggml-cuda")
 from boltbeam.collectors.gemv_reference import GGML_TYPES as GGML_TYPE  # noqa: E402  the one ggml.h type table (gemv_reference)
 from boltbeam.artifacts.run_io import load_manifest, read_json
 Q8_1_BLOCK, Q8_1_BYTES = 32, 36  # block_q8_1: half d, half s, 32 int8 (ggml-common.h)
@@ -276,27 +255,6 @@ MMVQ_RULE = ("ggml-cuda mmvq.cu mul_mat_vec_q<type, ncols_dst=1, has_fusion=fals
 GENERIC_TABLE = "MMVQ_PARAMETERS_GENERIC"  # the table the device-side get_device_table_id falls to; the adapter's base case
 LINKAGE_NOTE = ("mul_mat_vec_q is `static` in mmvq.cu; that one word is removed from the text in memory so the compiled module "
                 "exports the kernel. No other change to the engine's source.")
-
-
-def mmvq_source_dir() -> dict[str, Any]:
-  """The installed llama.cpp's ggml-cuda source folder: $BOLTBEAM_GGML_CUDA_SRC, a known checkout, or what the
-  engine scan saved (engine_scan.py)."""
-  from boltbeam.collectors import engine_scan
-  tried = []
-  kept = engine_scan.saved(GGML_CUDA_ENV)
-  for cand in ([os.environ[GGML_CUDA_ENV]] if os.environ.get(GGML_CUDA_ENV) else []) + list(_MMVQ_CANDIDATES) + ([kept] if kept else []):
-    p = pathlib.Path(cand).expanduser()
-    tried.append(str(p))
-    if (p / "mmvq.cu").is_file():
-      rec = _file_record(p / "mmvq.cu")
-      git = p.parents[2] / ".git" if len(p.parents) > 2 else None
-      head = None
-      if git and (git / "HEAD").is_file():
-        ref = (git / "HEAD").read_text().strip()
-        head = (git / ref.split(" ", 1)[1]).read_text().strip()[:12] if ref.startswith("ref:") and (git / ref.split(" ", 1)[1]).is_file() else ref[:12]
-      return {**rec, "dir": str(p), "commit": head}
-  raise NoEngineSource(f"llama.cpp's ggml-cuda source (mmvq.cu) was not found; looked in {', '.join(tried)}. "
-                       f"Set {GGML_CUDA_ENV} to llama.cpp/ggml/src/ggml-cuda")
 
 
 def template_parameters(text:str) -> list[tuple[str, str, str | None]]:

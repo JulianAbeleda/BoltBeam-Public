@@ -64,6 +64,7 @@ func TestFooterIsTheScreensKeys(t *testing.T) {
 		"setup":   {program(s, nil, nil, nil, 80, 24), []string{"↑↓ move", "enter pick", "? all keys", "q quit"}, []string{"esc", "l log", "d delete"}},
 		"running": {page(program(s, &s.planned, s.job, s.tail, 80, 24), pageRun), []string{"l log", "esc setup"}, []string{"d delete"}},
 		"picker":  {page(program(s, nil, nil, nil, 80, 24), pageChip), []string{"esc setup"}, []string{"l log"}},
+		"mods":    {page(program(s, nil, nil, nil, 80, 24), pageMods), []string{"esc engine"}, []string{"esc setup"}}, // esc goes to Engine
 	} {
 		got := footerOf(c.m)
 		if ansi.StringWidth(got) > 80 {

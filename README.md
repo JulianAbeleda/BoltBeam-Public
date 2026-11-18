@@ -56,7 +56,7 @@ Both setups draft 3 tokens a step with the same head and accept about the same. 
 
 What does it:
 
-- **Engine mods.** `boltbeam mods --apply` applies the opt-in llama.cpp mods of
+- **Engine mods.** `boltbeam mods apply` applies the opt-in llama.cpp mods of
   [arkey_ie_mods](https://github.com/JulianAbeleda/arkey_ie_mods) (MIT, public) to your llama.cpp, a tree without
   `.git` (a release archive) included. It builds the series, checks each mod is on, and refuses a build whose
   generated kernels did not load. 13 mods for v1.0.0, each off unless its switch is set. 12 compute the same bits as

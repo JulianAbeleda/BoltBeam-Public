@@ -106,7 +106,11 @@ type Facts struct {
 	Fetch FetchForm // Fetch runs (fetch.go)
 	Speed SpeedUp   // Speed up (speedup.go)
 	Tune  TuneState // Tuned for this machine (tune.go)
-	Side  SideJob   // Measure routing and Measure again (measure.go)
+	Mods  ModsState // Apply mods (mods.go)
+	// Modded is the modded build (its fork's key) Enter picked on Engine; "" for any other build. Only Enter sets it:
+	// the highlight shares the root's engine, so moving onto the fork alone must not change what runs.
+	Modded string
+	Side   SideJob // Measure routing and Measure again (measure.go)
 	// Env is the environment Run sets for the engine (Use these on Tuned for this machine), by name; cleared with a new
 	// engine, as Settings is.
 	Env    map[string]string
@@ -197,6 +201,7 @@ const (
 	pageFetch
 	pageOffload
 	pageContext
+	pageMods
 )
 
 func none(Facts) string { return "" }
@@ -220,6 +225,7 @@ var steps = []step{
 	{"Fetch runs", "", none, fetchLine, fetchBody, fetchActions},
 	{"Offload", offloadHint, none, func(Facts) (string, string) { return "", "" }, offloadBody, offloadActions},
 	{"Context", "", none, func(Facts) (string, string) { return "", "" }, contextBody, nil},
+	{"Apply mods", "", none, modsLine, modsBody, modsActions},
 }
 
 // picker reports whether a page is one of the three pickers Setup opens.
@@ -291,6 +297,9 @@ func runHelp(f Facts) string {
 	engine := f.Engine
 	if p := f.engineRow(); p != nil {
 		engine = p.Provider
+	}
+	if f.moddedKey() != "" { // the modded build picked on Engine is what runs
+		engine = modsWord("run_with", "{engine}", engine)
 	}
 	if !f.thisChip() {
 		return fmt.Sprintf("Plans a run of %s on %s with %s; it measures only on %s's own chip", model, f.target().ID, engine, here())
@@ -574,6 +583,7 @@ func engineActions(f Facts) []action {
 			out = append(out, action{chosen + p.Provider, "engine", p.Provider})
 			out = append(out, layoutActions(f, p)...)
 			out = append(out, upgradeAction(f, p.Provider)...)
+			out = append(out, modsAction(f, p.Provider)...)
 		} else {
 			out = append(out, note(fmt.Sprintf("  %-14s %s", p.Provider, stateWords(p))))
 		}

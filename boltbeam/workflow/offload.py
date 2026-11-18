@@ -629,6 +629,7 @@ def for_setup(profile:dict[str, Any], provider:str, *, usable:float, kv_bytes:fl
                routing=rp.find(profile.get("source"), engine=provider) if routing else None)
   except Refused as exc:
     return {**refusal(str(exc)), "page": page(refusal(str(exc)), usable_vram=usable, kv_bytes=kv_bytes, host=host)}
+  out["setup"] = {"model_id": _model_id(profile.get("source")), "target_id": getattr(target, "target_id", None)}  # the cache's gate evidence is keyed to these
   try:  # the setup for prompts, apart: what is tuned for replies reads a long prompt 5 to 18 times slower
     work = prompt_work(profile, target, vram_gbs=vram_gbs, kv=kv, routing=routing, engine=provider)
     try:
@@ -655,12 +656,20 @@ def for_setup(profile:dict[str, Any], provider:str, *, usable:float, kv_bytes:fl
   return out
 
 
+def _model_id(source:str | None) -> str | None:
+  """The model's header id (routing_profile.identity), or None when its file cannot be read: then no gate applies."""
+  try:
+    return rp.identity(source)["id"] if source else None
+  except (OSError, ValueError, KeyError, TypeError):
+    return None
+
+
 def output_words(moe:dict[str, Any]) -> tuple[str, str]:
-  """The expert cache's output label for the setup's engine (its audit_flags row, data/engine_knobs.json) and what it
-  does to the answers in words, said beside its recommendation; no words for an identical output."""
+  """The expert cache's output label for the setup's engine (its audit_flags row, data/engine_knobs.json), keyed to the
+  gate evidence for the setup's model and target (moe["setup"], for_setup's), and what it does to the answers in words, said beside its recommendation; no words for an identical output."""
   from boltbeam.workflow import context_audit as ca
   from boltbeam.workflow.tune import output_of
-  got = ca.expert_cache(moe["engine"]) or output_of(None)
+  got = ca.expert_cache(moe["engine"], setup=moe.get("setup")) or output_of(None)
   return got["output"], "" if got["output"] == ca.IDENTICAL else _w("output", label=got["output"], why=got["why"])
 
 

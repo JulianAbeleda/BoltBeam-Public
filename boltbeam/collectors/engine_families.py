@@ -99,8 +99,8 @@ def tool_flags(binary:str, tool:str, family:str = "llama.cpp", env:Mapping[str, 
 def _fix(fork:Mapping[str, Any]) -> str:
   """The one thing to do for a fork not here: get it from its repo, and name it by its env var (the engine scan's,
   for a fork with a provider)."""
-  from boltbeam.collectors import engine_scan
-  env = engine_scan.PRIMARY.get(fork.get("provider") or "") or fork.get("env")
+  from boltbeam.collectors import engine_saved
+  env = engine_saved.PRIMARY.get(fork.get("provider") or "") or fork.get("env")
   how = f"export {env}=<its path>" if env else "put it on PATH"
   branch = f" (branch {fork['branch']})" if fork.get("branch") else ""
   return f"get it from {fork['repo']}{branch}, then {how}"

@@ -94,7 +94,7 @@ def use_server(run:pathlib.Path, bench:str | None) -> str | None:
   server = server_for(bench)
   if server is None and (m == "real" or chat):
     from boltbeam.collectors.llama_bench_decode import CannotMeasure
-    raise CannotMeasure(f"{ENV}=real (or {pf.FORM_ENV}=chat) needs llama-server, which was not found beside llama-bench, in ${lsd.ENV} or on PATH",
+    raise CannotMeasure(f"{ENV}=real (or {pf.FORM_ENV}=chat) needs llama-server, which was not found ({lsd.WHERE})",
                         f"export {lsd.ENV}=/path/to/llama-server")
   return server
 

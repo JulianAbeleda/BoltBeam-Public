@@ -1,11 +1,13 @@
 # Semantic campaign
 
-Run the two-phase finite exact GGUF campaign with:
+The two-phase finite exact GGUF campaign runs in-process in the screen's Compare
+(`python3 -m boltbeam.workflow.screen compare`, `boltbeam/search/role_compare.py`). Its four steps were standalone
+commands until 2026-11-09 (41c211e3 removed them: nothing called them); this page keeps their record:
 
-1. `boltbeam propose-semantic-dimensions spec.json --describe describe.json --out request.json` (BubbleBeam)
-2. `boltbeam export-semantic-population request.json --out population.json`
-3. `boltbeam assess-semantic-population population.json [--preferences preferences.json] --out futuresight.json` (FutureSight)
-4. `boltbeam semantic-campaign request.json --futuresight-evidence futuresight.json --provider-command '["python3","extra/llm_research/search_provider.py"]' --out ledger.json`
+1. `propose-semantic-dimensions spec.json --describe describe.json --out request.json` (BubbleBeam)
+2. `export-semantic-population request.json --out population.json`
+3. `assess-semantic-population population.json [--preferences preferences.json] --out futuresight.json` (FutureSight)
+4. `semantic-campaign request.json --futuresight-evidence futuresight.json --provider-command '["python3","extra/llm_research/search_provider.py"]' --out ledger.json`
 
 Step 4 without `--futuresight-evidence` runs the population unordered and unfiltered. The provider serves the
 device the candidates' target names (METAL, NV, CUDA, AMD); no `--backend` is needed.
@@ -29,7 +31,7 @@ copied from one Apple M4 bench and labelled it `bubblebeam_futuresight`; that la
 `request.json` contains the exact semantic workload, the proposed dimensions and coupled rows, the compiler facts they were proposed against, the resolved target, GGUF path, execution regime, and finite budget. BoltBeam never imports Tinygrad; the provider process receives the original exact workload/path on every staged request. The output is the canonical full-kernel ledger, including rejected and blocked rows. Evidence hashes that do not match the exported population or coupled rows fail closed.
 
 For the bounded MR8-to-MR9 path, including persistent finalist repetition and
-the winner/refutation verdict, use [the MR9 semantic-search command](mr9-semantic-search.md).
+the winner/refutation verdict, see [the MR9 semantic-search record](mr9-semantic-search.md) (that command is removed too).
 
 ## Proposal spec (`propose-semantic-dimensions`)
 

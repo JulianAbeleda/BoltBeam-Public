@@ -6,7 +6,7 @@ file type; every 2-D weight is pinned, so it lands only in general.file_type). `
 the row's target type), and the MTP draft head, a sidecar GGUF of its own (llama-server -md, --spec-type draft-mtp) at the
 part row's per-tensor recipe. The output layer's gate is llama-perplexity's KL divergence run: its "Same top p" is the
 share of positions with the same most likely token. The draft head's is speed with MTP on, measured by the module
-data/engine_knobs.json names for llama.cpp, through collectors/mtp.measure, refused while it names none."""
+data/engine_adapters.json names for llama.cpp, through collectors/mtp.measure, refused while it names none."""
 from __future__ import annotations
 
 import functools
@@ -148,7 +148,7 @@ def _row() -> dict:
 
 
 def _measurer():
-  """collectors/mtp.measure on this engine, or Refused while data/engine_knobs.json names no MTP measurement for it."""
+  """collectors/mtp.measure on this engine, or Refused while data/engine_adapters.json names no MTP measurement for it."""
   from boltbeam.collectors import mtp
   if mtp.engine(engine := _row()["engine"]) is None:
     raise Refused(f"no MTP measurement for {_row()['label']} yet, so a lighter MTP draft head cannot be gated")

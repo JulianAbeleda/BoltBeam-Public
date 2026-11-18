@@ -64,7 +64,10 @@ func (m Model) startRun(provider string) tea.Cmd {
 	if provider != m.f.Engine { // the settings are the chosen engine's
 		settings = nil
 	}
-	trace, server := "", ""
+	trace, server, modded := "", "", m.f.moddedKey()
+	if provider != m.f.Engine {
+		modded = ""
+	}
 	if workload == "replay" {
 		if s := m.f.replayShape(); s != nil {
 			trace = s.Name
@@ -74,7 +77,11 @@ func (m Model) startRun(provider string) tea.Cmd {
 	if b := m.f.batch(); b > 1 && workload == "decode" { // batch is decode's: a prefill reads one prompt
 		batch = strconv.Itoa(b) // batch 1 is always timed beside it
 	}
+	building, buildingNote := m.f.Mods.Applying, modsWord("run_building", "{engine}", m.f.Mods.Engine) // a build beside a measurement skews it
 	return func() tea.Msg {
+		if building {
+			return noteMsg(buildingNote)
+		}
 		if live := gpuJobs(store); len(live) > 0 { // two measurements on one GPU would both be wrong
 			return noteMsg("Run " + live[0].ID + " is still going. Stop it or wait, then press Run.")
 		}
@@ -91,7 +98,7 @@ func (m Model) startRun(provider string) tea.Cmd {
 		}
 		argv := m.client.PipelineArgv(seam.Pipeline{Model: path, RunDir: dir, Target: target, Workload: workload, Measure: "auto", Provider: provider,
 			Layout: layout, Analyze: true, Batch: batch, RoleTime: roleTime, ReplayTrace: trace, ServerArgv: server,
-			Settings: settings, Repeats: repeats})
+			Settings: settings, Repeats: repeats, Modded: modded})
 		if _, err := m.store.Start(id, m.client.Repo, argv); err != nil {
 			return noteMsg("Start failed: " + err.Error())
 		}

@@ -41,7 +41,7 @@ class BuildError(RuntimeError):
 
 
 def is_checkout(path:pathlib.Path) -> bool:
-  return (path / "tui" / "go.mod").is_file() and (path / "boltbeam" / "__init__.py").is_file()
+  return (path / "tui" / "go.mod").is_file() and (path / "boltbeam/__init__.py").is_file()
 
 
 def checkout(start:pathlib.Path | None = None, env:Mapping[str, str] | None = None) -> pathlib.Path | None:
@@ -65,14 +65,17 @@ def required_go(checkout:pathlib.Path) -> str | None:
 
 
 def go_version(env:Mapping[str, str] | None = None) -> tuple[str | None, str | None]:
-  """(the go program on PATH, its version as "1.26.5"). (None, None) when there is no go; (path, None) when it does
-  not answer `go version`."""
+  """(the go program on PATH, its own version as "1.26.5", whatever the folder asked from). (None, None) when there is no
+  go; (path, None) when it does not answer `go version`."""
   env = os.environ if env is None else env
   go = shutil.which("go", path=env.get("PATH"))
   if not go:
     return None, None
   try:
-    out = subprocess.run([go, "version"], capture_output=True, text=True, timeout=30).stdout
+    # the Go that builds the screen: GOTOOLCHAIN=local, as build() runs it, and a neutral folder, so a go.mod in the caller's
+    # folder (tui/'s own) cannot switch toolchains and make the answer depend on where it is asked
+    out = subprocess.run([go, "version"], capture_output=True, text=True, timeout=30, cwd=pathlib.Path(go).parent,
+                         env={**os.environ, "GOTOOLCHAIN": "local"}).stdout
   except (OSError, subprocess.SubprocessError):
     return go, None
   m = re.search(r"\bgo(\d+(?:\.\d+)*)\b", out)

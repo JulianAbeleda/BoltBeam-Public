@@ -68,8 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv:list[str] | None=None) -> int:
   argv = list(sys.argv[1:] if argv is None else argv)
-  if not argv:
-    return tui.run([])  # bare `boltbeam` opens the screen
+  if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
+    return tui.run(argv)  # bare `boltbeam`, or the screen's own flags with `tui` left out, opens the screen
   if argv[:1] == ["tui"] and argv[1:2] not in (["-h"], ["--help"]):
     return tui.run(argv[1:])  # every flag passes through to boltbeam-tui; argparse would claim the dashes
   if argv[:1] == ["offload"]:

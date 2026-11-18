@@ -50,6 +50,11 @@ func (f Facts) engineBuild() string {
 		return ""
 	}
 	k := fam.Forks[f.highlighted(*fam)]
+	if mk := f.moddedFork(); mk != nil { // the modded build Enter picked, wherever the highlight rests
+		k = *mk
+	} else if k.Modded != nil { // highlighted, not picked: the root's build runs
+		return ""
+	}
 	if k.Provider != nil && *k.Provider == f.Engine && k.Path != nil {
 		return *k.Path
 	}
@@ -65,7 +70,7 @@ func (f Facts) tuneAsk() []string {
 	if w := f.workload(); w == "session" || w == "replay" {
 		workload = "chat"
 	}
-	ask := append(f.Context.tuneArgs(), "--workload", workload, "--target", f.target().ID)
+	ask := append(append(f.Context.tuneArgs(), f.launchArgs()...), "--workload", workload, "--target", f.target().ID)
 	for _, s := range f.settingsOffered() {
 		switch v := f.Settings[s.Name]; {
 		case v == "":
@@ -80,8 +85,39 @@ func (f Facts) tuneAsk() []string {
 	return ask
 }
 
+// launchArgs is the recommendation's command (Python's recommend launch), which this page is stated at so the two
+// command lines agree: its context when Setup's Context is unset (a typed one is the user's, passed as it is), its KV
+// type, and the experts it places in RAM unless Settings places them.
+func (f Facts) launchArgs() []string {
+	r := f.Recommend
+	if r == nil || r.Launch == nil || f.RecKey != f.recommendKey() {
+		return nil
+	}
+	var a []string
+	if r.Launch.Context != nil && !f.Context.on() {
+		a = append(a, "--context", fmt.Sprint(*r.Launch.Context))
+	}
+	if r.Launch.KV != "" {
+		a = append(a, "--kv", r.Launch.KV)
+	}
+	if n := r.Launch.NCpuMoe; n != nil && f.Settings["n_cpu_moe"] == "" && f.Settings["cpu_moe"] == "" {
+		a = append(a, "--experts-in-ram", fmt.Sprint(*n))
+	}
+	return a
+}
+
+// recPending: with Setup's Context unset, the recommendation for what is chosen now is still being read. This page waits
+// for it (its launch) rather than read once without it and again with it; a failed one leaves this page its defaults.
+func (f Facts) recPending() bool {
+	k := f.recommendKey()
+	return !f.Context.on() && k != "" && f.RecKey == k && f.Recommend == nil && f.RecErr == ""
+}
+
 // tuneKey names what the section is for: the model, chip and engine (recommendKey), the build and what Setup asks.
 func (f Facts) tuneKey() string {
+	if f.recPending() {
+		return ""
+	}
 	if k := f.recommendKey(); k != "" {
 		return k + "|" + f.engineBuild() + "|" + strings.Join(f.tuneAsk(), " ")
 	}
@@ -248,6 +284,9 @@ func tuneActions(f Facts) []action {
 		return nil
 	}
 	out := []action{}
+	if t := f.Tune.Page; t.Mods != nil && t.Mods.None && t.Mods.Modded == nil && f.provider(f.Engine) != nil && f.provider(f.Engine).Mods {
+		out = append(out, action{modsWord("tune_link"), "modsrow", f.Engine})
+	}
 	switch ms := p.Measure; {
 	case f.tuning():
 		out = append(out, action{"[ " + ms.Stop + " ] " + ms.StopHelper, "tunestop", ""})
@@ -286,6 +325,8 @@ func tuneSetting(r seam.TuneRow) string {
 func tuneBody(f Facts, width int) string {
 	t := f.Tune
 	switch {
+	case f.recPending():
+		return "\n" + stMuted.Render(strings.TrimSpace(f.Spin+" reading the recommendation's context and KV type…")) + "\n"
 	case f.tuneKey() == "":
 		return ""
 	case t.Err != "" && t.Key == f.tuneKey():

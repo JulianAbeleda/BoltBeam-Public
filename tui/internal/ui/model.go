@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -454,6 +455,8 @@ func (m Model) update(msg tea.Msg) (Model, tea.Cmd) {
 		}
 	case fetchJobMsg:
 		return m.fetchAnswer(msg)
+	case modsMsg:
+		return m.modsAnswer(msg)
 	case doctorMsg:
 		m.f.DoctorBusy, m.f.Doctor, m.f.DoctorErr = false, msg.doctor, ""
 		if msg.err != nil {
@@ -811,7 +814,7 @@ func (m Model) isSaved(id string) bool {
 }
 
 func (m Model) key(msg tea.KeyPressMsg) (Model, tea.Cmd) {
-	onClean := key.Matches(msg, keyEnter) && m.row < len(m.actions()) && m.actions()[m.row].do == "clean"
+	onClean := key.Matches(msg, keyEnter) && m.row < len(m.actions()) && slices.Contains([]string{"clean", "modsapply"}, m.actions()[m.row].do)
 	if !key.Matches(msg, keyDel) && !onClean {
 		m.f.Confirm = "" // any other key cancels a pending delete (enter on the clean row is its second press)
 	}
@@ -878,7 +881,10 @@ func (m Model) key(msg tea.KeyPressMsg) (Model, tea.Cmd) {
 			m.f.moveFork(acts[m.row].arg, map[bool]int{true: -1, false: 1}[msg.String() == "left"])
 		}
 	case key.Matches(msg, keyBack):
-		if m.cursor != pageSetup {
+		if m.cursor == pageMods { // Apply mods opens from Engine: back there, on its row
+			m.cursor, m.row = pageEngine, modsRowAt(m.f, m.f.Mods.Engine)
+			m.view.GotoTop()
+		} else if m.cursor != pageSetup {
 			m.backToSetup()
 		}
 	case key.Matches(msg, keyDown): // the rows first, then the page above them scrolls
@@ -921,7 +927,7 @@ func (m *Model) backToSetup() {
 
 // do runs one action row of the open step.
 func (m Model) do(a action) (Model, tea.Cmd) {
-	if a.do != "delete" && a.do != "deletesaved" && a.do != "clean" { // these ask twice: the first press must stay
+	if a.do != "delete" && a.do != "deletesaved" && a.do != "clean" && a.do != "modsapply" { // these ask twice: the first press must stay
 		m.f.Confirm = ""
 	}
 	switch a.do {
@@ -1007,9 +1013,12 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		if engine == "" {
 			return m, func() tea.Msg { return noteMsg(why) }
 		}
-		return m.do(action{"", "engine", engine})
+		key := m.f.highlightedModded(a.arg)
+		m, cmd := m.do(action{"", "engine", engine})
+		m.f.Modded = key
+		return m, cmd
 	case "engine":
-		m.f.Engine, m.f.Layout, m.engineSet = a.arg, "", true
+		m.f.Engine, m.f.Layout, m.engineSet, m.f.Modded = a.arg, "", true, ""
 		m.f.Measurement, m.f.Settings, m.f.Env, m.f.TunedSettings = "", nil, nil, nil
 		m.backToSetup()
 		return m, nil
@@ -1059,6 +1068,7 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		engine, layout, _ := strings.Cut(a.arg, "|")
 		if engine != m.f.Engine {
 			m.f.Measurement, m.f.Settings, m.f.Env, m.f.TunedSettings = "", nil, nil, nil // another engine's settings are not this one's
+			m.f.Modded = ""
 		}
 		m.f.Engine, m.f.Layout, m.engineSet = engine, layout, true
 		m.backToSetup()
@@ -1081,6 +1091,17 @@ func (m Model) do(a action) (Model, tea.Cmd) {
 		engine, argv, client := a.arg, []string{"--update", "--engine", a.arg, "--target", m.targetID()}, m.client
 		m.f.Upgrading, m.note = engine, "Upgrade "+engine+": installing the newer release beside the current build (a build can take minutes)…"
 		return m, func() tea.Msg { rows, err := client.EngineRows(argv...); return latestMsg{rows, err, engine} }
+	case "mods": // Apply mods: the page of the mods that fit this engine's build
+		return m, m.openMods(a.arg)
+	case "modsapply": // asks first: a second Enter builds (minutes)
+		return m, m.applyMods(a.arg == "rebuild")
+	case "modsuse":
+		return m.useModded()
+	case "modsrow": // the Tune page's link: the Engine picker, on the engine's Apply mods row
+		m.cursor = pageEngine
+		m.view.GotoTop()
+		m.row = modsRowAt(m.f, a.arg)
+		return m, nil
 	case "engines-scan":
 		if m.f.EngineScan {
 			return m, nil

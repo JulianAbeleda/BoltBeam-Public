@@ -128,7 +128,14 @@ one GPU, split by layer, split by rows, each with the GPUs it would use and what
 holds a bigger model but the GPUs take turns; split by rows reads on every GPU at once and pays a join per layer). The
 layouts an engine can run here sit under it and are picked with it (the run's `--layout`); the others say why not, in
 the engine's own words where it refused (a llama.cpp HIP build loads no split buffers, so no split by rows). Setup
-then reads `Engine  vllm · split by rows (2 GPUs)`. On one GPU nothing about layouts is shown. Switching formats chooses a compatible engine and resets the previous engine’s measurement choice. Chip shows a simple GPU, memory-bandwidth and driver summary. Workload is decode, prefill, session or replay. Measurement is in-model
+then reads `Engine  vllm · split by rows (2 GPUs)`. On one GPU nothing about layouts is shown. Apply mods, under an
+engine Python can apply mods to (`screen providers` `mods`: llama.cpp), opens a page of the arkey_ie_mods mods that fit
+the build here (`screen mods` `rows`, workflow/mods.py): what each changes, its switch, its output label in words, and
+chosen or not with why. `[ Apply mods ]` builds the chosen ones into a copy of the build (`screen mods --apply`, minutes;
+yours is never changed), and the copy is then a fork of the family, "with mods" (builds.json `modded`,
+mods.fork_rows). A run on it passes `--modded KEY`: Python hands the run that build with its mods' switches set (as
+`--engine-env`, so the run records them), and Tuned for this machine reads it as the build. The Tune page links its
+"none of the mods" note to that row. Switching formats chooses a compatible engine and resets the previous engine’s measurement choice. Chip shows a simple GPU, memory-bandwidth and driver summary. Workload is decode, prefill, session or replay. Measurement is in-model
 (a capture of the real token) or generic (the engine's kernels timed alone). `[ Run ]` is greyed until model, chip
 and engine are set. Setup does not show the speed limit; Run does.
 
@@ -262,6 +269,11 @@ boltbeam-tui [--json] [--root RUNS] [--saved DIR] [--repo DIR] [--python PY] [--
 | `save <id>` | export a run to `--saved`: the run, results.json, report.html, summary.txt | 0 / 1 |
 | `saved` | the saved runs, newest first | 0 |
 | `tail <id> [--lines N]` | the pipeline's status and the last lines of its log | 0 |
+| `mods [--engine E] [--apply] [--label L] [--mod ID] [--src DIR]` | the engine mods that fit the build here, one row each (what it changes, switch, output label, chosen or not and why); `--apply` builds them into a copy | 0 / 1 |
+| `tune MODEL --engine E [--build B] [--target ID] ...` | Tuned for this machine: each knob's value, source and reason, and `mods` (`none`: the build has none of the mods tune reads) | 0 / 1 |
+| `offload MODEL --target ID [--engine E]` | the offload page: what goes to the card and to RAM, each setup's limits | 0 / 1 |
+| `recommend MODEL --target ID [--engine E] [--gpus N]` | the recommended engine settings: context, speed and flags | 0 / 1 |
+| `doctor` | `boltbeam doctor --json`: what this machine has for BoltBeam, and the one fix for each gap | 0 / 1 |
 
 Every error is `{"kind":"error","error":"...","stderr":"..."}` with exit 1; a usage error exits 2 and prints
 the usage on stderr. The JSON commands print Python's bytes unchanged, so the agent reads the same facts the

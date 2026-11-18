@@ -33,10 +33,14 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "plan_ubatch_why": "why the plan's chunk: the bytes = compute crossover and the fit (roofline/chunk_size), or why there is none",
          "plan_ubatch_output": "the plan chunk's output label: quality-gated only with gate evidence for that chunk on this model, else untested",
          "plan_ubatch_output_why": "the evidence behind that label, or why there is none",
+         "plan_ubatch_candidates": "the memory fit's chunks: the plan's chunk and the smaller ones down to llama-server's default -ub, largest first",
+         "plan_ubatch_gains": "each of those chunks' prompt speed over the default -ub's, from the plan's prompt limit (derived, not measured)",
          "routing_note": "a clause from the saved routing profile of this model (how concentrated its expert use is), or empty when there is none",
          "host_tables_resident_bytes": "the host-mapped input tables' rows one prompt reads (one row per token, at least a page each): an estimate",
          "on_card_bytes": "the model's weights on the GPU: the GGUF's tensor bytes less the host experts and the host-mapped tables",
-         "kv_cache_bytes": "the KV cache at the context (f16, the attended layers) plus the recurrent state, from the model's profile",
+         "kv_cache_bytes": "the KV cache llama.cpp allocates at the context and the command's type (load_facts: the attended layers, a sparse indexer's keys, a quantized type's dequant copy) plus the recurrent state",
+         "kv_dequant_bytes": "the f16 copy of one attended layer's K and V a quantized KV cache adds per cell on a backend whose flash attention dequantizes it (kv_shape)",
+         "kpool_indexer": "the model has a k-pool sparse attention indexer: its scores and selection masks add to the compute buffer per cell and chunk token",
          "host_expert_tensors": "the expert tensors this placement keeps in host RAM (a slot holds one)",
          "host_expert_tensor_max_bytes": "the largest of those tensors: a slot grows to the largest it has held",
          "host_expert_layers": "the layers whose experts this placement keeps in host RAM",
@@ -58,6 +62,8 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "kv_sizes": "the KV cache's bytes per token at each of those types",
          "thread_candidates": "the thread counts a decode sweep tries: the cores sharing one L3, the physical cores and the logical CPUs",
          "fa_default": "the build's own -fa default (its --help)", "kv_default": "the build's own KV cache type default (its --help)",
+         "kv_setup": "the KV cache type the Recommended setup's command uses (screen tune --kv), when this build has flash attention kernels for it",
+         "kv_setup_output": "its output label: untested, no agreement gate ran for it", "kv_setup_output_why": "why it is untested",
          "threads_default": "the build's own -t default (its --help)",
          "per_layer_embd_bytes": "the per-layer token embedding llama.cpp keeps in host RAM and gathers a row of per token and layer",
          "mtp_head": "the multi-token prediction head the command loads (--draft, else the one beside the model)",
@@ -66,7 +72,7 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "server_slots": "llama-server's slots: -np in --flags, else the requests the setup is stated for (the command passes them as -np)", "draft_tokens": "the draft tokens per step the command runs (--flags' draft count, else the MTP draft count row's; 0 without)",
          "draft_from_flags": "--flags give the draft count (the command's own wins over the row's)",
          "kv_type_bytes": "bytes per element of each KV cache type this build takes (ggml's block layouts)",
-         "kv_elems_per_token": "the KV cache's elements one token adds: K and V of the attended layers (the model's profile)",
+         "kv_elems_per_token": "the KV cache's elements one token adds: K and V of the attended layers (the model's profile) and a sparse indexer's keys (the GGUF header; kv_shape)",
          "draft_kv_elems_per_token": "those the draft head adds: its layers at the model's elements per attended layer",
          "draft_weight_bytes": "the draft head's file: its weights on the GPU",
          "mtp_ks": "the draft counts the memory fit may choose: none and each one measured, when a measured one is used",
@@ -125,7 +131,7 @@ def detect(server:str | pathlib.Path | None) -> dict[str, Any]:
   from boltbeam.collectors import llama_server_decode as lsd
   server = server or lsd.find(None)
   if not server:
-    raise Refused("no llama-server found (beside llama-bench, $BOLTBEAM_LLAMA_SERVER or on PATH); pass --build PATH")
+    raise Refused(f"no llama-server found ({lsd.WHERE}); pass --build PATH")
   p = server_of(server)
   if not p.is_file():
     raise Refused(f"no llama-server at {p}; pass --build PATH or put llama-server on PATH")
@@ -244,6 +250,63 @@ def cpu_moe_layers(ids:list[int], expert_layers:int) -> int:
   return ids[min(expert_layers, len(ids)) - 1] + 1 if expert_layers > 0 and ids else 0
 
 
+KPOOL_ROW = 2  # a k-pool indexer caches each token's raw key and its pool's key side by side (llama.cpp src/models/qwen4exp.cpp:81)
+
+
+def kv_shape(profile:dict[str, Any], header:dict[str, Any]) -> dict[str, Any]:
+  """llama.cpp's KV cache per token, in elements: K and V of the attended layers (prefill_work's rule), plus a sparse
+  attention indexer's own cache, one key head of its key length per indexer layer, KPOOL_ROW wide for a k-pool indexer
+  (src/llama-memory-hybrid-idx.cpp:55; measured: 204 MiB of q8_0 indexer cache at 65,536 cells beside 816 MiB of KV,
+  Flash-Next IQ1_M on b11571). dequant: one attended layer's K and V, the f16 copy CUDA flash attention makes of a
+  quantized cache over the context (measured: 2,048 bytes per q8_0 cell over f16, same model). header: offload.header_table."""
+  from boltbeam.roofline import prefill_work as pw
+  meta, arch = header["meta"], header["meta"].get("general.architecture")
+  attn = pw.kv_bytes_per_token(profile, element_bytes=1) or 0.0
+  layers = pw.attention_layer_count(profile)
+  idx_layers = sum(1 for n, _, _ in header["tensors"] if ".indexer.k_proj." in n)
+  kpool = any((r or 0) > 1 for r in (meta.get(f"{arch}.attention.compress_ratios") or []))
+  idx = idx_layers * int(meta.get(f"{arch}.attention.indexer.key_length") or 0) * (KPOOL_ROW if kpool else 1)
+  return {"elems": attn + idx, "kpool": kpool and idx > 0, "dequant": attn / layers if layers and attn else 0.0}
+
+
+def dequant_bytes(shape:dict[str, Any], backend:str | None) -> float:
+  """Bytes per cell a quantized KV cache adds as the f16 copy of one attended layer, on a backend whose flash attention makes one."""
+  from boltbeam.target import vendors
+  return shape["dequant"] * 2 if any(v.ggml_kv_dequant for v in vendors.VENDORS.values() if v.ggml_backend == backend) else 0.0
+
+
+def header_of(model:str | pathlib.Path) -> dict[str, Any]:
+  """The model file's header (offload.header_table); an empty one when it cannot be read (kv_shape then sees no indexer)."""
+  from boltbeam.workflow.offload import header_table
+  try:
+    return header_table(str(pathlib.Path(model).expanduser()))
+  except (OSError, ValueError, KeyError):
+    return {"meta": {}, "tensors": []}
+
+
+def load_facts(profile:dict[str, Any], header:dict[str, Any], ex:dict[str, Any], *, kv_type:str, context:int, chunk:int,
+               backend:str | None, slots:int = 1) -> dict[str, Any]:
+  """The facts llama.cpp's after_load formula (data/engine_knobs.json engines.llama.cpp.after_load) reads from the model
+  and the command, besides the GPU's memory and the weights on the card: the one source tune's memory fit and the
+  Recommended setup's context both read. kv_cache_bytes: the cells at the KV type, a quantized type's dequant copy (on a
+  backend that makes one) and each slot's recurrent state; the expert shapes (ex: expert_layers) the compute buffer's chunk term reads."""
+  from boltbeam.roofline import prefill_work as pw
+  block = (formats.row(formats.canonical(kv_type)) or {"block": (1, 2)})["block"]
+  shape = kv_shape(profile, header)
+  dequant = dequant_bytes(shape, backend)
+  return {f"{NS}.kv_elems_per_token": shape["elems"], f"{NS}.kv_dequant_bytes": dequant, f"{NS}.kpool_indexer": shape["kpool"],
+          f"{NS}.kv_cache_bytes": int(context * (shape["elems"] * block[1] / block[0] + (dequant if block[0] > 1 else 0))
+                                      + (pw.recurrent_state_bytes(profile) or 0) * slots),
+          f"{NS}.chunk_tokens": chunk, f"{NS}.experts_used": ex.get("experts_used"), f"{NS}.expert_ffn": ex.get("expert_ffn"),
+          f"{NS}.hidden_size": int(profile["hidden_size"]) if profile.get("hidden_size") else None, "context_tokens": context}
+
+
+def after_load(facts:dict[str, Any]) -> float | None:
+  """GPU memory free once llama-server has loaded the model: the engine's after_load formula over these facts (tune.after_load)."""
+  from boltbeam.workflow import tune
+  return tune.after_load(facts, ENGINE, tune.table()).get("gpu_after_load_bytes")
+
+
 def host_tables(source:str | pathlib.Path, prompt:int, page:int) -> dict[str, Any]:
   """The input tables llama.cpp keeps mapped in host RAM (recommend.HOST_ONLY: token_embd, per_layer_token_embd): their bytes
   and the rows one prompt reads, one row per token and table, at least a page each (rows sit apart): an estimate.
@@ -298,6 +361,7 @@ def offload_plan(model:str, prompt:int, draft:str | None = None, context:int | N
       out["placement_why"] = "the derived placement is an estimate with no timed arm"
   else:
     out["why"] = words_of_tie()
+  out["chunk_tok_s"] = {int(c["ubatch"]): float(c["tok_s"]) for c in pre.get("chunks") or [] if c.get("tok_s")}
   chunk = next((c for c in pre.get("chunks") or [] if c.get("ubatch") == out["ubatch"]), None)
   if chunk and (chunk.get("ms") or {}).get("gpu"):
     out["gpu_ms"] = float(chunk["ms"]["gpu"])  # the prompt limit's GPU time at that chunk: compute, the copy apart
@@ -305,6 +369,17 @@ def offload_plan(model:str, prompt:int, draft:str | None = None, context:int | N
   if saved and flat_pre.get("status") == "recommended":
     out |= {"ubatch_uniform": int(flat_pre["ubatch"]), "routing_profile": saved}
   return out
+
+
+def chunk_fit(plan:dict[str, Any]) -> dict[str, Any]:
+  """The chunks the memory fit may pick (the -ub row's vram): the plan's chunk and each smaller one of its prompt limit
+  down to llama-server's default, largest first, with each one's prompt speed over the default's; none without a plan."""
+  from boltbeam.workflow.offload import knob_default
+  rate, top, low = plan.get("chunk_tok_s") or {}, plan.get("ubatch"), int(knob_default(ENGINE, "-ub"))
+  if not top or not rate.get(low):
+    return {f"{NS}.plan_ubatch_candidates": None, f"{NS}.plan_ubatch_gains": None}
+  keep = sorted((u for u in rate if low <= u <= top), reverse=True)
+  return {f"{NS}.plan_ubatch_candidates": [str(u) for u in keep], f"{NS}.plan_ubatch_gains": {str(u): rate[u] / rate[low] for u in keep}}
 
 
 def words_of_tie() -> str:
@@ -339,12 +414,13 @@ def gpu_backend(b:dict[str, Any]) -> str | None:
 
 
 def slot_facts(model:str, ex:dict[str, Any], tabs:dict[str, Any], host:dict[str, Any], *, in_ram:int, host_experts:int, plan:dict[str, Any],
-               options:dict[str, Any], kv:tuple[float | None, str | None] = (None, None)) -> tuple[dict[str, Any], dict[str, str]]:
+               options:dict[str, Any], kv:str | None = None, header:dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
   """The facts the streamer's slot count reads, read and not combined (the rule is the row's, data/engine_knobs.json): the
   host expert tensors (count, the largest, their layers), the GPU's free memory now, what the model takes of it on the
   card (weights, KV at the context and the recurrent state), the shapes the compute buffer scales with, the chunk, and
   the GPU's compute time for the prompt. vram_why names any that could not be read. options: gpu ({free, total}),
-  profile, time_budget (a measured boltbeam.time_budget.v1 record of this setup's prompt)."""
+  profile, time_budget (a measured boltbeam.time_budget.v1 record of this setup's prompt). kv: the KV type the command
+  runs (None: f16, the build's type unread); the KV cache and the per-cell terms are load_facts', as the Recommended setup's."""
   held = [(layer, b) for layer, b in ex.get("tensors") or [] if layer < in_ram]
   ids = ex.get("ids") or list(range(len(ex.get("per_layer") or [])))
   ms, ms_src = compute_time(plan, options.get("time_budget"), int(host["prompt_tokens"]))
@@ -371,15 +447,15 @@ def slot_facts(model:str, ex:dict[str, Any], tabs:dict[str, Any], host:dict[str,
       from boltbeam.profile.loaders import profile_from_model
       profile = profile_from_model(model, None).to_json()
     from boltbeam.roofline import prefill_work as pw
-    out[f"{NS}.hidden_size"] = int(profile["hidden_size"]) if profile.get("hidden_size") else None
     src[f"{NS}.hidden_size"] = "the model's profile"
-    per, state = kv[0] if kv[0] is not None else pw.kv_bytes_per_token(profile), pw.recurrent_state_bytes(profile)
-    if per is None and state is None:
+    if pw.kv_bytes_per_token(profile) is None and pw.recurrent_state_bytes(profile) is None:
       raise ValueError("the profile gives no attention or recurrent shape for a KV size")
     ctx = int(host.get("context_tokens") or host["prompt_tokens"])
-    out[f"{NS}.kv_cache_bytes"] = int((per or 0) * ctx + (state or 0))
-    at = f"the build's own type, {kv[1]}" if kv[0] is not None else "2 bytes an element (the build's cache type could not be read)"
-    src[f"{NS}.kv_cache_bytes"] = f"roofline/prefill_work at {at}: {ctx} tokens x KV per token + the recurrent state"
+    got = load_facts(profile, header if header is not None else header_of(model), ex, kv_type=kv or "f16", context=ctx, chunk=out[f"{NS}.chunk_tokens"],
+                     backend=options.get("ggml_backend"))
+    out |= {k: v for k, v in got.items() if k != "context_tokens"}
+    at = f"the command's type, {kv}" if kv else "f16 (the build's cache type could not be read)"
+    src[f"{NS}.kv_cache_bytes"] = f"tune_llama_cpp.load_facts at {at}: {ctx} cells x (KV and indexer keys per cell + a quantized type's dequant copy) + the recurrent state"
   except Exception as exc:  # noqa: BLE001  an unsized piece is a stated unknown, never a crash; the raw text is provenance
     out[f"{NS}.vram_why"] = "the model's shapes could not be read for a KV size"
     src[f"{NS}.vram_why"] = f"{type(exc).__name__}: {exc}"
@@ -435,9 +511,11 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
   host_experts = 0 if shared else sum(b_ for l, b_ in zip(ids, ex["per_layer"]) if l < in_ram)
   tabs = host_tables(model, host["prompt_tokens"], host["page_bytes"])
   placement = "shared memory: the GPU reads the experts where they are, nothing is copied" if shared else where
-  from boltbeam.workflow import tune
+  from boltbeam.workflow import mods, tune
   have = [g for g in tune.table()["engines"][ENGINE]["groups"].values() if tune.group_markers(ENGINE, g) & set(b["features"])]
-  notes = ([] if have else [w["no_patch"]]) + ([w["shared_memory"]] if shared else [])
+  named = sorted({m["id"].split("/", 1)[1] for g in tune.table()["engines"][ENGINE]["groups"].values() for m in mods.named(ENGINE, g["mod"])})
+  none = [] if have else [w["no_patch_modded" if mods.modded(ENGINE, b.get("build")) else "no_patch"].format(mods=", ".join(named))]
+  notes = none + ([w["shared_memory"]] if shared else [])
   name = pathlib.Path(model).name
   if plan.get("ubatch_uniform") is not None and plan.get("ubatch") != plan["ubatch_uniform"] and plan.get("routing_profile"):
     p = plan["routing_profile"]
@@ -449,15 +527,18 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
          f"{NS}.routing_note": routing_note(options.get("routing_profile", plan.get("routing_profile") or rp.find(model, engine=ENGINE))),
          f"{NS}.plan_ubatch": plan.get("ubatch"), f"{NS}.plan_ubatch_why": plan.get("why") or plan.get("source"),
          f"{NS}.plan_ubatch_output": (plan.get("output") or {}).get("output"), f"{NS}.plan_ubatch_output_why": (plan.get("output") or {}).get("why"),
+         **chunk_fit(plan),
          f"{NS}.pin_in_build": "LLAMA_WS_PIN_GIB" in b["features"], "layers": top, "layers_in_ram": 0 if shared else in_ram,
          "expert_bytes_total": sum(ex["per_layer"]), "host_tables_bytes": tabs["bytes"], "placement": placement, "notes": notes}
   lf, lsrc = placed_facts(model, host_experts, b["features"], tabs=tabs, draft=options.get("draft"))
   out |= lf
-  dr, dsrc = decode_facts(model, host, b, options, tabs)
+  header = options["header"] if "header" in options else header_of(model)  # a test's stand-in, else the file's
+  dr, dsrc = decode_facts(model, host, b, options, tabs, header=header)
   out |= dr
-  if not shared:  # the KV it sizes is at the build's own cache type (decode_facts)
+  if not shared:  # the KV it sizes is at the type the command starts from: the Recommended setup's, else the build's own (decode_facts)
+    kv_type = dr[f"{NS}.kv_setup"] or dr[f"{NS}.kv_default"]
     vr, vsrc = slot_facts(model, ex, tabs, host, in_ram=in_ram, host_experts=host_experts, plan=plan, options={"ggml_backend": gpu_backend(b), **options},
-                          kv=(dr["kv_bytes_per_token"], dr[f"{NS}.kv_default"]))
+                          kv=kv_type, header=header)
     out |= vr
   else:
     vsrc = {}
@@ -506,7 +587,8 @@ def placed_facts(model:str, host_experts:float, features=None, *, tabs:dict[str,
   return out, src
 
 
-def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, Any], tabs:dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, Any], tabs:dict[str, Any],
+                 header:dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
   """The facts the decode rows read, each from where it is: the -fa, -ctk and -t values and defaults this build takes
   (its --help; options help stands in), the KV types it has flash attention kernels for (detect), the KV cache's elements
   per token (the model's profile) and its bytes at each type (ggml's block layouts), the thread counts to try (the CPU's
@@ -544,8 +626,10 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
       from boltbeam.profile.loaders import profile_from_model
       profile = profile_from_model(model, None).to_json()
     from boltbeam.roofline import prefill_work as pw
-    elems = pw.kv_bytes_per_token(profile, element_bytes=1)  # elements per token: K and V of every attended layer
-    per_layer = elems / pw.attention_layer_count(profile) if elems else None
+    shape = kv_shape(profile, header if header is not None else header_of(model))  # K and V of every attended layer, and a sparse indexer's keys
+    elems = shape["elems"] or None
+    per_layer = shape["dequant"] or None  # one attended layer's K and V: a draft head's layer
+    out[f"{NS}.kv_dequant_bytes"] = dequant_bytes(shape, gpu_backend(b))  # the -ctk row's cost reads it on every backend (0 where none is made)
     out[f"{NS}.vocab_size"], src[f"{NS}.vocab_size"] = profile.get("vocab_size"), "the model's profile"
   except Exception as exc:  # noqa: BLE001  an unread shape is a stated unknown; the raw text is provenance
     elems, per_layer, src["kv_bytes_per_token"] = None, None, f"the model's shapes could not be read: {type(exc).__name__}: {exc}"
@@ -555,6 +639,11 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
     out["kv_bytes_per_token"] = size(default)
     out[f"{NS}.kv_sizes"] = ", ".join(w["kv_size"].format(type=t, bytes=size(t)) for t in kinds)
     src["kv_bytes_per_token"] = f"roofline/prefill_work.kv_bytes_per_token's elements (the attended layers) at the build's default type, {default}"
+  setup = options.get("kv")  # the Recommended setup's type: the -ctk row starts from it, as its command does
+  out[f"{NS}.kv_setup"] = setup if setup in kinds else None
+  out[f"{NS}.kv_setup_output"], out[f"{NS}.kv_setup_output_why"] = "untested", w["kv_setup_untested"]
+  src[f"{NS}.kv_setup"] = (f"--kv {setup}: the Recommended setup's KV type" if setup in kinds else
+                           f"--kv {setup}: not a type this build has flash attention kernels for, so not used" if setup else "no --kv given")
   topo = {"l3": host.get("cpu_l3_cores"), "physical": host.get("cpu_physical_cores"), "logical": host.get("cpu_logical_cores")}
   out[f"{NS}.thread_candidates"] = sorted({int(v) for v in topo.values() if v})
   src[f"{NS}.thread_candidates"] = "the CPU's topology (target/host.cpu_cores): " + ", ".join(f"{k} {v}" for k, v in topo.items() if v)

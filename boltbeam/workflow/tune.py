@@ -32,12 +32,18 @@ from boltbeam.core.refused import Refused
 from boltbeam.workflow import mods
 
 TABLE = pathlib.Path(__file__).resolve().parents[1] / "data" / "engine_knobs.json"
+ADAPTERS = TABLE.parent / "engine_adapters.json"  # engines.<E>.adapter: the module table() puts in each engine's row
 KiB, MiB, GiB = 1 << 10, 1 << 20, 1 << 30
 PROMPT = 10000  # the prompt length the setup is stated at (the evidence's 10k)
 DETAIL_CHARS = 300  # the end of an engine's error text kept as provenance: its last lines say why, its start is the command
 SEED_BITS = 31  # a choice sweep's order seed: a positive whole number a reader can retype and JSON keeps exact
 SERVED = 1  # tune states a setup for one request at a time: its context fit, its KV estimate and its decode rows are one request's
 REPLY_TOKENS = 2048  # room for the reply beside the prompt when no --context is given (a context of the prompt alone holds no reply)
+
+
+def prompt_at(context:int | None) -> int:
+  """The prompt tune states a setup at for this context: PROMPT, or below it the context less room for the reply (at most half)."""
+  return context - min(REPLY_TOKENS, context // 2) if context and context < PROMPT else PROMPT
 FACTS = {  # the engine-neutral names a formula may read: the fact and what it is
   "host_expert_bytes": "the experts this placement keeps in host RAM (the model's tensor table, per layer)",
   "model_experts": "experts per layer (0: a dense model)",
@@ -82,7 +88,10 @@ CONSTS = {"KiB": KiB, "MiB": MiB, "GiB": GiB, "True": True, "False": False, "Non
 
 
 def table(path:pathlib.Path = TABLE) -> dict[str, Any]:
-  return json.loads(path.read_text())
+  """The knob table, each engine's row with its adapter and MTP modules (engine_adapters.json) first, as one table."""
+  tab, mods = json.loads(path.read_text()), json.loads(ADAPTERS.read_text())["engines"]
+  tab["engines"] = {e: {**mods.get(e, {}), **row} for e, row in tab["engines"].items()}
+  return tab
 
 
 def engines(tab:dict[str, Any] | None = None) -> list[str]:
@@ -111,6 +120,12 @@ def fact_names(engine:str, tab:dict[str, Any] | None = None) -> set[str]:
   """The facts a row of this engine may read: the generic ones and its adapter's namespaced ones."""
   ad, tab = adapter(engine, tab), tab or table()
   return set(FACTS) | {f"{ad.NS}.{n}" for n in ad.FACTS} | {f"load.{n}" for n in (tab["engines"][engine].get("after_load") or {}).get("terms") or {}}
+
+
+def after_reads(engine:str, tab:dict[str, Any]) -> set[str]:
+  """The facts the engine's after-load estimate reads (its formula and terms): a row's sets that moves one moves the estimate."""
+  al = tab["engines"][engine].get("after_load") or {}
+  return {x for e in [al["formula"], *al["terms"].values()] for x in names_in(e)} if al else set()
 
 
 def after_load(f:dict[str, Any], engine:str, tab:dict[str, Any]) -> dict[str, Any]:
@@ -507,16 +522,19 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
     elif got:
       prov["sweep"] = got
       reason += f" (--measure: {got.get('says') or got.get('why')})"
-    if k["derive"] == "measured" and not got:
+    if k["derive"] == "measured" and not got and not held(k, f):
       s = k["sweep"]
       over = say("{x}", {"x": _try(s["candidates"], f, ok)}) if s["type"] == "choice" else s.get("points")  # a choice's points are this build's and machine's
       prov["measure"] = (f"confirm with --measure: {s['what']}" if s["type"] == "fit" else f"confirm with --measure: {s['type']} over {s['axis']} {over}")
     f = {n: v for n, v in f.items() if not n.startswith("t.")}
+    was = dict(f)
     for name, expr in (k.get("sets") or {}).items():
       try:
         f[name] = evaluate(expr, {**f, "value": value}, allowed)
       except Missing:
         f[name] = None
+    if any(f[n] != was.get(n) for n in (k.get("sets") or {}) if n in after_reads(engine, tab)):  # the estimate follows (a chunk row)
+      f |= after_load(f, engine, tab)
     shown = str(value) if value is not None else default
     if isinstance(row["bitwise"], str):  # whether outputs stay bitwise identical can hang on the value (only at the default, say)
       row["bitwise"] = bool(evaluate(row["bitwise"], {**f, "value": value}, allowed))
@@ -574,6 +592,12 @@ def memory_knobs(engine:str, tab:dict[str, Any], rows:list[dict[str, Any]]) -> l
   return [k for k in knobs(engine, tab) if k.get("vram") and st.get(k["name"]) in ("set", "default")]
 
 
+def held(k:dict[str, Any], f:dict[str, Any]) -> bool:
+  """A row the setup holds (its held_by fact is known: the Recommended setup's own value): neither the memory fit nor
+  --measure moves it, so this page's command keeps the setup's value."""
+  return bool(k.get("held_by")) and f.get(k["held_by"]) is not None
+
+
 def candidates(k:dict[str, Any], row:dict[str, Any], f:dict[str, Any], allowed:set[str]) -> list[str | None]:
   """A memory row's values for the fit, the setup's own first (None: the default): its fit candidates (a list, or a
   formula over the facts), less those its sweep's keep rule rejects; a candidate equal to the default is the default."""
@@ -586,29 +610,33 @@ def candidates(k:dict[str, Any], row:dict[str, Any], f:dict[str, Any], allowed:s
   return out
 
 
-def fit_facts(ks:list[dict[str, Any]], combo:dict[str, Any], f:dict[str, Any], allowed:set[str]) -> dict[str, Any]:
-  """The facts as the memory rows' sets leave them at these values."""
+def fit_facts(ks:list[dict[str, Any]], combo:dict[str, Any], f:dict[str, Any], allowed:set[str], at:tuple | None = None) -> dict[str, Any]:
+  """The facts as the memory rows' sets leave them at these values; at (engine, table): where a set moved a fact, the
+  engine's after-load estimate and its terms follow (a row's sets may move a fact the estimate reads, a chunk row the chunk)."""
   g = dict(f)
+  ks = [k for k in ks if k["name"] in combo]  # the rows the fit chose among (memory_fit leaves out a row with one value)
   for k, (name, expr) in ((k, x) for k in ks for x in (k.get("sets") or {}).items()):
     g[name] = _try(expr, {**g, "value": combo[k["name"]]}, allowed)
-  return g
+  moved = {n for k in ks for n in k.get("sets") or {} if g[n] != f.get(n)}
+  return {**g, **after_load(g, *at)} if at and moved & after_reads(*at) else g
 
 
-def costs(ks:list[dict[str, Any]], combo:dict[str, Any], f:dict[str, Any], allowed:set[str]) -> dict[str, float]:
+def costs(ks:list[dict[str, Any]], combo:dict[str, Any], f:dict[str, Any], allowed:set[str], at:tuple | None = None) -> dict[str, float]:
   """What each memory row takes of the GPU at these values (its vram over its terms); Missing when one is unknown."""
-  g = fit_facts(ks, combo, f, allowed)
+  g = fit_facts(ks, combo, f, allowed, at)
   return {k["name"]: evaluate(k["vram"], {**g, **terms(k, {**g, "value": combo[k["name"]]}, allowed), "value": combo[k["name"]]}, allowed | term_names(k))
-          for k in ks}
+          for k in ks if k["name"] in combo}
 
 
-def budget(ks:list[dict[str, Any]], ref:dict[str, Any], f:dict[str, Any], allowed:set[str], mem:dict[str, Any] | None = None) -> dict[str, Any]:
+def budget(ks:list[dict[str, Any]], ref:dict[str, Any], f:dict[str, Any], allowed:set[str], mem:dict[str, Any] | None = None,
+           at:tuple | None = None) -> dict[str, Any]:
   """The GPU memory the memory rows may take together: what is free after load (the engine's estimate with the rows at
   their defaults, or `mem`: read in a run of the setup at `ref`), plus what the rows take there, less a margin for what a
   session adds after load: the fall below the after-load reading measured over the run's replies, else SESSION_MARGIN
   (an estimate). Missing when a figure is unknown."""
-  after = mem["loaded"] if mem else evaluate("gpu_after_load_bytes", f)
+  after = mem["loaded"] if mem else evaluate("gpu_after_load_bytes", fit_facts(ks, ref, f, allowed, at))  # the estimate at ref's values
   m = session_margin(mem)
-  held, margin, growth = sum(costs(ks, ref, f, allowed).values()), m["value"], m["growth"]
+  held, margin, growth = sum(costs(ks, ref, f, allowed, at).values()), m["value"], m["growth"]
   return {"bytes": after + held - margin, "after_load": after, "held": held, "margin": margin, "growth": growth, "measured": bool(mem)}
 
 
@@ -625,9 +653,17 @@ def _bitwise(k:dict[str, Any], value:Any, f:dict[str, Any], allowed:set[str]) ->
   return bool(evaluate(b, {**f, "value": value}, allowed)) if isinstance(b := k.get("bitwise", True), str) else bool(b)
 
 
+def gated(k:dict[str, Any], f:dict[str, Any] | None) -> dict[str, str] | None:
+  """A row's gate evidence for this setup: its `gated` rows ({when: facts it ran on, result, evidence}) matched on the
+  facts given (model and target ids). quality-gated where one passed, gate failed where one failed (the prefill chunk's
+  labels, roofline/chunk_size.output_label); None where no gate ran here."""
+  hit = next((g for g in k.get("gated") or [] if f and all(f.get(x) == v for x, v in g["when"].items())), None)
+  return {"output": "quality-gated" if hit["result"] == "passed" else "gate failed", "why": hit["evidence"]} if hit else None
+
+
 def output_of(k:dict[str, Any] | None, value:Any = None, f:dict[str, Any] | None = None, allowed:set[str] | None = None) -> dict[str, str]:
   """A row's output label at a value (data/engine_knobs.json knobs and audit_flags, an arkey_ie_mods switch): identical
-  where the row states `bitwise` and it holds there; else the row's own `output`. The one statement of the default: a
+  where the row states `bitwise` and it holds there; else its gate evidence for these facts (gated); else the row's own `output`. The one statement of the default: a
   row that says neither, or no row, is untested (the bitwise default above is tune's own gating, not a label)."""
   k = k or {}
   try:
@@ -636,6 +672,8 @@ def output_of(k:dict[str, Any] | None, value:Any = None, f:dict[str, Any] | None
     same = False
   if same:
     return {"output": "identical", "why": "its row: bitwise at this value"}
+  if gate := gated(k, f):
+    return gate
   if (src := k.get("output_from")) and (f or {}).get(src) and value is not None and str(value) == str((f or {}).get(src.rsplit("_output", 1)[0])):
     return {"output": f[src], "why": f.get(src + "_why") or k.get("output_why", "")}  # a derived value's own label (its evidence), at that value only
   return {"output": k.get("output", "untested"), "why": k.get("output_why", "its row states no output" if k else "no data row names this setting")}
@@ -661,13 +699,19 @@ def memory_fit(rows:list[dict[str, Any]], f:dict[str, Any], engine:str, tab:dict
   allowed, by = fact_names(engine, tab), {r["name"]: r for r in rows}
   ks = memory_knobs(engine, tab, rows)
   cands = {k["name"]: candidates(k, by[k["name"]], f, allowed) for k in ks}
+  # a row with no other value whose cost is all the engine's own estimate (its terms) is in the budget already: not chosen
+  inside = after_reads(engine, tab) | {f"load.{t}" for t in ((tab["engines"][engine].get("after_load") or {}).get("terms") or {})}
+  ks = [k for k in ks if len(cands[k["name"]]) > 1 or not set(names_in(k["vram"])) <= inside]
+  cands = {k["name"]: cands[k["name"]] for k in ks}
   kept = [n for n in cands if only and n not in only and len(cands[n]) > 1]
-  cands = {n: c[:1] if n in kept else c for n, c in cands.items()}
+  holds = {k["name"] for k in ks if held(k, f)}  # its value is the setup's: kept, and judged by its own label, not the fit's bitwise rule
+  cands = {n: c[:1] if n in kept or n in holds else c for n, c in cands.items()}
   if not ks:
     return None
   here = {n: c[0] for n, c in cands.items()}
   try:
-    b = budget(ks, here if mem else dict.fromkeys(cands), f, allowed, mem)
+    # the estimate is after load with the rows at their defaults, a held row at the setup's value (the engine's after_load sizes it so)
+    b = budget(ks, here if mem else {n: here[n] if n in holds else None for n in cands}, f, allowed, mem, (engine, tab))
   except Missing as m:
     return {"rows": list(cands), "why": fact_words(str(m), adapter(engine, tab).FACTS)}
   out, uncosted = [], []
@@ -677,21 +721,23 @@ def memory_fit(rows:list[dict[str, Any]], f:dict[str, Any], engine:str, tab:dict
   for picks in itertools.product(*(list(enumerate(c)) for c in cands.values())):
     combo = {n: v for n, (_, v) in zip(cands, picks)}
     try:
-      cost = costs(ks, combo, f, allowed)
+      cost = costs(ks, combo, f, allowed, (engine, tab))
     except Missing as m:  # a value whose memory cannot be known is never chosen, and said
       uncosted.append((label(combo), fact_words(str(m), adapter(engine, tab).FACTS)))
       continue
-    g = fit_facts(ks, combo, f, allowed)
+    g = fit_facts(ks, combo, f, allowed, (engine, tab))
     said = [(_try((k.get("fit") or {}).get("gain") or "None", {**g, "value": combo[k["name"]]}, allowed),
              _try((k.get("fit") or {}).get("gain_words") or "None", {**g, "value": combo[k["name"]]}, allowed)) for k in ks]
     gain, how = math.prod(x for x, _ in said if x is not None), [h for x, h in said if x is not None and h]
     out.append({"values": combo, "order": tuple(i for i, _ in picks), "bytes": sum(cost.values()), "costs": cost, "gain": gain, "how": how,
-                "bitwise": all(_bitwise(k, combo[k["name"]], g, allowed) for k in ks), "fits": sum(cost.values()) <= b["bytes"],
+                "bitwise": all(_bitwise(k, combo[k["name"]], g, allowed) for k in ks if k["name"] not in holds), "fits": sum(cost.values()) <= b["bytes"],
                 "label": label(combo)})
   out.sort(key=lambda c: (-c["gain"], c["order"]))
   pick = next((c for c in out if c["fits"] and (c["bitwise"] or checked)), None)
+  # none fits: the one that takes the least (and keeps the answers) rather than the setup's own, so a value over the budget is not shown when a smaller one is there
+  least = min((c for c in out if c["bitwise"] or checked), key=lambda c: (c["bytes"], c["order"]), default=None) if pick is None else None
   return {"rows": list(cands), "budget": b, "here": here, "pick": pick, "combos": out, "uncosted": uncosted, "kept": kept,
-          "choices": len(out) + len(uncosted) > 1}
+          "choices": len(out) + len(uncosted) > 1, "least": least if least and least["values"] != here else None}
 
 
 def fit_words(plan:dict[str, Any] | None) -> str | None:
@@ -711,7 +757,8 @@ def fit_words(plan:dict[str, Any] | None) -> str | None:
     why.setdefault(what, []).append(lab)
   tail = "".join(w["uncosted"].format(n=len(labs), items="; ".join(labs[:3]), what=what) for what, labs in why.items()) + (w["kept"].format(rows=", ".join(plan["kept"])) if plan.get("kept") else "")
   if pick is None:
-    return said + w["none" + one] + tail
+    least = plan.get("least")
+    return said + (w["none_least"].format(label=least["label"], gib=least["bytes"] / GiB) if least else w["none" + one]) + tail
   swept = (plan.get("as") or {}).get("says", "")
   said += w["pick"].format(label=pick["label"], gib=pick["bytes"] / GiB) + (w["gain"].format(gain=pick["gain"], how="; ".join(pick["how"])) if pick["how"] else w["no_gain"]) + \
     (w["failed"].format(why=plan["failed"]) if plan.get("failed") else "") + (w["swept"].format(says=swept[:1].upper() + swept[1:].rstrip(".")) if swept else "")
@@ -726,6 +773,8 @@ def fit_overrides(plan:dict[str, Any] | None, rows:list[dict[str, Any]], source:
   pick, w, own = (plan or {}).get("pick"), _words()["tune"]["memory"], {r["name"]: r["value"] if r["status"] == "set" else None for r in rows}
   one = "_one" if plan and len(plan["rows"]) == 1 else ""
   why = pick and (w["row_measured" + one].format(label=pick["label"]) if says else w["row" + one].format(label=pick["label"], room=plan["budget"]["bytes"] / GiB, gain=pick["gain"]))
+  if pick is None and (pick := (plan or {}).get("least")):
+    why = w["row_least"].format(label=pick["label"], room=plan["budget"]["bytes"] / GiB)
   return {n: {"fit": True, "value": v, "source": source, "says": why, "record": {"label": pick["label"], "bytes": pick["bytes"], "gain": pick["gain"]}}
           for n, v in (pick or {}).get("values", {}).items() if v != own[n]}
 
@@ -1027,9 +1076,10 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
     out.mkdir(parents=True, exist_ok=True)
     go = run or ad.launch_measure(model, feats, f, port=port, out=out, extra=extra)
     scoped = memory_fit(rows, first, engine, tab, only=knobs_only) if plan and knobs_only else plan  # what --knob lets it move
-    fitted = {k["name"] for k in memory_knobs(engine, tab, rows)} if scoped and scoped.get("choices") else set()  # measured together, at the end
+    fitted = set(scoped["rows"]) if scoped and scoped.get("choices") else set()  # measured together, at the end
     todo = [k for k in knobs(engine, tab) if k["derive"] == "measured" and (not knobs_only or k["name"] in knobs_only)
-            and next(x for x in rows if x["name"] == k["name"])["status"] not in ("not_in_build", "not_applicable") and k["name"] not in fitted]
+            and next(x for x in rows if x["name"] == k["name"])["status"] not in ("not_in_build", "not_applicable") and k["name"] not in fitted
+            and not held(k, f)]
     together = bool(fitted)
     say = say or (lambda _line: None)
     say(f"pipeline steps: {len(todo) + together}")
@@ -1059,9 +1109,10 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
     say("pipeline done")
     rows, plan = settle(f, feats, engine, tab, measured, plan=plan)
     (out / "tune.json").write_text(json.dumps({"engine": engine, "rows": rows, "measured": measured, "memory_fit": plan, "facts": f}, indent=1, default=str))
-  shown = ad.render(values_of(rows), f, feats, model, extra)
+  shown = mods.with_switches(ad.render(values_of(rows), f, feats, model, extra), mods.modded(engine, feats.get("build")))  # as a run on it sets them
   return {"schema": "boltbeam.tune.v1", "engine": engine, "model": model, "build": {**{k: v for k, v in feats.items() if k != "features"},
-          "groups": groups_in(engine, feats, tab), "feature_count": len(feats["features"]), "modded": mods.modded(engine, feats.get("build"))}, "facts": f, "rows": rows, **shown,
+          "groups": groups_in(engine, feats, tab), "feature_count": len(feats["features"]), "modded": mods.modded(engine, feats.get("build")),
+          "series": sorted(m["id"] for m in mods.mods(engine) if m.get("state") == "series" and m.get("marker") in feats["features"])}, "facts": f, "rows": rows, **shown,
           "measured": measured, "memory_fit": plan, "out": str(out) if out else None}
 
 

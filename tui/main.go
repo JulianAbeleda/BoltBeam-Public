@@ -49,6 +49,17 @@ commands (each prints one JSON object):
   save <id>                                    export a run to --saved: the run, results.json, report.html, summary.txt
   saved                                        the saved runs, newest first
   tail <id> [--lines N]                        the pipeline's status and the last lines of its log
+  mods [--engine E] [--apply [--rebuild]] [--label L] [--mod ID] [--src DIR]
+                                               the engine mods (arkey_ie_mods) that fit the build here, one row each:
+                                               what it does, its switch, its output label, chosen or not and why;
+                                               --apply builds the chosen ones into a copy (minutes; yours is unchanged)
+  tune MODEL --engine E [--build B] [--target ID] [--context N] [--workload W]
+                                               Tuned for this machine: each knob's value, source and reason (no engine
+                                               starts; Measure stays on the screens)
+  offload MODEL --target ID [--engine E]       what goes to the card and to RAM, each setup's limits
+  recommend MODEL --target ID [--engine E] [--gpus N]
+                                               the engine settings for this model here: context, speed and flags
+  doctor                                       what this machine has for BoltBeam, and the one fix for each gap
 
 env: BOLTBEAM_RUNS (runs folder), BOLTBEAM_PYTHON (interpreter; default: the first of python3.13..3.10, python3),
      BOLTBEAM_REPO (checkout; default: walk up from here), BOLTBEAM_TUI_STATE (pids and logs),
@@ -162,10 +173,10 @@ func run(args []string, out, errOut io.Writer) int {
 		}
 		return 0
 	}
-	return command(client, store, rest, out, errOut)
+	return command(client, store, *target, rest, out, errOut)
 }
 
-func command(client seam.Client, store jobs.Store, rest []string, out, errOut io.Writer) int {
+func command(client seam.Client, store jobs.Store, target string, rest []string, out, errOut io.Writer) int {
 	name, args := rest[0], rest[1:]
 	need := func(n int) bool {
 		if len(args) < n {
@@ -358,6 +369,51 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 		}
 		raw, _ := json.Marshal(job)
 		return emit(out, raw)
+	case "mods": // the flags go to Python as they are (paths made absolute): it owns them (workflow/mods.arguments)
+		args = absPaths(args, "--src")
+		if !hasArg(args, "--target") && target != "" {
+			args = append(args, "--target", target)
+		}
+		var m seam.Mods // a refusal exits 1 with Python's sentence in refused: printed as it is
+		raw, code, err := client.ModsRaw(&m, append([]string{"mods"}, args...)...)
+		if err != nil {
+			return fail(out, err)
+		}
+		emit(out, raw)
+		return code
+	case "tune", "offload", "recommend": // MODEL then Python's own flags; the run folders' newest facts as the screens read them
+		if !need(1) {
+			return 2
+		}
+		model, flags := args[0], args[1:]
+		if abs, err := filepath.Abs(model); err == nil { // the seam runs in the checkout
+			model = abs
+		}
+		if strings.HasPrefix(args[0], "-") { // offload/recommend: --profile in MODEL's place
+			model, flags = "", args
+		}
+		rest := append([]string{name}, absPaths(flags, "--build", "--draft", "--profile", "--replies")...)
+		if model != "" {
+			rest = append([]string{name, model}, rest[1:]...)
+		}
+		switch {
+		case hasArg(args, "--target"):
+		case target != "": // the global --target (or BOLTBEAM_TARGET)
+			rest = append(rest, "--target", target)
+		case name != "tune": // tune finds this machine's chip itself
+			fmt.Fprintln(errOut, name+" needs MODEL and --target")
+			return 2
+		}
+		for _, pl := range client.Places() {
+			rest = append(rest, "--facts-root", pl.Dir)
+		}
+		return called(out, client, rest)
+	case "doctor":
+		raw, err := client.DoctorRaw()
+		if err != nil {
+			return fail(out, err)
+		}
+		return emit(out, raw)
 	case "tail":
 		if !need(1) {
 			return 2
@@ -379,6 +435,55 @@ func command(client seam.Client, store jobs.Store, rest []string, out, errOut io
 	}
 	fmt.Fprintln(errOut, usage)
 	return 2
+}
+
+// called is one screen command through client.Call: its JSON as Python printed it, or the error object.
+func called(out io.Writer, client seam.Client, args []string) int {
+	raw, err := client.Call(args...)
+	if err != nil {
+		return fail(out, err)
+	}
+	return emit(out, raw)
+}
+
+// absPaths is args with each of the path flags' values (--flag value or --flag=value) made absolute against the caller's
+// working directory: the seam runs in the checkout, where a relative path names another file. A ~ path is left as it
+// is, and so is a --build with no separator that is not a file here (a program found on PATH).
+func absPaths(args []string, flags ...string) []string {
+	out := append([]string{}, args...)
+	fix := func(f, v string) string {
+		if v == "" || strings.HasPrefix(v, "~") || filepath.IsAbs(v) {
+			return v
+		}
+		if _, err := os.Stat(v); f == "--build" && err != nil && !strings.ContainsRune(v, filepath.Separator) {
+			return v
+		}
+		if abs, err := filepath.Abs(v); err == nil {
+			return abs
+		}
+		return v
+	}
+	for i, a := range out {
+		for _, f := range flags {
+			switch {
+			case a == f && i+1 < len(out):
+				out[i+1] = fix(f, out[i+1])
+			case strings.HasPrefix(a, f+"="):
+				out[i] = f + "=" + fix(f, strings.TrimPrefix(a, f+"="))
+			}
+		}
+	}
+	return out
+}
+
+// hasArg says a flag is among args, as --flag or --flag=value.
+func hasArg(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag || strings.HasPrefix(a, flag+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // demo draws the screens from a demo file (BOLTBEAM_TUI_DEMO, not in the usage: the VHS tapes in tui/tapes use it).

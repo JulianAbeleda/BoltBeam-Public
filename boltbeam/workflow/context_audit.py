@@ -329,10 +329,12 @@ def rank(arms:list[dict[str, Any]]) -> dict[str, Any]:
 
 # --- expert cache coverage (audit only) ------------------------------------------------------------------------------
 
-def expert_cache(engine:str, *, log:str = "", cache:float | None = None, host:float | None = None, source:str = "") -> dict[str, Any] | None:
+def expert_cache(engine:str, *, log:str = "", cache:float | None = None, host:float | None = None, source:str = "",
+                 setup:dict[str, Any] | None = None) -> dict[str, Any] | None:
   """The engine's expert cache: the covered share of the expert bytes held on the host, and its hit rate per batch class
   when the engine logs them. The engine's audit_flags row (role expert_cache) gives the log patterns; cache and host
-  (one unit) stand in where the log does not say them. None for an engine with no such row."""
+  (one unit) stand in where the log does not say them. setup: the model and target ids its output label is keyed to (the
+  row's gate evidence, tune.gated). None for an engine with no such row."""
   row = next((r for r in _rows("engine_knobs.json", "audit_flags") if r["engine"] == engine and r.get("role") == "expert_cache"), None)
   if row is None:
     return None
@@ -343,7 +345,7 @@ def expert_cache(engine:str, *, log:str = "", cache:float | None = None, host:fl
   share = derived(min(1.0, cache / host), "cache bytes / expert bytes on the host", {"cache": cache, "host": host}) if cache and host else \
     unknown("the cache's size and the host experts' bytes: the engine's log line, or the device's used memory with and without the host layers")
   from boltbeam.workflow.tune import output_of
-  return {"coverage": share, "hit_rate": rates or unknown("run the engine at the verbosity that logs its cache's hits and misses"), **output_of(row)}
+  return {"coverage": share, "hit_rate": rates or unknown("run the engine at the verbosity that logs its cache's hits and misses"), **output_of(row, f=setup)}
 
 
 # --- the audit of one record -----------------------------------------------------------------------------------------

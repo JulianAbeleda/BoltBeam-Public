@@ -1,0 +1,14 @@
+{
+  "schema": "boltbeam.engine_adapters.v1",
+  "about": "The module that implements each engine's part, by engine, kept apart from engine_knobs.json so a reader of the knob rows does not load the adapters. adapter: the module workflow/tune.py loads (tune.table merges it into engines.<E>) to read that engine's build, supply its facts, run its measured points and write its command. mtp: the module collectors/mtp.py loads to measure the engine's multi-token prediction.",
+  "engines": {
+    "llama.cpp": {
+      "adapter": "boltbeam.workflow.tune_llama_cpp",
+      "mtp": "boltbeam.collectors.llama_mtp"
+    },
+    "vllm": {
+      "adapter": "boltbeam.workflow.tune_vllm",
+      "mtp": "boltbeam.collectors.vllm_mtp"
+    }
+  }
+}

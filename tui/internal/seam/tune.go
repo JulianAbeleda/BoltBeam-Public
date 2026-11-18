@@ -19,8 +19,16 @@ type Tune struct {
 	Build   *string   `json:"build"`
 	Out     *string   `json:"out"`
 	Page    *TunePage `json:"page"`
+	Mods    *TuneMods `json:"mods"`
 	Refused *string   `json:"refused"`
 	Error   string    `json:"error"`
+}
+
+// TuneMods is the build's engine mods as tune reads them: None says it has none of the mods whose knobs tune sets (the
+// page's note says so), and the screen links that note to Apply mods; Modded is the modded build's key, when it is one.
+type TuneMods struct {
+	None   bool    `json:"none"`
+	Modded *string `json:"modded"`
 }
 
 // TunePage is the section as the Recommended setup page lays it out.

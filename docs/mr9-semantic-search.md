@@ -1,5 +1,8 @@
 # MR9 semantic search
 
+A record: the `mr8-population-selection` and `mr9-semantic-search` commands were removed on 2026-11-09 (41c211e3:
+nothing called them). The semantic search runs in the screen's Compare (`python3 -m boltbeam.workflow.screen compare`).
+
 MR9 executes the complete population already selected by MR8. The MR8 handoff
 retains each canonical Tinygrad campaign request, so the operator does not
 reconstruct a request or candidate-population JSON file before the run.
@@ -19,7 +22,7 @@ cd <home>/env/BoltBeam
 ```
 
 `mr8-selection.json` must be the unedited output of
-`boltbeam mr8-population-selection`; the command refuses a partial population,
+the `mr8-population-selection` command; the command refuses a partial population,
 a changed retained request, or a population that no longer reproduces from
 that request. The MR7 ranking retains the canonical authority packet containing
 its exact prerequisite artifacts, derived plan, and raw provider results. MR8

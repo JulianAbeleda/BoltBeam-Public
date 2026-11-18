@@ -254,10 +254,11 @@ DEVICE_ENV = frozenset({"CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VIS
 
 def env_allowed(tab:dict[str, Any] | None = None) -> set[str]:
   """The variable names --engine-env takes: exactly the env knobs the engines' table declares (Tuned for this machine
-  offers only these). Exact names, not prefixes: a prefix like GGML_ or LLAMA_ would also let through variables no one
-  has measured, and a new knob is one table row."""
-  from boltbeam.workflow import tune
-  return {k["name"] for k in (tab or tune.table())["knobs"] if k.get("kind") == "env"}
+  offers only these) and the arkey_ie_mods switches (workflow/mods; a run on a modded build sets them). Exact names, not
+  prefixes: a prefix like GGML_ or LLAMA_ would also let through variables no one has measured, and a new knob is one
+  table row."""
+  from boltbeam.workflow import mods, tune
+  return {k["name"] for k in (tab or tune.table())["knobs"] if k.get("kind") == "env"} | {s for m in mods.mods() if (s := mods.switch(m))}
 
 
 def check_engine_env(args, tab:dict[str, Any] | None = None) -> None:
@@ -419,6 +420,39 @@ class _Prefixed:
     self.out.flush()
 
 
+def check_modded(args) -> None:
+  """--modded, refused in plain words before the run starts: the build must be the provider's and on disk, and no env
+  var of the user's may pick another build (theirs win over a recorded build)."""
+  from boltbeam.workflow import mods
+  if not (key := getattr(args, "modded", None)):
+    return
+  provider = getattr(args, "provider", None) or providers.DEFAULT
+  if getattr(args, "update_engines", False):
+    raise ValueError("--modded runs a modded build as it is; --upgrade-engines installs another build: give one or the other")
+  build = next((b for b in mods.built(provider) if b.get("key") == key), None)
+  if build is None:
+    raise ValueError(f"{provider} has no modded build {key} on this machine (builds.json modded, its folder on disk): "
+                     "build it with `boltbeam mods apply` (or Apply mods on Engine)")
+  if overridden := engine_builds.env_for(build)[1]:
+    raise ValueError(f"{', '.join(overridden)} set: the run would use that build, not the modded build {key}; unset it")
+
+
+def pipeline_modded(args, provider:str, key:str, out=sys.stdout) -> int:
+  """The pipeline on a modded build (screen mods --apply), with its mods' switches set as --engine-env (so the run
+  records them and results.engine_mods marks it a mod run). Refused when the build is not on disk, or when the user's
+  own env var would select another build (theirs win: the run would not be on the modded build)."""
+  from boltbeam.workflow import mods
+  say = _say_to(out)
+  check_modded(args)
+  build = next(b for b in mods.built(provider) if b.get("key") == key)
+  env = mods.run_env(build)
+  given = {str(e).partition("=")[0] for e in getattr(args, "engine_env", None) or []}
+  args.engine_env = [*(getattr(args, "engine_env", None) or []), *(f"{k}={v}" for k, v in env.items() if k not in given)]
+  say(f"engines {provider}: the modded build {key} ({build.get('folder')}), switches {', '.join(f'{k}={v}' for k, v in env.items()) or 'none'}")
+  with engine_builds.using(build):
+    return pipeline(args, out)
+
+
 def pipeline_current(args, out=sys.stdout) -> int:
   """The pipeline on this machine's current build of the engine (collectors/engine_builds.py). With --upgrade-engines,
   `engines --update` for this engine runs first. When a newer build waits (pending) and this is an --analyze run, the
@@ -427,6 +461,8 @@ def pipeline_current(args, out=sys.stdout) -> int:
   current as it was."""
   say = _say_to(out)
   provider = getattr(args, "provider", None) or providers.DEFAULT
+  if key := getattr(args, "modded", None):
+    return pipeline_modded(args, provider, key, out)
   if provider not in engine_builds.rows():
     return pipeline(args, out)
   if getattr(args, "update_engines", False):

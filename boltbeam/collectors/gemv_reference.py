@@ -131,8 +131,8 @@ def dequant_iq4_xs_block(blk:bytes) -> list[float]:
 @functools.lru_cache(maxsize=None)
 def iq3s_grid() -> tuple[int, ...]:
   """IQ3_S's 512-entry codebook, read from ggml-common.h beside the engine source the kernel is built from
-  (engine_kernels.mmvq_source_dir): the format's own definition, not a table BoltBeam copies."""
-  from boltbeam.collectors.engine_kernels import NoEngineSource, mmvq_source_dir
+  (engine_source.mmvq_source_dir): the format's own definition, not a table BoltBeam copies."""
+  from boltbeam.collectors.engine_source import NoEngineSource, mmvq_source_dir
   text = (pathlib.Path(mmvq_source_dir()["dir"]).parent / "ggml-common.h").read_text()
   m = re.search(r"GGML_TABLE_BEGIN\(uint32_t,\s*iq3s_grid,\s*512\)(.*?)GGML_TABLE_END", text, re.S)
   grid = tuple(int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", m.group(1))) if m else ()

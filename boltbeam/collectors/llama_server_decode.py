@@ -5,8 +5,8 @@ build's llama-bench lacks and its llama-server has is run here, by the same prov
 trace files, so the tie-out and the reports read it as any llama.cpp run.
 
 The server is $BOLTBEAM_LLAMA_SERVER, else the llama-server beside the run's llama-bench (one build), else llama-server
-on PATH. Any python3 runs boltbeam/runtime/llama_server_decode_drive.py, which starts it on its own port with the run's
-flags and stops that one process when it ends.
+on PATH, else the one beside the llama-bench the engine scan saved. Any python3 runs
+boltbeam/runtime/llama_server_decode_drive.py, which starts it on its own port with the run's flags and stops that one process when it ends.
 
 Whole step: the server's own timings, predicted_n over predicted_ms, at each requested context, one stream.
 Per role: the driver under the vendor capture (nsys follows the server it starts), N tokens and 1, subtracted and
@@ -28,6 +28,7 @@ PROVIDER = "llama.cpp"
 PROVIDER_ID = "llama.cpp/llama-server-decode"
 COLLECTOR_ID = "llama-server-decode"
 TOOL = "llama-server"
+WHERE = "$BOLTBEAM_LLAMA_SERVER, beside llama-bench, on PATH or beside the llama-bench the engine scan found"  # find()'s order, for refusals
 ENV = "BOLTBEAM_LLAMA_SERVER"
 DRIVER = ec.RUNTIME / "llama_server_decode_drive.py"
 TOKENS, REPS = 64, 3
@@ -38,13 +39,23 @@ HEADROOM = 64  # context cells past the prompt and the generated tokens
 
 
 def find(bench:str | None = None, env:dict[str, str] | None = None) -> str | None:
-  """$BOLTBEAM_LLAMA_SERVER, else the llama-server beside llama-bench (the one given, else $BOLTBEAM_LLAMA_BENCH's), else PATH."""
+  """$BOLTBEAM_LLAMA_SERVER, else the llama-server beside llama-bench (the one given, else $BOLTBEAM_LLAMA_BENCH's), else
+  PATH, else, when no llama-bench was named, the llama-server beside the one the engine scan saved (collectors/engine_scan.py):
+  one build, never another build's server for a named bench. The one lookup tune, routing and the MTP measure share."""
+  from boltbeam.collectors import engine_scan
   env = os.environ if env is None else env
   bench = bench or env.get("BOLTBEAM_LLAMA_BENCH")
   if env.get(ENV):
     return env[ENV] if pathlib.Path(env[ENV]).expanduser().is_file() else None
+  if found := _beside(bench) or shutil.which(TOOL, path=env.get("PATH")):
+    return found
+  return None if bench else _beside(engine_scan.saved("BOLTBEAM_LLAMA_BENCH"))
+
+
+def _beside(bench:str | None) -> str | None:
+  """The llama-server in the same folder as this llama-bench, when there is one."""
   beside = pathlib.Path(bench).expanduser().resolve().parent / TOOL if bench else None
-  return str(beside) if beside and beside.is_file() else shutil.which(TOOL, path=env.get("PATH"))
+  return str(beside) if beside and beside.is_file() else None
 
 
 def needs_server(run:pathlib.Path, bench:str) -> bool:

@@ -67,8 +67,15 @@ func (c Client) module(module string, args ...string) *exec.Cmd {
 // call runs one module and returns the raw bytes it printed with its exit code; codes other than 0 and the
 // ones in `ok` are errors.
 func (c Client) call(module string, ok []int, args ...string) ([]byte, int, error) {
+	raw, code, _, err := c.callStderr(module, ok, args...)
+	return raw, code, err
+}
+
+// callStderr is call, with what Python wrote to stderr also when its exit code was accepted (a crash's traceback).
+func (c Client) callStderr(module string, ok []int, args ...string) ([]byte, int, string, error) {
 	if c.Demo != nil {
-		return c.Demo.answer(args)
+		raw, code, err := c.Demo.answer(args)
+		return raw, code, "", err
 	}
 	cmd := c.module(module, args...)
 	var out, stderr bytes.Buffer
@@ -88,7 +95,7 @@ func (c Client) call(module string, ok []int, args ...string) ([]byte, int, erro
 		}
 	}
 	if err == nil {
-		return bytes.TrimSpace(out.Bytes()), code, nil
+		return bytes.TrimSpace(out.Bytes()), code, strings.TrimSpace(stderr.String()), nil
 	}
 	var reported struct {
 		Error   string    `json:"error"`
@@ -96,9 +103,9 @@ func (c Client) call(module string, ok []int, args ...string) ([]byte, int, erro
 		Needs   *ForkNeed `json:"needs"`
 	}
 	if json.Unmarshal(out.Bytes(), &reported) == nil && reported.Error != "" {
-		return nil, code, &Error{Message: reported.Error, Stderr: stderr.String(), Code: code, Formats: reported.Formats, Needs: reported.Needs}
+		return nil, code, "", &Error{Message: reported.Error, Stderr: stderr.String(), Code: code, Formats: reported.Formats, Needs: reported.Needs}
 	}
-	return nil, code, &Error{Message: fmt.Sprintf("%s -m %s %s: %v", c.Python, module, strings.Join(args, " "), err),
+	return nil, code, "", &Error{Message: fmt.Sprintf("%s -m %s %s: %v", c.Python, module, strings.Join(args, " "), err),
 		Stderr: strings.TrimSpace(stderr.String()), Code: code}
 }
 
@@ -204,6 +211,12 @@ func (c Client) Inspect(model string) (*Profile, []byte, error) {
 	var p Profile
 	raw, _, err := c.decode(&p, nil, "boltbeam.cli", "inspect", model)
 	return &p, raw, err
+}
+
+// DoctorRaw is `boltbeam doctor --json` as Python printed it, for agent mode.
+func (c Client) DoctorRaw() ([]byte, error) {
+	raw, _, err := c.call("boltbeam.cli", nil, "doctor", "--json")
+	return raw, err
 }
 
 // Doctor is `boltbeam doctor --json`: what this machine has for BoltBeam, one row per check, each gap with its fix.
@@ -415,11 +428,13 @@ type Pipeline struct {
 	Settings []string
 	// Repeats runs the same setup this many times, then their repeat band; 0 or 1 is one run
 	Repeats int
+	// Modded is the modded build to run on (a fork's Modded key): Python hands the run that build, its mods' switches set
+	Modded string
 }
 
 func (c Client) PipelineArgv(p Pipeline) []string {
 	argv := []string{c.Python, "-m", "boltbeam.workflow.screen", "pipeline", p.Model, "--run", p.RunDir, "--target", p.Target}
-	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider, "--layout": p.Layout, "--batch": p.Batch, "--role-time": p.RoleTime, "--replay-trace": p.ReplayTrace, "--server-argv": p.ServerArgv} {
+	for flag, value := range map[string]string{"--workload": p.Workload, "--id": p.ID, "--probe": p.Probe, "--timing": p.Timing, "--measure": p.Measure, "--provider": p.Provider, "--layout": p.Layout, "--batch": p.Batch, "--role-time": p.RoleTime, "--replay-trace": p.ReplayTrace, "--server-argv": p.ServerArgv, "--modded": p.Modded} {
 		if value != "" {
 			argv = append(argv, flag, value)
 		}
