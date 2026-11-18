@@ -391,6 +391,71 @@ def cmd_replay_ab(args) -> int:
   return 0 if summary["status"] == "complete" and summary.get("verdict") != "INCONCLUSIVE" else 2
 
 
+def _register_session_ab(sub) -> None:
+  p = sub.add_parser("session-ab", help="paired session benchmark: server arms in alternating order on one recorded session")
+  p.add_argument("--out", required=True, help="the benchmark's folder: session_ab.json, the table, one server log per arm")
+  p.add_argument("--server-argv", help="the server command every arm starts from; leading VAR=value tokens are its environment")
+  p.add_argument("--arm", action="append", default=[], help="NAME=[VAR=value ...] [binary] [flags ...], the first is the base; repeat per arm")
+  p.add_argument("--session", help="the session: {\"system\", \"turns\": [{\"user\", \"assistant\", \"reply_tokens\"}]}")
+  p.add_argument("--repeats", type=int, default=3, help="blocks of every arm, each block in the reverse order of the one before")
+  p.add_argument("--lengths", help="reply lengths, one per turn (a JSON list or {\"lengths\": [...]}); default the session's reply_tokens")
+  p.add_argument("--gaps", help="idle seconds before each turn (a JSON list or {\"gaps_s\": [...]}, e.g. mkgaps output); default back to back")
+  p.add_argument("--history", default="own", help="what goes back into the history: own (the server's reply) or recorded (the session's)")
+  p.add_argument("--engine", default="llama.cpp", help="the server's chat adapter (collectors/replay.REPLAY_ENGINES)")
+  p.add_argument("--wrap", default="", help="a command prefix for every server, e.g. 'taskset -c 0-7'")
+  p.add_argument("--power-cap", type=float, default=None, help="the power limit every arm must start and end at (W); default the first gate's")
+  p.add_argument("--retries", type=int, default=2, help="reruns of an invalid arm before the run stops")
+  p.add_argument("--turns", default=None, help="time only turns A-B (e.g. 40-59, a deep-turn screen; the history before A fills the cache untimed), or N: the first N")
+  p.add_argument("--hook", default="", help="a shell command run once per arm after its turns, the server still up (a quality gate): SESSION_AB_URL, SESSION_AB_ARM, SESSION_AB_BLOCK, SESSION_AB_OUT")
+  p.add_argument("--resume", action="store_true", help="carry on with the record in --out (same inputs only)")
+  p.add_argument("--analyze", action="store_true", help="print the table of the record in --out, run nothing")
+  p.set_defaults(fn=cmd_session_ab)
+
+
+def cmd_session_ab(args) -> int:
+  """Run (or re-read) a paired session benchmark; write the record's analysis and print the short table."""
+  from boltbeam.collectors import session_ab as sab
+  from boltbeam.core.refused import Refused
+  from boltbeam.workflow.session_ab import analyze, lines
+  out = pathlib.Path(args.out).expanduser()
+  try:
+    if args.analyze:
+      record = json.loads((out / sab.FILE).read_text())
+    else:
+      if not (args.server_argv and args.session and len(args.arm or []) >= 2):
+        return _fail("session-ab: --server-argv, --session and at least two --arm are needed")
+      record = sab.run(out=args.out, server_argv=args.server_argv, arms=args.arm, session=args.session, repeats=args.repeats,
+                       engine=args.engine, history=args.history, lengths=args.lengths, gaps=args.gaps, wrap=args.wrap,
+                       power_cap_w=args.power_cap, retries=args.retries, turns=args.turns, hook=args.hook, resume=args.resume,
+                       say=lambda m: print(m, file=sys.stderr, flush=True))
+    record["analysis"] = analyze(record)
+  except (OSError, ValueError, RuntimeError, Refused) as exc:
+    return _fail(f"session-ab: {exc}")
+  sab._write(out / sab.FILE, record)
+  text = "\n".join(lines(record, record["analysis"])) + "\n"
+  (out / "session_ab.txt").write_text(text)
+  sys.stdout.write(text)
+  return 0 if not record.get("stopped") else 2
+
+
+def _register_session_gate(sub) -> None:
+  p = sub.add_parser("session-gate", help="stage 1 of the agreement gate against the running server: session-ab's --hook")
+  p.add_argument("--reference", required=True, help="the arm every other arm is judged against: session-ab's first --arm")
+  p.add_argument("--floor", required=True, help="the reference with llama.cpp's declared no-op change appended (session-ab's second --arm): d_floor")
+  p.set_defaults(fn=cmd_session_gate)
+
+
+def cmd_session_gate(args) -> int:
+  """Run inside session-ab's --hook (SESSION_AB_* in the environment): 0 reference or pass, 3 needs_eval."""
+  from boltbeam.collectors import session_gate
+  from boltbeam.core.refused import Refused
+  try:
+    got = session_gate.from_env(args.reference, args.floor)
+  except (OSError, ValueError, RuntimeError, Refused) as exc:
+    return _fail(f"session-gate: {exc}")
+  return 3 if got.get("gate", {}).get("verdict") == "needs_eval" else 0
+
+
 # ---- machine-contract helpers (all commands exit nonzero on malformed contracts) -------------------------
 
 def _register_ingest(sub) -> None:
@@ -734,6 +799,8 @@ def register(sub) -> None:
   _register_runner_plan(sub)
   _register_matched_control(sub)
   _register_replay_ab(sub)
+  _register_session_ab(sub)
+  _register_session_gate(sub)
   _register_ingest(sub)
   _register_evaluate(sub)
   _register_reopen_check(sub)

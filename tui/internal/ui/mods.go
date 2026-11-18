@@ -179,7 +179,11 @@ func modsBody(f Facts, width int) string {
 		return b.String() + stWarn.Render(wrapText(*s.Plan.Refused, width))
 	}
 	if s.Plan.Fits != "" {
-		b.WriteString(stMuted.Render(wrapText(modsWord("this_build", "{fits}", s.Plan.Fits), width)) + "\n\n")
+		b.WriteString(stMuted.Render(wrapText(modsWord("this_build", "{fits}", s.Plan.Fits), width)) + "\n")
+		if c := s.Plan.ModsCommit; c != nil && c.Words != "" {
+			b.WriteString(stMuted.Render(wrapText(c.Words, width)) + "\n")
+		}
+		b.WriteString("\n")
 	}
 	for _, r := range s.Plan.Rows {
 		b.WriteString(modRow(r, width))

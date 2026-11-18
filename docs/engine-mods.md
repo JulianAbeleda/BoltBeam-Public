@@ -22,9 +22,24 @@
 The repo: `$BOLTBEAM_IE_MODS`, else `~/arkey_ie_mods` (`engine_patches.json` `mods_repo`). BoltBeam ships the repo's
 index.json at `mods_repo.pin` as `boltbeam/data/ie_mods_index.json`; every reader (results, the context audit, tune,
 recommend, the kernel ledger) answers from it, so the answers are the same with or without the repo. The repo itself
-is read only for a patch's text when mods are applied (`git show <pin>:<patch>`). Moving the pin is a BoltBeam commit
-that copies the new index; tests/test_engine_patches.py fails until the copy equals the pinned index (a named setup
-skip without the repo). A switch that is both a mod's and a knob row's takes the mod's output label; the knob row's
+is read only for a patch's text when mods are applied (`git show <commit>:<patch>`). Moving the pin is a BoltBeam
+commit that copies the new index; tests/test_engine_patches.py fails until the copy equals the pinned index (a named
+setup skip without the repo).
+
+The pin is the floor and the offline default, not the only commit `boltbeam mods` reads (`workflow/mods.resolve`).
+It fetches BoltBeam's own clone, then walks origin's default branch from its newest commit back to the pin and reads
+the first commit whose index schema this BoltBeam reads (`mods.SCHEMAS`) and whose `requires.boltbeam` (arkey_ie_mods
+engines.json, checked by its tools/check.py) is this version or older. Offline, a branch without the pin, or nothing
+newer it can read: the pin, and it says why. A configured clone (`$BOLTBEAM_IE_MODS` or the default path) is never
+fetched into: its `origin/HEAD` as last fetched is walked. `--pin COMMIT` or `$BOLTBEAM_IE_MODS_PIN` reads exactly
+that commit (refused if missing or unreadable). The commit is said first (`mods: arkey_ie_mods <commit> (newest
+compatible)`), kept in the plan (`mods_commit`), in the build record (`mods_commit`, `mods_resolved`) and in a run on
+the build (`workload_profile.json` `modded_build`), so `--pin` with it rebuilds the same mods. The build key hashes
+the chosen mods' patch and kernel sha256, so a commit that changes a patch builds anew. Only mods of a version the
+index marks verified (a tested tree) are applied; the rest are listed with why (`--mod` naming one is refused).
+What this trusts: by default the patches come from the tip of the repo's default branch, not a commit a BoltBeam
+release reviewed; the sha256 checks catch a file that differs from its index at the same commit, not a change made in
+the repo. `--pin` (the pin's full id is in `engine_patches.json`) reads only a reviewed commit. A switch that is both a mod's and a knob row's takes the mod's output label; the knob row's
 evidence is kept beside it. A run through the kernel hook mod (`install_paths`) reads untested: the mods repo has
 no kernel rows yet to label what a manifest installs.
 

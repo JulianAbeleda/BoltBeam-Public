@@ -1,10 +1,12 @@
 {
   "schema": "boltbeam.engine_patches.v2",
-  "about": "A pointer, not a registry: BoltBeam holds no engine patch and no engine kernel artifact. Engine mods (patches and kernels) live in the arkey_ie_mods repo; every mod fact (switch, check, output label, marker, lines, budget, archive) is that repo's index.json at mods_repo.pin, shipped as data/ie_mods_index.json and read by workflow/mods.py only. This file keeps BoltBeam-side facts: where the repo is (read only for a patch's text when applying), the pin, which BoltBeam features use which mod (uses, by engine/name), how a kernel gets into an engine (install_paths), how mods are applied per engine (apply), BoltBeam's own patches (own_patches) and the evidence records that are patch files (evidence_patches). sz.py fails on any other tracked or untracked *.patch or *.diff file in the repo.",
+  "about": "A pointer, not a registry: BoltBeam holds no engine patch and no engine kernel artifact. Engine mods (patches and kernels) live in the arkey_ie_mods repo; every mod fact (switch, check, output label, marker, lines, budget, archive) is that repo's index.json: at mods_repo.pin shipped as data/ie_mods_index.json, at a newer commit read by workflow/mods.py when `mods` resolves one; read by workflow/mods.py only. This file keeps BoltBeam-side facts: where the repo is (read only for a patch's text when applying), the pin, which BoltBeam features use which mod (uses, by engine/name), how a kernel gets into an engine (install_paths), how mods are applied per engine (apply), BoltBeam's own patches (own_patches) and the evidence records that are patch files (evidence_patches). sz.py fails on any other tracked or untracked *.patch or *.diff file in the repo.",
   "mods_repo": {
     "default_path": "~/arkey_ie_mods",
     "env": "BOLTBEAM_IE_MODS",
-    "pin": "c62d009bf3d43e91057f3900e876d5b6b1e901ce",
+    "pin": "093b0dda96b412f974358c31edf8d9bd1a2e9fc6",
+    "pin_env": "BOLTBEAM_IE_MODS_PIN",
+    "pin_why": "the floor and the offline default, not the only choice: `boltbeam mods` reads the newest commit on the repo's default branch past the pin whose index schema BoltBeam reads and whose requires.boltbeam it meets (workflow/mods.resolve), the pin when that fails; --pin or $BOLTBEAM_IE_MODS_PIN reads exactly one commit",
     "url": "https://github.com/JulianAbeleda/arkey_ie_mods",
     "url_why": "where `boltbeam mods` clones the repo from (into ~/.boltbeam/arkey_ie_mods, workflow/mods.ensure) when no local clone is configured; a configured clone is used as it is"
   },
@@ -12,30 +14,6 @@
     "llama.cpp/1.0.0": "benchmarks/llama.cpp-1.0.0-0.3.26"
   },
   "benchmarks_why": "where a mods version's published benchmark (speed and the quality gate) is in arkey_ie_mods, keyed engine/version; `boltbeam mods` names it beside each quality-gated mod it takes (workflow/mods.evidence). A path in the repo's master, not at the pin: the benchmark came after the pinned index",
-  "titles": {
-    "llama.cpp/1.0.0/kpool-incremental": "k-pool layout updated from the edit point",
-    "llama.cpp/1.0.0/sparse-direct": "sparse attention reads q8_0 K/V rows by index",
-    "llama.cpp/1.0.0/idx-pooled": "indexer cache keeps pooled keys only",
-    "llama.cpp/1.0.0/mtp-share-head": "draft head reads the target's output projection",
-    "llama.cpp/1.0.0/kpool-input-device": "k-pool inputs live on the device",
-    "llama.cpp/1.0.0/seq-rm-indexed": "seq_rm walks an index, not the cache",
-    "llama.cpp/1.0.0/fattn-vec-skip": "vector attention kernel skips masked rows",
-    "llama.cpp/1.0.0/idx-inplace": "indexer scores pooled q8_0 keys in place",
-    "llama.cpp/1.0.0/ext-kernels": "external kernel hook",
-    "llama.cpp/1.0.0/moe-inplace": "prefill reads cached experts in place",
-    "llama.cpp/1.0.0/ckpt-pinned": "context checkpoints in a pinned pool",
-    "llama.cpp/1.0.0/topk-fused": "radix top-k of a few rows in one launch",
-    "llama.cpp/1.0.0/graph-slots": "draft context keeps a graph per small ubatch size",
-    "llama.cpp/7592b61d3/moe-prefill": "MoE routing sort, MMQ tile knob, pinned staging",
-    "llama.cpp/7592b61d3/pinned-copy-stream": "host-RAM experts on a pinned copy stream",
-    "llama.cpp/7592b61d3/server-ckpt-min-head": "no checkpoint at a user start in the prompt head",
-    "llama.cpp/7592b61d3/server-ckpt-tail-only": "keep only the tail checkpoint",
-    "llama.cpp/7592b61d3/ple-prefetch-async": "PLE row prefetch on a thread",
-    "llama.cpp/7592b61d3/mtp-sidecar-subfolder": "MTP sidecar found in an `mtp/` subfolder",
-    "vllm/0.31.0/split-kv-verify": "TRITON_ATTN keeps the split-KV kernel for a verify of up to 8 tokens",
-    "vllm/0.31.0/quark-lm-head": "Quark quantizes an lm_head the config does not exclude"
-  },
-  "titles_why": "each series mod's one-line title, keyed by mod id: the per-version table's mod column in arkey_ie_mods README.md at the pin (the index has no title field); the Apply mods page and `screen mods` rows say it first. tests/test_engine_patches.py keeps it equal to that README",
   "uses": {
     "llama.cpp/moe-prefill": [
       "tune"
@@ -59,6 +37,10 @@
     ]
   },
   "uses_why": "by engine/name (the mod in any version); every mod with a switch is also read by results.engine_mods, context_audit.output_label and tune.output_of",
+  "plan_only": {
+    "llama.cpp/rs-one-copy": "costs +0.12 ms a decode step [0.04, 0.19] (session-ab, switch on vs off); it pays only when the plan spends the memory it frees (the expert residency placement with the hot draft), so a run on a modded build leaves it off and tune's spend fit names it (LLAMA_RS_ONE_COPY=1) when its plan uses the freed MiB"
+  },
+  "plan_only_why": "mods whose switch a run on a modded build does not turn on by itself (workflow/mods.run_env): the spend fit names it when its plan pays for it (engine/name, as uses)",
   "install_paths": {
     "why": "How a kernel the search finds gets into an engine's decode, per engine (the kernel ledger's install_path column reads this; an engine with no row has none). status proven: a run showed an outside kernel launched in place of the engine's own at no measured cost; the evidence names it. mod: the arkey_ie_mods mod (by name) whose switch turns it on; a run with it on reads untested until arkey_ie_mods has kernel rows a manifest entry maps to (context_audit.output_label).",
     "llama.cpp": {
@@ -69,8 +51,11 @@
       "missing": "a manifest writer in BoltBeam",
       "manifest_file": "manifest.json",
       "loaded_line": "ext_load: loaded {id}",
-      "commit_match": {"min_prefix": 7, "suffix_sep": "-",
-                       "why": "the hook's rule (09 ext_load, ggml/src/ggml-cuda/ext-kernels.cpp:155-168): the build's ggml commit cut at its first suffix_sep (a -dirty marker), never a manifest entry, then equal to one of the manifest's engine.builds on their common prefix of min_prefix or more characters"},
+      "commit_match": {
+        "min_prefix": 7,
+        "suffix_sep": "-",
+        "why": "the hook's rule (09 ext_load, ggml/src/ggml-cuda/ext-kernels.cpp:155-168): the build's ggml commit cut at its first suffix_sep (a -dirty marker), never a manifest entry, then equal to one of the manifest's engine.builds on their common prefix of min_prefix or more characters"
+      },
       "loaded_why": "the hook takes a manifest only on a build whose commit matches one of its engine.builds (commit_match), then writes this WARN line per entry it loads; llama-server drops ggml INFO lines (common/log.cpp:551/563), so a load is confirmed only by this line",
       "evidence": "boltbeam-runs/ext-kernel-hook-20261115: an identity cubin through the hook on X16 at 128k: 71,425 checks past 98.6k bit-identical, 59/59 replies identical, session step +0.069 ms against 0.158 ms off-vs-off, PDL and graph capture kept"
     }
@@ -79,16 +64,27 @@
     "why": "screen mods per engine: the applier its mods use and where a build's source checkout is in its folder; an engine with no row lists nothing (vLLM: patch_p1 into a venv copy is not wired yet)",
     "llama.cpp": {
       "applier": "git_apply",
-      "backends": ["CUDA"],
+      "backends": [
+        "CUDA"
+      ],
       "backends_words": "CUDA patches (NVIDIA GPUs)",
       "backends_why": "the GPU backends (data/targets.json backend) the mods do something on: the arkey_ie_mods llama.cpp mods were built and measured on CUDA (sm_120, an RTX 5090), their kernels and the ext-kernels hook are CUDA files, and a run sets switches only CUDA code reads; on Metal or HIP a modded copy would build and every switch would do nothing, so screen mods and the Engine picker say so instead",
       "source": "src",
-      "copy_skip": ["build*"],
+      "copy_skip": [
+        "build*"
+      ],
       "copy_skip_why": "a tree without .git is copied whole: its top-level build directories are not source",
-      "commit_cmake": ["-DLLAMA_BUILD_COMMIT={commit}", "-DGGML_BUILD_COMMIT={commit}", "-DGIT_EXE=OFF"],
+      "commit_cmake": [
+        "-DLLAMA_BUILD_COMMIT={commit}",
+        "-DGGML_BUILD_COMMIT={commit}",
+        "-DGIT_EXE=OFF"
+      ],
       "commit_cmake_why": "every mods build is configured with the base commit: in a tree without .git ggml says \"unknown\" and the ext-kernels hook refuses every manifest (09 ext_load: \"this build (unknown) is not one the manifest was checked on\"), silently running stock kernels. GGML_BUILD_COMMIT alone is not enough: the top-level CMakeLists.txt:158-160 and :224 set it from LLAMA_BUILD_COMMIT, and ggml/CMakeLists.txt:14-20 runs git rev-parse, whose empty output shadows the cache value, unless GIT_EXE is off (boltbeam-runs/decode-topk-fused-20261115 Round 2, measured 2026-11-16)",
-      "commit_header": {"path": "build/ggml/src/ggml-version.h", "pattern": "GGML_COMMIT\\s+\"([^\"]*)\"",
-                        "why": "the commit ggml_commit() returns, the one the ext-kernels hook compares with a manifest's engine.builds"}
+      "commit_header": {
+        "path": "build/ggml/src/ggml-version.h",
+        "pattern": "GGML_COMMIT\\s+\"([^\"]*)\"",
+        "why": "the commit ggml_commit() returns, the one the ext-kernels hook compares with a manifest's engine.builds"
+      }
     }
   },
   "own_patches": [

@@ -25,6 +25,10 @@ type Mods struct {
 	Key          string `json:"key"`
 	AlreadyBuilt bool   `json:"already_built"`
 	Reused       bool   `json:"reused"`
+	// ModsCommit is the arkey_ie_mods commit read (newest compatible, the pin, or forced); Words says it in a line.
+	ModsCommit *struct {
+		Words string `json:"words"`
+	} `json:"mods_commit"`
 }
 
 // ModRow is one mod: what it does in plain words, the switch that turns it on (nil: none, SwitchWhy says why), its

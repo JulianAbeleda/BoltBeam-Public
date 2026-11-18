@@ -272,8 +272,8 @@ def check_engine_env(args, tab:dict[str, Any] | None = None) -> None:
         why = "it belongs to BoltBeam itself" if name.startswith("BOLTBEAM_") else "the run's chip decides which devices the engine uses"
         raise ValueError(f"{name} cannot be set for the engine: {why}. Pass --engine-env-any to set it anyway.")
     elif not any_name:
-      allowed = env_allowed(tab) if allowed is None else allowed
-      if name not in allowed:
+      allowed = env_allowed(tab) | set((getattr(args, "modded_record", None) or {}).get("switches") or []) if allowed is None else allowed
+      if name not in allowed:  # a modded build's own switches count: its mods may come from a commit past the pin
         raise ValueError(f"{name} is not a setting BoltBeam knows for an engine. Take the variables from Tuned for this machine, "
                          "or pass --engine-env-any to set another one.")
 
@@ -305,7 +305,7 @@ def _load(args) -> dict[str, Any]:
     (pathlib.Path(args.run)/'forced_replay_request.json').write_text('{}')
   result = load_run(args.model, args.run, target_id=args.target, model_id=args.id, workload=args.workload,
                   contexts=contexts, target_source="user", provider=getattr(args, "provider", None),
-                  engine_settings=_engine_settings(args), engine_env=_engine_env(args))
+                  engine_settings=_engine_settings(args), engine_env=_engine_env(args), modded=getattr(args, "modded_record", None))
   keep_run_chip(pathlib.Path(args.run), args.target)
   if getattr(args, "bands", None):
     evidence = read_json(args.bands)
@@ -446,6 +446,8 @@ def pipeline_modded(args, provider:str, key:str, out=sys.stdout) -> int:
   check_modded(args)
   build = next(b for b in mods.built(provider) if b.get("key") == key)
   env = mods.run_env(build)
+  args.modded_record = {**{k: build.get(k) for k in ("key", "base_commit", "mods_commit", "mods_resolved")},  # the run keeps which mods it ran
+                        "mods": [m["id"] for m in build.get("mods") or []], "switches": sorted(env)}
   given = {str(e).partition("=")[0] for e in getattr(args, "engine_env", None) or []}
   args.engine_env = [*(getattr(args, "engine_env", None) or []), *(f"{k}={v}" for k, v in env.items() if k not in given)]
   say(f"engines {provider}: the modded build {key} ({build.get('folder')}), switches {', '.join(f'{k}={v}' for k, v in env.items()) or 'none'}")

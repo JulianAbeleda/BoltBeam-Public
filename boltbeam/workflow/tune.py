@@ -1048,7 +1048,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
          experts_in_ram:str | None = None, run:Callable[..., float] | None = None, tab:dict[str, Any] | None = None,
          memory:dict[str, Any] | None = None, l3:dict[str, Any] | None = None, say:Callable[[str], None] | None = None,
          workload:str = "chat", link:dict[str, Any] | None = None, reply:dict[str, Any] | None = None, cpu:dict[str, Any] | None = None,
-         **options) -> dict[str, Any]:
+         spend:list[str] | None = None, spend_max:bool = False, **options) -> dict[str, Any]:
   """The setup: the build, the facts, every row, the rendered command, and (measure) the sweeps' records. A Refused when
   the engine, its build or the model cannot be read. options go to the adapter's facts (test stand-ins). say: --measure's
   progress as a screen's pipeline lines (a stage per swept knob, a progress line per point, at most the row's points)."""
@@ -1063,8 +1063,11 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
       raise Refused(f"{engine} has no knob named {', '.join(unknown)} in BoltBeam's knob table")
     knobs_only = [names[q.lstrip("-")] for q in knobs_only]
   feats = ad.detect(build)
+  from boltbeam.workflow import spend as sp
+  if not spend and context is not None and sp.rows_of(engine, tab):  # stored measured runs of this model, this GPU's size and this build's switches
+    spend = sp.defaults(model, getattr(ad, "gpu_total", lambda: None), set(feats["features"])) or None
   f = host_facts(memory=memory, l3=l3, prompt=prompt, context=context, workload=workload, link=link, reply=reply, cpu=cpu)
-  got = ad.facts(model, f, feats, {"experts_in_ram": experts_in_ram, "extra": extra, **options})
+  got = ad.facts(model, f, feats, {"experts_in_ram": experts_in_ram, "extra": extra, "spend": bool(spend), **options})
   f = {**f, **got, "model_file": pathlib.Path(model).name, "sources": {**f["sources"], **got.get("sources", {}), "model_file": "the model given"}}
   if warn := speed_up.usable(model):  # a Speed up copy waiting on its task eval: tuned, and said; a failed one refused
     f["notes"] = [*f.get("notes", []), warn]
@@ -1110,7 +1113,11 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
     rows, plan = settle(f, feats, engine, tab, measured, plan=plan)
     (out / "tune.json").write_text(json.dumps({"engine": engine, "rows": rows, "measured": measured, "memory_fit": plan, "facts": f}, indent=1, default=str))
   shown = mods.with_switches(ad.render(values_of(rows), f, feats, model, extra), mods.modded(engine, feats.get("build")))  # as a run on it sets them
-  return {"schema": "boltbeam.tune.v1", "engine": engine, "model": model, "build": {**{k: v for k, v in feats.items() if k != "features"},
+  spent = None
+  if spend:  # the spend fit: the ways to spend the GPU's memory at the context, ranked on the measured runs given (workflow/spend.py)
+    spent = {"why": "no_facts", "what": f["spend_why"]} if f.get("spend_why") else sp.plan(f, engine, tab, model=model, records=sp.read_records(spend), context=None if spend_max else f["context_tokens"],
+                    features=set(feats["features"]), ad=ad, allowed=fact_names(engine, tab))
+  return {"schema": "boltbeam.tune.v1", "spend": spent, "engine": engine, "model": model, "build": {**{k: v for k, v in feats.items() if k != "features"},
           "groups": groups_in(engine, feats, tab), "feature_count": len(feats["features"]), "modded": mods.modded(engine, feats.get("build")),
           "series": sorted(m["id"] for m in mods.mods(engine) if m.get("state") == "series" and m.get("marker") in feats["features"])}, "facts": f, "rows": rows, **shown,
           "measured": measured, "memory_fit": plan, "out": str(out) if out else None}
@@ -1161,6 +1168,9 @@ def text(res:dict[str, Any], tab:dict[str, Any] | None = None) -> str:
                                 l3="unknown" if f["l3_bytes"] is None else f"{f['l3_bytes'] / MiB:.0f} MiB", l3_source=f["l3_source"]))
   if fitted := fit_words(res.get("memory_fit")):
     lines.append(fitted)
+  if res.get("spend"):
+    from boltbeam.workflow import spend as sp
+    lines += ["", *sp.words(res["spend"], tab["engines"][res["engine"]].get("spend") or {})]
   lines += ["", w["setup"]]
   for r in rows:
     if r["status"] in ("set", "default"):

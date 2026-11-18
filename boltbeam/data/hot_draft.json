@@ -1,0 +1,8 @@
+{
+ "schema": "boltbeam.hot_draft_adapters.v1",
+ "about": "How `boltbeam derive hot-draft` reads a draft file's experts, counts its routing and writes the trimmed copy, per engine (workflow/hot_draft.py). adapter: the module (experts, counts, capture, trim); counts_by: what writes the route count the capture reads.",
+ "engines": {
+  "llama.cpp": {"adapter": "boltbeam.adapters.hot_draft_llama_cpp",
+                "counts_by": "LLAMA_DRAFT_ROUTE_COUNT=path (arkey_ie_mods llama.cpp 1.0.0 mod 18, draft-route-count; diagnostic, off = stock)"}
+ }
+}

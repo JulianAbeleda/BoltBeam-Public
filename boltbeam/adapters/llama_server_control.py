@@ -140,10 +140,11 @@ def _wait_healthy(base_url:str, process:subprocess.Popen, timeout_s:float) -> No
 
 @contextlib.contextmanager
 def _running(command:list[str], base_url:str, log_path:str | pathlib.Path, startup_timeout_s:float,
-             environ:Mapping[str, str] | None, stop_timeout_s:float = 5.0):
+             environ:Mapping[str, str] | None, stop_timeout_s:float = 5.0, started=None):
   """The command started in its own session with its output in the log, waited on until /health answers; stopped
   (its whole process group) when the block ends: SIGTERM, then SIGKILL after stop_timeout_s (a traced server writes
-  its trace as it exits, which takes far longer than an untraced one's shutdown)."""
+  its trace as it exits, which takes far longer than an untraced one's shutdown). started: called with the process
+  once it is up, for a caller that accounts for its CPU or stops it itself."""
   log = pathlib.Path(log_path)
   log.parent.mkdir(parents=True, exist_ok=True)
   with log.open("w", encoding="utf-8") as stream:
@@ -151,6 +152,7 @@ def _running(command:list[str], base_url:str, log_path:str | pathlib.Path, start
                                env=dict(os.environ if environ is None else environ), start_new_session=True)
     try:
       _wait_healthy(base_url, process, startup_timeout_s)
+      if started: started(process)
       yield
     finally:
       if process.poll() is None:
@@ -205,16 +207,16 @@ def own_argv(argv:Sequence[str], port:int) -> list[str]:
 
 @contextlib.contextmanager
 def serve_argv(argv:Sequence[str], *, log_path:str | pathlib.Path, startup_timeout_s:float = 600.0,
-               environ:Mapping[str, str] | None = None, stop_timeout_s:float = 5.0):
+               environ:Mapping[str, str] | None = None, stop_timeout_s:float = 5.0, started=None):
   """The user's own server command on a free local port: yields (base url, the command run, seconds from start to
-  /health answering), then stops it."""
+  /health answering), then stops it. started: _running's."""
   if not argv or not pathlib.Path(argv[0]).expanduser().is_file():
     raise FileNotFoundError(f"llama server not found: {argv[0] if argv else '(empty command)'}")
   port = _free_port()
   base_url = f"http://127.0.0.1:{port}"
   command = own_argv([str(pathlib.Path(argv[0]).expanduser()), *argv[1:]], port)
   began = time.monotonic()
-  with _running(command, base_url, log_path, startup_timeout_s, environ, stop_timeout_s):
+  with _running(command, base_url, log_path, startup_timeout_s, environ, stop_timeout_s, started):
     yield base_url, command, time.monotonic() - began
 
 

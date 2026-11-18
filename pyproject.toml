@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boltbeam"
-version = "0.3.28"
+version = "0.3.29"
 description = "Audit where inference time goes against a measured roofline."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,7 @@ include = ["boltbeam*"]
 
 # The code reads these files next to its own modules at run time, so the wheel must carry them.
 [tool.setuptools.package-data]
-boltbeam = ["policy/assets/*.json", "policy/assets/*.sha256", "data/*.json", "data/*.jsonl", "collectors/*.cpp"]
+boltbeam = ["policy/assets/*.json", "policy/assets/*.sha256", "data/*.json", "data/*.jsonl", "data/spend/*.json", "collectors/*.cpp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

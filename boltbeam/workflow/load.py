@@ -83,7 +83,7 @@ def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str 
              model_id:str | None = None, workload:str = Workload.DECODE.value,
              contexts:tuple[int, ...] | None = None, target_source:str | None = None,
              engine_settings:dict[str, Any] | None = None, provider:str | None = None,
-             engine_env:dict[str, str] | None = None) -> dict[str, Any]:
+             engine_env:dict[str, str] | None = None, modded:dict[str, Any] | None = None) -> dict[str, Any]:
   """A run folder for the model. contexts: the decode contexts, or a prefill's prompt lengths; left out, decode
   takes (128, 512) and a prefill the sweep from the model's own cap (prefill_sweep.json, prefill_work.sweep)."""
   out = run_dir(run)
@@ -115,6 +115,8 @@ def load_run(model:str | pathlib.Path, run:str | pathlib.Path, *, target_id:str 
     workload_profile["engine_settings"] = dict(engine_settings)
   if engine_env:  # the environment the run set for its engine (pipeline --engine-env)
     workload_profile["engine_env"] = dict(engine_env)
+  if modded:  # a run on a modded build: its key and the arkey_ie_mods commit it was built from (pipeline --modded)
+    workload_profile["modded_build"] = dict(modded)
   write_json(out / "workload_profile.json", workload_profile)
   from boltbeam.collectors.toolchain import snapshot, vendor_args
   from boltbeam.target.targets import TARGETS

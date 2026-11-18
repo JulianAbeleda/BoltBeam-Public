@@ -24,6 +24,9 @@ python -m boltbeam.workflow.screen autoscan                       # measure this
 python -m boltbeam.workflow.screen recommend MODEL --target TARGET --engine ENGINE [--check]   # context, speed and flags per GPU layout
 boltbeam offload MODEL --target TARGET [--engine ENGINE]       # the offload page: what goes to the card and to RAM (the same as screen offload)
 boltbeam tune MODEL --engine llama.cpp|vllm [--build BIN] [--experts-in-ram all|N] [--prompt N] [--context N] [--replies REPLIES.jsonl] [--workload chat|one-shot] [--time-budget BUDGET.json] [--measure]
+boltbeam tune MODEL --measured RECORD [--context N|max] [--gpu-free-mib N]   # rank the ways to spend GPU memory from measured runs
+boltbeam session-ab --out DIR --server-argv CMD --session S.json --arm A=SPEC --arm B=SPEC [--repeats N] [--turns A-B] [--hook CMD]   # paired session benchmark
+boltbeam session-gate --reference ARM [--floor ARM]   # output-agreement check per arm, run as session-ab's --hook
 boltbeam time-budget capture.sqlite --engine ENGINE [--driver LINE.json | --wall-ms MS] [--out budget.json]
 boltbeam context-audit RECORD.json --engine ENGINE [--out audit.json]
 boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECORD] [--compare OTHER.json]
@@ -100,7 +103,8 @@ boltbeam update      # is a newer BoltBeam released, and how this install upgrad
                      # BOLTBEAM_NO_UPDATE_CHECK=1 turns that off)
 boltbeam mods        # the arkey_ie_mods mods that fit the engine build here (llama.cpp); `mods apply` builds them into a
                      # clone of its checkout, recorded as not verified (engine-mods.md); --json for the record. Default:
-                     # the benchmarked series (identical + quality-gated, marked with its evidence); --label/--mod narrow
+                     # the benchmarked series (identical + quality-gated, marked with its evidence); --label/--mod narrow;
+                     # reads the newest compatible arkey_ie_mods commit (the pin offline); --pin COMMIT reads exactly one
 ```
 
 `doctor` looks for the engines in the usual folders and remembers them (`~/.boltbeam/engines.json`); set an env var

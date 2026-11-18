@@ -34,8 +34,10 @@ def cmd_lighter_head(args, out=sys.stdout) -> int:
 
 
 def register(sub) -> None:
-  p = sub.add_parser("derive", help="make a derived copy of a model; the original stays (lighter-head: a lighter output layer, kept only if it still answers the same)")
+  p = sub.add_parser("derive", help="make a derived copy of a model; the original stays (lighter-head: a lighter output layer, kept only if it still answers the same; hot-draft: a draft holding only its hottest experts)")
   what = p.add_subparsers(dest="what", required=True, metavar="<what>")
+  from boltbeam.cli import hot_draft
+  hot_draft.add(what)
   q = what.add_parser("lighter-head", help="a faster copy: the output layer quantized lighter, stock engines only")
   q.add_argument("checkpoint", help="a GGUF file or a Hugging Face checkpoint folder")
   q.add_argument("--engine", default=None, help="an engine row of data/speed_up.json (vllm, llama.cpp), or the engine's python (vLLM) or llama-bench (llama.cpp); default: the row for the format, the engine found as other commands find it")

@@ -679,6 +679,10 @@ def show(run:pathlib.Path) -> dict[str, Any]:
     out["engine_env_outputs"] = env_outputs(run, env)  # what each does to the answers: a switch no row names is untested, never stock
     if mods := engine_mods(env):
       out["engine_mods"] = mods  # a mod run: its figures are never a stock engine's
+  if modded := optional(run, "workload_profile.json").get("modded_build"):
+    out["modded_build"] = modded  # the modded build's key and the arkey_ie_mods commit it was built from
+    # its own mods too: one from a commit past the pin has a switch the shipped index does not name
+    out["engine_mods"] = sorted({*out.get("engine_mods", []), *(modded.get("mods") or [])})
   return out
 
 

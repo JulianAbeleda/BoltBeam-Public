@@ -529,6 +529,7 @@ SCHEMA_RUNTIME_OUTPUT_IDENTITY = "boltbeam.runtime_output_identity.v1"
 SCHEMA_TINYGRAD_GRAPH_ADMISSION_CENSUS = "tinygrad.graph_admission_census.v1"
 SCHEMA_REPLAY_AB_PROTOCOL = "boltbeam.replay_ab_protocol.v1"
 SCHEMA_REPLAY_AB_ROW = "boltbeam.replay_ab_row.v1"
+SCHEMA_SESSION_AB = "boltbeam.session_ab.v1"  # collectors/session_ab.py: a paired session benchmark's one record
 SCHEMA_REPLAY_AB_SUMMARY = "boltbeam.replay_ab_summary.v1"
 SCHEMA_EXECUTION_BRIDGE_REQUEST = "execution_bridge.request.v1"
 SCHEMA_EXECUTION_BRIDGE_RESULT = "execution_bridge.result.v1"

@@ -506,9 +506,9 @@ def mods_page(args, say) -> dict[str, Any]:
   here = args.target or chips.detect().get("target_id")  # the backend: the mods refuse one they are not for (apply row backends)
   backend = _target_arg(here).backend if here else None
   engine = args.engine or mods.only_engine(backend)
-  got = mods.run(engine, src=args.src, labels=tuple(args.label) or None, only=args.mod, base=args.base,
-                 apply_them=args.apply, backend=backend, rebuild=getattr(args, "rebuild", False), say=say)
-  return {"schema": SCHEMA, "kind": "mods", "engine": engine, **got, **({"rows": mods.rows(engine, got, args.mod)} if "fits" in got else {})}
+  got = mods.run(engine, src=args.src, labels=tuple(args.label) or None, only=args.mod, base=args.base, apply_them=args.apply,
+                 backend=backend, rebuild=getattr(args, "rebuild", False), pin=getattr(args, "pin", None), say=say)
+  return {"schema": SCHEMA, "kind": "mods", "engine": engine, **got}  # rows: run reads them at the commit it resolved
 
 
 def _offload_args(p) -> None:

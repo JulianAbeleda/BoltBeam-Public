@@ -4,7 +4,13 @@ data/engine_patches.json is the pointer: where the mods repo is ($BOLTBEAM_IE_MO
 commit it pins and BoltBeam's own uses of a mod. data/ie_mods_index.json is that repo's index.json at the pin, shipped
 with BoltBeam: every mod fact (switch, check, output label, marker, size) is read from it, so every reader answers the
 same with or without the repo (tests/test_engine_patches.py keeps it equal to the pinned index). The repo itself is
-read only for a patch's text or a kernel manifest, at the pin.
+read only for a patch's text or a kernel manifest, at the commit read.
+
+    resolve  which commit `mods` reads (run): --pin or $<pin_env> exactly; else the newest commit on origin's default
+             branch past the pin whose index schema this BoltBeam reads (SCHEMAS) and whose requires.boltbeam it meets,
+             walking back from the newest; else the pin (the floor and the offline default). BoltBeam's own clone is
+             fetched first; a configured clone never (its origin as last fetched). Said, and recorded in the plan,
+             the build record and a run on the build (mods_commit)
 
     plan     the mods that fit a checkout (--src, else the current build's source, engine_patches.json apply): base =
              its commit (HEAD checked against the mods' base and said), or else each in series order applied in a
@@ -49,9 +55,22 @@ def pointer() -> dict[str, Any]:
   return json.loads((DATA / "engine_patches.json").read_text())
 
 
+SCHEMAS = ("arkey_ie_mods.index.v1",)  # the index schemas this BoltBeam reads: resolve takes no commit with another
+_AT: dict[str, Any] = {}  # the commit run() reads (resolve, while reading): commit, index, record; empty = the pin
+
+
 @functools.lru_cache(maxsize=1)
-def index() -> dict[str, Any]:
+def shipped() -> dict[str, Any]:
   return json.loads((DATA / "ie_mods_index.json").read_text())
+
+
+def index() -> dict[str, Any]:
+  """The mods index at the commit read: the one resolve chose while run() reads it, else the pin's (shipped)."""
+  return _AT.get("index") or shipped()
+
+
+def commit() -> str:
+  return _AT.get("commit") or pointer()["mods_repo"]["pin"]
 
 
 def mods(engine:str | None = None) -> list[dict[str, Any]]:
@@ -104,7 +123,11 @@ def ensure(say:Callable[[str], None] = print) -> pathlib.Path:
   say(f"mods: fetching arkey_ie_mods at {r['pin'][:9]} from {r['url']} into {w}")
   if not (w / ".git").exists():
     w.parent.mkdir(parents=True, exist_ok=True)
-    got = subprocess.run(["git", "clone", "-q", "--no-checkout", r["url"], str(w)], capture_output=True, text=True)
+    try:
+      got = subprocess.run(["git", "clone", "-q", "--no-checkout", r["url"], str(w)], capture_output=True, text=True,
+                           timeout=CLONE_TIMEOUT_S, env={**os.environ, **QUIET})
+    except subprocess.TimeoutExpired:
+      raise Refused(f"arkey_ie_mods could not be cloned from {r['url']}: {_why('no_answer', s=CLONE_TIMEOUT_S)}") from None
     if got.returncode:
       raise Refused(f"arkey_ie_mods could not be cloned from {r['url']}: {got.stderr.strip()[-200:]}")
   if not _has_pin(w):
@@ -114,19 +137,118 @@ def ensure(say:Callable[[str], None] = print) -> pathlib.Path:
   return w
 
 
+CLONE_TIMEOUT_S = 120  # the first clone of the mods repo; bounded so an offline machine is refused, not hung
+FETCH_TIMEOUT_S = 10  # a fetch of the mods repo (usually a few new commits); past it the pin is read, said as offline
+QUIET = {"GIT_TERMINAL_PROMPT": "0"}  # a fetch or clone never waits on a password prompt
+
+
+def _why(key:str, **kw) -> str:  # resolve's reasons, in plain_words.json mods.resolve_why
+  from boltbeam.report import plain
+  return plain.words()["mods"]["resolve_why"][key].format(**kw)
+
+
+def _fetch(w:pathlib.Path, *what:str) -> str | None:
+  """git fetch origin [what] into BoltBeam's own clone, bounded (offline must not hang a command); why it failed, or None."""
+  try:
+    got = subprocess.run(["git", "-C", str(w), "fetch", "-q", "origin", *what], capture_output=True, text=True,
+                         timeout=FETCH_TIMEOUT_S, env={**os.environ, **QUIET})
+  except subprocess.TimeoutExpired:
+    return _why("no_answer", s=FETCH_TIMEOUT_S)
+  return (got.stderr.strip()[-160:] or "git fetch failed") if got.returncode else None
+
+
+def _ver(v:str | None) -> tuple[int, ...]:
+  return tuple(int(x) for x in re.findall(r"\d+", v or ""))
+
+
+def _index_at(w:pathlib.Path, c:str) -> dict[str, Any] | None:
+  got = _git(w, "show", f"{c}:index.json")
+  try:
+    return json.loads(got.stdout) if not got.returncode else None
+  except ValueError:
+    return None
+
+
+def unreadable(idx:dict[str, Any] | None) -> str | None:
+  """Why this BoltBeam cannot read a commit's index (its schema, its requires.boltbeam), or None."""
+  from boltbeam.cli.self_update import installed
+  if not isinstance(idx, dict) or idx.get("schema") not in SCHEMAS:
+    return _why("schema", schema=idx.get("schema") if isinstance(idx, dict) else None)
+  need, mine = (idx.get("requires") or {}).get("boltbeam"), installed()
+  return _why("requires", need=need, mine=mine) if need and (not mine or _ver(need) > _ver(mine)) else None
+
+
+def resolve(say:Callable[[str], None] = print, pin:str | None = None) -> dict[str, Any]:
+  """The commit of the mods repo `mods` reads (module doc, resolve): {commit, how, why, pin, words}; refused when a
+  forced commit is missing or unreadable. The pin is the floor: a commit is taken only from origin's default branch
+  past it; anything that fails (offline, no default branch, a branch without the pin) reads the pin and says why."""
+  r = pointer()["mods_repo"]
+  floor, env = r["pin"], r["pin_env"]
+  forced, by = (pin, "--pin") if pin else (os.environ.get(env), f"${env}")
+  w = ensure(say)
+  own = w == _own()
+  if forced:
+    if own and _git(w, "cat-file", "-e", f"{forced}^{{commit}}").returncode:
+      _fetch(w, forced)
+    full = _git(w, "rev-parse", "--verify", "-q", f"{forced}^{{commit}}").stdout.strip()
+    if not full:
+      raise Refused(f"{by} {forced}: no such commit in {w}; {_get()}")
+    if why := unreadable(idx := _index_at(w, full)):
+      raise Refused(f"{by} {full[:9]}: {why}")
+    return _at(full, "forced", _why("forced", by=by), idx)
+  if own and (err := _fetch(w)):
+    return _at(floor, "pin", _why("offline", error=err))
+  tip = _git(w, "rev-parse", "--verify", "-q", "refs/remotes/origin/HEAD").stdout.strip()
+  if not tip:
+    return _at(floor, "pin", _why("no_head", clone=w))
+  if _git(w, "merge-base", "--is-ancestor", floor, tip).returncode:
+    return _at(floor, "pin", _why("off_branch", tip=tip[:9]))
+  skipped = []  # only descendants of the pin: --ancestry-path keeps a first-parent commit older than a merge of the pin out
+  for c in _git(w, "rev-list", "--first-parent", "--ancestry-path", f"{floor}..{tip}").stdout.split():
+    if why := unreadable(idx := _index_at(w, c)):
+      skipped.append((c[:9], why))
+      continue
+    return _at(c, "walked back" if skipped else "newest compatible",
+               _why("newer", commit=skipped[0][0], why=skipped[0][1]) if skipped else _why("newest", tip=tip[:9]), idx)
+  return _at(floor, "pin", _why("newer", commit=skipped[0][0], why=skipped[0][1]) if skipped else _why("at_pin"))
+
+
+def _at(c:str, how:str, why:str, idx:dict[str, Any] | None = None) -> dict[str, Any]:
+  from boltbeam.report import plain
+  pin = pointer()["mods_repo"]["pin"]
+  return {"commit": c, "how": how, "why": why, "pin": pin, "index": None if c == pin else idx,
+          "words": plain.words()["mods"]["resolved" if how == "newest compatible" else "resolved_why"].format(commit=c[:9], how=how, why=why)}
+
+
+@contextlib.contextmanager
+def reading(at:dict[str, Any]):
+  """Every mod fact read from the resolved commit's index, every file at that commit, for the block (run)."""
+  _AT.clear()
+  _AT.update({k: at[k] for k in ("commit", "index") if at.get(k)}, record=record(at))
+  try:
+    yield
+  finally:
+    _AT.clear()
+
+
+def record(at:dict[str, Any]) -> dict[str, Any]:  # what a plan, a build and a run on it keep of the commit read
+  return {k: at[k] for k in ("commit", "how", "why", "pin", "words")}
+
+
 def at_pin(rel:str, what:str) -> str:
-  """A file of the mods repo at the pin: the one way the repo itself is read (a patch's text, a kernel manifest)."""
-  got = _git(_repo(), "show", f"{pointer()['mods_repo']['pin']}:{rel}")
+  """A file of the mods repo at the commit read (the pin unless resolve chose another): the one way the repo itself is
+  read (a patch's text, a kernel manifest)."""
+  got = _git(_repo(), "show", f"{commit()}:{rel}")
   if got.returncode:
-    raise Refused(f"{what}: {rel} is not readable at the pin in {_repo()}; {_get()} ({got.stderr.strip()[-120:]})")
+    raise Refused(f"{what}: {rel} is not readable at {commit()[:9]} in {_repo()}; {_get()} ({got.stderr.strip()[-120:]})")
   return got.stdout
 
 
 def pin_bytes(rel:str, what:str, sha256:str) -> bytes:
-  """A file of the mods repo at the pin as bytes (a kernel's cubin too), refused unless it hashes to the index's sha256."""
-  got = subprocess.run(["git", "-C", str(_repo()), "show", f"{pointer()['mods_repo']['pin']}:{rel}"], capture_output=True)
+  """A file of the mods repo at the commit read as bytes (a kernel's cubin too), refused unless it hashes to the index's sha256."""
+  got = subprocess.run(["git", "-C", str(_repo()), "show", f"{commit()}:{rel}"], capture_output=True)
   if got.returncode or hashlib.sha256(got.stdout).hexdigest() != sha256:
-    raise Refused(f"{what}: {rel} at the pin in {_repo()} is not the file the index names "
+    raise Refused(f"{what}: {rel} at {commit()[:9]} in {_repo()} is not the file the index names "
                   f"({got.stderr.decode(errors='replace').strip()[-120:] or 'sha256 differs'})")
   return got.stdout
 
@@ -151,6 +273,17 @@ def install_kernels(engine:str, folder:pathlib.Path, checks:dict[str, Any]) -> l
       (dest / name).write_bytes(pin_bytes(k["dir"] + name, k["id"], sha))
     out.append(str(dest / ip["manifest_file"]))
   return out
+
+
+def kernel_manifest(engine:str, checks:dict[str, Any], folder:pathlib.Path) -> str | None:
+  """The one manifest a run on the build gives the hook's switch: of the kernel rows installed, the one whose hook no
+  other installed row's hook runs on (a region manifest on the window hook, 19, covers the one-op manifest on 09 and
+  names its files beside it); None when that is not one row."""
+  rows, by = {k["id"]: k for k in index().get("kernels", [])}, {m["id"]: m for m in mods()}
+  got = [rows[c["id"]] for c in checks.get("kernels", []) if c.get("matches")]
+  under = {f"{h.rsplit('/', 1)[0]}/{d}" for h in {k["hook"] for k in got} for d in (by.get(h) or {}).get("depends_on", {}).get("run", [])}
+  top = [k for k in got if k["hook"] not in under]
+  return str(kernel_dir(folder, top[0]) / pointer()["install_paths"][engine]["manifest_file"]) if len(top) == 1 else None
 
 
 def head_of(where:pathlib.Path) -> str | None:
@@ -221,6 +354,12 @@ def evidence(mod_id:str) -> str | None:  # a mod version's benchmark (engine_pat
   return f"{pointer()['mods_repo']['url'].replace('https://', '')}/tree/master/{rel}" if rel else None
 
 
+def verified() -> set[str]:
+  """The mods whose version the index marks verified (a tested tree): the only ones applied; the rest are listed."""
+  ok = {(v["engine"], v["version"]) for v in index().get("versions", []) if (v.get("verified") or {}).get("state", "none") != "none"}
+  return {m["id"] for m in mods() if (m["engine"], m["version"]) in ok}
+
+
 def plan(engine:str, src:pathlib.Path, labels:tuple[str, ...] | None = None, only:list[str] | None = None,
          base:str | None = None) -> dict[str, Any]:
   if only and labels:
@@ -236,7 +375,11 @@ def plan(engine:str, src:pathlib.Path, labels:tuple[str, ...] | None = None, onl
   exact = [m for m in rows if m["base"].get("commit") == head]
   if unknown := sorted(set(only or []) - {m["id"] for m in exact or rows}):
     raise Refused(f"not a mod for this checkout's commit {head[:9]}: {', '.join(unknown)}")
-  pick = [m for m in (exact or rows) if (m["id"] in only if only else m["state"] == "series" and m["output"] in labels)]
+  ok = verified()
+  if bad := sorted(set(only or []) - ok):
+    from boltbeam.report import plain
+    raise Refused(plain.words()["mods"]["unverified_asked"].format(ids=", ".join(bad)))
+  pick = [m for m in (exact or rows) if m["id"] in ok and (m["id"] in only if only else m["state"] == "series" and m["output"] in labels)]
   ids, missing, conflicts = {m["id"] for m in pick}, {}, []
   with tempfile.TemporaryDirectory(prefix="boltbeam-mods-") as tmp:
     while True:  # to a fixed point: a mod whose apply dependency is not taken, or conflicted, is left out with it
@@ -259,7 +402,7 @@ def plan(engine:str, src:pathlib.Path, labels:tuple[str, ...] | None = None, onl
           "marks": {m["id"]: m["output"] if m["state"] == "series" else m["state"] for m in pick
                     if m["output"] != "identical" or m["state"] != "series"}, "missing_dependencies": missing,
           "not_carried": [] if taken else _git(src, "status", "--porcelain").stdout.splitlines(),
-          "not_chosen": [f"{m['id']} ({m['output']}, {m['state']})" for m in (exact or rows) if m["id"] not in ids]}
+          "not_chosen": [f"{m['id']} ({m['output']}, {m['state'] if m['id'] in ok else 'version not verified'})" for m in (exact or rows) if m["id"] not in ids]}
 
 
 def apply(engine:str, src:pathlib.Path, chosen:list[str], into:pathlib.Path, head:str, vendor, taken:bool = False) -> dict[str, Any]:
@@ -277,8 +420,9 @@ def apply(engine:str, src:pathlib.Path, chosen:list[str], into:pathlib.Path, hea
                                 {"cmake": [f.format(commit=head) for f in row.get("commit_cmake", [])]})
   checks = verify(engine, into, head, rows, taken)
   return {**build, "base_commit": head, "checks": checks, "kernel_manifests": install_kernels(engine, into, checks),
+          "kernel_manifest": kernel_manifest(engine, checks, into),
           "status": "applied, not verified; base unchecked (no .git)" if taken else "applied, not verified",
-          "mods": [{k: m[k] for k in ("id", "switch", "output")} for m in rows]}
+          "mods_commit": commit(), "mods": [{k: m.get(k) for k in ("id", "engine", "name", "switch", "output")} for m in rows]}
 
 
 def verify(engine:str, folder:pathlib.Path, head:str, rows:list[dict[str, Any]], taken:bool = False) -> dict[str, Any]:
@@ -296,7 +440,7 @@ def verify(engine:str, folder:pathlib.Path, head:str, rows:list[dict[str, Any]],
   ip = pointer()["install_paths"].get(engine) or {}
   if hook := next((m for m in rows if m["name"] == ip.get("mod")), None):
     out["kernels"] = [{**k, "loaded": f"{told}; {k['loaded']}" if told else k["loaded"]}
-                      for k in (_kernel(engine, k, got, hook, ip, folder) for k in index().get("kernels", []) if k["hook"] == hook["id"])]
+                      for k in (_kernel(engine, k, got, hook, ip, folder) for k in index().get("kernels", []) if k["hook"] in {m["id"] for m in rows})]
   return out
 
 
@@ -337,6 +481,8 @@ def arguments(p, hide_apply:bool = False) -> None:
   p.add_argument("--mod", action="append", help="exactly these mod ids (engine/version/name)")
   p.add_argument("--target", default=None, help="the chip the build is for (default: this machine's); the mods refuse a GPU backend they are not for")
   p.add_argument("--rebuild", action="store_true", help="with apply: build the chosen mods again even when that build is already on disk")
+  p.add_argument("--pin", help="read arkey_ie_mods at exactly this commit (also $BOLTBEAM_IE_MODS_PIN; default: the newest "
+                 "compatible commit past BoltBeam's pin, the pin when offline)")
 
 
 def only_engine(backend:str | None) -> str:
@@ -350,7 +496,8 @@ def only_engine(backend:str | None) -> str:
 
 def text(res:dict[str, Any]) -> str:
   """`boltbeam mods` in plain lines; --json prints the record itself."""
-  out = [f"mods {res.get('engine', '')}".rstrip() + f": {res['refused']}"] if res.get("refused") else []
+  out = [(res.get("mods_commit") or {}).get("words")] * bool((res.get("mods_commit") or {}).get("words"))
+  out += [f"mods {res.get('engine', '')}".rstrip() + f": {res['refused']}"] if res.get("refused") else []
   if "fits" in res:
     out.append(f"{res['engine']} source: {res['fits']}")
     qg = res.get("quality_gated") or {}
@@ -392,28 +539,46 @@ def not_here(engine:str, backend:str | None) -> str | None:
 
 def key_of(got:dict[str, Any]) -> str:
   """The modded build's key for a plan's chosen set: its base, -copy for a taken tree (so it never replaces a checked
-  checkout's build at the same base), and the chosen ids' hash."""
-  return f"{got['head'][:9]}{'-copy' * got['taken']}-mods-{hashlib.sha256(' '.join(sorted(got['chosen'])).encode()).hexdigest()[:8]}"
+  checkout's build at the same base), and a hash of the chosen ids with their patches' and kernels' sha256 (index), so
+  a commit that changes a patch under the same id builds anew and one that does not reuses the build."""
+  by, chosen = {m["id"]: m for m in mods()}, set(got["chosen"])
+  what = sorted([f"{i} {by.get(i, {}).get('sha256', '')}" for i in chosen] +
+                [f"{k['id']} {sorted(k.get('files', {}).items())}" for k in index().get("kernels", []) if k.get("hook") in chosen])
+  return f"{got['head'][:9]}{'-copy' * got['taken']}-mods-{hashlib.sha256(' '.join(what).encode()).hexdigest()[:8]}"
 
 
 def run(engine:str, *, src:str | None = None, labels:tuple[str, ...] | None = None, only:list[str] | None = None,
         base:str | None = None, apply_them:bool = False, backend:str | None = None, rebuild:bool = False,
-        say:Callable[[str], None] = print) -> dict[str, Any]:
-  """`screen mods`: the plan, with the chosen set's key and whether that build is already on disk; with apply_them, the
-  modded build, recorded (one already on disk is offered as it is unless rebuild)."""
-  from boltbeam.collectors import engine_builds as eb
-  from boltbeam.target import vendors
+        pin:str | None = None, say:Callable[[str], None] = print) -> dict[str, Any]:
+  """`screen mods`: the plan at the resolved commit (resolve; pin forces one), with its rows, the chosen set's key and
+  whether that build is already on disk; with apply_them, the modded build, recorded (one already on disk is offered
+  as it is unless rebuild). The commit read is said and kept as mods_commit."""
   if engine not in pointer()["apply"]:
     return {"refused": f"no applier is wired for {engine} mods yet (engine_patches.json apply)"}
   if why := not_here(engine, backend):
     return {"refused": why}
+  try:
+    at = resolve(say, pin)
+  except (Refused, OSError, subprocess.SubprocessError) as exc:
+    return {"refused": str(exc) if isinstance(exc, Refused) else f"{type(exc).__name__}: {exc}"}
+  say(at["words"])
+  with reading(at):
+    got = _run(engine, src=src, labels=labels, only=only, base=base, apply_them=apply_them, backend=backend, rebuild=rebuild, say=say)
+    if "fits" in got:
+      got["rows"] = rows(engine, got, only)
+  return {**got, "mods_commit": record(at)}
+
+
+def _run(engine:str, *, src:str | None, labels:tuple[str, ...] | None, only:list[str] | None, base:str | None,
+         apply_them:bool, backend:str | None, rebuild:bool, say:Callable[[str], None]) -> dict[str, Any]:
+  from boltbeam.collectors import engine_builds as eb
+  from boltbeam.target import vendors
   state = eb.load()
   cur = eb.entry(state, engine).get("current") or {}
   where = pathlib.Path(src).expanduser() if src else (pathlib.Path(cur["folder"]) / pointer()["apply"][engine]["source"] if cur.get("folder") else None)
   if where is None or not where.is_dir():
     return {"refused": f"no source tree for {engine}: pass --src (the source of the build you run)"}
   try:
-    ensure(say)
     got = plan(engine, where, labels, only, base)
     say(f"mods {engine}: {got['fits']}")
     if got["chosen"]:
@@ -425,11 +590,14 @@ def run(engine:str, *, src:str | None = None, labels:tuple[str, ...] | None = No
     if not got["chosen"]:
       return {**got, "refused": "no mod to apply on this commit with the labels allowed"}
     if have and not rebuild:
+      if (r := have.get("mods_resolved") or {}).get("commit"):  # the same patches by key; say the commit it was made from
+        say(_why("built_from", commit=r["commit"][:9], how=r.get("how")))
       say(f"mods {engine}: these mods are already built as {key} in {have['folder']}; nothing was rebuilt (--rebuild builds it again)")
       return {**got, "build": have, "reused": True}
     into = pathlib.Path(state.get("root") or eb.state_file().with_name("engines")).expanduser() / engine / key
     say(f"mods {engine}: {len(got['chosen'])} mods onto a clone of {where} at {got['head'][:9]}, built in {into}")
-    build = {**apply(engine, where, got["chosen"], into, got["head"], vendors.for_backend(backend), got["taken"]), "key": key}
+    build = {**apply(engine, where, got["chosen"], into, got["head"], vendors.for_backend(backend), got["taken"]), "key": key,
+             "mods_resolved": _AT.get("record")}
     for line in [f"commit {build['checks']['commit']}", *(f"kernel {x['id']}: {x['loaded']}" for x in build["checks"].get("kernels", []))]:
       say(f"mods {engine}: {line}")
   except (Refused, RuntimeError, OSError, subprocess.SubprocessError) as exc:  # engine_update.CannotInstall is a RuntimeError
@@ -463,12 +631,14 @@ def run_on(m:dict[str, Any]) -> str | None:
 
 def run_env(build:dict[str, Any]) -> dict[str, str]:
   """The switches a run on this modded build sets: each of its mods' (index rows by id) that run_on can set, and the
-  kernel hook's (install_paths mod) set to the one kernel manifest installed with the build (install_kernels)."""
-  by = {m["id"]: m for m in mods()}
-  out = {switch(m): on for b in build.get("mods") or [] if (m := by.get(b["id"])) and (on := run_on(m))}
-  hook = next((by[b["id"]] for b in build.get("mods") or [] if b["id"] in by and by[b["id"]]["name"] ==
-               (pointer()["install_paths"].get(by[b["id"]]["engine"]) or {}).get("mod")), None)
-  if hook and switch(hook) and len(got := [p for p in build.get("kernel_manifests") or [] if os.path.isfile(p)]) == 1:
+  kernel hook's (install_paths mod) set to the manifest the build picked (kernel_manifest), else its one manifest."""
+  by = {m["id"]: m for m in mods()}  # the build's own record wins: it may come from a commit past the pin (resolve)
+  rows = [{**by.get(b["id"], {}), **{k: v for k, v in b.items() if v is not None}} for b in build.get("mods") or []]
+  plan = pointer().get("plan_only") or {}  # set by a plan that spends what they free, never by default
+  out = {switch(m): on for m in rows if (on := run_on(m)) and f"{m.get('engine')}/{m.get('name')}" not in plan}
+  hook = next((m for m in rows if m.get("name") and m["name"] == (pointer()["install_paths"].get(m.get("engine")) or {}).get("mod")), None)
+  got = [p for p in [build.get("kernel_manifest")] if p and os.path.isfile(p)] or [p for p in build.get("kernel_manifests") or [] if os.path.isfile(p)]
+  if hook and switch(hook) and len(got) == 1:  # the build's pick (kernel_manifest), else its one manifest
     out[switch(hook)] = got[0]
   return out
 
@@ -490,12 +660,12 @@ def rows(engine:str, got:dict[str, Any], only:list[str] | None = None) -> list[d
   in words, and chosen or not with why (data/plain_words.json mods). only: the --mod ids asked, when given."""
   from boltbeam.report import plain
   w = plain.words()["mods"]
-  ids = {*got["chosen"], *got["conflicts"], *got["missing_dependencies"], *(n.split(" ")[0] for n in got["not_chosen"])}
+  ids, ok = {*got["chosen"], *got["conflicts"], *got["missing_dependencies"], *(n.split(" ")[0] for n in got["not_chosen"])}, verified()
   out = []
   for m in mods(engine):
     if m["id"] not in ids:
       continue
-    sw, on = m.get("switch") or {}, run_on(m)
+    sw, on, plan = m.get("switch") or {}, run_on(m), f"{engine}/{m['name']}" in (pointer().get("plan_only") or {})
     hooked = m["name"] == (pointer()["install_paths"].get(engine) or {}).get("mod")
     if m["id"] in got["chosen"] and m["id"] in (got.get("quality_gated") or {}):
       why = w["chosen_gated"].format(evidence=got["quality_gated"][m["id"]][1] or w["no_evidence"])
@@ -505,18 +675,21 @@ def rows(engine:str, got:dict[str, Any], only:list[str] | None = None) -> list[d
       why = w["conflict"].format(commit=got["head"][:9])
     elif m["id"] in got["missing_dependencies"]:
       why = w["needs"].format(needs=", ".join(got["missing_dependencies"][m["id"]]))
+    elif m["id"] not in ok:
+      why = w["unverified"].format(engine=m["engine"], version=m["version"])
     elif only and m["id"] not in only:
       why = w["not_asked"]
     elif m["state"] != "series":
       why = w["parked"].format(state=m["state"])
     else:
       why = w["label"].format(label=m["output"], labels=" or ".join(got.get("labels") or default_labels()))
-    files, title = m.get("files") or [], (pointer().get("titles") or {}).get(m["id"])
+    files, title = m.get("files") or [], m.get("title")
     out.append({"id": m["id"], "name": m["name"], "chosen": m["id"] in got["chosen"], "why": why,
                 "about": w["about_titled" if title else "about"].format(title=title, files=", ".join(files) if len(files) <= 2 else f"{len(files)} files ({', '.join(files[:2])}, …)",
                                            added=m["lines"]["added"], removed=m["lines"]["removed"]),
-                "switch": f"{sw['name']}={on}" if on else sw.get("name"),
-                "switch_why": m.get("switch_null_why") if not sw else None if on else w["switch_manifest"] if hooked else
+                "switch": f"{sw['name']}={on}" if on and not plan else sw.get("name"),
+                "switch_why": m.get("switch_null_why") if not sw else w["switch_plan"].format(switch=sw["name"], on=on) if plan
+                              else None if on else w["switch_manifest"] if hooked else
                               w["switch_default_on"] if sw.get("default") == "on" else w["switch_unset"].format(on=sw.get("on")),
                 "output": m["output"], "output_words": w["output"].get(m["output"], m["output"])})
   return out

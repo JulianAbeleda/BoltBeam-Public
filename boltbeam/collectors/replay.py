@@ -24,6 +24,7 @@ band. One decode capture at the deepest turn. The ceilings and the table are wor
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import pathlib
@@ -66,14 +67,24 @@ def _post(url:str, body:dict[str, Any], timeout:float = 600.0) -> dict[str, Any]
 
 def stream_chat(url:str, messages:list[dict[str, str]], reply:int, **extra:Any) -> dict[str, Any]:
   """One turn streamed through the OpenAI chat endpoint: the reply text, the timings and usage the server put on
-  its chunks, and the client's clock (monotonic) at send, first token and last token."""
+  its chunks, and the client's clock (monotonic) at send, at the last request byte sent (t_sent), first token and
+  last token."""
+  import http.client
+  import urllib.parse
   body = json.dumps({"messages": messages, "max_tokens": reply, **REQUEST, **extra}).encode()
-  req = urllib.request.Request(url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"})
   from boltbeam.collectors.replay_semantics import StreamTokens
   tokens = StreamTokens() if extra.get("return_token_ids") else None
   text, timings, usage, first = [], {}, {}, None
-  sent = time.monotonic()
-  with urllib.request.urlopen(req, timeout=3600) as resp:
+  where = urllib.parse.urlsplit(url)
+  if where.scheme != "http" or where.path not in ("", "/"):
+    raise ValueError(f"a replay talks plain HTTP to a server's root: {url}")
+  with contextlib.closing(http.client.HTTPConnection(where.hostname, where.port, timeout=3600)) as conn:
+    sent = time.monotonic()
+    conn.request("POST", "/v1/chat/completions", body, {"Content-Type": "application/json"})
+    t_sent = time.monotonic()
+    resp = conn.getresponse()
+    if resp.status != 200:
+      raise RuntimeError(f"HTTP {resp.status}: {resp.read().decode(errors='replace')[-300:]}")
     for raw in resp:
       line = raw.decode(errors="replace").strip()
       if not line.startswith("data:") or line == "data: [DONE]":
@@ -88,7 +99,7 @@ def stream_chat(url:str, messages:list[dict[str, str]], reply:int, **extra:Any) 
       timings = chunk.get("timings") or timings
       usage = chunk.get("usage") or usage
   last = time.monotonic()
-  return {"text": "".join(text), "timings": timings, "usage": usage, "t_send": sent, "t_first": first or last, "t_last": last,
+  return {"text": "".join(text), "timings": timings, "usage": usage, "t_send": sent, "t_sent": t_sent, "t_first": first or last, "t_last": last,
           **({"response":tokens.finish(usage)} if tokens is not None else {})}
 
 

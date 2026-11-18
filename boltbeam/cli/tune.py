@@ -14,7 +14,14 @@ def cmd_tune(args) -> int:
     budget = tune.time_budget(args.time_budget, args.prompt) if args.time_budget else None
     reply = tune.reply_budget(args.replies) if args.replies else None
     kept = {"machine_facts": machine_facts(args.facts_root)} if args.facts_root else {}
-    res = tune.tune(args.model, args.engine, args.build, prompt=args.prompt, context=args.context, measure=args.measure,
+    if args.gpu_free_mib:  # a recorded reading of the GPU's free memory with nothing running (the GPU may be busy now)
+      kept["gpu_free"] = args.gpu_free_mib * 2**20
+    most = args.context == "max"
+    if (most and not args.measured) or not (most or args.context is None or args.context.isdigit()):
+      raise Refused(f"--context takes a token count, or max with --measured; got {args.context}")
+    context = None if most or args.context is None else int(args.context)
+    res = tune.tune(args.model, args.engine, args.build, prompt=args.prompt, context=context, measure=args.measure,
+                    spend=args.measured, spend_max=most,
                     knobs_only=args.knob, port=args.port, out=pathlib.Path(args.out).expanduser() if args.out else None,
                     extra=args.flags.split() if args.flags else None, experts_in_ram=args.experts_in_ram,
                     workload=args.workload, reply=reply, draft=args.draft, **kept, **({"time_budget": budget} if budget else {}))
@@ -42,7 +49,12 @@ def register(sub) -> None:
                  "doctor and screen find it)")
   p.add_argument("--experts-in-ram", help="all, or the first N layers' experts kept in host RAM (default: the offload plan's)")
   p.add_argument("--prompt", type=int, default=tune.PROMPT, help="the prompt length the setup is stated and swept at")
-  p.add_argument("--context", type=int, help=f"the context the setup must hold (default: the prompt plus {tune.REPLY_TOKENS} tokens for the reply)")
+  p.add_argument("--context", help=f"the context the setup must hold (default: the prompt plus {tune.REPLY_TOKENS} tokens for the reply); "
+                 "max, with --measured: the most any way of spending the GPU's memory holds")
+  p.add_argument("--measured", action="append", help="measured runs for the spend fit: boltbeam session-ab records or measured-row files "
+                 "(boltbeam.spend_measured.v1), a file or a folder (repeatable); ranks the ways to spend the GPU's memory at --context")
+  p.add_argument("--gpu-free-mib", type=float, help="the GPU's free memory to fit against, in MiB, as recorded with nothing running "
+                 "(default: read now)")
   p.add_argument("--replies", help="measured replies (a JSON line per reply: tokens, finish): the room for the reply is the length that holds 95%% "
                  "of them, instead of the unmeasured default (not with --context)")
   p.add_argument("--workload", choices=tune.WORKLOADS, default="chat",
