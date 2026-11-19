@@ -635,17 +635,20 @@ def budget(ks:list[dict[str, Any]], ref:dict[str, Any], f:dict[str, Any], allowe
   session adds after load: the fall below the after-load reading measured over the run's replies, else SESSION_MARGIN
   (an estimate). Missing when a figure is unknown."""
   after = mem["loaded"] if mem else evaluate("gpu_after_load_bytes", fit_facts(ks, ref, f, allowed, at))  # the estimate at ref's values
-  m = session_margin(mem)
+  m = session_margin(mem, f.get("session_fall"))
   held, margin, growth = sum(costs(ks, ref, f, allowed, at).values()), m["value"], m["growth"]
-  return {"bytes": after + held - margin, "after_load": after, "held": held, "margin": margin, "growth": growth, "measured": bool(mem)}
+  return {"bytes": after + held - margin, "after_load": after, "held": held, "margin": margin, "growth": growth, "measured": bool(mem), "ref": m.get("ref")}
 
 
-def session_margin(mem:dict[str, Any] | None) -> dict[str, Any]:
+def session_margin(mem:dict[str, Any] | None, fall:dict[str, Any] | None = None) -> dict[str, Any]:
   """The one margin rule for what a session adds after load: the fall from the free memory at load to the lowest free
-  over a run of the setup (mem {loaded, lowest}, bytes: measured), else SESSION_MARGIN (an estimate)."""
+  over a run of the setup (mem {loaded, lowest}, bytes: measured), else the largest such fall measured over load probes
+  of this model at this context (fall {bytes, where}: spend.probe_fall), else SESSION_MARGIN (an estimate)."""
   if mem:
     g = max(0, mem["loaded"] - mem["lowest"])
     return {"value": g, "growth": g, "label": "measured", "why": "the fall from free at load to the lowest free over a run of the setup"}
+  if fall:
+    return {"value": fall["bytes"], "growth": fall["bytes"], "label": "measured", "why": fall["where"], "ref": fall["where"]}
   return {"value": SESSION_MARGIN, "growth": None, "label": "estimate", "why": "SESSION_MARGIN: no run of the setup measured; test: one session's device samples"}
 
 
@@ -749,7 +752,7 @@ def fit_words(plan:dict[str, Any] | None) -> str | None:
     return plan and w["unknown" + one].format(rows=rows, what=plan["why"])
   b, pick = plan["budget"], plan["pick"]
   ref = next((c["label"] for c in plan["combos"] if c["values"] == plan["here"]), "the setup")
-  margin = (w["margin_estimate"] if b["growth"] is None else w["margin_measured"]).format(growth=(b["growth"] or 0) / GiB, ref=ref)
+  margin = (w["margin_estimate"] if b["growth"] is None else w["margin_probes"] if b.get("ref") else w["margin_measured"]).format(growth=(b["growth"] or 0) / GiB, ref=b.get("ref") or ref)
   said = w["lead" + one].format(rows=rows) + w["budget"].format( after=b["after_load"] / GiB, how=w["measured"].format(ref=ref) if b["measured"] else w["estimated"], held=b["held"] / GiB,
                             margin=b["margin"] / GiB, margin_how=margin, room=b["bytes"] / GiB)
   why: dict[str, list[str]] = {}
@@ -1043,6 +1046,30 @@ def sweep(knob:dict[str, Any], run:Callable[..., float], rows:list[dict[str, Any
   return {"value": answer, "points": out, "prompt": prompt_n, "tie_pct": s["tie_pct"], "stop": s["stop"], "says": says}
 
 
+def fall_of(engine:str, tab:dict[str, Any], model:str, context:int | None, paths:list[str], ad, f:dict[str, Any]) -> dict[str, Any] | None:
+  """What a session takes below the free memory at load, from the load probes of this model at this context and how much
+  lower a full session went than a probe at the same setup (spend.probe_fall, spend.probe_gap)."""
+  from boltbeam.workflow import spend as sp
+  rows, recs = sp.rows_of(engine, tab), sp.read_records(paths)
+  try:
+    gap = sp.plan_gap(rows, recs, model, f, ad, fact_names(engine, tab))
+  except Exception:  # noqa: BLE001  a setup's facts unread: the probes' own fall, the gap unknown
+    gap = 0.0
+  return sp.probe_fall(recs, model, context, rows, gap)
+
+
+def kv_of(engine:str, tab:dict[str, Any], model:str, paths:list[str]) -> dict[str, Any]:
+  """The KV type the measured runs of this model held their context at (the spend rows' argv fact spend.kv_type), as the
+  adapter's options (kv, kv_from, words); several types: none taken, a note asks for one (--kv); none set: {}."""
+  from boltbeam.workflow import spend as sp
+  got = sp.recorded(sp.rows_of(engine, tab), sp.read_records(paths), model, "spend.kv_type")
+  w = _words()["tune"]
+  if len(got) == 1:
+    (kv, where), = got.items()
+    return {"kv": kv, "kv_from": w["kv_measured"].format(where=", ".join(where))}
+  return {"kv_ask": w["kv_ask"].format(types="; ".join(f"{k} ({', '.join(v)})" for k, v in got.items()))} if got else {}
+
+
 def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT, context:int | None = None, measure:bool = False,
          knobs_only:list[str] | None = None, port:int = 0, out:pathlib.Path | None = None, extra:list[str] | None = None,
          experts_in_ram:str | None = None, run:Callable[..., float] | None = None, tab:dict[str, Any] | None = None,
@@ -1067,8 +1094,12 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
   if not spend and context is not None and sp.rows_of(engine, tab):  # stored measured runs of this model, this GPU's size and this build's switches
     spend = sp.defaults(model, getattr(ad, "gpu_total", lambda: None), set(feats["features"])) or None
   f = host_facts(memory=memory, l3=l3, prompt=prompt, context=context, workload=workload, link=link, reply=reply, cpu=cpu)
+  if spend and options.get("kv") is None and (kv := kv_of(engine, tab, model, spend)):  # the measured runs' KV type, not the engine's default
+    options = {**options, **kv}
   got = ad.facts(model, f, feats, {"experts_in_ram": experts_in_ram, "extra": extra, "spend": bool(spend), **options})
   f = {**f, **got, "model_file": pathlib.Path(model).name, "sources": {**f["sources"], **got.get("sources", {}), "model_file": "the model given"}}
+  if spend and sp.rows_of(engine, tab) and (fall := fall_of(engine, tab, model, context, spend, ad, f)):  # what a session adds after load, measured on this model
+    f["session_fall"] = fall
   if warn := speed_up.usable(model):  # a Speed up copy waiting on its task eval: tuned, and said; a failed one refused
     f["notes"] = [*f.get("notes", []), warn]
   first: dict[str, Any] = {}
@@ -1112,13 +1143,17 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
     say("pipeline done")
     rows, plan = settle(f, feats, engine, tab, measured, plan=plan)
     (out / "tune.json").write_text(json.dumps({"engine": engine, "rows": rows, "measured": measured, "memory_fit": plan, "facts": f}, indent=1, default=str))
-  shown = mods.with_switches(ad.render(values_of(rows), f, feats, model, extra), mods.modded(engine, feats.get("build")))  # as a run on it sets them
+  md = mods.found(engine, feats.get("build"), feats["features"])  # its build record, else its mods' markers in its files
+  shown = mods.with_switches(ad.render(values_of(rows), f, feats, model, extra), md)  # as a run on it sets them
   spent = None
   if spend:  # the spend fit: the ways to spend the GPU's memory at the context, ranked on the measured runs given (workflow/spend.py)
     spent = {"why": "no_facts", "what": f["spend_why"]} if f.get("spend_why") else sp.plan(f, engine, tab, model=model, records=sp.read_records(spend), context=None if spend_max else f["context_tokens"],
-                    features=set(feats["features"]), ad=ad, allowed=fact_names(engine, tab))
+                    features=set(feats["features"]), ad=ad, allowed=fact_names(engine, tab), local=[options["draft"]] if options.get("draft") else None)
+  if (sw := (spent or {}).get("margin", {}).get("switch")) and "argv" in shown:  # a bound headroom holds only with its switch set
+    env = {**(shown.get("env") or {}), **sw}
+    shown = {**shown, "env": env, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), *map(str, shown["argv"])])}
   return {"schema": "boltbeam.tune.v1", "spend": spent, "engine": engine, "model": model, "build": {**{k: v for k, v in feats.items() if k != "features"},
-          "groups": groups_in(engine, feats, tab), "feature_count": len(feats["features"]), "modded": mods.modded(engine, feats.get("build")),
+          "groups": groups_in(engine, feats, tab), "feature_count": len(feats["features"]), "modded": md, "mods_known": len(mods.mods(engine)),
           "series": sorted(m["id"] for m in mods.mods(engine) if m.get("state") == "series" and m.get("marker") in feats["features"])}, "facts": f, "rows": rows, **shown,
           "measured": measured, "memory_fit": plan, "out": str(out) if out else None}
 
@@ -1155,13 +1190,17 @@ def text(res:dict[str, Any], tab:dict[str, Any] | None = None) -> str:
   w, b, f, rows, eng = words()["tune"], res["build"], res["facts"], res["rows"], tab["engines"][res["engine"]]
   have = [k for k, v in b["groups"].items() if v]
   ver = f", {b['version']}" if b.get("version") else ""
-  md = b.get("modded")  # a modded build BoltBeam built is named as one; its mods are the line under it, not "none"
-  lines = [w["build"].format(engine=res["engine"], path=short_path(b["build"]), backend=(b.get("backend") or "?").upper(), version=ver,
-                             fork=w["modded_build"].format(key=md.get("key")) if md else b.get("fork") or w["unlisted"])]
-  if eng["groups"] and (have or not md):
-    lines[-1] += " " + w["groups"].format(what=eng["groups_words"], groups=", ".join(have) if have else w["none"])
+  md = b.get("modded")  # a modded build (its record, or its mods' markers) is named as one; its mods are the line under it, not "none"
+  fork = (w["modded_found"] if md.get("found") else w["modded_build"].format(key=md.get("key"))) if md else b.get("fork") or w["unlisted"]
+  lines = [w["build"].format(engine=res["engine"], path=short_path(b["build"]), backend=(b.get("backend") or "?").upper(), version=ver, fork=fork)]
+  if eng["groups"] and have:
+    lines[-1] += " " + w["groups"].format(what=eng["groups_words"], groups=", ".join(have))
   if md:
     lines.append(w["modded_unverified"].format(status=md.get("status"), mods=", ".join(m["id"] for m in md.get("mods", []))))
+    if md.get("other"):
+      lines.append(w["modded_other"].format(mods=", ".join(md["other"])))
+  elif b.get("mods_known"):  # no record and no marker: said, never read silently as a stock build
+    lines.append(w["no_mods_found"].format(n=b["mods_known"]))
   lines += list(b.get("notes") or []) + list(f.get("notes") or [])
   lines.append(w["host"].format(total=f["ram_total_bytes"] / GiB, usable=f["usable_ram_bytes"] / GiB,
                                 avail="unknown" if f["ram_available_bytes"] is None else f"{f['ram_available_bytes'] / GiB:.1f}",

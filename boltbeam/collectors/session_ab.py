@@ -219,7 +219,8 @@ def gate(source, backend:str | None, cap_w:float | None, bound_s:float | None, *
     if s.get("temp_c") is not None:
       temps.append((clock(), float(s["temp_c"])))
     m = cpu_mark(None)
-    idle.append(foreign_cores(mark, m))
+    if clock() - t0 >= GATE_INTERVAL_S / 2:  # a sample spans a sleep: the first one spans only this loop's reads (ms)
+      idle.append(foreign_cores(mark, m))
     mark = m
     off_cap = cap_w is not None and limit is not None and abs(limit - cap_w) >= LIMIT_STEP_W
     still = cooling(temps) if source and temps else False

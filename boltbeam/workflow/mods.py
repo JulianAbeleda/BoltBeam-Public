@@ -340,8 +340,10 @@ def _reset(copy:pathlib.Path, src:pathlib.Path, head:str, skip:tuple[str, ...] |
 
 
 def _series(copy:pathlib.Path, rows:list[dict[str, Any]]) -> list[str]:
-  """Apply in order, each on the ones before it that applied; returns the ids that did not apply."""
-  return [m["id"] for m in rows if _git(copy, "apply", "-", stdin=at_pin(m["patch"], m["id"])).returncode]
+  """Apply in order, each on the ones before it that applied; returns the ids that did not apply. Rows that name one
+  patch are features of one module (the index's `module`): the patch is applied once and stands or fails for all."""
+  bad = {p: _git(copy, "apply", "-", stdin=at_pin(p, i)).returncode for p, i in {m["patch"]: m["id"] for m in rows}.items()}
+  return [m["id"] for m in rows if bad[m["patch"]]]
 
 
 def default_labels() -> tuple[str, ...]:  # identical and quality-gated: the series the benchmarks measured
@@ -527,6 +529,29 @@ def modded(engine:str, path:str | None) -> dict[str, Any] | None:
                if real and real in {os.path.realpath(p) for p in (b.get("paths") or {}).values()}), None)
 
 
+def found(engine:str, path:str | None, features) -> dict[str, Any] | None:
+  """The mods a build has, from where it can be read: its build record (modded: a build `screen mods --apply` made, at any
+  path the record names), else each mod's marker (index) among the names read from the build's files (features), as a
+  record of the same shape marked found "markers" (the version with the most markers; the series' default labels are its
+  mods, as an apply would choose; the others are named). None: no record and no marker, which is not proof of a stock
+  build (a marker renamed by a later mods version reads as absent), so a reader says it and how to fix it."""
+  from boltbeam.report import plain
+  if rec := modded(engine, path):
+    return rec
+  names = set(features or ())
+  hit = [m for m in mods(engine) if m.get("marker") and m["marker"] in names]
+  if not any(re.fullmatch(r"[A-Z][A-Z0-9_]+", m["marker"]) for m in hit):  # a message alone may be the engine's own text: a switch name is the mod's
+    return None
+  if not hit:
+    return None
+  ver = max({m.get("version") for m in hit}, key=lambda v: (sum(m.get("version") == v for m in hit), _ver(v)))
+  rows = [m for m in hit if m.get("version") == ver]
+  ok = default_labels()
+  return {"key": None, "found": "markers", "version": ver, "status": plain.words()["mods"]["found_markers"].format(n=len(rows), total=sum(m.get("version") == ver for m in mods(engine))),
+          "mods": [{k: m.get(k) for k in ("id", "engine", "name", "switch", "output")} for m in rows if m.get("output") in ok],
+          "other": [m["id"] for m in rows if m.get("output") not in ok]}
+
+
 def not_here(engine:str, backend:str | None) -> str | None:
   """Why the engine's mods do nothing on this machine's GPU backend (the apply row's backends), or None: they apply, or
   the backend is not known."""
@@ -685,7 +710,7 @@ def rows(engine:str, got:dict[str, Any], only:list[str] | None = None) -> list[d
       why = w["label"].format(label=m["output"], labels=" or ".join(got.get("labels") or default_labels()))
     files, title = m.get("files") or [], m.get("title")
     out.append({"id": m["id"], "name": m["name"], "chosen": m["id"] in got["chosen"], "why": why,
-                "about": w["about_titled" if title else "about"].format(title=title, files=", ".join(files) if len(files) <= 2 else f"{len(files)} files ({', '.join(files[:2])}, …)",
+                "about": w["about_module" if m.get("module") and title else "about_titled" if title else "about"].format(title=title, module=m.get("module"), files=", ".join(files) if len(files) <= 2 else f"{len(files)} files ({', '.join(files[:2])}, …)",
                                            added=m["lines"]["added"], removed=m["lines"]["removed"]),
                 "switch": f"{sw['name']}={on}" if on and not plan else sw.get("name"),
                 "switch_why": m.get("switch_null_why") if not sw else w["switch_plan"].format(switch=sw["name"], on=on) if plan

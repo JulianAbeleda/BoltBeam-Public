@@ -261,6 +261,26 @@ def span_from_monotonic(tl:Timeline, start_ns:int, end_ns:int) -> tuple[int, int
   return start_ns - tl.monotonic_origin_ns, end_ns - tl.monotonic_origin_ns
 
 
+def turn_windows(tl:Timeline, turns:list[dict[str, Any]]) -> list[dict[str, tuple[int, int]] | None]:
+  """Each traced turn's prefill and decode windows in trace ns. A turn is {span_ns (the driver's, on the host's monotonic
+  clock), prompt_ms, decode_ms (the engine's own timings)}: its decode ends at the end of the last GPU operation (kernel
+  or copy) that starts inside the span and began decode_ms before; its prefill is the prompt_ms before that. The request's
+  HTTP and template time before the prefill is in neither. None for a turn the trace cannot place (no clock origin, no
+  GPU operation in its span)."""
+  ops = sorted([(s, e) for s, e, *_ in tl.kernels] + [(c["start_ns"], c["end_ns"]) for c in tl.copies])
+  starts, out = [s for s, _ in ops], []
+  for t in turns:
+    span = span_from_monotonic(tl, *t["span_ns"])
+    i0, i1 = (bisect.bisect_left(starts, x) for x in span) if span else (0, 0)
+    if i1 <= i0:
+      out.append(None)
+      continue
+    last = max(e for _, e in ops[i0:i1])
+    d0 = last - int(t["decode_ms"] * 1e6)
+    out.append({"prefill": (d0 - int(t["prompt_ms"] * 1e6), d0), "decode": (d0, last)})
+  return out
+
+
 # --- the parts ----------------------------------------------------------------------------------------------------
 
 def kernel_families(kernels:list[tuple[int, int, str, Any]], rules:list[Rule],
@@ -475,16 +495,57 @@ def decode_steps(tokens:int, accepted:int, row:dict[str, Any] | None) -> int:
   return tokens - (row or {}).get("tokens_from_prompt", 0) - accepted
 
 
-def forwards(tl:Timeline, fams:list[str], rule:dict[str, Any]) -> list[dict[str, Any]]:
+def shape_rows(engine:str | list[str] | None, target_id:str | None, extra:list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+  """The engine's `shapes` rows (kernel_families.json) along its `also` chain, each with the chip's by_target facts merged
+  in, after `extra` rows (an installed kernel manifest's, kernel_ledger.manifest_rows): what a matmul launch computes."""
+  t, todo, seen = _table("kernel_families.json")["engines"], list(engine_keys(engine)), set()
+  out = [{**r, "re": re.compile(r["pattern"])} for r in extra or []]
+  while todo:
+    if (key := todo.pop(0)) in seen or key not in t:
+      continue
+    seen.add(key)
+    out += [{**r, **(r.get("by_target") or {}).get(target_id or "", {}), "re": re.compile(r["pattern"])} for r in t[key].get("shapes") or []]
+    todo += t[key].get("also") or []
+  return out
+
+
+def shape_of(name:str, rows:list[dict[str, Any]]) -> dict[str, Any] | None:
+  return next((r for r in rows if r["re"].search(name)), None)
+
+
+def per_columns(rpb:Any, cols:int) -> list[int]:
+  """A shapes row's rows per block at this column count (a list, or keyed "1" and "more")."""
+  return rpb if isinstance(rpb, list) else rpb.get("1" if cols == 1 else "more", [])
+
+
+def out_rows(row:dict[str, Any], grid_x:int, cols:int) -> set[int]:
+  """The output rows a launch of this shapes row computes: its own `n` (a kernel built for one shape) or gridX x rows per block."""
+  return set(row["n"]) if row.get("n") else {grid_x * b for b in per_columns(row.get("rows_per_block", ()), cols)}
+
+
+def output_layers(names_grids:list[tuple[str, Any]], rows:list[dict[str, Any]], vocab:int) -> list[int]:
+  """The indexes of the launches that compute the output layer: a matmul (its shapes row) whose output rows, at one column
+  or more, are the vocabulary's. Every forward of the model and of a draft head ends with one."""
+  return [i for i, (n, g) in enumerate(names_grids) if g and (r := shape_of(n, rows)) and r["op"] == "matmul"
+          and vocab in {x for c in (1, 2) for x in out_rows(r, g[0], c)}]
+
+
+def forwards(tl:Timeline, fams:list[str], rule:dict[str, Any], heads:list[int] | None = None) -> list[dict[str, Any]]:
   """The trace's forwards in order: the kernels between two reads of a result (copies of rule["result_read"]; no other
-  copy cuts one); a run of kernels with no per-layer launch (a sampler) joins the forward before it, or the one after it
-  when it comes first. Each: its kernel indexes, start, end (the last result read before the next forward, else its last
-  kernel) and its per-layer launches."""
+  copy cuts one), or, with heads (output_layers: the header's vocabulary known), between two output-layer launches, so
+  a read inside a forward (an expert cache's lookup) does not split it; a run of kernels with no per-layer launch (a
+  sampler) joins the forward before it, or the one after it when it comes first; with heads, so do the launches after the
+  last output layer (a catch-up pass the window ends with). Each: its kernel indexes, start, end
+  (the last result read before the next forward, else its last kernel) and its per-layer launches."""
   reads = sorted(c["end_ns"] for c in tl.copies if c["kind"] == rule["result_read"])
+  cuts = sorted(tl.kernels[j][1] for j in heads) if heads else reads
   layer = set(rule["layer_families"])
   groups: dict[int, list[int]] = {}
   for j in sorted(range(len(tl.kernels)), key=lambda j: tl.kernels[j][:2]):
-    groups.setdefault(bisect.bisect_right(reads, tl.kernels[j][0]), []).append(j)
+    groups.setdefault(bisect.bisect_right(cuts, tl.kernels[j][0]), []).append(j)
+  tail = heads and len(cuts) in groups and len(groups) > 1
+  if tail:  # launches after the last output layer (a last catch-up) end no forward
+    groups[max(g for g in groups if g < len(cuts))] += groups.pop(len(cuts))
   segs: list[dict[str, Any]] = []
   for _, ks in sorted(groups.items()):
     n = sum(fams[j] in layer for j in ks)
@@ -494,6 +555,8 @@ def forwards(tl:Timeline, fams:list[str], rule:dict[str, Any]) -> list[dict[str,
       segs[-1].update(kernels=segs[-1]["kernels"] + ks, layers=n)
     else:
       segs.append({"kernels": ks, "layers": n})
+  if tail and segs:
+    segs[-1]["tail"] = True  # it holds a pass after its output layer: classify counts it as a catch-up
   for i, s in enumerate(segs):
     s["start"] = min(tl.kernels[j][0] for j in s["kernels"])
     last = max(tl.kernels[j][1] for j in s["kernels"])
@@ -503,7 +566,7 @@ def forwards(tl:Timeline, fams:list[str], rule:dict[str, Any]) -> list[dict[str,
   return segs
 
 
-def classify(segs:list[dict[str, Any]], mains:int, catchups:int = 0, drafted:tuple[int, int] = (0, 0)) -> bool:
+def classify(segs:list[dict[str, Any]], mains:int, catchups:int = 0, drafted:tuple[int, int] = (0, 0), at_heads:bool = False) -> bool:
   """Mark each forward main (the whole model) or draft from the engine's counts: `mains` forwards of the model,
   `catchups` catch-up passes of the draft head (one per model forward, when the engine runs them) and between drafted[0]
   and drafted[1] draft passes (the drafted tokens, and at most the passes the engine runs without counting them). The
@@ -526,12 +589,13 @@ def classify(segs:list[dict[str, Any]], mains:int, catchups:int = 0, drafted:tup
     if not low or len(segs) - len(low) != mains:
       continue
     shapes = sorted({x["layers"] for x in low}, key=lambda n: -freq[n])
-    for d in shapes:
-      for u in (shapes if catchups else [None]):
+    tails = sum(1 for x in segs if x.get("tail") and x["layers"] >= c)  # a catch-up after a main forward's output layer
+    for d in shapes:  # a catch-up's shape is a forward's own, or a forward's less one draft pass (cut at output layers, they share one)
+      for u in (list(dict.fromkeys([*shapes, *((n - d for n in shapes if n > d) if at_heads else ())])) if catchups else [None]):
         got = _passes(low, d, u)
         if got is None:
           continue
-        a, b = sum(g[0] for g in got), sum(g[1] for g in got)
+        a, b = sum(g[0] for g in got) + tails, sum(g[1] for g in got)
         if (catchups + lo <= a + b <= catchups + hi) if u in (None, d) else (a == catchups and lo <= b <= hi):
           for x in segs:
             x["kind"], x["passes"], x["catchups"] = ("main", 0, 0)
@@ -608,7 +672,8 @@ def decode_budget(tl:Timeline, *, tokens:int, accepted:int = 0, drafted:int = 0,
                   vendor:str | None = None, read:dict[str, Any] | None = None, overhead:dict[str, Any] | None = None,
                   input_rows:dict[str, int] | None = None, streaming:dict[str, Any] | None = None, prompt_from_counts:bool = False,
                   families_table:dict[str, Any] | None = None,
-                  causes_table:dict[str, Any] | None = None, what:str | None = None) -> dict[str, Any]:
+                  causes_table:dict[str, Any] | None = None, what:str | None = None, vocab:int | None = None,
+                  target_id:str | None = None) -> dict[str, Any]:
   """The time budget of one decode request (budget, over the whole request) and its `decode` part. The request is cut
   into forwards (forwards). The prompt's are every forward whose result was read before the first generated token
   reached the client (first_token, trace ns: the driver's mark), however many the server ran (batches, checkpoints,
@@ -621,19 +686,22 @@ def decode_budget(tl:Timeline, *, tokens:int, accepted:int = 0, drafted:int = 0,
   "draft_bytes", "how", "residency"} for what bounds a step, or {"refused": key}. input_rows: input_copies' inputs.
   overhead: the capture's measured overhead. streaming: whether the request was streamed and its unstreamed control.
   prompt_from_counts: with no first-token mark, the prompt's forwards are the fewest leading forwards after which the
-  rest give the engine's counts (said in the record: the count check is then weaker, it chose the prompt)."""
+  rest give the engine's counts (said in the record: the count check is then weaker, it chose the prompt).
+  vocab: the header's vocabulary (its output layer's rows): forwards are then cut at output-layer launches (the engine's
+  shapes rows, the chip's facts by target_id), not at result reads, so reads inside a forward do not split it."""
   tl = clip(tl, span)
   t = families_table or _table("kernel_families.json")
   rule, row = forward_rule(t), decode_row(engine, t)
   fams = launch_families(tl.kernels, families_for(engine, vendor, t, True))
-  segs = forwards(tl, fams, rule)
+  heads = output_layers(list(zip((k[2] for k in tl.kernels), tl.grids)), shape_rows(engine, target_id), vocab) if vocab and tl.grids else None
+  segs = forwards(tl, fams, rule, heads)
   kw = dict(engine=engine, vendor=vendor, families_table=t, causes_table=causes_table, gap_ms=0.0, decode=True)
   steps_expected = decode_steps(tokens, accepted, row)
   per = (row or {}).get("draft_forwards") if k else None
   catchups = per["per_main_forward"] * steps_expected if per else 0
   lo = per["per_draft_token"] * drafted if per else 0
   span_drafts = (lo, lo + per.get("uncounted_per_step", 0) * steps_expected) if per else (0, 0)
-  fits = lambda rest: classify(rest, steps_expected, catchups, span_drafts)  # noqa: E731
+  fits = lambda rest: classify(rest, steps_expected, catchups, span_drafts, bool(heads))  # noqa: E731
   if first_token is not None:
     prompt = [x for x in segs if x["end"] <= first_token]
     ok = bool(prompt) and fits(segs[len(prompt):])

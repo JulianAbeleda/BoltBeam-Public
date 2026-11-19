@@ -126,10 +126,18 @@ def _free_port() -> int:
     return int(sock.getsockname()[1])
 
 
+class ServerExited(RuntimeError):
+  """The server exited before /health answered: its exit status (a signal's negative number), as the OS returned it."""
+
+  def __init__(self, returncode:int):
+    super().__init__(f"llama server exited with status {returncode}")
+    self.returncode = returncode
+
+
 def _wait_healthy(base_url:str, process:subprocess.Popen, timeout_s:float) -> None:
   deadline = time.monotonic() + timeout_s
   while time.monotonic() < deadline:
-    if process.poll() is not None: raise RuntimeError(f"llama server exited with status {process.returncode}")
+    if process.poll() is not None: raise ServerExited(process.returncode)
     try:
       with urllib.request.urlopen(base_url.rstrip("/") + "/health", timeout=1) as response:
         if response.status == 200: return
@@ -155,7 +163,10 @@ def _running(command:list[str], base_url:str, log_path:str | pathlib.Path, start
       if started: started(process)
       yield
     finally:
-      if process.poll() is None:
+      if process.poll() is not None:  # the leader is gone (exited before /health): a child (vLLM's engine) may still hold the GPU
+        try: os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError: pass
+      else:
         try: os.killpg(process.pid, signal.SIGTERM)
         except ProcessLookupError: pass
         deadline = time.monotonic() + stop_timeout_s

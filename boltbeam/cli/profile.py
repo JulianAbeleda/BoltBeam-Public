@@ -553,7 +553,7 @@ def cmd_kernel_ledger(args) -> int:
   from boltbeam.collectors import time_budget as tb
   from boltbeam.roofline import limit
   from boltbeam.workflow import kernel_ledger as kl
-  paths = [c.partition("@")[0] for c in args.capture] + [p for p in (args.model, args.draft, args.lowering, *(args.counters or [])) if p]
+  paths = [c.partition("@")[0] for c in args.capture] + [p for p in (args.model, args.draft, args.lowering, args.session, args.manifest, args.routing, *(args.counters or [])) if p]
   if missing := [p for p in paths if not pathlib.Path(p).is_file()]:
     return _fail(f"kernel-ledger: no such file: {', '.join(missing)}")
   if bad := tb.unknown_engines(args.engine):
@@ -564,23 +564,102 @@ def cmd_kernel_ledger(args) -> int:
     return _fail(f"kernel-ledger: {', '.join(args.engine)} has no shapes rows (data/kernel_families.json): no output layer to cut steps by, no join")
   if len(args.untraced_ms or []) not in (0, len(args.capture)) or len(args.counters or []) not in (0, len(args.capture)):
     return _fail("kernel-ledger: give --untraced-ms and --counters once per capture, in the captures' order, or not at all")
+  if bool(args.session) != bool(args.window) or (args.window and len(args.window) != len(args.capture)):
+    return _fail("kernel-ledger: give --session with one --window per capture (the window its turns are tagged with), or neither")
   load = lambda p: json.loads(pathlib.Path(p).read_text()) if p else None  # noqa: E731
   low = None
   if args.lowering:
     from boltbeam.search.gemm_strategy import GemmLowering
     low = GemmLowering.from_json(load(args.lowering))
-  caps = [{"cap": kl.read(p), "depth": int(d) if d else None, "untraced_ms": (args.untraced_ms or [None] * len(args.capture))[i],
-           "counters": load((args.counters or [None] * len(args.capture))[i])} for i, (p, _, d) in enumerate(c.partition("@") for c in args.capture)]
+  from boltbeam.collectors import replay
+  turns = replay.llama_turns(load(args.session)["turns"]) if args.session else None
+  caps = []
+  for i, (p, _, d) in enumerate(c.partition("@") for c in args.capture):
+    tw = [t for t in turns if t["window"] == args.window[i]] if turns else None
+    if turns and not tw:
+      return _fail(f"kernel-ledger: the session record tags no turn with window {args.window[i]}")
+    caps.append({"cap": kl.read(p, tw), "depth": int(d) if d else round(sum(t["depth"] for t in tw) / len(tw)) if tw else None,
+                 "untraced_ms": (args.untraced_ms or [None] * len(args.capture))[i], "counters": load((args.counters or [None] * len(args.capture))[i])})
   out = kl.ledger(caps, main=load(args.model), draft=load(args.draft), engine=args.engine, vendor=args.vendor, target=target, k=args.k, kv_type=args.kv_type,
-                  selection={"verify": args.selection} if args.selection else None, lowering=low)
+                  selection={"verify": args.selection} if args.selection else None, lowering=low, manifest=load(args.manifest), routing=load(args.routing))
   if args.out:
     pathlib.Path(args.out).write_text(json.dumps(out, indent=1, default=list) + "\n")
   print("\n".join(kl.lines(out, args.top)))
   return 0 if out.get("ok") else 1
 
 
+def cmd_session_map(args) -> int:
+  from boltbeam.collectors import replay
+  from boltbeam.collectors import time_budget as tb
+  from boltbeam.roofline import limit
+  from boltbeam.workflow import session_map as sm
+  caps = [c.partition("@") for c in args.capture]
+  paths = [p for p, _, _ in caps] + [p.partition("@")[0] for p in (*args.session, args.model, args.draft, args.manifest, args.routing, args.reference, *(args.untraced or [])) if p]
+  if missing := [p for p in paths if not pathlib.Path(p).is_file()]:
+    return _fail(f"session-map: no such file: {', '.join(missing)}")
+  if bad := [p for p, _, w in caps if not w]:
+    return _fail(f"session-map: give each capture as PATH@WINDOW (the window the session record tags its turns with): {', '.join(bad)}")
+  if bad := tb.unknown_engines(args.engine):
+    return _fail(f"session-map: data/kernel_families.json has no rows for {', '.join(bad)}")
+  if (target := next((t for t in limit.targets()["targets"] if t["id"] == args.target), None)) is None:
+    return _fail(f"session-map: no target {args.target} (data/targets.json lists them)")
+  load = lambda p: json.loads(pathlib.Path(p).read_text()) if p else None  # noqa: E731
+
+  def runs(spec:str) -> list[list[dict]]:  # a driver record (its turns), or session-ab's record @ an arm (each valid run of it)
+    path, _, arm = spec.partition("@")
+    d = load(path)
+    if arm:
+      return [replay.llama_turns(a["turns"]) for a in d.get("arms") or [] if a.get("name") == arm and a.get("valid")]
+    return [replay.llama_turns(d["turns"])]
+  try:
+    recs = [r for x in args.session for r in runs(x)[:1]]
+    if len(recs) < len(args.session):
+      return _fail("session-map: a --session names no valid run")
+    tags = [{t["window"] for t in r if t["window"]} for r in recs]
+    if dup := sorted(set.intersection(*tags) if len(tags) > 1 else set()):
+      return _fail(f"session-map: window {', '.join(dup)} is tagged in more than one --session record: a window names one traced run's turns")
+    turns = [t for r in recs for t in r]
+    untraced = [r for u in args.untraced or [] for r in runs(u)]
+    out = sm.session_map([{"path": p, "window": w} for p, _, w in caps], turns, main=load(args.model), draft=load(args.draft), engine=args.engine,
+                         vendor=args.vendor, target=target, k=args.k, kv_type=args.kv_type, selection=args.selection, manifest=load(args.manifest), routing=load(args.routing),
+                         untraced=untraced or None, traced_runs=recs, reference=(load(args.reference) or {}).get("rows") if args.reference else None)
+  except (KeyError, ValueError) as exc:
+    return _fail(f"session-map: {type(exc).__name__}: {exc}")
+  if args.out:
+    pathlib.Path(args.out).write_text(json.dumps(out, indent=1, default=sorted) + "\n")
+  print("\n".join(sm.lines(out, args.top)))
+  return 0 if out.get("ok") else 1
+
+
+def _register_session_map(sub) -> None:
+  p = sub.add_parser("session-map", help="per kernel class of a traced session, for the decode step and the prefill turn: now, floor, reference ceiling, "
+                     "gap in session seconds, and whether the search can express it (boltbeam.session_map.v1; docs/session-map.md); exits 1 when "
+                     "more than 5% of a step is unattributed or a count check fails")
+  p.add_argument("capture", nargs="+", help="an nsys sqlite export as PATH@WINDOW: the window the session record tags its turns with")
+  p.add_argument("--session", action="append", required=True, help="a traced run's driver record (turns with span_ns, win and llama-server's timings); "
+                 "repeatable when the captures come from several traced runs, each tagging its own windows")
+  p.add_argument("--model", required=True, help="the main model's header table ({meta, tensors: [name, dims, type id]})")
+  p.add_argument("--draft", default=None, help="the draft head's header table")
+  p.add_argument("--engine", action="append", required=True, help="the engine's rows (data/kernel_families.json, data/kernel_classes.json): a fork, then its root")
+  p.add_argument("--vendor", default=None, help="the GPU vendor's family rows (nvidia, amd)")
+  p.add_argument("--target", required=True, help="the chip (data/targets.json): its measured bandwidth, matrix rates and shapes facts")
+  p.add_argument("--k", type=int, required=True, help="draft tokens a step (0 without a draft)")
+  p.add_argument("--kv-type", default=None, help="the KV cache's format (Q8_0, F16, ...)")
+  p.add_argument("--selection", type=int, default=None, help="the KV cells a verify attention launch reads when the engine runs sparse attention")
+  p.add_argument("--manifest", default=None, help="the kernel manifest the engine ran with (boltbeam.kernel_manifest.v1): its kernels are joined by what they compute")
+  p.add_argument("--routing", default=None, help="the model's measured routing profile (boltbeam.routing_profile.v1, `boltbeam routing`): expert bytes "
+                 "from the experts a verify reaches under it, not the upper estimate")
+  p.add_argument("--untraced", action="append", help="the same session untraced: a driver record, or session-ab's record as PATH@ARM; repeatable. "
+                 "Gives the untraced step per window and the session's steps")
+  p.add_argument("--reference", default=None, help="measured reference rows (JSON {rows: [{part (decode, prefill), phase, classes (or [\"*\"]), ms or gbs, source, window?}]})")
+  p.add_argument("--top", type=int, default=14, help="rows shown per part (the record holds all)")
+  p.add_argument("--out", default=None, help="write the record here (JSON)")
+  p.set_defaults(fn=cmd_session_map)
+
+
 def register(sub) -> None:
   _register_time_budget(sub)
+  _register_session_map(sub)
   p = sub.add_parser("kernel-ledger", help="every kernel of a decode step by shape: launches, exclusive time, bytes, limit, distance, in two rankings (bytes known, "
                      "bound unknown), with search and install coverage (boltbeam.kernel_ledger.v1; docs/kernel-ledger.md); exits 1 when a check fails")
   p.add_argument("capture", nargs="+", help="an nsys sqlite export or its extract (JSON[.gz]), as PATH or PATH@DEPTH (tokens of context); two depths give slopes")
@@ -595,6 +674,11 @@ def register(sub) -> None:
   p.add_argument("--untraced-ms", type=float, action="append", help="the same turns' step untraced, ms, once per capture: discloses the trace's overhead")
   p.add_argument("--counters", action="append", help="JSON [{tokens, accepted, drafted}] of the capture's turns (the engine's counters), once per capture")
   p.add_argument("--lowering", default=None, help="gemm-space's lowering facts (boltbeam.gemm_lowering_facts.v1): whether it admits a float row's shape")
+  p.add_argument("--session", default=None, help="the traced run's driver record (turns with span_ns, win, llama-server's timings): only the turns' "
+                 "decode windows are read, so a capture that holds prefills is cut right; the counters are the turns'")
+  p.add_argument("--window", action="append", help="with --session, the window each capture's turns are tagged with, once per capture")
+  p.add_argument("--manifest", default=None, help="the kernel manifest the engine ran with (boltbeam.kernel_manifest.v1): its kernels joined by what they compute")
+  p.add_argument("--routing", default=None, help="the model's measured routing profile: expert bytes from the experts a verify reaches under it")
   p.add_argument("--top", type=int, default=20, help="rows shown per ranking (the record holds all)")
   p.add_argument("--out", default=None, help="write the record here (JSON)")
   p.set_defaults(fn=cmd_kernel_ledger)

@@ -9,6 +9,9 @@ boltbeam kernel-ledger CAP@10013 CAP@102621 --model main.json --draft draft.json
 ```
 
 - **Inputs**
+  - A capture that holds prefills (a window of a session's turns) is read with `--session RECORD --window W` (once per capture): only each turn's decode window is kept, placed by the driver's span on the host clock and the engine's own prompt and decode times (`time_budget.turn_windows`), the turns joined end to end. The counters are then the turns'. Without it a prefill's forwards set the per-layer maximum and every verify is read as a draft.
+  - `--manifest` is the kernel manifest the engine ran with (`boltbeam.kernel_manifest.v1`). Its kernels are joined by what each entry computes (its matmul's weight format and output rows), so a generated kernel is not left unattributed.
+  - `--routing` is the model's measured routing profile. Expert bytes are then the experts a verify of k + 1 columns reaches under it (derived), not the experts_used x columns upper estimate.
   - A capture is an nsys sqlite export, or an extract of one in JSON. The extract carries each launch's grid and the device copies. It may also carry the engine's counters for its turns. The fixtures are in `tests/fixtures/kernel_ledger/`.
   - `--model` and `--draft` are header tables (`{meta, tensors: [name, dims, type id]}`), the same tables `min_memory` reads.
   - Two depths give each row a slope in ms per 1k tokens.
@@ -18,6 +21,7 @@ boltbeam kernel-ledger CAP@10013 CAP@102621 --model main.json --draft draft.json
   - The draft passes the cut finds are checked against the engine's counters (`decode_steps`, the decode row's `draft_forwards`).
 - **Join**
   - Launch groups are tied to the header's matrices by launches per forward. This uses the engine's `shapes` rows in `data/kernel_families.json`: rows per block, format families, `min_k`, and `tensors_per_launch`. Chip facts such as `min_cols` sit under `by_target`.
+  - Launches per forward are the most common count a step, so a step that a cut shortens (the one across two joined turns) does not unjoin a group.
   - When no single set of matrices fits a group, the group is marked "unattributed", by name. The join never guesses.
 - **Two rankings**
   - **Byte-limited.** The bytes are known, so distance = time − bytes / measured bandwidth.

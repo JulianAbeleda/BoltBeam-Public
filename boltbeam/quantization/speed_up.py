@@ -279,6 +279,13 @@ def z(confidence:float | None = None, df:int | None = None) -> float:
   return x + sum(c / df ** (i + 1) for i, c in enumerate(g)) if df else x
 
 
+def min_documents(confidence:float | None = None) -> int:
+  """The fewest documents the bar can decide on: its SE is a bootstrap over documents, and k documents give C(2k-1, k)
+  distinct resamples, which must resolve the one-sided tail 1 - confidence (at 0.95: 20 needed, so 4 documents: 35)."""
+  c = table()["threshold"]["confidence"] if confidence is None else confidence
+  return next(k for k in range(2, 1000) if math.comb(2 * k - 1, k) >= 1 / (1 - c))
+
+
 def bar(figures:dict[str, Any], floor:dict[str, Any] | None = None) -> dict[str, Any]:
   """Stage 1 of the agreement gate, the one place its rule is computed (Speed up's copies, tune's output-changing knobs).
   d = 1 - pooled agreement; pass iff d_copy - d_floor <= t SE and every document holds, else needs_eval (a paired

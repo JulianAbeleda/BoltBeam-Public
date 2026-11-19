@@ -27,8 +27,11 @@ boltbeam tune MODEL --engine llama.cpp|vllm [--build BIN] [--experts-in-ram all|
 boltbeam tune MODEL --measured RECORD [--context N|max] [--gpu-free-mib N]   # rank the ways to spend GPU memory from measured runs
 boltbeam session-ab --out DIR --server-argv CMD --session S.json --arm A=SPEC --arm B=SPEC [--repeats N] [--turns A-B] [--hook CMD]   # paired session benchmark
 boltbeam session-gate --reference ARM [--floor ARM]   # output-agreement check per arm, run as session-ab's --hook
+boltbeam load-probe --out DIR --server-argv CMD [--session S.json --turns N] [--timeout S]   # does it load: ready by /health, failure by exit status; free GPU memory; a probe row tune --measured reads
 boltbeam time-budget capture.sqlite --engine ENGINE [--driver LINE.json | --wall-ms MS] [--out budget.json]
 boltbeam context-audit RECORD.json --engine ENGINE [--out audit.json]
+boltbeam kernel-ledger CAP@DEPTH ... --model M.json --engine ENGINE --target T --k K [--session RECORD --window W ...] [--manifest M] [--routing R]
+boltbeam session-map CAP@WINDOW ... --session RECORD --model M.json --engine ENGINE --target T --k K [--untraced RECORD[@ARM]] [--reference REF.json]   # per kernel class: now, floor, reference, gap s, can the search express it
 boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECORD] [--compare OTHER.json]
 ```
 

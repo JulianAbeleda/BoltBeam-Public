@@ -117,7 +117,7 @@ def llama_detokenize(url:str, ids:list[int]) -> str:
 FLAGS = {"n_batch": ("-b", "--batch-size"), "n_ubatch": ("-ub", "--ubatch-size"), "type_k": ("-ctk", "--cache-type-k"),
          "type_v": ("-ctv", "--cache-type-v"), "flash_attn": ("-fa", "--flash-attn")}  # llama.cpp's server and llama-bench share them
 DEFAULTS = {"n_batch": 2048, "n_ubatch": 512, "type_k": "f16", "type_v": "f16", "flash_attn": "auto"}  # common/common.h
-LOGGED = {"n_ctx": r"(?:new slot, n_ctx|n_ctx_slot)\s*=\s*(\d+)", "ctx_checkpoints": r"context checkpoints enabled, max = (\d+)",
+LOGGED = {"ctx_checkpoints": r"context checkpoints enabled, max = (\d+)",
           "cache_ram_mib": r"prompt cache is enabled, size limit: (\d+) MiB"}  # what the server logs at start
 
 
@@ -132,9 +132,55 @@ def flag_value(argv:list[str], names:tuple[str, ...]) -> str | None:
   return got
 
 
-def llama_settings(argv:list[str], log:str) -> dict[str, Any]:
+def llama_turns(turns:list[dict[str, Any]]) -> list[dict[str, Any]]:
+  """A session's turns as the session map reads them, from llama-server's own per-request timings (a driver's `timings`
+  dict, or the same fields on the turn as session-ab records them): prompt_ms and decode_ms (predicted_ms) place a traced
+  turn's prefill and decode on the trace (time_budget.turn_windows) by its span_ns (the driver's request span on the
+  host's monotonic clock; None untraced); tokens, accepted and drafted are predicted_n, draft_n_accepted (draft_accepted)
+  and draft_n; depth is the context at the decode's middle (cache_n + prompt_n + predicted_n / 2); `win` is the capture
+  window a traced driver tagged. A turn with no timings is refused, by index."""
+  out = []
+  for t in turns:
+    tm = t.get("timings") or t
+    if "predicted_ms" not in tm or "prompt_ms" not in tm:
+      raise ValueError(f"turn {t.get('i')}: no prompt_ms and predicted_ms (llama-server's per-request timings are needed)")
+    n = int(tm["predicted_n"])
+    out.append({"i": t.get("i"), "window": t.get("win"), "span_ns": t.get("span_ns"), "prompt_ms": float(tm["prompt_ms"]), "decode_ms": float(tm["predicted_ms"]),
+                "tokens": n, "accepted": int(tm.get("draft_n_accepted", tm.get("draft_accepted")) or 0), "drafted": int(tm.get("draft_n") or 0),
+                "prompt_n": int(tm.get("prompt_n") or 0), "depth": int(tm.get("cache_n") or 0) + int(tm.get("prompt_n") or 0) + n // 2})
+  return out
+
+
+def _get_json(url:str, timeout:float = 10.0) -> dict[str, Any]:
+  """A running server's JSON object answering a GET; {} when it does not answer one."""
+  try:
+    got = json.loads(urllib.request.urlopen(url, timeout=timeout).read())
+  except (OSError, ValueError):
+    return {}
+  return got if isinstance(got, dict) else {}
+
+
+def llama_served(url:str) -> dict[str, Any]:
+  """What the running llama-server says it holds: n_ctx, one slot's context, from GET /props
+  (default_generation_settings.n_ctx), else GET /v1/models (data[0].meta.n_ctx); both are the server's slot_n_ctx
+  (tools/server/server-context.cpp get_res_props / get_res_model_info, b11571 and master 7592b61d3)."""
+  n, src = (_get_json(url + "/props").get("default_generation_settings") or {}).get("n_ctx"), "the server's /props"
+  if n is None:
+    src = "the server's /v1/models"
+    n = ((_get_json(url + "/v1/models").get("data") or [{}])[0].get("meta") or {}).get("n_ctx")
+  return {"n_ctx": n, "source": src} if isinstance(n, int) and n > 0 else {}
+
+
+def vllm_served(url:str) -> dict[str, Any]:
+  """What the running vLLM server says it holds: n_ctx from GET /v1/models (data[0].max_model_len)."""
+  n = (_get_json(url + "/v1/models").get("data") or [{}])[0].get("max_model_len")
+  return {"n_ctx": n, "source": "the server's /v1/models"} if isinstance(n, int) and n > 0 else {}
+
+
+def llama_settings(argv:list[str], log:str, served:dict[str, Any] | None = None) -> dict[str, Any]:
   """The configuration the server ran: each FLAGS setting from the user's command, else the engine's default; the
-  context, checkpoints and prompt-cache size from its log. `source` says where each came from."""
+  context from the running server (served: llama_served), else the command's context over its slots; checkpoints and
+  prompt-cache size from its log. `source` says where each came from."""
   out: dict[str, Any] = {"source": {}}
   for key, names in FLAGS.items():
     v = flag_value(argv, names)
@@ -148,8 +194,9 @@ def llama_settings(argv:list[str], log:str) -> dict[str, Any]:
   if out["ctx_checkpoints"] is None and checkpoints and checkpoints.isdigit():
     out["ctx_checkpoints"] = int(checkpoints)
     out["source"]["ctx_checkpoints"] = "the command"
+  out["n_ctx"], out["source"]["n_ctx"] = (served or {}).get("n_ctx"), (served or {}).get("source", "not served")
   if out["n_ctx"] is None:
-    # --ctx-size is shared across slots; prefer the actual per-slot size from the log.
+    # --ctx-size is shared across slots; the server's own answer is the per-slot size.
     ctx = flag_value(argv, ("-c", "--ctx-size"))
     parallel = flag_value(argv, ("-np", "--parallel"))
     if ctx and ctx.isdigit() and parallel and parallel.isdigit() and int(parallel) > 0:
@@ -261,7 +308,7 @@ VLLM_FLAGS = {"n_ctx": ("--max-model-len",), "n_batch": ("--max-num-batched-toke
 VLLM_LOGGED = {"n_ctx": r"max_model_len=(\d+)", "n_batch": r"max_num_batched_tokens=(\d+)", "type_k": r"kv_cache_dtype=[\"']?([a-z0-9_]+)"}
 
 
-def vllm_settings(argv:list[str], log:str) -> dict[str, Any]:
+def vllm_settings(argv:list[str], log:str, served:dict[str, Any] | None = None) -> dict[str, Any]:
   """The configuration vLLM ran: each setting from the command, else what its log says; the KV cache in the model's
   bf16 unless the command sets it ("auto" is the model's type); the chunk is max_num_batched_tokens, one output per
   chunk; the prefix cache on unless the command turns it off (vLLM's default)."""
@@ -272,6 +319,8 @@ def vllm_settings(argv:list[str], log:str) -> dict[str, Any]:
     v = v if v is not None else (m.group(1) if m else None)
     out[key] = int(v) if v and v.isdigit() else v
     out["source"][key] = "the command" if flag_value(argv, names) is not None else ("the server's log" if m else "vLLM's default")
+  if (served or {}).get("n_ctx"):
+    out["n_ctx"], out["source"]["n_ctx"] = served["n_ctx"], served["source"]
   if out["type_k"] in (None, "auto"):
     out["type_k"], out["source"]["type_k"] = "bf16", "the model's dtype (auto)"
   out["n_ubatch"], out["source"]["n_ubatch"] = out["n_batch"], out["source"]["n_batch"]
@@ -299,15 +348,15 @@ def vllm_env(argv:list[str]) -> dict[str, str]:
 
 REPLAY_ENGINES: dict[str, dict[str, Callable[..., Any]]] = {
   "llama.cpp": {"chat": llama_chat, "tokenize": llama_tokenize, "detokenize": llama_detokenize,
-                "settings": llama_settings, "weight_path": llama_weight_path, "attention_paths": llama_attention_paths,
+                "settings": llama_settings, "served": llama_served, "weight_path": llama_weight_path, "attention_paths": llama_attention_paths,
                 "formats": lambda s, weights: pf.llama_formats(s.get("type_k"), weights), "bench_flags": llama_bench_flags,
                 # the one GPU a server command keeps to (split mode none: its main GPU); None, it may use them all
                 "gpus": lambda argv: [int(flag_value(argv, ("-mg", "--main-gpu")) or 0)]
                 if flag_value(argv, ("-sm", "--split-mode")) == "none" else None},
-  "vllm": {"chat": vllm_chat, "tokenize": vllm_tokenize, "detokenize": vllm_detokenize, "settings": vllm_settings,
+  "vllm": {"chat": vllm_chat, "tokenize": vllm_tokenize, "detokenize": vllm_detokenize, "settings": vllm_settings, "served": vllm_served,
            "weight_path": lambda quant: (formats.row(quant) or {}).get("vllm_path", "bf16"),
            "attention_paths": vllm_attention_paths, "formats": lambda s, weights: pf.vllm_formats(weights, {"kv_cache_dtype": s.get("type_k")}),
-           "env": vllm_env,
+           "env": vllm_env, "version": lambda url: vllm_version(url),
            "gpus": lambda argv: [0] if int(flag_value(argv, ("-tp", "--tensor-parallel-size")) or 1) == 1 else None},
 }
 
@@ -382,8 +431,15 @@ def _version(binary:pathlib.Path) -> str | None:
   return next((l.strip() for l in (out.stdout + out.stderr).splitlines() if l.strip().startswith("version")), None)
 
 
-def build_metadata(provider:str, version:str | None, log:str = "") -> dict[str, Any]:
-  """Parse recorded engine evidence only; a Python executable's version is not a vLLM build."""
+def vllm_version(url:str) -> str | None:
+  """The running vLLM server's build from its /version; None when it does not answer (the log row is read instead)."""
+  return _get_json(url + "/version").get("version")
+
+
+def build_metadata(provider:str, version:str | None, log:str = "", live:str | None = None) -> dict[str, Any]:
+  """The engine's build: live, what the running server's own endpoint said (vLLM's /version); else recorded evidence
+  (a retained log, by the engine's version_words row in data/engine_adapters.json). A Python executable's version is
+  not a vLLM build."""
   if provider == "llama.cpp":
     text = version or ""
     m = re.search(r"build\s+(\d+),\s*commit\s+([0-9a-f]+)", text)
@@ -391,7 +447,10 @@ def build_metadata(provider:str, version:str | None, log:str = "") -> dict[str, 
       m = re.search(r"version:\s*(\d+)\s*\(([0-9a-f]+)\)", text)
     return {"build": m.group(2), "build_number": int(m.group(1))} if m else {}
   if provider == "vllm":
-    m = re.search(r"Initializing a V\d+ LLM engine \(v([^\s)]+)\)", log)
+    if live:
+      return {"build": live}
+    row = json.loads((pathlib.Path(__file__).resolve().parents[1] / "data" / "engine_adapters.json").read_text())["engines"]["vllm"]
+    m = re.search(row["version_words"], log)
     return {"build": m.group(1)} if m else {}
   return {}
 
@@ -483,12 +542,12 @@ def _arm(run:pathlib.Path, provider:str, server:dict[str, Any], trace:dict[str, 
   log = run / (SERVER_LOG if not profiled else "replay_server_profiled.log")
   with serve_argv(argv, log_path=log, environ=env, stop_timeout_s=300.0 if profiled else 5.0) as (url, command, load_s):
     text = log.read_text(errors="replace")
-    settings = eng["settings"](command, text)
+    settings = eng["settings"](command, text, *([eng["served"](url)] if "served" in eng else []))
     if profiled:
       server["profiled_command"] = command
     else:
       server["command"], server["settings"] = command, settings
-      server.update(build_metadata(provider, server.get("version"), text))
+      server.update(build_metadata(provider, server.get("version"), text, eng["version"](url) if "version" in eng else None))
     rows.append({"scope": "load", "workload": "replay", "seconds": round(load_s, 2),
                  "source": "from the server's start to /health answering 200"})
     words = Words(eng, url)

@@ -2,7 +2,8 @@
 distance from it, in two rankings (bytes known; bound unknown), and whether the search can propose a candidate.
 
     capture     an nsys sqlite export (collectors/time_budget.timeline_from_nsys, with each launch's grid) or an extract
-                of one (JSON, gzip allowed: names, kernel_cols, kernels, copy_cols, copies, counters); one per depth.
+                of one (JSON, gzip allowed: names, kernel_cols, kernels, copy_cols, copies, counters); one per depth. With
+                the session's traced turns, only their decode windows are read (read: a capture that holds prefills).
     steps       the output layer is the matmul launch whose output rows (gridX x rows_per_block, the engine's `shapes`
                 rows in data/kernel_families.json) are the header's vocabulary. Launches up to one are a forward (a
                 cut by result reads, time_budget.forwards, also splits a forward at every small read, such as an expert
@@ -14,13 +15,14 @@ distance from it, in two rankings (bytes known; bound unknown), and whether the 
     time        exclusive: launches in start order, each counts what it adds to the union (first-started wins, so a
                 downstream PDL wait is charged to the launch upstream); overlap across streams is measured and checked.
                 Every time is the traced run's; the untraced step, given, discloses the trace's overhead.
-    join        a matmul group is tied to the header's tensors by launches per forward (cells by class, format, K, N;
-                1-D tensors are N = 1): N = gridX x rows_per_block, the row's formats, K >= min_k, columns >= min_cols,
+    join        a matmul group is tied to the header's tensors by launches per forward (the most common count a step, so
+                a step a cut shortens does not unjoin it; cells by class, format, K, N; 1-D tensors are N = 1): N = gridX x
+                rows_per_block (or the row's own n: an installed manifest's kernel, manifest_rows), the row's formats, K >= min_k, columns >= min_cols,
                 counts that sum to the launches (to tensors_per_launch x launches for a fused launch), the one subset that
                 does, repeated until nothing changes. Unmatched is "unattributed". Chip facts are the row's by_target.
     bytes       matmul: the joined weights + activations read and written (derived). Experts: weights / experts x
-                distinct experts a launch reads, between experts_used and experts_used x columns (estimate, at the high
-                end). Attention: KV cells read x bytes a cell (estimate: cells = the selection when given, else the
+                distinct experts a launch reads: under a measured routing profile, the experts a forward of its columns
+                reaches (derived); else between experts_used and experts_used x columns (estimate, at the high end). Attention: KV cells read x bytes a cell (estimate: cells = the selection when given, else the
                 depth). Else unknown. limit = bytes / the target's measured bandwidth; distance = time - limit.
     floor       launches x the cheapest mean duration of launches no other launch overlaps: an estimate and a lower
                 bound, never a limit; a row with no bytes ranks by time - floor, an upper bound of what it can give.
@@ -52,14 +54,30 @@ def estimate(value:Any, formula:str, test:str, **kw) -> dict[str, Any]:
   return {"value": value, "label": "estimate", "formula": formula, "test": test, **kw}
 
 
-def read(path:str | pathlib.Path) -> dict[str, Any]:
-  """Kernels (start, end, name, grid, stream) and copies (start, end, bytes, kind) of a capture, ns, and its counters."""
+def read(path:str | pathlib.Path, turns:list[dict[str, Any]] | None = None, part:str = "decode", tl:tb.Timeline | None = None) -> dict[str, Any]:
+  """Kernels (start, end, name, grid, stream) and copies (start, end, bytes, kind) of a capture, ns, and its counters.
+  turns (an nsys export only: traced turns, time_budget.turn_windows): only each turn's `part` window is kept, the turns
+  joined end to end with the time between them taken out (the next turn's prefill and the reply's way back), so a capture
+  that holds prefills is cut as a decode; the step across a join is shortened by that time (one of each turn's steps).
+  Its counters are the turns' (tokens, accepted, drafted)."""
   p = pathlib.Path(path)
   if p.suffix == ".sqlite":
-    if not (tl := tb.timeline_from_nsys(p)).grids and tl.kernels:
+    if not (tl := tl or tb.timeline_from_nsys(p)).grids and tl.kernels:
       raise ValueError(f"{p.name}: the export has no launch grids (gridX): the join needs them")
-    return {"source": p.name, "kernels": sorted((a, e, n, g, st) for (a, e, n, st), g in zip(tl.kernels, tl.grids)),
-            "copies": [(c["start_ns"], c["end_ns"], c["bytes"], c["kind"]) for c in tl.copies]}
+    ks = sorted((a, e, n, g, st) for (a, e, n, st), g in zip(tl.kernels, tl.grids))
+    cs = sorted((c["start_ns"], c["end_ns"], c["bytes"], c["kind"]) for c in tl.copies)
+    if turns is None:
+      return {"source": p.name, "kernels": ks, "copies": cs}
+    wins = [w[part] for w in tb.turn_windows(tl, turns) if w]
+    if len(wins) < len(turns):
+      raise ValueError(f"{p.name}: {len(turns) - len(wins)} of {len(turns)} turns are not in the trace (no clock origin, or no GPU work in the span)")
+    out_k, out_c, shift, prev = [], [], 0, None
+    for a, b in sorted(wins):
+      shift += a - prev if prev is not None else 0
+      keep = lambda xs: [(x[0] - shift, x[1] - shift, *x[2:]) for x in xs[bisect.bisect_left(xs, (a,)):bisect.bisect_left(xs, (b,))]]  # noqa: E731
+      out_k, out_c, prev = out_k + keep(ks), out_c + keep(cs), b
+    return {"source": f"{p.name}, {part} windows of {len(wins)} turns", "kernels": out_k, "copies": out_c,
+            "counters": [{"tokens": t["tokens"], "accepted": t["accepted"], "drafted": t["drafted"]} for t in turns]}
   d = json.loads((gzip.open(p, "rt") if p.suffix == ".gz" else p.open()).read())
   kc, cc = {c: i for i, c in enumerate(d["kernel_cols"])}, {c: i for i, c in enumerate(d["copy_cols"])}
   ks = sorted((r[kc["start"]], r[kc["start"]] + r[kc["dur"]], d["names"][r[kc["name"]]], (r[kc["gx"]], r[kc["gy"]], r[kc["gz"]]), r[kc["stream"]])
@@ -95,28 +113,31 @@ def fact(table:dict[str, Any] | None, name:str) -> Any:
   return one(table["meta"].get(f"{arch}.{key}")) if key else None
 
 
-def shape_rows(engine:str | list[str], target_id:str | None) -> list[dict[str, Any]]:
-  """The engine's `shapes` rows along its `also` chain, each with the chip's by_target facts merged in."""
-  t, out, todo, seen = tb._table("kernel_families.json")["engines"], [], list(tb.engine_keys(engine)), set()
-  while todo:
-    if (key := todo.pop(0)) in seen or key not in t:
-      continue
-    seen.add(key)
-    out += [{**r, **(r.get("by_target") or {}).get(target_id or "", {}), "re": re.compile(r["pattern"])} for r in t[key].get("shapes") or []]
-    todo += t[key].get("also") or []
+shape_rows, shape_of, per_columns = tb.shape_rows, tb.shape_of, tb.per_columns
+
+
+def manifest_rows(manifest:dict[str, Any] | None) -> list[dict[str, Any]]:
+  """Shapes rows for the kernels an installed manifest (boltbeam.kernel_manifest.v1, the engine's external-kernel hook)
+  puts in place of the engine's: a kernel whose match holds a matmul is that matmul (its weight's format, its output rows);
+  any other is a region of elementwise nodes. The manifest is the engine's own statement of what each kernel computes."""
+  out = []
+  for e in (manifest or {}).get("entries") or []:
+    mm = [o for o in e["match"]["ops"] if o["op"].endswith("MUL_MAT")]
+    row = {"pattern": f"^{re.escape(e['kernel']['symbol'])}$", "manifest": e["id"], "why": f"the installed manifest's entry {e['id']}"}
+    if len(mm) == 1 and len(mm[0].get("src_ne") or []) == 2:
+      fmt = mm[0]["src_types"][0].upper()
+      out.append({**row, "op": "matmul", "family": "dense_gemm", "act": mm[0]["src_types"][1].upper(), "n": [mm[0]["src_ne"][0][1]],
+                  "format_families": [(formats.row(fmt) or {}).get("family")]})
+    else:
+      out.append({**row, "op": "region", "family": "elementwise"})
   return out
-
-
-def shape_of(name:str, rows:list[dict[str, Any]]) -> dict[str, Any] | None:
-  return next((r for r in rows if r["re"].search(name)), None)
 
 
 # --- steps and groups -----------------------------------------------------------------------------------------------
 
 def cut(ks:list[tuple], fams:list[str], rows:list[dict[str, Any]], vocab:int, layer:set[str], ups:list[int]) -> dict[str, Any]:
   """Each launch's forward, which forwards are verifies, and the steps (see the module)."""
-  heads = [i for i, (_, _, n, g, _) in enumerate(ks) if (r := shape_of(n, rows)) and r["op"] == "matmul"
-           and vocab in {g[0] * b for c in (1, 2) for b in per_columns(r.get("rows_per_block", ()), c)}]
+  heads = tb.output_layers([(n, g) for _, _, n, g, _ in ks], rows, vocab)
   if len(heads) < 3:
     return {"refused": f"{len(heads)} output-layer launches (a matmul of the vocabulary's {vocab} rows): a step needs two verifies after a first"}
   ends = list(itertools.accumulate((e for _, e, *_ in ks), max))
@@ -143,6 +164,7 @@ def groups(cap:dict[str, Any], *, engine:str | list[str], vendor:str | None, voc
   per step: wall, union, idle, overlap across streams."""
   ks, rule = cap["kernels"], tb.forward_rule()
   fams = tb.launch_families([(a, e, n, st) for a, e, n, _, st in ks], tb.families_for(engine, vendor, decode=True))
+  fams = [(shape_of(n, rows) or {}).get("family", f) for (_, _, n, _, _), f in zip(ks, fams)]  # a manifest kernel's own family
   c = cut(ks, fams, rows, vocab, set(rule["layer_families"]), sorted(a for a, _, _, kind in cap["copies"] if kind == rule["input_copy"]))
   if "refused" in c:
     return c
@@ -155,9 +177,10 @@ def groups(cap:dict[str, Any], *, engine:str | list[str], vendor:str | None, voc
     for i in range(h0 + 1, h1 + 1):
       st, en, name, grid, stream = ks[i]
       r = g.setdefault(("verify" if c["seg"][i] in c["main"] else "draft", name, *grid),
-                       {"launches": 0, "excl": [0.0] * n, "dur": 0.0, "gap": 0.0, "lone": [], "family": fams[i]})
+                       {"launches": 0, "per_step": [0] * n, "excl": [0.0] * n, "dur": 0.0, "gap": 0.0, "lone": [], "family": fams[i]})
       ex = max(0, min(en, b) - max(st, cur))
       r["launches"] += 1
+      r["per_step"][s] += 1
       r["excl"][s] += ex / 1e6
       r["dur"] += (en - st) / 1e6
       r["gap"] += max(0, st - cur) / 1e6
@@ -173,14 +196,10 @@ def groups(cap:dict[str, Any], *, engine:str | list[str], vendor:str | None, voc
   return {"groups": g, "steps": n, **per, "drafts": c["drafts"]}
 
 
-def per_columns(rpb:Any, cols:int) -> list[int]:
-  """A shapes row's rows per block at this column count (a list, or keyed "1" and "more")."""
-  return rpb if isinstance(rpb, list) else rpb.get("1" if cols == 1 else "more", [])
-
 
 def join(gs:dict[tuple, dict[str, Any]], by_phase:dict[str, list[dict[str, Any]]], rows:list[dict[str, Any]], steps:int,
-         forwards:dict[str, list[float]], cols:dict[str, int]) -> dict[tuple, tuple[list[dict[str, Any]], int]]:
-  """Each matmul group's cells and launches per forward (see the module). forwards: per phase, (columns, forwards a step) for
+         forwards:dict[str, list[tuple[int, list[int]]]], cols:dict[str, int]) -> dict[tuple, tuple[list[dict[str, Any]], int]]:
+  """Each matmul group's cells and launches per forward (see the module). forwards: per phase, (columns, its forwards each step) for
   each column regime it runs: the verify at k + 1; the draft head's passes at one column and its catch-up at more (decode row)."""
   taken: set[tuple[int, int]] = set()
   out: dict[tuple, tuple[list[dict[str, Any]], int]] = {}
@@ -191,9 +210,10 @@ def join(gs:dict[tuple, dict[str, Any]], by_phase:dict[str, list[dict[str, Any]]
       sr, phase, tpl, hits = shape_of(key[1], rows), key[0], max(shape_of(key[1], rows).get("tensors_per_launch", [1])), []
       for c, f in forwards[phase]:
         cand = [x for x in by_phase[phase] if (id(x), c) not in taken and (x["experts"] > 0) == (sr["op"] == "expert_matmul")
-                and x["n"] in {key[2] * b for b in per_columns(sr.get("rows_per_block", ()), c)} and fam(x["format"]) in sr["format_families"]
+                and x["n"] in tb.out_rows(sr, key[2], c) and fam(x["format"]) in sr["format_families"]
                 and x["k"] >= sr.get("min_k", 0) and c >= (sr.get("min_cols") or {}).get(x["format"], 0 if "min_cols" not in sr else math.inf)]
-        w = gs[key]["launches"] / steps / f if f else 0
+        per = [x / y for x, y in zip(gs[key]["per_step"], f) if y]  # launches a forward, each step (f: its forwards of this regime)
+        w = statistics.mode(per) if per else 0  # the most common: a step the cut shortens does not unjoin it
         if abs(w - round(w)) > 0.05 or round(w) < 1 or not cand or len(cand) > SUBSET_MAX:
           continue
         w = round(w)  # a fused launch: the whole set, its count between w and tpl x w; else the subsets that sum to w
@@ -224,6 +244,9 @@ def bytes_of(op:str, joined:tuple | None, sr:dict[str, Any] | None, launches:flo
       return unknown("the header's expert_used_count")
     hi, lo = min(n_exp, used * cols), used
     per = sum(x["bytes"] / x["experts"] for x in cs) * fwd
+    if (reach := (kv.get("reached") or {}).get(cols)) is not None:
+      return derived(per * reach + (io or 0), "weight bytes / experts x the distinct experts a forward of these columns reaches under the measured routing "
+                     "profile (routing_profile.reached, the layers' mean) + activations", {"reached": reach, "columns": cols, "forwards_a_step": fwd})
     return estimate(per * hi + (io or 0), "weight bytes / experts x distinct experts a forward (at most experts_used x columns) + activations",
                     "the routing counts (distinct experts a launch reads per step)", range=[per * lo + (io or 0), per * hi + (io or 0)])
   if op == "attention" and kv.get("cell_bytes") and depth:
@@ -271,10 +294,14 @@ def coverage(op:str, name:str, joined:tuple | None, m:int, engine:str, ctx:dict[
 # --- the ledger ---------------------------------------------------------------------------------------------------
 
 def ledger(captures:list[dict[str, Any]], *, main:dict[str, Any], draft:dict[str, Any] | None, engine:str | list[str], vendor:str | None,
-           target:dict[str, Any], k:int, kv_type:str | None = None, selection:dict[str, int] | None = None, lowering:Any = None) -> dict[str, Any]:
+           target:dict[str, Any], k:int, kv_type:str | None = None, selection:dict[str, int] | None = None, lowering:Any = None,
+           manifest:dict[str, Any] | None = None, routing:dict[str, Any] | None = None) -> dict[str, Any]:
   """The record (boltbeam.kernel_ledger.v1). captures: {cap, depth, untraced_ms?, counters?}, shallowest first; ranked at the last.
-  selection: the KV cells a phase's attention launch reads when it is sparse ({"verify": cells}); a phase not named reads all."""
-  eng, rows_t = tb.engine_keys(engine)[-1], shape_rows(engine, target.get("id"))
+  selection: the KV cells a phase's attention launch reads when it is sparse ({"verify": cells}); a phase not named reads all.
+  manifest: the kernel manifest the engine ran with (its kernels joined by what each entry computes, manifest_rows).
+  routing: the model's measured routing profile (roofline/routing_profile): expert bytes from the experts a forward
+  reaches under it (derived), not the experts_used x columns upper estimate."""
+  eng, rows_t = tb.engine_keys(engine)[-1], shape_rows(engine, target.get("id"), manifest_rows(manifest))
   vocab = next((x["n"] for x in cells(main, "main") if x["role"] == "lm_head"), None)
   if not vocab:
     return {"schema": SCHEMA, "refused": "the main header has no output layer (lm_head) to find the steps by"}
@@ -282,9 +309,14 @@ def ledger(captures:list[dict[str, Any]], *, main:dict[str, Any], draft:dict[str
     unknown("the target's measured read bandwidth (cuda_bandwidth)")
   cols, row_d = {"verify": k + 1, "draft": 1}, tb.decode_row(engine) or {}
   by_phase = {"verify": cells(main, "main"), "draft": cells(draft, "draft") if draft else []}
+  if draft and not any(x["role"] == "lm_head" for x in by_phase["draft"]):  # a draft file with no output layer reads the target's
+    by_phase["draft"] += [{**x, "file": "main"} for x in by_phase["verify"] if x["role"] == "lm_head"]
   kvb = formats.elem_bytes(kv_type) if kv_type else None
   hk = [fact(main, x) for x in ("kv_heads", "key_len", "value_len")]
   kv = {"experts_used": fact(main, "experts_used"), "cell_bytes": hk[0] * (hk[1] + hk[2]) * kvb if kvb and all(hk) else None}
+  if routing:
+    from boltbeam.roofline import routing_profile as rp
+    kv["reached"] = {c: statistics.fmean(rp.reached(routing, c)) for c in sorted({k + 1, 1})}
   selection = selection or {}
   ctx = {"kv_type": kv_type, "lowering": lowering}
   if lowering is not None:
@@ -299,7 +331,7 @@ def ledger(captures:list[dict[str, Any]], *, main:dict[str, Any], draft:dict[str
     n, gs, d = got["steps"], got["groups"], str(depth)
     src = f"{cap['source']}: {n} steps, traced"
     catchups = (row_d.get("draft_forwards") or {}).get("per_main_forward", 0)  # a catch-up pass a verify, with no output layer of its own
-    tied = join(gs, by_phase, rows_t, n, {"verify": [(k + 1, 1.0)], "draft": [(1, statistics.fmean(got["drafts"])), (k + 1, catchups)]}, cols)
+    tied = join(gs, by_phase, rows_t, n, {"verify": [(k + 1, [1] * n)], "draft": [(1, got["drafts"]), (k + 1, [catchups] * n)]}, cols)
     lone = [(statistics.fmean(r["lone"]), key) for key, r in gs.items() if r["lone"] and r["launches"] >= n]
     fl = estimate(min(lone)[0], "the cheapest group's mean duration over its launches no other launch overlaps, us", "an empty kernel launched in the same graph",
                   inputs={"group": list(min(lone)[1])}) if lone else unknown("a group of a launch a step no other launch overlaps")
@@ -307,7 +339,7 @@ def ledger(captures:list[dict[str, Any]], *, main:dict[str, Any], draft:dict[str
       sr = shape_of(key[1], rows_t) or {}
       op = "expert_matmul" if r["family"] == "expert_mmq" else sr.get("op")
       ms, launches, sd = sum(r["excl"]) / n, r["launches"] / n, statistics.stdev(r["excl"]) if n > 1 else None
-      by = bytes_of(op, tied.get(key), sr, launches, cols[key[0]], depth, {**kv, "selection": selection.get(key[0])})
+      by = bytes_of(op, tied.get(key), sr, launches, cols[key[0]], depth, {**kv, "selection": selection.get(key[0]), "reached": kv.get("reached") if key[0] == "verify" else None})
       lim = (estimate if by["label"] == "estimate" else derived)(by["value"] / (bw["value"] * 1e9) * 1e3, "bytes / bandwidth",
                                                                    **({"test": by["test"]} if by["label"] == "estimate" else {"inputs": ["bytes", "bandwidth"]})) \
         if by["value"] is not None and bw["value"] else unknown(by.get("test") or "the target's bandwidth")

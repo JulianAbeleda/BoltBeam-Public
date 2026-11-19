@@ -15,6 +15,7 @@ Everything is read from the record collectors/session_ab.py wrote; nothing here 
 """
 from __future__ import annotations
 
+import math
 import statistics
 from typing import Any
 
@@ -85,15 +86,36 @@ def condition_mismatches(base:list[dict[str, Any]], arm:list[dict[str, Any]], te
   return out
 
 
-def contamination(arms:list[dict[str, Any]]) -> tuple[float | None, dict[int, set[int]]]:
-  """The run's outlier bound on other programs' CPU per turn, and the turns over it, by arm index."""
+def idle_bound(arms:list[dict[str, Any]], family:float = 0.05) -> dict[str, Any] | None:
+  """The bound on other programs' CPU in a turn from the machine's own idle: the start gate's samples before each arm
+  (one a GATE_INTERVAL_S, nothing of ours running). baseline: their mean; SE: their SD scaled to a typical turn's length
+  (a turn's figure is a mean over its seconds), never under two ticks over it; bound: baseline + z SE, z the normal
+  quantile for family / turns (family-wise over the run's turns). None with under 3 samples."""
+  from boltbeam.collectors.session_ab import GATE_INTERVAL_S, HZ
+  idle = [x for a in arms for x in (a.get("gate") or {}).get("foreign_cores") or [] if x is not None]
+  secs = [t["wall_ms"] / 1e3 for a in arms for t in a.get("turns") or [] if t.get("wall_ms")]
+  n = sum(1 for a in arms for t in a.get("turns") or [] if t.get("foreign_cores") is not None)
+  if len(idle) < 3 or not secs or not n:
+    return None
+  turn = statistics.median(secs)
+  se = max(statistics.stdev(idle) / math.sqrt(max(turn / GATE_INTERVAL_S, 1.0)), 2 / (HZ * turn))
+  base = statistics.fmean(idle)
+  z = statistics.NormalDist().inv_cdf(1 - family / n)
+  return {"baseline_cores": base, "se_cores": se, "z": z, "bound_cores": base + z * se, "samples": len(idle), "source": "idle"}
+
+
+def contamination(arms:list[dict[str, Any]]) -> tuple[dict[str, Any], dict[int, set[int]]]:
+  """The bound on other programs' CPU per turn (idle_bound: the measured idle before the arms; without it the run's own
+  outlier bound over its turns) and the turns over it, by arm index."""
   every = [t["foreign_cores"] for a in arms for t in a.get("turns") or [] if t.get("foreign_cores") is not None]
   from boltbeam.collectors.session_ab import HZ
   secs = [t["wall_ms"] / 1e3 for a in arms for t in a.get("turns") or [] if t.get("wall_ms")]
-  bound = outlier_bound(every, resolution=2 / (HZ * statistics.median(secs)) if secs else 0.0)  # two ticks over a typical turn
+  got = idle_bound(arms) or {"baseline_cores": statistics.median(every) if every else None, "source": "turns",
+                             "bound_cores": outlier_bound(every, resolution=2 / (HZ * statistics.median(secs)) if secs else 0.0)}  # two ticks over a typical turn
+  bound = got["bound_cores"]
   flagged = {k: {t["i"] for t in a.get("turns") or [] if bound is not None and (t.get("foreign_cores") or 0) > bound}
              for k, a in enumerate(arms)}
-  return bound, flagged
+  return got, flagged
 
 
 def analyze(record:dict[str, Any]) -> dict[str, Any]:
@@ -101,13 +123,13 @@ def analyze(record:dict[str, Any]) -> dict[str, Any]:
   names = [a["name"] for a in record["inputs"]["arms"]]
   valid = [a for a in record["arms"] if a["valid"]]
   by = {n: sorted((a for a in valid if a["name"] == n), key=lambda a: a["block"]) for n in names}
-  bound, flags = contamination(valid)
+  got, flags = contamination(valid)
   flag = {id(a): flags[k] for k, a in enumerate(valid)}
   base = names[0]
   ref = by[base][0]["turns"] if by[base] else []
   ref_sha = {t["i"]: t["sha256"] for t in ref}
   identity = {n: [f"{sum(ref_sha.get(t['i']) == t['sha256'] for t in a['turns'])}/{len(ref)}" for a in by[n]] for n in names}
-  out = {"base": base, "identity": identity, "contamination": {"bound_cores": bound,
+  out = {"base": base, "identity": identity, "contamination": {**got,
          "turns": {f"{a['name']}#{a['block'] + 1}": sorted(flag[id(a)]) for a in valid if flag[id(a)]}},
          "valid": {n: len(by[n]) for n in names}, "invalid": sum(not a["valid"] for a in record["arms"]),
          "exit_hangs": [f"{a['name']}#{a['block'] + 1}" for a in record["arms"] if (a.get("exit") or {}).get("killed")],
@@ -169,6 +191,8 @@ def lines(record:dict[str, Any], an:dict[str, Any]) -> list[str]:
   out.append(_words("identity", base=an["base"]) + "; ".join(f"{n} {' '.join(v)}" for n, v in an["identity"].items()))
   c = an["contamination"]
   out.append(_words("contamination", bound=c["bound_cores"] or 0, n=sum(len(v) for v in c["turns"].values()),
+                    how=_words("contamination_idle", base=c["baseline_cores"], se=c["se_cores"], z=c["z"], k=c["samples"]) if c.get("source") == "idle"
+                    else _words("contamination_turns"),
                     where=", ".join(f"{k}: {v}" for k, v in c["turns"].items()) or "none"))
   if an["invalid"] or an["exit_hangs"] or record.get("stopped"):
     out.append(_words("invalid", n=an["invalid"], hangs=", ".join(an["exit_hangs"]) or "none") +

@@ -28,6 +28,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import urllib.request
 from typing import Any, NamedTuple
 
 from boltbeam import formats
@@ -192,9 +193,9 @@ def parse_vllm(log:str) -> dict[str, Any]:
 
 def parse_llama(log:str) -> dict[str, Any]:
   """llama.cpp's server/cli log: 'llama_context: n_ctx = N' (the context it fitted) and 'llama_kv_cache: size = X MiB
-  (N cells ...)' (the KV it allocated), printed only at -lv 4 (b11571: the default prints neither, and the ready line
-  is 'llama_server: listening on', older builds 'server is listening on'). The memory breakdown it prints on exit,
-  after the ready line ('| - CUDA0 (...) | total = free + (self = model + context + compute) + unaccounted |', MiB),
+  (N cells ...)' (the KV it allocated), printed only at -lv 4 (b11571: the default prints neither). The memory
+  breakdown it prints on exit, after READY_MARK (start_engine's line where /health answered, never the server's own
+  ready words, which change between builds) ('| - CUDA0 (...) | total = free + (self = model + context + compute) + unaccounted |', MiB),
   says what it left free and its context buffers (KV and recurrent state): llama.cpp holds only the context asked
   for, so the free memory is room the overhead must not absorb."""
   ctx = re.search(r"n_ctx\s*=\s*(\d+)", log)
@@ -203,7 +204,7 @@ def parse_llama(log:str) -> dict[str, Any]:
   if not (ctx and kv):
     raise ValueError("the engine log has no 'n_ctx' and KV cache 'size = ... MiB' lines")
   rows = re.findall(r"\|\s*-\s*(?!Host)[^|\n]+\|\s*\d+\s*=\s*(\d+)\s*\+\s*\(\s*\d+\s*=\s*\d+\s*\+\s*(\d+)\s*\+",
-                    log[log.rfind("listening on"):] if "listening on" in log else "")
+                    log[log.rfind(READY_MARK):] if READY_MARK in log else "")
   return {"available_kv_bytes": float(kv.group(1)) * 2**20, "cache_tokens": int(kv.group(2) or ctx.group(1)),
           "served_context": int(ctx.group(1)),
           **({"free_bytes": float(rows[-1][0]) * 2**20, "context_bytes": float(rows[-1][1]) * 2**20} if rows else {})}
@@ -657,7 +658,7 @@ def llama_scratch(profile:dict[str, Any], kv:str, target) -> float:
 
 class Engine(NamedTuple):
   """What differs per engine: its KV formats (label: bytes per element, full precision first), the memory share it
-  may use, its flags and settings, how to start it once (binary, ready line) and how to read its fit figures.
+  may use, its flags and settings, how to start it once (binary, the path that answers 200 once it is ready) and how to read its fit figures.
   start is None where the engine prints none (Check says so)."""
   kv: dict[str, float]
   utilization: float
@@ -696,10 +697,10 @@ ENGINES = {
   "vllm": Engine(formats.kv_offer("vllm"), UTILIZATION, vllm_flags, vllm_settings, lambda m, a: " ".join(["vllm", "serve", m, *a]),
                  _vllm_python, lambda b, m, a, port: [b, "-m", "vllm.entrypoints.openai.api_server", "--model", m, "--host", "127.0.0.1",
                                                       "--port", str(port), "--served-model-name", "recommend-check", *a],
-                 "GPU KV cache size", parse_vllm),
+                 "/health", parse_vllm),
   "llama.cpp": Engine(formats.kv_offer("llama.cpp"), 1.0, llama_flags, llama_settings, lambda m, a: " ".join(["llama-server", "-m", m, *a]),
                       _llama_binary, lambda b, m, a, port: [b, "-m", m, "--host", "127.0.0.1", "--port", str(port), "-lv", "4", *a],
-                      "listening on", parse_llama, "Check hook: llama-server's n_ctx and KV size lines", llama_scratch,
+                      "/health", parse_llama, "Check hook: llama-server's n_ctx and KV size lines", llama_scratch,
                       1024 * 2**20, llama_cells, llama_fit, llama_chunk),  # llama.cpp's own -fit target: 1024 MiB free (common_params_fit, -fitt)
   "arkey": Engine({"f16": 2}, 1.0, None, None, None, lambda: None, None, None, None,
                   "one GPU only; arkey prints no KV fit figure, so Check has nothing to read"),
@@ -1058,27 +1059,34 @@ def stop_group(proc:subprocess.Popen, grace_s:float = 30.0) -> None:
       time.sleep(0.5)
 
 
+READY_MARK = "[boltbeam] /health answered 200"  # start_engine's line in the log where the server was ready
+
+
 def start_engine(cmd:list[str], ready:str, *, env:dict[str, str] | None = None, timeout_s:float = 900.0) -> str:
-  """Starts the engine's server with this command and returns its log once it has printed the `ready` text (or it
-  exits, or timeout_s passes); the server is then stopped. Nothing is served: the fit lines come before any request."""
-  with tempfile.TemporaryFile("w+") as log:
+  """Starts the engine's server with this command and returns its log once `ready` (its health URL) answers 200, or it
+  exits, or timeout_s passes; the server is then stopped. Readiness is the server's own endpoint, never its log's
+  words; READY_MARK goes into the returned log where it answered, so what the server printed as it exited is told
+  from its load lines. Nothing is served: the fit lines come before any request."""
+  with tempfile.TemporaryFile("w+b") as log:
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, env={**os.environ, **RUN_ENV, **(env or {})},
                             start_new_session=True)
-    end = time.monotonic() + timeout_s
+    end, at = time.monotonic() + timeout_s, None
     try:
-      while time.monotonic() < end and proc.poll() is None:
-        log.seek(0)
-        if ready in log.read():
-          break
-        time.sleep(2.0)
+      while at is None and time.monotonic() < end and proc.poll() is None:
+        try:
+          with urllib.request.urlopen(ready, timeout=2) as r:
+            at = os.fstat(log.fileno()).st_size if r.status == 200 else None  # the size, not a seek: the server shares the offset
+        except OSError:
+          time.sleep(1.0)
     finally:
       stop_group(proc)
     log.seek(0)
-    return log.read()
+    raw = log.read()
+    return (raw[:at].decode(errors="replace") + f"\n{READY_MARK}\n" + raw[at:].decode(errors="replace")) if at is not None else raw.decode(errors="replace")
 
 
 def check(rec:dict[str, Any], model:str, *, facts_file:pathlib.Path | None, facts:dict[str, Any] | None,
-          run=start_engine, port:int = 18080) -> dict[str, Any]:
+          run=start_engine, port:int | None = None) -> dict[str, Any]:
   """One real start with the recommended flags: the engine's own figures against the page's prediction (made before
   the start, from the overhead cached until now, else an upper bound), the overhead measured and cached in
   facts_file, and the prediction again with that overhead. The weights are one GPU's in the layout the flags start."""
@@ -1089,7 +1097,10 @@ def check(rec:dict[str, Any], model:str, *, facts_file:pathlib.Path | None, fact
   if not binary:
     raise ValueError(f"{rec['provider']} was not found: set its environment variable (BOLTBEAM_VLLM_PYTHON, BOLTBEAM_LLAMA_SERVER)")
   env = {**ec.venv_env(binary), **(rec.get("env") or {})} if rec["provider"] == "vllm" else None
-  log = run(eng.argv(binary, model, rec["flags"], port), eng.ready, env=env)
+  if port is None:  # a free one: a server already on a fixed port would answer /health for this one
+    from boltbeam.adapters.llama_server_control import _free_port
+    port = _free_port()
+  log = run(eng.argv(binary, model, rec["flags"], port), f"http://127.0.0.1:{port}{eng.ready}", env=env)
   started = rec.get("flags_layout") or {"id": "one", "gpus": 1}
   row = next(r for r in rec["layouts"] if r["id"] == started["id"])
   try:

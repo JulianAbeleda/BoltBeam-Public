@@ -15,7 +15,8 @@ the same order, so positions pair by request. A document = a turn.
   draft's tail): checked against BASE's command; d_floor = its disagreement with BASE.
 - Every other arm: d = its disagreement with BASE; pass iff speed_up.bar passes (d - d_floor <= t SE, every turn holds).
 Positions: the threshold's min_positions spread over the turns (shares: a short reply gives all it has, the others the
-rest), so the gate has what it needs to decide and no more. Files under SESSION_AB_OUT/gate: tops-<arm>-<block>.json, verdict-<arm>-<block>.json (a retried arm
+rest; a cut that does not read back moves to the nearest free one). The span needs speed_up.min_documents turns, each
+with a position: fewer positions than asked are said, not refused (the SE and the t at k - 1 df carry them). Files under SESSION_AB_OUT/gate: tops-<arm>-<block>.json, verdict-<arm>-<block>.json (a retried arm
 overwrites its own; the session-ab record says which attempt was valid).
 """
 from __future__ import annotations
@@ -76,11 +77,16 @@ def tops(url:str, session:dict[str, Any], span:list[int], total:int, post:Callab
   for t, reply, want in zip(turns, replies, shares([len(r) for r in replies], total)):
     msgs.append({"role": "user", "content": t["user"]})
     got, base, done = [], None, set()
-    for k in cuts(len(reply), want):
-      while k < len(reply) and (k in done or (k and tok(url, text := detok(url, reply[:k])) != reply[:k])):
-        k += 1  # the next cut the tokenizer reads back as the same tokens (no split character, no merge across it), not one used
-      if k >= len(reply):
+    for c in cuts(len(reply), want):
+      # the nearest cut at or after c, else before it, that is not used and the tokenizer reads back as the same tokens (no
+      # split character, no merge across it): a cut that collides or runs off the reply's end moves, so the turn still
+      # gives its share and the span its total (a 116-turn session fell one short of 2,000 when such a cut was dropped)
+      k = next((j for j in [*range(c, len(reply)), *range(c - 1, -1, -1)]
+                if j not in done and (not j or tok(url, detok(url, reply[:j])) == reply[:j])), None)
+      if k is None:
         continue
+      if k:
+        text = detok(url, reply[:k])
       done.add(k)
       body = {"messages": msgs + ([{"role": "assistant", "content": text}] if k else []), **REQUEST}
       seen.update(json.dumps(body, sort_keys=True).encode())
@@ -126,9 +132,13 @@ def run(*, url:str, arm:str, block:str, out:str, reference:str, floor:str, sessi
           **tops(url, sess, span, th["min_positions"], post, tokenize, detokenize)}
   (d / f"tops-{arm}-{block}.json").write_text(json.dumps(mine))
   if arm == reference and block == "1":
-    n = sum(map(len, mine["tops"]))
-    if n < th["min_positions"] or n_turns < th["min_documents"]:
-      raise ValueError(f"the span gives {n} positions over {n_turns} turns; the gate needs {th['min_positions']} over at least {th['min_documents']}")
+    n, k_min, docs = sum(map(len, mine["tops"])), speed_up.min_documents(), sum(1 for x in mine["tops"] if x)
+    if docs < k_min:  # a turn with an empty reply scores no position: it is not a document, the others still are
+      raise ValueError(f"the span gives {n} positions over {docs} of its {n_turns} turns; the gate needs at least {k_min} turns (documents) with a "
+                       f"scored position each: its SE is a bootstrap over documents, and k give C(2k-1, k) distinct resamples, which "
+                       f"must resolve the one-sided tail 1 - {th['confidence']}")
+    if n < th["min_positions"]:  # fewer than asked only where the replies hold no more: the t at k - 1 df and the SE carry it
+      say(f"session-gate: {n} positions, under the {th['min_positions']} asked: the span's replies hold no more")
     off = [c[2] for c in mine["computed"] if c[2] is not None]
     say(f"session-gate: context offset 0 on {sum(x == 0 for x in off)}/{len(off)} prefilled positions")
     say(f"session-gate: {arm} is the reference: {sum(map(len, mine['tops']))} positions over {n_turns} turns stored")
@@ -151,10 +161,12 @@ def run(*, url:str, arm:str, block:str, out:str, reference:str, floor:str, sessi
   if not (d / "floor.json").exists():
     raise ValueError(f"no floor in {d}: the floor arm {floor!r} must be session-ab's second --arm")
   fl = json.loads((d / "floor.json").read_text())
-  figures = {"per_doc": per_doc(mine["tops"], ref["tops"]), "ctx": None, "method": "llama-server chat path, teacher-forced greedy top-1 (session-gate)"}
+  pd = per_doc(mine["tops"], ref["tops"])
+  keep = [i for i, x in enumerate(pd) if x["n"]]  # the documents: turns with a scored position (an empty reply has none)
+  figures = {"per_doc": [pd[i] for i in keep], "ctx": None, "method": "llama-server chat path, teacher-forced greedy top-1 (session-gate)"}
   figures["n"] = sum(x["n"] for x in figures["per_doc"])
-  figures = speed_up.agreement(figures, [str(i) for i in range(span[0], span[1] + 1)])
-  g = speed_up.bar(figures, fl)
+  figures = speed_up.agreement(figures, [str(span[0] + i) for i in keep])
+  g = speed_up.bar(figures, {**fl, "per_doc": [fl["per_doc"][i] for i in keep if i < len(fl["per_doc"])]})
   rec = {"arm": arm, "block": block, "reference": reference, "floor": floor, "accuracy": figures, "gate": g}
   (d / f"verdict-{arm}-{block}.json").write_text(json.dumps(rec, indent=1))
   say(f"session-gate: {arm} block {block} vs {reference}: {g['verdict']}; agreement {1 - g['d_copy']:.4f}, floor {1 - g['d_floor']:.4f}, "

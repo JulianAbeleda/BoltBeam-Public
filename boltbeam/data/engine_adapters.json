@@ -1,14 +1,25 @@
 {
   "schema": "boltbeam.engine_adapters.v1",
-  "about": "The module that implements each engine's part, by engine, kept apart from engine_knobs.json so a reader of the knob rows does not load the adapters. adapter: the module workflow/tune.py loads (tune.table merges it into engines.<E>) to read that engine's build, supply its facts, run its measured points and write its command. mtp: the module collectors/mtp.py loads to measure the engine's multi-token prediction.",
+  "about": "The module that implements each engine's part, by engine, kept apart from engine_knobs.json so a reader of the knob rows does not load the adapters. adapter: the module workflow/tune.py loads (tune.table merges it into engines.<E>) to read that engine's build, supply its facts, run its measured points and write its command. mtp: the module collectors/mtp.py loads to measure the engine's multi-token prediction. out_of_memory: the engine's own words when a GPU allocation fails, a regular expression over its log, read only where no structured signal says why a process failed (its exit status says that it failed, not why): load-probe's out-of-memory label and the llama-server driver's reason. fit_words: llama.cpp's own words for its -fit outcome (common/fit.cpp), which it says only in its log, read by the llama-server driver's fit probe. version_words: vLLM's build in a retained log, for evidence recorded before replay read its /version. Each is tested against the pinned engine's source (tests/test_load_probe.py).",
   "engines": {
     "llama.cpp": {
       "adapter": "boltbeam.workflow.tune_llama_cpp",
-      "mtp": "boltbeam.collectors.llama_mtp"
+      "mtp": "boltbeam.collectors.llama_mtp",
+      "out_of_memory": "\\b[A-Za-z]+ error: (out of memory|the resource allocation failed)|cudaMalloc failed|failed to allocate (?!CPU)[A-Za-z]+\\d* buffer|ErrorOutOfDeviceMemory|hipErrorOutOfMemory",
+      "fit_words": {
+        "failed": "failed to fit params to free device memory",
+        "error": "encountered an error while trying to fit params to free device memory",
+        "fits": "successfully fit params",
+        "unchanged": "no changes needed",
+        "reduced": "context size reduced from (\\d+) to (\\d+)",
+        "by_context": "entire model can be fit by reducing context"
+      }
     },
     "vllm": {
       "adapter": "boltbeam.workflow.tune_vllm",
-      "mtp": "boltbeam.collectors.vllm_mtp"
+      "mtp": "boltbeam.collectors.vllm_mtp",
+      "out_of_memory": "torch\\.OutOfMemoryError|CUDA out of memory|CUDA error: out of memory",
+      "version_words": "Initializing a V\\d+ LLM engine \\(v([^\\s)]+)\\)"
     }
   }
 }

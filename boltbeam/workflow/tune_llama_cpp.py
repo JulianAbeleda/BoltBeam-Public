@@ -49,10 +49,15 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "draft_head_shared": "the draft reads the target's output head, so its own is not loaded (an on mod's row)",
          "mods_on": "the mods the command runs with on: the build has them and their switches are set (mods_on)",
          "first_layers_expert_bytes": "the experts of the model's first N layers, by N (what --n-cpu-moe N keeps in host RAM)",
+         "layer_expert_bytes": "each expert layer's experts in bytes, by layer (the GGUF tensor table: what -ot keeps in host RAM per layer)",
+         "expert_layer_count": "the model's layers that hold routed experts",
+         "layer_reach": "per prompt chunk size, the share of each layer's experts a chunk reaches (a measured routing profile; None: uniform)",
+         "layer_reach_source": "where the per-layer reach came from (a measured routing profile, or uniform routing assumed)",
          "draft_expert_bytes": "one routed expert of the draft head, its rows of every expert tensor and its router row (the draft file's tensors over its expert count)",
          "draft_input_row_bytes": "the draft's input rows per batch token: the target's hidden state, every stream, in f32",
          "recurrent_state_bytes": "one sequence's recurrent state (the model's profile)",
          "model_context": "the context the model was trained to (the GGUF header's context_length)",
+         "kv_layer_elems": "one attended layer's K and V elements per cell (the model's profile)", "kv_stream_layers": "the layers the kv-stream mod streams: the target's sparse-attention layers (the GGUF header's compress_ratios above 0) of an architecture it streams (its spend row's archs), else 0",
          "host_expert_tensors": "the expert tensors this placement keeps in host RAM (a slot holds one)",
          "host_expert_tensor_max_bytes": "the largest of those tensors: a slot grows to the largest it has held",
          "host_expert_layers": "the layers whose experts this placement keeps in host RAM",
@@ -75,6 +80,7 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "thread_candidates": "the thread counts a decode sweep tries: the cores sharing one L3, the physical cores and the logical CPUs",
          "fa_default": "the build's own -fa default (its --help)", "kv_default": "the build's own KV cache type default (its --help)",
          "kv_setup": "the KV cache type the Recommended setup's command uses (screen tune --kv), when this build has flash attention kernels for it",
+         "kv_setup_from": "where the setup's KV type came from (the Recommended setup's --kv, or the measured runs of this model)",
          "kv_setup_output": "its output label: untested, no agreement gate ran for it", "kv_setup_output_why": "why it is untested",
          "threads_default": "the build's own -t default (its --help)",
          "per_layer_embd_bytes": "the per-layer token embedding llama.cpp keeps in host RAM and gathers a row of per token and layer",
@@ -103,6 +109,10 @@ HELP_TIMEOUT_S = 60  # --help loads no model; a build that has not answered in a
 GiB = 1 << 30
 NP = ("-np", "--parallel")  # llama-server's slots: the command passes the requests the setup is stated for (tools/server/server.cpp:126-134)
 CHECK_TOOL = "llama-perplexity (it scores the logits)"  # the output check's tool, in tune's words
+def kv_stream_archs() -> tuple[str, ...]:
+  """The graphs the kv-stream mod streams: its spend row's archs (arkey_ie_mods llama.cpp 1.0.0 patch 20, llama-kv-stream.cpp plan)."""
+  from boltbeam.workflow import tune
+  return tuple(next((r.get("archs") or [] for r in tune.table()["engines"]["llama.cpp"]["spend"]["rows"] if r["name"] == "kv_stream"), []))
 GATE_CHUNKS = 1  # the output check reads one chunk of the tuned context per document: its second half is what is scored, the depth tune is for
 
 
@@ -153,6 +163,8 @@ def detect(server:str | pathlib.Path | None) -> dict[str, Any]:
     dirs |= {dep.parent, dep.parent.parent / "libexec"}
   files = [real] + sorted(f for d in dirs if d.is_dir() for f in d.iterdir() if f.is_file() and re.search(r"^lib(ggml|llama)\S*\.(so|dylib)", f.name))
   seen, names, libs, where, fa = set(), set(), [], {}, set()
+  from boltbeam.workflow import mods
+  marks = {m["marker"]: m["marker"].encode() for m in mods.mods(ENGINE) if m.get("marker") and not NAMES.fullmatch(m["marker"].encode())}  # a mod known by a message, not a getenv name
   for f in files:
     r = f.resolve()
     if r in seen:
@@ -163,7 +175,7 @@ def detect(server:str | pathlib.Path | None) -> dict[str, Any]:
       with open(r, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
         for m in NAMES.finditer(mm):
           where.setdefault(m.group().decode(), f.name)
-        for name, lit in LITERALS.items():
+        for name, lit in {**LITERALS, **marks}.items():
           if mm.find(lit) >= 0:
             where.setdefault(name, f.name)
         fa |= fa_kernel_types(mm)
@@ -291,13 +303,14 @@ def dequant_bytes(shape:dict[str, Any], backend:str | None) -> float:
 
 def mods_on(b:dict[str, Any]) -> list[str]:
   """The mods a run of the command has on, by name: the build has the mod (its marker is compiled in) and its switch is
-  set, as a run on a modded build BoltBeam built sets it (mods.run_env) or in this environment, at its on value. A mod on
+  set, as a run on a modded build sets it (mods.run_env of its record, or of its mods found by their markers: mods.found)
+  or in this environment, at its on value. A mod on
   by default (switch unset) reads as off: the conservative side, it is charged the stock path's memory."""
   import os
   from boltbeam.workflow import mods
-  feats, env = set(b.get("features") or {}), {**mods.run_env(mods.modded(ENGINE, b.get("build")) or {}), **os.environ}
-  return [m["name"] for m in mods.mods(ENGINE) if m.get("marker") in feats and (sw := mods.switch(m)) in env
-          and (env[sw] == mods.run_on(m) if mods.run_on(m) else env[sw] not in ("", "0"))]  # a value-valued switch (a path): set and not 0
+  feats, env = set(b.get("features") or {}), {**mods.run_env(mods.found(ENGINE, b.get("build"), b.get("features")) or {}), **os.environ}
+  return list(dict.fromkeys(m["name"] for m in mods.mods(ENGINE) if m.get("marker") in feats and (sw := mods.switch(m)) in env  # once a name: versions share it
+          and (env[sw] == mods.run_on(m) if mods.run_on(m) else env[sw] not in ("", "0"))))  # a value-valued switch (a path): set and not 0
 
 
 def memory_facts(shape:dict[str, Any], *, kv_type:str, backend:str | None, mods:list[str] | tuple = (),
@@ -561,8 +574,8 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
   from boltbeam.workflow import mods, tune
   have = [g for g in tune.table()["engines"][ENGINE]["groups"].values() if tune.group_markers(ENGINE, g) & set(b["features"])]
   named = sorted({m["id"].split("/", 1)[1] for g in tune.table()["engines"][ENGINE]["groups"].values() for m in mods.named(ENGINE, g["mod"])})
-  none = [] if have else [w["no_patch_modded" if mods.modded(ENGINE, b.get("build")) else "no_patch"].format(mods=", ".join(named))]
-  notes = none + ([w["shared_memory"]] if shared else [])
+  none = [] if have else [w["no_patch_modded" if mods.found(ENGINE, b.get("build"), b.get("features")) else "no_patch"].format(mods=", ".join(named))]
+  notes = none + ([w["shared_memory"]] if shared else []) + ([options["kv_ask"]] if options.get("kv_ask") else [])
   name = pathlib.Path(model).name
   if plan.get("ubatch_uniform") is not None and plan.get("ubatch") != plan["ubatch_uniform"] and plan.get("routing_profile"):
     p = plan["routing_profile"]
@@ -590,7 +603,8 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
                           kv=kv_type, header=header)
     out |= vr
     try:
-      out |= spend_facts(ex, options.get("profile") or _profile(model), header, dr[f"{NS}.mtp_head"])
+      out |= spend_facts(ex, options.get("profile") or _profile(model), header, dr[f"{NS}.mtp_head"],
+                         routing=options["routing_profile"] if "routing_profile" in options else rp.find(model, engine=ENGINE))
     except (OSError, ValueError, KeyError) as exc:  # the spend fit then says which fact it lacks
       out["spend_why"] = f"{type(exc).__name__}: {exc}"
   else:
@@ -640,18 +654,29 @@ def placed_facts(model:str, host_experts:float, features=None, *, tabs:dict[str,
   return out, src
 
 
-def spend_facts(ex:dict[str, Any], profile:dict[str, Any] | None, header:dict[str, Any], head:str | None) -> dict[str, Any]:
+def spend_facts(ex:dict[str, Any], profile:dict[str, Any] | None, header:dict[str, Any], head:str | None,
+                routing:dict[str, Any] | None = None) -> dict[str, Any]:
   """The facts the spend rows (engines.llama.cpp.spend) read beyond tune's: the experts of the first N model layers by N,
-  the draft's bytes per routed expert, its input rows per batch token and one sequence's recurrent state."""
+  each expert layer's own bytes (the GGUF tensor table: a mixed-type model's layers differ), the share of a layer's
+  experts a prompt chunk reaches per chunk size (a measured routing profile; None: uniform routing), the draft's bytes
+  per routed expert, its input rows per batch token, one sequence's recurrent state and the KV the kv-stream mod streams."""
   from boltbeam.roofline import prefill_work as pw
   ids, per = ex.get("ids") or [], ex.get("per_layer") or []
   top = (ids[-1] + 1) if ids else 0
   first = {n: sum(b for i, b in zip(ids, per) if i < n) for n in range(top + 1)}
   meta, arch = header["meta"], header["meta"].get("general.architecture")
   streams = int(meta.get(f"{arch}.hyper_connection.count") or 1)
-  out = {f"{NS}.first_layers_expert_bytes": first, f"{NS}.recurrent_state_bytes": (pw.recurrent_state_bytes(profile) if profile else None),
+  reach = None
+  if routing and routing.get("layers"):
+    order = [r["layer"] for r in routing["layers"]]
+    reach = {w: {l: x / routing["n_expert"] for l, x in zip(order, rp.reached(routing, w))} for w in rp.CHUNKS}
+  out = {f"{NS}.first_layers_expert_bytes": first, f"{NS}.layer_expert_bytes": dict(zip(ids, per)), f"{NS}.expert_layer_count": len(ids),
+         f"{NS}.layer_reach": reach, f"{NS}.layer_reach_source": rp.words(routing) if routing else rp.UNIFORM,
+         f"{NS}.recurrent_state_bytes": (pw.recurrent_state_bytes(profile) if profile else None),
          f"{NS}.draft_input_row_bytes": 4 * int(profile["hidden_size"]) * streams if profile and profile.get("hidden_size") else None,
-         f"{NS}.draft_expert_bytes": None, f"{NS}.model_context": meta.get(f"{arch}.context_length")}
+         f"{NS}.draft_expert_bytes": None, f"{NS}.model_context": meta.get(f"{arch}.context_length"),
+         f"{NS}.kv_layer_elems": (pw.kv_bytes_per_token(profile, element_bytes=1) or 0) / max(pw.attention_layer_count(profile) or 0, 1) if profile else None,
+         f"{NS}.kv_stream_layers": sum(1 for r in (meta.get(f"{arch}.attention.compress_ratios") or [])[:int(meta.get(f"{arch}.block_count") or 0)] if (r or 0) > 0) if arch in kv_stream_archs() else 0}
   if head:
     out[f"{NS}.draft_expert_bytes"] = draft_expert_bytes(pathlib.Path(head))
   return out
@@ -766,10 +791,11 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
     out["kv_bytes_per_token"] = size(default)
     out[f"{NS}.kv_sizes"] = ", ".join(w["kv_size"].format(type=t, bytes=size(t)) for t in kinds)
     src["kv_bytes_per_token"] = f"roofline/prefill_work.kv_bytes_per_token's elements (the attended layers) at the build's default type, {default}"
-  setup = options.get("kv")  # the Recommended setup's type: the -ctk row starts from it, as its command does
+  setup = options.get("kv")  # the Recommended setup's type (--kv), else the measured runs' (tune.kv_of): the -ctk row starts from it
   out[f"{NS}.kv_setup"] = setup if setup in kinds else None
+  out[f"{NS}.kv_setup_from"] = options.get("kv_from") or w["kv_setup_from"]
   out[f"{NS}.kv_setup_output"], out[f"{NS}.kv_setup_output_why"] = "untested", w["kv_setup_untested"]
-  src[f"{NS}.kv_setup"] = (f"--kv {setup}: the Recommended setup's KV type" if setup in kinds else
+  src[f"{NS}.kv_setup"] = (f"--kv {setup}: {out[f'{NS}.kv_setup_from']}" if setup in kinds else
                            f"--kv {setup}: not a type this build has flash attention kernels for, so not used" if setup else "no --kv given")
   topo = {"l3": host.get("cpu_l3_cores"), "physical": host.get("cpu_physical_cores"), "logical": host.get("cpu_logical_cores")}
   out[f"{NS}.thread_candidates"] = sorted({int(v) for v in topo.values() if v})

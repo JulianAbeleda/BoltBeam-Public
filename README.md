@@ -16,6 +16,15 @@ BoltBeam audits inference time against a measured roofline. It runs your model i
 kernel, pairs each kernel with the model role it serves, and puts each one beside the fastest that role could run
 on this chip. The chip's limits are measured on the chip, not read off a data sheet.
 
+Past the audit, it works on the rows it finds: **find the expensive work → search the kernel configurations the
+chip allows → rebuild, check and time each candidate independently, on the model's own weight bytes → validate a
+change against the whole model before it is kept.** BubbleBeam proposes only configurations the hardware can run,
+FutureSight orders them by static legality checks, and a provider's compiler can join a bounded search. A kept
+change passes a whole-model A/B with binding checks and promotion gates, and leaves its evidence and a rollback
+record; a kernel that got faster while the model got slower is recorded as exactly that. Scope today: the
+whole-model A/B installs tinygrad Opt-sequence plans; emitter plans are searched and checked but stop before it.
+It is not a general automatic optimizer.
+
 ![BoltBeam on an M5 MacBook Air: Qwen3-8B on llama.cpp, the run, then where each millisecond of the token goes](docs/media/boltbeam-demo.gif)
 
 It answers, per role and per kernel:

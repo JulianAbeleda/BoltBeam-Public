@@ -4,7 +4,7 @@
   "mods_repo": {
     "default_path": "~/arkey_ie_mods",
     "env": "BOLTBEAM_IE_MODS",
-    "pin": "093b0dda96b412f974358c31edf8d9bd1a2e9fc6",
+    "pin": "faf3a33627c5804333e4e6dd5a572323f2ea80f6",
     "pin_env": "BOLTBEAM_IE_MODS_PIN",
     "pin_why": "the floor and the offline default, not the only choice: `boltbeam mods` reads the newest commit on the repo's default branch past the pin whose index schema BoltBeam reads and whose requires.boltbeam it meets (workflow/mods.resolve), the pin when that fails; --pin or $BOLTBEAM_IE_MODS_PIN reads exactly one commit",
     "url": "https://github.com/JulianAbeleda/arkey_ie_mods",
@@ -38,7 +38,8 @@
   },
   "uses_why": "by engine/name (the mod in any version); every mod with a switch is also read by results.engine_mods, context_audit.output_label and tune.output_of",
   "plan_only": {
-    "llama.cpp/rs-one-copy": "costs +0.12 ms a decode step [0.04, 0.19] (session-ab, switch on vs off); it pays only when the plan spends the memory it frees (the expert residency placement with the hot draft), so a run on a modded build leaves it off and tune's spend fit names it (LLAMA_RS_ONE_COPY=1) when its plan uses the freed MiB"
+    "llama.cpp/rs-one-copy": "costs +0.12 ms a decode step [0.04, 0.19] (session-ab, switch on vs off); it pays only when the plan spends the memory it frees (the expert residency placement with the hot draft), so a run on a modded build leaves it off and tune's spend fit names it (LLAMA_RS_ONE_COPY=1) when its plan uses the freed MiB",
+"llama.cpp/kv-stream": "costs -8.6 tok/s warm decode [-17.8, +0.6] at 128k where everything fits without it (session-ab, 3 pairs, N 65,536 vs off); it pays only where the memory it frees buys expert residency (256k: 220.0 vs 184.4 tok/s), so a run on a modded build leaves it off and tune's spend fit names it (LLAMA_KV_STREAM=N) when its plan uses the freed MiB"
   },
   "plan_only_why": "mods whose switch a run on a modded build does not turn on by itself (workflow/mods.run_env): the spend fit names it when its plan pays for it (engine/name, as uses)",
   "install_paths": {

@@ -123,12 +123,12 @@ class Server:
 
 
 WORDS = pathlib.Path(__file__).resolve().parents[1] / "data" / "plain_words.json"
-NO_FIT = "common_fit_params: failed to fit params to free device memory"  # common/fit.cpp: its fit did not run (-ngl given) or missed its target
-# any ggml GPU backend's words: its error prefix is the backend's name (GGML_CUDA_NAME: CUDA, ROCm, MUSA), the buffer's is the
-# device's (CUDA0, ROCm0, Vulkan0, MTL0); the HIP build keeps the source's "cudaMalloc failed" text
-OUT_OF_MEMORY = re.compile(r"\b[A-Za-z]+ error: (out of memory|the resource allocation failed)|cudaMalloc failed|failed to allocate (?!CPU)[A-Za-z]+\d* buffer"
-                           r"|ErrorOutOfDeviceMemory|hipErrorOutOfMemory")
-FIT_END = re.compile(r"(successfully fit params|failed to fit params|encountered an error while trying to fit params)")
+# llama.cpp's own words, where its log is the only signal (data/engine_adapters.json, tested against the pinned source): any ggml
+# GPU backend's out of memory (error prefix the backend's name, buffer the device's; HIP keeps "cudaMalloc failed"), its -fit outcome
+ROW = json.loads((WORDS.parent / "engine_adapters.json").read_text())["engines"]["llama.cpp"]
+OUT_OF_MEMORY, FIT = re.compile(ROW["out_of_memory"]), ROW["fit_words"]
+NO_FIT = "common_fit_params: " + FIT["failed"]  # common/fit.cpp: its fit did not run (-ngl given) or missed its target
+FIT_END = re.compile("(" + "|".join(re.escape(FIT[k]) for k in ("fits", "failed", "error")) + ")")
 
 
 def words() -> dict:
@@ -160,12 +160,12 @@ def fit_outcome(log:str) -> dict:
   """llama.cpp's own fit of a setup to the GPU's free memory (common/fit.cpp, logged at -lv 4), as the server logged it:
   {"fits", "context" (the context it reduced to; None: the model's own context fits), "why"}. Fitting only by moving
   layers off the GPU is no fit here: a measurement keeps every layer on it."""
-  if m := re.search(r"(?:failed to fit params to free device memory|encountered an error while trying to fit params to free device memory): (.*)", log):
+  if m := re.search(f"(?:{re.escape(FIT['failed'])}|{re.escape(FIT['error'])}): (.*)", log):
     return {"fits": False, "context": None, "why": m.group(1).strip()}
-  if "no changes needed" in log:
+  if FIT["unchanged"] in log:
     return {"fits": True, "context": None, "why": "the model's own context fits"}
-  reduced = re.findall(r"context size reduced from (\d+) to (\d+)", log)
-  if reduced and "entire model can be fit by reducing context" in log:
+  reduced = re.findall(FIT["reduced"], log)
+  if reduced and FIT["by_context"] in log:
     return {"fits": True, "context": int(reduced[-1][1]), "why": f"the context reduced from {int(reduced[-1][0]):,} to {int(reduced[-1][1]):,}"}
   return {"fits": False, "context": None, "why": "only with layers moved off the GPU, even at the smallest context"}
 

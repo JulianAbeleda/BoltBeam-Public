@@ -438,6 +438,34 @@ def cmd_session_ab(args) -> int:
   return 0 if not record.get("stopped") else 2
 
 
+def _register_load_probe(sub) -> None:
+  p = sub.add_parser("load-probe", help="does a server command load: ready by its /health, why not by its exit, its free GPU memory")
+  p.add_argument("--out", required=True, help="the probe's folder: load_probe.json (a measured row tune --measured reads) and server.log")
+  p.add_argument("--server-argv", required=True, help="the server command; leading VAR=value tokens are its environment")
+  p.add_argument("--session", help="a session (session-ab's format): its first turns run after ready, for the lowest free memory")
+  p.add_argument("--turns", help="with --session: the span to run, A-B or N (default the first 3)")
+  p.add_argument("--history", default="recorded", help="with --session: own or recorded (default recorded)")
+  p.add_argument("--engine", default="llama.cpp", help="the server's chat adapter and out-of-memory row (data/engine_adapters.json)")
+  p.add_argument("--stress", action="store_true", help="with --session: then new and resumed prompts across every chunk boundary until the free memory plateaus (the runtime headroom tune keeps)")
+  p.add_argument("--timeout", type=float, default=600.0, help="seconds to wait for /health before the load counts as hung")
+  p.add_argument("--name", help="the probe's name in tune's fit (default the --out folder's name)")
+  p.set_defaults(fn=cmd_load_probe)
+
+
+def cmd_load_probe(args) -> int:
+  """0 loaded (and its session span ran), 2 it did not, 1 refused."""
+  from boltbeam.collectors import load_probe, session_ab as sab
+  if args.stress and not args.session:
+    return _fail("load-probe: --stress runs after a session: pass --session")
+  try:
+    rec = load_probe.run(out=args.out, server_argv=args.server_argv, engine=args.engine, session=args.session, turns=args.turns,
+                         history=args.history, timeout_s=args.timeout, name=args.name, stress_on=args.stress, say=lambda m: print(m, file=sys.stderr, flush=True))
+  except (OSError, ValueError, RuntimeError, sab.Refused) as exc:
+    return _fail(f"load-probe: {exc}")
+  print(load_probe.summary(rec))
+  return 0 if rec["loaded"] and rec["session"] is not False else 2
+
+
 def _register_session_gate(sub) -> None:
   p = sub.add_parser("session-gate", help="stage 1 of the agreement gate against the running server: session-ab's --hook")
   p.add_argument("--reference", required=True, help="the arm every other arm is judged against: session-ab's first --arm")
@@ -800,6 +828,7 @@ def register(sub) -> None:
   _register_matched_control(sub)
   _register_replay_ab(sub)
   _register_session_ab(sub)
+  _register_load_probe(sub)
   _register_session_gate(sub)
   _register_ingest(sub)
   _register_evaluate(sub)
