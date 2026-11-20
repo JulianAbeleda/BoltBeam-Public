@@ -5,6 +5,8 @@
     "llama.cpp": {
       "adapter": "boltbeam.workflow.tune_llama_cpp",
       "mtp": "boltbeam.collectors.llama_mtp",
+      "graph_stats": {"line": "GGML_CUDA_GRAPH_STATS: ctx (?P<ctx>\\S+) \\S+ graph (?P<graph>\\S+) chunk (?P<chunk>\\d+) ", "chunk_env": "GGML_CUDA_GRAPH_CHUNK_SIZE", "chunk_default": 512,
+                      "why": "the graph-cap mod's stats line (GGML_CUDA_GRAPH_STATS=1, arkey_ie_mods llama.cpp/graph-cap): one per graph executable built, with its backend context, its graph and its chunk; a context's chunks a graph = the highest chunk + 1 = ceil(nodes of its largest CUDA split graph / the chunk size)"},
       "out_of_memory": "\\b[A-Za-z]+ error: (out of memory|the resource allocation failed)|cudaMalloc failed|failed to allocate (?!CPU)[A-Za-z]+\\d* buffer|ErrorOutOfDeviceMemory|hipErrorOutOfMemory",
       "fit_words": {
         "failed": "failed to fit params to free device memory",

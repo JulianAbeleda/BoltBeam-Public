@@ -10,6 +10,9 @@ Everything is read from the record collectors/session_ab.py wrote; nothing here 
   contamination   a turn is contaminated when other programs' CPU during it lies beyond the run's own outlier bound
                   (median + MAD sigma at a 5% family-wise level over every turn of the run); the clean deltas drop a
                   turn contaminated in either arm of a pair
+  loops           a reply loops when it repeats itself (collectors/session_ab.repeat_share) more than any of the session's
+                  own recorded replies at least as long does (loop_bound; a short reply repeats more of itself by its length alone): a loop is easy to draft, so its decode speed is not real
+                  text's. The "no loop" band drops a warm turn that looped in any run of the two arms compared
   bands           the warm turns (turn 1 is cold, reported apart) cut into quartiles of their prompt depth
   deltas          arm less base, per pair (pair k = block k's run of each), mean and 95% t interval over the pairs
 """
@@ -118,6 +121,15 @@ def contamination(arms:list[dict[str, Any]]) -> tuple[dict[str, Any], dict[int, 
   return got, flagged
 
 
+def loop_bound(ref:list[dict[str, Any]], t:dict[str, Any]) -> float:
+  """The most a recorded reply at least as long as this one repeats itself (ref: the base's first run, whose repeat_ref is
+  the recorded reply cut to its own reply's length, predicted_n tokens). A short text repeats a larger share of itself by
+  its length alone, so a short recorded reply never sets the bound of a longer one; with none as long, the longest ones."""
+  real = [(x.get("predicted_n") or 0, x["repeat_ref"]) for x in ref if x.get("repeat_ref") is not None]
+  long_ = [r for n, r in real if n >= (t.get("predicted_n") or 0)] or [r for n, r in real if n == max(n for n, _ in real)]
+  return max(long_)
+
+
 def analyze(record:dict[str, Any]) -> dict[str, Any]:
   """The record's comparisons: every arm against the first (the base), on the valid runs."""
   names = [a["name"] for a in record["inputs"]["arms"]]
@@ -127,14 +139,19 @@ def analyze(record:dict[str, Any]) -> dict[str, Any]:
   flag = {id(a): flags[k] for k, a in enumerate(valid)}
   base = names[0]
   ref = by[base][0]["turns"] if by[base] else []
+  real = [t["repeat_ref"] for t in ref if t.get("repeat_ref") is not None]
+  loop = {id(a): {t["i"] for t in a["turns"] if real and t["i"] > 1 and (t.get("repeat") or 0) > loop_bound(ref, t)} for a in valid}
   ref_sha = {t["i"]: t["sha256"] for t in ref}
   identity = {n: [f"{sum(ref_sha.get(t['i']) == t['sha256'] for t in a['turns'])}/{len(ref)}" for a in by[n]] for n in names}
   out = {"base": base, "identity": identity, "contamination": {**got,
          "turns": {f"{a['name']}#{a['block'] + 1}": sorted(flag[id(a)]) for a in valid if flag[id(a)]}},
+         "loops": {"bound": max(real) if real else None, "of": sum(t["i"] > 1 for t in ref), "turns": {f"{a['name']}#{a['block'] + 1}": sorted(loop[id(a)]) for a in valid if loop[id(a)]}},
          "valid": {n: len(by[n]) for n in names}, "invalid": sum(not a["valid"] for a in record["arms"]),
          "exit_hangs": [f"{a['name']}#{a['block'] + 1}" for a in record["arms"] if (a.get("exit") or {}).get("killed")],
          "comparisons": []}
   cuts = bands(ref) if ref else []
+  if real and cuts:  # the warm turns less the looping ones (before "warm", which stays the last row)
+    cuts.insert(-1, {"label": "no loop", "turns": cuts[-1]["turns"], "loops": True})
   for n in names[1:]:
     blocks = sorted({a["block"] for a in by[n]} & {a["block"] for a in by[base]})
     pairs = [(next(a for a in by[base] if a["block"] == k), next(a for a in by[n] if a["block"] == k)) for k in blocks]
@@ -147,12 +164,13 @@ def analyze(record:dict[str, Any]) -> dict[str, Any]:
       continue
     rows = []
     for cut in cuts:
-      row = {"band": cut["label"], "turns": len(cut["turns"])}
+      drop = set().union(*(loop[id(a)] for p in pairs for a in p)) if cut.get("loops") else set()
+      row = {"band": cut["label"], "turns": len(cut["turns"] - drop)}
       for clean in (False, True):
         for m, _ in METRICS:
           got = []
           for a, b in pairs:
-            keep = cut["turns"] - (flag[id(a)] | flag[id(b)] if clean else set())
+            keep = cut["turns"] - drop - (flag[id(a)] | flag[id(b)] if clean else set())
             va, vb = band_value(a["turns"], keep, m), band_value(b["turns"], keep, m)
             if va is not None and vb is not None:
               got.append((va, vb))
@@ -164,6 +182,11 @@ def analyze(record:dict[str, Any]) -> dict[str, Any]:
     cmp["bands"] = rows
     cmp["session_wall_s"] = {"base": statistics.fmean(x for x, _ in walls), "arm": statistics.fmean(y for _, y in walls),
                              "delta": mean_ci([y - x for x, y in walls])}
+    # the same sum over the turns no pair flagged (CPU contamination), every pair on the same turns
+    clean = set.intersection(*({t["i"] for t in a["turns"]} - flag[id(a)] for p in pairs for a in p))
+    cw = [(sum(t["wall_ms"] for t in a["turns"] if t["i"] in clean) / 1e3, sum(t["wall_ms"] for t in b["turns"] if t["i"] in clean) / 1e3) for a, b in pairs]
+    cmp["session_wall_clean_s"] = {"base": statistics.fmean(x for x, _ in cw), "arm": statistics.fmean(y for _, y in cw), "delta": mean_ci([y - x for x, y in cw]),
+                                   "turns": len(clean), "of": len(ref)}
     common = sorted(set.intersection(*({t["i"] for t in a["turns"]} for p in pairs for a in p)))
     cmp["turns"] = [{"i": i, **{m: mean_ci([per_turn(_turn(b, i))[m] - per_turn(_turn(a, i))[m] for a, b in pairs
                                              if per_turn(_turn(b, i))[m] is not None and per_turn(_turn(a, i))[m] is not None])
@@ -194,6 +217,11 @@ def lines(record:dict[str, Any], an:dict[str, Any]) -> list[str]:
                     how=_words("contamination_idle", base=c["baseline_cores"], se=c["se_cores"], z=c["z"], k=c["samples"]) if c.get("source") == "idle"
                     else _words("contamination_turns"),
                     where=", ".join(f"{k}: {v}" for k, v in c["turns"].items()) or "none"))
+  if (lp := an.get("loops") or {}).get("bound") is None and any(t.get("repeat") is not None for a in record["arms"] for t in a.get("turns") or []):
+    out.append(_words("loops_no_ref", base=an["base"]))
+  elif lp.get("bound") is not None:
+    out.append(_words("loops", bound=lp["bound"], n=len(set().union(*lp["turns"].values())), m=lp["of"],
+                      where=", ".join(f"{k}: {v}" for k, v in lp["turns"].items()) or "none"))
   if an["invalid"] or an["exit_hangs"] or record.get("stopped"):
     out.append(_words("invalid", n=an["invalid"], hangs=", ".join(an["exit_hangs"]) or "none") +
                (f" {record['stopped']}" if record.get("stopped") else ""))
@@ -216,4 +244,6 @@ def lines(record:dict[str, Any], an:dict[str, Any]) -> list[str]:
         out.append(f"  {band:<10}" + "".join(f"{c:>34}" for c in cells))
     w = cmp["session_wall_s"]
     out.append("  " + _words("wall", a=w["base"], b=w["arm"], d=_ci(w["delta"], 1)))
+    if (c := cmp.get("session_wall_clean_s")) and c["turns"] < c["of"]:
+      out.append("  " + _words("wall_clean", a=c["base"], b=c["arm"], d=_ci(c["delta"], 1), n=c["turns"], m=c["of"]))
   return out

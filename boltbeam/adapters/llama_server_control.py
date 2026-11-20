@@ -177,7 +177,7 @@ def _running(command:list[str], base_url:str, log_path:str | pathlib.Path, start
           process.wait(timeout=5)
         while time.monotonic() < deadline:  # the group outlives its leader while a child (vLLM's engine) still exits
           try: os.killpg(process.pid, 0)
-          except ProcessLookupError: break
+          except (ProcessLookupError, PermissionError): break  # EPERM: a group of zombies only (macOS), gone
           time.sleep(0.2)
 
 

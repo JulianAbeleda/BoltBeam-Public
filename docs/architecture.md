@@ -16,7 +16,7 @@ measure           collectors/  an engine run and its outside capture (nsys, rocp
 tie-out           workflow/    the measured token against the limit: roofline/ gives each role's floor from the
                   roofline/    bytes it reads and the measured bandwidth and matrix rates; tie_out.py says where
                                the token loses time, and the capture-overhead ceiling
-search            search/      per role, where the engine and chip have a search provider: the kernel path
+search            search/      per role, where the engine and chip have a search provider: the kernel lifecycle
                                below (search/search_stage.py; skipped with --no-search, and on a replay)
 report / output   report/      results.json, report.html, summary.md from the folder (workflow/output.py)
 ```
@@ -36,7 +36,7 @@ workflow/       the stages in order (pipeline.py), the layout of a run on its GP
 roofline/       the limits: memory (weights, KV, recurrent state), compute paths, MoE and prefill work; a run's
                 ceiling and the one memory speed its numbers use (roofline/limit.py)
 report/         the HTML report and the Markdown summary
-search/         the kernel path: proposal and legality (BubbleBeam, FutureSight), the provider and BoltBeam's own
+search/         the kernel lifecycle: proposal and legality (BubbleBeam, FutureSight), the provider and BoltBeam's own
                 check of it, the whole-model A/B and the decision (section below)
 runtime/        the drivers BoltBeam runs on a GPU: the vLLM, TensorRT-LLM and Ollama decode drivers, the
                 CUDA, HIP and Metal device bridges, the bounded build jobs
@@ -51,7 +51,13 @@ Every stated choice (a tolerance that is not a measured uncertainty, a search
 limit, a ceiling) is a row of `data/policy.json` with its reason, read through
 `core.policy.value()`. A missing row is an error, never a default in code.
 
-## Search and validate: the kernel path
+## Search and validate: the kernel lifecycle
+
+The kernel lifecycle is propose -> check -> time -> gate -> install -> retire. It is one stage of the optimization
+cycle: audit (the session map's per-role audit, docs/session-map.md) -> search -> gate -> ship, then audit again. That
+is the APOD cycle (Assess, Parallelize, Optimize, Deploy) of NVIDIA's CUDA C++ Best Practices Guide
+(https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/), guided by the roofline: the audit's floors say where
+the time is, and the ranked queue says what to do next.
 
 The audit names the rows that lose time; the search stage works on them, one
 role at a time (`search/role_compare.py`):
@@ -100,7 +106,7 @@ BoltBeam began as a profile -> search -> codegen frontend, and that path is
 still live: `cli/workflow.py` and `analyze.py` emit the search space
 (`search/emit.py`), the seed route policy (`policy/emit.py`) and the synthetic
 fixtures (`synth/fixtures.py`); `report/markdown.py` reads the ledger
-(`ledger/`), which the kernel path above also writes. They are not retired.
+(`ledger/`), which the kernel lifecycle above also writes. They are not retired.
 Their contracts:
 
 - `data/formats.json` — every weight, KV-cache and activation format (docs/formats.md): names, block size, bits, each component's status, and the quant capability (dequant family, route

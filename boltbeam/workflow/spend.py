@@ -34,6 +34,7 @@ import re
 import shlex
 from typing import Any
 
+from boltbeam.collectors.load_probe import machine_id  # noqa: F401  (spend reads records by it)
 from boltbeam.collectors.replay import flag_value
 from boltbeam.vocab import SCHEMA_SPEND_PROBE
 
@@ -95,6 +96,43 @@ def model_of(d:dict[str, Any]) -> str | None:
   return pathlib.Path(m).name if m else None
 
 
+def file_facts_of(d:dict[str, Any]) -> dict[str, Any]:
+  """The facts a record read from the files its commands name, by file name (session-ab writes them at the record's top
+  level, older records in inputs; a probe at its top level): what lets a record measured elsewhere be read here."""
+  return {**((d.get("inputs") or {}).get("file_facts") or {}), **(d.get("file_facts") or {})}
+
+
+def machine_free(d:dict[str, Any], given:float | dict[str, float] | None = None) -> float | None:
+  """The GPU's free memory with nothing running on the machine a record ran on, bytes (the reading tune's --gpu-free-mib
+  is): a probe's free_before_mib; a session-ab record's machine.free_mib, else its runs' highest free_before_mib (nothing
+  running reads highest: a server still letting go reads low); else
+  given (--measured-free-mib: the reading for records that carry none). None: unknown."""
+  if d.get("schema") == PROBE:
+    got = d.get("free_before_mib")
+  else:
+    got = (d.get("machine") or {}).get("free_mib")
+    got = got if got is not None else max((r["free_before_mib"] for r in d.get("arms") or [] if r.get("free_before_mib") is not None), default=None)
+  if got is not None:
+    return got * MiB
+  if isinstance(given, dict):  # per path (--measured-free-mib PATH=MiB): the records under it; "" for every record
+    real = str(pathlib.Path(d.get("_path") or "").resolve())
+    hit = [(len(k), v) for k, v in given.items() if k and (real == k or real.startswith(k.rstrip("/") + "/"))]
+    return max(hit)[1] if hit else given.get("")
+  return given
+
+
+def machine_shift(d:dict[str, Any], here:float | None, given:float | dict[str, float] | None = None) -> dict[str, Any]:
+  """What a record's free memory readings move by on this machine: this machine's free with nothing running less the
+  record's machine's (the same allocations leave that much more or less free here: a display, another driver). bytes 0
+  and known False when either reading is missing (said by the fit: its anchors are read as if measured here)."""
+  there = machine_free(d, given)
+  if (d.get("machine") or {}).get("id", d.get("machine_id")) == machine_id():  # measured here: its own readings stand
+    return {"bytes": 0.0, "known": True, "there": there}
+  if here is None or there is None:
+    return {"bytes": 0.0, "known": False, "there": there}
+  return {"bytes": here - there, "known": True, "there": there}
+
+
 def defaults(model:str, gpu_total, features:set[str]) -> list[str]:
   """The measured records of this model file, from the stores (STORES: BoltBeam's own measured rows, then
   ~/.boltbeam/spend): what tune ranks on when no --measured is given. Only a session-ab record of a GPU of this size
@@ -119,6 +157,8 @@ def headroom_of(spend:dict[str, Any], records:list[dict[str, Any]], model:str, f
   grew, given or stored (a crash's lower bound included). The stored probes count here only, never as anchors. skip: rows
   that could not be read (a bound whose formula failed falls to the next row)."""
   stored = [d for d in read_records([str(x) for x in STORES if x.is_dir()]) if d.get("schema") == PROBE]
+  mine = [d for d in {d["_path"]: d for d in stored + records}.values() if d.get("schema") == PROBE and model_of(d) == pathlib.Path(model).name]
+  passed = []  # the bound rows this build has whose params are not all known: said with the row that stands instead
   for r in spend.get("headroom") or []:
     if not available(r, features) or r["name"] in skip:
       continue
@@ -127,14 +167,39 @@ def headroom_of(spend:dict[str, Any], records:list[dict[str, Any]], model:str, f
         rec = next((json.loads((x / r["record"]).read_text()) for x in STORES if r.get("record") and (x / r["record"]).is_file()), {})
       except (OSError, ValueError):
         continue  # an unreadable record: the next row
-      got = {k: v if v is not None else rec.get(k) for k, v in r["params"].items()}
+      got = {k: probed(v, mine) if isinstance(v, dict) and "probe" in v else v if v is not None else rec.get(k) for k, v in r["params"].items()}
       if None not in got.values():
-        return {"bytes": None, "kind": "bound", "row": r["name"], "formula": r["bytes"], "params": got, "switch": r.get("switch") or {}}
-      continue  # its record has not landed: the next row
+        return {"bytes": None, "kind": "bound", "row": r["name"], "formula": r["bytes"], "params": got, "switch": r.get("switch") or {},
+                "from": sources(r["params"], mine)}
+      passed.append({"row": r["name"], "unknown": [k for k, v in got.items() if v is None], "why": (r.get("params_why") or {})})
+      continue  # its record or probe has not landed: the next row
     grow = [d["stress_growth_mib"] for d in {d["_path"]: d for d in stored + records}.values()
             if d.get("schema") == PROBE and d.get("stress_growth_mib") is not None and model_of(d) == pathlib.Path(model).name]
-    return {"bytes": max(grow) * MiB if grow else None, "kind": r["kind"], "row": r["name"]}
-  return {"bytes": None, "kind": None, "row": None}
+    return {"bytes": max(grow) * MiB if grow else None, "kind": r["kind"], "row": r["name"], **({"passed": passed} if passed else {})}
+  return {"bytes": None, "kind": None, "row": None, **({"passed": passed} if passed else {})}
+
+
+def probed(param:dict[str, Any], probes_:list[dict[str, Any]]) -> float | None:
+  """A headroom param read from load probes of the model ({probe: a dotted field}): the most over the probes that
+  recorded it (None: none did)."""
+  vals = []
+  for d in probes_:
+    v: Any = d
+    for k in param["probe"].split("."):
+      v = v.get(k) if isinstance(v, dict) else None
+    if isinstance(v, (int, float)):
+      vals.append(v)
+  return max(vals) if vals else None
+
+
+def sources(params:dict[str, Any], probes_:list[dict[str, Any]]) -> dict[str, str]:
+  """Where each probe-read param came from: the probe that gave its value (the most)."""
+  out = {}
+  for k, v in params.items():
+    if isinstance(v, dict) and "probe" in v and (top := probed(v, probes_)) is not None:
+      d = next(d for d in probes_ if probed(v, [d]) == top)
+      out[k] = where_of(d["_path"]) + (v.get("shipped", "") if pathlib.Path(d["_path"]).parent in STORES else "")  # the row's own words for a probe that is BoltBeam's, not the plan's
+  return out
 
 
 def room_at(room:dict[str, Any], spend:dict[str, Any], cfg:dict[str, Any], f:dict[str, Any], context:int, allowed:set[str]) -> float:
@@ -234,9 +299,37 @@ def config_of(spend:dict[str, Any], argv:list[str], env:dict[str, str], ad, f:di
   return out
 
 
+def requirements(row:dict[str, Any]) -> set[str] | None:
+  """The names that show a build has a row's switch: its mod's markers in the arkey_ie_mods index (mod: engine/name, every
+  version's), else its own requires (a switch no indexed mod carries yet). None: the row needs nothing in the build."""
+  if mod := row.get("mod"):
+    from boltbeam.workflow import mods
+    engine, _, name = mod.partition("/")
+    return {m["marker"] for m in mods.named(engine, name) if m.get("marker")} or {f"(no marker: {mod} is not in the mods index)"}
+  return {row["requires"]} if row.get("requires") else None
+
+
+def lacks_with(row:dict[str, Any], features:set[str]) -> str | None:
+  """The mod a row must run with (its `with`: e.g. kv_stream with graph-cap) when this build lacks it, else None."""
+  w = row.get("with")
+  return w["mod"] if w and not requirements({"mod": w["mod"]}) & set(features) else None
+
+
+def unfit(row:dict[str, Any], f:dict[str, Any]) -> str | None:
+  """Why a row is not offered for this model, or None: the first of its `needs` ([{when, why}], formulas over the facts)
+  that does not hold on what the model's header and the command show (an unread fact does not hold), and for a row of a
+  mod the mod's own shape (mods.shape_why)."""
+  from boltbeam.workflow import mods, tune
+  if row.get("mod") and (why := mods.shape_why(*row["mod"].partition("/")[::2], f.get("mod_shape"))):
+    return why  # the mod's own shape (data/mod_shapes.json): the one reading of it
+  return next((tune.say(n["why"], f) for n in row.get("needs") or [] if not tune._holds(n["when"], f, set(f) | set(tune.names_in(n["when"])))), None)
+
+
 def available(row:dict[str, Any], features:set[str]) -> bool:
-  """A row the fit may move here: its switch exists (built) and the build has it (requires)."""
-  return row.get("built", True) and (row.get("requires") is None or row["requires"] in features)
+  """A row the fit may move here: its switch exists (built), the build has it (requirements) and the mod it must run
+  with (with)."""
+  need = requirements(row)
+  return row.get("built", True) and (need is None or bool(need & set(features))) and not lacks_with(row, features)
 
 
 # --- the measured inputs: session-ab arms and measured rows ------------------------------------------------------------
@@ -253,8 +346,11 @@ def _arm_metrics(arm_runs:list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def sessions(records:list[dict[str, Any]], spend:dict[str, Any], ad, model:str, f:dict[str, Any], allowed:set[str],
-             known:dict[str, Any] | None = None, skipped:list | None = None) -> list[dict[str, Any]]:
-  """Each session-ab record of this model as {scope, base, arms: {name: config, metrics, free_min, runs}}."""
+             known:dict[str, Any] | None = None, skipped:list | None = None, given_free:float | dict[str, float] | None = None) -> list[dict[str, Any]]:
+  """Each session-ab record of this model as {scope, base, arms: {name: config, metrics, free_min, runs}}. free_min is
+  as it would read on this machine (machine_shift: the record's machine's free with nothing running against this one's,
+  f gpu_free_bytes). A record whose base arm cannot be read keeps its other arms (memory anchors; no effect is measured
+  against an unread base)."""
   out = []
   for d in records:
     if d.get("schema") != "boltbeam.session_ab.v1":
@@ -264,6 +360,7 @@ def sessions(records:list[dict[str, Any]], spend:dict[str, Any], ad, model:str, 
     if model_of(d) != pathlib.Path(model).name:
       continue
     ctx = flag_value(argv, tuple(spend["context_flags"]))
+    shift = machine_shift(d, f.get("gpu_free_bytes"), given_free)
     session = inp.get("session") or {}
     scope = {"context": int(ctx) if ctx else None, "session": session.get("sha256"), "turns": tuple(inp.get("turns") or (1, session.get("turns"))),
              "last": session.get("turns"), "path": d["_path"]}
@@ -277,19 +374,19 @@ def sessions(records:list[dict[str, Any]], spend:dict[str, Any], ad, model:str, 
       if not runs or a["name"] in refused:
         continue
       try:
-        cfg = config_of(spend, argv + [str(x) for x in a.get("flags") or []], {**env, **(a.get("env") or {})}, ad, f, allowed, {**(known or {}), **(inp.get("file_facts") or {})})
+        cfg = config_of(spend, argv + [str(x) for x in a.get("flags") or []], {**env, **(a.get("env") or {})}, ad, f, allowed, {**(known or {}), **file_facts_of(d)})
       except (OSError, ValueError) as exc:  # a file it names is not here and not known by name: the arm is not read, said with the record's own figures
         cmp_ = next((c for c in (d.get("analysis") or {}).get("comparisons") or [] if c.get("arm") == a["name"]), None)
         if skipped is not None and a["name"] not in refused:
           skipped.append({"where": f"{where_of(d['_path'])} {a['name']}", "why": f"{type(exc).__name__}: {exc}", "against": cmp_})
         continue
       used = [((r.get("telemetry") or {}).get("memory_mib") or {}) for r in runs]
-      free = [(u["total"] - u["used_max"]) * MiB for u in used if u.get("total") and u.get("used_max")]
+      free = [(u["total"] - u["used_max"]) * MiB + shift["bytes"] for u in used if u.get("total") and u.get("used_max")]
       arms[a["name"]] = {"config": cfg, "metrics": _arm_metrics(runs), "free_min": min(free) if free else None,
-                         "free_spread": max(free) - min(free) if len(free) > 1 else None, "runs": len(runs)}
+                         "free_spread": max(free) - min(free) if len(free) > 1 else None, "runs": len(runs), "shift": shift, "frees": free}
     first = (inp.get("order") or [None])[0]  # the arm order, or (block, arm) pairs
     base = (d.get("analysis") or {}).get("base") or (first[-1] if isinstance(first, list) and first else first)
-    if base in arms:
+    if arms:
       out.append({"scope": scope, "base": base, "arms": arms})
   return out
 
@@ -300,6 +397,8 @@ def units(spend:dict[str, Any], sess:list[dict[str, Any]], records:list[dict[str
   moves = {r["name"]: set(r.get("moves") or []) for r in spend["rows"]}
   out = []
   for s in sess:
+    if s["base"] not in s["arms"]:  # its base was not read here: no effect is measured against it
+      continue
     b = s["arms"][s["base"]]
     for name, a in s["arms"].items():
       if name == s["base"] or not a["metrics"] or not b["metrics"]:
@@ -442,11 +541,12 @@ def candidates(spend:dict[str, Any], base:dict[str, Any], measured:list[dict[str
   """Each row's values: the base arm's, and where the row is available here every measured one, its own values (a fit_value row: its derive marker)
   and its range (a count fact: 0..N); values_from adds another row's (a batch is at least a chunk)."""
   out = {}
+  here = lambda r: available(r, features) and not unfit(r, _facts(f, base, 0))  # noqa: E731  in the build, and the model has its shape
   for r in spend["rows"]:
-    vals = [base[r["name"]]]
-    if available(r, features) and r.get("fit_value"):
-      vals += list(r.get("values") or []) + [DERIVE]  # the value each combination fits, not the ones measured elsewhere
-    elif available(r, features):
+    vals = [base[r["name"]]] if here(r) or not r.get("fit_value") else [(r.get("read") or {}).get("default")]  # not here: never on, even as measured
+    if here(r) and r.get("fit_value"):
+      vals += list(r.get("values") or []) + [DERIVE]  # the value each combination fits
+    elif here(r):
       vals += [u["rows"][r["name"]] for u in measured if r["name"] in u["rows"]] + list(r.get("values") or [])
       vals += list(range(int(f.get(r["range"]) or 0) + 1)) if r.get("range") else []
     out[r["name"]] = list(dict.fromkeys(v for v in vals if v is not None))
@@ -485,8 +585,10 @@ def project(spend:dict[str, Any], cfg:dict[str, Any], fit:dict[str, Any], base:d
       if isinstance(base["config"][r], int) and isinstance(changed[r], int) and base["config"][r] <= changed[r]:
         tries = [{k: v for k, v in t.items() if k != r} for t in tries]  # the base's own value covers it
         continue
+      if not isinstance(changed[r], int):  # off (the row's default): no measured value stands in for it
+        continue
       got = sorted({u["rows"][r] for u in us if u["metric"] == m and isinstance(u["rows"].get(r), int) and u["rows"][r] <= changed[r]}, reverse=True)
-      tries = [{**t, r: v} for t in tries for v in got] or tries if isinstance(changed[r], int) else tries
+      tries = [{**t, r: v} for t in tries for v in got] or tries
     changed = next((t for t in tries if _cover(t, base["config"], [u for u in us if u["metric"] == m], sink, srow) is not None), tries[0])
     if srow and m in moves.get(srow, set()) and cfg[srow] == base["config"][srow] and fit["has_sink"] and sink < (base["config"].get("_sink") or 0):
       changed[srow] = cfg[srow]  # the same layers in RAM behind a smaller cache: not the base's measurement
@@ -508,7 +610,8 @@ def project(spend:dict[str, Any], cfg:dict[str, Any], fit:dict[str, Any], base:d
           "prefill_ms": bm["prefill_ms"] + eff["prefill_ms"], "from": used, "runs": min([base["runs"]] + [u.get("runs", 1) for u in us if u["where"] in used])}
 
 
-def probes(records:list[dict[str, Any]], spend:dict[str, Any], ad, model:str, f:dict[str, Any], allowed:set[str], known:dict[str, Any]) -> list[dict[str, Any]]:
+def probes(records:list[dict[str, Any]], spend:dict[str, Any], ad, model:str, f:dict[str, Any], allowed:set[str], known:dict[str, Any],
+           given_free:float | dict[str, float] | None = None) -> list[dict[str, Any]]:
   """Each load probe of this model as {config, context, loaded (it ran its session), free_min (its lowest free, bytes),
   name, where}: measured memory without times, read as a session-ab arm's command is."""
   out = []
@@ -519,13 +622,14 @@ def probes(records:list[dict[str, Any]], spend:dict[str, Any], ad, model:str, f:
     argv = [str(x) for x in d["argv"]]
     ctx = flag_value(argv, tuple(spend["context_flags"]))
     try:
-      cfg = config_of(spend, argv, dict(d.get("env") or {}), ad, f, allowed, {**known, **(d.get("file_facts") or {})})
+      cfg = config_of(spend, argv, dict(d.get("env") or {}), ad, f, allowed, {**known, **file_facts_of(d)})
     except (OSError, ValueError) as exc:  # a file it names is not here and not known by name: skipped, said
       out.append({"skipped": f"{where_of(d['_path'])}: {type(exc).__name__}: {exc}"})
       continue
+    shift = machine_shift(d, f.get("gpu_free_bytes"), given_free)
     out.append({"config": cfg, "context": int(ctx) if ctx else None, "loaded": bool(d["loaded"] and d["session"]), "no_load": not d["loaded"],
-                "stress_oom": ((d.get("stress") or {}).get("failure") or {}).get("out_of_memory") is True,
-                "free_min": d["free_min_mib"] * MiB if d.get("free_min_mib") is not None else None, "free_spread": None, "runs": 1, "name": f"probe {d.get('name')}", "where": d["_path"], "probe": True})
+                "stress_oom": ((d.get("stress") or {}).get("failure") or {}).get("out_of_memory") is True, "shift": shift,
+                "free_min": d["free_min_mib"] * MiB + shift["bytes"] if d.get("free_min_mib") is not None else None, "free_spread": None, "runs": 1, "name": f"probe {d.get('name')}", "where": d["_path"], "probe": True})
   return out
 
 
@@ -555,12 +659,12 @@ def probe_gap(short:list[dict[str, Any]], full:list[dict[str, Any]], names:list[
   return {"bytes": max(most[0], 0.0), "pairs": len(pairs), "from": f"{most[1]} against {most[2]}"}
 
 
-def plan_gap(spend:dict[str, Any], records:list[dict[str, Any]], model:str, f:dict[str, Any], ad, allowed:set[str]) -> float:
+def plan_gap(spend:dict[str, Any], records:list[dict[str, Any]], model:str, f:dict[str, Any], ad, allowed:set[str], given_free:float | dict[str, float] | None = None) -> float:
   """probe_gap over these records, as plan reads them (the full sessions' arms and the probes): bytes, 0 when unmeasured."""
-  known = {k: v for d in records for k, v in ((d.get("inputs") or d).get("file_facts") or {}).items()}
-  full = [{**a, "context": s["scope"]["context"], "name": n} for s in sessions(records, spend, ad, model, f, allowed, known) for n, a in s["arms"].items()
+  known = {k: v for d in records for k, v in file_facts_of(d).items()}
+  full = [{**a, "context": s["scope"]["context"], "name": n} for s in sessions(records, spend, ad, model, f, allowed, known, given_free=given_free) for n, a in s["arms"].items()
           if a["free_min"] is not None and s["scope"]["turns"][-1] == s["scope"]["last"] and s["scope"]["context"]]
-  short = [p for p in probes(records, spend, ad, model, f, allowed, known) if "config" in p and p["loaded"] and p["context"]]
+  short = [p for p in probes(records, spend, ad, model, f, allowed, known, given_free) if "config" in p and p["loaded"] and p["context"]]
   return probe_gap(short, full, [r["name"] for r in spend["rows"]])["bytes"] or 0.0
 
 
@@ -575,6 +679,28 @@ def known_files(spend:dict[str, Any], ad, local:list[str] | None) -> dict[str, A
           out.setdefault(pathlib.Path(path).name, {})[r["read"]["fact"]] = ad.spend_value(r["read"]["fact"], path)
         except (OSError, ValueError):
           pass
+  return out
+
+
+def files_read(engine:str, argvs:list[list[str]]) -> dict[str, Any]:
+  """The facts the engine's file rows read from the files these commands name, by file name: what a record carries
+  (file_facts) so it reads the same on a machine where those paths do not exist. {} for an engine with no file row; a
+  file that cannot be read is left out (a reader then names it)."""
+  from boltbeam.workflow import tune
+  tab = tune.table()
+  spend = rows_of(engine, tab) if engine in tune.engines(tab) else {}
+  rows = [r for r in (spend or {}).get("rows") or [] if "file_flags" in (r.get("read") or {})]
+  if not rows:
+    return {}
+  ad, out = tune.adapter(engine, tab), {}
+  for argv in argvs:
+    for r in rows:
+      path = flag_value([str(x) for x in argv], tuple(r["read"]["file_flags"]))
+      try:
+        if path and (v := ad.spend_value(r["read"]["fact"], path)) is not None:
+          out.setdefault(pathlib.Path(path).name, {})[r["read"]["fact"]] = v
+      except (OSError, ValueError):
+        pass
   return out
 
 
@@ -598,18 +724,26 @@ def project_any(spend:dict[str, Any], cfg:dict[str, Any], fit:dict[str, Any], ba
 
 
 def plan(f:dict[str, Any], engine:str, tab:dict[str, Any], *, model:str, records:list[dict[str, Any]], context:int | None,
-         features:set[str], ad, allowed:set[str], local:list[str] | None = None) -> dict[str, Any]:
+         features:set[str], ad, allowed:set[str], local:list[str] | None = None, given_free:float | dict[str, float] | None = None) -> dict[str, Any]:
   """The spend fit at a context (None: the most cells each combination holds): every combination costed from its nearest
   anchor, the measured ones ranked by projected session time; the rows not available here with the memory they would
   free. {why} when there is nothing to anchor on."""
   spend, at_ = rows_of(engine, tab), (engine, tab)
+  tq = (spend or {}).get("same_setup_t") or {}
+
+  def bound(a:dict[str, Any]) -> float:
+    """One more run of the anchor's setup below its runs' mean, one-sided 95%: t(dof) x sd x sqrt(1 + 1/n); unknown sd: 0, its rows unranked and said."""
+    if margin["sd"] is None:
+      return 0.0
+    t = tq["t"][min(margin["sd_dof"], len(tq["t"])) - 1]
+    return t * margin["sd"] * (1 + 1 / max(len(a.get("frees") or []), 1)) ** 0.5
   if not spend:
     return {"why": "no_rows"}
-  known = {k: v for d in records for k, v in ((d.get("inputs") or d).get("file_facts") or {}).items()}  # a file another record read, by name
+  known = {k: v for d in records for k, v in file_facts_of(d).items()}  # a file another record read, by name
   known = {**known, **known_files(spend, ad, local)}
   unread: list[dict[str, Any]] = []
-  sess = sessions(records, spend, ad, model, f, allowed, known, unread)
-  probed = probes(records, spend, ad, model, f, allowed, known)
+  sess = sessions(records, spend, ad, model, f, allowed, known, unread, given_free)
+  probed = probes(records, spend, ad, model, f, allowed, known, given_free)
   failed = [p for p in probed if "config" in p and p["no_load"] and p["context"]]  # never ready: out of memory at load (a later error is not a fit verdict)
   oom = [p for p in probed if "config" in p and p.get("stress_oom") and p["context"]]  # ran its session, then ran out under the stress: never fits
   anchors = [{**a, "context": s["scope"]["context"], "name": n, "where": s["scope"]["path"]} for s in sess for n, a in s["arms"].items()
@@ -618,7 +752,7 @@ def plan(f:dict[str, Any], engine:str, tab:dict[str, Any], *, model:str, records
   gap = probe_gap(short, anchors, [r["name"] for r in spend["rows"]])
   anchors += [{**p, "free_min": p["free_min"] - (gap["bytes"] or 0)} for p in short]
   if not anchors:
-    return {"why": "no_anchor"}
+    return {"why": "no_anchor_unread" if unread else "no_anchor", "unread": unread, "what": "; ".join(f"{u['where']}: {u['why']}" for u in unread[:4])}
   try:
     margin = margin_of(spend, anchors, f, allowed, at_, failed)
   except Exception as exc:  # noqa: BLE001  a fact the rows read is missing (no draft head given): said, never a crash
@@ -627,9 +761,9 @@ def plan(f:dict[str, Any], engine:str, tab:dict[str, Any], *, model:str, records
   room = headroom_of(spend, records, model, features)
   for a in anchors:
     a["margin"] = margin["bytes"] if margin["bytes"] is not None else 0
-  timed = [s for s in sess if s["arms"][s["base"]]["metrics"]]
+  timed = [s for s in sess if s["base"] in s["arms"] and s["arms"][s["base"]]["metrics"]]
   if not timed:
-    return {"why": "no_anchor"}
+    return {"why": "no_anchor_unread" if unread else "no_anchor", "unread": unread, "what": "; ".join(f"{u['where']}: {u['why']}" for u in unread[:4])}
   ref = max(timed, key=lambda s: (s["scope"]["context"] == context, s["scope"]["turns"][-1] == s["scope"]["last"], s["scope"]["turns"][-1] - s["scope"]["turns"][0]))  # at the asked context first
   base = {**ref["arms"][ref["base"]], "scope": ref["scope"]}
   try:  # said at the base's setup; each combination keeps its own (room_at)
@@ -638,7 +772,8 @@ def plan(f:dict[str, Any], engine:str, tab:dict[str, Any], *, model:str, records
     room = headroom_of(spend, records, model, features, skip=(room["row"],))
     head = room["bytes"] or 0
   margin |= {"headroom": head if room["kind"] == "bound" else room["bytes"], "headroom_kind": room["kind"], "headroom_row": room["row"],
-             "headroom_switch": " ".join(f"{k}={v}" for k, v in (room.get("switch") or {}).items()), "switch": room.get("switch") or {}}  # tune's command sets it
+             "headroom_switch": " ".join(f"{k}={v}" for k, v in (room.get("switch") or {}).items()), "switch": room.get("switch") or {},  # tune's command sets it
+             "headroom_params": room.get("params"), "headroom_from": room.get("from"), "headroom_passed": room.get("passed") or []}
   every = units(spend, sess, records, model)
   inside = lambda sc: [u for u in every if u["scope"]["context"] == sc["context"] and u["scope"]["session"] == sc["session"]  # noqa: E731
                        and tuple(u["scope"]["turns"]) == tuple(sc["turns"])]  # the same context, session and turns
@@ -667,15 +802,35 @@ def plan(f:dict[str, Any], engine:str, tab:dict[str, Any], *, model:str, records
     vals = tuple(cfg[n] for n in names)
     # the measured setup itself (same rows, layers and context): its own reading, so only the run-to-run spread is kept
     exact = not any(apart(anchor)) and not anchor.get("probe")  # a full session of this very setup (a probe's short one is not)
+    dn = {r["name"] for r in drv}
+    # a full session of the same setup on this machine (another machine's lowest is a prediction here), only a derived value apart: its own lowest already holds the session's growth, so
+    # the keep is the runtime headroom plus z x the run-to-run sd (one-sided), not the cross-setup formulas' error
+    same = lambda a: not a.get("probe") and not (a.get("shift") or {}).get("bytes") and context is not None and a["context"] == context and _same(a["config"], cfg, [n for n in names if n not in dn])  # noqa: E731
+    keep_of = lambda a, h: ((margin["spread"] or 0) + h) if exact else (bound(a) + h) if drv and same(a) else a["margin"] + h  # noqa: E731
     try:
       head = room_at(room, spend, cfg, f, context or cap, allowed)
+      keep = keep_of(anchor, head)
       anchor = {**anchor, "margin": anchor["margin"] + head}
-      keep = ((margin["spread"] or 0) + head) if exact else anchor["margin"]
       cells = context or _max_cells(spend, cfg, anchor, f, allowed, cap, at_)
       if drv and free_at(spend, cfg, anchor, f, cells, allowed, at_)["has_sink"]:
         continue  # behind a cache the derived value would take the cache's memory: a trade nothing measured
-      for r in drv:
-        cfg[r["name"]] = _derive(spend, r, cfg, anchor, f, cells, allowed, at_, keep)
+      if drv:  # of the anchors equally near, the one whose own value of a derived row is nearest what it derives: the least extrapolation
+        tied = []
+        for i, a in enumerate(x for x in anchors if apart(x) == apart(anchor)):
+          k = keep_of(a, head)
+          a = {**a, "margin": a["margin"] + head}
+          try:
+            c = context or _max_cells(spend, cfg, a, f, allowed, cap, at_)
+            got = {r["name"]: _derive(spend, r, cfg, a, f, c, allowed, at_, k) for r in drv}
+          except Exception:  # noqa: BLE001  an anchor whose memory cannot be read here is not the one extrapolated from
+            continue
+          far = sum(abs(v - a["config"][n]) if isinstance(a["config"][n], int) else float("inf") for n, v in got.items())
+          tied.append((not same(a), far, -a["runs"], i, a, got, c, k))  # a same-setup anchor first
+        if tied:
+          *_, anchor, got, cells, keep = min(tied, key=lambda t: t[:4])
+          cfg |= got
+        else:  # none read: the nearest anchor's own derivation, its error said like any other
+          cfg |= {r["name"]: _derive(spend, r, cfg, anchor, f, cells, allowed, at_, keep) for r in drv}
       if not context and any(not _holds(r, cfg, allowed, cells, f) for r in spend["rows"]):  # a value legal only below the context it holds
         continue
       fit = place(spend, cfg, free_at(spend, cfg, anchor, f, cells, allowed, at_), keep, f, split)
@@ -690,20 +845,28 @@ def plan(f:dict[str, Any], engine:str, tab:dict[str, Any], *, model:str, records
     lay = {**cfg["_layers"], **{r: tuple(v["layers"]) for r, v in fit["placed"].items()}}
     veto = next((p for p in failed + oom if p["context"] == cells and (_same(p["config"], {**cfg, "_layers": lay}, names) or drv and all(  # a derived value at or above a failed one fails too
       isinstance(p["config"].get(r["name"]), int) and cfg[r["name"]] >= p["config"][r["name"]] for r in drv) and _same(p["config"], {**cfg, "_layers": lay}, [n for n in names if n not in {r["name"] for r in drv}]))), None)
-    row = {"values": dict(zip(names, vals)), "derived": [r["name"] for r in drv], "context": cells, "free": fit["free"] - fit["sink"], "sink": fit["sink"], "fits": fit["free"] >= keep and cells > 0 and not veto,
+    row = {"values": dict(zip(names, vals)), "derived": [r["name"] for r in drv], "context": cells, "keep": keep, "same_setup": bool(drv) and same(anchor), "free": fit["free"] - fit["sink"], "sink": fit["sink"], "fits": fit["free"] >= keep and cells > 0 and not veto,
            "placed": fit["placed"], "failed": veto and veto["name"],
            "anchor": anchor["name"], "by_row": fit["by_row"], "layers": cfg.get(spend["sink"]["row"]) if spend.get("sink") else None,
            "files": {r: next((u["files"][r] for u in us if u["rows"].get(r) == cfg[r] and u["files"].get(r)), None) for r in cfg.get("_files") or {}}}
-    if row["fits"] and margin["bytes"] is None:
+    if row["fits"] and (margin["bytes"] is None or row["same_setup"] and margin["sd"] is None):
       row["projection"] = {"unmeasured": ["margin"]}  # no measured spread or residual: whether it fits is not known well enough to rank
     elif row["fits"]:
       row["projection"] = project_any(spend, cfg, fit, base, us, others) if cells == base["scope"]["context"] else {"unmeasured": ["context"]}
     out.append(row)
   held, every_n = _held_off(spend, out), len(out)
   out = [r for r in out if id(r) not in held]
-  ranked = sorted((r for r in out if r["fits"] and "seconds" in r["projection"]), key=lambda r: r["projection"]["seconds"])
-  unranked = sorted((r for r in out if r["fits"] and "seconds" not in r["projection"]), key=lambda r: (-r["context"], r["layers"] or 0, -r["free"] - r["sink"]))
-  return {"context": context, "measured_context": base["scope"]["context"], "margin": margin,
+  for r in spend["rows"]:  # a row on in any fitting combination: the switch it must run with is set by tune's command too
+    if r.get("with") and any(x.get("fits") and x["values"].get(r["name"]) not in (None, (r.get("read") or {}).get("default")) for x in out):
+      margin["switch"] = {**margin["switch"], **r["with"]["switch"]}
+  grown = lambda r: tuple(-r["values"][x["name"]] if isinstance(r["values"].get(x["name"]), int) else 0 for x in spend["rows"] if x.get("fit_value"))  # noqa: E731
+  # a tie in projected time goes to a combination with no fitted value (a measured setup is evidence, a fitted value a prediction), then to the larger fitted value
+  ranked = sorted((r for r in out if r["fits"] and "seconds" in r["projection"]), key=lambda r: (round(r["projection"]["seconds"], 6), bool(r["derived"]), grown(r)))
+  unranked = sorted((r for r in out if r["fits"] and "seconds" not in r["projection"]), key=lambda r: (not r.get("same_setup"), -r["context"], r["layers"] or 0, -r["free"] - r["sink"]))  # a same-setup derivation first
+  moved = {a["where"]: a["shift"] for a in anchors if a.get("shift")}
+  machines = {"moved": {where_of(w): s["bytes"] for w, s in moved.items() if s["known"] and s["bytes"]},
+              "unknown": sorted({where_of(w) for w, s in moved.items() if not s["known"]}), "here": f.get("gpu_free_bytes")}
+  return {"context": context, "measured_context": base["scope"]["context"], "margin": margin, "machines": machines,
           "base": {"name": ref["base"], "config": {n: base["config"][n] for n in names}, "metrics": base["metrics"], "where": ref["scope"]["path"], "sink": base["config"].get("_sink") or 0,
                    "turns": list(ref["scope"]["turns"])},
           "ranked": ranked, "unmeasured_fits": unranked, "combinations": every_n, "held_off": len(held), "errors": [r for r in out if r.get("why")][:3],
@@ -734,7 +897,17 @@ def margin_of(spend:dict[str, Any], anchors:list[dict[str, Any]], f:dict[str, An
     for a in anchors:
       resid.append(max(free_at(spend, b["config"], {**a, "margin": 0}, f, b["context"], allowed, at_)["free"] - (b["config"].get("_sink") or 0), 0.0))  # its own cache was taken too
   both = spread + resid
-  return {"bytes": max(both) if both else None, "spread": max(spread) if spread else None, "residual": max(resid) if resid else None}
+  # the run-to-run sd of a setup's lowest free, pooled over every setup run more than once (repeats of one arm, equal arms)
+  # (every run, its arm's cache added back, of equal setups together: a run's lowest, not an arm's lowest over runs)
+  runs: dict[tuple, list[float]] = {}
+  for a in anchors:
+    if not a.get("probe"):
+      runs.setdefault(key(a), []).extend(x + (a["config"].get("_sink") or 0) for x in a.get("frees") or [])
+  reps = [g for g in runs.values() if len(g) > 1]
+  dof = sum(len(g) - 1 for g in reps)
+  sd = max((sum(sum((x - sum(g) / len(g)) ** 2 for x in g) for g in reps) / dof) ** 0.5, MiB / 12 ** 0.5) if dof else None  # readings are whole MiB
+  return {"bytes": max(both) if both else None, "spread": max(spread) if spread else None, "residual": max(resid) if resid else None,
+          "sd": sd, "sd_dof": dof}
 
 
 def _same(a:dict[str, Any], b:dict[str, Any], names:list[str]) -> bool:
@@ -790,14 +963,18 @@ def pending(spend:dict[str, Any], features:set[str], f:dict[str, Any], base:dict
   base setup and the context. Never ranked."""
   out = []
   for r in spend["rows"]:
-    if available(r, features) or "on" not in r:
+    if why := unfit(r, _facts(f, base, context)):  # the model lacks its shape: said, never "would free ?"
+      out.append({"row": r["name"], "words": r.get("words", r["name"]), "unfit": why})
       continue
-    try:
-      on, off = (taken(spend, {**base, r["name"]: v}, f, context, allowed, at_)[r["name"]] for v in (r["on"], base[r["name"]]))
+    if available(r, features) or not ("on" in r or r.get("fit_value")):
+      continue
+    try:  # a fit_value row is previewed at its least value, which frees the most
+      on, off = (taken(spend, {**base, r["name"]: v}, f, context, allowed, at_)[r["name"]] for v in (r["on"] if "on" in r else r["fit_value"]["min"], base[r["name"]]))
       frees = off - on
     except Exception:  # noqa: BLE001  unread: said as unknown
       frees = None
-    out.append({"row": r["name"], "words": r.get("words", r["name"]), "frees": frees, "built": r.get("built", True), "requires": r.get("requires"),
+    out.append({"row": r["name"], "words": r.get("words", r["name"]), "frees": frees, "built": r.get("built", True), "requires": " or ".join(sorted(requirements(r) or ())),
+                "lacks": lacks_with(r, features), "lacks_why": (r.get("with") or {}).get("why"),
                 "moves": r.get("moves") or [], "evidence": r.get("evidence", "")})
   return out
 
@@ -817,7 +994,8 @@ def label(values:dict[str, Any], spend:dict[str, Any], files:dict[str, Any] | No
       continue
     f, env = (files or {}).get(r["name"]), (r.get("read") or {}).get("env")
     if env and ("on" not in r["read"] or str(v) in ("on", str(r["read"]["on"]))):  # a switch is said as the command sets it: NAME=on, or NAME=N
-      out.append(f"{r['name']} ({env}={r['read'].get('on', v)})")
+      sets = [f"{env}={r['read'].get('on', v)}", *(f"{k}={x}" for k, x in ((r.get("with") or {}).get("switch") or {}).items())]  # with the switch it must run with
+      out.append(f"{r['name']} ({' '.join(sets)})")
       continue
     out.append(f"{r['name']} {v}" + (f" ({pathlib.Path(f).name})" if f else ""))
   return ", ".join(out)
@@ -837,7 +1015,22 @@ def words(p:dict[str, Any], spend:dict[str, Any]) -> list[str]:
          w["margin_unknown"] if p["margin"]["bytes"] is None else
          w["margin"].format(mib=p["margin"]["bytes"] / MiB, spread="?" if p["margin"]["spread"] is None else f"{p['margin']['spread'] / MiB:.0f}",
                             resid="?" if p["margin"]["residual"] is None else f"{p['margin']['residual'] / MiB:.0f}",
-                            head=w[f"headroom_{p['margin'].get('headroom_kind') or 'mitigation'}"].format(mib=p["margin"]["headroom"] / MiB, switch=p["margin"].get("headroom_switch") or "its switch") if p["margin"].get("headroom") is not None else w["headroom_none"])]
+                            head=w[f"headroom_{p['margin'].get('headroom_kind') or 'mitigation'}"].format(mib=p["margin"]["headroom"] / MiB, switch=p["margin"].get("headroom_switch") or "its switch",
+                                                                                                         params=", ".join((f"{k} {v:g}" if isinstance(v, (int, float)) else f"{k} {v}") + (f" ({p['margin']['headroom_from'][k]})" if k in (p["margin"].get("headroom_from") or {}) else "")
+                                                                                                                          for k, v in (p["margin"].get("headroom_params") or {}).items()))
+                            if p["margin"].get("headroom") is not None else w["headroom_none"])]
+  on = {n for r in p["ranked"] + p["unmeasured_fits"] for n, v in r["values"].items() if v not in ("off", 0, None)} | {p["margin"].get("headroom_row")}
+  if ss := [r for r in p["ranked"] + p["unmeasured_fits"] if r.get("same_setup")]:
+    m = p["margin"]
+    out.append(w["same_setup"].format(n=len(ss), where=", ".join(sorted({r["anchor"] for r in ss})), rows=", ".join(sorted({x for r in ss for x in r["derived"]})),
+                                      head=(m.get("headroom") or 0) / MiB, keep=ss[0]["keep"] / MiB,
+                                      sd=f"{m['sd'] / MiB:.1f} MiB, {m['sd_dof']} degrees of freedom" if m.get("sd") is not None else "not measured: no setup ran twice, so these rows are not ranked; test: --repeats 2"))
+  out += [w["headroom_passed"].format(row=x["row"], what=", ".join(x["unknown"]), why="; ".join(x["why"].get(k, k) for k in x["unknown"])) for x in p["margin"].get("headroom_passed") or []]
+  mc = p.get("machines") or {}
+  if mc.get("moved") and mc.get("here") is not None:
+    out.append(w["machines"].format(here=mc["here"] / MiB, moved=", ".join(f"{k} {v / MiB:+,.1f} MiB" for k, v in mc["moved"].items())))
+  if mc.get("unknown"):
+    out.append(w["machines_unknown"].format(where=", ".join(mc["unknown"])))
   bm = b["metrics"]
   dec = bm["tokens"] / bm["tokens_per_step"] * bm["step_ms"] / 1000
   base_s = bm["prefill_total_ms"] / 1000 + dec
@@ -890,10 +1083,12 @@ def words(p:dict[str, Any], spend:dict[str, Any]) -> list[str]:
     for name, pl in placed.items():
       row = next(r for r in spend["rows"] if r["name"] == name)
       out.append(w["placed"].format(why=row["layers"]["why"], reach=pl.get("reach") or ""))
-  if p["pending"]:
+  if lost := [r for r in p["pending"] if r.get("unfit")]:
+    out += [w["unfit_head"], *(w["unfit"].format(words=r["words"], why=r["unfit"]) for r in lost)]
+  if left := [r for r in p["pending"] if not r.get("unfit")]:
     out.append(w["pending_head"])
-    for r in p["pending"]:
-      why = w["pending_unbuilt"] if not r["built"] else w["pending_built"].format(switch=r["requires"])
+    for r in left:
+      why = w["pending_unbuilt"] if not r["built"] else w["pending_with"].format(mod=r["lacks"], why=r["lacks_why"]) if r.get("lacks") else w["pending_built"].format(switch=r["requires"])
       cost = w["pending_cost"] if any(r["row"] in u["rows"] for u in p["units"]) else w["pending_nocost"]
       out.append(w["pending"].format(words=r["words"], mib="?" if r["frees"] is None else f"{r['frees'] / MiB:,.0f}", why=f"{why}; {cost}"))
   out.append(w["command_apart"])

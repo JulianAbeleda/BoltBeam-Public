@@ -24,12 +24,25 @@ def cmd_tune(args) -> int:
                     spend=args.measured, spend_max=most,
                     knobs_only=args.knob, port=args.port, out=pathlib.Path(args.out).expanduser() if args.out else None,
                     extra=args.flags.split() if args.flags else None, experts_in_ram=args.experts_in_ram,
-                    workload=args.workload, reply=reply, draft=args.draft, **kept, **({"time_budget": budget} if budget else {}))
+                    workload=args.workload, reply=reply, draft=args.draft, measured_free=measured_free(args.measured_free_mib), **kept, **({"time_budget": budget} if budget else {}))
   except Refused as exc:
     print(f"tune: {exc}")
     return 2
   print(json.dumps(res, indent=1, default=str) if args.json else tune.text(res))
   return 0
+
+
+def measured_free(given:list[str] | None) -> dict | None:
+  """--measured-free-mib values: MiB for every record without its own reading, or PATH=MiB for the records under PATH."""
+  from boltbeam.core.refused import Refused
+  out = {}
+  for g in given or []:
+    path, _, mib = g.rpartition("=")
+    try:
+      out[str(pathlib.Path(path).expanduser().resolve()) if path else ""] = float(mib) * 2**20
+    except ValueError:
+      raise Refused(f"--measured-free-mib takes MiB or PATH=MiB; got {g}") from None
+  return out or None
 
 
 def machine_facts(roots:list[str]) -> dict | None:
@@ -55,6 +68,9 @@ def register(sub) -> None:
                  "(boltbeam.spend_measured.v1), a file or a folder (repeatable); ranks the ways to spend the GPU's memory at --context")
   p.add_argument("--gpu-free-mib", type=float, help="the GPU's free memory to fit against, in MiB, as recorded with nothing running "
                  "(default: read now)")
+  p.add_argument("--measured-free-mib", action="append", help="the GPU's free memory with nothing running, in MiB, on the machine "
+                 "--measured records ran on, for records that carry no such reading (session-ab before 0.3.31): MiB for all of them, "
+                 "or PATH=MiB for the records under PATH (repeatable); their lowest free is moved by its difference from this machine's")
   p.add_argument("--replies", help="measured replies (a JSON line per reply: tokens, finish): the room for the reply is the length that holds 95%% "
                  "of them, instead of the unmeasured default (not with --context)")
   p.add_argument("--workload", choices=tune.WORKLOADS, default="chat",

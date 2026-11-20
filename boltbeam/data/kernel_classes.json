@@ -1,7 +1,7 @@
 {
  "schema": "boltbeam.kernel_classes.v1",
  "note": "The session map's kernel classes (workflow/session_map.py, read only there). A launch's class is, in order: the output head when its matmul computes the vocabulary's rows (the header's lm_head); an engine row below whose pattern matches its name (the engine's rows, then those of the engines it lists in kernel_families.json `also`); a matmul by its op (data/kernel_families.json shapes rows, or an installed manifest's entry) and the format family of the tensors a decode's join ties it to (a prefill has no join: its dense matmuls are one class, `unsplit`; a decode matmul tied to none is `unjoined`); else its family (data/kernel_families.json) through `families`. A class names what the search would have to express, not a model's role: rows are keyed by kernel class and phase. `unattributed` lists the classes whose time the map cannot put a floor under (no family, or a matmul tied to no tensor): their share of the step is the map's own coverage check. Words for every class are in data/plain_words.json session_map.classes.",
- "classes": ["output_head", "expert_matmul", "expert_routing", "dense_quant", "dense_float", "dense", "matmul_unjoined", "attention", "kv_write", "sparse_select", "indexer", "recurrent", "small", "sampling", "other"],
+ "classes": ["output_head", "expert_matmul", "expert_routing", "dense_quant", "dense_float", "dense", "matmul_unjoined", "attention", "kv_write", "sparse_select", "indexer", "recurrent", "small", "sampling", "kv_stream", "other"],
  "unattributed": ["matmul_unjoined", "other"],
  "matmul": {"expert_matmul": "expert_matmul", "float": "dense_float", "quantized": "dense_quant", "unsplit": "dense", "unjoined": "matmul_unjoined"},
  "families": {"expert_mmq": "expert_matmul", "expert_routing": "expert_routing", "dense_gemm": "matmul_unjoined", "output_layer": "output_head", "draft_head": "output_head",
@@ -9,9 +9,10 @@
  "engines": {
   "llama.cpp": {
    "rows": [
-    {"pattern": "^top_k_|mask_to_sparse", "class": "sparse_select", "why": "the sparse attention's selection: the radix top-k over the indexer's scores, the mask it builds and its compaction to indices (ggml-cuda top-k, flash_attn_mask_to_sparse_indices; mods 01/03/05 and decode-topk-fused)"},
+    {"pattern": "^top_k_|mask_to_sparse", "class": "sparse_select", "why": "the sparse attention's selection: the radix top-k over the indexer's scores, the mask it builds and its compaction to indices (ggml-cuda top-k, flash_attn_mask_to_sparse_indices; arkey indexer module, indexer/topk-fused)"},
     {"pattern": "^lightning_indexer", "class": "indexer", "why": "the sparse attention's indexer, scoring the pooled keys (lightning_indexer_kernel_*)"},
-    {"pattern": "^rope|^k_set_rows", "class": "kv_write", "why": "the KV cache write of a forward's new tokens and their position encoding (rope_*, k_set_rows*: SET_ROWS into the cache)"}
+    {"pattern": "^rope|^k_set_rows", "class": "kv_write", "why": "the KV cache write of a forward's new tokens and their position encoding (rope_*, k_set_rows*: SET_ROWS into the cache)"},
+    {"pattern": "^kvs_", "class": "kv_stream", "why": "the KV stream's paging kernels (arkey kv/kv-stream, kvs_*): the cells it moves into and out of the resident window (decode-floor-256k-20261119)"}
    ],
    "prefill_phase": {"draft": "other_streams", "why": "llama-server runs the draft head in its own llama_context, so its prefill catch-up runs on its own CUDA stream; the target's prefill is the stream with the most launches in the window (prefill-gap-20261117 pf_ana: target stream 15, draft 17, on the 2026-11-17 traces)"}
   }

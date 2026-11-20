@@ -6,6 +6,7 @@ The build is read, not run: a knob applies when its env-var name is a string in 
 (getenv literals), so a stock build gets only stock flags, and a v1 pinned-stream build no pin budget."""
 from __future__ import annotations
 
+import functools
 import itertools
 import json
 import math
@@ -43,6 +44,10 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "kpool_indexer": "the model has a k-pool sparse attention indexer: its scores and selection masks add to the compute buffer per cell and chunk token",
          "kpool_ratio": "the k-pool indexer's pool ratio: cells per pooled key (the GGUF header's compress ratios)",
          "kpool_cell_bytes": "the compute buffer's bytes per cell and chunk token of a k-pool indexer's scores and masks (the stock path's, or an on mod's row)",
+         **{n: f"a figure measured per machine (data/machine_figures.json {n.split('.')[-1]}): this chip's row, else borrowed widened or not used, said" for n in
+            ("server_runtime_bytes", "kpool_mask_bytes", "cublas_shared_bytes", "graph_instance_mib", "ws_ring_l3_parts", "ws_ring_chunks", "ckpt_min_head_tokens", "draft_step_bytes")},
+         "kv_stream_why": "why the kv-stream mod streams no layer of this model, in words",
+         "draft_plane_bytes": "one rollback plane of the target's recurrent state, kept a draft token (0 for a model with none)",
          "indexer_row": "the indexer cache's keys per cell, in key heads of its key length (the stock path's, or an on mod's row)",
          "kv_type": "the KV cache type the command runs, as llama-server spells it",
          "kv_dequant_types": "the block-quantized KV types this command keeps the f16 dequant copy for (an on mod may read some in place)",
@@ -109,10 +114,34 @@ HELP_TIMEOUT_S = 60  # --help loads no model; a build that has not answered in a
 GiB = 1 << 30
 NP = ("-np", "--parallel")  # llama-server's slots: the command passes the requests the setup is stated for (tools/server/server.cpp:126-134)
 CHECK_TOOL = "llama-perplexity (it scores the logits)"  # the output check's tool, in tune's words
-def kv_stream_archs() -> tuple[str, ...]:
-  """The graphs the kv-stream mod streams: its spend row's archs (arkey_ie_mods llama.cpp 1.0.0 patch 20, llama-kv-stream.cpp plan)."""
+def _chips():
+  from boltbeam.workflow import chips
+  return chips
+
+
+@functools.lru_cache(maxsize=16)
+def machine_figures(chip:str | None, l3_mib:float | None = None) -> tuple[dict[str, Any], tuple]:
+  """llama.cpp's machine figures for a chip and an L3 (workflow/figures.py): the facts its formulas read and each figure's
+  resolution. The borrowed margin's t is the spend fit's (engines.llama.cpp.spend.same_setup_t)."""
+  from boltbeam.workflow import figures
+  got, how = figures.facts(ENGINE, {"chip": chip, "l3_mib": l3_mib}, tuple(_row()["spend"]["same_setup_t"]["t"]))
+  return got, tuple(how)
+
+
+def kv_stream_fit(header:dict[str, Any]) -> tuple[int, str]:
+  """The layers the kv-stream mod streams and, when none, why: the sparse-attention layers with pooled keys the header
+  shows (compress ratios above 0 beside indexer key tensors), a shape, then the built mod's own gate (the spend row's
+  mod_archs: the graphs it takes), a limit of the mod that is said when it withholds a model with the shape."""
+  from boltbeam.report.plain import words
   from boltbeam.workflow import tune
-  return tuple(next((r.get("archs") or [] for r in tune.table()["engines"]["llama.cpp"]["spend"]["rows"] if r["name"] == "kv_stream"), []))
+  w, meta = words()["tune_llama_cpp"], header["meta"]
+  arch = meta.get("general.architecture")
+  row = next((r for r in tune.table()["engines"][ENGINE]["spend"]["rows"] if r["name"] == "kv_stream"), {})
+  keys = any(".indexer.k_proj." in n for n, _, _ in header["tensors"])
+  n = sum(1 for r in (meta.get(f"{arch}.attention.compress_ratios") or [])[:int(meta.get(f"{arch}.block_count") or 0)] if (r or 0) > 0) if keys else 0
+  if n and row.get("mod_archs") and arch not in row["mod_archs"]:
+    return 0, w["kv_stream_gate"].format(n=n, arch=arch, archs=", ".join(row["mod_archs"]))
+  return n, "" if n else w["kv_stream_shape"]
 GATE_CHUNKS = 1  # the output check reads one chunk of the tuned context per document: its second half is what is scored, the depth tune is for
 
 
@@ -301,27 +330,40 @@ def dequant_bytes(shape:dict[str, Any], backend:str | None) -> float:
   return shape["dequant"] * 2 if any(v.ggml_kv_dequant for v in vendors.VENDORS.values() if v.ggml_backend == backend) else 0.0
 
 
-def mods_on(b:dict[str, Any]) -> list[str]:
+def model_shape(header:dict[str, Any], experts:int, host_experts:bool, draft:bool = True, kv_type:str = "q8_0") -> dict[str, Any]:
+  """What a mod's needs read (data/mod_shapes.json) from a header and the command (draft, kv_type: set once read)."""
+  meta, arch = header["meta"], header["meta"].get("general.architecture")
+  has = lambda part: any(part in n for n, _, _ in header["tensors"])  # noqa: E731
+  return {"arch": arch, "indexer": has(".indexer.k_proj."), "pool_ratio": max((r or 0 for r in meta.get(f"{arch}.attention.compress_ratios") or []), default=0),
+          **{k: meta.get(f"{arch}.attention.{k}") for k in ("key_length", "head_count", "head_count_kv")}, "experts": experts,
+          "host_experts": host_experts, "recurrent": has(".ssm_out."), "per_layer_embedding": has(_row()["per_layer_table"]),
+          "draft": draft, "kv_type": kv_type}
+
+
+def mods_on(b:dict[str, Any], shape:dict[str, Any] | None = None) -> list[str]:
   """The mods a run of the command has on, by name: the build has the mod (its marker is compiled in) and its switch is
   set, as a run on a modded build sets it (mods.run_env of its record, or of its mods found by their markers: mods.found)
-  or in this environment, at its on value. A mod on
+  or in this environment, at its on value, and the model shows the shape its code needs (shape: mods.shape_why; a mod
+  that does nothing on this model changes no memory term). A mod on
   by default (switch unset) reads as off: the conservative side, it is charged the stock path's memory."""
   import os
   from boltbeam.workflow import mods
   feats, env = set(b.get("features") or {}), {**mods.run_env(mods.found(ENGINE, b.get("build"), b.get("features")) or {}), **os.environ}
   return list(dict.fromkeys(m["name"] for m in mods.mods(ENGINE) if m.get("marker") in feats and (sw := mods.switch(m)) in env  # once a name: versions share it
-          and (env[sw] == mods.run_on(m) if mods.run_on(m) else env[sw] not in ("", "0"))))  # a value-valued switch (a path): set and not 0
+          and (env[sw] == mods.run_on(m) if mods.run_on(m) else env[sw] not in ("", "0"))
+          and not mods.shape_why(ENGINE, m["name"], shape)))  # a value-valued switch (a path): set and not 0
 
 
 def memory_facts(shape:dict[str, Any], *, kv_type:str, backend:str | None, mods:list[str] | tuple = (),
-                 extra:dict[str, Any] | None = None) -> dict[str, Any]:
+                 extra:dict[str, Any] | None = None, chip:str | None = None) -> dict[str, Any]:
   """The per-cell memory facts of the command: the stock path's (the engine row's mod_memory.stock over the shape) with
   each on mod's row over them (mod_memory.rows, in the order given), then the KV's elements per cell. extra: further facts
-  a row may read (the draft head's bytes). The one place a mod's memory effect is applied; the rows are data."""
+  a row may read (the draft head's bytes). chip: the chip whose machine figures the terms read (None: this machine's).
+  The one place a mod's memory effect is applied; the rows are data."""
   from boltbeam.workflow import tune
   rule = _row()["mod_memory"]
   f = {f"{NS}.kpool_indexer": shape["kpool"], f"{NS}.kpool_ratio": shape["ratio"] or 1, f"{NS}.kv_type": kv_type,
-       f"{NS}.kv_dequant_bytes": dequant_bytes(shape, backend), **(extra or {})}
+       f"{NS}.kv_dequant_bytes": dequant_bytes(shape, backend), **machine_figures(chip or _chips().this_chip())[0], **(extra or {})}
   allowed = set(f) | {f"{NS}.{n}" for n in FACTS}
   for name, expr in rule["stock"].items():
     f[name] = tune.evaluate(expr, f, allowed)
@@ -342,7 +384,7 @@ def header_of(model:str | pathlib.Path) -> dict[str, Any]:
 
 
 def load_facts(profile:dict[str, Any], header:dict[str, Any], ex:dict[str, Any], *, kv_type:str, context:int, chunk:int,
-               backend:str | None, slots:int = 1, mods:list[str] | tuple = ()) -> dict[str, Any]:
+               backend:str | None, slots:int = 1, mods:list[str] | tuple = (), chip:str | None = None) -> dict[str, Any]:
   """The facts llama.cpp's after_load formula (data/engine_knobs.json engines.llama.cpp.after_load) reads from the model
   and the command, besides the GPU's memory and the weights on the card: the one source tune's memory fit and the
   Recommended setup's context both read. kv_cache_bytes: the cells at the KV type, a quantized type's dequant copy (on a
@@ -350,7 +392,7 @@ def load_facts(profile:dict[str, Any], header:dict[str, Any], ex:dict[str, Any],
   chunk term reads. mods: the mods the command runs with on (mods_on), whose memory rows replace the stock path's terms."""
   from boltbeam.roofline import prefill_work as pw
   block = (formats.row(formats.canonical(kv_type)) or {"block": (1, 2)})["block"]
-  f = memory_facts(kv_shape(profile, header), kv_type=str(kv_type).lower(), backend=backend, mods=mods)
+  f = memory_facts(kv_shape(profile, header), kv_type=str(kv_type).lower(), backend=backend, mods=mods, chip=chip)
   dequant = f[f"{NS}.kv_dequant_bytes"]
   return {**{k: v for k, v in f.items() if k != f"{NS}.kv_type"},
           f"{NS}.kv_cache_bytes": int(context * (f[f"{NS}.kv_elems_per_token"] * block[1] / block[0] + (dequant if block[0] > 1 else 0))
@@ -432,7 +474,6 @@ def offload_plan(model:str, prompt:int, draft:str | None = None, context:int | N
 def chunk_fit(plan:dict[str, Any]) -> dict[str, Any]:
   """The chunks the memory fit may pick (the -ub row's vram): the plan's chunk and each smaller one of its prompt limit
   down to llama-server's default, largest first, with each one's prompt speed over the default's; none without a plan."""
-  from boltbeam.workflow.offload import knob_default
   rate, top, low = plan.get("chunk_tok_s") or {}, plan.get("ubatch"), int(knob_default(ENGINE, "-ub"))
   if not top or not rate.get(low):
     return {f"{NS}.plan_ubatch_candidates": None, f"{NS}.plan_ubatch_gains": None}
@@ -471,6 +512,11 @@ def gpu_backend(b:dict[str, Any]) -> str | None:
   return None if b.get("backend") in (None, "cpu") else b["backend"]
 
 
+def knob_default(engine:str, name:str) -> int:
+  from boltbeam.workflow.offload import knob_default as read  # the knob row's own default, the one place it is stated
+  return read(engine, name)
+
+
 def slot_facts(model:str, ex:dict[str, Any], tabs:dict[str, Any], host:dict[str, Any], *, in_ram:int, host_experts:int, plan:dict[str, Any],
                options:dict[str, Any], kv:str | None = None, header:dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
   """The facts the streamer's slot count reads, read and not combined (the rule is the row's, data/engine_knobs.json): the
@@ -484,7 +530,7 @@ def slot_facts(model:str, ex:dict[str, Any], tabs:dict[str, Any], host:dict[str,
   ms, ms_src = compute_time(plan, options.get("time_budget"), int(host["prompt_tokens"]))
   out: dict[str, Any] = {f"{NS}.host_expert_tensors": len(held), f"{NS}.host_expert_tensor_max_bytes": max((b for _, b in held), default=None),
                          f"{NS}.host_expert_layers": len({layer for layer, _ in held}) or None, f"{NS}.model_layers": (ids[-1] + 1) if ids else None,
-                         f"{NS}.chunk_tokens": int(plan.get("ubatch") or 512), f"{NS}.experts_used": ex.get("experts_used"),
+                         f"{NS}.chunk_tokens": int(plan.get("ubatch") or knob_default(ENGINE, "-ub")), f"{NS}.experts_used": ex.get("experts_used"),
                          f"{NS}.expert_ffn": ex.get("expert_ffn"), f"{NS}.hidden_size": None, f"{NS}.on_card_bytes": None,
                          f"{NS}.kv_cache_bytes": None, f"{NS}.prompt_compute_ms": ms, f"{NS}.prompt_compute_source": ms_src,
                          f"{NS}.vram_why": "", "gpu_total_bytes": None, "gpu_free_bytes": None}
@@ -590,10 +636,11 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
          **chunk_fit(plan),
          f"{NS}.pin_in_build": "LLAMA_WS_PIN_GIB" in b["features"], "layers": top, "layers_in_ram": 0 if shared else in_ram,
          "expert_bytes_total": sum(ex["per_layer"]), "host_tables_bytes": tabs["bytes"], "placement": placement, "notes": notes}
-  lf, lsrc = placed_facts(model, host_experts, b["features"], tabs=tabs, draft=options.get("draft"))
+  lf, lsrc = placed_facts(model, host_experts, b["features"], tabs=tabs, draft=options.get("draft"), extra=options.get("extra"))
   out |= lf
   header = options["header"] if "header" in options else header_of(model)  # a test's stand-in, else the file's
-  on = mods_on(b)  # the mods the command runs with: their memory rows replace the stock path's terms
+  shape = model_shape(header, int(ex["experts"] or 0), host_experts > 0)
+  on = mods_on(b, shape)  # the mods the command runs with: their memory rows replace the stock path's terms (a row reads the KV type and the draft itself)
   out[f"{NS}.mods_on"] = on
   dr, dsrc = decode_facts(model, host, b, {**options, "mods": on}, tabs, header=header)
   out |= dr
@@ -607,6 +654,11 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
                          routing=options["routing_profile"] if "routing_profile" in options else rp.find(model, engine=ENGINE))
     except (OSError, ValueError, KeyError) as exc:  # the spend fit then says which fact it lacks
       out["spend_why"] = f"{type(exc).__name__}: {exc}"
+    from boltbeam.workflow import figures
+    figs, how = machine_figures(_chips().this_chip(), (host.get("l3_bytes") or 0) / (1 << 20) or None)  # this chip's and this L3's rows
+    out |= figs
+    out["mod_shape"] = {**shape, "draft": bool(dr[f"{NS}.mtp_head"]), "kv_type": str(kv_type).lower()}
+    notes += figures.said(how, b["features"], lambda e: tune._holds(e, out, tune.fact_names(ENGINE)))  # borrowed or not used: said, never silent
   else:
     vsrc = {}
   vsrc = {**vsrc, **dsrc}
@@ -619,13 +671,14 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
 
 
 def placed_facts(model:str, host_experts:float, features=None, *, tabs:dict[str, Any] | None = None,
-                 profile:dict[str, Any] | None = None, draft:str | None = None) -> tuple[dict[str, Any], dict[str, str]]:
+                 profile:dict[str, Any] | None = None, draft:str | None = None, extra:list[str] | None = None) -> tuple[dict[str, Any], dict[str, str]]:
   """The facts of the rows that hang on where the experts sit and on RAM alone (knob rows marked placed: tune.placed, the
   offload page): the model's files on disk (and the draft's: -lm applies to -md too), what --load-mode none reads into
   RAM at that placement (the host experts, the host tables of both files it does not leave mapped), the pinned
   checkpoint pool, the prompt cache at its default (the --cache-ram row sets it in tune) and whether the build pins a
   second copy of the host experts. The engine's rules are engines.llama.cpp.load_none. features: the build's (None: not
-  read: no pin, the pool counted). A fact that cannot be read is None (the row keeps its default), said in its source."""
+  read: no pin, the pool counted). extra: the command's own flags: its checkpoint count sizes the pool, the engine's default
+  only when it sets none. A fact that cannot be read is None (the row keeps its default), said in its source."""
   from boltbeam.workflow import tune
   from boltbeam.workflow.recommend import _gguf_files, CACHE_RAM_DEFAULT
   from boltbeam.roofline import prefill_work as pw
@@ -648,7 +701,12 @@ def placed_facts(model:str, host_experts:float, features=None, *, tabs:dict[str,
   if out[f"{NS}.ckpt_pool_bytes"] is None:
     try:  # a model with no recurrent state may still checkpoint (sliding-window attention): unknown, not 0
       state = pw.recurrent_state_bytes(profile or profile_from_model(model, None).to_json())
-      out[f"{NS}.ckpt_pool_bytes"] = int((rule["ctx_checkpoints"] + 1) * state) if state else None
+      given = flag_value(extra or [], rule["ctx_checkpoints_flags"])  # the command's own count; the engine's default only when it sets none
+      n = int(given) if given is not None else rule["ctx_checkpoints"]  # not a whole number: a ValueError, said below as not read
+      if n < 0:
+        raise ValueError(f"the command's checkpoint count {given} is not a count")
+      src[f"{NS}.ckpt_pool_bytes"] += f"; n_ctx_checkpoints {n}, " + ("the command's" if given is not None else "the engine's default: the command sets none")
+      out[f"{NS}.ckpt_pool_bytes"] = int((n + 1) * state) if state else None
     except Exception as exc:  # noqa: BLE001
       src[f"{NS}.ckpt_pool_bytes"] += f"; not read: {type(exc).__name__}: {exc}"
   return out, src
@@ -676,7 +734,8 @@ def spend_facts(ex:dict[str, Any], profile:dict[str, Any] | None, header:dict[st
          f"{NS}.draft_input_row_bytes": 4 * int(profile["hidden_size"]) * streams if profile and profile.get("hidden_size") else None,
          f"{NS}.draft_expert_bytes": None, f"{NS}.model_context": meta.get(f"{arch}.context_length"),
          f"{NS}.kv_layer_elems": (pw.kv_bytes_per_token(profile, element_bytes=1) or 0) / max(pw.attention_layer_count(profile) or 0, 1) if profile else None,
-         f"{NS}.kv_stream_layers": sum(1 for r in (meta.get(f"{arch}.attention.compress_ratios") or [])[:int(meta.get(f"{arch}.block_count") or 0)] if (r or 0) > 0) if arch in kv_stream_archs() else 0}
+         **dict(zip((f"{NS}.kv_stream_layers", f"{NS}.kv_stream_why"), kv_stream_fit(header)))}
+  out[f"{NS}.draft_plane_bytes"] = (out[f"{NS}.recurrent_state_bytes"] or 0) if profile else None
   if head:
     out[f"{NS}.draft_expert_bytes"] = draft_expert_bytes(pathlib.Path(head))
   return out
@@ -842,7 +901,7 @@ def _env_flags(values:list[dict[str, Any]], f:dict[str, Any] | None = None) -> t
   for v in values:
     if v["kind"] == "flag":
       flags += [v["name"], v["value"], *(x for k, t in (v.get("with") or {}).items() for x in (k, fill(t, v)))]
-      if v["name"] == "-ub" and "-b" not in given and int(v["value"]) > 2048:
+      if v["name"] == "-ub" and "-b" not in given and int(v["value"]) > knob_default(ENGINE, "-b"):
         flags += ["-b", v["value"]]
   if _row()["draft"]["model"] in flags:
     flags += [x for v in values if v["kind"] == "flag" for k, t in (v.get("with_draft") or {}).items() for x in (k, fill(t, v))]

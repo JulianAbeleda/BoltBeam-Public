@@ -24,12 +24,18 @@ the floor, the reference ceiling, the gap in session seconds and whether the sea
                 and the kernels an installed manifest already puts in place (generated).
     coverage    unattributed = the time in the classes data/kernel_classes.json lists as unattributed; the record fails when
                 it is above UNATTRIBUTED_MAX_PCT of the step (the design's refuting line).
+    audit       the per-role decode audit (record key `audit`; docs/session-map.md "The audit"): per class and window,
+                the phases summed, now against a floor that counts a byte-less row's launch floor (and --floors' cited
+                bytes); exposed copies and host idle as rows; the depth slope (z standard errors); shape flags whose
+                thresholds are this machine's (compute units, the capture's best achieved bandwidth, one graph launch);
+                the stock proof against --previous; the queue ranked by gap x the lever's measured realization
+                (data/realization.json).
 
 Engine-blind: an engine is a key into data rows; nothing here names one, a model or a GPU.
 Labels: measured (source), derived (formula, inputs), estimate (formula, test), unknown (test, no value)."""
 from __future__ import annotations
 
-import bisect, collections, json, pathlib, re, statistics
+import bisect, collections, json, math, pathlib, re, statistics
 from typing import Any
 
 from boltbeam import formats
@@ -37,12 +43,16 @@ from boltbeam.collectors import time_budget as tb
 from boltbeam.workflow import kernel_ledger as kl
 from boltbeam.workflow.context_audit import derived, measured, unknown
 
+
 SCHEMA = "boltbeam.session_map.v1"
 UNATTRIBUTED_MAX_PCT = 5.0  # the machine-search design's S0 refuting line (2026-11-18): above it the map does not cover the step
 DATA = pathlib.Path(__file__).resolve().parents[1] / "data"
 GATES = ("join coverage: every main-file matrix joined", "draft passes against the counters")  # the ledger checks the map's exit code holds to
 NO_WEIGHTS = ("small", "sampling", "expert_routing", "kv_write", "sparse_select")  # prefill classes that read no weight: floor 0, a lower bound
 estimate = kl.estimate
+AUDIT = json.loads((DATA / "realization.json").read_text())  # the audit's levers, measured realization and call words
+Z = AUDIT["z"]
+LETTER = {"measured": "M", "derived": "D", "estimate": "E", "unknown": "U"}
 
 
 def table() -> dict[str, Any]:
@@ -96,7 +106,7 @@ def host_idle(tl:tb.Timeline, wins:list[tuple[int, int]], steps:int) -> dict[str
   calls = sorted(tl.calls)
   kst, ost, cst = [k[0] for k in ks], [o[0] for o in ops], [c[0] for c in calls]
   longest = max((e - s for s, e, _ in calls), default=0)  # a call in flight at a window's start began at most this long before it
-  by_cause, api, idle = collections.Counter(), collections.Counter(), 0.0
+  by_cause, api, idle, pairs = collections.Counter(), collections.Counter(), 0.0, collections.Counter()
   for a, b in wins:
     au = [x for x in tb.union(ops[bisect.bisect_left(ost, a):bisect.bisect_left(ost, b)]) if x[1] > a and x[0] < b]
     gaps = ([(a, au[0][0])] if au and au[0][0] > a else []) + tb.idle_gaps(au)
@@ -105,9 +115,11 @@ def host_idle(tl:tb.Timeline, wins:list[tuple[int, int]], steps:int) -> dict[str
     for g in tb.attribute_gaps(gaps, cl, ks[bisect.bisect_left(kst, a):bisect.bisect_left(kst, b)], rows, cpu):
       idle += (g["end_ns"] - g["start_ns"]) / 1e6
       by_cause.update({c: ns / 1e6 for c, ns in g["causes"].items()})
+      pairs[(g["before"], g["after"])] += (g["end_ns"] - g["start_ns"]) / 1e6
   src = f"{pathlib.Path(tl.source).name}: decode windows, {steps} steps, traced"
   return {"idle_ms": measured(idle / steps, src), "by_cause_ms": {c: measured(v / steps, src) for c, v in by_cause.most_common()},
-          "api_calls_a_step": {n: measured(v / steps, src) for n, v in api.most_common(8)}}
+          "api_calls_a_step": {n: measured(v / steps, src) for n, v in api.most_common(8)},
+          "pairs_ms": [[a, b, v / steps] for (a, b), v in pairs.most_common(10)]}
 
 
 def decode_classes(led:dict[str, Any], t:dict[str, Any], rows:list[tuple[re.Pattern, str]], depth:str, manifest:list[dict[str, Any]]) -> dict[tuple, dict[str, Any]]:
@@ -123,13 +135,17 @@ def decode_classes(led:dict[str, Any], t:dict[str, Any], rows:list[tuple[re.Patt
     c = class_of(t, rows, r["kernel"], r["family"], None if r["op"].startswith("none") else r["op"], fmts and ["float" if f == "float" else "q" for f in fmts],
                  "lm_head" in serves.get("role", []))
     g = out.setdefault((r["phase"], c), {"phase": r["phase"], "class": c, "launches": 0.0, "now_ms": 0.0, "floor_ms": 0.0, "floor_labels": set(), "bytes": 0.0,
-                                         "no_bytes_ms": 0.0, "propose_ms": 0.0, "missing": collections.Counter(), "generated": set(), "rows": 0})
+                                         "no_bytes_ms": 0.0, "propose_ms": 0.0, "missing": collections.Counter(), "generated": set(), "rows": 0,
+                                         "launch_floor_ms": 0.0, "kernels": []})
     ms, lim = x["time_ms"]["value"], x["limit_ms"]
     g["launches"] += x["launches"]["value"]
     g["now_ms"] += ms
     g["rows"] += 1
+    g["kernels"].append({"kernel": r["kernel"], "grid": r["grid"], "launches": x["launches"]["value"], "ms": ms, "step_sd": x["time_ms"].get("step_sd"),
+                         "limit_ms": lim["value"], "label": lim["label"], "floor_ms": x["floor_ms"]["value"]})
     if lim["value"] is None:
       g["no_bytes_ms"] += ms
+      g["launch_floor_ms"] += x["floor_ms"]["value"] or 0.0
     else:
       g["floor_ms"] += lim["value"]
       g["bytes"] += x["bytes"]["value"]
@@ -199,8 +215,8 @@ def prefill_floor(cls:str, header:list[dict[str, Any]], passes:float, tokens:flo
 
 def layer_count(table:dict[str, Any], name:str) -> int | None:
   """A layer count by data/min_memory.json's tensor-name pattern for it under the header's architecture."""
-  from boltbeam.workflow.min_memory import TAB
-  pat = (TAB["architectures"].get(((table or {}).get("meta") or {}).get("general.architecture")) or {}).get("counts", {}).get(name)
+  from boltbeam.workflow.min_memory import block
+  pat = (block((table or {}).get("meta"), (table or {}).get("tensors")) or {}).get("counts", {}).get(name)
   return sum(1 for n, *_ in table["tensors"] if re.search(pat, n)) if pat else None
 
 
@@ -219,11 +235,17 @@ def bands(turns:list[dict[str, Any]], depths:dict[str, float], row:dict[str, Any
 def session_map(captures:list[dict[str, Any]], turns:list[dict[str, Any]], *, main:dict[str, Any], draft:dict[str, Any] | None, engine:str | list[str],
                 vendor:str | None, target:dict[str, Any], k:int, kv_type:str | None = None, selection:int | None = None,
                 manifest:dict[str, Any] | None = None, routing:dict[str, Any] | None = None, untraced:list[list[dict[str, Any]]] | None = None,
-                reference:list[dict[str, Any]] | None = None, traced_runs:list[list[dict[str, Any]]] | None = None) -> dict[str, Any]:
+                reference:list[dict[str, Any]] | None = None, traced_runs:list[list[dict[str, Any]]] | None = None,
+                draft_selection:int | None = None, previous:dict[str, Any] | None = None, floors:list[dict[str, Any]] | None = None,
+                h2d_gbs:float | None = None, first:bool = False, name:str | None = None) -> dict[str, Any]:
   """The record. captures: [{path, window, tl?}] (tl: a Timeline already read); turns: the traced record's
   (replay.llama_turns), tagged by window; untraced: the same session's untraced runs (each a list of turns): the
   untraced step per window and the session's steps. reference: [{part (decode or prefill), phase, classes (one, several, or ["*"]), ms or gbs, source,
-  window?}] measured rows (ms a step, or a turn)."""
+  window?}] measured rows (ms a step, or a turn). draft_selection: the KV cells the draft's attention reads when it is sparse
+  too. The audit's inputs (the module's audit lines): previous, an earlier map record of the same plan (the stock proof);
+  floors, [{class, bytes, depth?, source}] bytes a class reads that the header does not give (scaled by depth when `depth`
+  names the depth they were counted at); h2d_gbs, the GPU's measured host-to-device copy rate; first, rank with no
+  previous record (the plan's first audit, said); name, this record's name for a later proof."""
   t, eng = table(), tb.engine_keys(engine)[-1]
   rows, phase_row = engine_rows(t, engine)
   mrows = kl.manifest_rows(manifest)
@@ -248,12 +270,13 @@ def session_map(captures:list[dict[str, Any]], turns:list[dict[str, Any]], *, ma
   for w, info in windows.items():
     per = [sum(x["decode_ms"] for x in r if x["i"] in info["turns"]) / max(1, sum(tb.decode_steps(x["tokens"], x["accepted"], row_d) for x in r if x["i"] in info["turns"]))
            for r in (untraced or [])]
+    info["untraced_runs_ms"] = per
     info["untraced_step_ms"] = measured(statistics.median(per), f"median of {len(per)} untraced runs, turns {info['turns']}") if per else \
       unknown("the same turns untraced (--untraced): the trace's overhead")
   leds = {}  # one ledger a window: its rankings hold every row of that window (a ledger over several depths ranks the deepest's)
   for c in caps:
     leds[c["window"]] = led = kl.ledger([{"cap": c["cap"], "depth": c["depth"], "untraced_ms": windows[c["window"]]["untraced_step_ms"]["value"]}], main=main, draft=draft,
-                                        engine=engine, vendor=vendor, target=target, k=k, kv_type=kv_type, selection={"verify": selection} if selection else None, manifest=manifest,
+                                        engine=engine, vendor=vendor, target=target, k=k, kv_type=kv_type, selection={q: v for q, v in (("verify", selection), ("draft", draft_selection)) if v} or None, manifest=manifest,
                                         routing=routing)
     if led.get("refused"):
       return {"schema": SCHEMA, "refused": f"kernel ledger, window {c['window']}: {led['refused']}"}
@@ -262,7 +285,7 @@ def session_map(captures:list[dict[str, Any]], turns:list[dict[str, Any]], *, ma
   per_run = [bands(r, depths, row_d) for r in run_turns]
   band = {w: {q: statistics.median(b[w][q] for b in per_run) for q in ("steps", "turns")} for w in windows}
   fams_rules = tb.families_for(engine, vendor)
-  out_windows = []
+  out_windows, aud = [], []
   for c in caps:
     w, d = c["window"], str(c["depth"])
     tot = leds[w]["depths"][0]
@@ -278,7 +301,12 @@ def session_map(captures:list[dict[str, Any]], turns:list[dict[str, Any]], *, ma
     out_windows.append({"window": w, "depth": c["depth"], "turns": windows[w]["turns"], "decode_steps": measured(tot["steps"]["value"], tot["source"]),
                         "step_ms": tot["totals"]["step_ms"], "untraced_step_ms": windows[w]["untraced_step_ms"], "kernels_ms": tot["totals"]["union_ms"],
                         "host": host, "classes": cls, "prefill": pf, "prefill_tokens": windows[w]["tokens"], "checks": tot["checks"]})
-  return finish(out_windows, band, t, target, header, used, reference or [], eng, vendor, k)
+    aud.append(audit_window(out_windows[-1], leds[w], tls[w], [x["decode"] for x in wins], target=target, vendor=vendor, h2d_gbs=h2d_gbs, floors=floors or [],
+                           counted=windows[w]["steps"]))
+  out = finish(out_windows, band, t, target, header, used, reference or [], eng, vendor, k)
+  out["audit"] = audit(sorted(aud, key=lambda a: a["depth"]), out["session"], windows, previous, first)
+  out["name"] = name
+  return out
 
 
 def finish(wins:list[dict[str, Any]], band:dict[str, dict[str, float]], t:dict[str, Any], target:dict[str, Any],
@@ -375,6 +403,170 @@ def express(g:dict[str, Any]) -> dict[str, Any]:
           "missing": [m for m, _ in g["missing"].most_common(3)], "generated": sorted(g["generated"])}
 
 
+# --- the audit ----------------------------------------------------------------------------------------------------
+
+def realization(lever:str) -> dict[str, Any]:
+  """A lever class's factor: the median of its measured rows' ratios, at most 1 (None with no row)."""
+  rows = AUDIT["realization"].get(lever) or []
+  return {"factor": min(1.0, statistics.median(r["ratio"] for r in rows)) if rows else None, "ratios": [r["ratio"] for r in rows],
+          "sources": [r["source"] for r in rows]}
+
+
+def _calls(tl:tb.Timeline, wins:list[tuple[int, int]], word:str) -> tuple[int, float]:
+  """Host API calls whose name holds `word`, started inside the windows: count and summed ms."""
+  st = [c[0] for c in tl.calls]
+  hit = [c for a, b in wins for c in tl.calls[bisect.bisect_left(st, a):bisect.bisect_left(st, b)] if word in c[2]]
+  return len(hit), sum(e - s for s, e, _ in hit) / 1e6
+
+
+def _h2d_bytes(tl:tb.Timeline, wins:list[tuple[int, int]]) -> int:
+  return sum(c["bytes"] or 0 for c in tl.copies if c["kind"] == "HtoD" and any(a <= c["start_ns"] < b for a, b in wins))
+
+
+def audit_window(x:dict[str, Any], led:dict[str, Any], tl:tb.Timeline, wins:list[tuple[int, int]], *, target:dict[str, Any], vendor:str | None,
+                 h2d_gbs:float | None, floors:list[dict[str, Any]], counted:int) -> dict[str, Any]:
+  """One window: per class now / floor / se and its phases, the copies and host rows, and the shape flags."""
+  d = led["depths"][0]
+  n, bw = d["steps"]["value"], target.get("memory_bandwidth_gbs")
+  classes: dict[str, dict[str, Any]] = {}
+  for (phase, cls), g in x["classes"].items():
+    c = classes.setdefault(cls, {"now_ms": 0.0, "floor_ms": 0.0, "launches": 0.0, "sd": 0.0, "label": "derived", "phases": {}, "kernels": []})
+    c["now_ms"] += g["now_ms"]
+    c["floor_ms"] += g["floor_ms"] + g["launch_floor_ms"]
+    c["launches"] += g["launches"]
+    c["phases"][phase] = g["now_ms"]
+    c["sd"] = None if c["sd"] is None or any(k["step_sd"] is None for k in g["kernels"]) else c["sd"] + sum(k["step_sd"] for k in g["kernels"])
+    if g["no_bytes_ms"] or not g["floor_labels"] <= {"derived"}:
+      c["label"] = "estimate"
+    c["kernels"] += [{**k, "phase": phase} for k in g["kernels"]]
+  for f in floors:
+    if (c := classes.get(f["class"])) and bw:
+      by = f["bytes"] * (x["depth"] / f["depth"] if f.get("depth") else 1.0)
+      if (ms := by / (bw * 1e9) * 1e3) > c["floor_ms"]:
+        c.update(floor_ms=ms, label="estimate", floor_source=f"{by / 1e6:.1f} MB / {bw} GB/s: {f['source']}")
+  for c in classes.values():  # the rows' per-step sds summed: rows of one step co-vary (clocks, heat), so the sum is the safe side
+    sd = c.pop("sd")
+    c["se_ms"] = sd / math.sqrt(n) if sd is not None and n > 1 else None
+  host = x["host"]
+  idle_t, idle_u = host["idle_ms"]["value"], host["idle_untraced_ms"]["value"]  # a step of the counters' (`counted` steps)
+  launches, launch_ms = _calls(tl, wins, AUDIT["calls"].get(vendor or "", {}).get("graph_launch", "\0"))
+  exposed = max(0.0, d["totals"]["idle_ms"]["value"] - idle_t * counted / n)  # both over the ledger's n steps
+  h2d = _h2d_bytes(tl, wins) / n
+  classes["exposed_copies"] = {"now_ms": exposed, "floor_ms": h2d / (h2d_gbs * 1e9) * 1e3 if h2d_gbs else 0.0, "label": "derived" if h2d_gbs else "unknown", "se_ms": None,
+                       "h2d_bytes": h2d, "phases": {}, "kernels": []}
+  classes["host"] = {"now_ms": idle_u if idle_u is not None else idle_t, "now_label": "estimate" if idle_u is not None else "measured",
+                     "floor_ms": launch_ms / launches if launches else 0.0, "label": "derived" if launches else "unknown", "se_ms": None, "phases": {}, "kernels": [],
+                     "traced_ms": idle_t, "by_cause_ms": {k: v["value"] for k, v in host["by_cause_ms"].items()}}
+  for c in classes.values():
+    c["gap_ms"] = c["now_ms"] - c["floor_ms"]
+  return {"window": x["window"], "depth": x["depth"], "steps": n, "step_ms": d["totals"]["step_ms"]["value"],
+          "untraced_step_ms": x["untraced_step_ms"]["value"], "launch_floor_us": d["launch_floor_us"]["value"], "classes": classes,
+          "flags": flags(classes, host, tl, wins, n, target, vendor)}
+
+
+def flags(classes:dict[str, dict[str, Any]], host:dict[str, Any], tl:tb.Timeline, wins:list[tuple[int, int]], n:int, target:dict[str, Any],
+          vendor:str | None) -> list[dict[str, Any]]:
+  """The shape flags of one window (see the module), each with its class and its ms a step."""
+  sms, bw, out = target.get("compute_units"), target.get("memory_bandwidth_gbs"), []
+  rows = [(cls, k) for cls, c in classes.items() for k in c["kernels"]]
+  se = lambda k: (k["step_sd"] or 0.0) / math.sqrt(n)  # noqa: E731
+  for cls, k in rows:
+    blocks = math.prod(k["grid"])
+    if sms and blocks < sms and k["ms"] - (k["floor_ms"] or 0.0) > Z * se(k):
+      out.append({"flag": "grid", "class": cls, "phase": k["phase"], "kernel": k["kernel"], "grid": k["grid"], "ms": k["ms"] * (1 - blocks / sms), "time_ms": k["ms"],
+                  "why": f"{blocks} blocks on {sms} compute units: {1 - blocks / sms:.0%} of the GPU idle while it runs"})
+  byte_rows = [(cls, k) for cls, k in rows if k["limit_ms"] and k["ms"] > Z * se(k)]
+  reach = max((min(1.0, k["limit_ms"] / k["ms"]) for _, k in byte_rows if k["label"] == "derived"), default=None)
+  for cls, k in byte_rows if reach and bw else []:
+    if k["ms"] - k["limit_ms"] / reach > Z * se(k):
+      out.append({"flag": "bandwidth", "class": cls, "phase": k["phase"], "kernel": k["kernel"], "grid": k["grid"], "ms": k["ms"] - k["limit_ms"] / reach, "time_ms": k["ms"],
+                  "why": f"{bw * k['limit_ms'] / k['ms']:.0f} GB/s ({k['label']} bytes) against the {bw * reach:.0f} GB/s the best byte-bound group of this capture reaches"})
+  one = classes["host"]["floor_ms"]
+  for a, b, ms in host.get("pairs_ms") or []:
+    if one and ms > one:
+      out.append({"flag": "host gap", "class": "host", "kernel": f"{a} -> {b}", "ms": ms, "why": f"{ms:.3f} ms a step of idle between them, above one graph launch ({one:.3f})"})
+  words = AUDIT["calls"].get(vendor or "", {})
+  for what, cause in (("reinstantiate", None), ("sync", "sync")):  # a sync's call time is waiting: its cost is the idle it leaves
+    if words.get(what) and (got := _calls(tl, wins, words[what]))[0]:
+      ms = classes["host"]["by_cause_ms"].get(cause, 0.0) if cause else got[1] / n
+      out.append({"flag": what, "class": "host", "kernel": words[what], "ms": ms, "per_step": got[0] / n,
+                  "why": f"{got[0] / n:.2f} calls a step; {ms:.3f} ms a step of {'idle in them (traced)' if cause else 'call time'}"})
+  return sorted(out, key=lambda f: -f["ms"])  # ms: what the shape costs a step (idle compute units' share, time over the reach, idle)
+
+
+def slopes(ws:list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+  """Per class, the deepest window less the shallowest: grows, flat, or unknown (no spread)."""
+  a, b = ws[0], ws[-1]
+  out = {}
+  for cls in set(a["classes"]) & set(b["classes"]) if len(ws) > 1 and b["depth"] > a["depth"] else ():
+    x, y = a["classes"][cls], b["classes"][cls]
+    delta = y["now_ms"] - x["now_ms"]
+    se = math.hypot(x["se_ms"], y["se_ms"]) if x["se_ms"] is not None and y["se_ms"] is not None else None
+    out[cls] = {"delta_ms": delta, "per_100k_ms": delta / (b["depth"] - a["depth"]) * 1e5, "se_ms": se,
+                "trend": "unknown" if se is None else "grows" if delta > Z * se else "shrinks" if delta < -Z * se else "flat"}
+  return out
+
+
+def run_spread(info:dict[str, Any]) -> float | None:
+  """The untraced runs' step spread as a share (pooled over windows with two runs or more), None without."""
+  vs = [statistics.variance(p) / statistics.fmean(p) ** 2 for p in (w.get("untraced_runs_ms") or [] for w in info.values()) if len(p) > 1]
+  return math.sqrt(statistics.fmean(vs)) if vs else None
+
+
+def proof(ws:list[dict[str, Any]], slope:dict[str, dict[str, Any]], spread:float | None, previous:dict[str, Any] | None) -> dict[str, Any]:
+  """The stock proof (see the module): ok, and per flat class its difference and tolerance; ok None when it cannot be judged."""
+  if previous is None:
+    return {"ok": None, "why": "no previous audit named (--previous), or its record has no audit part: the depth-flat classes have nothing to match"}
+  if not slope:
+    return {"ok": None, "why": "one depth: no slope tells which classes are flat (trace two depths)"}
+  flat = [c for c, s in slope.items() if s["trend"] == "flat"]
+  sp = [s for s in (spread, previous.get("run_spread")) if s is not None]
+  if not sp:
+    return {"ok": None, "why": "no run-to-run spread in either audit (--untraced with two runs or more): the tolerance cannot be derived"}
+  rows = []
+  for x in ws:
+    pw = min(previous["windows"], key=lambda p: abs(p["depth"] - x["depth"]))
+    for c in flat:
+      a, b = x["classes"].get(c), pw["classes"].get(c)
+      if not a or not b or a["se_ms"] is None or b["se_ms"] is None:
+        continue
+      tol = Z * math.sqrt(a["se_ms"] ** 2 + b["se_ms"] ** 2 + sum(s ** 2 for s in (sp * 2)[:2]) * ((a["now_ms"] + b["now_ms"]) / 2) ** 2)
+      rows.append({"class": c, "window": x["window"], "previous_window": pw["window"], "now_ms": a["now_ms"], "previous_ms": b["now_ms"],
+                   "delta_ms": a["now_ms"] - b["now_ms"], "tolerance_ms": tol, "ok": abs(a["now_ms"] - b["now_ms"]) <= tol})
+  bad = [r for r in rows if not r["ok"]]
+  why = "; ".join(f"{r['class']} {r['window']} {r['now_ms']:.3f} vs {r['previous_ms']:.3f} ({r['previous_window']}), {r['delta_ms']:+.3f} beyond {r['tolerance_ms']:.3f}" for r in bad)
+  return {"ok": bool(rows) and not bad, "previous": previous.get("name"), "rows": rows, "run_spread": sp,
+          "why": why or (f"{len(rows)} flat class cells within tolerance" if rows else "no flat class in both audits")}
+
+
+def audit(ws:list[dict[str, Any]], session:dict[str, Any], info:dict[str, Any], previous:dict[str, Any] | None, first:bool) -> dict[str, Any]:
+  """The audit part of the record: windows (classes, copies, host, flags), slopes, the stock proof and the ranked queue."""
+  band = {w: b["decode_steps"]["value"] for w, b in session["bands"].items()}
+  slope, spread = slopes(ws), run_spread(info)
+  pr = proof(ws, slope, spread, (previous or {}).get("audit") and {**previous["audit"], "name": previous.get("name")})
+  queue = []
+  for cls in sorted({c for w in ws for c in w["classes"]}):
+    cells = {w["window"]: w["classes"][cls] for w in ws if cls in w["classes"]}
+    gap_s = sum(c["gap_ms"] * band[w] for w, c in cells.items()) / 1e3
+    lever = AUDIT["levers"].get(cls, "kernel")
+    r = realization(lever)
+    queue.append({"target": cls, "lever": lever, "gap_s": gap_s, "realization": r, "score_s": None if r["factor"] is None else max(0.0, gap_s) * r["factor"],
+                  "slope": slope.get(cls), "flags": [f for w in ws for f in w["flags"] if f["class"] == cls][:5],
+                  "windows": {w: {"now_ms": c["now_ms"], "floor_ms": c["floor_ms"], "gap_ms": c["gap_ms"],
+                                  "label": "E" if c.get("now_label") == "estimate" and c["label"] == "derived" else LETTER[c["label"]]} for w, c in cells.items()},
+                  "labels": {"gap_s": "derived: sum over windows of (now - floor) x the band's steps", "score_s": "estimate: gap_s x the lever's median realization"}})
+  queue.sort(key=lambda q: (q["score_s"] is None, -(q["score_s"] or 0.0), -q["gap_s"]))
+  ranked = pr["ok"] is True or (previous is None and first)
+  for i, q in enumerate([q for q in queue if ranked and (q["score_s"] or 0) > 0], 1):
+    q["rank"] = i
+  for w in ws:
+    for c in w["classes"].values():
+      c.pop("kernels", None)
+  return {"windows": ws, "slopes": slope, "run_spread": spread, "stock_proof": pr, "ranked": bool(ranked),
+          "refused_ranking": None if ranked else f"not ranked: stock proof {'failed' if pr['ok'] is False else 'not judged'}: {pr['why']}" + ("" if previous else " (or --first)"),
+          "queue": queue}
+
+
 def lines(rec:dict[str, Any], top:int = 14) -> list[str]:
   """The short table: decode classes (per window ms: now / floor / reference; session s of gap; express), prefill, host, checks."""
   from boltbeam.report import plain
@@ -404,4 +596,24 @@ def lines(rec:dict[str, Any], top:int = 14) -> list[str]:
   for g in rec.get("reference_groups") or []:
     cells = " | ".join(f"{v(c['now_ms'])}/{v(c['reference_ms'])}" for c in (g["windows"].get(w, {}) for w in ws) if c) or "-"
     out.append(wd["group"].format(part=g["part"], phase=g["phase"], classes="+".join(g["classes"]), cells=cells, reach=g["reachable_s"]))
-  return out + [f"{'ok' if c['ok'] else 'FAIL'} {c['check']}: {c['why']}" for c in rec["checks"]]
+  return out + audit_lines(rec.get("audit"), wd, top) + [f"{'ok' if c['ok'] else 'FAIL'} {c['check']}: {c['why']}" for c in rec["checks"]]
+
+
+def audit_lines(a:dict[str, Any] | None, wd:dict[str, Any], top:int) -> list[str]:
+  """The audit: per target and window now / floor / gap (label), session s of gap, slope, lever x factor = score; the
+  flags; the stock proof; the ranking's state."""
+  if not a:
+    return []
+  ws = [w["window"] for w in a["windows"]]
+  out = [wd["audit_cols"].format(windows=" | ".join(ws))]
+  for q in a["queue"][:top]:
+    cells = " | ".join(f"{c['now_ms']:.2f}/{c['floor_ms']:.3f}/{c['gap_ms']:.2f} {c['label']}" for c in (q["windows"].get(w) for w in ws) if c)
+    s, f = q["slope"], q["realization"]["factor"]
+    slope = f"{s['delta_ms']:+.2f} {s['trend']}" if s else "-"  # one quote level: Python 3.11 (the floor) rejects reused quotes
+    fac, score = "U" if f is None else f"{f:.2f}", "U" if q["score_s"] is None else f"{q['score_s']:.1f}"
+    out.append(f"  {q.get('rank') or '-':>2} {wd['classes'].get(q['target'], q['target'])[:40]:<40} {cells}  gap {q['gap_s']:.1f} s  "
+               f"slope {slope}  {q['lever']} x{fac} = {score} s")
+  out.append(wd["flags"])
+  out += [f"  {w['window']} {f['flag']:<13} {f['class']:<14} {f['kernel'][:44]} {f.get('grid') or ''} {f['ms']:.3f} ms: {f['why']}" for w in a["windows"] for f in w["flags"][:top]]
+  pr = a["stock_proof"]
+  return out + [wd["proof"].format(state="ok" if pr["ok"] else "FAIL" if pr["ok"] is False else "not judged", why=pr["why"]), a["refused_ranking"] or wd["ranked"]]

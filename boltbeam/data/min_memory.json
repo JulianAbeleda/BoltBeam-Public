@@ -1,9 +1,11 @@
 {
  "schema": "boltbeam.min_memory.v1",
- "about": "The least memory each role needs resident on the device, as formulas over a model's shapes and the run's settings (workflow/min_memory.py evaluates them with tune's formula reader; no engine is named). Tensors are sorted by the one classifier (profile/roles.py): expert stacks, the output head, lookup tables (a step reads one row), unclassified (the classifier's 'other': unknown) and dense (the rest); their bytes are the header's (decode_roles._physical_bytes). Per architecture: meta = fact -> metadata key under the architecture's prefix (a per-layer list is one value only when its nonzero entries agree; else the fact is missing and the rows that read it are unknown); dims = fact -> [tensor pattern, axis]; counts = n_<fact> -> the pattern of one tensor per such layer; terms = named formulas over the facts, in order. Settings are facts: context, ubatch, draft_depth, and <x>_type as <x>_elem_bytes through the format registry. class: exact (the formula is the need, under the condition its `why` states) or bounded (a floor; `rest` says what sets the remainder). `every`: roles no model's shapes give, with the measurement that settles each. docs/context-audit.md, Minimum memory.",
+ "about": "The least memory each role needs resident on the device, as formulas over a model's shapes and the run's settings (workflow/min_memory.py evaluates them with tune's formula reader; no engine is named). Tensors are sorted by the one classifier (profile/roles.py): expert stacks, the output head, lookup tables (a step reads one row), unclassified (the classifier's 'other': unknown) and dense (the rest); their bytes are the header's (decode_roles._physical_bytes). Per block (blocks: the first whose `has` tensor-name patterns the header shows; a header that shows none gets no block, and the fit says which rows that leaves out): meta = fact -> metadata key under the architecture's prefix (a per-layer list is one value only when its nonzero entries agree; else the fact is missing and the rows that read it are unknown); dims = fact -> [tensor pattern, axis]; counts = n_<fact> -> the pattern of one tensor per such layer; terms = named formulas over the facts, in order. Settings are facts: context, ubatch, draft_depth, and <x>_type as <x>_elem_bytes through the format registry. class: exact (the formula is the need, under the condition its `why` states) or bounded (a floor; `rest` says what sets the remainder). `every`: roles no model's shapes give, with the measurement that settles each. docs/context-audit.md, Minimum memory.",
  "roles": {
   "copies": "copies of the other file's tensors",
-  "unclassified": "unclassified tensors"
+  "unclassified": "unclassified tensors",
+  "no_block": "rows of no block",
+  "no_block_test": "a block in data/min_memory.json whose `has` patterns this header shows (it shows no indexer keys, recurrent block or per-layer embedding), or the engine's own buffer lines; not sized here: {rows}"
  },
  "every": [
   {
@@ -15,8 +17,15 @@
    "test": "total - used - free off the device's samples (the audit's memory section) on each driver: what the device keeps for itself"
   }
  ],
- "architectures": {
-  "qwen4exp": {
+ "blocks": [
+  {
+   "name": "sparse-attention indexer, recurrent state or per-layer embedding (hybrid memory)",
+   "has": [
+    "\\.indexer\\.k_proj\\.",
+    "\\.ssm_out\\.",
+    "\\.ple_conv1d\\."
+   ],
+   "has_why": "the block is taken by what the header shows, never by the architecture's name: a model with any of these tensors (indexer keys, a recurrent block's output, a per-layer embedding's convolution) has the memory roles the rows below size; a row whose metadata the header does not give is unknown, naming it",
    "meta": {
     "n_embd": "embedding_length",
     "streams": "hyper_connection.count",
@@ -112,5 +121,5 @@
     }
    ]
   }
- }
+ ]
 }

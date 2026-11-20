@@ -68,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv:list[str] | None=None) -> int:
   argv = list(sys.argv[1:] if argv is None else argv)
+  if argv[:1] in (["--version"], ["-V"]):  # before the screen claims every leading dash
+    print(f"boltbeam {self_update.installed() or 'unknown'}")  # pyproject in a checkout, the package metadata in a wheel
+    return 0
   if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
     return tui.run(argv)  # bare `boltbeam`, or the screen's own flags with `tui` left out, opens the screen
   if argv[:1] == ["tui"] and argv[1:2] not in (["-h"], ["--help"]):

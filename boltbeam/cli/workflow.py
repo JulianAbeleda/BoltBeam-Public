@@ -407,8 +407,11 @@ def _register_session_ab(sub) -> None:
   p.add_argument("--retries", type=int, default=2, help="reruns of an invalid arm before the run stops")
   p.add_argument("--turns", default=None, help="time only turns A-B (e.g. 40-59, a deep-turn screen; the history before A fills the cache untimed), or N: the first N")
   p.add_argument("--hook", default="", help="a shell command run once per arm after its turns, the server still up (a quality gate): SESSION_AB_URL, SESSION_AB_ARM, SESSION_AB_BLOCK, SESSION_AB_OUT")
+  p.add_argument("--save-replies", action="store_true", help="also write every reply's text and token ids to OUT/replies/BLOCK-ARM-ATTEMPT.jsonl (the record itself keeps only the sha256)")
   p.add_argument("--resume", action="store_true", help="carry on with the record in --out (same inputs only)")
   p.add_argument("--analyze", action="store_true", help="print the table of the record in --out, run nothing")
+  p.add_argument("--trace-windows", default=None, help="NAME:A-B[,NAME:A-B ...]: one traced run (one arm, --repeats 1) with the vendor's capture open over "
+                 "each window's turns, exported to OUT/cap-NAME.sqlite; the record's turns carry span_ns and win, for session-map PATH@NAME --session OUT/session_ab.json@ARM")
   p.set_defaults(fn=cmd_session_ab)
 
 
@@ -422,12 +425,17 @@ def cmd_session_ab(args) -> int:
     if args.analyze:
       record = json.loads((out / sab.FILE).read_text())
     else:
-      if not (args.server_argv and args.session and len(args.arm or []) >= 2):
-        return _fail("session-ab: --server-argv, --session and at least two --arm are needed")
+      if not (args.server_argv and args.session and len(args.arm or []) >= (1 if args.trace_windows else 2)):
+        return _fail("session-ab: --server-argv, --session and at least two --arm (one with --trace-windows) are needed")
+      from boltbeam.workflow.spend import files_read
       record = sab.run(out=args.out, server_argv=args.server_argv, arms=args.arm, session=args.session, repeats=args.repeats,
                        engine=args.engine, history=args.history, lengths=args.lengths, gaps=args.gaps, wrap=args.wrap,
-                       power_cap_w=args.power_cap, retries=args.retries, turns=args.turns, hook=args.hook, resume=args.resume,
-                       say=lambda m: print(m, file=sys.stderr, flush=True))
+                       power_cap_w=args.power_cap, retries=args.retries, turns=args.turns, hook=args.hook, resume=args.resume, save_replies=args.save_replies,
+                       say=lambda m: print(m, file=sys.stderr, flush=True), files_read=files_read, trace_windows=args.trace_windows)
+    if record["inputs"].get("trace_windows"):
+      sab._write(out / sab.FILE, record)
+      print(json.dumps({"traces": record.get("traces"), "valid": [a["valid"] for a in record["arms"]]}))
+      return 0 if all(a["valid"] for a in record["arms"]) and not record.get("stopped") else 2
     record["analysis"] = analyze(record)
   except (OSError, ValueError, RuntimeError, Refused) as exc:
     return _fail(f"session-ab: {exc}")

@@ -16,6 +16,7 @@ families (not a run target). Python decides the groups; the screen draws them.
 from __future__ import annotations
 
 import datetime as _dt
+import functools
 import shutil
 import subprocess
 from typing import Any, Callable
@@ -326,3 +327,12 @@ def detect(profile:dict[str, Any] | None = None) -> dict[str, Any]:
           # known: a registry row or a profile made here fits; new: autoscan would measure one (workflow/chips.py)
           "profile": gpu.get("profile"),
           "registered": bool(target_id) and target_id in {t["id"] for t in limit.targets()["targets"]}}
+
+
+@functools.lru_cache(maxsize=1)
+def this_chip() -> str | None:
+  """This machine's chip (the target id its GPU scans as), which keys the machine figures; None when no GPU is read."""
+  try:
+    return detect().get("target_id")
+  except (Exception, SystemExit):  # noqa: BLE001  no chip: every chip-keyed figure is then borrowed or unmeasured, said
+    return None

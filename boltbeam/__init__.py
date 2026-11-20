@@ -15,5 +15,4 @@ if sys.version_info < MINIMUM_PYTHON:
     "The system python3 on macOS is usually older than the floor: try python3.12, or any newer one."
     % (MINIMUM_PYTHON + sys.version_info[:3] + (sys.executable,)))
 
-__all__ = ["__version__", "MINIMUM_PYTHON"]
-__version__ = "0.1.0"
+__all__ = ["MINIMUM_PYTHON"]  # the version has one source: boltbeam.cli.self_update.installed()

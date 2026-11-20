@@ -83,7 +83,7 @@ def stop_group(pgid_file:pathlib.Path, wait_s:float = 30.0) -> bool:
     try:
       os.killpg(pgid, sig)
       alive = True
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):  # EPERM: a group of zombies only (macOS), gone
       break
     t0 = time.time()
     while time.time() - t0 < wait_s and _group_alive(pgid):
@@ -96,7 +96,7 @@ def _group_alive(pgid:int) -> bool:
   try:
     os.killpg(pgid, 0)
     return True
-  except ProcessLookupError:
+  except (ProcessLookupError, PermissionError):  # EPERM: a group of zombies only (macOS), gone
     return False
 
 

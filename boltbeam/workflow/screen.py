@@ -243,6 +243,9 @@ def recommended(profile:dict[str, Any], target, *, engine:str = "vllm", gpus:int
     args["free_bytes"] = gpu_memory(every=True, ggml_backend=rec.vendors.for_backend(target.backend).ggml_backend).get("free_min")
   out = {"schema": SCHEMA, "kind": "recommend", "target_id": target.target_id, **rec.setup(profile, facts, engine, devs, **args)}
   out["mtp_measure"] = mtp_offer(out.get("mtp_measure"), profile["source"], context, engine)
+  from boltbeam.workflow import figures, tune
+  if engine in tune.engines() and hasattr(ad := tune.adapter(engine), "machine_figures"):  # a figure borrowed for this target is said here too
+    out["figures_said"] = figures.said(ad.machine_figures(target.target_id)[1], None, lambda when: True)
   if check_in is None:
     return out
   free = gpu_free(target)

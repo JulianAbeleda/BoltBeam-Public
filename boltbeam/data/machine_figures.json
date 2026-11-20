@@ -1,0 +1,412 @@
+{
+ "schema": "boltbeam.machine_figures.v1",
+ "about": "Figures measured on one machine, one row per key each (workflow/figures.py reads it; the policy guard checks every row). key: what the figure depends on that this run can read (chip: the target id; l3_mib: the host's L3; engine, layout, hidden, layers, ffn: an engine on a model shape); unkeyed: what else it depends on that a run does not read yet, said, never matched. A row: its key's values, value (what a run on that key uses), readings (the measurements behind it: their spread is the margin a borrowed value is widened by), and its provenance (machine, date, run folder, evidence, build). readings are the measurements a row has, repeats or not (two loads, two chunk sizes, a stock and a capped build): the margin they give is that row's own spread, not a bound across chips, which only a second chip's row gives (then the rows' spread is the floor). kind: cost (borrowed: value + margin), saving (borrowed: value - margin, never below 0), choice or constant (never borrowed). how_to_measure: the existing command that measures it on a machine with no row. A run whose key has no row either borrows the nearest row (the most key fields equal), labelled, widened by one more reading's one-sided 95% bound over that row's readings (t x sd x sqrt(1 + 1/n)) and by the spread of the rows' values, or, when the row has fewer than two readings or borrow is false, does not use the figure and says so with how_to_measure. fact: the engine fact a formula reads (unit_bytes: its unit in bytes); requires: the build features without which the figure is not read; when: a formula over the facts, the same. Adding a machine is adding a row.",
+ "figures": {
+  "server_runtime": {
+   "engine": "llama.cpp",
+   "fact": "llama_cpp.server_runtime_bytes",
+   "unit": "MiB",
+   "unit_bytes": 1048576,
+   "kind": "cost",
+   "key": [
+    "chip"
+   ],
+   "words": "the GPU memory llama-server holds beyond its own buffers (the CUDA context, cuBLAS, what CUDA's free figure holds back)",
+   "unkeyed": "the driver and the engine build: tune reads neither, so whether the figure moves with them is unknown; test: how_to_measure on a second build or driver",
+   "how_to_measure": "boltbeam load-probe --server-argv 'SERVER -m MODEL ...' --out DIR at two contexts: the record's free_before_mib less the model, context and compute buffers server.log reports less free_ready_mib",
+   "rows": [
+    {
+     "key": {
+      "chip": "nvidia_sm120"
+     },
+     "value": 705,
+     "readings": [
+      704,
+      706
+     ],
+     "machine": "the home dev box, one RTX 5090 (32 GiB), a 32 MiB-L3 CPU",
+     "date": "2026-11-17",
+     "run": "~/storage/tmp/rel27/fit",
+     "evidence": "two loads (-c 65,536 every expert on the GPU; -c 247,552 with 7 layers' experts in RAM): NVML's free before the start less the logged model, context and compute buffers less the free CUDA reported after load",
+     "build": "llama.cpp b11571"
+    }
+   ]
+  },
+  "kpool_mask": {
+   "engine": "llama.cpp",
+   "fact": "llama_cpp.kpool_mask_bytes",
+   "unit": "B a cell and chunk token",
+   "kind": "cost",
+   "key": [
+    "chip"
+   ],
+   "when": "llama_cpp.kpool_indexer",
+   "words": "the stock k-pool path's selection masks over the cells, in the compute buffer (its pooled scores and pool mask are derived from the header's pool ratio beside it: 6 / ratio)",
+   "unkeyed": "the engine build's graph (the stock scatter path builds its masks over n_kv x n_tokens: src/models/qwen4exp.cpp build_layer_attn); tune does not read which path a build takes",
+   "how_to_measure": "boltbeam load-probe --server-argv 'SERVER -m MODEL ...' --out DIR at two contexts and one -ub: the growth of the compute buffer server.log reports, per cell and chunk token, less 6 / the pool ratio",
+   "rows": [
+    {
+     "key": {
+      "chip": "nvidia_sm120"
+     },
+     "value": 6.2,
+     "readings": [
+      6.2,
+      6.13
+     ],
+     "machine": "the home dev box, one RTX 5090 (32 GiB), a 32 MiB-L3 CPU",
+     "date": "2026-11-17",
+     "run": "~/storage/tmp/rel27/fit",
+     "evidence": "llama-server's own fit projection at -c 16,384 to 247,552: compute grows 3,943 B a cell at -ub 512 and 7,814 at -ub 1024 (7.70 and 7.63 a chunk token), less the 1.5 of the pooled terms at pool ratio 4",
+     "build": "llama.cpp b11571"
+    }
+   ]
+  },
+  "cublas_shared": {
+   "engine": "llama.cpp",
+   "fact": "llama_cpp.cublas_shared_bytes",
+   "unit": "MiB",
+   "unit_bytes": 1048576,
+   "kind": "saving",
+   "key": [
+    "chip"
+   ],
+   "requires": [
+    "LLAMA_CUBLAS_SHARED"
+   ],
+   "words": "the GPU memory one shared cuBLAS handle frees (LLAMA_CUBLAS_SHARED)",
+   "unkeyed": "the cuBLAS library's version and the number of contexts the command opens (target and draft)",
+   "how_to_measure": "boltbeam load-probe --server-argv 'SERVER -m MODEL ...' --out DIR --session S --turns 3, once with LLAMA_CUBLAS_SHARED=1 and once without: the difference of free_min_mib",
+   "rows": [
+    {
+     "key": {
+      "chip": "nvidia_sm120"
+     },
+     "value": 96,
+     "readings": [
+      96
+     ],
+     "machine": "the home dev box, one RTX 5090 (32 GiB), a 32 MiB-L3 CPU",
+     "date": "2026-11-17",
+     "run": "boltbeam-runs/conversation-server-design-20261117 P4",
+     "evidence": "session-minimum free 178 vs 82 MiB (FP0c vs FP0n), 59/59 replies identical"
+    }
+   ]
+  },
+  "graph_instance": {
+   "engine": "llama.cpp",
+   "fact": "llama_cpp.graph_instance_mib",
+   "unit": "MiB an executable",
+   "kind": "cost",
+   "key": [
+    "chip"
+   ],
+   "requires": [
+    "GGML_CUDA_GRAPH_MAX_KEYS"
+   ],
+   "words": "the GPU memory one CUDA graph executable holds (the graph cap's bound)",
+   "unkeyed": "the driver version",
+   "how_to_measure": "boltbeam load-probe --server-argv 'SERVER -m MODEL ...' --out DIR --session S --stress with GGML_CUDA_GRAPH_STATS=1: stress_growth_mib over the graph instances the stats lines count",
+   "rows": [
+    {
+     "key": {
+      "chip": "nvidia_sm120"
+     },
+     "value": 0.68,
+     "readings": [
+      0.68,
+      0.66
+     ],
+     "machine": "the home dev box, one RTX 5090 (32 GiB), a 32 MiB-L3 CPU",
+     "date": "2026-11-19",
+     "run": "boltbeam-runs/graph-cap-20261119 stats128-a, kv100-n49k",
+     "evidence": "MiB an executable, stock 0.68 and capped 0.66: the larger stands",
+     "build": "llama.cpp b12521"
+    }
+   ]
+  },
+  "draft_step": {
+   "engine": "llama.cpp",
+   "fact": "llama_cpp.draft_step_bytes",
+   "unit": "MiB a draft token",
+   "unit_bytes": 1048576,
+   "kind": "cost",
+   "key": [
+    "chip"
+   ],
+   "requires": [
+    "LLAMA_ARG_SPEC_DRAFT_N_MAX"
+   ],
+   "when": "model_draft_layers > 0",
+   "words": "the GPU memory one more draft token takes at load (the floor under the derived rollback plane of the recurrent state)",
+   "unkeyed": "the model and its draft head: read with one model whose recurrent state is 112.57 MiB a plane; a model with no recurrent state is not measured",
+   "how_to_measure": "boltbeam load-probe --server-argv 'SERVER -m MODEL ...' --out DIR at --spec-draft-n-max k and k + 1: the difference of free_ready_mib",
+   "rows": [
+    {
+     "key": {
+      "chip": "nvidia_sm120"
+     },
+     "value": 114,
+     "readings": [
+      114,
+      112
+     ],
+     "machine": "the home dev box, one RTX 5090 (32 GiB), a 32 MiB-L3 CPU",
+     "date": "2026-11-13",
+     "run": "boltbeam-runs/replay-h2h-20261113 run 9; flash-night-20261112 run 5c",
+     "evidence": "k=2 -> 3 loaded 114 MiB more (31,387 -> 31,501 MiB, q8_0 KV, -bs, whole-MiB readings) and about 112 MiB per k on a full card"
+    }
+   ]
+  },
+  "ws_ring_l3_parts": {
+   "engine": "llama.cpp",
+   "fact": "llama_cpp.ws_ring_l3_parts",
+   "unit": "parts of the L3",
+   "kind": "choice",
+   "key": [
+    "l3_mib"
+   ],
+   "borrow": false,
+   "requires": [
+    "GGML_CUDA_WS_RING_MIB"
+   ],
+   "when": "host_expert_bytes > 0",
+   "unkeyed": "the GPU's host link and the model the sweep ran on (one RTX 5090, one model)",
+   "words": "the staging ring as a share of the L3 (GGML_CUDA_WS_RING_MIB = L3 / parts)",
+   "how_to_measure": "boltbeam session-ab --out DIR --server-argv 'SERVER ...' --session S --arm A= --arm B=VAR=value (one arm with the setting, one without) over GGML_CUDA_WS_RING_MIB values around L3 / 4 on a prompt-heavy session with experts in host RAM",
+   "rows": [
+    {
+     "key": {
+      "l3_mib": 32
+     },
+     "value": 4,
+     "readings": [
+      4
+     ],
+     "machine": "the home dev box, one RTX 5090 (32 GiB), a 32 MiB-L3 CPU",
+     "date": "2026-11-11",
+     "run": "boltbeam-runs/llama-pinned-stream-20261111.md",
+     "evidence": "8 MiB (1 MiB x 8) 1,661 tok/s; 2 MiB 1,563; 16 MiB 1,463-1,485; 512 MiB 612"
+    }
+   ]
+  },
+  "ws_ring_chunks": {
+   "engine": "llama.cpp",
+   "fact": "llama_cpp.ws_ring_chunks",
+   "unit": "chunks a ring",
+   "kind": "choice",
+   "key": [
+    "l3_mib"
+   ],
+   "borrow": false,
+   "requires": [
+    "GGML_CUDA_WS_CHUNK_KIB"
+   ],
+   "when": "host_expert_bytes > 0",
+   "unkeyed": "the GPU's host link and the model the sweep ran on (one RTX 5090, one model)",
+   "words": "the staging copies a ring holds (GGML_CUDA_WS_CHUNK_KIB = ring / chunks)",
+   "how_to_measure": "boltbeam session-ab --out DIR --server-argv 'SERVER ...' --session S --arm A= --arm B=VAR=value (one arm with the setting, one without) over GGML_CUDA_WS_CHUNK_KIB values at the ring size on a prompt-heavy session with experts in host RAM",
+   "rows": [
+    {
+     "key": {
+      "l3_mib": 32
+     },
+     "value": 8,
+     "readings": [
+      8
+     ],
+     "machine": "the home dev box, one RTX 5090 (32 GiB), a 32 MiB-L3 CPU",
+     "date": "2026-11-11",
+     "run": "boltbeam-runs/llama-pinned-stream-20261111.md",
+     "evidence": "1 MiB x 8 1,661 tok/s against 4 MiB x 4 at 1,463 and 512 KiB x 4 at 1,563"
+    }
+   ]
+  },
+  "ckpt_min_head": {
+   "engine": "llama.cpp",
+   "fact": "llama_cpp.ckpt_min_head_tokens",
+   "unit": "prompt tokens",
+   "kind": "choice",
+   "key": [
+    "chip"
+   ],
+   "borrow": false,
+   "requires": [
+    "LLAMA_SERVER_CKPT_MIN_HEAD"
+   ],
+   "when": "host_expert_bytes > 0",
+   "words": "the prompt head kept free of a batch break and a checkpoint (LLAMA_SERVER_CKPT_MIN_HEAD)",
+   "unkeyed": "the chat template's head (42 tokens on the measured model: any N above it holds) and the host link the head batch's expert upload crosses",
+   "how_to_measure": "boltbeam session-ab --out DIR --server-argv 'SERVER ...' --session S --arm A= --arm B=VAR=value (one arm with the setting, one without) with LLAMA_SERVER_CKPT_MIN_HEAD=N against unset, on a chat session with experts in host RAM (the replies change: read both)",
+   "rows": [
+    {
+     "key": {
+      "chip": "nvidia_sm120"
+     },
+     "value": 256,
+     "readings": [
+      256
+     ],
+     "machine": "the home dev box, one RTX 5090 (32 GiB), a 32 MiB-L3 CPU",
+     "date": "2026-11-11",
+     "run": "boltbeam-runs/llama-expert-table-20261111.md",
+     "evidence": "combined3 vs combined2, chat text, n=6: +16% at 10k, +53% at 2.7k; first argmax divergences near-ties"
+    }
+   ]
+  },
+  "engine_efficiency": {
+   "unit": "share of the read limit",
+   "kind": "choice",
+   "key": [
+    "engine",
+    "chip",
+    "layout",
+    "hidden",
+    "layers",
+    "ffn"
+   ],
+   "borrow": false,
+   "words": "batch-1 decode speed as a share of the chip's read limit",
+   "unkeyed": "the weights' format and the engine's version",
+   "how_to_measure": "boltbeam session-ab --out DIR --engine ENGINE --server-argv '...' --session S --arm A= on a short session (its decode tok/s, one request at a time) over the limit python -m boltbeam.workflow.screen recommend states for the layout",
+   "rows": [
+    {
+     "key": {
+      "engine": "vllm",
+      "chip": "nvidia_sm120",
+      "layout": "one",
+      "hidden": 5120,
+      "layers": 64,
+      "ffn": 17408
+     },
+     "value": 0.79,
+     "readings": [
+      0.79
+     ],
+     "machine": "one RTX 5090",
+     "date": "2026-10",
+     "run": "~/vllm-bench/layout27b/README.md",
+     "evidence": "vLLM Marlin on the 5090, batch 1, ~/vllm-bench/layout27b"
+    },
+    {
+     "key": {
+      "engine": "llama.cpp",
+      "chip": "nvidia_sm120",
+      "layout": "one",
+      "hidden": 5120,
+      "layers": 64,
+      "ffn": 17408
+     },
+     "value": 0.775,
+     "readings": [
+      0.775
+     ],
+     "machine": "one RTX 5090",
+     "date": "2026-10",
+     "run": "~/vllm-bench/layout27b/README.md",
+     "evidence": "llama.cpp on the 5090, batch 1, ~/vllm-bench/layout27b"
+    },
+    {
+     "key": {
+      "engine": "vllm",
+      "chip": "amd_radeon_ai_pro_r9700_32g",
+      "layout": "row",
+      "hidden": 5120,
+      "layers": 64,
+      "ffn": 17408
+     },
+     "value": 0.77,
+     "readings": [
+      0.77
+     ],
+     "machine": "2 x Radeon AI PRO R9700",
+     "date": "2026-10-27",
+     "run": "the R9700 box's 27B AWQ run",
+     "evidence": "vLLM TP=2 on 2 x R9700, 56.1 tok/s of a 73.0 limit, TRITON_ATTN, GPU_MAX_HW_QUEUES=1, the 27B AWQ, 2026-10-27"
+    }
+   ]
+  },
+  "mtp_fixed_ms": {
+   "unit": "ms a step",
+   "kind": "cost",
+   "key": [
+    "engine",
+    "chip",
+    "hidden",
+    "layers",
+    "ffn"
+   ],
+   "borrow": false,
+   "words": "MTP's per-step cost besides the reads (the verify's extra tokens, rejection)",
+   "unkeyed": "the head's format (the 5090 row's value is the middle of a full head's and a 4-bit head's reading) and the engine's version",
+   "how_to_measure": "python -m boltbeam.workflow.screen mtp CHECKPOINT --target CHIP --out DIR --engine ENGINE: the measured step at k less the one-token step and k draft reads",
+   "rows": [
+    {
+     "key": {
+      "engine": "vllm",
+      "chip": "nvidia_sm120",
+      "hidden": 5120,
+      "layers": 64,
+      "ffn": 17408
+     },
+     "value": 0.55,
+     "readings": [
+      0.09,
+      1.02
+     ],
+     "machine": "one RTX 5090",
+     "date": "2026-10",
+     "run": "~/vllm-bench/layout27b/README.md",
+     "evidence": "5090, the 27B AWQ k=3 at 144 tok/s (0.09 ms) and its 4-bit-head variant at 188 (1.02 ms)"
+    },
+    {
+     "key": {
+      "engine": "vllm",
+      "chip": "amd_radeon_ai_pro_r9700_32g",
+      "hidden": 5120,
+      "layers": 64,
+      "ffn": 17408
+     },
+     "value": 2.9,
+     "readings": [
+      2.68,
+      3.08
+     ],
+     "machine": "2 x Radeon AI PRO R9700",
+     "date": "2026-10-27",
+     "run": "the R9700 box's 27B AWQ run",
+     "evidence": "2 x R9700 TP=2, the 27B AWQ k=1 and k=2: 23.95 and 27.78 ms steps (2.68, 3.08 ms), 2026-10-27"
+    }
+   ]
+  },
+  "cold_compile_s": {
+   "unit": "s",
+   "kind": "choice",
+   "key": [
+    "engine",
+    "chip"
+   ],
+   "borrow": false,
+   "words": "the torch.compile time at or above which an engine start had a cold compile cache: a cut between a cold and a warm reading",
+   "unkeyed": "the model's graph and the host CPU: a start on another model or CPU compiles in another time",
+   "how_to_measure": "boltbeam load-probe --engine vllm --server-argv '...' --out DIR twice (a cleared compile cache, then again): the 'torch.compile took' line of each server.log",
+   "rows": [
+    {
+     "key": {
+      "engine": "vllm",
+      "chip": "nvidia_sm120"
+     },
+     "value": 5.0,
+     "readings": [
+      25.4,
+      0.6
+     ],
+     "machine": "one RTX 5090",
+     "date": "2026-10",
+     "run": "~/vllm-bench/layout27b",
+     "evidence": "torch.compile took 25.4 s cold and 0.6 s warm, the 27B AWQ on the 5090"
+    }
+   ]
+  }
+ }
+}

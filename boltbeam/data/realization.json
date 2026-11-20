@@ -1,0 +1,124 @@
+{
+ "schema": "boltbeam.realization.v1",
+ "note": "The session map's audit table (workflow/session_map.py, read only there). levers: the lever class each kernel class (data/kernel_classes.json) and each non-kernel row (copies, host) is closed by; a class not listed is `kernel`. realization: per lever class, measured history: what a lever of that class realized against the gap or projection an audit gave before it was built (ratio = realized / projected, each row cited, run folders under ~/storage/boltbeam-runs). A class's factor is the median of its rows' ratios, at most 1; a class with no row has no factor and its targets rank last. A new realized pair is a new row. z: the standard errors a difference must clear (the kernel ledger's checks use 3). calls: words in a host API call's name, per vendor, for the call counts the shape flags read. A row's `predicted` is the search/span-saving prediction (boltbeam span-saving: the stock run's measured trace wall minus the candidate's bench in-model time; in-model, so no factor applies to it) and `predicted_ratio` = realized / predicted. A span prediction needs no factor: on the R1-R3 batch (read after the method was written; the host-wait rule came after, moving R1 by 0.06 us) it predicted 0.193 ms a step against 0.180-0.193 realized, search-realization-20261119. The factor here (session_map's) still scales the audit's gaps, which are not span predictions. projections: levers projected but never built or measured in the model; they hold no ratio and give no factor until realized. predictions: every candidate the search predicts, tracked until realized (realized null + the test that will measure it).",
+ "z": 3,
+ "levers": {
+  "expert_routing": "fusion",
+  "kv_write": "fusion",
+  "small": "fusion",
+  "kv_stream": "memory",
+  "copies": "memory",
+  "sampling": "host",
+  "host": "host"
+ },
+ "realization": {
+  "memory": [
+   {
+    "lever": "every expert resident (-ncmoe 0, no MoE cache)",
+    "projected": "-13.9 s a session (decode -6.6 from the -0.89 ms a step screen, prefill -7.3)",
+    "realized": "-13.8 s session wall [-26.9, -0.7], 3-pair confirm",
+    "ratio": 0.99,
+    "source": "decode-floor-20261118/README.md:22,124 (projection); targets-20261117/TARGETS.md:167 (confirm, conversation-server-design-20261117/ab-OC5)"
+   }
+  ],
+  "fusion": [
+   {
+    "lever": "region fusion batch R1+R2+R3 (generated region kernels)",
+    "projected": "0.32 ms a step, 2.1% (D, ledger exclusive times)",
+    "realized": "+1.2 to +1.29% decode, 3-pair confirm (about 60% of the prediction)",
+    "ratio": 0.6,
+    "source": "targets-20261117/TARGETS.md:195 (region-fusion-20261118); search-realization-20261119/span-R{1,2,3}-D.json (predicted)",
+    "predicted": "0.193 ms a step (span: R1 4.45 - 1.30 us x 48 = 0.151; R2 1.50 - 1.63 x 94 = -0.012; R3 1.31 - 0.736 x 94 = 0.054)",
+    "predicted_ratio": [
+     0.93,
+     1.0
+    ],
+    "realized_ms_step": "0.180-0.193 (D: 15.14 ms a step x g / (1 + g), g = +1.2 to +1.29%)"
+   },
+   {
+    "lever": "generated GDN gating region (region_gdn_gate, b12521 kernels module), 256k",
+    "projected": "0.33-0.38 ms a step (E, summed kernel times; midpoint 0.355)",
+    "realized": "0.238 ms a step [0.210, 0.266], 3-pair confirm, turns 60-116",
+    "ratio": 0.67,
+    "source": "search-regions-20261119/README.md (projection); gdn-gate-live-20261119/README.md (confirm/session_ab.json)",
+    "predicted": "0.219 ms a step at Q 240k (span: wall 8.32 - candidate 2.25 us = 6.07 us a spot x 36.1)",
+    "predicted_ratio": 1.09,
+    "realized_ms_step": "0.238 [0.210, 0.266] (D: paired decode ms / steps, 3 pairs)"
+   }
+  ],
+  "kernel": [
+   {
+    "lever": "generated BF16 hyper-connection inject/down kernels",
+    "projected": "0.24 to 0.64 ms a step (upper 0.64 against the rows' gap)",
+    "realized": "-0.548 ms a step [0.530, 0.567]",
+    "ratio": 0.86,
+    "source": "bf16-hc-kernels-20261115/README.md:151-153 (projection), :271 (realized)",
+    "predicted": null,
+    "predicted_note": "no span prediction: the stock run's trace is not re-read (U, test: span-saving on bf16-hc-kernels-20261115's stock capture)"
+   },
+   {
+    "lever": "sparse-split: multi-block mask build + compaction (kv/sparse-split), 240k",
+    "projected": "-1.05 ms a step (bench, x 12.9 verify launches)",
+    "predicted": "-1.022 ms a step (span: wall 86.97 - candidate 7.76 us, x 12.9)",
+    "realized": "-1.02 ms a step (screen: +10.9 tok/s at 3.29 tokens a step; confirm +11.8 [+5.1, +18.5])",
+    "ratio": 0.97,
+    "predicted_ratio": 1.0,
+    "source": "sparse-chain-20261119/README.md:121 (projection), :155 (realized); search-realization-20261119/span-sparse-split-Q.json (predicted)"
+   }
+  ],
+  "host": [
+   {
+    "lever": "sync-free split-input uploads (GGML_SCHED_ASYNC_INPUTS)",
+    "projected": "0.34-0.39 ms a step",
+    "realized": "-0.119 ms a step [-0.42, +0.18], 6 pairs",
+    "ratio": 0.33,
+    "source": "host-idle-a-20261118/README.md:37 (projection), :79 (realized)"
+   },
+   {
+    "lever": "graph re-instantiation (memcpy2D kernel fix)",
+    "projected": "0.09-0.29 ms a step (midpoint 0.19)",
+    "realized": "-0.04 ms a step",
+    "ratio": 0.21,
+    "source": "decode-notest-20261118/README.md:65 (projection), :76 (realized)"
+   }
+  ]
+ },
+ "calls": {
+  "nvidia": {
+   "reinstantiate": "GraphInstantiate",
+   "graph_launch": "GraphLaunch",
+   "sync": "Synchronize"
+  }
+ },
+ "projections": {
+  "kernel": [
+   {
+    "lever": "fused gate + up + SWIGLU for the IQ expert formats (P1, prefill expert GEMM)",
+    "projected": "2.8 s a session to the reference (machine-search DESIGN P1 row)",
+    "source": "search-iq-gemm-20261119/README.md:27 (projection), :277 (calibrated value); search-realization-20261119/span-iq-gateup-D.json",
+    "status": "projection only: never built, so not a realization",
+    "predicted": "0.64-0.81 s a session (span: the stock gate+up run's wall = its summed time within 5% (overlap -1.6 of 837 us), so the bench's 11-14 ms a turn holds in-model x 0.058)",
+    "calibrated": "~0.5 s a session, calibrated from the bench (11-14 ms a turn x 0.058 x 0.6); not built"
+   },
+   {
+    "lever": "mmq tile config rows (occupancy 2, I = 64) for the IQ expert formats (P1)",
+    "projected": "P1's 2.8 s (the config-table axis)",
+    "source": "search-iq-gemm-20261119/README.md:244; search-realization-20261119/span-iq-gateup-D.json",
+    "status": "projection only: never built, so not a realization",
+    "predicted": "< 0 (bench slower at every T)",
+    "calibrated": "0: occupancy 2 slower at every T, I = 64 aborts"
+   }
+  ]
+ },
+ "predictions": [
+  {
+   "lever": "generated GDN gating region (region_gdn_gate: 2 gemvs + softplus + sigmoid, one launch for six), 256k",
+   "projected": "9.2-10.5 us a spot, 0.33-0.38 ms a step (E, summed kernel times)",
+   "predicted": "6.07 us a spot x 36.1 = 0.219 ms a step at Q 240k (0.220 at P 102k) (span: wall 8.32 - candidate 2.25 us); bench in-model 5.47",
+   "realized": "0.238 ms a step [0.210, 0.266], realized / predicted 1.09 [0.96, 1.22] (D; M, 3-pair confirm, turns 60-116 of the 256k session, b12521, per-arm page-cache evict; decode +3.5 tok/s [+3.0, +4.0], session -2.6 s [-3.3, -2.0]); 6.6 us a spot at 35.8 spots a step (D, check-mode count / steps); flat with depth (<=195k 0.245, <=262k 0.234)",
+   "test": "install via the b12521 kernels module manifest, same-output 30 turns, 1-pair 256k screen turns 60-116",
+   "source": "search-realization-20261119/span-gdn-gate-Q.json; search-regions-20261119/README.md (bench); gdn-gate-live-20261119/README.md (confirm/session_ab.json)",
+   "predicted_ratio": 1.09
+  }
+ ]
+}

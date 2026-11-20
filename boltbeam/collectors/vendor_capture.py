@@ -303,6 +303,26 @@ ALTERNATIVES: dict[str, Callable[[], tuple[Callable[..., Any], ...]]] = {
 ALTERNATIVE_NEEDS = {"cupti-hes": "cupti-hes needs g++, CUDA headers, and BOLTBEAM_CUPTI_ROOT pointing to a CUDA 13 CUPTI SDK"}
 
 
+# A server traced in windows (session-ab --trace-windows): the server starts under `launch` with nothing collected, each
+# window of turns is bracketed by `start` / `stop` (a report per window), and `export` writes the sqlite the session
+# map reads. Node tracing: llama.cpp's decode runs as CUDA graphs (see _nsys_argv).
+SESSION_WINDOWS = {"nsys": {
+  "launch": lambda tool, name: [tool, "launch", f"--session-new={name}", "--trace=cuda", "--cuda-graph-trace=node"],
+  "start": lambda tool, name, out: [tool, "start", f"--session={name}", "--sample=none", "--cpuctxsw=none", "-f", "true", "-o", str(out)],
+  "stop": lambda tool, name: [tool, "stop", f"--session={name}"],
+  "export": lambda tool, out: [tool, "export", "--type", "sqlite", "--force-overwrite", "true", "-o", f"{out}.sqlite", f"{out}.nsys-rep"],
+  "report": lambda out: f"{out}.nsys-rep", "exported": lambda out: f"{out}.sqlite"}}  # the file a window's capture leaves, and its export
+
+
+def session_windows(backend:str | None) -> dict[str, Any]:
+  """The windowed capture of a long-running server on this backend: {tool, launch, start, stop, export}; NoCapture when
+  the backend's capture has no windowed form or its tool is missing."""
+  p = plan(backend or "")
+  if p["tool"] is None or p["method"] not in SESSION_WINDOWS:
+    raise NoCapture(p["reason"] or f"{p['method']} has no windowed capture of a running server")
+  return {"tool": p["tool"], **SESSION_WINDOWS[p["method"]]}
+
+
 def tools(backend:str, p:dict[str, Any]) -> tuple[Callable[..., list[str]], Callable[..., list[dict[str, Any]]]]:
   """The wrapper and reader of the capture plan() chose for a backend: the vendor's own, or the alternative chosen."""
   if p["method"] != VENDORS[backend][0] and p["method"] in ALTERNATIVES:  # an alternative the run chose

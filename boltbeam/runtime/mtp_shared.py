@@ -9,7 +9,7 @@ or a test suite beside a decode slows it); the load average is recorded beside i
 being in it. delta: an engine's cumulative spec-decode counters, one request's worth."""
 from __future__ import annotations
 
-import collections, hashlib, json, operator, re, time
+import collections, hashlib, json, operator, os, re, subprocess, time
 from pathlib import Path
 
 BUSY = ("pytest", "make", "go", "nvcc", "cicc", "cc1plus")
@@ -79,6 +79,10 @@ def reference(docs:dict[str, list[int]], window:int) -> dict:
 
 
 def comms() -> list[str]:
+  """Every running program's name: /proc on Linux, ps elsewhere (macOS has no /proc)."""
+  if not Path("/proc/self").is_dir():
+    ps = subprocess.run(["ps", "-axo", "comm="], capture_output=True, text=True)
+    return [Path(line.strip()).name for line in ps.stdout.splitlines() if line.strip()]
   out = []
   for p in Path("/proc").glob("[0-9]*/comm"):
     try:
@@ -95,7 +99,7 @@ def quiet(wait_s:float, comms=comms) -> dict:
     if time.time() - t0 > wait_s:
       raise SystemExit(f"the CPU was not quiet in {wait_s:.0f} s ({', '.join(busy)} running): a decode beside them is slower and looks real")
     time.sleep(5)
-  return {"waited_s": time.time() - t0, "load1": float(Path("/proc/loadavg").read_text().split()[0])}
+  return {"waited_s": time.time() - t0, "load1": os.getloadavg()[0]}
 
 
 def delta(after:dict, before:dict) -> dict:

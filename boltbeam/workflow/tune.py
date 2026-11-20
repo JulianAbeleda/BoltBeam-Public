@@ -293,9 +293,9 @@ def copy_rate(link:dict[str, Any] | None = None) -> tuple[float | None, str, str
 
 def host_facts(*, memory:dict[str, Any] | None = None, l3:dict[str, Any] | None = None, prompt:int = PROMPT,
                context:int | None = None, workload:str = "chat", link:dict[str, Any] | None = None, reply:dict[str, Any] | None = None,
-               cpu:dict[str, Any] | None = None) -> dict[str, Any]:
+               cpu:dict[str, Any] | None = None, page:int | None = None) -> dict[str, Any]:
   """RAM, L3, the CPU's cores, the copy rate to the GPU, the page size, the workload and the prompt and context the setup
-  is stated at, with "sources". memory, l3, cpu and link (host.facts' record) stand in for the readings (tests)."""
+  is stated at, with "sources". memory, l3, cpu, page and link (host.facts' record) stand in for the readings (tests)."""
   from boltbeam.target import host
   if workload not in WORKLOADS:
     raise Refused(f"--workload is one of {', '.join(WORKLOADS)}, not {workload!r}")
@@ -308,7 +308,7 @@ def host_facts(*, memory:dict[str, Any] | None = None, l3:dict[str, Any] | None 
   ram = host.usable_ram(mem["total_bytes"], mem.get("available_bytes"))
   l3 = l3 or host.l3_cache()
   cpu = cpu or host.cpu_cores()
-  page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+  page = page or (os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096)
   out = {"usable_ram_bytes": ram["usable_bytes"], "ram_available_bytes": ram.get("available_bytes"), "ram_total_bytes": ram["total_bytes"],
          "ram_margin_bytes": ram["margin_bytes"], "l3_bytes": l3.get("bytes"), "l3_source": l3["source"], "page_bytes": page,
          "prompt_tokens": prompt, "context_tokens": context or prompt + (reply["value"] if reply else REPLY_TOKENS), "h2d_pinned_gbs": rate, "workload": workload,
@@ -480,6 +480,9 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
                    "provenance": {"build": features["source"], "lacks": lacks,
                                   **({"group": tab["engines"][engine]["groups"][k["group"]]["mod"]} if k.get("group") else {})}})
       continue
+    if k.get("group") and (why := mods.shape_why(engine, tab["engines"][engine]["groups"][k["group"]]["mod"], f.get("mod_shape"))):
+      rows.append({**row, "status": "not_applicable", "value": None, "source": None, "reason": why, "provenance": {"shape": f.get("mod_shape")}})
+      continue  # the mod's code does nothing on this model: its knob is not set
     unread = None
     try:
       applies = evaluate(k.get("applies", "True"), f, allowed)
@@ -717,6 +720,8 @@ def memory_fit(rows:list[dict[str, Any]], f:dict[str, Any], engine:str, tab:dict
     b = budget(ks, here if mem else {n: here[n] if n in holds else None for n in cands}, f, allowed, mem, (engine, tab))
   except Missing as m:
     return {"rows": list(cands), "why": fact_words(str(m), adapter(engine, tab).FACTS)}
+  if b["after_load"] < 0:  # the estimate leaves less than nothing after load: no value of these rows is sized from it
+    return {"rows": list(cands), "why": "negative", "after_load": b["after_load"], "budget": b}
   out, uncosted = [], []
 
   def label(combo:dict[str, Any]) -> str:
@@ -748,6 +753,8 @@ def fit_words(plan:dict[str, Any] | None) -> str | None:
   predicted combinations that did not fit or that only the output check could let count."""
   w, rows = _words()["tune"]["memory"], ", ".join((plan or {}).get("rows") or [])
   one = "_one" if len((plan or {}).get("rows") or []) == 1 else ""
+  if plan and plan.get("why") == "negative":
+    return w["negative"].format(after=plan["after_load"] / GiB, rows=rows)
   if not plan or "why" in plan:
     return plan and w["unknown" + one].format(rows=rows, what=plan["why"])
   b, pick = plan["budget"], plan["pick"]
@@ -1046,13 +1053,13 @@ def sweep(knob:dict[str, Any], run:Callable[..., float], rows:list[dict[str, Any
   return {"value": answer, "points": out, "prompt": prompt_n, "tie_pct": s["tie_pct"], "stop": s["stop"], "says": says}
 
 
-def fall_of(engine:str, tab:dict[str, Any], model:str, context:int | None, paths:list[str], ad, f:dict[str, Any]) -> dict[str, Any] | None:
+def fall_of(engine:str, tab:dict[str, Any], model:str, context:int | None, paths:list[str], ad, f:dict[str, Any], given_free:float | dict[str, float] | None = None) -> dict[str, Any] | None:
   """What a session takes below the free memory at load, from the load probes of this model at this context and how much
   lower a full session went than a probe at the same setup (spend.probe_fall, spend.probe_gap)."""
   from boltbeam.workflow import spend as sp
   rows, recs = sp.rows_of(engine, tab), sp.read_records(paths)
   try:
-    gap = sp.plan_gap(rows, recs, model, f, ad, fact_names(engine, tab))
+    gap = sp.plan_gap(rows, recs, model, f, ad, fact_names(engine, tab), given_free)
   except Exception:  # noqa: BLE001  a setup's facts unread: the probes' own fall, the gap unknown
     gap = 0.0
   return sp.probe_fall(recs, model, context, rows, gap)
@@ -1075,7 +1082,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
          experts_in_ram:str | None = None, run:Callable[..., float] | None = None, tab:dict[str, Any] | None = None,
          memory:dict[str, Any] | None = None, l3:dict[str, Any] | None = None, say:Callable[[str], None] | None = None,
          workload:str = "chat", link:dict[str, Any] | None = None, reply:dict[str, Any] | None = None, cpu:dict[str, Any] | None = None,
-         spend:list[str] | None = None, spend_max:bool = False, **options) -> dict[str, Any]:
+         spend:list[str] | None = None, spend_max:bool = False, measured_free:float | dict[str, float] | None = None, **options) -> dict[str, Any]:
   """The setup: the build, the facts, every row, the rendered command, and (measure) the sweeps' records. A Refused when
   the engine, its build or the model cannot be read. options go to the adapter's facts (test stand-ins). say: --measure's
   progress as a screen's pipeline lines (a stage per swept knob, a progress line per point, at most the row's points)."""
@@ -1098,7 +1105,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
     options = {**options, **kv}
   got = ad.facts(model, f, feats, {"experts_in_ram": experts_in_ram, "extra": extra, "spend": bool(spend), **options})
   f = {**f, **got, "model_file": pathlib.Path(model).name, "sources": {**f["sources"], **got.get("sources", {}), "model_file": "the model given"}}
-  if spend and sp.rows_of(engine, tab) and (fall := fall_of(engine, tab, model, context, spend, ad, f)):  # what a session adds after load, measured on this model
+  if spend and sp.rows_of(engine, tab) and (fall := fall_of(engine, tab, model, context, spend, ad, f, measured_free)):  # what a session adds after load, measured on this model
     f["session_fall"] = fall
   if warn := speed_up.usable(model):  # a Speed up copy waiting on its task eval: tuned, and said; a failed one refused
     f["notes"] = [*f.get("notes", []), warn]
@@ -1144,11 +1151,12 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
     rows, plan = settle(f, feats, engine, tab, measured, plan=plan)
     (out / "tune.json").write_text(json.dumps({"engine": engine, "rows": rows, "measured": measured, "memory_fit": plan, "facts": f}, indent=1, default=str))
   md = mods.found(engine, feats.get("build"), feats["features"])  # its build record, else its mods' markers in its files
-  shown = mods.with_switches(ad.render(values_of(rows), f, feats, model, extra), md)  # as a run on it sets them
+  shown = mods.with_switches(ad.render(values_of(rows), f, feats, model, extra), md, f.get("mod_shape"))  # as a run on it sets them, a mod's switch only on a model with its shape
   spent = None
   if spend:  # the spend fit: the ways to spend the GPU's memory at the context, ranked on the measured runs given (workflow/spend.py)
     spent = {"why": "no_facts", "what": f["spend_why"]} if f.get("spend_why") else sp.plan(f, engine, tab, model=model, records=sp.read_records(spend), context=None if spend_max else f["context_tokens"],
-                    features=set(feats["features"]), ad=ad, allowed=fact_names(engine, tab), local=[options["draft"]] if options.get("draft") else None)
+                    features=set(feats["features"]), ad=ad, allowed=fact_names(engine, tab), local=[options["draft"]] if options.get("draft") else None,
+                    given_free=measured_free)
   if (sw := (spent or {}).get("margin", {}).get("switch")) and "argv" in shown:  # a bound headroom holds only with its switch set
     env = {**(shown.get("env") or {}), **sw}
     shown = {**shown, "env": env, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), *map(str, shown["argv"])])}
@@ -1230,6 +1238,10 @@ def text(res:dict[str, Any], tab:dict[str, Any] | None = None) -> str:
   if lacks:
     lines += ["", w["lacks"].format(engine=res["engine"], knobs=", ".join(lacks))]
   lines += ["", w["command"], "  " + res["command"]]
+  if res.get("withheld"):  # a built mod's switch left off this model's command says why
+    lines += [w["withheld"], *(f"  {k} ({v['mod']}): {v['why']}" for k, v in res["withheld"].items())]
+  if (res.get("memory_fit") or {}).get("why") == "negative":  # a command the estimate says cannot load is never printed bare
+    lines.append(w["command_unfit"].format(after=res["memory_fit"]["after_load"] / GiB))
   if not res["measured"] and any(r["provenance"].get("measure") for r in rows):
     lines.append(w["measure_hint"])
   return "\n".join(lines)

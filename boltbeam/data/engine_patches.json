@@ -81,6 +81,10 @@
         "-DGIT_EXE=OFF"
       ],
       "commit_cmake_why": "every mods build is configured with the base commit: in a tree without .git ggml says \"unknown\" and the ext-kernels hook refuses every manifest (09 ext_load: \"this build (unknown) is not one the manifest was checked on\"), silently running stock kernels. GGML_BUILD_COMMIT alone is not enough: the top-level CMakeLists.txt:158-160 and :224 set it from LLAMA_BUILD_COMMIT, and ggml/CMakeLists.txt:14-20 runs git rev-parse, whose empty output shadows the cache value, unless GIT_EXE is off (boltbeam-runs/decode-topk-fused-20261115 Round 2, measured 2026-11-16)",
+      "offline_cmake": [
+        "-DLLAMA_USE_PREBUILT_UI=OFF"
+      ],
+      "offline_cmake_why": "a mods build is a copy of a tree already on the machine and needs no network: with the option on (the engine's default, CMakeLists.txt:138) the build step tries to fetch llama-server's page assets from a remote bucket (scripts/ui-assets.cmake); without network that fetch fails after its timeout and what gets embedded then depends on the network. BoltBeam drives llama-server through its API only. A stock install (data/engine_releases.json) keeps the engine's default, so a stock and a mods build of one base may differ in the embedded page, nothing else. Measured: the b12521 mods tree of boltbeam-runs/gdn-gate-live-20261119 was configured with it and the commit flags above (its README, Process: Tree), embedded 0 assets and loaded its region manifest",
       "commit_header": {
         "path": "build/ggml/src/ggml-version.h",
         "pattern": "GGML_COMMIT\\s+\"([^\"]*)\"",

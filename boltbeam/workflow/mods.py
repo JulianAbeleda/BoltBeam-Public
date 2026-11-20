@@ -21,7 +21,7 @@ read only for a patch's text or a kernel manifest, at the commit read.
              clone does not carry named
     apply    a clone of the checkout at its commit (theirs is never changed; a rerun resets the clone), every chosen
              mod applied or none (a tree without .git: a copy, made a repo of its own), built with the engine's
-             install recipe (engine_update.install) configured with the base commit (apply row commit_cmake) and
+             install recipe (engine_update.install) configured with the base commit and no fetch (apply row commit_cmake, offline_cmake) and
              recorded in builds.json under `modded`, replaced by its key on a rerun (a taken tree's key marked -copy),
              as applied, not verified (a taken tree: base unchecked too); each kernel the build matches installed in
              its folder (kernels/), its manifest the value a run gives the hook's switch (run_env)
@@ -419,7 +419,7 @@ def apply(engine:str, src:pathlib.Path, chosen:list[str], into:pathlib.Path, hea
     _reset(copy, src, head, row.get("copy_skip", []))
     raise Refused(f"{', '.join(failed)} did not apply on {head[:9]} in series order; nothing was applied")
   build = engine_update.install(engine, f"{head[:9]}-mods", into, vendor,
-                                {"cmake": [f.format(commit=head) for f in row.get("commit_cmake", [])]})
+                                {"cmake": [f.format(commit=head) for f in row.get("commit_cmake", [])] + row.get("offline_cmake", [])})
   checks = verify(engine, into, head, rows, taken)
   return {**build, "base_commit": head, "checks": checks, "kernel_manifests": install_kernels(engine, into, checks),
           "kernel_manifest": kernel_manifest(engine, checks, into),
@@ -634,11 +634,43 @@ def _run(engine:str, *, src:str | None, labels:tuple[str, ...] | None, only:list
   return {**got, "build": build, "already_built": True}
 
 
-def with_switches(shown:dict[str, Any], build:dict[str, Any] | None) -> dict[str, Any]:
+@functools.lru_cache(maxsize=1)
+def _shapes() -> dict[str, Any]:
+  return json.loads((DATA / "mod_shapes.json").read_text())["engines"]
+
+
+def shape_why(engine:str | None, name:str | None, shape:dict[str, Any] | None) -> str | None:
+  """Why a mod does nothing on this model and command, or None: its `needs` (data/mod_shapes.json) over the shape they
+  show. The one reading of a mod's shape: a switch (withheld), a knob row of its group (tune.derive) and a spend row
+  (spend.unfit) all ask here. A fact the shape could not read, or a mod with no row, is a reason too. shape None (a
+  caller with no model read): nothing is checked."""
+  if shape is None:
+    return None
+  from boltbeam.report import plain
+  from boltbeam.workflow import tune
+  w, row = plain.words()["mods"], (_shapes().get(engine) or {}).get(name)
+  try:
+    return w["shape_no_row"] if row is None else None if tune.evaluate(row["needs"], shape, set(shape)) else w["shape_lacks"].format(why=row["why"], needs=row["needs"])
+  except tune.Missing as miss:
+    return w["shape_unread"].format(fact=miss, needs=row["needs"])
+
+
+def withheld(build:dict[str, Any] | None, shape:dict[str, Any] | None) -> dict[str, dict[str, str]]:
+  """{switch: {mod, why}} for the build's mods with a switch whose shape this model and command do not show (shape_why)."""
+  by = {m["id"]: m for m in mods()}
+  rows = [{**by.get(b["id"], {}), **{k: v for k, v in b.items() if v is not None}} for b in (build or {}).get("mods") or []]
+  return {switch(m): {"mod": m["id"], "why": why} for m in rows if switch(m) and (why := shape_why(m.get("engine"), m.get("name"), shape))}
+
+
+def with_switches(shown:dict[str, Any], build:dict[str, Any] | None, shape:dict[str, Any] | None = None) -> dict[str, Any]:
   """A rendered command (env, argv, command) on a modded build with its mods' switches (run_env) set, as a run on it
-  sets them; a switch the render already sets keeps its value."""
-  env = {k: v for k, v in run_env(build or {}).items() if k not in (shown.get("env") or {})}
-  if not env or "argv" not in shown:
+  sets them; a switch the render already sets keeps its value. shape: the model's and the command's (withheld): a mod
+  whose shape they do not show is not set, and the command says which and why (`withheld`)."""
+  held = withheld(build, shape)
+  if held:  # a held switch is on no command
+    shown = {**shown, "withheld": held, "env": {k: v for k, v in (shown.get("env") or {}).items() if k not in held}}
+  env = {k: v for k, v in run_env(build or {}).items() if k not in (shown.get("env") or {}) and k not in held}
+  if "argv" not in shown or not (env or held):
     return shown
   env = {**env, **(shown.get("env") or {})}
   return {**shown, "env": env, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), *map(str, shown["argv"])])}

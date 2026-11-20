@@ -7,7 +7,7 @@
     unknown    nothing in the shapes gives it (the device's context, what it reserves, a tensor the classifier does not
                name): the row names the measurement
 
-Formulas are data (data/min_memory.json, one block per architecture) read by tune's formula reader over facts from a
+Formulas are data (data/min_memory.json, a block per shape the header shows) read by tune's formula reader over facts from a
 tensor table cut from the model file's header ({meta, tensors: [name, dims, type id]}), the metadata and the settings.
 Tensors are sorted by the one classifier (profile/roles.py) and sized by decode_roles._physical_bytes. The audit's
 memory ledger sets each held row beside its minimum (gaps, checks). Engine-blind: an engine's sizes are the held rows."""
@@ -24,7 +24,7 @@ from boltbeam.workflow.context_audit import derived, unknown
 from boltbeam.workflow.tune import Missing, evaluate, output_of
 
 TAB = json.loads((pathlib.Path(__file__).resolve().parents[1] / "data" / "min_memory.json").read_text())
-COPIES, UNCLASSIFIED = TAB["roles"]["copies"], TAB["roles"]["unclassified"]
+COPIES, UNCLASSIFIED, NO_BLOCK = TAB["roles"]["copies"], TAB["roles"]["unclassified"], TAB["roles"]["no_block"]
 
 
 def kind(name:str, dims:list) -> str:
@@ -43,6 +43,12 @@ def one(v:Any) -> Any:
 def ev(formula:str, f:dict[str, Any]) -> Any:
   """A row's formula over the facts; a name the facts lack (a setting not given, a typo) is Missing, so its row is unknown, naming it."""
   return evaluate(formula, f, set(f) | set(re.findall(r"[a-z_]+", formula)))
+
+
+def block(meta:dict[str, Any] | None, tensors:list) -> dict[str, Any] | None:
+  """The block of formulas for a header, by what it shows (a block's `has` tensor-name patterns), never by its
+  architecture's name; None when it shows none of any block's."""
+  return next((b for b in TAB["blocks"] if any(re.search(p, t[0]) for p in b["has"] for t in tensors or [])), None)
 
 
 def facts(meta:dict[str, Any], tensors:list, settings:dict[str, Any], arch:dict[str, Any], skip:Any = ()) -> dict[str, Any]:
@@ -67,10 +73,10 @@ def minimum(meta:dict[str, Any], tensors:list, settings:dict[str, Any], *, other
             unit:float = 1.0) -> dict[str, dict[str, Any]]:
   """{role: figure with its class}, in bytes / unit. other: the table of a file loaded beside this one; same: citations
   [{tensor, from, output?, output_why?}] that a tensor it shares is one matrix with the other's (none, or no `from`:
-  unknown, with the test). An architecture with no block gives only the `every` rows."""
+  unknown, with the test). A header that shows no block's shape gives the `every` rows and one unknown row naming what it leaves out."""
   out = {} if prefix else {r["role"]: unknown(r["test"]) for r in TAB["every"]}
-  if (arch := TAB["architectures"].get(meta.get("general.architecture"))) is None:
-    return out
+  if (arch := block(meta, tensors)) is None:  # said: the rows no block sizes for this header
+    return out if prefix else {**out, NO_BLOCK: unknown(TAB["roles"]["no_block_test"].format(rows=", ".join(r["role"] for b in TAB["blocks"] for r in b["rows"])))}
   theirs = {n: (tuple(d), t) for n, d, t in other}
   twice = {n: t != theirs[n][1] for n, d, t in tensors if theirs.get(n, ((),))[0] == tuple(d) and kind(n, d) != "lookup"}
   f = facts(meta, tensors, settings, arch, skip=twice)

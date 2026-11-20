@@ -38,19 +38,24 @@ from boltbeam.core.refused import Refused
 from boltbeam.profile import loaders
 from boltbeam.roofline import prefill_work as pw
 from boltbeam.target import gpu as tgpu, vendors
-from boltbeam.workflow import layout as lay, offload as off
+from boltbeam.workflow import chips, layout as lay, offload as off
 
 TIE = 0.05  # limits within this share of the best are one prediction (docs/multi-gpu-recommendation-checks.md)
 UTILIZATION = 0.90  # vLLM --gpu-memory-utilization, Arkey's value
 CONTEXT = 4096  # the context the sequence count and the speed are stated at
 # flags the user's engine host owns: a copied setup must not set them (arkey_v3 internal/runtime/vllm.go)
 RESERVED = ("--model", "--host", "--port", "--served-model-name", "--max-model-len", "-m")
-# measured on the 5090, ~/vllm-bench/layout27b/README.md: engine efficiency against the limit, per engine and chip
-EFFICIENCY = {("vllm", "nvidia_sm120"): (0.79, "vLLM Marlin on the 5090, batch 1, ~/vllm-bench/layout27b"),
-              ("llama.cpp", "nvidia_sm120"): (0.775, "llama.cpp on the 5090, batch 1, ~/vllm-bench/layout27b"),
-              # a layout's own efficiency: (engine, chip, layout)
-              ("vllm", "amd_radeon_ai_pro_r9700_32g", "row"): (0.77, "vLLM TP=2 on 2 x R9700, 56.1 tok/s of a 73.0 limit, TRITON_ATTN, "
-                                                               "GPU_MAX_HW_QUEUES=1, the 27B AWQ, 2026-10-27")}
+
+
+def measured_figure(name:str, profile:dict[str, Any] | None = None, **key) -> tuple[float, str] | None:
+  """A figure measured for this engine, chip (and layout) on a model of this shape (data/machine_figures.json, by
+  workflow/figures): (value, its evidence), or None when no row has this key: another shape or chip is unmeasured."""
+  from boltbeam.workflow import figures
+  shape = {"hidden": (profile or {}).get("hidden_size"), "layers": (profile or {}).get("layer_count"), "ffn": (profile or {}).get("ffn_size")} if profile is not None else {}
+  r = figures.resolve(name, {**key, **shape})
+  return (r["value"], r["row"]["evidence"]) if r["status"] == "measured" else None
+
+
 # measured on a model of this shape (hidden, layers, ffn) on the 5090 with vLLM: the 27B AWQ
 MEASURED = {("vllm", "nvidia_sm120", 5120, 64, 17408): {
   "throughput": (1863, "tok/s at batch 32 on one 5090, the 27B sweep, ~/vllm-bench/layout27b/sweep.json"),
@@ -59,11 +64,6 @@ MTP_NOTE = "1.6x at k=3 on text (accept length 2.75), measured on the 27B on the
 # MTP, measured: mean accept length per draft count k on text (greedy), per model shape (hidden, layers, ffn)
 MTP_ACCEPT = {(5120, 64, 17408): ({1: 1.86, 2: 2.47, 3: 2.88}, "the 27B AWQ, 4 text prompts x 256 tokens, greedy, vLLM 0.31, "
                                   "2 x R9700, 2026-10-27 (k=3 read 2.75 on the 5090)")}
-# MTP's per-step cost besides the reads (the verify's extra tokens, rejection), per engine and chip: the measured step
-# less step(1 token) + k x draft read, at this chip's engine efficiency (mtp_speed)
-MTP_FIXED = {("vllm", "nvidia_sm120"): (0.55, "5090, the 27B AWQ k=3 at 144 tok/s (0.09 ms) and its 4-bit-head variant at 188 (1.02 ms)"),
-             ("vllm", "amd_radeon_ai_pro_r9700_32g"): (2.9, "2 x R9700 TP=2, the 27B AWQ k=1 and k=2: 23.95 and 27.78 ms steps "
-                                                       "(2.68, 3.08 ms), 2026-10-27")}
 # MTP measured, where the formula is not enough: tok/s per k, per (engine, chip, hidden, layers, ffn, layout, lm_head GB),
 # short context; the head's size tells a 4-bit-head variant of the same model apart
 MTP_MEASURED = {("vllm", "amd_radeon_ai_pro_r9700_32g", 5120, 64, 17408, "row", 2.5): (
@@ -73,7 +73,6 @@ MTP_MEASURED = {("vllm", "amd_radeon_ai_pro_r9700_32g", 5120, 64, 17408, "row", 
   {2: 115.5, 3: 105.5}, "the 4-bit-head variant, same run setup with a split-KV verify, 2026-10-27; k=3 17% under the formula")}
 RUN_ENV = {"VLLM_USE_FLASHINFER_SAMPLER": "0", "CUDA_HOME": "/usr/local/cuda"}  # collectors/vllm_decode.RUN_ENV, the 5090 box's CUDA
 OVERHEAD = "engine_overhead"  # in the machine facts: {engine: {checkpoint path: {cache state: {bytes, source, ...}}}}
-COLD_COMPILE_S = 5.0  # vLLM torch.compile at or above this is a cold compile cache (measured 25.4 s cold, 0.6 s warm, 27B AWQ on the 5090)
 
 
 def fig(value:Any, formula:str, inputs:list[str], kind:str = "derived") -> dict[str, Any]:
@@ -185,10 +184,11 @@ def parse_vllm(log:str) -> dict[str, Any]:
     raise ValueError("the engine log has no 'Available KV cache memory' and 'GPU KV cache size' lines")
   comp = re.search(r"torch\.compile took\s*([\d.]+)\s*s", log)
   act = re.search(r"([\d.]+)\s*GiB for peak activation", log)
+  cut = measured_figure("cold_compile_s", engine="vllm", chip=chips.this_chip()) if comp else None  # no row for this chip: the cache state is not told apart
   return {"available_kv_bytes": float(kv.group(1)) * 2**30, "cache_tokens": int(tokens.group(1).replace(",", "")),
           "served_context": int(served.group(1)) if served else None,
           "compile_s": float(comp.group(1)) if comp else None, "activation_gib": float(act.group(1)) if act else None,
-          "state": None if not comp else ("cold" if float(comp.group(1)) >= COLD_COMPILE_S else "warm")}
+          "state": None if not (comp and cut) else ("cold" if float(comp.group(1)) >= cut[0] else "warm")}
 
 
 def parse_llama(log:str) -> dict[str, Any]:
@@ -475,7 +475,7 @@ def llama_after_load(profile:dict[str, Any], load:dict[str, Any], *, kv:str, cel
   free: the GPU's free memory before the start; weights: the weights it holds; share: its share of the KV and state."""
   from boltbeam.workflow import tune_llama_cpp as lc
   f = lc.load_facts(profile, load["header"], load["ex"], kv_type=kv, context=cells, chunk=chunk or off.knob_default("llama.cpp", "-ub"),
-                    backend=vendors.for_backend(target.backend).ggml_backend, slots=seqs)
+                    backend=vendors.for_backend(target.backend).ggml_backend, slots=seqs, chip=target.target_id)
   f[f"{lc.NS}.kv_cache_bytes"] *= share
   return lc.after_load({**f, "gpu_free_bytes": free, "gpu_free_min_bytes": free, "gpu_count": 1, f"{lc.NS}.on_card_bytes": weights})
 
@@ -833,9 +833,9 @@ def setup(profile:dict[str, Any], facts:dict[str, Any] | None, provider:str, gpu
       if r.get("tok_s"):
         r["batch1_limit"] = fig(r["tok_s"], "(weight bytes + KV at the context) / measured read bandwidth", [f"{(base + kvb) / 1e9:.2f} GB per token", f"context {context}"])
         chip = (facts or {}).get("gpus", [{}])[0].get("target_id")
-        eff = EFFICIENCY.get((provider, chip, r["id"])) or (EFFICIENCY.get((provider, chip)) if r["id"] in ("one", "replica") else None)
+        eff = measured_figure("engine_efficiency", profile, engine=provider, chip=chip, layout="one" if r["id"] in ("one", "replica") else r["id"])
         r["batch1_expected"] = fig(r["tok_s"] * eff[0], f"limit x {eff[0]:.0%} engine efficiency", [eff[1]], "measured") if eff else \
-          fig(None, "efficiency not measured here for this engine, chip and layout", [])
+          fig(None, "efficiency not measured for this engine, chip, layout and model shape (data/machine_figures.json engine_efficiency names the command)", [])
         if eff and tb["mtp"]:
           r["mtp"] = mtp_speed(profile, tb, provider, chip, r, eff[0], (facts or {}).get("gpus", [{}])[0].get("read_gbs"),
                                measured=mtp_of(facts, provider, profile.get("source")), context=context)
@@ -983,10 +983,10 @@ def mtp_speed(profile:dict[str, Any], tb:dict[str, Any], provider:str, chip:str 
   """Batch-1 decode with MTP at each measured draft count k: accept length / (one-token step + fixed + k x draft read).
   A draft step reads the MTP layer and the whole lm_head (on the 5090 a 4-bit head gave +30% with MTP against +11%
   without, inferred from step times), split over the GPUs of a row split, at the layout's engine efficiency. The
-  accept lengths and the fixed cost are measured (MTP_ACCEPT, MTP_FIXED); None where either is not. `measured`, this
+  accept lengths and the fixed cost are measured (MTP_ACCEPT; mtp_fixed_ms, a keyed figure); None where either is not. `measured`, this
   checkpoint's in-repo measurement on this machine (mtp_of), stands in on one GPU, which is what it ran on."""
   acc = MTP_ACCEPT.get((profile.get("hidden_size"), profile.get("layer_count"), profile.get("ffn_size")))
-  fixed = MTP_FIXED.get((provider, chip))
+  fixed = measured_figure("mtp_fixed_ms", profile, engine=provider, chip=chip)
   ch = mtp_choice(measured, context) if measured and r["id"] == "one" else None
   own = _measured_mtp(measured, ch["at"]) if ch else {}
   if not (acc and fixed and read_gbs and r["batch1_expected"]["value"]):
@@ -1045,7 +1045,7 @@ def stop_group(proc:subprocess.Popen, grace_s:float = 30.0) -> None:
   for sig in (signal.SIGTERM, signal.SIGKILL):
     try:
       os.killpg(proc.pid, sig)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):  # EPERM: a group of zombies only (macOS), gone
       return
     end = time.monotonic() + grace_s
     while time.monotonic() < end:
@@ -1054,7 +1054,7 @@ def stop_group(proc:subprocess.Popen, grace_s:float = 30.0) -> None:
         os.killpg(proc.pid, 0)  # the server is gone; is anything of its group left?
       except subprocess.TimeoutExpired:
         continue
-      except ProcessLookupError:
+      except (ProcessLookupError, PermissionError):
         return
       time.sleep(0.5)
 

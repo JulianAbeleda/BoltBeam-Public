@@ -81,7 +81,8 @@ def budget_from_arm(record:str, arm:str, ad, per_bytes:int, margin_mib:float | N
   if margin is None:
     raise Refused(f"arm {arm} ran once: the run-to-run spread of its lowest free memory is unknown; repeat it (session-ab --repeats) or pass --margin-mib")
   draft = flag_value([str(x) for x in d["inputs"]["server_argv"] + (a.get("flags") or [])], ("-md", "--model-draft"))
-  known = ((d["inputs"].get("file_facts") or {}).get(pathlib.Path(draft).name) or {}).get("experts") if draft else None
+  from boltbeam.workflow.spend import file_facts_of
+  known = (file_facts_of(d).get(pathlib.Path(draft).name) or {}).get("experts") if draft else None
   held = (known if known is not None else ad.experts(draft)["n_expert"] if draft else 0) * per_bytes
   return {"bytes": (min(free) - margin) * MiB + held, "lowest_free_mib": min(free), "margin_mib": margin, "runs": len(free),
           "draft_held_mib": held / MiB,

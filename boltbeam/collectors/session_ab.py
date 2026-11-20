@@ -27,6 +27,7 @@ import shlex
 import shutil
 import signal
 import statistics
+import sys
 import time
 from typing import Any, Callable
 
@@ -131,8 +132,8 @@ def arm_command(base:dict[str, Any], arms:list[dict[str, Any]], arm:dict[str, An
 
 def load1() -> float | None:
   try:
-    return float(pathlib.Path("/proc/loadavg").read_text().split()[0])
-  except (OSError, ValueError, IndexError):
+    return os.getloadavg()[0]
+  except (OSError, AttributeError):
     return None
 
 
@@ -149,35 +150,43 @@ def host_temps(root:str = "/sys/class/hwmon") -> dict[str, float]:
   return out
 
 
-def _process_ticks(pgid:int | None) -> dict[int, int]:
-  """CPU time (user + system, clock ticks) of every process outside the server's process group and this client."""
-  out, me = {}, os.getpid()
-  for d in os.listdir("/proc"):
-    if d.isdigit() and int(d) != me:
+def _process_ticks(pgid:int | None) -> int:
+  """CPU time (clock ticks: user + system, and that of their reaped children) of the server's process group and of this
+  client (with the tools it ran): what foreign_cores takes out of the machine's busy time."""
+  out = sum(os.times()[:4]) * HZ  # this client and its reaped tools (the gate's probes)
+  for d in os.listdir("/proc") if pgid is not None else ():
+    if d.isdigit():
       try:
         st = pathlib.Path(f"/proc/{d}/stat").read_text()
       except OSError:
         continue
       rest = st[st.rindex(")") + 2:].split()
-      if int(rest[2]) != pgid and int(rest[1]) != me:  # rest[1] ppid: the client's own tools (the gate's probes)
-        out[int(d)] = int(rest[11]) + int(rest[12])
-  return out
+      if int(rest[2]) == pgid:
+        out += sum(int(x) for x in rest[11:15])
+  return int(out)
 
 
-def cpu_mark(pgid:int | None) -> tuple[float, dict[int, int]] | None:
-  """The clock and every other process's CPU ticks: foreign_cores of two marks."""
+def _busy_ticks(stat:str = "/proc/stat") -> int:
+  """The machine's busy CPU time (clock ticks: user, nice, system) since boot. Interrupt time is left out: the server's
+  own GPU work causes it."""
+  return sum(int(x) for x in pathlib.Path(stat).read_text().split("\n", 1)[0].split()[1:4])
+
+
+def cpu_mark(pgid:int | None) -> tuple[float, int, int] | None:
+  """The clock, the machine's busy ticks and the server's and client's own: foreign_cores of two marks."""
   try:
-    return time.monotonic(), _process_ticks(pgid)
+    return time.monotonic(), _busy_ticks(), _process_ticks(pgid)
   except (OSError, ValueError, IndexError):
     return None
 
 
 def foreign_cores(a, b) -> float | None:
-  """Cores' worth of CPU other programs used between two marks (per process, so one that exits takes nothing away;
-  interrupt time the server's own GPU work causes is not in it)."""
+  """Cores' worth of CPU other programs used between two marks: the machine's busy time less the server's and this
+  client's. Machine-wide, so a program that starts and exits between the marks (a compile inside one turn) counts;
+  a process's own ticks would miss it (detect-256k-20261119)."""
   if not a or not b or b[0] <= a[0]:
     return None
-  return sum(t - a[1].get(pid, 0) for pid, t in b[1].items()) / HZ / (b[0] - a[0])
+  return max(0.0, (b[1] - a[1]) - (b[2] - a[2])) / HZ / (b[0] - a[0])
 
 
 def now_words() -> dict[str, Any]:
@@ -265,15 +274,35 @@ def stop(process, timeout_s:float, *, sleep:Callable[[float], None] = time.sleep
   return {"seconds": round(time.monotonic() - t0, 2), "timeout_s": round(timeout_s, 1), "killed": killed}
 
 
+def repeat_share(text:str) -> float | None:
+  """The longest span of the text that occurs in it twice (overlapping or not), as a share of its length: a reply that
+  loops repeats most of itself, real text a few percent (rolling hash, binary search on the span's length)."""
+  xs, mod, base = [ord(c) for c in text], (1 << 61) - 1, sys.maxunicode + 2  # a base above every code point: no two spans share a hash by digit carry
+  def twice(m:int) -> bool:
+    h, top, seen = 0, pow(base, m - 1, mod), set()
+    for i, x in enumerate(xs):
+      h = ((h - (xs[i - m] * top if i >= m else 0)) * base + x) % mod
+      if i >= m - 1 and (h in seen or seen.add(h)):
+        return True
+    return False
+  lo, hi = 0, len(xs) - 1
+  while lo < hi:
+    m = (lo + hi + 1) // 2
+    lo, hi = (m, hi) if twice(m) else (lo, m - 1)
+  return lo / len(xs) if xs else None
+
+
 def play(eng:dict[str, Callable[..., Any]], url:str, session:dict[str, Any], lengths:list[float] | None,
          gaps:list[float] | None, history:str, pgid:int | None, tele, say:Callable[[str], None], span:list[int],
-         sleep:Callable[[float], None] = time.sleep, fill:dict[str, Any] | None = None) -> list[dict[str, Any]]:
+         sleep:Callable[[float], None] = time.sleep, fill:dict[str, Any] | None = None, trace:dict[str, Any] | None = None,
+         texts:dict[int, str] | None = None) -> list[dict[str, Any]]:
   """The session's turns span[0]..span[1], one row each: the server's timings, the client's clock from the last
   request byte, the reply's sha256, other programs' CPU while the turn ran, the GPU clock and temperature over it.
   A span that starts past turn 1 first fills the cache, untimed, with the history up to the user message before it
   (the recorded replies): the first timed turn then processes what it would in a full run with the recorded history.
-  fill: where the fill's own timings go."""
-  msgs, rows = [{"role": "system", "content": session.get("system", "")}], []
+  fill: where the fill's own timings go. trace (--trace-windows): its capture opens before a window's first turn and
+  closes after its last; every row holds its request's span on the monotonic clock (span_ns) and its window (win)."""
+  msgs, rows, win = [{"role": "system", "content": session.get("system", "")}], [], None
   for t in session["turns"][:span[0] - 1]:
     msgs += [{"role": "user", "content": t["user"]}, {"role": "assistant", "content": t["assistant"]}]
   if span[0] > 1:
@@ -287,11 +316,19 @@ def play(eng:dict[str, Callable[..., Any]], url:str, session:dict[str, Any], len
       sleep(gap)
     msgs.append({"role": "user", "content": t["user"]})
     want = int(lengths[i - 1]) if lengths else t["reply_tokens"]
+    if trace and i in trace["starts"]:
+      win = trace["starts"][i]
+      trace["start"](win)
     a, load = cpu_mark(pgid), load1()
-    got = eng["chat"](url, msgs, want)
+    try:
+      got = eng["chat"](url, msgs, want)
+    except Exception:
+      if trace and win:
+        trace["abort"]()  # close the open capture, so the tracer session does not outlive the turn
+      raise
     b = cpu_mark(pgid)
     tm, us = got["timings"], got["usage"]
-    win = tele.summary(got["t_send"], got["t_last"]) if tele else {}
+    tw = tele.summary(got["t_send"], got["t_last"]) if tele else {}
     rows.append({"i": i, "gap_s": gap, "reply_wanted": want, "prompt_tokens": us.get("prompt_tokens"),
                  "cache_n": tm.get("cache_n"), "prompt_n": tm.get("prompt_n"), "prompt_ms": tm.get("prompt_ms"),
                  "predicted_n": tm.get("predicted_n") or us.get("completion_tokens"), "predicted_ms": tm.get("predicted_ms"),
@@ -299,7 +336,13 @@ def play(eng:dict[str, Callable[..., Any]], url:str, session:dict[str, Any], len
                  "ttft_ms": (got["t_first"] - got["t_sent"]) * 1e3, "send_ms": (got["t_sent"] - got["t_send"]) * 1e3,
                  "wall_ms": (got["t_last"] - got["t_send"]) * 1e3, "sha256": hashlib.sha256(got["text"].encode()).hexdigest(),
                  "foreign_cores": foreign_cores(a, b), "load1": load,
-                 "sm_mhz": (win.get("sm_mhz") or {}).get("mean"), "temp_c_max": win.get("temp_c_max")})
+                 "sm_mhz": (tw.get("sm_mhz") or {}).get("mean"), "temp_c_max": tw.get("temp_c_max"),
+                 "span_ns": [int(got["t_send"] * 1e9), int(got["t_last"] * 1e9)], "win": win})
+    if texts is not None:
+      texts[i] = got["text"]
+    if trace and i in trace["stops"]:
+      trace["stop"](win)
+      win = None
     msgs.append({"role": "assistant", "content": got["text"] if history == "own" else t["assistant"]})
     say(f"  turn {i}: prompt {tm.get('prompt_ms') or 0:.0f} ms, TTFT {rows[-1]['ttft_ms']:.0f} ms")
   return rows
@@ -311,7 +354,10 @@ def run_arm(ctx:dict[str, Any], arm:dict[str, Any], block:int, attempt:int, boun
   from boltbeam.collectors import gpu_telemetry
   from boltbeam.collectors.replay import _sha256, _version
   inp, say = ctx["inputs"], ctx["say"]
-  argv, env = arm_command(ctx["base"], ctx["arms"], arm, inp["wrap"])
+  if (tr := ctx.get("trace")) is not None:  # a fresh tracer session per server start: a retry never reuses a closed one
+    tr["name"] = f"bb-{os.getpid()}-{block + 1}-{attempt + 1}"
+    tr["gates"] = {}
+  argv, env = arm_command(ctx["base"], ctx["arms"], arm, inp["wrap"] + (tr["cap"]["launch"](tr["cap"]["tool"], tr["name"]) if tr else []))
   binary = pathlib.Path(arm["binary"] or ctx["base"]["argv"][0]).expanduser()
   rec: dict[str, Any] = {"name": arm["name"], "block": block, "attempt": attempt, "valid": False, "why": None,
                          "binary": {"path": str(binary), "sha256": _sha256(binary) if binary.is_file() else None,
@@ -323,6 +369,8 @@ def run_arm(ctx:dict[str, Any], arm:dict[str, Any], block:int, attempt:int, boun
   if not g["passed"]:
     rec["why"] = _words("gate_failed", why=g["why"])
     return rec
+  from boltbeam.collectors.load_probe import free_mib
+  rec["free_before_mib"] = free_mib(ctx["source"])  # nothing of this run started yet: the machine's own use of the GPU
   proc: list[Any] = []
   log = ctx["out"] / "logs" / f"{block + 1}-{arm['name']}-{attempt + 1}.log"
   with gpu_telemetry.opened(ctx["source"] or gpu_telemetry.Unsampled(_words("no_gpu")), 0, TELEMETRY_S) as tele:
@@ -331,10 +379,20 @@ def run_arm(ctx:dict[str, Any], arm:dict[str, Any], block:int, attempt:int, boun
         rec["command"], rec["load_s"] = command, round(load_s, 2)
         ctx["engine"]["chat"](url, *WARMUP)
         rec["fill"] = {}
+        texts: dict[int, str] = {}
         rec["turns"] = play(ctx["engine"], url, ctx["session"], ctx["lengths"], ctx["gaps"], inp["history"],
-                            proc[0].pid, tele, say, inp["turns"], fill=rec["fill"])
+                            proc[0].pid, tele, say, inp["turns"], fill=rec["fill"], trace=tr, texts=texts)
+        for t in rec["turns"]:  # after the timed turns: how much each reply repeats itself, beside the session's own recorded reply cut to its length
+          real = ctx["session"]["turns"][t["i"] - 1].get("assistant")
+          t["repeat"], t["repeat_ref"] = repeat_share(texts[t["i"]]), repeat_share(real[:len(texts[t["i"]])]) if isinstance(real, str) else None
+        if ctx.get("save_replies"):  # --save-replies: the replies' text and token ids beside the record, after the timed turns
+          (ctx["out"] / "replies").mkdir(exist_ok=True)
+          (ctx["out"] / "replies" / f"{block + 1}-{arm['name']}-{attempt + 1}.jsonl").write_text(
+            "".join(json.dumps({"i": i, "text": x, "tokens": ctx["engine"]["tokenize"](url, x)}) + "\n" for i, x in texts.items()))
         if ctx.get("hook"):  # after the timed turns, the server still up: the user's own check (a quality gate), untimed
           rec["hook"] = arm_hook(ctx["hook"], url, rec, ctx["out"], inp["session"]["path"], inp["turns"])
+        if tr:
+          rec["trace_gates"] = tr["gates"]
         rec["exit"] = stop(proc[0], load_s)  # tearing down never needs longer than bringing up took
         if rec["exit"]["killed"]:
           say(_words("exit_hang", pid=proc[0].pid, s=rec["exit"]["timeout_s"]))
@@ -366,6 +424,59 @@ def parse_span(text:str | None, n:int) -> list[int]:
   if not 1 <= span[0] <= span[1] <= n:
     raise Refused(_words("bad_span", turns=text))
   return span
+
+
+def parse_windows(text:str | None, span:list[int]) -> dict[str, list[int]]:
+  """--trace-windows "P:44-46,Q:106-108" as {name: [first, last]}: inside the timed span, in order, not overlapping."""
+  out: dict[str, list[int]] = {}
+  for part in filter(None, (text or "").split(",")):
+    name, _, r = part.partition(":")
+    try:
+      w = parse_span(r, span[1])
+    except Refused:
+      raise Refused(_words("bad_windows", text=text)) from None
+    if not NAME.match(name) or name in out or not span[0] <= w[0] or (out and w[0] <= max(b for _, b in out.values())) or "-" not in r:
+      raise Refused(_words("bad_windows", text=text))
+    out[name] = w
+  return out
+
+
+def traced(ctx:dict[str, Any], windows:dict[str, list[int]], out:pathlib.Path) -> dict[str, Any]:
+  """The play's trace (sess.py's nsys start/stop around a window's turns, moved here). Each window first waits on the
+  start gate with the server's own hold on the GPU allowed (cooled, at its cap); a window whose gate does not pass makes
+  the arm invalid. trace["name"] is set per server start (run_arm), so a retry opens a fresh tracer session."""
+  import subprocess
+  from boltbeam.collectors import vendor_capture as vc
+  cap, tr = vc.session_windows(ctx["backend"]), {"gates": {}}
+  def run(argv:list[str]) -> None:
+    got = subprocess.run(argv, capture_output=True, text=True, timeout=600)
+    ctx["say"](f"session-ab: {' '.join(argv[:3])} -> {got.returncode}")
+    if got.returncode:
+      raise RuntimeError(f"{' '.join(argv[:3])} exited {got.returncode}: {(got.stdout + got.stderr)[-300:]}")
+  def start(w:str) -> None:
+    tr["gates"][w] = g = ctx["gate"](ctx["source"], ctx["backend"], ctx["cap_w"], None, free=lambda _b: {"free": True, "reason": ""})
+    if not g["passed"]:
+      raise RuntimeError(_words("gate_failed", why=g["why"]))
+    run(cap["start"](cap["tool"], tr["name"], out / f"cap-{w}"))
+  tr.update({"starts": {a: w for w, (a, _) in windows.items()}, "stops": {b: w for w, (_, b) in windows.items()}, "cap": cap, "start": start,
+               "stop": lambda w: run(cap["stop"](cap["tool"], tr["name"])), "abort": lambda: subprocess.run(cap["stop"](cap["tool"], tr["name"]), capture_output=True, timeout=600)})
+  return tr
+
+
+def export_traces(trace:dict[str, Any], windows:dict[str, list[int]], out:pathlib.Path, say:Callable[[str], None]) -> dict[str, Any]:
+  """Each window's report as the sqlite the session map reads: {window: {path, rc}}."""
+  import subprocess
+  got = {}
+  for w in windows:
+    rep = out / f"cap-{w}"
+    try:
+      r = subprocess.run(trace["cap"]["export"](trace["cap"]["tool"], rep), capture_output=True, text=True, timeout=3600).returncode \
+        if pathlib.Path(trace["cap"]["report"](rep)).is_file() else None
+    except subprocess.TimeoutExpired:
+      r = "timeout"
+    got[w] = {"path": trace["cap"]["exported"](rep), "rc": r}
+    say(f"session-ab: window {w}: export rc {got[w]['rc']}")
+  return got
 
 
 def arm_hook(cmd:str, url:str, rec:dict[str, Any], out:pathlib.Path, session:str = "", turns:list[int] | None = None) -> dict[str, Any]:
@@ -405,19 +516,22 @@ def _machine() -> tuple[Any, str | None]:
 
 def run(*, out:str, server_argv:str, arms:list[str], session:str, repeats:int, engine:str, history:str = "own",
         lengths:str | None = None, gaps:str | None = None, wrap:str = "", power_cap_w:float | None = None,
-        retries:int = 2, turns:str | None = None, resume:bool = False, hook:str = "", say:Callable[[str], None] = print,
-        machine:Callable[[], tuple[Any, str | None]] = _machine, gate_fn=gate) -> dict[str, Any]:
-  """Every arm of the plan, valid ones kept, invalid ones run again (at most `retries` times each); the record."""
+        retries:int = 2, turns:str | None = None, resume:bool = False, hook:str = "", save_replies:bool = False, say:Callable[[str], None] = print, trace_windows:str | None = None,
+        machine:Callable[[], tuple[Any, str | None]] = _machine, gate_fn=gate,
+        files_read:Callable[[str, list[list[str]]], dict[str, Any]] | None = None) -> dict[str, Any]:
+  """Every arm of the plan, valid ones kept, invalid ones run again (at most `retries` times each); the record.
+  files_read(engine, argvs): the facts the caller's spend rows read from the files the arms name (workflow/spend.files_read)."""
   from boltbeam.collectors.replay import engine as engine_of
   if history not in HISTORY:
     raise Refused(_words("bad_history", history=history, ok=", ".join(HISTORY)))
   parsed = [parse_arm(a) for a in arms]
   names = [a["name"] for a in parsed]
-  if len(set(names)) != len(names) or len(names) < 2 or repeats < 1:
-    raise Refused(_words("bad_plan"))
+  if len(set(names)) != len(names) or len(names) < (1 if trace_windows else 2) or repeats < 1 or (trace_windows and len(names) * repeats > 1):
+    raise Refused(_words("bad_trace_plan" if trace_windows else "bad_plan"))
   sess, sess_id = read_session(session, history)
   n = len(sess["turns"])
   span = parse_span(turns, n)
+  windows = parse_windows(trace_windows, span)
   if span[0] > 1 and any(not isinstance(t.get("assistant"), str) for t in sess["turns"][:span[0] - 1]):
     raise Refused(_words("bad_span", turns=turns))
   lens, lens_id = read_list(lengths, "lengths", n)
@@ -428,7 +542,7 @@ def run(*, out:str, server_argv:str, arms:list[str], session:str, repeats:int, e
   inputs = {"server_argv": base_argv, "server_env": base_env, "arms": parsed, "session": sess_id, "lengths": lens_id,
             "gaps": gap_id, "history": history, "repeats": repeats, "order": order(names, repeats), "engine": engine,
             "wrap": shlex.split(wrap), "power_cap_w": power_cap_w, "turns": span,
-            **({"hook": hook} if hook else {})}
+            **({"hook": hook} if hook else {}), **({"trace_windows": windows} if windows else {})}
   outdir = pathlib.Path(out).expanduser()
   path = outdir / FILE
   if path.exists() and not resume:
@@ -438,14 +552,27 @@ def run(*, out:str, server_argv:str, arms:list[str], session:str, repeats:int, e
     raise Refused(_words("resume_differs", path=path))
   outdir.mkdir(parents=True, exist_ok=True)
   source, backend = machine()
-  record["machine"] = {"gpu_sampled": source is not None, "backend": backend}
+  from boltbeam.collectors.load_probe import free_mib
+  # the GPU's free memory with nothing running (the first reading is kept on a resume): a reader on another machine
+  # moves this record's lowest free by the difference from its own (workflow/spend.machine_shift)
+  free0 = (record.get("machine") or {}).get("free_mib")
+  from boltbeam.collectors.load_probe import machine_id
+  record["machine"] = {"gpu_sampled": source is not None, "backend": backend, "free_mib": free0 if free0 is not None else free_mib(source),
+                       "id": (record.get("machine") or {}).get("id") or machine_id()}
+  if "file_facts" not in record and files_read:  # what the spend rows read from the files the arms name, so the record reads anywhere
+    try:
+      record["file_facts"] = files_read(engine, [arm_command({"argv": base_argv, "env": base_env}, parsed, a, [], {})[0] for a in parsed])
+    except Exception:  # noqa: BLE001  a file fact is a reader's convenience, never a reason to stop a benchmark
+      record["file_facts"] = {}
   cap = power_cap_w if power_cap_w is not None else next((a["gate"]["power_limit_w"] for a in record["arms"] if a.get("gate")), None)
   if cap is None and source is not None:
     cap = source.power_limit_w()
   record["power_cap_w"] = cap
   ctx = {"inputs": inputs, "base": {"argv": base_argv, "env": base_env}, "arms": parsed, "session": sess, "lengths": lens,
          "gaps": gap, "engine": engine_of(engine), "source": source, "backend": backend, "cap_w": cap, "out": outdir,
-         "say": say, "gate": gate_fn, "hook": hook}
+         "say": say, "gate": gate_fn, "hook": hook, "save_replies": save_replies}
+  if windows:
+    ctx["trace"] = traced(ctx, windows, outdir)
   by = {a["name"]: a for a in parsed}
   for block, name in inputs["order"]:
     tried = [a for a in record["arms"] if a["block"] == block and a["name"] == name]
@@ -467,5 +594,7 @@ def run(*, out:str, server_argv:str, arms:list[str], session:str, repeats:int, e
       _write(path, record)
       return record
   record.pop("stopped", None)
+  if windows:
+    record["traces"] = export_traces(ctx["trace"], windows, outdir, say)
   _write(path, record)
   return record

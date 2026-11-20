@@ -203,6 +203,8 @@ def chunk_plan(table:dict[str, Any], *, peaks:dict[str, float], bandwidth_gbs:fl
   er = cs.engine_row(engine, ev)
   ref = int((ev.get("held_at") or {}).get("ubatch") or knob_default(engine, "-ub"))
   w = cs.weights(table["meta"], table["tensors"], kind=mm.kind, nbytes=mm.nbytes, peaks=peaks, path_of=weight_path)
+  if not w["ops_per_token"]:  # no rate, no compute time: said (for_setup keeps the old rule), never a division by zero or the largest chunk
+    raise ValueError(f"this chip has no measured matrix rate for the model's weight formats ({', '.join(w['pathless']) or 'none read'}), so a chunk's compute time is unknown")
   if ev.get("held_mib"):
     rows = {k: cs.fig(v * cs.MiB, lab, ev["held_evidence"]) for k, (v, lab) in ev["held_mib"].items()}
   else:

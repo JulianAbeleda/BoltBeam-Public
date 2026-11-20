@@ -519,8 +519,13 @@ def per_columns(rpb:Any, cols:int) -> list[int]:
 
 
 def out_rows(row:dict[str, Any], grid_x:int, cols:int) -> set[int]:
-  """The output rows a launch of this shapes row computes: its own `n` (a kernel built for one shape) or gridX x rows per block."""
-  return set(row["n"]) if row.get("n") else {grid_x * b for b in per_columns(row.get("rows_per_block", ()), cols)}
+  """The output rows a launch of this shapes row computes: its own `n` (a kernel built for one shape) or gridX x rows per block.
+  A row whose rows per block are a chip's fact (by_target) and has none for this chip is a ValueError with the row to add:
+  its launches cannot be joined to the model's matrices on this chip, and a guess would join them to the wrong ones."""
+  if not row.get("n") and "rows_per_block" not in row:
+    raise ValueError(f"data/kernel_families.json has no rows per block for {row['re'].pattern} on this chip (its by_target rows: "
+                     f"{', '.join(sorted(row.get('by_target') or {})) or 'none'}): add this chip's, from the engine's own table")
+  return set(row["n"]) if row.get("n") else {grid_x * b for b in per_columns(row["rows_per_block"], cols)}
 
 
 def output_layers(names_grids:list[tuple[str, Any]], rows:list[dict[str, Any]], vocab:int) -> list[int]:

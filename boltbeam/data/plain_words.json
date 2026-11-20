@@ -989,7 +989,14 @@
    "fail": "This copy does not match its record."
   }
  },
+ "machine_figures": {
+  "unread": "not read",
+  "unkeyed": "Measured on this chip, and also dependent on what this run does not read, so each is an estimate where that differs: {figures}.",
+  "borrowed": "Borrowed, not measured on this machine: {what}. This run is {here}; the nearest measured row is {row} ({machine}, {date}, {run}): {value:g} {unit}. Used as {used:.4g} {unit}, widened against this setup by {margin:.3g}: one more reading's 95% bound over that row's {n} readings ({readings}). To measure it here: {how}.",
+  "unmeasured": "Not measured on this machine, so not used: {what}. This run is {here}; the only row is {row} ({machine}, {date}, {run}: {value:g} {unit}, {n} reading), which gives no spread to borrow it with: a saving is counted as nothing and a setting that reads it keeps its default. To measure it here: {how}."
+ },
  "tune": {
+  "withheld": "Switches this build has that are left off, because the model and the command do not show the shape they need:",
   "build": "{engine} build: {fork}, at {path} ({backend}{version}).",
   "groups": "Its {what}: {groups}.",
   "none": "none",
@@ -1016,6 +1023,7 @@
   "older_group": "This build has an older version of a {noun}: these of its knobs are not in it: {knobs}.",
   "lacks": "This {engine} build lacks these knobs: {knobs}.",
   "command": "Command:",
+  "command_unfit": "Not expected to load: by the estimate above this command leaves {after:.2f} GiB free on the GPU after load, less than nothing. It is printed for its knobs. Before running it, keep expert layers in host RAM where the model has them (--experts-in-ram N), lower --context, or give measured runs (--measured) so the spend fit places the experts.",
   "measure_hint": "Rows marked derived or default for a chunk size, a crossover or a choice are the starting point; --measure confirms them with a short real-text sweep, of reading a prompt or of writing a reply (it starts the engine once per point).",
   "memory": {
    "lead": "Memory: {rows} take GPU memory from one budget, so they are chosen together, not one at a time. ",
@@ -1044,6 +1052,7 @@
    "nothing": "nothing else fits the measured budget, so the setup stands with nothing more to confirm",
    "unknown": "Memory: {rows} take GPU memory from one budget, but {what} could not be read here, so each keeps its own value and their fit is not checked.",
    "unknown_one": "Memory: {rows} takes GPU memory, but {what} could not be read here, so it keeps its own value and its fit is not checked.",
+   "negative": "Memory: refused: {after:.2f} GiB would be free after the model loads (estimated: the GPU's free memory, less the model, its KV cache at this context and the engine's own buffers), less than nothing, so no value of {rows} is sized from it and each keeps its own. The estimate counts the whole KV cache on the GPU; the spend fit (--measured: session-ab records or load probes of this model) sizes the context's memory from measured runs, else lower --context.",
    "row_measured": "measured together with the other rows that take GPU memory (the Memory line above): {label}",
    "row_measured_one": "measured against the GPU memory it takes (the Memory line above): {label}",
    "row": "chosen with the other rows that take GPU memory, from one budget of {room:.2f} GiB (the Memory line above): {label}, the fastest predicted ({gain:.2f}x) that fits and keeps the answers",
@@ -1097,6 +1106,8 @@
   }
  },
  "tune_llama_cpp": {
+  "kv_stream_shape": "the model's header shows no sparse-attention layer with pooled keys (no compress ratio above 0 beside indexer key tensors), so there is nothing to stream",
+  "kv_stream_gate": "the header shows {n} sparse-attention layers with pooled keys, the shape kv-stream streams, but the built mod takes only {archs} graphs by name (its own gate) and this model is {arch}: it would refuse at load",
   "ubatch_tie": "the smallest chunk whose prompt limit is within the policy's tie of the best one's: the model's header could not be read, so the chunk was not derived from its crossover and fit",
   "kv_setup_from": "the Recommended setup's KV type",
   "kv_setup_untested": "the Recommended setup picks this KV type to hold its context, and no next-token agreement gate ran for it against llama-server's default",
@@ -1167,6 +1178,9 @@
   "fit_bound": "llama.cpp's own fit at k={k} with the draft head, {why}"
  },
  "mods": {
+  "shape_lacks": "{why}; this model and command do not show it ({needs})",
+  "shape_unread": "its shape could not be checked: {fact} was not read from the model ({needs})",
+  "shape_no_row": "no row in data/mod_shapes.json says what shape it needs",
   "about": "changes {files}: {added} lines added, {removed} removed",
   "about_titled": "{title} · {files}, +{added} -{removed}",
   "about_module": "{title} · in the {module} module ({files}, +{added} -{removed} for the whole module)",
@@ -1253,18 +1267,25 @@
   "pending_head": "  Not available here (never ranked):",
   "pending": "    {words}: would free up to {mib} MiB at the measured setup; {why}.",
   "pending_built": "not in this build ({switch})",
+  "pending_with": "refused: this build lacks {mod}, which it must run with ({why})",
   "pending_unbuilt": "no switch built yet",
   "pending_cost": "its cost was measured elsewhere",
   "pending_nocost": "its cost is not measured",
   "no_rows": "Spend fit: this engine has no spend rows.",
   "no_anchor": "Spend fit: no measured run of this model reached the end of its session with its GPU memory read (a boltbeam session-ab record), so no combination can be costed. Run one and pass it with --measured.",
+  "no_anchor_unread": "Spend fit: the measured runs of this model could not be read here, so no combination can be costed: {what}. A record names the files its commands read by its own machine's paths: pass the same file here (--draft for a draft head), or measure with session-ab, which records the files' facts.",
+  "machines": "  Machines: {here:,.0f} MiB free with nothing running here (--gpu-free-mib, else read now: a busy GPU reads low); the lowest free of runs measured on another machine is moved by the difference: {moved}.",
+  "machines_unknown": "  Machines: {where} carry no reading of their machine's free memory with nothing running, so their lowest free is read as if measured here (pass --measured-free-mib with that machine's reading; session-ab and load-probe record it).",
   "context": "{cells:,} cells",
   "max_context": "the most cells each holds",
   "metric_step": "step ms",
   "metric_tps": "tokens a step",
   "metric_prefill": "prefill ms a turn",
+  "unfit_head": "  Not offered for this model:", "unfit": "    {words}: {why}.",
   "margin": "Margin: {mib:.0f} MiB kept free beyond each combination's predicted lowest: the larger of the spread over runs of one setup ({spread} MiB) and the memory formulas' worst error predicting one measured arm from another ({resid} MiB){head}.",
-  "headroom_bound": "; plus {mib:.0f} MiB of runtime headroom, this build's cap on live CUDA graph instances times the measured MiB of one (a bound, with {switch} set: the cap is off without it)",
+  "headroom_bound": "; plus {mib:.0f} MiB of runtime headroom, this build's cap on live CUDA graph instances times the measured MiB of one ({params}; a bound, with {switch} set: the cap is off without it)",
+  "same_setup": "  Same setup: {n} derived combinations are anchored on a full session of the same setup ({where}: only {rows} apart): they keep {head:.1f} MiB of runtime headroom plus a one-sided 95% bound on one more run's lowest (t x the pooled run-to-run sd {sd}), {keep:.1f} MiB, not the cross-setup error.",
+  "headroom_passed": "  Headroom: the {row} row's bound is not used: its {what} is not known here ({why}).",
   "headroom_mitigation": "; plus {mib:.0f} MiB of runtime headroom, the most any load-probe --stress of this model grew after its session (a mitigation, not a bound: this build has no cap on CUDA graph instances, so the growth is not bounded)",
   "headroom_none": "; no runtime headroom measured (new prompts after a session can add memory: load-probe --stress measures it)",
   "margin_unknown": "Margin: unknown: one reading of one setup, so neither the run-to-run spread nor the formulas' error is measured; nothing is ranked (test: repeat an arm, or measure a second setup).",
@@ -1305,6 +1326,8 @@
   "bad_span": "--turns {turns!r}: need A-B (or N, the first N) within the session's turns; a span past turn 1 needs every earlier turn's \"assistant\" text to fill the cache",
   "bad_history": "history is {history!r}; it is one of {ok}",
   "bad_plan": "a comparison needs at least two arms with distinct names and at least one repeat",
+  "bad_trace_plan": "--trace-windows traces one run: give exactly one arm and --repeats 1",
+  "bad_windows": "--trace-windows {text!r}: need NAME:A-B[,NAME:A-B ...], each window inside --turns, in order and not overlapping",
   "bad_server": "the server command is empty",
   "exists": "{path} exists: pass --resume to carry on with it, or a new --out",
   "resume_differs": "{path} was started with other inputs (arms, session, order, server or files); --resume continues only the same benchmark",
@@ -1327,12 +1350,19 @@
   "contamination_idle": "the machine's idle {base:.3f} cores over {k} samples before the arms, + {z:.2f} x its SE {se:.3f} at a turn's length",
   "contamination_turns": "no idle samples: the run's own outlier bound over its turns",
   "invalid": "{n} invalid arm runs (run again, never averaged); exit hangs killed: {hangs}.",
+  "loops_no_ref": "replies that loop: not checked ({base}'s first run has no recorded reply to compare against)",
+  "loops": "replies that loop: {n} of {m} warm turns repeat themselves more than any of the session's own recorded replies at least as long does (at most {bound:.3f} of a reply's length) ({where}); the 'no loop' band is the warm turns without them",
   "refused": "{arm} against {base}: REFUSED, conditions do not match: {why}",
   "cmp_head": "{arm} against {base}: base->arm and arm less base, mean [95% CI] over {pairs} pairs; turn 1 cold, apart",
   "clean": "clean (turns contaminated in either arm of a pair dropped):",
-  "wall": "session wall s {a:.1f}->{b:.1f} {d}"
+  "wall": "session wall s, every turn (CPU-flagged ones included) {a:.1f}->{b:.1f} {d}",
+  "wall_clean": "session wall s, the {n} of {m} turns no pair flagged {a:.1f}->{b:.1f} {d}"
  },
  "session_map": {
+  "audit_cols": "audit, decode step: rank, target, ms a step now/floor/gap and label per window ({windows}); session s of gap; slope deepest - shallowest; lever x realization = score",
+  "flags": "shape flags (thresholds from this machine and capture):",
+  "proof": "stock proof: {state}: {why}",
+  "ranked": "ranked: the queue above is the order to work in (record: audit.queue)",
   "refused": "session-map refused: {why}",
   "head": "session map, {engine} on {target}: {steps:,.0f} decode steps and {turns:,.0f} turns a session; windows {windows} (traced)",
   "window": "window {w}: step {step} ms traced, {untraced} untraced; kernels {kernels}; host idle {idle} traced, {idle_u} untraced (estimate): {causes}; prefill {passes} passes, {tokens} tokens a turn",
@@ -1355,6 +1385,9 @@
    "small": "small kernels (norms, quantize, copies, elementwise)",
    "sampling": "sampling",
    "copies": "copies (busy, first-started)",
+   "kv_stream": "KV stream paging kernels",
+   "exposed_copies": "copies with no kernel running (exposed)",
+   "host": "host idle (no GPU work; untraced estimate)",
    "other": "other kernels, no family row (unattributed)"
   }
  }

@@ -25,13 +25,13 @@ python -m boltbeam.workflow.screen recommend MODEL --target TARGET --engine ENGI
 boltbeam offload MODEL --target TARGET [--engine ENGINE]       # the offload page: what goes to the card and to RAM (the same as screen offload)
 boltbeam tune MODEL --engine llama.cpp|vllm [--build BIN] [--experts-in-ram all|N] [--prompt N] [--context N] [--replies REPLIES.jsonl] [--workload chat|one-shot] [--time-budget BUDGET.json] [--measure]
 boltbeam tune MODEL --measured RECORD [--context N|max] [--gpu-free-mib N]   # rank the ways to spend GPU memory from measured runs
-boltbeam session-ab --out DIR --server-argv CMD --session S.json --arm A=SPEC --arm B=SPEC [--repeats N] [--turns A-B] [--hook CMD]   # paired session benchmark
+boltbeam session-ab --out DIR --server-argv CMD --session S.json --arm A=SPEC --arm B=SPEC [--repeats N] [--turns A-B] [--hook CMD] [--trace-windows P:A-B,...]   # paired session benchmark; one traced arm with --trace-windows (the audit's capture)
 boltbeam session-gate --reference ARM [--floor ARM]   # output-agreement check per arm, run as session-ab's --hook
 boltbeam load-probe --out DIR --server-argv CMD [--session S.json --turns N] [--timeout S]   # does it load: ready by /health, failure by exit status; free GPU memory; a probe row tune --measured reads
 boltbeam time-budget capture.sqlite --engine ENGINE [--driver LINE.json | --wall-ms MS] [--out budget.json]
 boltbeam context-audit RECORD.json --engine ENGINE [--out audit.json]
 boltbeam kernel-ledger CAP@DEPTH ... --model M.json --engine ENGINE --target T --k K [--session RECORD --window W ...] [--manifest M] [--routing R]
-boltbeam session-map CAP@WINDOW ... --session RECORD --model M.json --engine ENGINE --target T --k K [--untraced RECORD[@ARM]] [--reference REF.json]   # per kernel class: now, floor, reference, gap s, can the search express it
+boltbeam session-map CAP@WINDOW ... --session RECORD --model M.json --engine ENGINE --target T --k K [--untraced RECORD[@ARM]] [--reference REF.json] [--previous MAP.json | --first] [--floors F.json] [--draft-selection N]   # per kernel class: now, floor, reference, gap s, can the search express it; the audit: slopes, shape flags, stock proof, realization-ranked queue (docs/session-map.md)
 boltbeam routing MODEL --engine llama.cpp|strata|vllm [--tokens N | --from RECORD] [--compare OTHER.json]
 ```
 

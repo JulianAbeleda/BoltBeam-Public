@@ -97,6 +97,12 @@ def valid_h2d(entry:Any) -> dict[str, Any] | None:
           "measured_at": str(entry.get("measured_at") or "date not recorded")}
 
 
+def only_h2d(path:pathlib.Path | None = None) -> dict[str, Any] | None:
+  """The saved copy rate when the file holds exactly one GPU's (a reader with no bus id: the session map), else None."""
+  h = _load(path or host_file()).get("h2d")
+  return valid_h2d(next(iter(h.values()))) if isinstance(h, dict) and len(h) == 1 else None
+
+
 def saved_h2d(pci_bus_id:str | None, path:pathlib.Path | None = None) -> dict[str, Any] | None:
   h = _load(path or host_file()).get("h2d")
   return valid_h2d(h.get((pci_bus_id or "").lower())) if isinstance(h, dict) else None

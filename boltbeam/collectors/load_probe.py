@@ -60,6 +60,33 @@ def out_of_memory(engine:str | None, log:str) -> dict[str, Any]:
   return {"out_of_memory": hit is not None, "line": hit[-300:] if hit else None}
 
 
+def cuda_graphs(engine:str | None, log:str, env:dict[str, str]) -> dict[str, Any] | None:
+  """The CUDA graphs a run built, from the engine's stats lines (its adapter row graph_stats; the line is printed only
+  with the stats switch on): per backend context the most chunks one graph took (highest chunk + 1, which the backend
+  sizes as ceil(nodes / chunk size)), their sum (chunks: what a cap on graph keys bounds per key) and the chunk size
+  they were split at. None: no row for the engine, or no stats line (the switch was off)."""
+  import json
+  row = (json.loads(ADAPTERS.read_text())["engines"].get(engine or "") or {}).get("graph_stats")
+  if not row:
+    return None
+  most: dict[str, int] = {}
+  for m in re.finditer(row["line"], log):
+    most[m["ctx"]] = max(most.get(m["ctx"], 0), int(m["chunk"]) + 1)
+  if not most:
+    return None
+  size = env.get(row["chunk_env"]) or os.environ.get(row["chunk_env"])
+  per = sorted(most.values(), reverse=True)
+  return {"contexts": per, "chunks": sum(per), "chunk_size": int(size) if size and size.isdigit() else row["chunk_default"]}
+
+
+def machine_id() -> str:
+  """This machine, as a record names it: a hash of its host name (records travel; the name itself is not written), so
+  a reader knows a record measured on itself (workflow/spend.machine_shift)."""
+  import hashlib
+  import socket
+  return hashlib.sha256(socket.gethostname().encode()).hexdigest()[:12]
+
+
 def exit_words(code:int | None) -> dict[str, Any]:
   """An exit status as the OS returned it: the code, and the signal's name when a signal ended the process."""
   if code is None:
@@ -155,7 +182,7 @@ def run(*, out:str, server_argv:str, engine:str = "llama.cpp", session:str | Non
                          "loaded": False, "session": None, "turns": span, "start": sab.now_words(),
                          "binary": {"path": str(binary), "sha256": _sha256(binary) if binary.is_file() else None,
                                     "version": _version(binary) if binary.is_file() else None},
-                         "free_before_mib": free_mib(source), "free_ready_mib": None, "sampled_every_s": INTERVAL_S,
+                         "free_before_mib": free_mib(source), "machine_id": machine_id(), "free_ready_mib": None, "sampled_every_s": INTERVAL_S,
                          "log": str(log), "failure": None}
   proc: list[Any] = []
   say(_words("start", name=rec["name"]))
@@ -211,6 +238,8 @@ def run(*, out:str, server_argv:str, engine:str = "llama.cpp", session:str | Non
     rec["stress"]["lower_bound"] = bool(rec["stress"].get("failure")) or not rec["stress"].get("plateau")
   if rec["failure"]:
     rec["failure"].update(out_of_memory(engine, log.read_text(errors="replace") if log.is_file() else ""))
+  if log.is_file() and (cg := cuda_graphs(engine, log.read_text(errors="replace"), env)):
+    rec["cuda_graphs"] = cg  # the graph cap's chunks for tune (spend headroom graph_cap)
   rec.pop("ready_t", None)
   rec["end"] = sab.now_words()
   sab._write(outdir / FILE, rec)

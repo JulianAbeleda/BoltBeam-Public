@@ -107,9 +107,9 @@ def cells(table:dict[str, Any], file:str) -> list[dict[str, Any]]:
 
 def fact(table:dict[str, Any] | None, name:str) -> Any:
   """A metadata fact by data/min_memory.json's name for it under the header's architecture (None when not given)."""
-  from boltbeam.workflow.min_memory import TAB, one
+  from boltbeam.workflow.min_memory import block, one
   arch = ((table or {}).get("meta") or {}).get("general.architecture")
-  key = (TAB["architectures"].get(arch) or {}).get("meta", {}).get(name)
+  key = (block((table or {}).get("meta"), (table or {}).get("tensors")) or {}).get("meta", {}).get(name)
   return one(table["meta"].get(f"{arch}.{key}")) if key else None
 
 

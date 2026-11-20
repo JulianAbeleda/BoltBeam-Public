@@ -588,13 +588,20 @@ def cmd_kernel_ledger(args) -> int:
   return 0 if out.get("ok") else 1
 
 
+def _saved_h2d() -> float | None:
+  """This machine's saved pinned host-to-device rate when the copy probe holds one GPU (target/host.only_h2d), else None."""
+  from boltbeam.target import host
+  return ((host.only_h2d() or {}).get("h2d_gbs") or {}).get("pinned")
+
+
 def cmd_session_map(args) -> int:
   from boltbeam.collectors import replay
   from boltbeam.collectors import time_budget as tb
   from boltbeam.roofline import limit
   from boltbeam.workflow import session_map as sm
   caps = [c.partition("@") for c in args.capture]
-  paths = [p for p, _, _ in caps] + [p.partition("@")[0] for p in (*args.session, args.model, args.draft, args.manifest, args.routing, args.reference, *(args.untraced or [])) if p]
+  paths = [p for p, _, _ in caps] + [p.partition("@")[0] for p in (*args.session, args.model, args.draft, args.manifest, args.routing, args.reference, args.previous,
+                                                                    args.floors, *(args.untraced or [])) if p]
   if missing := [p for p in paths if not pathlib.Path(p).is_file()]:
     return _fail(f"session-map: no such file: {', '.join(missing)}")
   if bad := [p for p, _, w in caps if not w]:
@@ -603,6 +610,8 @@ def cmd_session_map(args) -> int:
     return _fail(f"session-map: data/kernel_families.json has no rows for {', '.join(bad)}")
   if (target := next((t for t in limit.targets()["targets"] if t["id"] == args.target), None)) is None:
     return _fail(f"session-map: no target {args.target} (data/targets.json lists them)")
+  from boltbeam.target.targets import get_target
+  target = {**target, "compute_units": get_target(args.target).compute_units}  # SMs / CUs: the audit's grid flag
   load = lambda p: json.loads(pathlib.Path(p).read_text()) if p else None  # noqa: E731
 
   def runs(spec:str) -> list[list[dict]]:  # a driver record (its turns), or session-ab's record @ an arm (each valid run of it)
@@ -622,13 +631,46 @@ def cmd_session_map(args) -> int:
     untraced = [r for u in args.untraced or [] for r in runs(u)]
     out = sm.session_map([{"path": p, "window": w} for p, _, w in caps], turns, main=load(args.model), draft=load(args.draft), engine=args.engine,
                          vendor=args.vendor, target=target, k=args.k, kv_type=args.kv_type, selection=args.selection, manifest=load(args.manifest), routing=load(args.routing),
-                         untraced=untraced or None, traced_runs=recs, reference=(load(args.reference) or {}).get("rows") if args.reference else None)
+                         untraced=untraced or None, traced_runs=recs, reference=(load(args.reference) or {}).get("rows") if args.reference else None,
+                         draft_selection=args.draft_selection, previous=load(args.previous), floors=(load(args.floors) or {}).get("rows"), first=args.first,
+                         h2d_gbs=args.h2d_gbs or _saved_h2d(), name=args.name or (pathlib.Path(args.out).stem if args.out else None))
   except (KeyError, ValueError) as exc:
     return _fail(f"session-map: {type(exc).__name__}: {exc}")
   if args.out:
     pathlib.Path(args.out).write_text(json.dumps(out, indent=1, default=sorted) + "\n")
   print("\n".join(sm.lines(out, args.top)))
   return 0 if out.get("ok") else 1
+
+
+def cmd_span_saving(args) -> int:
+  from boltbeam.collectors import time_budget as tb
+  from boltbeam.search import span_saving as ss
+  if not pathlib.Path(args.capture).is_file():
+    return _fail(f"span-saving: no such file: {args.capture}")
+  if (args.candidate_us is None) != (args.candidate_source is None) or (args.per_step is not None and args.candidate_us is None):
+    return _fail("span-saving: --candidate-us takes --candidate-source (the bench file, or what the estimate is), and --per-step needs both")
+  tl = tb.timeline_from_nsys(args.capture)
+  s = ss.summary(ss.spans(tl.kernels, tl.grids, args.run), pathlib.Path(args.capture).name)
+  rec = {"schema": ss.SCHEMA, "source": pathlib.Path(args.capture).name, "run": args.run, "spans": s}
+  if args.candidate_us is not None and s.get("occurrences"):
+    rec["prediction"] = ss.predict(s, args.candidate_us, args.candidate_source, args.per_step, "estimate" if args.candidate_estimate else "measured")
+  if args.out:
+    pathlib.Path(args.out).write_text(json.dumps(rec, indent=1) + "\n")
+  print("\n".join(ss.lines(rec)))
+  return 0 if s.get("occurrences") else 1
+
+
+def _register_span_saving(sub) -> None:
+  p = sub.add_parser("span-saving", help="what one candidate kernel replacing a run of stock launches saves in the model: the run's measured wall "
+                     "(PDL overlap counted once, idle gaps in) minus the candidate's time, beside the summed-time projection (boltbeam.span_saving.v1); exits 1 when the run never occurs")
+  p.add_argument("capture", help="an nsys sqlite export")
+  p.add_argument("--run", action="append", required=True, help="one launch of the run, in order: a regular expression searched in kernel names (anchor it with ^...$), NAME@gridX to key the grid; repeatable")
+  p.add_argument("--candidate-us", type=float, default=None, help="the candidate's in-model time a copy, us (its bench, back-to-back copies in one graph)")
+  p.add_argument("--candidate-source", default=None, help="where the candidate's time comes from (a run folder file, or the model that estimates it)")
+  p.add_argument("--candidate-estimate", action="store_true", help="the candidate's time is an estimate (a model's figure), not a bench measurement")
+  p.add_argument("--per-step", type=float, default=None, help="occurrences a decode step (or a turn): gives the saving a step")
+  p.add_argument("--out", default=None, help="write the record here (JSON)")
+  p.set_defaults(fn=cmd_span_saving)
 
 
 def _register_session_map(sub) -> None:
@@ -652,6 +694,15 @@ def _register_session_map(sub) -> None:
   p.add_argument("--untraced", action="append", help="the same session untraced: a driver record, or session-ab's record as PATH@ARM; repeatable. "
                  "Gives the untraced step per window and the session's steps")
   p.add_argument("--reference", default=None, help="measured reference rows (JSON {rows: [{part (decode, prefill), phase, classes (or [\"*\"]), ms or gbs, source, window?}]})")
+  p.add_argument("--draft-selection", type=int, default=None, help="the KV cells a draft attention launch reads, when the draft's attention is sparse too")
+  p.add_argument("--previous", default=None, help="the audit's stock proof: an earlier session-map record of the same plan; the classes flat across this "
+                 "map's depths must match it within the derived tolerance, or the queue is not ranked")
+  p.add_argument("--first", action="store_true", help="rank with no --previous (this plan's first audit; the record says so)")
+  p.add_argument("--floors", default=None, help="bytes a class reads that the header does not give (JSON {rows: [{class, bytes, depth?, source}]}; "
+                 "scaled by depth when depth names the depth they were counted at)")
+  p.add_argument("--h2d-gbs", type=float, default=None, help="the GPU's measured host-to-device copy rate (default: this machine's saved copy probe, "
+                 "target/host.h2d, when it holds one GPU)")
+  p.add_argument("--name", default=None, help="this record's name, for a later --previous")
   p.add_argument("--top", type=int, default=14, help="rows shown per part (the record holds all)")
   p.add_argument("--out", default=None, help="write the record here (JSON)")
   p.set_defaults(fn=cmd_session_map)
@@ -660,6 +711,7 @@ def _register_session_map(sub) -> None:
 def register(sub) -> None:
   _register_time_budget(sub)
   _register_session_map(sub)
+  _register_span_saving(sub)
   p = sub.add_parser("kernel-ledger", help="every kernel of a decode step by shape: launches, exclusive time, bytes, limit, distance, in two rankings (bytes known, "
                      "bound unknown), with search and install coverage (boltbeam.kernel_ledger.v1; docs/kernel-ledger.md); exits 1 when a check fails")
   p.add_argument("capture", nargs="+", help="an nsys sqlite export or its extract (JSON[.gz]), as PATH or PATH@DEPTH (tokens of context); two depths give slopes")
