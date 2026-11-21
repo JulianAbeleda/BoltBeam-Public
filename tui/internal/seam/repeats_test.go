@@ -47,8 +47,12 @@ func TestPipelineSettingsRepeatsAndMtpArgv(t *testing.T) {
 		t.Fatalf("one run asks for no repeats: %v", argv)
 	}
 	ctx := 8192
-	got := strings.Join(c.MtpArgv("/m/q", "nvidia_sm120", "llama.cpp", "/r/.work/q-mtp", []int{1, 2, 3}, &ctx), " ")
+	got := strings.Join(c.MtpArgv("/m/q", "nvidia_sm120", "llama.cpp", "", "/r/.work/q-mtp", []int{1, 2, 3}, &ctx), " ")
 	if want := "py -m boltbeam.workflow.screen mtp /m/q --target nvidia_sm120 --engine llama.cpp --out /r/.work/q-mtp --ks 1,2,3 --context 8192 --facts-root /r"; !strings.HasPrefix(got, want) {
 		t.Fatalf("mtp argv %q", got)
+	}
+	got = strings.Join(c.MtpArgv("/m/q", "nvidia_sm120", "llama.cpp", "/b/llama-bench", "/r/.work/q-mtp", []int{1, 2, 3}, nil), " ")
+	if want := "--ks 1,2,3 --build /b/llama-bench --facts-root /r"; !strings.Contains(got, want) { // the build tune runs
+		t.Fatalf("mtp argv with a build %q", got)
 	}
 }

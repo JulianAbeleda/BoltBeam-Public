@@ -65,7 +65,7 @@ def offer(provider:str, model:str, draft_bytes:int, *, facts:bool) -> dict[str, 
 
 
 def measure(provider:str, model:str, ks:list[int], *, backend:str, out:pathlib.Path, tokens:int = TOKENS, long_tokens:int = 2048,
-            long_why:str = "asked (--long-tokens)", grow:bool = False, head:str | None = None, **engine_kw) -> dict[str, Any]:
+            long_why:str = "asked (--long-tokens)", grow:bool = False, head:str | None = None, **engine_kw) -> dict[str, Any]:  # engine_kw: build, admit
   """The measurement on this engine (its row's module); head: a draft head file, where the engine takes one."""
   m = engine(provider)
   if m is None:
@@ -274,9 +274,11 @@ def by_context(depths:dict[str, Any]) -> dict[float, dict[int, tuple]]:
 
 
 def sweep(run_k:Callable[[int], list[dict[str, Any]]], ks:list[int], *, model:str, backend:str, out:pathlib.Path,
-          tokens:int, long_tokens:int, long_why:str, grow:bool, decode_speed:str) -> dict[str, Any]:
+          tokens:int, long_tokens:int, long_why:str, grow:bool, decode_speed:str,
+          admit:Callable[[int], str | None] | None = None) -> dict[str, Any]:
   """Run k=0 then each k in `ks` through run_k (one engine start: its prompt rows and one {"engine"} row), then (grow)
-  one k more while core/draft_count.sweep_next says a larger k could still win; write and return the measurement. The
+  one k more while core/draft_count.sweep_next says a larger k could still win and admit (the engine's own fit at that
+  k, when it has one) does not say why it cannot run; write and return the measurement. The
   GPU must be free before, and free again after each k. decode_speed: how the engine's rows time a token, said."""
   ks = sorted({int(k) for k in ks})
   if not ks or ks[0] < 1:
@@ -314,6 +316,9 @@ def sweep(run_k:Callable[[int], list[dict[str, Any]]], ks:list[int], *, model:st
     if grow and not todo:
       more, said = draft_count.sweep_next(by_context(summarize(rows)))
       why.append(said)
+      if more and admit and (no := admit(more)):  # the asked ks were fitted; a grown k is fitted before it runs
+        why.append(f"stopped at k={more - 1}: k={more} does not fit ({no})")
+        more = None
       todo += [more] if more else []
   long = long_corpus()
   record = {"schema": SCHEMA, "model": model, "prompts": prompt_set(), "tokens": tokens, "long_tokens": long_tokens, "long_why": long_why,

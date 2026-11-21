@@ -11,7 +11,7 @@
    "key": [
     "chip"
    ],
-   "words": "the GPU memory llama-server holds beyond its own buffers (the CUDA context, cuBLAS, what CUDA's free figure holds back)",
+   "words": "the GPU memory llama-server holds beyond its own buffers (the GPU runtime's context, its matrix library, what the driver's free figure holds back)",
    "unkeyed": "the driver and the engine build: tune reads neither, so whether the figure moves with them is unknown; test: how_to_measure on a second build or driver",
    "how_to_measure": "boltbeam load-probe --server-argv 'SERVER -m MODEL ...' --out DIR at two contexts: the record's free_before_mib less the model, context and compute buffers server.log reports less free_ready_mib",
    "rows": [
@@ -29,6 +29,21 @@
      "run": "~/storage/tmp/rel27/fit",
      "evidence": "two loads (-c 65,536 every expert on the GPU; -c 247,552 with 7 layers' experts in RAM): NVML's free before the start less the logged model, context and compute buffers less the free CUDA reported after load",
      "build": "llama.cpp b11571"
+    },
+    {
+     "key": {
+      "chip": "amd_radeon_ai_pro_r9700_32g"
+     },
+     "value": 322,
+     "readings": [
+      322.3,
+      321.7
+     ],
+     "machine": "the AMD box, 2x Radeon AI PRO R9700 (32 GiB each), TR PRO 9955WX",
+     "date": "2026-11-20",
+     "run": "~/storage/boltbeam-runs/r9700-figures-20261120 rt1-c16384-r1, rt1-c32768-r1 (r2 repeats read the same free)",
+     "evidence": "Qwen3.8-27B Q4_K_M on one card (HIP_VISIBLE_DEVICES=0), -c 16,384 and 32,768, -ub 512, -lv 4: load-probe's free before (32,117.6 MiB) less the ROCm0 model, KV, rotation, recurrent and compute buffers server.log reports less the free at ready",
+     "build": "llama.cpp 5193ef1d (build 12372), HIP"
     }
    ]
   },
@@ -59,6 +74,21 @@
      "run": "~/storage/tmp/rel27/fit",
      "evidence": "llama-server's own fit projection at -c 16,384 to 247,552: compute grows 3,943 B a cell at -ub 512 and 7,814 at -ub 1024 (7.70 and 7.63 a chunk token), less the 1.5 of the pooled terms at pool ratio 4",
      "build": "llama.cpp b11571"
+    },
+    {
+     "key": {
+      "chip": "amd_radeon_ai_pro_r9700_32g"
+     },
+     "value": 8.65,
+     "readings": [
+      8.65,
+      8.65
+     ],
+     "machine": "the AMD box, 2x Radeon AI PRO R9700 (32 GiB each), TR PRO 9955WX",
+     "date": "2026-11-20",
+     "run": "~/storage/boltbeam-runs/r9700-figures-20261120 kp-c32768, kp-c65536",
+     "evidence": "Flash-Next IQ3_S over both cards, -ub 512, -c 32,768 and 65,536, -lv 4: each card's compute buffer grew 162.4 MiB (ROCm0 330.79 -> 493.17, ROCm1 405.78 -> 568.15): 10.15 B a cell and chunk token on each card, less the 1.5 of the pooled terms at pool ratio 4",
+     "build": "llama.cpp 5193ef1d (build 12372), HIP"
     }
    ]
   },
@@ -74,8 +104,8 @@
    "requires": [
     "LLAMA_CUBLAS_SHARED"
    ],
-   "words": "the GPU memory one shared cuBLAS handle frees (LLAMA_CUBLAS_SHARED)",
-   "unkeyed": "the cuBLAS library's version and the number of contexts the command opens (target and draft)",
+   "words": "the GPU memory one shared matrix-library handle frees (LLAMA_CUBLAS_SHARED)",
+   "unkeyed": "the matrix library's version and the number of contexts the command opens (target and draft)",
    "how_to_measure": "boltbeam load-probe --server-argv 'SERVER -m MODEL ...' --out DIR --session S --turns 3, once with LLAMA_CUBLAS_SHARED=1 and once without: the difference of free_min_mib",
    "rows": [
     {
@@ -104,7 +134,7 @@
    "requires": [
     "GGML_CUDA_GRAPH_MAX_KEYS"
    ],
-   "words": "the GPU memory one CUDA graph executable holds (the graph cap's bound)",
+   "words": "the GPU memory one captured GPU graph holds (the graph cap's bound)",
    "unkeyed": "the driver version",
    "how_to_measure": "boltbeam load-probe --server-argv 'SERVER -m MODEL ...' --out DIR --session S --stress with GGML_CUDA_GRAPH_STATS=1: stress_growth_mib over the graph instances the stats lines count",
    "rows": [

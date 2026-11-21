@@ -4,6 +4,7 @@ import json
 import math
 import os
 import pathlib
+import re
 
 from boltbeam.vocab import BackendStatus, SCHEMA_TARGET_REGISTRY
 from boltbeam.profile.ir import TargetProfile
@@ -231,6 +232,22 @@ def target_aliases(name:str | None) -> frozenset[str]:
   if sep and vendor in _VENDORS: spellings.add(arch)
   else: spellings |= {f"{v}_{name}" for v in _VENDORS if f"{v}_{name}" in TARGETS}
   return frozenset(spellings)
+
+
+def compiler_arch(name:str | None) -> str | None:
+  """The GPU architecture a target compiles for (sm_120, gfx1201): its capabilities' compiler_arch (a registry row's,
+  or a profile made on the machine), else the one its id spells (nvidia_sm120, amd_gfx1201); None when neither says."""
+  if name and (arch := target_capability(name, "compiler_arch")):
+    return str(arch)
+  m = re.fullmatch(r"(?:nvidia_sm(\d+)|amd_(gfx[0-9a-f]+))", name or "")
+  return (f"sm_{m.group(1)}" if m.group(1) else m.group(2)) if m else None
+
+
+def target_vendor(name:str | None) -> str | None:
+  """The vendor a target id names (its prefix, as every registry and profile id spells it: nvidia_sm120, amd_gfx1100,
+  amd_radeon_ai_pro_r9700_32g), else None: an id that names no vendor the registry knows, or none."""
+  vendor, sep, _ = (name or "").partition("_")
+  return vendor if sep and vendor in _VENDORS else None
 
 
 def target_matches(declared:str | None, target_id:str | None) -> bool:

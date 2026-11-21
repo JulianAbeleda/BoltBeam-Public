@@ -212,7 +212,7 @@ func (f Facts) measuringMtp() bool { return f.MJob != nil && f.MJob.Alive }
 
 // mtpArgv is the Measure MTP job's command: the offer's draft counts at the context it states (Setup's Context).
 func (f Facts) mtpArgv(c seam.Client, path, target, dir string) []string {
-	return c.MtpArgv(path, target, f.Engine, dir, f.Recommend.MtpMeasure.Ks, f.Recommend.MtpMeasure.Context)
+	return c.MtpArgv(path, target, f.Engine, f.engineBuild(), dir, f.Recommend.MtpMeasure.Ks, f.Recommend.MtpMeasure.Context)
 }
 
 // mtpAction is the Recommended setup row that measures MTP here; nil when Python offers none (no MTP measurement on

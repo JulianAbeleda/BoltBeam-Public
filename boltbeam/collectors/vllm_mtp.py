@@ -25,8 +25,10 @@ def offer(model:str, draft_bytes:int, *, facts:bool) -> dict[str, Any] | None:
 
 def measure(model:str, ks:list[int], *, backend:str, out:pathlib.Path, tokens:int = mtp.TOKENS, long_tokens:int = 2048,
             gpu_memory_utilization:float = GPU_SHARE, python:str | None = None, long_why:str = "asked (--long-tokens)",
-            grow:bool = False, head:str | None = None) -> dict[str, Any]:
-  """collectors/mtp.sweep on vLLM. python: the engine's python (default: the one vd.python() finds)."""
+            grow:bool = False, head:str | None = None, build:str | None = None, admit=None) -> dict[str, Any]:
+  """collectors/mtp.sweep on vLLM. python (or build, Measure MTP's --build): the engine's python (default: the one
+  vd.python() finds)."""
+  python = python or build
   if head:
     raise mtp.MtpRefused("vLLM's MTP head is the checkpoint's own: a head file (--draft) is llama.cpp's")
   py = python or vd.python()
@@ -41,4 +43,4 @@ def measure(model:str, ks:list[int], *, backend:str, out:pathlib.Path, tokens:in
             "--gpu-memory-utilization", str(gpu_memory_utilization)]
     return ec.run_driver(argv, env={**ec.venv_env(py), **vd.RUN_ENV}, log=out / f"mtp-k{k}.log")
   return mtp.sweep(run_k, ks, model=model, backend=backend, out=out, tokens=tokens, long_tokens=long_tokens, long_why=long_why, grow=grow,
-                   decode_speed="(tokens - 1) / (last token - first token), the engine's own timestamps: no prefill")
+                   decode_speed="(tokens - 1) / (last token - first token), the engine's own timestamps: no prefill", admit=admit)

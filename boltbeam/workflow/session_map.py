@@ -406,8 +406,10 @@ def express(g:dict[str, Any]) -> dict[str, Any]:
 # --- the audit ----------------------------------------------------------------------------------------------------
 
 def realization(lever:str) -> dict[str, Any]:
-  """A lever class's factor: the median of its measured rows' ratios, at most 1 (None with no row)."""
-  rows = AUDIT["realization"].get(lever) or []
+  """A lever class's factor: the median of its measured rows' ratios, at most 1 (None with no row). A row with no ratio
+  (no projection, or a prediction void for shape) is history. A regressed row is in: a change that made
+  it slower realized below 0, and the median over every realized row is the honest search-realization figure."""
+  rows = [r for r in AUDIT["realization"].get(lever) or [] if r.get("ratio") is not None]
   return {"factor": min(1.0, statistics.median(r["ratio"] for r in rows)) if rows else None, "ratios": [r["ratio"] for r in rows],
           "sources": [r["source"] for r in rows]}
 

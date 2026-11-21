@@ -60,11 +60,14 @@ class CannotMeasure(RuntimeError):
     self.reason, self.command = reason, command
 
 
-def find(llama_bench:str = DEFAULT, env:dict[str, str] | None = None) -> str | None:
-  """The llama-bench to run: an explicit path, then $BOLTBEAM_LLAMA_BENCH, then PATH, then what the engine scan
+def find(llama_bench:str = DEFAULT, env:dict[str, str] | None = None, *, build:str | None = None) -> str | None:
+  """The llama-bench to run: the one beside `build` (a program of the build a run measured with, as a replay's server:
+  its captures time that build), an explicit path, then $BOLTBEAM_LLAMA_BENCH, then PATH, then what the engine scan
   saved (collectors/engine_scan.py). None when there is none."""
   from boltbeam.collectors import engine_scan
   env = os.environ if env is None else env
+  if build and (beside := pathlib.Path(build).expanduser().resolve().parent / DEFAULT).is_file():
+    return str(beside)
   if llama_bench != DEFAULT:
     return llama_bench if pathlib.Path(llama_bench).expanduser().is_file() else shutil.which(llama_bench)
   if env.get(ENV):

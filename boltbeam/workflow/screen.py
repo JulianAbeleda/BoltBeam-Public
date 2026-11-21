@@ -74,7 +74,7 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
                                                each with the reason when it cannot, the weight formats it reads,
                                                and how step 5 times its roles
     gpu-free --target T                        is the GPU free, or which program holds it
-    mtp MODEL --target T --out DIR [--engine E] [--draft HEAD] [--ks 1,2,3] [--context N]  multi-token prediction per
+    mtp MODEL --target T --out DIR [--engine E] [--build B] [--draft HEAD] [--ks 1,2,3] [--context N]  multi-token prediction per
                                                draft count k on vLLM or llama-server (more k while a larger one could still
                                                win) on the shipped natural prompts at a short and a long context, against
                                                k=0: tok/s per prompt and their spread, acceptance
@@ -211,9 +211,9 @@ def provider_list(target, root:pathlib.Path | None = None, gpu_count:int | None 
   n = gpu_count if gpu_count is not None else len(devs)
   from boltbeam.workflow import mods
   rows = [{**p, "layouts": lay.layouts(n, p["provider"], target.backend), "settings": capture_settings.offered(p["provider"]),
-           # the Engine picker offers Apply mods (screen mods); mods_note: why it does not on this GPU backend, said in its place
-           "mods": p["provider"] in mods.pointer()["apply"] and not mods.not_here(p["provider"], target.backend),
-           "mods_note": mods.not_here(p["provider"], target.backend) if p["provider"] in mods.pointer()["apply"] else None}
+           # the Engine picker offers Apply mods (screen mods); mods_note: why it does not on this chip (the mods' chip rows), said in its place
+           "mods": p["provider"] in mods.pointer()["apply"] and not mods.chip_note(p["provider"], target.target_id),
+           "mods_note": mods.chip_note(p["provider"], target.target_id) if p["provider"] in mods.pointer()["apply"] else None}
           for p in providers.available(target, tinygrad_root=root, cached=True)]
   note = None
   if n > 1 and profile and facts:
@@ -294,13 +294,13 @@ def mtp_sized(model:pathlib.Path, head:str | None) -> tuple[dict[str, Any], int]
 
 
 def mtp_long(model:pathlib.Path, long_tokens:int | None, context:int | None, tokens:int, engine:str = "vllm",
-             head:str | None = None, fit_in:pathlib.Path | None = None, k_top:int = draft_count.K_MAX) -> tuple[int, str]:
+             head:str | None = None, fit_in:pathlib.Path | None = None, k_top:int = draft_count.K_MAX, build:str | None = None) -> tuple[int, str]:
   """The long depth's document tokens and why. --long-tokens as asked; --context N: the document tokens that keep the
   prompt room (the chat template and the task), the document and the measured tokens within N, refused past the model's position limit or the KV that fits
   (quantization/speed_up.long_context at the engine's GPU share and reserve, mtp_sized); neither: Speed up's long
   context less that room. Past the long-depth corpus's length a long depth is refused here, before an engine loads.
   fit_in: the run's folder, where an engine with its own fit (the module's fit_context: llama.cpp's common_fit_params,
-  with the draft head at k_top, the largest draft count the sweep may reach) is asked what context it holds on the GPU's
+  with the draft head at k_top, the largest asked draft count; a k the sweep grows to is fitted on its own, mtp_admit) is asked what context it holds on the GPU's
   free memory now; that bounds the KV in place of the byte count, and a context it cannot hold is refused before a load."""
   if long_tokens is not None and context:
     raise mtp.MtpRefused("--long-tokens and --context both set the long depth: give one")
@@ -320,7 +320,7 @@ def mtp_long(model:pathlib.Path, long_tokens:int | None, context:int | None, tok
     raise mtp.MtpRefused(f"{engine} has no MTP measurement in its engine row (data/engine_adapters.json)")
   fit = None
   if fit_in is not None and hasattr(m, "fit_context"):
-    got, said = m.fit_context(str(model), head, k=k_top, need=context or room + tokens + 1, out=fit_in)
+    got, said = m.fit_context(str(model), head, k=k_top, need=context or room + tokens + 1, out=fit_in, build=build)
     fit = (got and got - tokens, said)  # the decode context: the server's less the measured tokens, as the model limit is cut
   lc = speed_up.long_context(cfg, weights, int(total * m.GPU_SHARE), tokens=tokens, reserve=getattr(m, "RESERVE", speed_up.RESERVE_BYTES), engine_fit=fit)
   if context:
@@ -330,6 +330,22 @@ def mtp_long(model:pathlib.Path, long_tokens:int | None, context:int | None, tok
                                 f"{'the position limit' if bound == 'model_limit' else 'the KV that fits'} ({lc['why']})")
     return context - room - tokens, f"the asked context, {context} (--context), less the prompt room and the measured tokens"
   return lc["context"] - room, f"Speed up's long context, {lc['context']} tokens: {lc['why']}"
+
+
+def mtp_admit(model:pathlib.Path, head:str | None, engine:str, build:str | None, out:pathlib.Path, need:int):
+  """What the sweep asks before it grows past the asked draft counts (fitted at the largest of them): the engine's own fit
+  at the new k, at the context the measurement runs (need). None: the engine has no fit, nothing to ask. The callable
+  returns None (it fits) or why it does not, and the sweep stops there, said."""
+  m = mtp.engine(engine)
+  if m is None or not hasattr(m, "fit_context"):
+    return None
+  def admit(k:int) -> str | None:
+    try:
+      m.fit_context(str(model), head, k=k, need=need, out=out, build=build)
+    except Exception as exc:  # noqa: BLE001  a fit that fails stops the growth, said; the measured ks are kept
+      return str(exc) if isinstance(exc, mtp.MtpRefused) else f"its fit failed: {type(exc).__name__}: {exc}"
+    return None
+  return admit
 
 
 def mtp_offer(offer:dict[str, Any] | None, model:str, context:int | None, engine:str = "vllm") -> dict[str, Any] | None:
@@ -506,11 +522,12 @@ def _run_arg(args) -> pathlib.Path:
 def mods_page(args, say) -> dict[str, Any]:
   """The mods that fit (workflow/mods.run); with --apply, the modded build. No --engine: the one engine with mods here."""
   from boltbeam.workflow import mods
-  here = args.target or chips.detect().get("target_id")  # the backend: the mods refuse one they are not for (apply row backends)
+  here = args.target or chips.detect().get("target_id")  # the chip: each mod's chip row says whether it applies there (mods.chip_why)
   backend = _target_arg(here).backend if here else None
   engine = args.engine or mods.only_engine(backend)
   got = mods.run(engine, src=args.src, labels=tuple(args.label) or None, only=args.mod, base=args.base, apply_them=args.apply,
-                 backend=backend, rebuild=getattr(args, "rebuild", False), pin=getattr(args, "pin", None), say=say)
+                 backend=backend, rebuild=getattr(args, "rebuild", False), pin=getattr(args, "pin", None), say=say,
+                 target=here, build_only=getattr(args, "allow_build_only", False))
   return {"schema": SCHEMA, "kind": "mods", "engine": engine, **got}  # rows: run reads them at the commit it resolved
 
 
@@ -725,6 +742,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p.add_argument("--out", required=True, help="the folder the measurement and the logs go to")
   p.add_argument("--engine", default="vllm", help="the engine (a provider name whose row names an MTP measurement: vllm, llama.cpp)")
   p.add_argument("--draft", help="llama.cpp: the MTP head file (default: the one beside the model, collectors/llama_mtp.heads)")
+  p.add_argument("--build", help="the build to measure (any of its programs, as tune takes it; default: found as tune finds it)")
   p.add_argument("--ks", default=",".join(map(str, mtp.KS)), help="draft counts to measure; k=0 always runs as the baseline")
   p.add_argument("--tokens", type=int, default=mtp.TOKENS, help="tokens generated per prompt and depth")
   p.add_argument("--long-tokens", type=int, help="the long depth's real-text document tokens (data/mtp_long_corpus.json); 0: short only (default: derived, mtp_long)")
@@ -841,11 +859,13 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
         model = pathlib.Path(args.model).expanduser()
         head = args.draft or (mtp.offer(args.engine, str(model), 1, facts=True) or {}).get("head")
         ks = [int(k) for k in args.ks.split(",") if k.strip()]
+        out_dir = pathlib.Path(args.out).expanduser()
         long_tokens, why = mtp_long(model, args.long_tokens, args.context, args.tokens, args.engine, head,
-                                    fit_in=pathlib.Path(args.out).expanduser(), k_top=max([draft_count.K_MAX, *ks]))
+                                    fit_in=out_dir, k_top=max(ks or [1]), build=args.build)
         record = mtp.measure(args.engine, str(model), ks, backend=_target_arg(args.target).backend,
-                           out=pathlib.Path(args.out).expanduser(), tokens=args.tokens, long_tokens=long_tokens, long_why=why, grow=True,
-                           head=head)
+                           out=out_dir, tokens=args.tokens, long_tokens=long_tokens, long_why=why, grow=True,
+                           head=head, build=args.build, admit=mtp_admit(model, head, args.engine, args.build, out_dir,
+                                                                        mtp.prompt_set()["room"] + long_tokens + args.tokens))
       except mtp.MtpRefused as exc:  # refused before or between engines: free the GPU or fix the request, then rerun
         sys.stdout.write(pretty_json({"schema": SCHEMA, "kind": "refused", "error": str(exc), "retry": "after the cause is fixed"}))
         return 2

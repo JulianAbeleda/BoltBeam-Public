@@ -8,17 +8,12 @@ import datetime as _dt
 import hashlib, json, pathlib, subprocess
 from typing import Any
 
+from boltbeam.core.canonical import sha256_file  # noqa: F401  (role_compare reads it here)
+
 FOLDER = "kernel_compare"
 STATUS_FILE = "search_status.json"
 FUSIONS_FILE = "fusions.json"
 TIMING_SOURCE = "arkey runtime (whole model) and BoltBeam's kernel timer (each kernel alone)"
-
-
-def sha256_file(path:pathlib.Path) -> str:
-  digest = hashlib.sha256()
-  with path.open("rb") as fh:
-    for chunk in iter(lambda: fh.read(1 << 20), b""): digest.update(chunk)
-  return digest.hexdigest()
 
 
 def now() -> str:

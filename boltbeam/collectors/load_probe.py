@@ -22,11 +22,11 @@ from __future__ import annotations
 import os
 import pathlib
 import re
-import shlex
 import signal
 import time
 from typing import Any, Callable
 
+from boltbeam.core.shell import split_command
 from boltbeam.collectors import session_ab as sab
 from boltbeam.vocab import SCHEMA_SPEND_PROBE as PROBE
 
@@ -100,6 +100,38 @@ def free_mib(source) -> float | None:
   return round(total - used, 1) if used is not None and total is not None else None
 
 
+def log_level(engine:str, env:dict[str, str], argv:list[str]) -> list[str]:
+  """The flags that make the engine log its buffer sizes (the engine's row in data/engine_adapters.json, probe_log), or
+  none when the command or its environment sets a log level of its own (the user's wins) or the engine has no row."""
+  import json
+  row = (json.loads(ADAPTERS.read_text())["engines"].get(engine) or {}).get("probe_log")
+  if not row or any(a.split("=", 1)[0] in row["given"] for a in argv) or any(k in env for k in row["env"]):
+    return []
+  return list(row["argv"])
+
+
+def card_sources(env:dict[str, str]) -> list[tuple[str, Any]]:
+  """(PCI address, telemetry source) of each GPU the server can use: the hardware profile's GPUs of the first GPU's
+  vendor (the scan already narrowed by this shell's visibility variables), narrowed again by those the command's own
+  environment sets (hardware.shown: by index or UUID, outermost first), each read as gpu_telemetry reads one card (NVML,
+  the amdgpu sysfs). [] with no profile or no GPU, or when the command resets a variable this shell set (the scan's
+  order no longer names its cards), or names a card the scan does not see."""
+  from boltbeam.collectors.gpu_telemetry import Unsampled, source_for
+  from boltbeam.target.hardware import hardware_profile, shown
+  from boltbeam.target.vendors import vendor
+  devs = (hardware_profile().get("gpu") or {}).get("devices") or []
+  devs = [d for d in devs if devs and d.get("vendor") == devs[0].get("vendor")]
+  names = vendor(devs[0].get("vendor")).visible if devs else ()
+  own = {k: env[k] for k in names if k in env and os.environ.get(k) != env[k]}
+  if own and any(os.environ.get(k) for k in names):
+    return []
+  try:
+    devs = shown(devs, tuple(k for k in names if k in own), own)[0]
+  except ValueError:
+    return []
+  return [(str(d.get("pci_bus_id")), s) for d in devs if (s := source_for(d)) is not None and not isinstance(s, Unsampled) and hasattr(s, "memory_mib")]
+
+
 def low_between(tele, total:float | None, t0:float, t1:float) -> float | None:
   """The lowest free memory sampled in [t0, t1], MiB."""
   used = [x["mem_mib"] for x in list(tele.samples) if x.get("mem_mib") is not None and t0 <= x["t"] <= t1]
@@ -156,15 +188,22 @@ def stress(chat:Callable, url:str, lengths:list[int], low:Callable[[float, float
 
 def run(*, out:str, server_argv:str, engine:str = "llama.cpp", session:str | None = None, turns:str | None = None,
         history:str = "recorded", timeout_s:float = 600.0, name:str | None = None, say:Callable[[str], None] = print, stress_on:bool = False,
-        machine:Callable[[], tuple[Any, str | None]] | None = None, held:Callable[[str], dict] | None = None) -> dict[str, Any]:
-  """Start the server once, read whether it loaded and its free memory, run the session span if given, stop it: the record."""
+        machine:Callable[[], tuple[Any, str | None]] | None = None, held:Callable[[str], dict] | None = None,
+        cards:Callable[[dict[str, str]], list[tuple[str, Any]]] | None = None) -> dict[str, Any]:
+  """Start the server once, read whether it loaded and its free memory, run the session span if given, stop it: the record.
+  cards(env): each GPU the server can use, (PCI address, source): their free memory before, at ready and at the end
+  (default: card_sources, on a run that reads this machine; none with a machine given)."""
   from boltbeam.adapters.llama_server_control import ServerExited, serve_argv
   from boltbeam.collectors import gpu_telemetry
   from boltbeam.collectors.providers import gpu_free
   from boltbeam.collectors.replay import _sha256, _version, engine as engine_of
-  env, argv = sab.split_env(shlex.split(server_argv.replace("\\\n", " ")))
+  env, argv = sab.split_env(split_command(server_argv))
   if not argv:
     raise sab.Refused(sab._words("bad_server"))
+  if refused := sab.slot_refusals(engine, env, argv):
+    raise sab.Refused("; ".join(refused))
+  log_flags = log_level(engine, env, argv)  # the level at which the engine logs its buffer sizes, unless the command sets one
+  per_card = (cards or (card_sources if machine is None else lambda _e: []))(env)
   sess = span = None
   if session:
     sess, _ = sab.read_session(session, history)
@@ -183,13 +222,16 @@ def run(*, out:str, server_argv:str, engine:str = "llama.cpp", session:str | Non
                          "binary": {"path": str(binary), "sha256": _sha256(binary) if binary.is_file() else None,
                                     "version": _version(binary) if binary.is_file() else None},
                          "free_before_mib": free_mib(source), "machine_id": machine_id(), "free_ready_mib": None, "sampled_every_s": INTERVAL_S,
-                         "log": str(log), "failure": None}
+                         "log": str(log), "failure": None, **({"log_flags": log_flags} if log_flags else {}),
+                         **({"cards": [{"pci": p, "free_before_mib": free_mib(s)} for p, s in per_card]} if per_card else {})}
   proc: list[Any] = []
   say(_words("start", name=rec["name"]))
   with gpu_telemetry.opened(source or gpu_telemetry.Unsampled(sab._words("no_gpu")), 0, INTERVAL_S) as tele:
     try:
-      with serve_argv(argv, log_path=log, startup_timeout_s=timeout_s, environ={**os.environ, **env}, started=proc.append) as (url, command, load_s):
+      with serve_argv([*argv, *log_flags], log_path=log, startup_timeout_s=timeout_s, environ={**os.environ, **env}, started=proc.append) as (url, command, load_s):
         rec.update(loaded=True, command=command, load_s=round(load_s, 2), free_ready_mib=free_mib(source), ready_t=time.monotonic())
+        for c, (_, s) in zip(rec.get("cards") or [], per_card):
+          c["free_ready_mib"] = free_mib(s)
         say(_words("ready", s=load_s, free=rec["free_ready_mib"]))
         if sess is not None:
           try:
@@ -214,6 +256,8 @@ def run(*, out:str, server_argv:str, engine:str = "llama.cpp", session:str | Non
             except Exception as exc:  # noqa: BLE001  the server died under the stress (what it probes): kept with its cause
               rec["stress"] = {"failure": {"kind": "stress", "why": str(exc)[-300:], "exit": exit_words(proc[0].poll()),
                                            **out_of_memory(engine, log.read_text(errors="replace") if log.is_file() else "")}}
+        for c, (_, s) in zip(rec.get("cards") or [], per_card):  # each card's lowest is not sampled: card 0's (source) is
+          c["free_end_mib"] = free_mib(s)
         rec["exit"] = sab.stop(proc[0], load_s)  # the hang guard: tearing down never needs longer than bringing up took
     except ServerExited as exc:
       rec["failure"] = {"kind": "exited", "exit": exit_words(exc.returncode)}

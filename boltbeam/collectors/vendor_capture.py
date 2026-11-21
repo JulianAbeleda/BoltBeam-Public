@@ -5,7 +5,7 @@ provider's command, and how to read the launches back as {"key", "wall_us"}. The
 launch geometry when the tool reports it; attribution.py treats it as opaque. Nothing here knows a provider.
 
     CUDA   nsys (Nsight Systems)  `nsys profile -t cuda`, then `nsys stats --report cuda_gpu_trace` as CSV
-    AMD    rocprofv3              `rocprofv3 --kernel-trace --output-format csv`
+    AMD    rocprofv3              `rocprofv3 --kernel-trace --hip-runtime-trace --memory-copy-trace --output-format csv rocpd`
     Metal  xctrace                Metal System Trace; needs Xcode (found with `xcrun --find xctrace` at run
                                   time). Its export is read with metal_system_trace.py. It reports command
                                   buffers, not dispatches, so it splits a runtime's time per kernel only when
@@ -179,14 +179,19 @@ def _rocprof_argv(tool:str, argv:list[str], out:pathlib.Path, env:dict[str, str]
   if profiler_range:
     return [tool, "--kernel-trace", "--marker-trace", "--hip-runtime-trace", "--selected-regions", "--output-format",
             "rocpd", "-d", str(out), "-o", "capture_%pid%", "--", *argv]  # one database per traced process
-  return [tool, "--kernel-trace", "--output-format", "csv", "-d", str(out), "-o", "capture", "--", *argv]
+  # the kernels as CSV (read_rocprof_csv), and with the HIP calls and copies in a rocpd database: the timeline nsys's
+  # `-t cuda` records, exported as its sqlite (rocpd_trace.export) for the time budget
+  return [tool, "--kernel-trace", "--hip-runtime-trace", "--memory-copy-trace", "--output-format", "csv", "rocpd",
+          "-d", str(out), "-o", "capture", "--", *argv]
 
 
 def _rocprof_read(tool:str, out:pathlib.Path) -> list[dict[str, Any]]:
-  if dbs := sorted(out.rglob("*_results.db")):
-    from boltbeam.collectors import rocpd_trace, semantic_capture
-    return semantic_capture.read(rocpd_trace.export(dbs, out / "capture.sqlite"))
-  files = sorted(out.rglob("*kernel_trace.csv"))
+  from boltbeam.collectors import rocpd_trace, semantic_capture
+  files, dbs = sorted(out.rglob("*kernel_trace.csv")), sorted(out.rglob("*_results.db"))
+  if dbs:
+    if not files:  # a marked window (profiler_range): its database is the launches, each graph node with its origin
+      return semantic_capture.read(rocpd_trace.export(dbs, out / "capture.sqlite"))
+    rocpd_trace.export(dbs, out / "capture.sqlite", lineage=False)  # the timeline beside the kernels, as nsys's export
   if not files:
     raise RuntimeError(f"rocprofv3 wrote no kernel_trace.csv under {out}")
   return [l for f in files for l in read_rocprof_csv(f.read_text())]

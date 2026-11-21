@@ -63,7 +63,7 @@ def capture(main:str, draft:str, k:int, *, out:pathlib.Path, server:str | None, 
   env = {SWITCH: str(path)} if routes else {}
   path.unlink(missing_ok=True)
   with mods.switched({**mods.run_env(mods.modded("llama.cpp", server) or {}), **env}):
-    rec = llama_mtp.measure(main, [k], backend=backend, out=out, head=draft, server=server)
+    rec = llama_mtp.measure(main, [k], backend=backend, out=out, head=draft, build=server)
   if routes and not path.is_file():
     raise ValueError(f"the server wrote no route count ({SWITCH}); is arkey_ie_mods draft-route-count in this build?")
   acc = {d: v[str(k)]["accept_length"] for d, v in rec["depths"].items() if str(k) in v}

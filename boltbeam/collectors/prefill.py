@@ -106,7 +106,8 @@ def qualification_sample(row:dict, length:int, depth:int = 0) -> float | None:
 
 def _bench(run:pathlib.Path) -> str:
   from boltbeam.collectors.llama_bench_decode import ENV, CannotMeasure, find
-  bench = find()
+  from boltbeam.collectors.replay import SERVER  # a replay's captures time the build its server ran
+  bench = find(build=(json.loads((run / SERVER).read_text()).get("binary") if (run / SERVER).is_file() else None))
   if bench is None:
     raise CannotMeasure(f"llama-bench was not found in ${ENV} or on PATH", f"export {ENV}=/path/to/llama-bench")
   return bench

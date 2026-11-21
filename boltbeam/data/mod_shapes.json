@@ -1,6 +1,6 @@
 {
  "schema": "boltbeam.mod_shapes.v1",
- "about": "What each engine mod needs of the model and the command before its switch changes anything, read from the mod's own engage condition in its patch (arkey_ie_mods 2c72325; ec06fea for the mods past the pin sparse-split, idx-keys, topk-rowhist, kpool-mask-range, ple-prefetch-step, ple-prefetch-prompt; 18351f1 for kv-stream, whose gate changed at ad16a8c, and concat-rows; evidence: the patch file and its line). workflow/mods.shape_why reads it, for a switch, a knob row of the mod's group, a spend row and a memory row alike: tune sets a built mod's switch only when `needs` holds over the shape the model's header and the command show (tune_llama_cpp.model_shape: indexer, pool_ratio, key_length, head_count, head_count_kv, experts, host_experts, recurrent, per_layer_embedding, draft, kv_type, arch), and says why when it does not. off_shape: what the mod does off its shape (silent: nothing, with no word; logged; refuses; n/a). arch appears only where the mod's own code gates on the architecture's name: a limit of that mod, recorded as such, never a BoltBeam key. A mod with no row is not set, said: adding a mod adds its row (tests/test_machine_figures.py fails when a mod of the pinned index, or of the index past the pin kept in tests/data/ie_mods_past_pin.json, has none). Not expressible in these facts, so not checked: a sliding-window model's checkpoints, a k-pool read from another header key, the draft's kind and its own expert count, whether the expert cache is on.",
+ "about": "What each engine mod needs of the model and the command before its switch changes anything, read from the mod's own engage condition in its patch (arkey_ie_mods 2c72325; ec06fea for the mods past the pin sparse-split, idx-keys, topk-rowhist, kpool-mask-range, ple-prefetch-step, ple-prefetch-prompt; 18351f1 for kv-stream, whose gate changed at ad16a8c, and concat-rows; evidence: the patch file and its line). slots (a row's server slots its code needs, with slots_why): the command's slots must be that count (-np; the shape's slots), and session-ab and load-probe refuse a command that sets the switch without it. workflow/mods.shape_why reads it, for a switch, a knob row of the mod's group, a spend row and a memory row alike: tune sets a built mod's switch only when `needs` holds over the shape the model's header and the command show (tune_llama_cpp.model_shape: indexer, pool_ratio, top_k, key_length, value_length, head_count, head_count_kv, experts, host_experts, recurrent, per_layer_embedding, draft, kv_type, arch), and says why when it does not. off_shape: what the mod does off its shape (silent: nothing, with no word; logged; refuses; n/a). arch appears only where the mod's own code gates on the architecture's name: a limit of that mod, recorded as such, never a BoltBeam key. A mod with no row is not set, said: adding a mod adds its row (tests/test_machine_figures.py fails when a mod of the pinned index, or of the index past the pin kept in tests/data/ie_mods_past_pin.json, has none). Not expressible in these facts, so not checked: a sliding-window model's checkpoints, a k-pool read from another header key, the draft's kind and its own expert count, whether the expert cache is on.",
  "engines": {
   "llama.cpp": {
    "ckpt-pinned": {
@@ -76,6 +76,8 @@
     "off_shape": "silent"
    },
    "idx-pooled": {
+    "slots": 1,
+    "slots_why": "its code turns itself off at load and says so in the log (\"LLAMA_IDX_POOLED ignored: needs an order k-pool indexer, one sequence and a known n_ubatch\", b12521 indexer module, llama-memory-hybrid-idx.cpp:142): one sequence is one server slot (-np 1), and llama-server's default is auto, 4 slots",
     "needs": "arch == 'qwen4exp' and indexer and pool_ratio > 0",
     "why": "it keeps a k-pool indexer's pooled keys only, for the order pools one architecture sets (a name gate in the mod)",
     "evidence": "b12521 indexer.patch:+747-757,+80-81",
@@ -88,6 +90,8 @@
     "off_shape": "silent"
    },
    "kpool-input-device": {
+    "slots": 1,
+    "slots_why": "its code turns itself off at load and says so in the log (\"LLAMA_KPOOL_INPUT_DEVICE ignored: needs one sequence and every indexer layer on one device (the device is not checked here)\", b12521 indexer module, llama-memory-hybrid-idx.cpp:617): one sequence is one server slot (-np 1), and llama-server's default is auto, 4 slots",
     "needs": "indexer and pool_ratio > 0",
     "why": "it keeps a k-pool indexer's inputs on the device",
     "evidence": "b12521 indexer.patch:+974,+986-989",
@@ -100,9 +104,9 @@
     "off_shape": "silent"
    },
    "kv-stream": {
-    "needs": "indexer and pool_ratio == 4 and kv_type == 'q8_0' and key_length == 256 and head_count / head_count_kv > 4",
-    "why": "it pages the q8_0 K/V of sparse-attention layers in pages of 4 cells (one indexer pool), read through sparse-direct's path (head dimension 256, more than 4 query heads a K/V head); from arkey_ie_mods ad16a8c the mod gates on this capability and shape, not on the architecture's name (a build made before it also refuses any architecture but one by name, logged: the knob row's mod_archs in engine_knobs.json still holds N to that architecture)",
-    "evidence": "b12521 kv.patch at 18351f1:+1681-1701 (+1691 a layer with a compress ratio, pooled keys and top-k; +1693 the pool is 4; +1688,+1695 head dimension 256 and more than 4 query heads a K/V head; +1698 q8_0; +1700 one stream), +1733 (layers with a compress ratio), +865 (KVS_PAGE = 4), +1275 (the paged read is the sparse-direct call); mods.json kv-stream depends_on.run sparse-direct and limits[0]",
+    "needs": "indexer and pool_ratio == 4 and top_k > 0 and key_length == 256 and value_length == 256 and head_count / head_count_kv > 4 and kv_type == 'q8_0'",
+    "why": "it pages the q8_0 K/V of sparse-attention layers (layers with a compress ratio, an indexer pooling 4 cells a key with a top-k above 0) in pages of 4 cells, read through sparse-direct's path (K and V head dimension 256, more than 4 query heads a K/V head); from arkey_ie_mods ad16a8c its gate is that capability and shape, no architecture's name. Also needed, not in these facts: one KV stream on the GPU",
+    "evidence": "b12521 kv.patch at 18351f1:+1684-1709, the `LLAMA_KV_STREAM ignored` refusals (+1684-1689 a layer with a compress ratio, K and V head dim 256, more than 4 query heads a K/V head; +1691 pooled keys and top-k above 0; +1693 the pool is 4; +1698 q8_0; +1700 one stream offloaded; then a CUDA device), +1733 (layers with a compress ratio), +865 (KVS_PAGE = 4), +1275 (the paged read is the sparse-direct call); the same gate at master 7f47bd2 (+1688-1713); mods.json kv-stream depends_on.run sparse-direct and limits[0]",
     "off_shape": "logged"
    },
    "mmid-helper-par": {
@@ -224,6 +228,151 @@
     "why": "it runs inside topk-fused's kernel (alone its switch is ignored), which takes the indexer's top-k",
     "evidence": "b12521 indexer.patch:+742-748 (only on the fused path)",
     "off_shape": "silent"
+   }
+  }
+ },
+ "chip_status": {
+  "about": "Where each mod was built, checked and measured, per chip: BoltBeam's stand-in until arkey_ie_mods carries the row itself. The schema is the mods repo's to adopt: an index mod row's `chips` ({chip: {level, evidence}}) is that mod's one authoritative row and, when present, is read in place of these (workflow/mods.chip_status); until then a version row here grants a level on a chip to the mods it names, as of the index commit the evidence was taken at (at): a mod it does not name, with no row of its own, has no level there (refused, said: no evidence is recorded), never the version's. chip: the GPU architecture the build compiles for (sm_120, gfx1201: a target's compiler_arch, workflow/mods.chip_of). level, rising: builds < checked < measured (levels_why). A mod is applied on a chip at `applies` or above; a mod at builds is refused there by default and applied only with --allow-build-only, said in the plan, every row and the build record; a chip with no row is refused, said. A row never borrows across chips.",
+  "levels": [
+   "builds",
+   "checked",
+   "measured"
+  ],
+  "levels_why": {
+   "builds": "the mod's patch applies and the engine compiles for this chip; nothing has run on it",
+   "checked": "its check mode passed on this chip (its output against stock, the arkey_ie_mods check switch)",
+   "measured": "checked, and its speed measured on this chip against stock"
+  },
+  "applies": "checked",
+  "versions": {
+   "llama.cpp/1.0.0": {
+    "sm_120": [
+     {
+      "level": "measured",
+      "evidence": "RTX 5090: arkey_ie_mods index llama.cpp/1.0.0 verified entries mods-series-verify and mods-series-verify-0111 (2026-11-15, the series tree built for CMAKE_CUDA_ARCHITECTURES=120, check modes and paired arms) and the published benchmark benchmarks/llama.cpp-1.0.0-0.3.26",
+      "at": "faf3a33",
+      "mods": [
+       "ckpt-pinned",
+       "cublas-shared",
+       "draft-route-count",
+       "ext-kernels",
+       "ext-kernels-window",
+       "fattn-vec-skip",
+       "graph-cap",
+       "graph-slots",
+       "idx-inplace",
+       "idx-pooled",
+       "kpool-incremental",
+       "kpool-input-device",
+       "moe-inplace",
+       "mtp-share-head",
+       "ple-prefetch",
+       "rs-one-copy",
+       "seq-rm-indexed",
+       "sparse-direct",
+       "tokenize-incr",
+       "topk-fused"
+      ]
+     }
+    ]
+   },
+   "llama.cpp/b12521": {
+    "sm_120": [
+     {
+      "level": "measured",
+      "evidence": "RTX 5090: arkey_ie_mods index llama.cpp/b12521 verified entries guardrails-b12521 (2026-11-18) and modules-b12521 (2026-11-19): the six modules built for sm_120, check modes 0 differences, paired speed arms; the 0.3.31 release gates (docs/release-0331-20261120.md)",
+      "at": "faf3a33",
+      "mods": [
+       "ckpt-pinned",
+       "cublas-shared",
+       "draft-route-count",
+       "ext-kernels",
+       "ext-kernels-window",
+       "fattn-vec-skip",
+       "graph-cap",
+       "graph-slots",
+       "idx-inplace",
+       "idx-pooled",
+       "kpool-input-device",
+       "moe-inplace",
+       "mtp-share-head",
+       "ple-prefetch",
+       "rs-one-copy",
+       "sched-async-inputs",
+       "sparse-direct",
+       "tokenize-incr",
+       "topk-fused"
+      ]
+     },
+     {
+      "level": "checked",
+      "evidence": "RTX 5090: the 0.3.31 release's end-to-end tune on the build from arkey_ie_mods 18351f1 set these switches and passed its gates (docs/release-0331-20261120.md); no paired speed arm per mod",
+      "at": "18351f1",
+      "mods": [
+       "concat-rows",
+       "idx-keys",
+       "kpool-mask-range",
+       "kv-stream",
+       "ple-prefetch-step",
+       "sparse-split",
+       "topk-rowhist"
+      ]
+     }
+    ],
+    "gfx1201": [
+     {
+      "level": "checked",
+      "evidence": "2x R9700, ROCm: arkey_ie_mods hip-port-wip ff50a56 (the HIP port folded into the kv and kernels modules), Flash-Next IQ3_S, session-ab turns 1-8 recorded history, -np 1 -fa on -ctk q8_0 -ctv q8_0 -c 65536: stock b12521, the nine identical switches on, and those plus every check (GPU graphs off) gave the same reply sha256 on 8 of 8 turns; check lines: idx_inplace 27 calls 0 score bit patterns differ, LLAMA_IDX_POOLED_CHECK ring reads verified (12 lines, no abort), ckpt_pinned 25 saves 0 differing bytes, tokenize_incr 9 prompts equal (~/storage/boltbeam-runs/hip-port-check-20261120/ident9np1, 2026-11-20)",
+      "at": "ff50a56",
+      "mods": [
+       "ckpt-pinned",
+       "idx-inplace",
+       "idx-pooled",
+       "tokenize-incr"
+      ]
+     },
+     {
+      "level": "builds",
+      "evidence": "2x R9700: not identical on HIP: with its switch on 2 of 8 replies matched stock, and LLAMA_FATTN_VEC_SKIP_CHECK aborted (5,031 of 6,144 values differ): the skip kernel takes a whole warp per K row where RDNA's stock vector kernel takes 2 threads, so the sums run in another order (~/storage/boltbeam-runs/hip-port-check-20261120/ident, 2026-11-20)",
+      "at": "ff50a56",
+      "mods": [
+       "fattn-vec-skip"
+      ]
+     },
+     {
+      "level": "builds",
+      "evidence": "2x R9700, ROCm: arkey_ie_mods branch hip-port-wip 07caa86 (engines/llama.cpp/b12521/hip/README.md): the six b12521 patches build for gfx1201 only with hip-port.diff on top, which no mod's patch carries yet; ext-kernels is stubbed there (the stock path); nothing has run on the GPU (2026-11-20); 2026-11-20 at ff50a56 the port is folded into the modules. Not exercised in the R9700 check run (identical replies with the switch on, no check line): sparse-direct and topk-fused (the model's HIP route does not reach them), moe-inplace (no expert staged from host RAM), sched-async-inputs (no CPU split), kpool-input-device (needs every indexer layer on one device: the model spans two cards)",
+      "at": "07caa86",
+      "mods": [
+       "ckpt-pinned",
+       "concat-rows",
+       "cublas-shared",
+       "draft-route-count",
+       "ext-kernels",
+       "ext-kernels-window",
+       "fattn-vec-skip",
+       "graph-cap",
+       "graph-slots",
+       "idx-inplace",
+       "idx-keys",
+       "idx-pooled",
+       "kpool-input-device",
+       "kpool-mask-range",
+       "kv-stream",
+       "moe-inplace",
+       "mtp-share-head",
+       "ple-prefetch",
+       "ple-prefetch-step",
+       "rs-one-copy",
+       "sched-async-inputs",
+       "sparse-direct",
+       "sparse-split",
+       "tokenize-incr",
+       "topk-fused",
+       "topk-rowhist"
+      ]
+     }
+    ]
    }
   }
  }

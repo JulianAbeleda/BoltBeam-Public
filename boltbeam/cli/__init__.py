@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
 import sys
 import textwrap
 
 from boltbeam.cli import analysis, doctor, fetch, gemm, mods, ncu, offload, profile, roofline, routing, selfcheck, self_update, speed_up, tui, tune, workflow
 
-_MODULES = (analysis, profile, roofline, workflow, gemm, ncu, selfcheck, doctor, self_update, fetch, speed_up, tui, offload, tune, routing, mods)
+# Owner tooling: command modules registered only where the module is present (exp). main and dev lack the file, not this line.
+_OWNER = ("region",)
+_MODULES = (analysis, profile, roofline, workflow, gemm, ncu, selfcheck, doctor, self_update, fetch, speed_up, tui, offload, tune, routing, mods,
+            *(importlib.import_module(f"boltbeam.cli.{name}") for name in _OWNER if importlib.util.find_spec(f"boltbeam.cli.{name}")))
 
 # The core group `boltbeam --help` shows first, in the order a reader uses them.
 # Every other command still runs. Scripts and papers call them by name. --help lists them after the core group.

@@ -5,17 +5,11 @@ from dataclasses import dataclass, field
 import hashlib, json, math, re
 from typing import Any
 
+from boltbeam.core.canonical import canonical_json, sha256_json as canonical_hash  # the one canonical JSON and its sha256
+
 KERNEL_CANDIDATE_SCHEMA = "boltbeam.kernel_candidate.v1"
 KERNEL_ROUTE_SCHEMA = "boltbeam.kernel_route.v1"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-
-
-def canonical_json(value: Any) -> str:
-  return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
-
-
-def canonical_hash(value: Any) -> str:
-  return hashlib.sha256(canonical_json(value).encode("ascii")).hexdigest()
 
 
 def _strict(value: Any, keys: set[str], label: str) -> dict[str, Any]:

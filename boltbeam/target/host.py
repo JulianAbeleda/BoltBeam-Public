@@ -27,23 +27,53 @@ def host_file() -> pathlib.Path:
   return pathlib.Path(os.environ.get(FILE_ENV) or pathlib.Path.home() / ".boltbeam" / "host.json").expanduser()
 
 
-def _sum_probe() -> tuple[float, str]:
-  """Read bandwidth in GB/s with the standard library only: bytes.find of an absent byte over PROBE_BYTES of ones is one
-  C memchr pass that reads every byte and writes none, best of REPS. One thread: find holds the GIL, so a second
-  thread would not run beside it. A lower bound on the DDR peak (one core), about 80 percent of two cores' numpy sum."""
+def _scan(conn, nbytes:int, reps:int, start) -> None:
+  """One process of the probe: its own buffer, then `reps` scans, each started with the others (`start`, a barrier);
+  sends [(t0, t1), ...] on the shared monotonic clock, or None when its buffer could not be had."""
   try:
-    buf = bytes(b"\x01") * PROBE_BYTES  # every page touched, far beyond any cache
-  except MemoryError as exc:
-    raise Refused(f"the RAM read probe needs {PROBE_BYTES >> 20} MiB of free memory: close other programs and try again") from exc
-  best = 0.0
-  for _ in range(REPS):
+    buf = bytes(b"\x01") * nbytes  # every page touched, far beyond any cache
+  except MemoryError:
+    start.abort()
+    conn.send(None)
+    return
+  from boltbeam.collectors.kernel_timer import samples
+  times = []
+  def scan() -> float:  # one barrier-started scan; the spans go to the parent, which takes the whole group's window
+    start.wait()
     t0 = time.perf_counter()
     buf.find(b"\x02")
-    best = max(best, PROBE_BYTES / (time.perf_counter() - t0) / 1e9)
-  return best, f"memory scan (Python standard library), {PROBE_BYTES >> 20} MiB, best of {REPS}: a lower bound on the DDR peak"
+    times.append((t0, time.perf_counter()))
+    return (times[-1][1] - t0) * 1e6
+  samples(scan, warmups=0, count=reps)
+  conn.send(times)
 
 
-RAM_METHOD = "memscan-stdlib-1t"  # _sum_probe's method; a saved figure of another method (numpy's 2-thread sum, before 0.3.21) is not this one
+def _sum_probe(procs:int | None = None) -> tuple[float, str]:
+  """Read bandwidth in GB/s with the standard library only, on every physical core at once (the cores an engine's CPU
+  work runs on): bytes.find of an absent byte over PROBE_BYTES of ones is one C memchr pass that reads every byte and
+  writes none; one process a core (find holds the GIL, so threads would not run beside it), each rep started together
+  and timed from the first start to the last end, best of REPS. A lower bound on the DDR peak the CPU can read."""
+  import multiprocessing as mp
+  procs = procs or cpu_cores().get("physical") or os.cpu_count() or 1
+  avail = memory().get("available_bytes")
+  if avail is not None and procs * PROBE_BYTES > avail or PROBE_BYTES > (1 << 40):
+    raise Refused(f"the RAM read probe needs {procs * PROBE_BYTES >> 20} MiB of free memory: close other programs and try again")
+  ctx = mp.get_context("fork" if platform.system() == "Linux" else "spawn")
+  start, pipes = ctx.Barrier(procs), [ctx.Pipe(duplex=False) for _ in range(procs)]
+  workers = [ctx.Process(target=_scan, args=(w, PROBE_BYTES, REPS, start), daemon=True) for _, w in pipes]
+  for w in workers:
+    w.start()
+  got = [r.recv() for r, _ in pipes]
+  for w in workers:
+    w.join()
+  if any(g is None for g in got):
+    raise Refused(f"the RAM read probe needs {procs * PROBE_BYTES >> 20} MiB of free memory: close other programs and try again")
+  best = max(procs * PROBE_BYTES / (max(g[i][1] for g in got) - min(g[i][0] for g in got)) / 1e9 for i in range(REPS))
+  return best, (f"memory scan (Python standard library) on {procs} cores at once, {PROBE_BYTES >> 20} MiB each, best of {REPS}: "
+                "a lower bound on the DDR peak the CPU reads")
+
+
+RAM_METHOD = "memscan-stdlib-cores"  # _sum_probe's method; a saved figure of another method (one core, memscan-stdlib-1t; numpy's 2-thread sum before 0.3.21) is not this one
 
 
 def ram_read(*, probe:Callable[[], tuple[float, str]] = _sum_probe, path:pathlib.Path | None = None, remeasure:bool = False,

@@ -29,12 +29,12 @@ import hashlib
 import json
 import pathlib
 import re
-import shlex
 import subprocess
 import time
 import urllib.request
 from typing import Any, Callable
 
+from boltbeam.core.shell import split_command
 from boltbeam import formats
 from boltbeam.collectors import gpu_telemetry
 from boltbeam.collectors import prefill as pf
@@ -115,8 +115,12 @@ def llama_detokenize(url:str, ids:list[int]) -> str:
 
 
 FLAGS = {"n_batch": ("-b", "--batch-size"), "n_ubatch": ("-ub", "--ubatch-size"), "type_k": ("-ctk", "--cache-type-k"),
-         "type_v": ("-ctv", "--cache-type-v"), "flash_attn": ("-fa", "--flash-attn")}  # llama.cpp's server and llama-bench share them
+         "type_v": ("-ctv", "--cache-type-v"), "flash_attn": ("-fa", "--flash-attn"),
+         "n_cpu_moe": ("-ncmoe", "--n-cpu-moe"), "tensor_split": ("-ts", "--tensor-split"), "split_mode": ("-sm", "--split-mode"),
+         "threads": ("-t", "--threads")}  # llama.cpp's server and llama-bench share them; the placement ones (experts in RAM,
+# the split across cards, CPU threads) decide what a capture times once experts sit in RAM, so a capture carries them too
 DEFAULTS = {"n_batch": 2048, "n_ubatch": 512, "type_k": "f16", "type_v": "f16", "flash_attn": "auto"}  # common/common.h
+BENCH_FORM = {"tensor_split": lambda v: str(v).replace(",", "/")}  # llama-bench separates the split with "/", the server ","
 LOGGED = {"ctx_checkpoints": r"context checkpoints enabled, max = (\d+)",
           "cache_ram_mib": r"prompt cache is enabled, size limit: (\d+) MiB"}  # what the server logs at start
 
@@ -184,7 +188,7 @@ def llama_settings(argv:list[str], log:str, served:dict[str, Any] | None = None)
   out: dict[str, Any] = {"source": {}}
   for key, names in FLAGS.items():
     v = flag_value(argv, names)
-    out[key] = int(v) if v and v.isdigit() else (v if v is not None else DEFAULTS[key])
+    out[key] = int(v) if v and v.isdigit() else (v if v is not None else DEFAULTS.get(key))  # no default: the engine's own
     out["source"][key] = "the command" if v is not None else "llama.cpp's default"
   for key, pat in LOGGED.items():
     m = re.search(pat, log)
@@ -246,8 +250,8 @@ def _attention(found:dict[str, Any]) -> dict[str, int]:
 
 
 def llama_bench_flags(s:dict[str, Any]) -> list[str]:
-  """llama-bench flags that match the server's configuration: cache types, chunk and flash attention (FLAGS)."""
-  return [x for key in FLAGS if s.get(key) is not None for x in (FLAGS[key][0], str(s[key]))]
+  """llama-bench flags that match the server's configuration (FLAGS): cache types, chunk, flash attention and placement."""
+  return [x for key in FLAGS if s.get(key) is not None for x in (FLAGS[key][0], BENCH_FORM.get(key, str)(s[key]))]
 
 
 # --- the vLLM OpenAI server ----------------------------------------------------------------------------------------
@@ -385,7 +389,7 @@ def engine(provider:str) -> dict[str, Callable[..., Any]]:
 
 def server_argv(text:str) -> list[str]:
   """The user's server command from a string (a shell line, or the contents of a command file)."""
-  argv = shlex.split(text.replace("\\\n", " "))
+  argv = split_command(text)
   if not argv:
     raise ValueError("the server command is empty")
   return argv
@@ -746,7 +750,7 @@ def role_time(run:pathlib.Path, provider:str, *, root=None, say:Callable[[str], 
   say(f"replay: capturing decode at the deepest turn ({deep['prefix']} tokens)")
   try:
     lbd.role_time(run, target=target, model=model, model_id=manifest["model_id"], context=deep["prefix"],
-                  tokens=DECODE_TOKENS, flags=_decode_flags(flags),
+                  tokens=DECODE_TOKENS, flags=_decode_flags(flags), llama_bench=lbd.find(build=server.get("binary")) or lbd.DEFAULT,
                   raw=run / lbd.RAW / "replay-deep", out="replay_decode_trace.json")
     out["decode"] = {"i": deep["i"], "context": deep["prefix"], "file": "replay_decode_trace.json",
                      "server_tok_s": deep.get("decode_tok_s")}

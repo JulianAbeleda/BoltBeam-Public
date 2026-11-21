@@ -98,12 +98,17 @@ _ROLES: dict[str, RoleClass] = {
   "attn_qkv": R.ATTENTION_QKV, "attn_gate": R.ATTENTION_GATE, "attn_q": R.ATTENTION_Q, "attn_k": R.ATTENTION_K,
   "attn_v": R.ATTENTION_V, "cross_attn_q": R.ATTENTION_Q, "cross_attn_k": R.ATTENTION_K, "cross_attn_v": R.ATTENTION_V,
   "attn_kv_a_mqa": R.ATTENTION_KV_A, "attn_kv_b": R.ATTENTION_KV_B,
+  "attn_q_a": R.ATTENTION_Q, "attn_q_b": R.ATTENTION_Q,  # a low-rank q's factors (DeepSeek V4)
+  "attn_kv": R.ATTENTION_KV_A, "attn_compressor_kv": R.ATTENTION_KV_A, "attn_compressor_gate": R.ATTENTION_KV_A,  # its
+  # one shared K/V head and the compressor that pools it for the sparse attention (the compressor's ape and norm are not)
+  "engram_kv": R.PER_LAYER_EMBEDDING, "engram_gate": R.PER_LAYER_EMBEDDING,  # the Engram lookup's key/value and gate
   "in_proj_qkv": R.ATTENTION_QKV, "in_proj_z": R.ATTENTION_GATE,  # a gated delta net's q, k and v and its output gate
   "attn_output": R.ATTENTION_O, "attn_output_a": R.ATTENTION_O, "attn_output_b": R.ATTENTION_O,  # a low-rank o's factors
   "q_proj": R.ATTENTION_Q, "k_proj": R.ATTENTION_K, "v_proj": R.ATTENTION_V, "o_proj": R.ATTENTION_O,
   "out_proj": R.ATTENTION_O}
 _ANCHORED = frozenset(("attn_qkv", "attn_gate", "attn_q", "attn_k", "attn_v", "cross_attn_q", "cross_attn_k",
-                       "cross_attn_v", "attn_kv_a_mqa", "attn_kv_b"))
+                       "cross_attn_v", "attn_kv_a_mqa", "attn_kv_b", "attn_q_a", "attn_q_b", "attn_kv",
+                       "attn_compressor_kv", "attn_compressor_gate", "engram_kv", "engram_gate"))
 
 
 def classify_tensor_role(name:str, dims:tuple[int, ...] | None = None) -> RoleClass:

@@ -491,7 +491,7 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
     except Missing as m:
       applies, unread = False, str(m)
     if not applies:
-      reason = _missing(unread, adapter(engine, tab).FACTS) if unread else say(k.get("not_applicable", ""), f)
+      reason = _missing(unread, adapter(engine, tab).FACTS) if unread else say(case(k.get("not_applicable", ""), f, allowed), f)
       rows.append({**row, "status": "not_applicable", "value": None, "source": None, "reason": reason,
                    "provenance": {"applies": k.get("applies"), "inputs": {n: _shown(f.get(n)) for n in names_in(k.get("applies", "True"))}}})
       continue
@@ -571,6 +571,13 @@ def fact_words(fact:str, engine_facts:dict[str, str] | None = None) -> str:
   import re
   what = FACTS.get(fact) or (engine_facts or {}).get(fact.rpartition(".")[2]) or fact.rpartition(".")[2].replace("_", " ")
   return re.sub(r"\s*\([^()]*[/.][^()]*\)", "", what).strip()
+
+
+def unread(fact:str, f:dict[str, Any], engine:str, tab:dict[str, Any]) -> str:
+  """Why a fit could not read a fact, in words: the fact, and the machine figures the run reads with no value for this chip
+  (the adapter's unmeasured_figures, each said with the command that measures it), which the fit's formulas rest on."""
+  what = fact_words(fact, adapter(engine, tab).FACTS)
+  return what + (_words()["tune"]["unmeasured_figures"].format(count=len(f["unmeasured_figures"])) if f.get("unmeasured_figures") else "")
 
 
 def _missing(fact:str, engine_facts:dict[str, str] | None = None) -> str:
@@ -719,7 +726,7 @@ def memory_fit(rows:list[dict[str, Any]], f:dict[str, Any], engine:str, tab:dict
     # the estimate is after load with the rows at their defaults, a held row at the setup's value (the engine's after_load sizes it so)
     b = budget(ks, here if mem else {n: here[n] if n in holds else None for n in cands}, f, allowed, mem, (engine, tab))
   except Missing as m:
-    return {"rows": list(cands), "why": fact_words(str(m), adapter(engine, tab).FACTS)}
+    return {"rows": list(cands), "why": unread(str(m), f, engine, tab)}
   if b["after_load"] < 0:  # the estimate leaves less than nothing after load: no value of these rows is sized from it
     return {"rows": list(cands), "why": "negative", "after_load": b["after_load"], "budget": b}
   out, uncosted = [], []
@@ -731,7 +738,7 @@ def memory_fit(rows:list[dict[str, Any]], f:dict[str, Any], engine:str, tab:dict
     try:
       cost = costs(ks, combo, f, allowed, (engine, tab))
     except Missing as m:  # a value whose memory cannot be known is never chosen, and said
-      uncosted.append((label(combo), fact_words(str(m), adapter(engine, tab).FACTS)))
+      uncosted.append((label(combo), unread(str(m), f, engine, tab)))
       continue
     g = fit_facts(ks, combo, f, allowed, (engine, tab))
     said = [(_try((k.get("fit") or {}).get("gain") or "None", {**g, "value": combo[k["name"]]}, allowed),
@@ -1096,6 +1103,10 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
     if unknown := sorted(q for q in knobs_only if q.lstrip("-") not in names):
       raise Refused(f"{engine} has no knob named {', '.join(unknown)} in BoltBeam's knob table")
     knobs_only = [names[q.lstrip("-")] for q in knobs_only]
+    # --measure moves a measured row (its sweep) and a row of the memory fit (its vram): a facts row with neither is timed by nothing
+    if unmeasured := [k["name"] for k in knobs(engine, tab) if k["name"] in knobs_only and k["derive"] != "measured" and not k.get("vram")]:
+      raise Refused(f"--measure sweeps only measured knobs; {', '.join(unmeasured)} {'is' if len(unmeasured) == 1 else 'are'} set from "
+                    "the facts, with nothing to time. Drop it from --knob, or compare its values with boltbeam session-ab")
   feats = ad.detect(build)
   from boltbeam.workflow import spend as sp
   if not spend and context is not None and sp.rows_of(engine, tab):  # stored measured runs of this model, this GPU's size and this build's switches
@@ -1159,7 +1170,7 @@ def tune(model:str, engine:str, build:str | None = None, *, prompt:int = PROMPT,
                     given_free=measured_free)
   if (sw := (spent or {}).get("margin", {}).get("switch")) and "argv" in shown:  # a bound headroom holds only with its switch set
     env = {**(shown.get("env") or {}), **sw}
-    shown = {**shown, "env": env, "command": " ".join([*(f"{k}={v}" for k, v in env.items()), *map(str, shown["argv"])])}
+    shown = {**shown, "env": env, "command": mods.command_line(env, shown["argv"])}
   return {"schema": "boltbeam.tune.v1", "spend": spent, "engine": engine, "model": model, "build": {**{k: v for k, v in feats.items() if k != "features"},
           "groups": groups_in(engine, feats, tab), "feature_count": len(feats["features"]), "modded": md, "mods_known": len(mods.mods(engine)),
           "series": sorted(m["id"] for m in mods.mods(engine) if m.get("state") == "series" and m.get("marker") in feats["features"])}, "facts": f, "rows": rows, **shown,

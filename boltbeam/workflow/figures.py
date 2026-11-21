@@ -4,7 +4,9 @@ A figure's row is keyed by what it depends on that a run can read (the chip, the
 model shape). resolve() gives a run its figure in one of three states, and the state is always said:
 
     measured    a row's key is this run's: its value
-    borrowed    no such row: the nearest row's value (the most key fields equal), widened against the run by a margin
+    borrowed    no such row: the nearest row of the same GPU vendor (a figure keyed by chip is never borrowed across
+                vendors: their memory, drivers and runtimes differ, the R9700's out-of-memory server on 2026-11-20 was an
+                RTX 5090 row borrowed) with the most key fields equal, its value widened against the run by a margin
                 from that row's own readings (one more reading's one-sided 95% bound, t x sd x sqrt(1 + 1/n)) and the
                 spread of the rows' values; a cost is charged more, a saving credited less
     unmeasured  nothing to borrow honestly (the row has fewer than two readings, or the figure is a choice or a constant):
@@ -36,13 +38,22 @@ def resolve(name:str, key:dict[str, Any], t:list[float] | tuple = ()) -> dict[st
   hit = next((r for r in fig["rows"] if all(key.get(k) == v for k, v in r["key"].items())), None)
   if hit:
     return {"name": name, "status": "measured", "value": hit["value"], "margin": 0.0, "row": hit, "says": None}
-  near = max(fig["rows"], key=lambda r: sum(key.get(k) == v for k, v in r["key"].items()))
+  rows = fig["rows"]
+  if "chip" in fig["key"]:  # never across vendors: a chip with no row of its own vendor is measured or not used
+    from boltbeam.target.targets import target_vendor
+    vendor = target_vendor(key.get("chip"))
+    rows = [r for r in rows if vendor and target_vendor(r["key"].get("chip")) == vendor]
+    if not rows:
+      return {"name": name, "status": "unmeasured", "value": None, "margin": None, "row": None,
+              "says": w["other_vendor" if vendor else "unread_chip"].format(what=fig["words"], here=here, how=fig["how_to_measure"],
+                                              rows=", ".join(sorted({str(r["key"].get("chip")) for r in fig["rows"]})))}
+  near = max(rows, key=lambda r: sum(key.get(k) == v for k, v in r["key"].items()))
   got, n = near["readings"], len(near["readings"])
   told = {"what": fig["words"], "unit": fig["unit"], "here": here, "how": fig["how_to_measure"], "n": n, "value": near["value"],
           "row": ", ".join(f"{k} {v}" for k, v in near["key"].items()), "machine": near["machine"], "date": near["date"], "run": near["run"]}
   if not t or n < 2 or fig.get("borrow") is False or fig["kind"] not in ("cost", "saving"):
     return {"name": name, "status": "unmeasured", "value": None, "margin": None, "row": near, "says": w["unmeasured"].format(**told)}
-  values = [r["value"] for r in fig["rows"]]
+  values = [r["value"] for r in rows]
   margin = max(t[min(n - 1, len(t)) - 1] * statistics.stdev(got) * (1 + 1 / n) ** 0.5, max(values) - min(values))
   value = near["value"] + margin if fig["kind"] == "cost" else max(0.0, near["value"] - margin)
   return {"name": name, "status": "borrowed", "value": value, "margin": margin, "row": near,
@@ -62,7 +73,18 @@ def said(resolved:list[dict[str, Any]], features, holds) -> list[str]:
   (its requires are features) and its `when` holds (holds: a formula over the run's facts -> bool), and one line for
   the figures read on their key that also hang on something the run does not read (unkeyed)."""
   from boltbeam.report.plain import words
-  figs = table()["figures"]
-  used = [r for r in resolved if all(x in (features or ()) for x in figs[r["name"]].get("requires") or []) and (not figs[r["name"]].get("when") or holds(figs[r["name"]]["when"]))]
+  figs, used = table()["figures"], _used(resolved, features, holds)
   also = [f"{r['name']} ({figs[r['name']]['unkeyed']})" for r in used if r["status"] == "measured" and figs[r["name"]].get("unkeyed")]
   return [r["says"] for r in used if r["says"]] + ([words()["machine_figures"]["unkeyed"].format(figures="; ".join(also))] if also else [])
+
+
+def _used(resolved:list[dict[str, Any]], features, holds) -> list[dict[str, Any]]:
+  """The figures a run reads: the build has what each requires (features) and its `when` holds over the run's facts."""
+  figs = table()["figures"]
+  return [r for r in resolved if all(x in (features or ()) for x in figs[r["name"]].get("requires") or []) and (not figs[r["name"]].get("when") or holds(figs[r["name"]]["when"]))]
+
+
+def unused(resolved:list[dict[str, Any]], features, holds) -> list[str]:
+  """The figures a run reads that it has no value for (not measured for its key, none borrowed), by name: a fit that reads
+  one is not checked, and says it rests on them (said() names each with the command that measures it)."""
+  return [r["name"] for r in _used(resolved, features, holds) if r["value"] is None]

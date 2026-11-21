@@ -679,7 +679,7 @@ class Engine(NamedTuple):
 
 def _llama_binary() -> str | None:
   from boltbeam.collectors import llama_server_decode as lsd
-  return lsd.find()
+  return lsd.server()  # the one build resolver
 
 
 def _vllm_python() -> str | None:

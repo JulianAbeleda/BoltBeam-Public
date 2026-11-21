@@ -31,9 +31,9 @@ import itertools
 import json
 import pathlib
 import re
-import shlex
 from typing import Any
 
+from boltbeam.core.shell import split_command
 from boltbeam.collectors.load_probe import machine_id  # noqa: F401  (spend reads records by it)
 from boltbeam.collectors.replay import flag_value
 from boltbeam.vocab import SCHEMA_SPEND_PROBE
@@ -56,7 +56,7 @@ def probe_of(result:pathlib.Path) -> dict[str, Any] | None:
   when the folder is not one."""
   cmd = result.with_name("cmd.txt")
   try:
-    r, words = json.loads(result.read_text()), shlex.split(cmd.read_text())
+    r, words = json.loads(result.read_text()), split_command(cmd.read_text())
   except (OSError, ValueError):
     return None
   if not isinstance(r, dict) or "min_free_mib" not in r or "status" not in r:

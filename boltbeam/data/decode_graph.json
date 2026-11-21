@@ -19,5 +19,14 @@
     "silu_mul": {"op": "silu_mul", "reads": ["ffn_gate", "ffn_up"]},
     "ffn_down": {"op": "gemv", "reads": ["silu_mul"]},
     "ffn_residual": {"op": "add", "reads": ["attn_residual", "ffn_down"]}
+  },
+  "fusion": {
+    "why": "The fusion check's graph ops (this table's `op` column) as rows of neutral ops, applied in turn (the first to the node's first read, each later one with its next read): search/fusion_space.REFERENCE_OPS is read from them and each neutral op's formula is search/fusion_space.FORMULAS, in fp64 pure Python on any weight format, matmul by dequantize and dot, within math/numerics.TOLERANCE of the GPU's output (owner decision 2026-11-20: one formula per op for every check that computes it).",
+    "rows": {
+      "gemv": {"ops": ["matmul"]},
+      "silu_mul": {"ops": ["silu", "mul"]},
+      "add": {"ops": ["add"]},
+      "cast_fp16": {"ops": ["cast"], "to": "half"}
+    }
   }
 }

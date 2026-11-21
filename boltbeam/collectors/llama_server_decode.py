@@ -52,6 +52,15 @@ def find(bench:str | None = None, env:dict[str, str] | None = None) -> str | Non
   return None if bench else _beside(engine_scan.saved("BOLTBEAM_LLAMA_BENCH"))
 
 
+def server(build:str | pathlib.Path | None = None, env:dict[str, str] | None = None) -> str | None:
+  """THE llama.cpp build resolver (tune, Measure MTP, session-ab, routing and the recommended setup all ask here): the
+  llama-server of a build given as any of its programs (the screen's llama-bench maps to the server beside it; a
+  folder, to the server in it), else, with no build given, find()'s. A build is never swapped for another one: a given
+  path with no server is returned as it is, for the caller to refuse."""
+  p = pathlib.Path(build).expanduser() if build else None  # only another of the build's own programs (llama-*) maps; any other path stays as given
+  return find(None, env) if p is None else str(p / TOOL) if p.is_dir() else str(p.parent / TOOL) if p.is_file() and p.name.startswith("llama-") and TOOL not in p.name and (p.parent / TOOL).is_file() else str(build)
+
+
 def _beside(bench:str | None) -> str | None:
   """The llama-server in the same folder as this llama-bench, when there is one."""
   beside = pathlib.Path(bench).expanduser().resolve().parent / TOOL if bench else None

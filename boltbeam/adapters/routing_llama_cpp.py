@@ -4,10 +4,11 @@
 n_expert_used, n_group; per group u32 device, n_expert, n_layers, the layers, f64 split, split_sum, u64 group host bytes,
 device host bytes, alignment, u32 n_tensors, u64 per tensor; then per lookup i32 layer, experts per token, n_ids, the ids).
 
-What it takes: a lookup happens only with the MoE cache on (--moe-cache-mib, experts in host RAM: --cpu-moe) and only for
-a batch of at most 32 tokens (get_slot_map, :693-695, max_batch :368): so the capture runs the real-text prefill driver
-(runtime/llama_server_decode_drive.py --prefill, the corpus data/gate_corpus.json) with -b 32 -ub 32 and one pass
-(--reps 0). Router choices do not depend on the chunk; only the speed does."""
+What it takes: a lookup happens only with the MoE cache on (--moe-cache-mib, experts in host RAM: --cpu-moe), only for
+a batch of at most 32 tokens (get_slot_map, :693-695, max_batch :368) and only when the cache has a slot for every expert
+the batch picks (:698): so the capture runs the real-text prefill driver (runtime/llama_server_decode_drive.py --prefill,
+the corpus data/gate_corpus.json) at the largest such batch the GPUs' free memory holds (ubatch) with the cache sized to
+it (cache_mib), and one pass (--reps 0). Router choices do not depend on the chunk; only the speed does."""
 from __future__ import annotations
 
 import pathlib
@@ -17,16 +18,29 @@ from typing import Any
 
 MAGIC = b"MCT1"
 UBATCH = 32  # llama-moe-cache.cpp:368 max_batch: a larger batch is not looked up, so not traced
+HEADROOM_BYTES = 4 << 30  # the compute buffers and the KV of a short prefill beside the dense parts
 SLOT_MARGIN = 1.5  # over the least cache that keeps lookups on (a GPU's share below n_expert_used slots turns it off,
 # llama-moe-cache.cpp:509-514): GPUs take shares by their layer split, not exactly. The cache size does not change routing.
 
 
-def cache_mib(model:str) -> int:
-  """The trace's --moe-cache-mib: n_expert_used + 2 slots (the end slot, rounding) of one expert across every layer, with
-  SLOT_MARGIN; derived from the model, not a card's free memory (no other run is sized by it)."""
+def cache_mib(model:str, ubatch:int = 1) -> int:
+  """The trace's --moe-cache-mib: a slot for every expert a batch of `ubatch` tokens picks (a lookup is skipped when the
+  batch's ubatch x n_expert_used slots exceed a group's slots, llama-moe-cache.cpp:698) and 2 more (the end slot,
+  rounding), of one expert across every layer, with SLOT_MARGIN; derived from the model, not a card's free memory."""
   from boltbeam.roofline.offload_shapes import moe_split
   sh = moe_split(model)
-  return int((sh["top_k"] + 2) * sh["expert_total"] / sh["experts"] * SLOT_MARGIN / 2**20) + 1
+  return int((ubatch * sh["top_k"] + 2) * sh["expert_total"] / sh["experts"] * SLOT_MARGIN / 2**20) + 1
+
+
+def ubatch(model:str, free_bytes:float | None) -> int:
+  """The largest batch up to UBATCH whose cache (cache_mib) fits the GPUs' free memory beside the dense parts and
+  HEADROOM_BYTES: a larger batch's lookups are skipped, so nothing of it is traced. 1 when the free memory is unknown."""
+  from boltbeam.roofline.offload_shapes import moe_split
+  sh = moe_split(model)
+  if not free_bytes:
+    return 1
+  slots = (free_bytes - sh["dense_bytes"] - HEADROOM_BYTES) / (sh["expert_total"] / sh["experts"]) / SLOT_MARGIN - 2
+  return max(1, min(UBATCH, int(slots // sh["top_k"])))
 
 
 def read_trace(path:str | pathlib.Path) -> dict[str, Any]:
@@ -70,14 +84,15 @@ def capture(model:str, out:pathlib.Path, *, tokens:int, ident:dict[str, Any], co
             port:int = 0) -> dict[str, Any]:
   """Run the real-text prefill driver once with the trace on and read it. build: any program of the build, taken as its llama-server (default: as screen finds it)."""
   from boltbeam.collectors import engine_common as ec, llama_server_decode as lsd
-  from boltbeam.workflow.tune_llama_cpp import server_of  # the build tune uses: any program of it maps to its llama-server
-  server = str(server_of(build)) if build else lsd.find()
+  server = lsd.server(build)  # the build tune uses: the one resolver
   if not server:
     raise FileNotFoundError(f"no llama-server found ({lsd.WHERE}); pass --build")
   out.mkdir(parents=True, exist_ok=True)
   trace = out / "moe-cache-trace.bin"
   trace.unlink(missing_ok=True)
-  flags = ["-ngl", "99", "--cpu-moe", "--moe-cache-mib", str(cache_mib(model)), "-b", str(UBATCH), "-ub", str(UBATCH), "--no-warmup"]
+  from boltbeam.workflow.tune_vllm import gpu_memory
+  ub = ubatch(model, gpu_memory(every=True).get("free"))  # the cache is split over every GPU like the layers
+  flags = ["-ngl", "99", "--cpu-moe", "--moe-cache-mib", str(cache_mib(model, ub)), "-b", str(ub), "-ub", str(ub), "--no-warmup"]
   import json
   argv = [sys.executable, str(lsd.DRIVER), "--server", server, "--model", str(pathlib.Path(model).absolute()), "--port", str(port),
           "--ctx-size", str(tokens + lsd.HEADROOM), "--contexts", str(tokens), "--reps", "0", "--flags", json.dumps(flags),

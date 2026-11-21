@@ -101,8 +101,23 @@ def predict(s:dict[str, Any], candidate_us:float, candidate_source:str, per_step
          "gap_removed_us": derived(round(max(0.0, s["gap_us"]["value"]["median"]) * (n - 1), 3), "max(0, gap median) x (launches - 1): idle a fusion takes out",
                                    {"gap_median": s["gap_us"]["value"]["median"]})}
   if per_step:
-    out["saving_ms_step"] = derived(round((wall - candidate_us) * per_step / 1e3, 4), "saving x occurrences a step / 1000", {"per_step": per_step})
+    out["saving_ms_step"] = derived(_ms_step(wall - candidate_us, per_step), "saving x occurrences a step / 1000", {"per_step": per_step})
   return out
+
+
+def _ms_step(us:float, per_step:float) -> float:
+  return round(us * per_step / 1e3, 4)
+
+
+def saving_step(s:dict[str, Any], candidate_us:float, candidate_lo:float, candidate_hi:float, per_step:float) -> dict[str, Any]:
+  """The saving a step with both its ends, for a candidate time known as an interval: the wall less the candidate, low end
+  = the wall's low less the candidate's high. The wall's ends are the figure's own (`lo`, `hi`: a wall derived from other
+  figures states them, label derived) or, for a measured span, the p10 and p90 of its occurrences: their spread, which
+  says nothing of what another trace or another build would give."""
+  w, v = s["wall_us"], s["wall_us"]["value"]
+  lo, hi = (v["lo"], v["hi"]) if "lo" in v else (v["p10"], v["p90"])
+  return {"stock_us": {"value": v["median"], "lo": lo, "hi": hi, "label": w["label"], "ends": "the figure's own" if "lo" in v else "p10 and p90 of its occurrences", "source": w.get("source")},
+          "saving_ms_step": _ms_step(v["median"] - candidate_us, per_step), "interval_ms_step": [_ms_step(lo - candidate_hi, per_step), _ms_step(hi - candidate_lo, per_step)]}
 
 
 def lines(rec:dict[str, Any]) -> list[str]:

@@ -3,10 +3,10 @@ output layer by default), kept only if it passes the part's gates (quantization/
 from __future__ import annotations
 
 import json
-import shlex
 import sys
 
 from boltbeam.core.refused import Refused
+from boltbeam.core.shell import split_command
 from boltbeam.quantization import speed_up
 
 
@@ -14,7 +14,7 @@ def cmd_lighter_head(args, out=sys.stdout) -> int:
   try:
     named = args.engine in {r["engine"] for r in speed_up.table()["engines"]}  # an engine row, else the engine's own path
     if args.verify:
-      rec = speed_up.verify(args.checkpoint, args.engine if named else None, None if named else args.engine, None if getattr(args, "eval_flags", None) is None else shlex.split(args.eval_flags))
+      rec = speed_up.verify(args.checkpoint, args.engine if named else None, None if named else args.engine, None if getattr(args, "eval_flags", None) is None else split_command(args.eval_flags))
       print(json.dumps(rec, indent=2) if args.json else f"verified: {rec['name']} matches its record: files, gate text, {rec['engine_version']}, " + ("speed measured on this GPU" if speed_up.measured(rec) else "SPEED WAS NOT MEASURED"), file=out)
       return 0
     progress = getattr(args, "progress", False)

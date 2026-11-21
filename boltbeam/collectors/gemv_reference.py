@@ -128,28 +128,80 @@ def dequant_iq4_xs_block(blk:bytes) -> list[float]:
   return out
 
 
+# The codebook formats' tables in ggml-common.h: name -> entry count. Read from the engine source, never copied here.
+GGML_TABLES = {"iq3s_grid": "512", "iq2xxs_grid": "256", "iq2xs_grid": "512", "ksigns_iq2xs": "128", "iq1s_grid": "NGRID_IQ1S"}
+GGML_TABLE_SIZES = {"NGRID_IQ1S": 2048}
+IQ1_DELTA = 0.125  # ggml-common.h IQ1S_DELTA (IQ1_M's dequantize_row_iq1_m adds it): a constant, not a table
+
+
 @functools.lru_cache(maxsize=None)
-def iq3s_grid() -> tuple[int, ...]:
-  """IQ3_S's 512-entry codebook, read from ggml-common.h beside the engine source the kernel is built from
-  (engine_source.mmvq_source_dir): the format's own definition, not a table BoltBeam copies."""
+def ggml_table(name:str) -> tuple[int, ...]:
+  """A codebook format's table (GGML_TABLES) as unsigned ints, read from ggml-common.h beside the engine source the
+  kernel is built from (engine_source.mmvq_source_dir): the format's own definition, not a table BoltBeam copies."""
   from boltbeam.collectors.engine_source import NoEngineSource, mmvq_source_dir
+  size = GGML_TABLES[name]
   text = (pathlib.Path(mmvq_source_dir()["dir"]).parent / "ggml-common.h").read_text()
-  m = re.search(r"GGML_TABLE_BEGIN\(uint32_t,\s*iq3s_grid,\s*512\)(.*?)GGML_TABLE_END", text, re.S)
-  grid = tuple(int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", m.group(1))) if m else ()
-  if len(grid) != 512:
-    raise NoEngineSource("ggml-common.h has no 512-entry iq3s_grid")
-  return grid
+  m = re.search(r"GGML_TABLE_BEGIN\(\w+,\s*" + name + r",\s*" + size + r"\)(.*?)GGML_TABLE_END", text, re.S)
+  table = tuple(int(x, 0) for x in re.findall(r"0x[0-9a-fA-F]+|\b\d+\b", m.group(1))) if m else ()
+  if len(table) != GGML_TABLE_SIZES.get(size, int(size) if size.isdigit() else -1):
+    raise NoEngineSource(f"ggml-common.h has no {size}-entry {name}")
+  return table
+
+
+def _grid_bytes(entry:int, signed:bool = False) -> list[int]:
+  """A grid entry's 8 (uint64) or 4 (uint32) bytes, low byte first, as ggml reads them through a uint8_t/int8_t pointer."""
+  return [((entry >> 8 * j) & 0xFF) - (256 if signed and (entry >> 8 * j) & 0x80 else 0) for j in range(8)]
 
 
 def dequant_iq3_s_block(blk:bytes) -> list[float]:
   d, qs, qh, signs, sc = _half(blk, 0), blk[2:66], blk[66:74], blk[74:106], blk[106:110]  # block_iq3_s
-  grid, out = iq3s_grid(), []
+  grid, out = ggml_table("iq3s_grid"), []
   for k in range(8):  # 32 weights each: scale nibble k % 2 of byte k // 2, qh[k]'s bits as each pair's ninth index bit
     db = d * (1 + 2 * ((sc[k // 2] >> 4 * (k % 2)) & 0xF))
     for l in range(4):
       g1, g2 = grid[qs[8 * k + 2 * l] | ((qh[k] << (8 - 2 * l)) & 256)], grid[qs[8 * k + 2 * l + 1] | ((qh[k] << (7 - 2 * l)) & 256)]
       s = signs[4 * k + l]
       out += [db * ((g >> 8 * j) & 0xFF) * (-1 if s & (1 << (j + 4 * h)) else 1) for h, g in ((0, g1), (1, g2)) for j in range(4)]
+  return out
+
+
+def _signed8(d:float, entry:int, signs:int) -> list[float]:
+  """IQ2's 8 weights of one grid entry: d x each byte, negated where the sign byte's bit j is set (kmask_iq2xs = 1 << j)."""
+  return [d * g * (-1.0 if signs >> j & 1 else 1.0) for j, g in enumerate(_grid_bytes(entry))]
+
+
+def dequant_iq2_xxs_block(blk:bytes) -> list[float]:
+  d, qs = _half(blk, 0), struct.unpack_from("<32H", blk, 2)  # block_iq2_xxs: d, qs[32] as 8 pairs of uint32 per 32 weights
+  grid, ksigns, out = ggml_table("iq2xxs_grid"), ggml_table("ksigns_iq2xs"), []
+  for ib in range(8):  # aux32[0]: four grid indices (bytes); aux32[1]: four 7-bit sign indices, the scale in its top 4 bits
+    a0, a1 = qs[4 * ib] | qs[4 * ib + 1] << 16, qs[4 * ib + 2] | qs[4 * ib + 3] << 16
+    db = d * (0.5 + (a1 >> 28)) * 0.25
+    for l in range(4):
+      out += _signed8(db, grid[a0 >> 8 * l & 0xFF], ksigns[a1 >> 7 * l & 127])
+  return out
+
+
+def dequant_iq2_xs_block(blk:bytes) -> list[float]:
+  d, qs, sc = _half(blk, 0), struct.unpack_from("<32H", blk, 2), blk[66:74]  # block_iq2_xs: d, qs[32], scales[8]
+  grid, ksigns, out = ggml_table("iq2xs_grid"), ggml_table("ksigns_iq2xs"), []
+  for ib in range(8):  # each uint16: 9-bit grid index, 7-bit sign index; the scale nibble per 16 weights
+    for l in range(4):
+      q = qs[4 * ib + l]
+      out += _signed8(d * (0.5 + (sc[ib] >> 4 * (l // 2) & 0xF)) * 0.25, grid[q & 511], ksigns[q >> 9])
+  return out
+
+
+def dequant_iq1_m_block(blk:bytes) -> list[float]:
+  qs, qh, sc = blk[0:32], blk[32:48], struct.unpack_from("<4H", blk, 48)  # block_iq1_m: qs[32], qh[16], scales[8]
+  d = struct.unpack("<e", struct.pack("<H", (sc[0] >> 12) | (sc[1] >> 8 & 0xF0) | (sc[2] >> 4 & 0xF00) | (sc[3] & 0xF000)))[0]
+  grid, out = ggml_table("iq1s_grid"), []
+  for ib in range(8):  # 32 weights: 4 groups of 8, an 11-bit grid index each (qs byte + 3 qh bits), a delta sign bit each
+    h0, h1 = qh[2 * ib], qh[2 * ib + 1]
+    idx = (qs[4 * ib] | (h0 << 8 & 0x700), qs[4 * ib + 1] | (h0 << 4 & 0x700), qs[4 * ib + 2] | (h1 << 8 & 0x700), qs[4 * ib + 3] | (h1 << 4 & 0x700))
+    delta = [-IQ1_DELTA if h & bit else IQ1_DELTA for h in (h0, h1) for bit in (0x08, 0x80)]
+    for l in range(4):
+      dl = d * (2 * (sc[ib // 2] >> (6 * (ib % 2) + 3 * (l // 2)) & 7) + 1)
+      out += [dl * (g + delta[l]) for g in _grid_bytes(grid[idx[l]], signed=True)]
   return out
 
 

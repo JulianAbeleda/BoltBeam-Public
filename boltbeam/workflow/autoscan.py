@@ -118,6 +118,15 @@ def _provider_row(provider_id:str, path:str | None) -> dict[str, Any]:
   }
 
 
+# Owner tooling's scan probes (cli/__init__._OWNER: on exp only), each a module with probe(rows) and observation(providers):
+# a probe runs only where its module is present, so a tree without the tool records no key of it.
+OWNER_PROBES = ("boltbeam.search.region_generate",)
+
+
+def _owner_probes() -> list[Any]:
+  return [importlib.import_module(m) for m in OWNER_PROBES if importlib.util.find_spec(m)]
+
+
 def _provider_capabilities(provider_args:tuple[str, ...]) -> dict[str, Any]:
   configured = [_parse_provider(p) for p in provider_args]
   seen = {pid for pid, _path in configured}
@@ -125,6 +134,8 @@ def _provider_capabilities(provider_args:tuple[str, ...]) -> dict[str, Any]:
     if pid not in seen:
       configured.append((pid, None))
   rows = [_provider_row(pid, path) for pid, path in configured if pid]
+  for probe in _owner_probes():   # owner tooling present on this tree adds its own capability (none on a tree without it)
+    probe.probe(rows)
   rows.append({
     "provider_id": "external",
     "configured_path": None,
@@ -159,6 +170,7 @@ def _scan_evidence(hardware:dict[str, Any], providers:dict[str, Any]) -> dict[st
        "value": hardware["gpu"].get("target_resolution", {}).get("selected_target_id")},
       {"key": "provider.available",
        "value": [p["provider_id"] for p in providers["providers"] if p["status"] == "available"]},
+      *(probe.observation(providers) for probe in _owner_probes()),
     ],
     "measurement_status": "no_benchmarks_run",
   }

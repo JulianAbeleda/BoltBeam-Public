@@ -327,10 +327,12 @@ def gpu_free(backend:str, *, run=_run, uuids:set[str] | None = None, me:int | No
   return {"free": True, "holders": [], "reason": "no other program holds the GPU"}
 
 
-def gpu_free_here(*, probes:list[dict[str, Any]] | None = None, free=gpu_free) -> dict[str, Any]:
+def gpu_free_here(*, probes:list[dict[str, Any]] | None = None, free=None) -> dict[str, Any]:
   """gpu_free over every vendor with a GPU on this machine (hardware.detected_vendors): the first held one, else free.
-  For a check with no run target (a host probe, a writer before its run exists): any GPU in use counts."""
+  For a check with no run target (a host probe, a writer before its run exists): any GPU in use counts. free: this
+  module's gpu_free, looked up at the call (a test that replaces it replaces it here too)."""
   from boltbeam.target import hardware, vendors
+  free = free or gpu_free
   for name in hardware.detected_vendors(probes):
     if vendors.VENDORS[name].profile is not None and not (got := free(vendors.VENDORS[name].backend))["free"]:
       return got

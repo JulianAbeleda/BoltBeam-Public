@@ -31,6 +31,7 @@ import sys
 import time
 from typing import Any, Callable
 
+from boltbeam.core.shell import split_command
 from boltbeam.vocab import SCHEMA_SESSION_AB
 
 FILE = "session_ab.json"
@@ -100,11 +101,20 @@ def parse_arm(text:str) -> dict[str, Any]:
   name, _, spec = text.partition("=")
   if not NAME.match(name):
     raise Refused(_words("bad_arm", text=text))
-  env, rest = split_env(shlex.split(spec))
+  env, rest = split_env(split_command(spec))
   binary = None
   if rest and not rest[0].startswith("-") and pathlib.Path(rest[0]).expanduser().is_file():
     binary, rest = str(pathlib.Path(rest[0]).expanduser().absolute()), rest[1:]
   return {"name": name, "env": env, "binary": binary, "flags": rest}
+
+
+def build_of(engine:str, program:str | None) -> str | None:
+  """The program a run starts for a build given as any of its programs, by the engine's one build resolver (data/
+  engine_adapters.json build: the one tune and Measure MTP use); an engine with none, or a program it cannot place, as given."""
+  import importlib
+  from boltbeam.collectors.load_probe import ADAPTERS
+  mod, _, fn = ((json.loads(ADAPTERS.read_text())["engines"].get(engine) or {}).get("build") or "").partition(":")
+  return getattr(importlib.import_module(mod), fn)(program) or program if mod and program else program
 
 
 def order(names:list[str], repeats:int) -> list[list[Any]]:
@@ -348,6 +358,73 @@ def play(eng:dict[str, Callable[..., Any]], url:str, session:dict[str, Any], len
   return rows
 
 
+KERNEL_LISTS = ("boltbeam.kernel_manifest.v1", "boltbeam.kernel_manifest.v2")  # the kernel list schemas an engine's kernel hook loads (data/ie_mods_index.json)
+
+
+def named_files(switches:dict[str, str | None]) -> tuple[dict[str, str], dict[str, dict[str, str | None]]]:
+  """The files the arm's switches name, hashed at its start ({absolute path: sha256}; a relative path is the server's,
+  which runs in this process's folder, so it is resolved against it), and of those that are BoltBeam kernel lists, each
+  entry's kernel file beside the list hashed ({list: {entry id: sha256, or None when the file is missing}}): the kernel
+  an engine that loads the entry runs."""
+  from boltbeam.collectors.replay import _sha256
+  files, lists = {}, {}
+  for v in switches.values():
+    p = pathlib.Path(v).expanduser() if v else None
+    if p is None or not p.is_file():
+      continue
+    p = pathlib.Path(os.path.abspath(p))
+    files[str(p)] = _sha256(p)
+    try:
+      doc = json.loads(p.read_text())
+    except (OSError, ValueError):
+      continue
+    if isinstance(doc, dict) and doc.get("schema") in KERNEL_LISTS:
+      lists[str(p)] = {e["id"]: (_sha256(p.parent / e["kernel"]["file"]) if (p.parent / e["kernel"]["file"]).is_file() else None)
+                       for e in doc.get("entries") or [] if isinstance(e, dict) and isinstance((e.get("kernel") or {}).get("file"), str)}
+  return files, lists
+
+
+def kernel_load(log:str | None, engine:str) -> dict[str, Any] | None:
+  """What the engine said it did with a kernel list, from its own log lines (the engine's row in
+  data/engine_adapters.json, kernel_list.log): {loaded: [entry ids], dropped: {id: why}, unused: [why]}; None when the
+  engine's row reads no such lines or there is no log."""
+  from boltbeam.collectors.load_probe import ADAPTERS
+  row = ((json.loads(ADAPTERS.read_text())["engines"].get(engine) or {}).get("kernel_list") or {}).get("log")
+  if not row or log is None:
+    return None
+  pat = {k: re.compile(v) for k, v in row.items()}
+  return {"loaded": [m.group(1) for m in pat["loaded"].finditer(log)], "dropped": {m.group(1): m.group(2).strip() for m in pat["dropped"].finditer(log)},
+          "unused": [m.group(2).strip() for m in pat["unused"].finditer(log)]}
+
+
+def slot_refusals(engine:str, env:dict[str, Any], argv:list[str]) -> list[str]:
+  """Why a server command cannot run a switch it sets: for each switch set on (env: not empty, not 0) whose mod's shape
+  row needs a count of server slots (data/mod_shapes.json slots, the mods by switch from the shipped index), when the
+  command's -np (or LLAMA_ARG_N_PARALLEL) is not that count: llama-server's default is auto (4 slots), at which those
+  mods turn themselves off. Empty: nothing to say."""
+  from boltbeam.collectors.replay import flag_value
+  from boltbeam.report.plain import words
+  data = pathlib.Path(__file__).resolve().parents[1] / "data"
+  rows = json.loads((data / "mod_shapes.json").read_text())["engines"].get(engine) or {}
+  np = flag_value([str(a) for a in argv], ("-np", "--parallel")) or {**os.environ, **env}.get("LLAMA_ARG_N_PARALLEL") or "auto (4)"  # the server inherits this shell's
+  out = {}
+  for m in json.loads((data / "ie_mods_index.json").read_text())["mods"]:
+    need, sw = (rows.get(m["name"]) or {}).get("slots") if m.get("engine") == engine else None, (m.get("switch") or {}).get("name")
+    if need is not None and sw and str(env.get(sw) or "0") != "0" and str(np).lstrip("0") != str(need):
+      out[sw] = words()["mods"]["slots_refused"].format(switch=sw, mod=m["name"], need=need, slots=np, why=rows[m["name"]]["slots_why"])
+  return list(out.values())
+
+
+def switch_ignored(log:str | None, engine:str, env:dict[str, Any]) -> dict[str, str]:
+  """{switch: the engine's words} for each switch set on in the server's environment that the engine's log says it
+  turned off at load (the engine's row in data/engine_adapters.json, switch_log): a mod that never ran."""
+  from boltbeam.collectors.load_probe import ADAPTERS
+  pat = ((json.loads(ADAPTERS.read_text())["engines"].get(engine) or {}).get("switch_log") or {}).get("ignored")
+  if not pat or log is None:
+    return {}
+  return {m.group(1): m.group(2).strip() for m in re.finditer(pat, log) if str(env.get(m.group(1)) or "0") != "0"}
+
+
 def run_arm(ctx:dict[str, Any], arm:dict[str, Any], block:int, attempt:int, bound_s:float | None) -> dict[str, Any]:
   """One fresh server for one arm through the gate, the session and the hang guard: its record."""
   from boltbeam.adapters.llama_server_control import serve_argv
@@ -363,6 +440,7 @@ def run_arm(ctx:dict[str, Any], arm:dict[str, Any], block:int, attempt:int, boun
                          "binary": {"path": str(binary), "sha256": _sha256(binary) if binary.is_file() else None,
                                     "version": _version(binary) if binary.is_file() else None},
                          "switches": {k: env.get(k) for a in ctx["arms"] for k in a["env"]}}
+  rec["files"], rec["kernels"] = named_files(rec["switches"])  # what binds an arm to the kernel it ran
   say(f"session-ab: block {block + 1}, arm {arm['name']} (attempt {attempt + 1}): start gate")
   rec["gate"] = g = ctx["gate"](ctx["source"], ctx["backend"], ctx["cap_w"], bound_s)
   rec["start"], rec["host_temps_start"] = now_words(), host_temps()
@@ -399,13 +477,16 @@ def run_arm(ctx:dict[str, Any], arm:dict[str, Any], block:int, attempt:int, boun
     except Exception as exc:  # noqa: BLE001  a server that fails is this arm's reason; the run goes on
       rec["why"] = _words("server_failed", why=str(exc)[-300:])
     rec["telemetry"] = tele.summary()
+  rec["kernel_load"] = kernel_load(log.read_text(errors="replace") if log.is_file() else None, inp["engine"])
+  rec["switch_ignored"] = switch_ignored(log.read_text(errors="replace") if log.is_file() else None, inp["engine"], env)
   rec["end"], rec["host_temps_end"] = now_words(), host_temps()
   rec["power_limit_end_w"] = ctx["source"].power_limit_w() if ctx["source"] else None
   want = inp["turns"][1] - inp["turns"][0] + 1
   if rec["why"] is None:
     moved = g["power_limit_w"] is not None and rec["power_limit_end_w"] is not None and abs(g["power_limit_w"] - rec["power_limit_end_w"]) >= LIMIT_STEP_W
     short = len(rec.get("turns") or []) < want
-    rec["why"] = _words("survived") if (rec.get("exit") or {}).get("survived") else \
+    rec["why"] = _words("switch_ignored", what="; ".join(f"{k}: {v}" for k, v in rec["switch_ignored"].items())) if rec["switch_ignored"] else \
+                 _words("survived") if (rec.get("exit") or {}).get("survived") else \
                  _words("cap_moved", a=g["power_limit_w"], b=rec["power_limit_end_w"]) if moved else \
                  _words("short", n=len(rec.get("turns") or []), want=want) if short else None
   rec["valid"] = rec["why"] is None
@@ -524,7 +605,7 @@ def run(*, out:str, server_argv:str, arms:list[str], session:str, repeats:int, e
   from boltbeam.collectors.replay import engine as engine_of
   if history not in HISTORY:
     raise Refused(_words("bad_history", history=history, ok=", ".join(HISTORY)))
-  parsed = [parse_arm(a) for a in arms]
+  parsed = [{**a, "binary": build_of(engine, a["binary"])} for a in map(parse_arm, arms)]  # an arm's build, as tune resolves it
   names = [a["name"] for a in parsed]
   if len(set(names)) != len(names) or len(names) < (1 if trace_windows else 2) or repeats < 1 or (trace_windows and len(names) * repeats > 1):
     raise Refused(_words("bad_trace_plan" if trace_windows else "bad_plan"))
@@ -536,9 +617,12 @@ def run(*, out:str, server_argv:str, arms:list[str], session:str, repeats:int, e
     raise Refused(_words("bad_span", turns=turns))
   lens, lens_id = read_list(lengths, "lengths", n)
   gap, gap_id = read_list(gaps, "gaps_s", n)
-  base_env, base_argv = split_env(shlex.split(server_argv.replace("\\\n", " ")))
+  base_env, base_argv = split_env(split_command(server_argv))
   if not base_argv:
     raise Refused(_words("bad_server"))
+  base_argv = [build_of(engine, base_argv[0]), *base_argv[1:]]  # the server's build, by the resolver tune and Measure MTP use
+  if refused := sorted({w for a in parsed for w in slot_refusals(engine, {**base_env, **a["env"]}, [*base_argv, *a["flags"]])}):
+    raise Refused("; ".join(refused))  # a mod that turns itself off at this slot count would pass a check it never ran
   inputs = {"server_argv": base_argv, "server_env": base_env, "arms": parsed, "session": sess_id, "lengths": lens_id,
             "gaps": gap_id, "history": history, "repeats": repeats, "order": order(names, repeats), "engine": engine,
             "wrap": shlex.split(wrap), "power_cap_w": power_cap_w, "turns": span,
@@ -589,6 +673,10 @@ def run(*, out:str, server_argv:str, arms:list[str], session:str, repeats:int, e
       say(f"session-ab: {name} block {block + 1}: " + ("valid" if rec["valid"] else f"INVALID: {rec['why']}"))
       if rec["valid"]:
         break
+      if rec.get("switch_ignored"):  # the engine said a mod never ran: a failed check, and a retry would say it again
+        record["stopped"] = rec["why"]
+        _write(path, record)
+        return record
     else:
       record["stopped"] = _words("retries", name=name, block=block + 1, n=retries + 1)
       _write(path, record)

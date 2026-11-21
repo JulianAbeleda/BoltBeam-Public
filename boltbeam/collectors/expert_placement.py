@@ -55,11 +55,11 @@ def parse_flags(tokens:list[str]) -> dict[str, Any]:
 def recorded(run) -> dict[str, Any] | None:
   """The offload a run recorded: its engine arguments (trace_request.json engine_settings: engine_args, or the keys cpu_moe,
   n_cpu_moe, override_tensor, moe_cache_mib, moe_cache_cpu_share, moe_cache_hit_rate), or a Strata fork row. None: no offload."""
-  import shlex
+  from boltbeam.core.shell import split_command
   from boltbeam.artifacts.run_io import load_manifest, optional
   s = optional(run, "trace_request.json").get("engine_settings") or optional(run, "workload_profile.json").get("engine_settings") or {}
   args = s.get("engine_args") or []
-  toks = shlex.split(args) if isinstance(args, str) else [str(a) for a in args]
+  toks = split_command(args) if isinstance(args, str) else [str(a) for a in args]
   from boltbeam.collectors.capture_settings import render_llama
   toks += render_llama({k: True if k == "cpu_moe" else s[k] for k in PLACEMENT if s.get(k) is not None and (k != "cpu_moe" or s[k])})
   flags = parse_flags(toks)

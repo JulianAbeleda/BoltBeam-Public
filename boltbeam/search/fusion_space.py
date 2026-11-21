@@ -23,14 +23,22 @@ Nothing here names a backend, a chip or a model shape.
 """
 from __future__ import annotations
 
-import functools, json, math, pathlib, re, struct
+import functools, json, pathlib, re, struct
 from collections.abc import Mapping
 from typing import Any
 from boltbeam import formats
 
 GRAPH_TABLE = pathlib.Path(__file__).resolve().parents[1] / "data" / "decode_graph.json"
-# the ops BoltBeam computes itself (reference): a node with any other op cannot be inside a fusion BoltBeam checks
-REFERENCE_OPS = ("gemv", "silu_mul", "add", "cast_fp16")
+# What each graph op computes is the table's `fusion` rows: neutral ops applied in turn. This module computes them in
+# tolerance mode: each op's formula in fp64 pure Python (any weight format; no numpy; FORMULAS), compared within
+# math/numerics.TOLERANCE on the GPU's output.
+OP_TABLE, LOG2E = GRAPH_TABLE, 1.4426950408889634
+# (value so far, the node's later reads, its fusion row) -> value; a binary op takes the next read; matmul: Reference.at
+FORMULAS = {"matmul": None, "silu": lambda a, _r, _row: a / (1.0 + 2.0 ** (-a * LOG2E)) if a > -80 else 0.0,
+            "mul": lambda a, r, _row: a * r.pop(0), "add": lambda a, r, _row: a + r.pop(0), "cast": lambda a, _r, row: _round([a], row["to"])[0]}
+FUSION_OPS = json.loads(OP_TABLE.read_text())["fusion"]["rows"]
+# the ops BoltBeam computes itself (reference): a node with any other op cannot be inside a fusion BoltBeam checks.
+REFERENCE_OPS = tuple(op for op, row in FUSION_OPS.items() if all(n in FORMULAS for n in row["ops"]))
 LAYER = re.compile(r"^blk\.(\d+)\.")  # GGUF's per-layer tensor names (blk.N.<role>.weight)
 DTYPES = {k: (r["struct"], r["block"][1]) for r in formats.rows() if "struct" in r for k in (r["metal"], r["torch"])}  # data/formats.json
 NOT_IN_MODEL = ("has no kernel of its own in the model's capture: counted as 0 ms, which favours the model's "
@@ -214,14 +222,10 @@ def _round(values:list[float], dtype:str) -> list[float]:
   return list(struct.unpack(f"<{len(values)}{fmt}", struct.pack(f"<{len(values)}{fmt}", *values)))
 
 
-def _silu(a:float) -> float:
-  return a / (1.0 + math.exp(-a)) if a > -80 else 0.0
-
-
 class Reference:
   """The covered nodes computed one after another by BoltBeam alone: a weight node by pure-Python dequantize and dot
-  (gemv_reference.reference_row) on the model's bytes, an elementwise node by its op. Values from outside are the ones
-  BoltBeam bound, rounded to the dtype the kernel reads them in."""
+  (gemv_reference.reference_row) on the model's bytes, an elementwise node by its op's rows in the table, in tolerance
+  mode. Values from outside are the ones BoltBeam bound, rounded to the dtype the kernel reads them in."""
 
   def __init__(self, nodes:list[str], quant:str, rows:int, cols:int, weights:Mapping[str, bytes], values:Mapping[str, list[float]]):
     self.nodes, self.quant, self.rows, self.cols = list(nodes), quant, rows, cols
@@ -247,14 +251,12 @@ class Reference:
     if op == "gemv":
       x = self.full(row["reads"][0])
       return gemv_reference.reference_row(self.weights[node], self.quant, i, len(x), x)
-    a = [self.at(v, i) for v in row["reads"]]
-    if op == "silu_mul":
-      return _silu(a[0]) * a[1]
-    if op == "add":
-      return a[0] + a[1]
-    if op == "cast_fp16":
-      return _round([a[0]], "half")[0]
-    raise ValueError(f"BoltBeam has no reference for {node} ({op})")
+    if op not in REFERENCE_OPS:
+      raise ValueError(f"BoltBeam has no reference for {node} ({op})")
+    value, *rest = [self.at(v, i) for v in row["reads"]]
+    for name in FUSION_OPS[op]["ops"]:
+      value = FORMULAS[name](value, rest, FUSION_OPS[op])
+    return value
 
 
 def bind(record:Mapping[str, Any], *, weights:Mapping[str, bytes], value_len:Mapping[str, int], rows:int,
@@ -308,5 +310,5 @@ def value_lengths(nodes:list[str], rows:int, cols:int) -> dict[str, int]:
   return out
 
 
-__all__ = ["GRAPH_TABLE", "NOT_IN_MODEL", "REFERENCE_OPS", "Reference", "adjacency", "bind", "fusion_name", "graph",
+__all__ = ["GRAPH_TABLE", "NOT_IN_MODEL", "OP_TABLE", "REFERENCE_OPS", "Reference", "FORMULAS", "adjacency", "bind", "fusion_name", "graph",
            "layers", "propose", "value_lengths", "workload"]

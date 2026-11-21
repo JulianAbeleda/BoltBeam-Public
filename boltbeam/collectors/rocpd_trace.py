@@ -11,7 +11,8 @@ work-items; it is written in blocks, as CUDA counts it. rocpd names no node's or
 instantiations in order, so the k-th hipGraphInstantiate is exec k, its capture the last one its thread ended,
 and node n the capture's n-th kernel launch, copy or fill. Every node is checked against that launch's grid and block; a
 graph whose launches do not line up is refused, never guessed. ROCm runs a copy or fill as its own blit kernel
-(__amd_rocclr_*); Nsight records those as memory operations, not kernels, so they are left out of the kernels here.
+(__amd_rocclr_*); Nsight records those as memory operations, not kernels, so they are left out of the kernels here, and
+a --memory-copy-trace's copies are its MEMCPY rows. A kernel's shortName is its function's own name, as Nsight's.
 """
 from __future__ import annotations
 
@@ -27,9 +28,20 @@ SCHEMA = """create table StringIds(id integer primary key, value text);
 create table NVTX_EVENTS(start int, end int, text text, textId int, globalTid int, eventType int);
 create table CUPTI_ACTIVITY_KIND_RUNTIME(start int, end int, globalTid int, correlationId int, nameId int);
 create table CUPTI_ACTIVITY_KIND_KERNEL(start int, end int, correlationId int, globalPid int, deviceId int, streamId int,
-  graphNodeId int, demangledName int, mangledName int, gridX int, gridY int, gridZ int, blockX int, blockY int, blockZ int);
+  graphNodeId int, demangledName int, mangledName int, gridX int, gridY int, gridZ int, blockX int, blockY int, blockZ int,
+  shortName int);
+create table CUPTI_ACTIVITY_KIND_MEMCPY(start int, end int, bytes int, copyKind int, srcKind int, dstKind int, streamId int);
 create table CUDA_GRAPH_NODE_EVENTS(start int, end int, globalTid int, graphNodeId int, originalGraphNodeId int);
 create table ANALYSIS_FILE(filename text, globalPid int); create table TARGET_INFO_SESSION_START_TIME(systemClockNs int);"""
+
+
+COPY_KIND = {("CPU", "GPU", False): 1, ("GPU", "CPU", False): 2, ("GPU", "GPU", True): 8, ("GPU", "GPU", False): 10}  # Nsight's
+# copyKind (HtoD, DtoH, DtoD, PtoP) by the agents' types and whether they are one device; rocpd does not say pinned or pageable
+
+
+def short_name(name:str) -> str:
+  """A demangled kernel name as Nsight's shortName: the function's own name, no return type, template or parameters."""
+  return re.split(r"[<(]", name.removeprefix("void "), maxsplit=1)[0].strip()
 
 
 def tid(pid:int, thread:int) -> int:
@@ -101,25 +113,27 @@ def windows(sources:list[Path]) -> list[tuple[int, int]]:
   return [(a[1], b[1]) for a, b in zip(marks, marks[1:]) if a[0] == "roctxProfilerResume" and b[0] == "roctxProfilerPause"]
 
 
-def export(sources:list[Path], dst:Path, *, window:tuple[int, int] | None = None, nodes:bool = True) -> Path:
+def export(sources:list[Path], dst:Path, *, window:tuple[int, int] | None = None, nodes:bool = True,
+           lineage:bool = True) -> Path:
   """Write dst (an Nsight-shaped capture.sqlite) from rocprofv3's rocpd databases, one per traced process. window
   keeps one capture window (as nsys writes one file per range): its markers, calls, and the kernels its calls
   launched. nodes writes every replayed graph node's origin (the lineage file); a window file without them resolves
-  its nodes through that one, as semantic_capture.Capture(lineage=) reads nsys's."""
+  its nodes through that one, as semantic_capture.Capture(lineage=) reads nsys's. lineage False: a timeline alone (the
+  time budget), no graph node named by its origin, so an engine whose graphs do not line up with their captures exports."""
   (dst := Path(dst)).unlink(missing_ok=True)
   (out := sqlite3.connect(dst)).executescript(SCHEMA)
   strings: dict[str, int] = {}
   sid = lambda s: strings.setdefault(s, len(strings) + 1) if s is not None else None  # noqa: E731
   for src in sources:
     with sqlite3.connect(src) as db:
-      _copy(db, out, sid, window, nodes)
+      _copy(db, out, sid, window, nodes, lineage)
   out.executemany("insert into StringIds values(?,?)", [(i, s) for s, i in strings.items()])
   out.execute("insert into TARGET_INFO_SESSION_START_TIME values(0)")
   out.commit(), out.close()
   return dst
 
 
-def _copy(db:sqlite3.Connection, out:sqlite3.Connection, sid, window, with_nodes) -> None:
+def _copy(db:sqlite3.Connection, out:sqlite3.Connection, sid, window, with_nodes, lineage=True) -> None:
   # rocprofv3 writes its tables without indexes; its views join a million call arguments to their calls
   for (table,) in db.execute("select name from sqlite_master where type='table' and "
                              "(name like 'rocpd_arg%' or name like 'rocpd_region%')").fetchall():
@@ -141,18 +155,23 @@ def _copy(db:sqlite3.Connection, out:sqlite3.Connection, sid, window, with_nodes
   for r in rows:
     if r[6]:
       replayed[r[6]][r[7]] = (shape(r[10:]), r[8])
-  captured = origins(captures(db), replayed)
+  captured = origins(captures(db), replayed) if lineage else {}
   kernels, nodes = [], {}
   for (start, end, corr, pid, dev, stream, exec_id, index, name, raw, *dims) in rows:
     (grid, block), graph = shape(dims), None
-    if exec_id:
+    if exec_id and lineage:
       launch = captured[exec_id, index]
       graph = node(exec_id, index)
       nodes[graph] = (launch["start"], launch["end"], launch["tid"], graph)
     # ROCm runs copies and fills as kernels; CUDA records them as copies
     if not name.startswith("__amd_rocclr_") and (window is None or corr in launched):
-      kernels.append((start, end, corr, pid << 24, dev, stream, graph, sid(name), sid(raw), *grid, *block))
-  out.executemany("insert into CUPTI_ACTIVITY_KIND_KERNEL values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", kernels)
+      kernels.append((start, end, corr, pid << 24, dev, stream, graph, sid(name), sid(raw), *grid, *block, sid(short_name(name))))
+  out.executemany("insert into CUPTI_ACTIVITY_KIND_KERNEL values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", kernels)
+  if db.execute("select 1 from sqlite_master where name='memory_copies'").fetchone():  # --memory-copy-trace's copies
+    out.executemany("insert into CUPTI_ACTIVITY_KIND_MEMCPY values(?,?,?,?,null,null,?)",
+                    [(s, e, size, COPY_KIND.get((src, dst, src_dev == dst_dev), 0), stream) for s, e, size, src, dst, src_dev, dst_dev, stream in
+                     db.execute("select start, end, size, src_agent_type, dst_agent_type, src_agent_abs_index, dst_agent_abs_index, "
+                                "stream_id from memory_copies") if inside(s)])
   out.executemany("insert into CUDA_GRAPH_NODE_EVENTS values(?,?,?,?,null)", nodes.values() if with_nodes else ())
   out.executemany("insert into ANALYSIS_FILE values(?,?)",
                   [(str(g), p << 24) for g, p in db.execute("select guid, pid from processes")])

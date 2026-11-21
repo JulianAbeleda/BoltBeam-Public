@@ -535,14 +535,19 @@ def output_layers(names_grids:list[tuple[str, Any]], rows:list[dict[str, Any]], 
           and vocab in {x for c in (1, 2) for x in out_rows(r, g[0], c)}]
 
 
-def forwards(tl:Timeline, fams:list[str], rule:dict[str, Any], heads:list[int] | None = None) -> list[dict[str, Any]]:
+def forwards(tl:Timeline, fams:list[str], rule:dict[str, Any], heads:list[int] | None = None,
+             row_bytes:int | None = None) -> list[dict[str, Any]]:
   """The trace's forwards in order: the kernels between two reads of a result (copies of rule["result_read"]; no other
   copy cuts one), or, with heads (output_layers: the header's vocabulary known), between two output-layer launches, so
   a read inside a forward (an expert cache's lookup) does not split it; a run of kernels with no per-layer launch (a
   sampler) joins the forward before it, or the one after it when it comes first; with heads, so do the launches after the
   last output layer (a catch-up pass the window ends with). Each: its kernel indexes, start, end
-  (the last result read before the next forward, else its last kernel) and its per-layer launches."""
-  reads = sorted(c["end_ns"] for c in tl.copies if c["kind"] == rule["result_read"])
+  (the last result read before the next forward, else its last kernel) and its per-layer launches. row_bytes: the
+  model's output row (its vocabulary in f32); when some reads are whole rows (an engine that reads the logits back), only
+  those are results: the others are a layer's activations handed to the host and back (layers the CPU computes)."""
+  back = [c for c in tl.copies if c["kind"] == rule["result_read"]]
+  rows = [c for c in back if row_bytes and c["bytes"] and c["bytes"] % row_bytes == 0]
+  reads = sorted(c["end_ns"] for c in rows or back)
   cuts = sorted(tl.kernels[j][1] for j in heads) if heads else reads
   layer = set(rule["layer_families"])
   groups: dict[int, list[int]] = {}
@@ -676,7 +681,7 @@ def decode_budget(tl:Timeline, *, tokens:int, accepted:int = 0, drafted:int = 0,
                   span:tuple[int, int] | None = None, wall_ms:float | None = None, engine:str | list[str] | None = None,
                   vendor:str | None = None, read:dict[str, Any] | None = None, overhead:dict[str, Any] | None = None,
                   input_rows:dict[str, int] | None = None, streaming:dict[str, Any] | None = None, prompt_from_counts:bool = False,
-                  families_table:dict[str, Any] | None = None,
+                  families_table:dict[str, Any] | None = None, output_row_bytes:int | None = None,
                   causes_table:dict[str, Any] | None = None, what:str | None = None, vocab:int | None = None,
                   target_id:str | None = None) -> dict[str, Any]:
   """The time budget of one decode request (budget, over the whole request) and its `decode` part. The request is cut
@@ -693,13 +698,14 @@ def decode_budget(tl:Timeline, *, tokens:int, accepted:int = 0, drafted:int = 0,
   prompt_from_counts: with no first-token mark, the prompt's forwards are the fewest leading forwards after which the
   rest give the engine's counts (said in the record: the count check is then weaker, it chose the prompt).
   vocab: the header's vocabulary (its output layer's rows): forwards are then cut at output-layer launches (the engine's
-  shapes rows, the chip's facts by target_id), not at result reads, so reads inside a forward do not split it."""
+  shapes rows, the chip's facts by target_id), not at result reads, so reads inside a forward do not split it.
+  output_row_bytes: the model's output row, for forwards (layers on the CPU hand activations back between results)."""
   tl = clip(tl, span)
   t = families_table or _table("kernel_families.json")
   rule, row = forward_rule(t), decode_row(engine, t)
   fams = launch_families(tl.kernels, families_for(engine, vendor, t, True))
   heads = output_layers(list(zip((k[2] for k in tl.kernels), tl.grids)), shape_rows(engine, target_id), vocab) if vocab and tl.grids else None
-  segs = forwards(tl, fams, rule, heads)
+  segs = forwards(tl, fams, rule, heads, output_row_bytes)
   kw = dict(engine=engine, vendor=vendor, families_table=t, causes_table=causes_table, gap_ms=0.0, decode=True)
   steps_expected = decode_steps(tokens, accepted, row)
   per = (row or {}).get("draft_forwards") if k else None

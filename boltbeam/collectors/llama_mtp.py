@@ -15,7 +15,7 @@ timed request per prompt and depth, as on vLLM), and chat requests (token ids he
 server's /apply-template, so every k reads the same ids)."""
 from __future__ import annotations
 
-import json, pathlib, sys
+import json, pathlib, shutil, sys
 from typing import Any
 
 from boltbeam.collectors import capture_settings as cs, engine_common as ec, llama_server_decode as lsd, mtp
@@ -78,16 +78,19 @@ def offer(model:str, draft_bytes:int, *, facts:bool) -> dict[str, Any] | None:
   return {"ks": list(mtp.KS), "blocked": blocked, "head": str(found[0]) if len(found) == 1 else None}
 
 
-def resolve(model:str, head:str | None, server:str | None) -> tuple[pathlib.Path, str]:
-  """The draft head (the one named, else the one heads() finds) and the server binary, or MtpRefused saying which is missing."""
+def resolve(model:str, head:str | None, build:str | None) -> tuple[pathlib.Path, str]:
+  """The draft head (the one named, else the one heads() finds) and the build's llama-server (llama_server_decode.server,
+  the one resolver tune uses: build is any program of it, none: as tune finds one), or MtpRefused saying which is missing."""
   if head and not pathlib.Path(head).expanduser().is_file():
     raise mtp.MtpRefused(f"the draft head {head} is not a file")
   found = [pathlib.Path(head).expanduser()] if head else heads(model)
   if len(found) != 1:
     said = ", ".join(f.name for f in found) + " are all MTP heads" if found else "no MTP head is"
     raise mtp.MtpRefused(f"{said} beside {pathlib.Path(model).name}: name the one to measure (--draft HEAD)")
-  if (server := server or lsd.find()) is None:
-    raise mtp.MtpRefused(f"llama-server was not found ({lsd.WHERE}): set ${lsd.ENV}")
+  if (server := lsd.server(build)) is None:
+    raise mtp.MtpRefused(f"llama-server was not found ({lsd.WHERE}): pass --build or set ${lsd.ENV}")
+  if build and not (pathlib.Path(server).expanduser().is_file() or shutil.which(server)):
+    raise mtp.MtpRefused(f"no llama-server at {server}: pass --build as any program of the build")
   return found[0], server
 
 
@@ -95,21 +98,21 @@ def spec_flags(head:pathlib.Path, k:int) -> list[str]:
   return ["-md", str(head.absolute()), "--spec-type", "draft-mtp", "--spec-draft-n-max", str(k)] if k else []
 
 
-def fit_context(model:str, head:str | None, *, k:int, need:int, out:pathlib.Path, server:str | None = None) -> tuple[int | None, str]:
+def fit_context(model:str, head:str | None, *, k:int, need:int, out:pathlib.Path, build:str | None = None) -> tuple[int | None, str]:
   """The largest server context llama.cpp's own fit (common_fit_params, with the draft head and its context at draft
   count k, to its free-memory target) holds on this GPU's free memory now, and how it says so: a server started with the fit on
   (no -c, no -ngl) and stopped as soon as it has logged the fit, before the weights load. None: the model's own context
   fits. need and the context returned are the measurement's, the server's less the driver's HEADROOM; the fit never goes
   below need (-fitc): MtpRefused when even that fits only with layers off the GPU."""
   from boltbeam.report.plain import words
-  hd, server = resolve(model, head, server)
+  hd, server = resolve(model, head, build)
   w = words()["llama_server"]
   argv = [sys.executable, str(lsd.DRIVER), "--server", server, "--model", str(pathlib.Path(model).absolute()), "--port", "0", "--ctx-size", "0",
-          "--flags", json.dumps(spec_flags(hd, k)), "--fit-probe", str(need + lsd.HEADROOM), "--log", str(out / "llama-server-fit.log"),
+          "--flags", json.dumps(spec_flags(hd, k)), "--fit-probe", str(need + lsd.HEADROOM), "--log", str(out / f"llama-server-fit-k{k}.log"),
           "--deadline-s", str(FIT_DEADLINE_S), "--pgid-file", str(out / mtp.SERVER_GROUP.format(k="fit"))]
   out.mkdir(parents=True, exist_ok=True)
   try:
-    got = next(x["fit"] for x in ec.run_driver(argv, log=out / "mtp-fit.log", timeout_s=FIT_DEADLINE_S + DRIVER_GRACE_S) if "fit" in x)
+    got = next(x["fit"] for x in ec.run_driver(argv, log=out / f"mtp-fit-k{k}.log", timeout_s=FIT_DEADLINE_S + DRIVER_GRACE_S) if "fit" in x)
   finally:
     mtp.stop_group(out / mtp.SERVER_GROUP.format(k="fit"))
   if not got["fits"]:
@@ -118,10 +121,11 @@ def fit_context(model:str, head:str | None, *, k:int, need:int, out:pathlib.Path
 
 
 def measure(model:str, ks:list[int], *, backend:str, out:pathlib.Path, tokens:int = mtp.TOKENS, long_tokens:int = 2048,
-            long_why:str = "asked (--long-tokens)", grow:bool = False, head:str | None = None, server:str | None = None) -> dict[str, Any]:
-  """collectors/mtp.sweep on llama-server. head: the draft head (default: the one heads() finds); server: the binary
-  (default: llama_server_decode.find)."""
-  hd, server = resolve(model, head, server)
+            long_why:str = "asked (--long-tokens)", grow:bool = False, head:str | None = None, build:str | None = None,
+            admit=None) -> dict[str, Any]:
+  """collectors/mtp.sweep on llama-server (admit: what the sweep asks before a grown k, screen.mtp_admit). head: the draft head (default: the one heads() finds); build: any program of
+  the build (resolve: the one resolver tune uses)."""
+  hd, server = resolve(model, head, build)
   prompts = mtp.prompt_set()
   deadline, ends = deadline_s(prompts), json.dumps(end_ids(model))
 
@@ -134,4 +138,4 @@ def measure(model:str, ks:list[int], *, backend:str, out:pathlib.Path, tokens:in
             "--end-ids", ends, "--deadline-s", str(deadline), "--pgid-file", str(out / mtp.SERVER_GROUP.format(k=k))]
     return ec.run_driver(argv, log=out / f"mtp-k{k}.log", timeout_s=deadline + DRIVER_GRACE_S)  # the driver's own deadline first: it stops its server
   return mtp.sweep(run_k, ks, model=model, backend=backend, out=out, tokens=tokens, long_tokens=long_tokens, long_why=long_why, grow=grow,
-                   decode_speed="(predicted_n - 1) / predicted_ms, llama-server's own timings: no prefill")
+                   decode_speed="(predicted_n - 1) / predicted_ms, llama-server's own timings: no prefill", admit=admit)

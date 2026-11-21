@@ -437,7 +437,7 @@ def import_profiler_ncu_csv(
   path: str | pathlib.Path,
   *,
   model_id: str,
-  target_id: str = "nvidia_unknown",
+  target_id: str,
   workload: str = "decode",
   context: int | None = None,
   provider_id: str = "nvidia/ncu",
@@ -445,6 +445,8 @@ def import_profiler_ncu_csv(
   """Import an NCU CSV into a ``boltbeam.hw_trace.v1`` payload."""
   if not model_id:
     raise ValueError("model_id is required")
+  from boltbeam.target.targets import need_target_id
+  need_target_id(target_id, "import-ncu")  # a trace names the chip it ran on: no default chip
   csv_path = pathlib.Path(path)
 
   rows: list[dict[str, Any]] = []

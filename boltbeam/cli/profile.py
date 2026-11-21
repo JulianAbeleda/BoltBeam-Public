@@ -107,7 +107,7 @@ def _register_import_ncu(sub) -> None:
   p.add_argument("--model-id", default=None,
                  help="BoltBeam model id for the trace; required unless --run supplies it")
   p.add_argument("--target-id", default=None,
-                 help="target id for the trace; defaults to run target or nvidia_unknown")
+                 help="target id for the trace; required unless --run supplies one (no chip is assumed)")
   p.add_argument("--workload", default=None, choices=["decode", "prefill"],
                  help="workload represented by the trace; defaults to run workload or decode")
   p.add_argument("--context", type=int, default=None,
@@ -129,7 +129,7 @@ def cmd_import_ncu(args) -> int:
     trace = import_profiler_ncu_csv(
       args.csv,
       model_id=model_id,
-      target_id=args.target_id or run_manifest.get("target_id") or "nvidia_unknown",
+      target_id=need_target_id(args.target_id or run_manifest.get("target_id"), "import-ncu"),
       workload=args.workload or run_manifest.get("workload") or "decode",
       context=args.context,
       provider_id=args.provider_id or "nvidia/ncu",
@@ -419,6 +419,9 @@ def _decode_time_budget(args, rows:list[dict], lines:list[dict], kw:dict) -> int
   overhead = _decode_overhead(row, rows, json_lines(pathlib.Path(args.untraced).read_text()) if args.untraced else None)
   kw = {k: v for k, v in kw.items() if k != "gap_ms"}  # a decode attributes every gap
   more = {}
+  if args.model:  # the output row in f32: a read of whole rows is a result, other reads are layers handed to the host
+    from boltbeam.profile.loaders import profile_from_model
+    more["output_row_bytes"] = 4 * (profile_from_model(args.model).vocab_size or 0) or None
   if args.spans_from_trace:
     tl = tb.timeline_from_nsys(args.trace)
     more = {"tl": tl, "trace_span": tb.spans_from_trace(tl, [r["wall_s"] * 1e3 for r in rows])[i]}
@@ -652,6 +655,8 @@ def cmd_span_saving(args) -> int:
   tl = tb.timeline_from_nsys(args.capture)
   s = ss.summary(ss.spans(tl.kernels, tl.grids, args.run), pathlib.Path(args.capture).name)
   rec = {"schema": ss.SCHEMA, "source": pathlib.Path(args.capture).name, "run": args.run, "spans": s}
+  if args.stock_for:  # the candidate and PASS:SHAPE the run stands for, written into the record
+    rec |= dict(zip(("candidate", "at"), args.stock_for))
   if args.candidate_us is not None and s.get("occurrences"):
     rec["prediction"] = ss.predict(s, args.candidate_us, args.candidate_source, args.per_step, "estimate" if args.candidate_estimate else "measured")
   if args.out:
@@ -669,6 +674,7 @@ def _register_span_saving(sub) -> None:
   p.add_argument("--candidate-source", default=None, help="where the candidate's time comes from (a run folder file, or the model that estimates it)")
   p.add_argument("--candidate-estimate", action="store_true", help="the candidate's time is an estimate (a model's figure), not a bench measurement")
   p.add_argument("--per-step", type=float, default=None, help="occurrences a decode step (or a turn): gives the saving a step")
+  p.add_argument("--stock-for", nargs=2, default=None, metavar=("HASH", "PASS:SHAPE"), help="the candidate (its hash) whose stock side this run is, and its pass and shape: written into the record")
   p.add_argument("--out", default=None, help="write the record here (JSON)")
   p.set_defaults(fn=cmd_span_saving)
 

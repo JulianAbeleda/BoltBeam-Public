@@ -24,10 +24,13 @@ def tok_range(span:dict[str, float]) -> str:
   return lo if lo == hi else f"{lo}–{hi}"
 
 
-def replies_words(span:dict[str, float], *, all_cached:bool, unit:str = "tok/s") -> str:
+def replies_words(span:dict[str, float], *, all_cached:bool, unit:str = "tok/s", layers:bool = False) -> str:
   """The replies limit in words, the one place it is said: a band over hit rates, or one number with its own reason
-  (every expert in the card's cache; or the same at every hit rate swept)."""
+  (every expert in the card's cache; whole layers' experts on the card and in RAM, taking turns; or the same at every
+  hit rate swept)."""
   one = tok_range(span)
+  if layers:
+    return _w("replies_limit_layers", span=one, unit=unit)
   if "–" in one:
     return _w("replies_limit", span=one, unit=unit)
   return _w("replies_limit_cached" if all_cached else "replies_limit_flat", span=one, unit=unit)
@@ -97,31 +100,41 @@ def plan(sh:dict[str, Any], *, usable_vram:float, kv_bytes:float, vram_gbs:float
   if dense + total_exp > usable_vram + usable_ram:
     raise Refused(f"the weights need {_gb(dense + total_exp)} ({_gb(dense)} dense, {_gb(total_exp)} experts); this machine has "
                   f"{_gb(usable_vram)} usable GPU memory and {_gb(usable_ram)} usable RAM: {_gb(usable_vram + usable_ram)} in all. {ram['says']}")
-  cache = min(usable_vram - dense - kv_bytes, total_exp)
+  # a cache miss reads its expert's host copy (the CPU computes from it, or it is uploaded), so a cache plan needs every
+  # expert in RAM: past the usable RAM it reads from disk every token. Then whole layers' experts go on the card
+  # (-ncmoe, as the prompt setup) and RAM holds only the rest's; the CPU computes those, the card serves the others.
+  per_layer = total_exp / sh["layers"]
+  layered = total_exp > usable_ram and usable_vram - dense - kv_bytes < total_exp  # a cache of every expert never misses
+  in_ram = sh["layers"] - min(sh["layers"], int((usable_vram - dense - kv_bytes) // per_layer))
+  cache = 0.0 if layered else min(usable_vram - dense - kv_bytes, total_exp)
   mib = int(cache // 2**20)
   rate, memory = _rate(host)
   hl = host_links.of(host)
-  s = round(host["ram_gbs"] / (host["ram_gbs"] + rate), 2)  # the share that loads RAM and the copies equally
+  s = 1.0 if layered else round(host["ram_gbs"] / (host["ram_gbs"] + rate), 2)  # the share that loads RAM and the copies equally
   common = dict(dense_bytes=dense, expert_bytes=sh["expert_bytes"], vram_gbs=vram_gbs, ram_gbs=host["ram_gbs"], link_gbs=(hl or {}).get("gbs"), link=hl,
                 estimated=sh["estimated"], cpu_gbs=host.get("cpu_gbs"), h2d_gbs=host.get("h2d_gbs"), memory=memory)
-  rates = shapes.hit_rates(cache, total_exp, hottest_hit(routing, cache, sh))
+  rates = [1 - in_ram / sh["layers"]] if layered else shapes.hit_rates(cache, total_exp, hottest_hit(routing, cache, sh))
   band, plain = ol.band(rates, cpu_share=s, **common), ol.band(rates, cpu_share=0.0, **common)  # 0.0: llama.cpp's default share
   pinned = ol.band(rates, cpu_share=0.0, **{**common, "memory": "pinned"}) if (host.get("h2d_gbs") or {}).get("pinned") else None
   from boltbeam.collectors.capture_settings import render_llama
-  placed = {"cpu_moe": True, "moe_cache_mib": mib, "moe_cache_cpu_share": s} if engine == "llama.cpp" else None
+  placed = ({"n_cpu_moe": in_ram} if layered else {"cpu_moe": True, "moe_cache_mib": mib, "moe_cache_cpu_share": s}) if engine == "llama.cpp" else None
   flags = render_llama(placed) if placed else None
-  spill = max(total_exp - cache - usable_ram, 0.0)  # the experts the card's cache holds are never read from RAM after loading
-  notes = list(band[0]["notes"]) + ([("only if you choose to offload: " if fits else "") + f"the experts the cache does not hold "
-                                     f"({_gb(total_exp - cache)}) are more than the usable RAM ({_gb(usable_ram)}): {_gb(spill)} would be read from disk, "
-                                     "which this limit does not cover; the speed is below it"] if spill else []) \
+  spill = max(in_ram * per_layer - usable_ram, 0.0) if layered else 0.0
+  notes = list(band[0]["notes"]) + ([f"every expert ({_gb(total_exp)}) is more than the usable RAM ({_gb(usable_ram)}), and a cache's "
+                                     f"misses read the experts' copies there, so whole layers' experts stay on the card: the first {in_ram} "
+                                     f"layers' ({_gb(in_ram * per_layer)}) in RAM, computed by the processor"] if layered else []) \
+          + ([("only if you choose to offload: " if fits else "") + f"the experts in RAM ({_gb(in_ram * per_layer)}) are more than the "
+              f"usable RAM ({_gb(usable_ram)}): {_gb(spill)} would be read from disk, which this limit does not cover; the speed is below it"] if spill else []) \
           + ([] if memory else [_unmeasured(hl)]) + [hit_rate_note(routing, rates[0], engine)]
-  tok, lo_hi = [r["overlap"]["tok_s"] for r in band], shapes.span(band)
-  say = (replies_words(lo_hi, all_cached=cache >= total_exp, unit="tokens a second")
+  turns = [r["no_overlap"]["tok_s"] for r in band]  # whole layers on the card and in RAM run one after the other
+  tok, lo_hi = [r["overlap"]["tok_s"] for r in band], ({"low": min(turns), "high": max(turns)} if layered else shapes.span(band))
+  say = (replies_words(lo_hi, all_cached=cache >= total_exp, unit="tokens a second", layers=layered)
          + (" (estimate: the model's shapes are not read from a header)" if sh["estimated"] else "") + ". " + plain_words()["offload"]["decode_tuned"])
   return {"schema": "boltbeam.offload_setup.v1", "status": "recommended", "workload": "decode", "for": plain_words()["offload"]["for_decode"],
           "estimated": sh["estimated"], "notes": notes, "engine": engine,
           "shapes": {k: sh[k] for k in ("source", "dense_bytes", "expert_bytes", "expert_total", "experts", "top_k", "layers")},
           "cache_mib": mib, "cache_share_of_experts": cache / total_exp, "cpu_share": s, "ram_usable_bytes": usable_ram, "ram": ram, "spill_bytes": spill,
+          "layers_in_ram": in_ram if layered else None,
           "host": host, "hit_rates": rates, "routing": rp.words(routing, engine), "h2d_gbs": rate, "h2d_memory": memory, "vram_gbs": vram_gbs,
           "band": [{"hit_rate": r["hit_rate"], "ms": r["ms"], "bound_by": r["bound_by"], "tok_s": r["overlap"]["tok_s"],
                     "tok_s_no_overlap": r["no_overlap"]["tok_s"]} for r in band],
@@ -553,10 +566,16 @@ def page(out:dict[str, Any], *, usable_vram:float, kv_bytes:float, fits:bool = F
   vram_gbs = out["vram_gbs"]
   cache = out["cache_mib"] * 2**20
   spill = (lambda b: "; " + _w("spill_if_offloaded" if fits else "spill", spill=_gb(b)) if b else "")
-  all_cached = out["cache_share_of_experts"] >= 1
-  where = [{"label": "On the card, replies", "value": _w("card_replies", dense=_gb(sh["dense_bytes"]), kv=_gb(kv_bytes), cache=_gb(cache),
+  all_cached, n_ram = out["cache_share_of_experts"] >= 1, out.get("layers_in_ram")
+  per = sh["expert_total"] / sh["layers"]
+  where = ([{"label": "On the card, replies", "value": _w("card_prompts", dense=_gb(sh["dense_bytes"]), kv=_gb(kv_bytes), on=sh["layers"] - n_ram,
+                                                          layers=sh["layers"], experts=_gb((sh["layers"] - n_ram) * per),
+                                                          used=_gb(sh["dense_bytes"] + kv_bytes + (sh["layers"] - n_ram) * per), usable=_gb(usable_vram))},
+            {"label": "In RAM, replies", "value": _w("ram_prompts", n=n_ram, layers=sh["layers"], experts=_gb(n_ram * per)) + spill(out.get("spill_bytes"))}]
+           if n_ram is not None else
+           [{"label": "On the card, replies", "value": _w("card_replies", dense=_gb(sh["dense_bytes"]), kv=_gb(kv_bytes), cache=_gb(cache),
                                                           used=_gb(sh["dense_bytes"] + kv_bytes + cache), usable=_gb(usable_vram))},
-           {"label": "In RAM, replies", "value": _w("ram_replies_cached" if all_cached else "ram_replies", experts=_gb(sh["expert_total"])) + spill(out.get("spill_bytes"))}]
+            {"label": "In RAM, replies", "value": _w("ram_replies_cached" if all_cached else "ram_replies", experts=_gb(sh["expert_total"])) + spill(out.get("spill_bytes"))}])
   if pre.get("status") == "recommended":
     on = sh["layers"] - pre["layers_in_ram"]
     where += [{"label": "On the card, prompts", "value": _w("card_prompts", dense=_gb(sh["dense_bytes"]), kv=_gb(kv_bytes), on=on, layers=sh["layers"],
@@ -567,10 +586,11 @@ def page(out:dict[str, Any], *, usable_vram:float, kv_bytes:float, fits:bool = F
                                                     + spill(pre.get("spill_bytes"))}]
   if ram.get("host_tables_bytes"):
     where.append({"label": "Mapped from disk", "value": _w("tables", tables=_gb(ram["host_tables_bytes"]))})
-  rows_r = [{"label": "Settings", "value": _w("set_replies_cached", mib=f"{out['cache_mib']:,}") if all_cached else
+  rows_r = [{"label": "Settings", "value": _w("set_replies_layers", n=n_ram, layers=sh["layers"]) if n_ram is not None else
+                                           _w("set_replies_cached", mib=f"{out['cache_mib']:,}") if all_cached else
                                            _w("set_replies", mib=f"{out['cache_mib']:,}", pct=f"{100 * out['cpu_share']:.0f}")},
             {"label": "Flags", "value": " ".join(out.get("flags") or [])}, *([{"label": "Output", "value": said}] if (said := output_words(out)[1]) else []),
-            {"label": "Replies", "value": replies_words(out["tok_s"], all_cached=all_cached)},
+            {"label": "Replies", "value": replies_words(out["tok_s"], all_cached=all_cached, layers=n_ram is not None)},
             {"label": "Limited by", "value": _bound(out["band"][0]["bound_by"], vram_gbs=vram_gbs, host=host, rate=rate, memory=memory)}]
   sections = [{"title": _w("where"), "rows": where, "lines": [ram["says"]]}, {"title": _w("replies"), "rows": rows_r, "lines": []}]
   if pre.get("status") == "recommended":

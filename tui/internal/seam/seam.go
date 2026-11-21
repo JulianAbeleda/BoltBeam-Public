@@ -453,13 +453,16 @@ func (c Client) PipelineArgv(p Pipeline) []string {
 
 // MtpArgv is Measure MTP: the engine's decode per draft count k against k=0 (screen mtp), into out; the measurement is
 // kept in the newest machine facts of the run folders, where Recommend reads it back. context: Setup's Context, the
-// long depth (nil: Python derives it).
-func (c Client) MtpArgv(model, target, engine, out string, ks []int, context *int) []string {
+// long depth (nil: Python derives it). build: the build tune runs (any of its programs; "": Python finds one as tune does).
+func (c Client) MtpArgv(model, target, engine, build, out string, ks []int, context *int) []string {
 	list := make([]string, len(ks))
 	for i, k := range ks {
 		list[i] = strconv.Itoa(k)
 	}
 	argv := []string{c.Python, "-m", "boltbeam.workflow.screen", "mtp", model, "--target", target, "--engine", engine, "--out", out, "--ks", strings.Join(list, ",")}
+	if build != "" { // Measure MTP measures the build tune uses: one resolver
+		argv = append(argv, "--build", build)
+	}
 	if context != nil {
 		argv = append(argv, "--context", strconv.Itoa(*context))
 	}

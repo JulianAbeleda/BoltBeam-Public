@@ -39,7 +39,7 @@
   "uses_why": "by engine/name (the mod in any version); every mod with a switch is also read by results.engine_mods, context_audit.output_label and tune.output_of",
   "plan_only": {
     "llama.cpp/rs-one-copy": "costs +0.12 ms a decode step [0.04, 0.19] (session-ab, switch on vs off); it pays only when the plan spends the memory it frees (the expert residency placement with the hot draft), so a run on a modded build leaves it off and tune's spend fit names it (LLAMA_RS_ONE_COPY=1) when its plan uses the freed MiB",
-"llama.cpp/kv-stream": "costs -8.6 tok/s warm decode [-17.8, +0.6] at 128k where everything fits without it (session-ab, 3 pairs, N 65,536 vs off); it pays only where the memory it frees buys expert residency (256k: 220.0 vs 184.4 tok/s), so a run on a modded build leaves it off and tune's spend fit names it (LLAMA_KV_STREAM=N) when its plan uses the freed MiB"
+    "llama.cpp/kv-stream": "costs -8.6 tok/s warm decode [-17.8, +0.6] at 128k where everything fits without it (session-ab, 3 pairs, N 65,536 vs off); it pays only where the memory it frees buys expert residency (256k: 220.0 vs 184.4 tok/s), so a run on a modded build leaves it off and tune's spend fit names it (LLAMA_KV_STREAM=N) when its plan uses the freed MiB"
   },
   "plan_only_why": "mods whose switch a run on a modded build does not turn on by itself (workflow/mods.run_env): the spend fit names it when its plan pays for it (engine/name, as uses)",
   "install_paths": {
@@ -62,14 +62,9 @@
     }
   },
   "apply": {
-    "why": "screen mods per engine: the applier its mods use and where a build's source checkout is in its folder; an engine with no row lists nothing (vLLM: patch_p1 into a venv copy is not wired yet)",
+    "why": "screen mods per engine: the applier its mods use and where a build's source checkout is in its folder; an engine with no row lists nothing (vLLM: patch_p1 into a venv copy is not wired yet); where each mod applies is its chip row (data/mod_shapes.json chip_status, else the index row's own chips), not a backend list here",
     "llama.cpp": {
       "applier": "git_apply",
-      "backends": [
-        "CUDA"
-      ],
-      "backends_words": "CUDA patches (NVIDIA GPUs)",
-      "backends_why": "the GPU backends (data/targets.json backend) the mods do something on: the arkey_ie_mods llama.cpp mods were built and measured on CUDA (sm_120, an RTX 5090), their kernels and the ext-kernels hook are CUDA files, and a run sets switches only CUDA code reads; on Metal or HIP a modded copy would build and every switch would do nothing, so screen mods and the Engine picker say so instead",
       "source": "src",
       "copy_skip": [
         "build*"
@@ -99,8 +94,11 @@
   "evidence_patches": {
     "paths": [
       "docs/evidence/mtp-27b-rtx5090-r9700-20261027/r9700/patches/split-kv-verify.patch",
-      "docs/evidence/mtp-27b-rtx5090-r9700-20261027/r9700/patches/quark-lm-head.patch"
+      "docs/evidence/mtp-27b-rtx5090-r9700-20261027/r9700/patches/quark-lm-head.patch",
+      "docs/evidence/amd-r9700-patches-20261114/patches/llama-iq2xxs-avx512.patch",
+      "docs/evidence/amd-r9700-patches-20261114/patches/llama-sched-batch-gets.patch",
+      "docs/evidence/amd-r9700-patches-20261114/patches/llama-sync-spin.patch"
     ],
-    "why": "evidence records: the files the 2026-10-27 R9700 runs applied, kept verbatim beside their sources.md; the mods themselves live in arkey_ie_mods"
+    "why": "evidence records: the files the 2026-10-27 R9700 runs applied, kept verbatim beside their sources.md; the mods themselves live in arkey_ie_mods; the amd-r9700-patches-20261114 three are the R9700 box's 2026-11-14 llama.cpp patches (an AVX-512 IQ2_XXS dot product, GGML_SCHED_BATCH_GETS, GGML_CUDA_SYNC_SPIN), parked here until they are ported to arkey_ie_mods as mods"
   }
 }

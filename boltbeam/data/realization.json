@@ -1,6 +1,6 @@
 {
  "schema": "boltbeam.realization.v1",
- "note": "The session map's audit table (workflow/session_map.py, read only there). levers: the lever class each kernel class (data/kernel_classes.json) and each non-kernel row (copies, host) is closed by; a class not listed is `kernel`. realization: per lever class, measured history: what a lever of that class realized against the gap or projection an audit gave before it was built (ratio = realized / projected, each row cited, run folders under ~/storage/boltbeam-runs). A class's factor is the median of its rows' ratios, at most 1; a class with no row has no factor and its targets rank last. A new realized pair is a new row. z: the standard errors a difference must clear (the kernel ledger's checks use 3). calls: words in a host API call's name, per vendor, for the call counts the shape flags read. A row's `predicted` is the search/span-saving prediction (boltbeam span-saving: the stock run's measured trace wall minus the candidate's bench in-model time; in-model, so no factor applies to it) and `predicted_ratio` = realized / predicted. A span prediction needs no factor: on the R1-R3 batch (read after the method was written; the host-wait rule came after, moving R1 by 0.06 us) it predicted 0.193 ms a step against 0.180-0.193 realized, search-realization-20261119. The factor here (session_map's) still scales the audit's gaps, which are not span predictions. projections: levers projected but never built or measured in the model; they hold no ratio and give no factor until realized. predictions: every candidate the search predicts, tracked until realized (realized null + the test that will measure it).",
+ "note": "The session map's audit table (workflow/session_map.py, read only there). levers: the lever class each kernel class (data/kernel_classes.json) and each non-kernel row (copies, host) is closed by; a class not listed is `kernel`. realization: per lever class, measured history: what a lever of that class realized against the gap or projection an audit gave before it was built (ratio = realized / projected, each row cited, run folders under ~/storage/boltbeam-runs). A class's factor is the median of its rows' ratios, at most 1; a class with no row has no factor and its targets rank last. A new realized pair is a new row. z: the standard errors a difference must clear (the kernel ledger's checks use 3). calls: words in a host API call's name, per vendor, for the call counts the shape flags read. A row's `predicted` is the search/span-saving prediction (boltbeam span-saving: the stock run's measured trace wall minus the candidate's bench in-model time; in-model, so no factor applies to it) and `predicted_ratio` = realized / predicted. A span prediction needs no factor: on the R1-R3 batch (read after the method was written; the host-wait rule came after, moving R1 by 0.06 us) it predicted 0.193 ms a step against 0.180-0.193 realized, search-realization-20261119. The factor here (session_map's) still scales the audit's gaps, which are not span predictions. projections: levers projected but never built or measured in the model; they hold no ratio and give no factor until realized. predictions: the registrations written before a candidate is measured: the candidate's hash (so a prediction and a realization row join on it), the pass and shape it was made at (`at`, PASS:SHAPE), predicted_ms_step, when it was registered, its source. A registration is never rewritten and stays after the measurement. historic: true marks one written after its measurement (region_gdn_gate and concat-rows: written into this record on 2026-11-20, after their sessions were measured): it is never counted blind, and its row says historic. A realization row with `candidate` is written from a session-ab record, in numbers: measured_ms_step (mean and 95% t interval over the pairs), turns [used, of], the prediction it was held against (predicted_for, predicted_at, predicted_ms_step, `prediction`: registered and when, or typed at measure time), realized_over_predicted, `artifact` (the sha256 of what ran) and `session` (the sha256 of the session record). Its key is (candidate, measured_at, session); a candidate sits under one class. When the prediction is for another candidate, pass or shape the row is `void`: the measurement stays, no ratio. `regressed`: the arm got slower. `ratio` (measured / projected_ms_step) is null without a projection and on a void row; a row with no ratio is not in the class's factor, a regressed one (ratio below 0) is.",
  "z": 3,
  "levers": {
   "expert_routing": "fusion",
@@ -36,14 +36,53 @@
     "realized_ms_step": "0.180-0.193 (D: 15.14 ms a step x g / (1 + g), g = +1.2 to +1.29%)"
    },
    {
-    "lever": "generated GDN gating region (region_gdn_gate, b12521 kernels module), 256k",
-    "projected": "0.33-0.38 ms a step (E, summed kernel times; midpoint 0.355)",
-    "realized": "0.238 ms a step [0.210, 0.266], 3-pair confirm, turns 60-116",
+    "lever": "generated GDN gating region (region_gdn_gate: 2 gemvs + softplus + sigmoid, one launch for six; b12521 kernels module), 256k, turns 60-116",
+    "candidate": "3816a666a26fc92bb444d656d8cef3bf2abcd28f3a668e56938ba6b711ed2dee",
+    "artifact": "5ec83b3b0a89acbc34b649b401ebf803e74e8a2274fb632bc79f071a78e7fb3d",
+    "session": "115eeb3078b032c37ce9901e97cd43cdd67c52bdec566e6ce34b6343802cd5b7",
+    "measured_at": "decode:48x4",
+    "predicted_for": "3816a666a26fc92bb444d656d8cef3bf2abcd28f3a668e56938ba6b711ed2dee",
+    "predicted_at": "decode:48x4",
+    "predicted_ms_step": 0.219,
+    "prediction": "registered 2026-11-19",
+    "historic": true,
+    "measured_ms_step": {
+     "mean": 0.23829324894514767,
+     "lo": 0.2102513363166572,
+     "hi": 0.2663351615736381,
+     "n": 3
+    },
+    "clean_ms_step": {
+     "mean": 0.23701712029012934,
+     "lo": 0.20631599410436202,
+     "hi": 0.26771824647589665,
+     "n": 3
+    },
+    "per_pair": [
+     0.23614033173286772,
+     0.2505030554343081,
+     0.22823635966826714
+    ],
+    "pairs": 3,
+    "steps": 9164,
+    "turns": [
+     56,
+     56
+    ],
+    "arms": [
+     "S",
+     "G"
+    ],
+    "realized_over_predicted": {
+     "value": 1.088097027146793,
+     "lo": 0.960051764003001,
+     "hi": 1.216142290290585
+    },
+    "void": null,
+    "regressed": false,
+    "projected_ms_step": 0.355,
     "ratio": 0.67,
-    "source": "search-regions-20261119/README.md (projection); gdn-gate-live-20261119/README.md (confirm/session_ab.json)",
-    "predicted": "0.219 ms a step at Q 240k (span: wall 8.32 - candidate 2.25 us = 6.07 us a spot x 36.1)",
-    "predicted_ratio": 1.09,
-    "realized_ms_step": "0.238 [0.210, 0.266] (D: paired decode ms / steps, 3 pairs)"
+    "source": "gdn-gate-live-20261119/confirm/session_ab.json (measured; artifact = the kernel's cubin); search-regions-20261119/README.md (projected: 0.33-0.38 ms a step from summed kernel times, midpoint 0.355)"
    }
   ],
   "kernel": [
@@ -64,6 +103,51 @@
     "ratio": 0.97,
     "predicted_ratio": 1.0,
     "source": "sparse-chain-20261119/README.md:121 (projection), :155 (realized); search-realization-20261119/span-sparse-split-Q.json (predicted)"
+   },
+   {
+    "lever": "concat-rows: the non-contiguous concat launches by element count, not one block a row (b12521 kernels module), 256k, turns 60-116",
+    "candidate": "01cda15f28163f7c505c2427c1be8d1c288897850ef85e59211657210f976480",
+    "artifact": "4c05e2a6f50a45359b0789f77e0753fed15c7e9d1475d10acf5f5602c7840eda",
+    "session": "63ab97947b74f703d6ad6f0b96e21eb67f0997732bc28660679bae3d8ce96873",
+    "measured_at": "decode:7x10240",
+    "predicted_for": "793d78c6ee306e7faf60086efef1e296c24fbb0b86d32b644e09a080a2be6bd9",
+    "predicted_at": "prompt:13x10240",
+    "predicted_ms_step": 0.135,
+    "prediction": "registered 2026-11-20T02:54:00-05:00",
+    "historic": true,
+    "measured_ms_step": {
+     "mean": 0.1543363160192055,
+     "lo": 0.14659650687887946,
+     "hi": 0.16207612515953154,
+     "n": 3
+    },
+    "clean_ms_step": {
+     "mean": 0.15026890834028947,
+     "lo": 0.13878355216158697,
+     "hi": 0.16175426451899197,
+     "n": 3
+    },
+    "per_pair": [
+     0.1562432343954603,
+     0.15074083369707542,
+     0.1560248799650808
+    ],
+    "pairs": 3,
+    "steps": 9164,
+    "turns": [
+     56,
+     56
+    ],
+    "arms": [
+     "S",
+     "R"
+    ],
+    "realized_over_predicted": null,
+    "void": "predicted for another candidate (793d78c6ee30) at prompt:13x10240, measured at decode:7x10240: not a prediction for what was measured, so no ratio",
+    "regressed": false,
+    "projected_ms_step": null,
+    "ratio": null,
+    "source": "concat-launch-shape-20261120/confirm/session_ab.json (measured; artifact = the concat.cu that ran, tree-next 7536ca9); the prediction is void for the decode step (hook-match-gate-20261120)"
    }
   ],
   "host": [
@@ -112,13 +196,22 @@
  },
  "predictions": [
   {
-   "lever": "generated GDN gating region (region_gdn_gate: 2 gemvs + softplus + sigmoid, one launch for six), 256k",
-   "projected": "9.2-10.5 us a spot, 0.33-0.38 ms a step (E, summed kernel times)",
-   "predicted": "6.07 us a spot x 36.1 = 0.219 ms a step at Q 240k (0.220 at P 102k) (span: wall 8.32 - candidate 2.25 us); bench in-model 5.47",
-   "realized": "0.238 ms a step [0.210, 0.266], realized / predicted 1.09 [0.96, 1.22] (D; M, 3-pair confirm, turns 60-116 of the 256k session, b12521, per-arm page-cache evict; decode +3.5 tok/s [+3.0, +4.0], session -2.6 s [-3.3, -2.0]); 6.6 us a spot at 35.8 spots a step (D, check-mode count / steps); flat with depth (<=195k 0.245, <=262k 0.234)",
-   "test": "install via the b12521 kernels module manifest, same-output 30 turns, 1-pair 256k screen turns 60-116",
-   "source": "search-realization-20261119/span-gdn-gate-Q.json; search-regions-20261119/README.md (bench); gdn-gate-live-20261119/README.md (confirm/session_ab.json)",
-   "predicted_ratio": 1.09
+   "candidate": "3816a666a26fc92bb444d656d8cef3bf2abcd28f3a668e56938ba6b711ed2dee",
+   "at": "decode:48x4",
+   "predicted_ms_step": 0.219,
+   "lever": "generated GDN gating region (region_gdn_gate: 2 gemvs + softplus + sigmoid, one launch for six; b12521 kernels module), 256k, turns 60-116",
+   "registered": "2026-11-19",
+   "historic": true,
+   "source": "search-realization-20261119/span-gdn-gate-Q.json (span wall 8.32 - candidate 2.25 us = 6.07 us a spot x 36.1), registered in gdn-gate-live-20261119/README.md before any build or GPU run; the candidate is the 9-node window of hook-match-gate-20261120's session recording (region-next/dryrun/out-sc4-128)"
+  },
+  {
+   "candidate": "793d78c6ee306e7faf60086efef1e296c24fbb0b86d32b644e09a080a2be6bd9",
+   "at": "prompt:13x10240",
+   "predicted_ms_step": 0.135,
+   "lever": "concat-rows: the non-contiguous concat launches by element count, not one block a row (b12521 kernels module), 256k, turns 60-116",
+   "registered": "2026-11-20T02:54:00-05:00",
+   "historic": true,
+   "source": "concat-launch-shape-20261120/concatbench-2.json (bench at [13, 10240]: stock - rows = 3.77 us a spot x 35.9); the candidate is the 10-token prompt pass's concat (region-next/dryrun/out-h1-dump256, graph 1): the shape the bench was built from"
   }
  ]
 }
