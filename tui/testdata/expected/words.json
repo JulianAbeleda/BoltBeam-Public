@@ -456,6 +456,7 @@
   },
   "machine_figures": {
     "borrowed": "Borrowed, not measured on this machine: {what}. This run is {here}; the nearest measured row is {row} ({machine}, {date}, {run}): {value:g} {unit}. Used as {used:.4g} {unit}, widened against this setup by {margin:.3g}: one more reading's 95% bound over that row's {n} readings ({readings}). To measure it here: {how}.",
+    "other_chip": "Not measured on this chip, so not used: {what}. This run is {here}; it is measured on {rows} only, other chips: a figure keyed by chip is measured on the chip that reads it, never borrowed from another, and a setting that reads it keeps its default. To measure it here: {how}.",
     "other_vendor": "Not measured on this GPU's vendor, so not used: {what}. This run is {here}; it is measured on {rows} only, another vendor's GPU, whose memory and runtime differ: a figure is never borrowed across vendors, and a setting that reads it keeps its default. To measure it here: {how}.",
     "unkeyed": "Measured on this chip, and also dependent on what this run does not read, so each is an estimate where that differs: {figures}.",
     "unmeasured": "Not measured on this machine, so not used: {what}. This run is {here}; the only row is {row} ({machine}, {date}, {run}: {value:g} {unit}, {n} reading), which gives no spread to borrow it with: a saving is counted as nothing and a setting that reads it keeps its default. To measure it here: {how}.",

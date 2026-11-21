@@ -552,6 +552,15 @@ def cmd_context_audit(args) -> int:
   return 0 if out["ok"] else 1
 
 
+LOWERING_HELP = "gemm-space's lowering facts (boltbeam.gemm_lowering_facts.v1): whether it admits a float row's shape"
+
+
+def _lowering(path:str | None):
+  """The lowering facts kernel-ledger and session-map hand the ledger (kernel_ledger.coverage), or None."""
+  from boltbeam.search.gemm_strategy import GemmLowering
+  return GemmLowering.from_json(json.loads(pathlib.Path(path).read_text())) if path else None
+
+
 def cmd_kernel_ledger(args) -> int:
   from boltbeam.collectors import time_budget as tb
   from boltbeam.roofline import limit
@@ -570,10 +579,7 @@ def cmd_kernel_ledger(args) -> int:
   if bool(args.session) != bool(args.window) or (args.window and len(args.window) != len(args.capture)):
     return _fail("kernel-ledger: give --session with one --window per capture (the window its turns are tagged with), or neither")
   load = lambda p: json.loads(pathlib.Path(p).read_text()) if p else None  # noqa: E731
-  low = None
-  if args.lowering:
-    from boltbeam.search.gemm_strategy import GemmLowering
-    low = GemmLowering.from_json(load(args.lowering))
+  low = _lowering(args.lowering)
   from boltbeam.collectors import replay
   turns = replay.llama_turns(load(args.session)["turns"]) if args.session else None
   caps = []
@@ -603,7 +609,7 @@ def cmd_session_map(args) -> int:
   from boltbeam.roofline import limit
   from boltbeam.workflow import session_map as sm
   caps = [c.partition("@") for c in args.capture]
-  paths = [p for p, _, _ in caps] + [p.partition("@")[0] for p in (*args.session, args.model, args.draft, args.manifest, args.routing, args.reference, args.previous,
+  paths = [p for p, _, _ in caps] + [p.partition("@")[0] for p in (*args.session, args.model, args.draft, args.lowering, args.manifest, args.routing, args.reference, args.previous,
                                                                     args.floors, *(args.untraced or [])) if p]
   if missing := [p for p in paths if not pathlib.Path(p).is_file()]:
     return _fail(f"session-map: no such file: {', '.join(missing)}")
@@ -634,7 +640,7 @@ def cmd_session_map(args) -> int:
     untraced = [r for u in args.untraced or [] for r in runs(u)]
     out = sm.session_map([{"path": p, "window": w} for p, _, w in caps], turns, main=load(args.model), draft=load(args.draft), engine=args.engine,
                          vendor=args.vendor, target=target, k=args.k, kv_type=args.kv_type, selection=args.selection, manifest=load(args.manifest), routing=load(args.routing),
-                         untraced=untraced or None, traced_runs=recs, reference=(load(args.reference) or {}).get("rows") if args.reference else None,
+                         lowering=_lowering(args.lowering), untraced=untraced or None, traced_runs=recs, reference=(load(args.reference) or {}).get("rows") if args.reference else None,
                          draft_selection=args.draft_selection, previous=load(args.previous), floors=(load(args.floors) or {}).get("rows"), first=args.first,
                          h2d_gbs=args.h2d_gbs or _saved_h2d(), name=args.name or (pathlib.Path(args.out).stem if args.out else None))
   except (KeyError, ValueError) as exc:
@@ -688,6 +694,7 @@ def _register_session_map(sub) -> None:
                  "repeatable when the captures come from several traced runs, each tagging its own windows")
   p.add_argument("--model", required=True, help="the main model's header table ({meta, tensors: [name, dims, type id]})")
   p.add_argument("--draft", default=None, help="the draft head's header table")
+  p.add_argument("--lowering", default=None, help=LOWERING_HELP + " (the map's can_express for float rows)")
   p.add_argument("--engine", action="append", required=True, help="the engine's rows (data/kernel_families.json, data/kernel_classes.json): a fork, then its root")
   p.add_argument("--vendor", default=None, help="the GPU vendor's family rows (nvidia, amd)")
   p.add_argument("--target", required=True, help="the chip (data/targets.json): its measured bandwidth, matrix rates and shapes facts")
@@ -731,7 +738,7 @@ def register(sub) -> None:
   p.add_argument("--selection", type=int, default=None, help="the KV cells a verify attention launch reads when the engine runs sparse attention")
   p.add_argument("--untraced-ms", type=float, action="append", help="the same turns' step untraced, ms, once per capture: discloses the trace's overhead")
   p.add_argument("--counters", action="append", help="JSON [{tokens, accepted, drafted}] of the capture's turns (the engine's counters), once per capture")
-  p.add_argument("--lowering", default=None, help="gemm-space's lowering facts (boltbeam.gemm_lowering_facts.v1): whether it admits a float row's shape")
+  p.add_argument("--lowering", default=None, help=LOWERING_HELP)
   p.add_argument("--session", default=None, help="the traced run's driver record (turns with span_ns, win, llama-server's timings): only the turns' "
                  "decode windows are read, so a capture that holds prefills is cut right; the counters are the turns'")
   p.add_argument("--window", action="append", help="with --session, the window each capture's turns are tagged with, once per capture")

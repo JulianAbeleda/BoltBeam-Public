@@ -6,7 +6,7 @@ reason), and each role's best_found and verdict from its route_policy.json compa
 from __future__ import annotations
 
 import json, pathlib
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from boltbeam.role_key import role_label
@@ -30,6 +30,11 @@ def detect(backend:str | None) -> str | None:
 ARKEY_ONLY = "the kernel search runs in arkey only"  # search_applies' answer for another engine; Emit reads it
 
 
+def provider_refusal(provider:str) -> str | None:
+  """Why Run's per-role search does not exist for this engine at all (no GPU, no fork asked): search_applies' and the ledger's one rule."""
+  return None if provider == "arkey" else f"{ARKEY_ONLY}; this run used {provider}"
+
+
 def search_applies(backend:str | None, provider:str, *, root:pathlib.Path | None = None,
                    capability_fn:Callable[[pathlib.Path, list[str]], dict[str, Any]] | None = None,
                    detect_fn:Callable[[str | None], str | None] | None = None) -> str | None:
@@ -37,8 +42,8 @@ def search_applies(backend:str | None, provider:str, *, root:pathlib.Path | None
   the provider's own capability (the devices it can run, asked with its capability action) and BoltBeam's own
   detection of the GPU (its bridge opens one), never a list of backend names. Without the fork checked out the
   provider cannot be asked; readiness() names the fix for that."""
-  if provider != "arkey":
-    return f"{ARKEY_ONLY}; this run used {provider}"
+  if why := provider_refusal(provider):
+    return why
   row = tinygrad_fork.runtime_row(backend)
   if row is None:
     return f"the search runtime table (data/search_runtime.json) has no row for {backend or 'an unknown backend'}"
@@ -73,13 +78,25 @@ def skip(run:pathlib.Path, reason:str, say:Callable[[str], None] = print) -> dic
   return {"status": "skipped", "reason": reason}
 
 
-def search_stage(run:pathlib.Path, *, backend:str, provider:str, root:pathlib.Path | None = None,
+def search_stage(run:pathlib.Path, *, backend:str | None, provider:str, root:pathlib.Path | None = None,
                  say:Callable[[str], None] = print, step:Callable[[int, int], None] | None = None,
-                 compare:Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
-  """Run's "Search faster kernels" stage: the per-role search where it exists, else a skip with its reason. A
-  search that cannot start (no fork, a dirty fork) is a skip too: the run still ends with its results."""
+                 compare:Callable[..., dict[str, Any]] | None = None, paths:Sequence[Any] = ()) -> dict[str, Any]:
+  """Run's "Search faster kernels" stage: the per-role search where it exists; for an engine it does not serve, each
+  of paths in turn (engine paths: owner tooling that workflow/pipeline.OWNER_SEARCH registers only where its module is
+  present, none on main; each a module with stage(run, engine=, say=) -> {status, reason}); else a skip with its
+  reason. A search that cannot start (no fork, a dirty fork) is a skip too: the run still ends with its results."""
   import time
-  if why := search_applies(backend, provider, root=root):
+  why = search_applies(backend, provider, root=root)
+  if why and why.startswith(ARKEY_ONLY):
+    for path in paths:
+      began = time.monotonic()
+      got = path.stage(pathlib.Path(run), engine=provider, say=say)
+      if got["status"] == "searched":
+        seconds = round(time.monotonic() - began, 1)
+        write_status(run, "searched", None, seconds)
+        return {"status": "searched", "reason": None, "seconds": seconds}
+      why = f"{why}; {got['reason']}"   # the per-role search's words first: Emit matches them
+  if why:
     write_status(run, "skipped", why)
     say(f"search skipped: {why}")
     return {"status": "skipped", "reason": why}

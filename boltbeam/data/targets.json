@@ -89,7 +89,7 @@
         "compiler_arch": "sm_120",
         "timing_collector": "tinygrad-profile-events",
         "counter_importer": "ncu-import",
-        "match": {"compute_capability": "12.0"},
+        "match": {"architecture": "sm_120", "compute_capability": "12.0", "gpu_name": "NVIDIA GeForce RTX 5090", "memory_gib": 32},
         "fact_status": {
           "wave_size": "hardware_scan",
           "lds_bytes_per_cu": "hardware_scan",

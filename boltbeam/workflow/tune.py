@@ -59,7 +59,9 @@ FACTS = {  # the engine-neutral names a formula may read: the fact and what it i
   "prompt_tokens": "the prompt length the setup is stated at", "context_tokens": "the context the setup must hold", "reply_tokens": "the reply length the context leaves room for, from measured replies (--replies; absent when not measured)",
   "shared_memory": "the GPU reads host memory directly (no copies)",
   "h2d_pinned_gbs": "the measured copy rate to the GPU from pinned host memory, GB/s (target/host.facts)",
-  "gpu_name": "the GPU's name (the hardware scan)", "model_file": "the model file's name",
+  "gpu_name": "the GPU's name (the hardware scan): words, never a row's gate (policy/guards.row_gate_failures)", "model_file": "the model file's name: words, never a row's gate",
+  "chip_id": "this machine's chip: the target id its GPU scans as (data/targets.json or a profile made here; workflow/chips.this_chip), what a measured clause is keyed on",
+  "model_arch": "the model's architecture (its file's header): with its experts, the shape a measured clause is keyed on",
   "cpu_physical_cores": "the CPU's physical cores (target/host.cpu_cores)", "cpu_logical_cores": "the CPU's logical CPUs (target/host.cpu_cores)",
   "cpu_l3_cores": "the physical cores that share one L3 (one core complex; target/host.cpu_cores)",
   "served_requests": "the requests the setup is stated for at once (SERVED)",
@@ -291,6 +293,13 @@ def copy_rate(link:dict[str, Any] | None = None) -> tuple[float | None, str, str
           (None, str(link.get("h2d_source") or "never measured (boltbeam host measures it)"), name))
 
 
+def _this_chip() -> str | None:
+  """This machine's chip as a row's gate reads it: the shipped id a profile made here aliases (one chip, two ids)."""
+  from boltbeam.target.targets import canonical_target
+  from boltbeam.workflow import chips
+  return canonical_target(chips.this_chip())
+
+
 def host_facts(*, memory:dict[str, Any] | None = None, l3:dict[str, Any] | None = None, prompt:int = PROMPT,
                context:int | None = None, workload:str = "chat", link:dict[str, Any] | None = None, reply:dict[str, Any] | None = None,
                cpu:dict[str, Any] | None = None, page:int | None = None) -> dict[str, Any]:
@@ -300,6 +309,7 @@ def host_facts(*, memory:dict[str, Any] | None = None, l3:dict[str, Any] | None 
   if workload not in WORKLOADS:
     raise Refused(f"--workload is one of {', '.join(WORKLOADS)}, not {workload!r}")
   rate, rate_source, gpu_name = copy_rate(link)
+  chip = link.get("chip_id") if link is not None else _this_chip()  # link stands in for the scan (tests), as for gpu_name
   if context is not None and reply:
     raise Refused("--context and --replies both say how much room the reply gets: give one or the other")
   if context is not None and context < prompt:
@@ -312,12 +322,12 @@ def host_facts(*, memory:dict[str, Any] | None = None, l3:dict[str, Any] | None 
   out = {"usable_ram_bytes": ram["usable_bytes"], "ram_available_bytes": ram.get("available_bytes"), "ram_total_bytes": ram["total_bytes"],
          "ram_margin_bytes": ram["margin_bytes"], "l3_bytes": l3.get("bytes"), "l3_source": l3["source"], "page_bytes": page,
          "prompt_tokens": prompt, "context_tokens": context or prompt + (reply["value"] if reply else REPLY_TOKENS), "h2d_pinned_gbs": rate, "workload": workload,
-         "gpu_name": gpu_name, "cpu_physical_cores": cpu["physical"], "cpu_logical_cores": cpu["logical"], "cpu_l3_cores": cpu.get("l3_cores"), "served_requests": SERVED, **({"reply_tokens": reply["value"]} if reply else {})}
+         "gpu_name": gpu_name, "chip_id": chip, "cpu_physical_cores": cpu["physical"], "cpu_logical_cores": cpu["logical"], "cpu_l3_cores": cpu.get("l3_cores"), "served_requests": SERVED, **({"reply_tokens": reply["value"]} if reply else {})}
   out["sources"] = {"usable_ram_bytes": ram["says"], "ram_available_bytes": mem["source"], "ram_total_bytes": mem["source"],
                     "ram_margin_bytes": "target/host.RAM_MARGIN_BYTES", "l3_bytes": l3["source"], "page_bytes": "os.sysconf SC_PAGE_SIZE",
                     "prompt_tokens": "--prompt", "context_tokens": "--context" if context else f"--prompt plus {reply['value']} tokens for the reply: {reply['says']}" if reply else
                     f"--prompt plus {REPLY_TOKENS} tokens for the reply (the unmeasured default: no --context and no --replies given)",
-                    "h2d_pinned_gbs": rate_source, "workload": "--workload", "gpu_name": "the hardware scan",
+                    "h2d_pinned_gbs": rate_source, "workload": "--workload", "gpu_name": "the hardware scan", "chip_id": "the hardware scan's target id (workflow/chips.this_chip)",
                     "cpu_physical_cores": cpu["source"], "cpu_logical_cores": cpu["source"], "cpu_l3_cores": cpu["source"], "served_requests": "SERVED"}
   return out
 

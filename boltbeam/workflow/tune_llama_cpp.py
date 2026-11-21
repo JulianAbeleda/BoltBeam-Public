@@ -91,6 +91,8 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "split_modes": "the ways this build splits the model across GPUs (its --help -sm values)", "split_default": "the build's own -sm default",
         
          "switch_values": "the values an on/off environment switch of a local patch takes",
+         "kv_splits": "LLAMA_FATTN_KV_SPLITS' candidates, blocks per output tile, from the verify step's stream-K launch math (kv_split_points)",
+         "kv_splits_why": "the launch figures behind them, or why none are derived",
          "per_layer_embd_bytes": "the per-layer token embedding llama.cpp keeps in host RAM and gathers a row of per token and layer",
          "mtp_head": "the multi-token prediction head the command loads (--draft, else the one beside the model)",
          "mtp_k_measured": "the MTP draft count measured on this machine for this model", "mtp_why": "why there is no measured draft count",
@@ -99,7 +101,9 @@ FACTS = {"pin_in_build": "the build can pin host experts at load (LLAMA_WS_PIN_G
          "draft_from_flags": "--flags give the draft count (the command's own wins over the row's)",
          "model_thinks": "the model's chat template (the GGUF header) names an end-of-thinking tag llama.cpp's chat parsers know (engines.llama.cpp.thinking)",
          "think_budget_from_flags": "--flags give the thinking budget (the command's own wins over the row's)",
-         "think_capped": "a thinking budget is on (the row's, or a budget of 0 or more --flags give) on a model that thinks: llama.cpp then samples every thinking request on the CPU, so -bs does nothing",
+         "think_capped": "a thinking budget is on (the row's, or a budget of 0 or more --flags give) on a model that thinks: llama.cpp then samples every thinking request on the CPU, so -bs does nothing unless the build has the rbudget-backend mod (rbudget_in_build)",
+         "rbudget_in_build": "the build keeps backend sampling on under a thinking budget (LLAMA_RBUDGET_BACKEND, arkey_ie_mods host/rbudget-backend, is in it)",
+         "backend_sampling": "the command samples on the GPU: -bs in --flags, or the -bs row sets it",
          "flags_given": "the flag names --flags give (a row of one of them stands down: the command's own value wins)",
          "think_budget_why": "why the thinking budget row is not set: the template names no such tag, or --flags give the budget",
          "kv_type_bytes": "bytes per element of each KV cache type this build takes (ggml's block layouts)",
@@ -351,6 +355,48 @@ def model_shape(header:dict[str, Any], experts:int, host_experts:bool, draft:boo
           "top_k": meta.get(f"{arch}.attention.indexer.top_k"), "experts": experts,
           "host_experts": host_experts, "recurrent": has(".ssm_out."), "per_layer_embedding": has(_row()["per_layer_table"]),
           "draft": draft, "kv_type": kv_type, "slots": slots}
+
+
+def _units() -> tuple[int | None, int | None, int | None]:
+  """This machine's target's SM count, shared memory per SM and NVIDIA sm number (data/targets.json), or Nones."""
+  from boltbeam.target.targets import TARGETS, compiler_arch
+  from boltbeam.workflow import chips
+  chip = chips.this_chip() or ""
+  t, arch = TARGETS.get(chip), compiler_arch(chip) or ""
+  return (t.compute_units, t.lds_bytes_per_cu, int(arch[3:]) if arch.startswith("sm_") and arch[3:].isdigit() else None) if t else (None, None, None)
+
+
+def kv_split_points(shape:dict[str, Any], q:int, units:int | None, lds:int | None, *, context:int | None = None,
+                    quantized:bool = False, nvidia:bool = True) -> tuple[list[str], str]:
+  """LLAMA_FATTN_KV_SPLITS' candidates at a q-token step, by engines.llama.cpp.fattn_launch's rule, and the figures (or why none)."""
+  r = _row()["fattn_launch"]
+  heads, kv, ratio, top = (shape.get(k) for k in ("head_count", "head_count_kv", "pool_ratio", "top_k"))
+  if not nvidia:
+    return [], "the launch rule is read for NVIDIA sm80 and later only"
+  if not (top and ratio and ratio > 1 and isinstance(heads, int) and isinstance(kv, int) and kv > 0):
+    return [], "the model has no k-pool sparse selection with one head count (the GGUF header's indexer top_k, compress_ratios, head_count, head_count_kv)"
+  if (shape.get("key_length"), shape.get("value_length")) != (r["head_dim"], r["head_dim"]) or heads // kv <= r["gqa_min"]:
+    return [], f"the rule is read for head dim {r['head_dim']} and more than {r['gqa_min']} query heads a K/V head, not {shape.get('key_length')} / {heads // kv}"
+  if q > r["wide_above"]:
+    return [], f"a {q}-token step takes the wide sparse variant (more than {r['wide_above']} tokens), whose launch is not modelled here"
+  if quantized and q <= r["vec_at_most"]:
+    return [], f"a {q}-token step with a quantized KV cache runs the vector kernel, which has no stream-K launch"
+  sel = ratio * (top // ratio) + ratio - 1
+  if context is not None and context < max(r["sparse_min_cells"], 2 * q * sel):
+    return [], f"the {context:,}-token context is below the sparse launch's threshold ({max(r['sparse_min_cells'], 2 * q * sel):,} cells)"
+  if not units or not lds:
+    return [], "this machine's SM count or shared memory per SM is not known (no hardware scan of its target)"
+  tiles = q * -(-(heads // kv) // r["cols2"]) * kv
+  kv_tiles = -(-sel // r["tile_kv"])
+  resident = units * min(r["occupancy"], lds // (r["block_shared_bytes"] + r["block_reserved_bytes"]))
+  if not resident or tiles >= resident:
+    return [], f"{tiles} output tiles do not leave the {resident} resident blocks room to split: the engine keeps its own count"
+  raw = min(resident, kv_tiles * tiles)
+  stock = raw // tiles * tiles if 100 * (raw - raw // tiles * tiles) // raw <= r["round_loss_pct"] else raw
+  ks = sorted(k for k in {1} | {-(-kv_tiles // (1 << i)) for i in range(kv_tiles.bit_length())}
+              if k * tiles <= r["max_waves"] * resident and not (stock % tiles == 0 and k == stock // tiles))
+  return [str(k) for k in ks], (f"{tiles} output tiles at a {q}-token step (one request, the draft count's maximum), {kv_tiles} KV tiles, "
+                                 f"{resident} resident blocks ({units} SMs): stock runs {stock} blocks ({stock / tiles:g} a tile)")
 
 
 def mods_on(b:dict[str, Any], shape:dict[str, Any] | None = None) -> list[str]:
@@ -650,6 +696,7 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
   out |= lf
   header = options["header"] if "header" in options else header_of(model)  # a test's stand-in, else the file's
   shape = model_shape(header, int(ex["experts"] or 0), host_experts > 0, slots=server_slots(host, options.get("extra")))
+  out["model_arch"] = shape["arch"]
   on = mods_on(b, shape)  # the mods the command runs with: their memory rows replace the stock path's terms (a row reads the KV type and the draft itself)
   out[f"{NS}.mods_on"] = on
   dr, dsrc = decode_facts(model, host, b, {**options, "mods": on}, tabs, header=header)
@@ -676,7 +723,7 @@ def facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[str, An
     vsrc = {}
   vsrc = {**vsrc, **dsrc}
   out["sources"] = {**vsrc, "host_expert_bytes": f"{ex['source']}: layers 0-{in_ram - 1} ({where})" if in_ram and not shared else where,
-                    "model_experts": ex["source"], f"{NS}.host_tables_resident_bytes": f"estimate: {host['prompt_tokens']} tokens x one row (at least a {host['page_bytes']} B page) per host table",
+                    "model_experts": ex["source"], "model_arch": "the GGUF header's general.architecture", f"{NS}.host_tables_resident_bytes": f"estimate: {host['prompt_tokens']} tokens x one row (at least a {host['page_bytes']} B page) per host table",
                     f"{NS}.prompt_cache_default_bytes": "llama-server --cache-ram default (8192 MiB)", f"{NS}.prompt_cache_bytes": "the --cache-ram row",
                     f"{NS}.plan_ubatch": plan.get("source") or plan.get("detail") or plan.get("why"), f"{NS}.pin_in_build": b["source"],
                     "shared_memory": f"build backend {b['backend']}, {system}", **lsrc}
@@ -869,7 +916,8 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
   out |= think
   out[f"{NS}.think_capped"] = think[f"{NS}.think_capped"] and (think[f"{NS}.think_budget_from_flags"] or all(x in b["features"] for x in _row()["thinking"]["features"]))  # a build without the flag runs no cap
   out[f"{NS}.flags_given"] = sorted({x.split("=", 1)[0] for x in map(str, options.get("extra") or []) if x.startswith("-") and not x[1:2].isdigit()})  # -1 is a value
-  src = {**think_src, f"{NS}.flags_given": "--flags", f"{NS}.switch_values": "a switch: off and on", f"{NS}.fa_modes": said, **{f"{NS}.{k}_{x}": said for k in ("split", "load") for x in ("modes", "default")}, f"{NS}.flash_attn": f"{said}: its default, until the -fa row sets it", f"{NS}.v_quant_needs_fa": b["source"],
+  out |= {f"{NS}.rbudget_in_build": "LLAMA_RBUDGET_BACKEND" in b["features"], f"{NS}.backend_sampling": bool({"-bs", "--backend-sampling"} & set(out[f"{NS}.flags_given"]))}
+  src = {**think_src, f"{NS}.flags_given": "--flags", f"{NS}.rbudget_in_build": b["source"], f"{NS}.backend_sampling": "--flags (the -bs row sets it after)", f"{NS}.switch_values": "a switch: off and on", f"{NS}.fa_modes": said, **{f"{NS}.{k}_{x}": said for k in ("split", "load") for x in ("modes", "default")}, f"{NS}.flash_attn": f"{said}: its default, until the -fa row sets it", f"{NS}.v_quant_needs_fa": b["source"],
          f"{NS}.kv_types": f"{said}, " + ("the flash attention kernels in the build's GPU library" if b.get("fa_kv_types") else "no flash attention kernels read in the build: every type it takes")
          + (f"; not {', '.join(unknown)}: no block layout for them here" if unknown else ""), f"{NS}.per_layer_embd_bytes": "the GGUF tensor table",
          f"{NS}.server_slots": "the requests the setup is stated for (the command passes -np)" if np is None else f"--flags -np {np}" + ("" if out[f"{NS}.server_slots"] else
@@ -922,6 +970,12 @@ def decode_facts(model:str, host:dict[str, Any], b:dict[str, Any], options:dict[
   out |= {f"{NS}.draft_kv_elems_per_token": per_layer * layers if per_layer else None, f"{NS}.draft_weight_bytes": draft_on_card(heads[0], options.get("mods") or ()) if head else None,
           f"{NS}.mtp_ks": [None, *gains] if gains else [], f"{NS}.mtp_gains": {k: g[0] for k, g in gains.items()},
           f"{NS}.mtp_gain_words": {k: w["mtp_gain"].format(k=k, speedup=g[0], context=g[1]) for k, g in gains.items()}}
+  units = options.get("gpu_units") or _units()  # the verify step's tokens: the flags' draft count, else the measured one
+  q = 1 + int((out[f"{NS}.draft_tokens"] or 0) if dk is not None else (pick["k"] or 0))
+  kvt = out[f"{NS}.kv_setup"] or out[f"{NS}.kv_default"]
+  out[f"{NS}.kv_splits"], out[f"{NS}.kv_splits_why"] = kv_split_points(model_shape(header, 0, False), q, *units[:2], context=host.get("context_tokens"),
+                                                                       quantized=kvt in out[f"{NS}.kv_quantized_types"], nvidia=(units[2] or 0) >= _row()["fattn_launch"]["min_sm"])
+  src[f"{NS}.kv_splits"] = "engines.llama.cpp.fattn_launch over the GGUF header, the draft count and the target's SMs (data/targets.json)"
   src |= {"model_draft_layers": f"{heads[0].name}: its nextn_predict_layers" if head else "no MTP head (--draft, or one beside the model)",
           f"{NS}.mtp_head": "--draft (given)" if given else "the one MTP head beside the model (collectors/llama_mtp.heads)"}
   return out, src

@@ -118,8 +118,9 @@ def _provider_row(provider_id:str, path:str | None) -> dict[str, Any]:
   }
 
 
-# Owner tooling's scan probes (cli/__init__._OWNER: on exp only), each a module with probe(rows) and observation(providers):
-# a probe runs only where its module is present, so a tree without the tool records no key of it.
+# Owner tooling's scan probes (cli/__init__._OWNER: on exp only), each a module with probe(caps), which adds its own key to
+# provider_capabilities.json, and observation(caps): a probe runs only where its module is present, so a tree without the
+# tool records no key of it.
 OWNER_PROBES = ("boltbeam.search.region_generate",)
 
 
@@ -134,8 +135,6 @@ def _provider_capabilities(provider_args:tuple[str, ...]) -> dict[str, Any]:
     if pid not in seen:
       configured.append((pid, None))
   rows = [_provider_row(pid, path) for pid, path in configured if pid]
-  for probe in _owner_probes():   # owner tooling present on this tree adds its own capability (none on a tree without it)
-    probe.probe(rows)
   rows.append({
     "provider_id": "external",
     "configured_path": None,
@@ -148,13 +147,16 @@ def _provider_capabilities(provider_args:tuple[str, ...]) -> dict[str, Any]:
       "adapter": "normalized_evidence_json",
     },
   })
-  return {
+  caps = {
     "schema": SCHEMA_PROVIDER_CAPABILITIES,
     "providers": rows,
     "notes": [
       "Providers are evidence producers. BoltBeam core consumes normalized artifacts, not provider internals.",
     ],
   }
+  for probe in _owner_probes():   # owner tooling present on this tree adds its own key (none on a tree without it)
+    probe.probe(caps)
+  return caps
 
 
 def _scan_evidence(hardware:dict[str, Any], providers:dict[str, Any]) -> dict[str, Any]:

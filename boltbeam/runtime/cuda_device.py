@@ -74,18 +74,18 @@ def find_cuda_tool(name:str, preferred:pathlib.Path | None = None) -> str | None
 
 
 def build_cubin(nvcc:str, source:str, macros:dict[str, str] | None = None, *, cache:pathlib.Path | None = None,
-                arch:str = "native", includes:list[str] | None = None) -> bytes:
+                arch:str = "native", includes:list[str] | None = None, flags:list[str] | None = None) -> bytes:
   """Compile CUDA source to a cubin for the GPU in this machine (-arch=native), once per source: the file is cached
   by the hash of the source, the macros, the includes and the compiler."""
   cache = cache or default_cache()
   cache.mkdir(parents=True, exist_ok=True)
   macros = macros or {}
-  key = hashlib.sha256((source + repr(sorted(macros.items())) + repr(includes or []) + nvcc + arch).encode()).hexdigest()[:16]
+  key = hashlib.sha256((source + repr(sorted(macros.items())) + repr(includes or []) + repr(flags or []) + nvcc + arch).encode()).hexdigest()[:16]
   cubin = cache / f"k-{key}.cubin"
   if not cubin.exists():
     src = cache / f"k-{key}.cu"
     src.write_text(source)
-    argv = [nvcc, "-cubin", "-O3", f"-arch={arch}", "-std=c++17", *[f"-D{k}={v}" for k, v in macros.items()],
+    argv = [nvcc, "-cubin", "-O3", f"-arch={arch}", "-std=c++17", *(flags or []), *[f"-D{k}={v}" for k, v in macros.items()],
             *[f"-I{i}" for i in includes or []], "-o", str(cubin), str(src)]
     proc = subprocess.run(argv, capture_output=True, text=True, timeout=1200)
     if proc.returncode != 0:
@@ -155,14 +155,15 @@ def match_symbol(wanted:str, demangled:dict[str, str]) -> str | None:
   (normalise_symbol), with or without the parameter list. A template instantiation also matches as a prefix:
   `f<a, b>` matches `f<a, b, c>`, so an engine source with one more defaulted template parameter (mmvq.cu's
   `halve_iters`) is still found; the caller records which symbol was matched."""
-  w = normalise_symbol(wanted)
+  bare = lambda s: re.sub(r"&(\w+)\([^()]*\)", r"&\1", normalise_symbol(s))  # noqa: E731  a function template argument: cu++filt prints &f, c++filt &(f(float))
+  w = bare(wanted)
   prefix = w[:-1] + "," if w.endswith(">") else None
-  exact = next((m for m, plain in demangled.items() if m == wanted or normalise_symbol(kernel_name(plain)) == w), None)
+  exact = next((m for m, plain in demangled.items() if m == wanted or bare(kernel_name(plain)) == w), None)
   if exact or prefix is None:
     return exact
   # several instantiations can share the prefix (mmvq.cu's halve_iters true and false): an ambiguous prefix
   # has no match; the caller must request the actual instantiation
-  near = sorted(((normalise_symbol(plain), m) for m, plain in demangled.items() if normalise_symbol(kernel_name(plain)).startswith(prefix)))
+  near = sorted(((normalise_symbol(plain), m) for m, plain in demangled.items() if bare(kernel_name(plain)).startswith(prefix)))
   return near[0][1] if len(near) == 1 else None
 
 
@@ -190,6 +191,24 @@ def kernel_candidates(wanted:str, demangled:dict[str, str], limit:int = 8) -> li
   stem = wanted.split("<", 1)[0].strip()
   names = sorted({kernel_name(plain) for plain in demangled.values() if "$__internal" not in plain and stem in plain})
   return names[:limit]
+
+
+_CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION, _CU_MEMORYTYPE_DEVICE = 6, 2  # cuda.h CUlaunchAttributeID, CUmemorytype
+
+
+class _LaunchAttribute(ctypes.Structure):  # cuda.h CUlaunchAttribute: the id, padded to 8 bytes, a 64-byte value union
+  _fields_ = [("id", ctypes.c_int), ("pad", ctypes.c_char * 4), ("value", ctypes.c_char * 64)]
+
+
+class _LaunchConfig(ctypes.Structure):  # cuda.h CUlaunchConfig
+  _fields_ = [("grid", ctypes.c_uint * 3), ("block", ctypes.c_uint * 3), ("shared", ctypes.c_uint), ("stream", ctypes.c_void_p),
+              ("attrs", ctypes.POINTER(_LaunchAttribute)), ("count", ctypes.c_uint)]
+
+
+class _Memcpy2D(ctypes.Structure):  # cuda.h CUDA_MEMCPY2D
+  _fields_ = [(f"{side}{name}", kind) for side in ("src", "dst") for name, kind in (("XInBytes", ctypes.c_size_t), ("Y", ctypes.c_size_t), ("MemoryType", ctypes.c_int),
+              ("Host", ctypes.c_void_p), ("Device", ctypes.c_uint64), ("Array", ctypes.c_void_p), ("Pitch", ctypes.c_size_t))] + \
+             [("WidthInBytes", ctypes.c_size_t), ("Height", ctypes.c_size_t)]
 
 
 class _Driver:
@@ -306,6 +325,56 @@ class _Driver:
       self.cu.cuEventDestroy_v2(end)
     return ms.value * 1000.0
 
+  def launch(self, fn:int, grid:tuple[int, int, int], block:tuple[int, int, int], shared:int, stream:int, params:list[bytes], pdl:bool = False) -> None:
+    """One launch, not waited for (a graph's capture records it). pdl: cuLaunchKernelEx with programmatic stream
+    serialization, as ggml_cuda_kernel_launch and the kernels hook launch (cuda.h CUlaunchConfig, attribute 6)."""
+    holders = [ctypes.create_string_buffer(p, len(p)) for p in params]
+    array = (ctypes.c_void_p * max(len(holders), 1))(*[ctypes.cast(h, ctypes.c_void_p) for h in holders])
+    if not pdl:
+      self.call("cuLaunchKernel", ctypes.c_void_p(fn), *grid, *block, shared, ctypes.c_void_p(stream), array, None)
+      return
+    attr = _LaunchAttribute(id=_CU_LAUNCH_ATTRIBUTE_PROGRAMMATIC_STREAM_SERIALIZATION, value=struct.pack("<i", 1))  # a c_char field reads as a bytes copy: set at construction, zero-padded
+    cfg = _LaunchConfig(grid=(ctypes.c_uint * 3)(*grid), block=(ctypes.c_uint * 3)(*block), shared=shared, stream=stream, attrs=ctypes.pointer(attr), count=1)
+    self.call("cuLaunchKernelEx", ctypes.byref(cfg), ctypes.c_void_p(fn), array, None)
+
+  def memcpy_async(self, dst:int, src:int, nbytes:int, stream:int) -> None:
+    self.call("cuMemcpyDtoDAsync_v2", ctypes.c_uint64(dst), ctypes.c_uint64(src), ctypes.c_size_t(nbytes), ctypes.c_void_p(stream))
+
+  def memcpy2d_async(self, dst:int, dpitch:int, src:int, spitch:int, width:int, height:int, stream:int) -> None:
+    copy = _Memcpy2D(srcMemoryType=_CU_MEMORYTYPE_DEVICE, srcDevice=src, srcPitch=spitch, dstMemoryType=_CU_MEMORYTYPE_DEVICE, dstDevice=dst, dstPitch=dpitch,
+                     WidthInBytes=width, Height=height)
+    self.call("cuMemcpy2DAsync_v2", ctypes.byref(copy), ctypes.c_void_p(stream))
+
+  def capture(self, stream:int) -> None:
+    self.call("cuStreamBeginCapture_v2", ctypes.c_void_p(stream), 0)  # CU_STREAM_CAPTURE_MODE_GLOBAL
+
+  def end_capture(self, stream:int) -> tuple[int, int]:
+    """The captured graph and its instantiation: (graph, exec)."""
+    graph, exe = ctypes.c_void_p(), ctypes.c_void_p()
+    self.call("cuStreamEndCapture", ctypes.c_void_p(stream), ctypes.byref(graph))
+    self.call("cuGraphInstantiateWithFlags", ctypes.byref(exe), graph, ctypes.c_ulonglong(0))
+    return graph.value, exe.value
+
+  def graph_timed(self, exe:int, stream:int) -> float:
+    """One replay of an instantiated graph between two events on the stream, waited for; µs."""
+    begin, end, ms = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_float()
+    self.call("cuEventCreate", ctypes.byref(begin), 0)
+    self.call("cuEventCreate", ctypes.byref(end), 0)
+    try:
+      self.call("cuEventRecord", begin, ctypes.c_void_p(stream))
+      self.call("cuGraphLaunch", ctypes.c_void_p(exe), ctypes.c_void_p(stream))
+      self.call("cuEventRecord", end, ctypes.c_void_p(stream))
+      self.call("cuEventSynchronize", end)
+      self.call("cuEventElapsedTime", ctypes.byref(ms), begin, end)
+    finally:
+      self.cu.cuEventDestroy_v2(begin)
+      self.cu.cuEventDestroy_v2(end)
+    return ms.value * 1000.0
+
+  def graph_destroy(self, graph:int, exe:int) -> None:
+    self.cu.cuGraphExecDestroy(ctypes.c_void_p(exe))
+    self.cu.cuGraphDestroy(ctypes.c_void_p(graph))
+
   def profiler(self, on:bool) -> None:
     self.call("cuProfilerStart" if on else "cuProfilerStop")
 
@@ -346,6 +415,7 @@ class Cuda:
     self.stream = self.driver.stream()
     self._modules:dict[int, bytes] = {}
     self._buffers:list[int] = []
+    self._graphs:list[tuple[int, int] | None] = []
 
   def ggml_cc(self) -> int | None:
     """This device's compute capability as ggml-cuda numbers it (ggml_compute_capability)."""
@@ -356,14 +426,15 @@ class Cuda:
     return {"name": self.name, "total_global_mem_bytes": self.working_set_bytes,
             **{k: self.driver.attribute(code, self.dev) for k, code in ATTRIBUTES.items()}}
 
-  def _nvcc(self, source:str, macros:dict[str, str]) -> bytes:
+  def _nvcc(self, source:str, macros:dict[str, str], flags:list[str] | None = None) -> bytes:
     if not self.nvcc:
       raise CudaUnavailable(f"nvcc is not installed (set {NVCC_ENV} or put /usr/local/cuda/bin on PATH)")
-    return build_cubin(self.nvcc, source, macros, cache=self.cache, includes=self.includes)
+    return build_cubin(self.nvcc, source, macros, cache=self.cache, includes=self.includes, flags=flags)
 
-  def library(self, source:str, macros:dict[str, str] | None = None) -> int:
-    """Compile the source (nvcc -cubin, cached) and load it; the module handle is the library."""
-    return self.module(self._compile(source, macros or {}))
+  def library(self, source:str, macros:dict[str, str] | None = None, flags:list[str] | None = None) -> int:
+    """Compile the source (nvcc -cubin, cached) and load it; the module handle is the library. flags: the engine's own
+    nvcc flags when its source is compiled as it builds it (an engine kernel launched as the engine launches it)."""
+    return self.module(self._compile(source, macros or {}, flags) if flags else self._compile(source, macros or {}))
 
   def module(self, cubin:bytes) -> int:
     """Load a cubin someone else compiled (cubin_launch.py replays a compiler's export)."""
@@ -421,6 +492,43 @@ class Cuda:
   def run(self, pso:int, buffers:list[int], constants:list[bytes], groups:int, threads:int) -> float:
     return self.dispatch(pso, [*buffers, *constants], (groups, 1, 1), (threads, 1, 1))
 
+  def write(self, buf:int, data:bytes) -> None:
+    self.driver.upload(buf, bytes(data))
+
+  def graph(self, launches:list[tuple]) -> int:
+    """Capture launches into one CUDA graph, instantiated; its handle. Each: ("kernel", fn, bound, grid, block, shared,
+    pdl) with bound as dispatch takes it, ("memcpy", dst, src, n) or ("memcpy2d", dst, dpitch, src, spitch, width, height),
+    device to device."""
+    for fn, shared in {(x[1], x[5]) for x in launches if x[0] == "kernel" and x[5]}:   # set before the capture, once a kernel
+      self.driver.set_dynamic_shared(fn, shared)
+    self.driver.capture(self.stream)
+    try:
+      for x in launches:
+        if x[0] == "kernel":
+          _, fn, bound, grid, block, shared, pdl = x
+          self.driver.launch(fn, tuple(grid), tuple(block), shared, self.stream, [bytes(a) if isinstance(a, (bytes, bytearray)) else struct.pack("<Q", int(a)) for a in bound], pdl)
+        elif x[0] == "memcpy":
+          self.driver.memcpy_async(*x[1:], self.stream)
+        else:
+          self.driver.memcpy2d_async(*x[1:], self.stream)
+    except BaseException:
+      try:  # a failed launch still ends the capture, or the stream stays capturing
+        self.driver.graph_destroy(*self.driver.end_capture(self.stream))
+      except RuntimeError:
+        pass
+      raise
+    self._graphs.append(self.driver.end_capture(self.stream))
+    return len(self._graphs) - 1
+
+  def replay(self, graph:int) -> float:
+    """One replay of a graph between two events, waited for; µs."""
+    return self.driver.graph_timed(self._graphs[graph][1], self.stream)
+
+  def release_graph(self, graph:int) -> None:
+    if self._graphs[graph] is not None:
+      self.driver.graph_destroy(*self._graphs[graph])
+      self._graphs[graph] = None
+
   def profiler(self, on:bool) -> None:
     self.driver.profiler(on)
 
@@ -430,6 +538,8 @@ class Cuda:
     self.driver.mem_free(buf)
 
   def close(self) -> None:
+    for g in range(len(self._graphs)):
+      self.release_graph(g)
     for buf in self._buffers:
       self.driver.mem_free(buf)
     self._buffers.clear()

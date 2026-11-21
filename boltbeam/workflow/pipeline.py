@@ -220,6 +220,17 @@ def _measure_steps(args, plan:dict[str, Any], say=lambda _: None) -> list[tuple[
   return [*probe, timing]
 
 
+# Owner tooling's engine search paths (cli/__init__._OWNER, autoscan.OWNER_PROBES: on exp only), each a module with
+# stage(run, engine=, say=): Run's search stage runs one for an engine the per-role search does not serve, only where its
+# module is present, so a tree without it (main) has no such path and search/search_stage names none.
+OWNER_SEARCH = ("boltbeam.search.region_stage",)
+
+
+def owner_search() -> list[Any]:
+  import importlib, importlib.util
+  return [importlib.import_module(m) for m in OWNER_SEARCH if importlib.util.find_spec(m)]
+
+
 # The quick setup stages run in under two seconds. The screen does not count them: step 1 is the first slow one.
 SETUP = frozenset({"load", "autoscan", "analyze", "machine", "measure_probe", "measure"})
 
@@ -386,7 +397,7 @@ def pipeline(args, out=sys.stdout) -> int:
       backend = get_target(args.target).backend
       steps.append(("search", lambda: search_stage.search_stage(pathlib.Path(args.run), backend=backend,
                                                                 provider=plan["provider"], root=root, say=say,
-                                                                step=progress.report)))
+                                                                step=progress.report, paths=owner_search())))
     steps.append(("output", lambda: output_run(args.run)))
   ids = progress.step_ids([key for key, _ in steps])
   flags = [counted(sid) for sid in ids]

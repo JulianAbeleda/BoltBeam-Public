@@ -9,12 +9,17 @@ from boltbeam.cli._common import _write
 
 def cmd_ncu_collect(args) -> int:
   from boltbeam.profiler.ncu_counters import collect
+  metrics = [m.strip() for m in (args.metrics or "").split(",") if m.strip()]
+  if args.metrics is not None and not metrics: raise SystemExit("ncu-collect: --metrics names no counter")
+  if args.kernel_name_base and not args.kernel_name: raise SystemExit("ncu-collect: --kernel-name-base needs --kernel-name")
   env = dict(kv.split("=", 1) for kv in args.env or [])
   target = args.target[1:] if args.target and args.target[0] == "--" else args.target
   doc = collect(target, out=args.report, side=args.side, ncu=args.ncu, sudo_mem_max=None if args.no_sudo else args.mem_max,
-                env=env, nvtx=args.nvtx)
+                env=env, nvtx=args.nvtx, kernel_name=args.kernel_name, launch_skip=args.launch_skip, launch_count=args.launch_count,
+                kernel_name_base=args.kernel_name_base, from_start=args.from_start,
+                metrics=metrics)
   _write(doc, args.out)
-  return 0
+  return 1 if doc.get("provenance", {}).get("missing_metrics") else 0
 
 
 def cmd_ncu_import(args) -> int:
@@ -53,6 +58,13 @@ def register(sub) -> None:
   p.add_argument("--mem-max", default="20G"); p.add_argument("--no-sudo", action="store_true")
   p.add_argument("--nvtx", action="store_true", help="label launches by NVTX push/pop range 'role/M'")
   p.add_argument("--env", action="append", help="KEY=VALUE for the target (repeatable)")
+  p.add_argument("--kernel-name", default=None, help="profile only the launches of this kernel (ncu --kernel-name: a name, or regex:EXPR)")
+  p.add_argument("--kernel-name-base", choices=("function", "demangled", "mangled"), default=None,
+                 help="what --kernel-name matches: one template instantiation needs mangled or demangled (ncu default: function)")
+  p.add_argument("--from-start", action="store_true", help="profile from the first launch: for a target that never calls cudaProfilerStart (an engine server)")
+  p.add_argument("--metrics", default=None, help="comma-separated counters instead of the sections: a set one pass holds needs no kernel replay; one the chip lacks exits 1")
+  p.add_argument("--launch-skip", type=int, default=None, help="skip this many matching launches first: reach a depth of a long session (counted across processes, not per server)")
+  p.add_argument("--launch-count", type=int, default=None, help="profile this many matching launches (across processes)")
   p.add_argument("--out", default=None)
   p.add_argument("target", nargs="...", help="-- the target command; it labels launches with NVTX 'role/M' ranges or 'SHAPE role M kernels' stdout lines")
   p.set_defaults(fn=cmd_ncu_collect)

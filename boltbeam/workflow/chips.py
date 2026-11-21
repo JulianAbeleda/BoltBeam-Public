@@ -24,7 +24,7 @@ from typing import Any, Callable
 from boltbeam.collectors import path_rates
 from boltbeam.target import targets as reg
 from boltbeam.target import vendors
-from boltbeam.target.targets import fact_uncertainty
+from boltbeam.target.targets import fact_uncertainty, registry_claim
 from boltbeam.workflow import layout as lay
 from boltbeam.target.gpu import first_gpu
 from boltbeam.target.hardware import chip_profile_id, hardware_profile, vendor_rows
@@ -116,6 +116,7 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
     "tinygrad_device": vendors.vendor(device.get("vendor")).tinygrad_device,
     **({} if apple else {"compiler_arch": device.get("architecture")}),
     "match": match,
+    **({"aliases": [rid]} if (rid := registry_claim(match)) and rid != pid else {}),  # the shipped row that claims this GPU: the same chip
     "fact_status": {"memory_bandwidth_gbs": "measurement", "matrix_tflops": "measurement_lower_bound",
                     "wave_size": "hardware_family",
                     "vram_bytes": "not_applicable_unified_memory" if apple else "hardware_scan",

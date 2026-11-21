@@ -41,14 +41,15 @@ CLOCK_CONTROL = "none"
 def ncu_command(target_cmd:Sequence[str], *, out:str, ncu:str="ncu", sections:Iterable[str]=NCU_SECTIONS,
                 metrics:Iterable[str]=(), cache_control:str="all", profile_from_start:str="off", nvtx:bool=False,
                 kernel_name:str | None=None, launch_count:int | None=None, sudo_mem_max:str | None=None,
-                env:Mapping[str, str] | None=None, replay_mode:str | None=None) -> list[str]:
+                env:Mapping[str, str] | None=None, replay_mode:str | None=None, launch_skip:int | None=None, kernel_name_base:str | None=None) -> list[str]:
   """The one ncu argv BoltBeam builds, for one target command, always at the free clock (CLOCK_CONTROL); with
   ``sudo_mem_max`` wrapped in a memory-capped root scope."""
   cmd = [ncu, "--profile-from-start", profile_from_start, "--target-processes", "all"]
   for section in sections: cmd += ["--section", section]
   if metrics: cmd += ["--metrics", ",".join(metrics)]
   if nvtx: cmd.append("--nvtx")
-  if kernel_name: cmd += ["--kernel-name", kernel_name]
+  if kernel_name: cmd += (["--kernel-name-base", kernel_name_base] if kernel_name_base else []) + ["--kernel-name", kernel_name]
+  if launch_skip is not None: cmd += ["--launch-skip", str(launch_skip)]
   if launch_count is not None: cmd += ["--launch-count", str(launch_count)]
   if replay_mode: cmd += ["--replay-mode", replay_mode]
   cmd += ["--cache-control", cache_control, "--clock-control", CLOCK_CONTROL, "-f", "-o", str(out), *target_cmd]
@@ -65,11 +66,23 @@ def export_raw_csv(report:str | pathlib.Path, *, ncu:str="ncu", instances:bool=F
 
 
 def collect(target_cmd:Sequence[str], *, out:str | pathlib.Path, side:str, ncu:str="ncu", sudo_mem_max:str | None="20G",
-            env:Mapping[str, str] | None=None, nvtx:bool=False, owner:str | None="ubuntu:ubuntu") -> dict[str, Any]:
+            env:Mapping[str, str] | None=None, nvtx:bool=False, owner:str | None="ubuntu:ubuntu", kernel_name:str | None=None,
+            launch_skip:int | None=None, launch_count:int | None=None, kernel_name_base:str | None=None, from_start:bool=False,
+            metrics:Sequence[str]=()) -> dict[str, Any]:
   """Profile ``target_cmd`` under ncu, export and import: returns the counters document (and writes the raw CSV and
-  target stdout next to the report)."""
+  target stdout next to the report). kernel_name (matched on kernel_name_base: function, demangled or mangled, ncu's names),
+  launch_skip / launch_count: ncu's own filters (one kernel instantiation at one depth), counted across every process ncu
+  follows, not per server (measured: a count reached in the first server never profiles the second). from_start: profile from the first
+  launch (a target that never calls cudaProfilerStart, such as an engine server), else from the target's own start call.
+  metrics: these counters instead of the sections, so one pass can hold them (a kernel replay saves and restores device
+  memory, which fails in an engine that fills the card); each row carries their values under "metrics", and a counter
+  neither set holds reads None, not 0. A requested counter the report lacks is named in provenance.missing_metrics and
+  on stderr (the CLI then exits 1): ncu drops a name the chip does not have without an error (dram__bytes_read.sum on sm_120)."""
   out = pathlib.Path(out)
-  cmd = ncu_command(target_cmd, out=str(out), ncu=ncu, nvtx=nvtx, sudo_mem_max=sudo_mem_max, env=env)
+  cmd = ncu_command(target_cmd, out=str(out), ncu=ncu, nvtx=nvtx, sudo_mem_max=sudo_mem_max, env=env, kernel_name=kernel_name,
+                    launch_skip=launch_skip, launch_count=launch_count, kernel_name_base=kernel_name_base,
+                    profile_from_start="on" if from_start else "off",
+                    **({"sections": (), "metrics": list(dict.fromkeys(["gpu__time_duration.sum", *metrics]))} if metrics else {}))
   proc = subprocess.run(cmd, capture_output=True, text=True)
   out.with_suffix(".stdout.log").write_text(proc.stdout)
   out.with_suffix(".ncu.log").write_text(proc.stderr)
@@ -79,9 +92,29 @@ def collect(target_cmd:Sequence[str], *, out:str | pathlib.Path, side:str, ncu:s
   raw, instances = export_raw_csv(report, ncu=ncu), export_raw_csv(report, ncu=ncu, instances=True)
   out.with_suffix(".raw.csv").write_text(raw)
   out.with_suffix(".instances.csv").write_text(instances)
-  doc = import_raw_csv(raw, side=side, target_stdout=proc.stdout, source_report=str(report), instances_text=instances)
+  # SHAPE lines label launches in order, so they count every launch: with a filter, or with none printed (an engine
+  # server), the rows stay unlabelled instead of failing the count after the whole profile ran
+  picked = kernel_name or launch_skip is not None or launch_count is not None
+  labels = None if picked or not _shape_lines(proc.stdout) else proc.stdout
+  doc = import_raw_csv(raw, side=side, target_stdout=labels, source_report=str(report), instances_text=instances, metrics=metrics)
   doc["provenance"]["command"] = cmd
+  if missing := missing_metrics(raw, metrics):
+    doc["provenance"]["missing_metrics"] = missing
+    print(f"ncu reported no {', '.join(missing)} (not a metric on this chip?)", file=sys.stderr)
   return doc
+
+
+def _of_metric(column:str, m:str) -> bool:
+  """A raw column holds metric m: its name, or (m a base name, no rollup) one of the rollups ncu expands it to."""
+  return column == m or ("." not in m and column.startswith(m + "."))
+
+
+def missing_metrics(raw:str, metrics:Iterable[str]) -> list[str]:
+  """The requested counters a raw export has no column for; a regex or breakdown request is not checked, nor a report
+  with no profiled launch."""
+  rows = list(csv.reader(io.StringIO(raw)))
+  if len(rows) < 3: return []
+  return [m for m in metrics if ":" not in m and not any(_of_metric(c, m) for c in rows[0])]
 
 
 # ---- import -------------------------------------------------------------------------------------------------------
@@ -123,10 +156,12 @@ def read_raw_csv(text:str) -> tuple[list[dict[str, str]], dict[str, str]]:
   return [dict(zip(header, r)) for r in rows[2:] if r], dict(zip(header, rows[1]))
 
 
-def _scaled(raw:Mapping[str, str], units:Mapping[str, str], column:str, table:Mapping[str, float], what:str) -> float:
+def _scaled(raw:Mapping[str, str], units:Mapping[str, str], column:str, table:Mapping[str, float], what:str,
+            absent:float | None=0.0) -> float | None:
   value = _f(raw.get(column))
   unit = (units.get(column) or "").strip().lower()
-  if value is None or column not in raw: return 0.0
+  if column not in raw: return absent
+  if value is None: return 0.0
   if unit not in table: raise ValueError(f"unknown {what} unit {unit!r} for {column}")
   return value * table[unit]
 
@@ -139,20 +174,23 @@ def top_stall_reasons(raw:Mapping[str, str], top:int=3) -> list[dict[str, Any]]:
   return [{"reason": name, "pct": round(value / total * 100.0, 3)} for value, name in stalls[:top]]
 
 
-def parse_kernel_row(raw:Mapping[str, str], units:Mapping[str, str]) -> dict[str, Any]:
+def parse_kernel_row(raw:Mapping[str, str], units:Mapping[str, str], metrics:Iterable[str]=()) -> dict[str, Any]:
+  """One launch. A counter column the report does not hold (a --metrics collection) reads None, never a measured 0."""
+  got = lambda c: _f(raw[c]) if c in raw else None
   nvtx = next((v for k, v in raw.items() if k.startswith(_NVTX_COLUMN)), "")
   row = {"kernel": raw.get("Kernel Name"), "grid": raw.get("Grid Size"), "block": raw.get("Block Size"),
          "registers_per_thread": int(_f(raw.get("launch__registers_per_thread")) or 0),
          "static_shared_bytes": _scaled(raw, units, "launch__shared_mem_per_block_static", _SHARED_BYTES, "shared memory"),
          "dynamic_shared_bytes": _scaled(raw, units, "launch__shared_mem_per_block_dynamic", _SHARED_BYTES, "shared memory"),
          "duration_us": _scaled(raw, units, "gpu__time_duration.sum", _TIME_TO_US, "time"),
-         "achieved_occupancy_pct": _f(raw.get("sm__warps_active.avg.pct_of_peak_sustained_active")),
-         "tensor_pipe_util_pct": _f(raw.get("sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed")),
-         "dram_throughput_bytes_per_sec": _scaled(raw, units, "dram__bytes.sum.per_second", _BYTES_PER_SEC, "throughput"),
-         "sm_throughput_pct": _f(raw.get("sm__throughput.avg.pct_of_peak_sustained_elapsed")),
+         "achieved_occupancy_pct": got("sm__warps_active.avg.pct_of_peak_sustained_active"),
+         "tensor_pipe_util_pct": got("sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed"),
+         "dram_throughput_bytes_per_sec": _scaled(raw, units, "dram__bytes.sum.per_second", _BYTES_PER_SEC, "throughput", None),
+         "sm_throughput_pct": got("sm__throughput.avg.pct_of_peak_sustained_elapsed"),
          "top_stall_reasons": top_stall_reasons(raw)}
   conflicts = {k: _f(v) for k, v in raw.items() if "bank_conflict" in k.lower() and _f(v, None) is not None}
   if conflicts: row["bank_conflicts"] = conflicts
+  if picked := {c: _f(v, None) for c, v in raw.items() if any(_of_metric(c, m) for m in metrics)}: row["metrics"] = picked
   census = {op: int(n) for op, n in _CENSUS.findall(raw.get("sass__inst_executed_per_opcode") or "")}
   if census: row["opcode_census"] = census
   if (m := _NVTX_RANGE.search(nvtx)): row["_nvtx"] = (m["role"], int(m["m"]))
@@ -174,7 +212,7 @@ def _shape_lines(stdout:str) -> list[tuple[str, int, int]]:
 
 
 def import_raw_csv(text:str, *, side:str, target_stdout:str | None=None, source_report:str | None=None,
-                   provenance:Mapping[str, Any] | None=None, instances_text:str | None=None) -> dict[str, Any]:
+                   provenance:Mapping[str, Any] | None=None, instances_text:str | None=None, metrics:Iterable[str]=()) -> dict[str, Any]:
   """Raw CSV -> counters document.  Launches are labelled by NVTX range when present, else by the target's
   ``SHAPE role M kernels`` lines (launch order); a mismatch between the two counts is an error."""
   side = _SIDE_ALIASES.get(side, side)
@@ -183,7 +221,7 @@ def import_raw_csv(text:str, *, side:str, target_stdout:str | None=None, source_
   if instances_text is not None:   # the per-opcode census, joined by launch ID
     census_by_id = {r.get("ID"): r.get("sass__inst_executed_per_opcode") for r in read_raw_csv(instances_text)[0]}
     raws = [{**r, "sass__inst_executed_per_opcode": census_by_id.get(r.get("ID")) or r.get("sass__inst_executed_per_opcode", "")} for r in raws]
-  rows = [parse_kernel_row(r, units) for r in raws]
+  rows = [parse_kernel_row(r, units, metrics) for r in raws]
   groups: list[list[dict[str, Any]]] = []
   if rows and all("_nvtx" in r for r in rows):
     for r in rows:
@@ -227,7 +265,7 @@ def to_hw_trace(doc:Mapping[str, Any], *, model_id:str, target_id:str, workload:
   rows = []
   for r in load_counters(doc)["rows"]:
     counters = {k: float(r[k]) for k in ("achieved_occupancy_pct", "tensor_pipe_util_pct", "sm_throughput_pct") if r.get(k) is not None}
-    counters["dram_bytes_per_sec"] = float(r["dram_throughput_bytes_per_sec"])
+    if r.get("dram_throughput_bytes_per_sec") is not None: counters["dram_bytes_per_sec"] = float(r["dram_throughput_bytes_per_sec"])
     counters.update({f"stall_{s['reason']}_pct": float(s["pct"]) for s in r.get("top_stall_reasons", ())})
     rows.append({"scope": "kernel", "kernel": r["kernel"], "role": r.get("role") or "unknown", "wall_us": float(r["duration_us"]),
                  "calls": 1, "kind": "gemm" if not r.get("aux") else "aux", "counters": counters,
@@ -239,4 +277,4 @@ def to_hw_trace(doc:Mapping[str, Any], *, model_id:str, target_id:str, workload:
 
 
 __all__ = ["LEGACY_SCHEMAS", "NCU_SECTIONS", "SCHEMA", "collect", "export_raw_csv", "import_raw_csv", "load_counters",
-           "mark_gemm", "CLOCK_CONTROL", "ncu_command", "parse_kernel_row", "read_raw_csv", "to_hw_trace", "top_stall_reasons"]
+           "mark_gemm", "missing_metrics", "CLOCK_CONTROL", "ncu_command", "parse_kernel_row", "read_raw_csv", "to_hw_trace", "top_stall_reasons"]

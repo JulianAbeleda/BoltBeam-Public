@@ -26,7 +26,8 @@ distance from it, in two rankings (bytes known; bound unknown), and whether the 
                 depth). Else unknown. limit = bytes / the target's measured bandwidth; distance = time - limit.
     floor       launches x the cheapest mean duration of launches no other launch overlaps: an estimate and a lower
                 bound, never a limit; a row with no bytes ranks by time - floor, an upper bound of what it can give.
-    coverage    per depth: search_can_propose (formats.refusal, role_proposal.LOGICAL_M, gemm-space's own space,
+    coverage    per depth: search_can_propose (for matmul and attention rows first the search stage's own rule for the engine,
+                search_stage.provider_refusal; then formats.refusal, role_proposal.LOGICAL_M, gemm-space's own space,
                 flash_space, decode_graph.json kinds), check (a reference), install_path (engine_patches.json).
 
 Engine-blind: an engine is a key into data rows; nothing here names one or a kernel.
@@ -258,11 +259,14 @@ def bytes_of(op:str, joined:tuple | None, sr:dict[str, Any] | None, launches:flo
 
 
 def coverage(op:str, name:str, joined:tuple | None, m:int, engine:str, ctx:dict[str, Any]) -> dict[str, Any]:
-  """search_can_propose (the search's own answers), check (a reference) and install_path (data/engine_patches.json)."""
-  from boltbeam.search import fusion_space, gemm_strategy
+  """search_can_propose (the search's own answers, first whether the search stage runs for this engine at all:
+  search_stage.provider_refusal), check (a reference) and install_path (data/engine_patches.json)."""
+  from boltbeam.search import fusion_space, gemm_strategy, search_stage
   from boltbeam.search.role_proposal import LOGICAL_M
   cs = joined[0] if joined else []
   fmts, miss, check = sorted({x["format"] for x in cs}), [], []
+  if op in MATMUL or op == "attention":  # the per-role search's rows: the search stage's own rule says whether it runs for this engine
+    miss += [f"per-role search: {why}"] if (why := search_stage.provider_refusal(ctx.get("provider", engine))) else []
   if op in MATMUL:
     miss += [f"format: {r}" for f in fmts if (r := formats.refusal("search", f))] or ([] if fmts else ["format: unknown (not joined to the header)"])
     check += [f"reference: {r}" for f in fmts if (r := formats.refusal("reference", f))]
@@ -318,7 +322,7 @@ def ledger(captures:list[dict[str, Any]], *, main:dict[str, Any], draft:dict[str
     from boltbeam.roofline import routing_profile as rp
     kv["reached"] = {c: statistics.fmean(rp.reached(routing, c)) for c in sorted({k + 1, 1})}
   selection = selection or {}
-  ctx = {"kv_type": kv_type, "lowering": lowering}
+  ctx = {"kv_type": kv_type, "lowering": lowering, "provider": tb.engine_keys(engine)[0]}   # the engine that ran: a fork, not its root
   if lowering is not None:
     from boltbeam.search.gemm_strategy import GemmMachine
     ctx["machine"] = GemmMachine.from_target(target["id"])

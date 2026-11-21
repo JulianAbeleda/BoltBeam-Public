@@ -22,7 +22,7 @@ import time
 from typing import Any, Mapping
 
 from boltbeam.target import toolkits, vendors
-from boltbeam.target.targets import TARGETS, family_target, is_local, match_target, target_kind
+from boltbeam.target.targets import TARGETS, family_target, is_local, match_target, target_capability, target_kind
 from boltbeam.target.vendors import NoVendorRow
 from boltbeam.vocab import SCHEMA_HARDWARE_PROFILE
 
@@ -165,9 +165,11 @@ def _probe_nvidia(nvidia_smi:str, run_command) -> tuple[list[dict[str, Any]], st
     architecture, by_convention = _nvidia_arch(compute_capability)
     device = {"vendor": "nvidia", "name": name, "architecture": architecture, "compute_capability": compute_capability or None,
               "memory_bytes": memory_mib * 1024 * 1024 if memory_mib is not None else None}
-    # A row may claim this device outright; otherwise the vendor's own architecture name is the id.
+    # A row may claim this device outright; otherwise the vendor's own architecture name is the id, unless a row of that
+    # id claims one device (nvidia_sm120: the RTX 5090, by name and memory): another card of the architecture is its own
+    # chip (chip_profile_id), never the claimed one's figures and bandwidth.
     matched = match_target(match_facts(device))
-    target_id = matched or by_convention
+    target_id = matched or (chip_profile_id(device) if target_capability(by_convention, "match") else by_convention)
     devices.append({
       "vendor": "nvidia",
       "name": name,

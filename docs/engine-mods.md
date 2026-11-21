@@ -16,6 +16,9 @@
   `tinygrad` (the provider's name before 2026-11-15) reads as `arkey`. The arkey
   capture patch (`tools/patches/arkey-capture-support.patch`) and arkey's kernel routes
   (`boltbeam/data/nv_sm120_kernel_authority.json`) are BoltBeam's own, not engine mods, and stay in BoltBeam.
+- **Kernels** come with `boltbeam mods`: the kernels module's kernel list, one build per chip architecture. Chips with
+  builds today: sm_120 (RTX 5090) for every searched kernel; gfx1201 (R9700) none, so there the engine's own kernels run
+  (the kernel hook is not ported to HIP yet: it loads nothing there and its log says nothing of it).
 
 ## Where and which commit
 

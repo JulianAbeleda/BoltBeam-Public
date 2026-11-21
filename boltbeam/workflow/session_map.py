@@ -237,7 +237,7 @@ def session_map(captures:list[dict[str, Any]], turns:list[dict[str, Any]], *, ma
                 manifest:dict[str, Any] | None = None, routing:dict[str, Any] | None = None, untraced:list[list[dict[str, Any]]] | None = None,
                 reference:list[dict[str, Any]] | None = None, traced_runs:list[list[dict[str, Any]]] | None = None,
                 draft_selection:int | None = None, previous:dict[str, Any] | None = None, floors:list[dict[str, Any]] | None = None,
-                h2d_gbs:float | None = None, first:bool = False, name:str | None = None) -> dict[str, Any]:
+                h2d_gbs:float | None = None, first:bool = False, name:str | None = None, lowering:Any = None) -> dict[str, Any]:
   """The record. captures: [{path, window, tl?}] (tl: a Timeline already read); turns: the traced record's
   (replay.llama_turns), tagged by window; untraced: the same session's untraced runs (each a list of turns): the
   untraced step per window and the session's steps. reference: [{part (decode or prefill), phase, classes (one, several, or ["*"]), ms or gbs, source,
@@ -277,7 +277,7 @@ def session_map(captures:list[dict[str, Any]], turns:list[dict[str, Any]], *, ma
   for c in caps:
     leds[c["window"]] = led = kl.ledger([{"cap": c["cap"], "depth": c["depth"], "untraced_ms": windows[c["window"]]["untraced_step_ms"]["value"]}], main=main, draft=draft,
                                         engine=engine, vendor=vendor, target=target, k=k, kv_type=kv_type, selection={q: v for q, v in (("verify", selection), ("draft", draft_selection)) if v} or None, manifest=manifest,
-                                        routing=routing)
+                                        routing=routing, lowering=lowering)
     if led.get("refused"):
       return {"schema": SCHEMA, "refused": f"kernel ledger, window {c['window']}: {led['refused']}"}
   run_turns = untraced or traced_runs or [turns]  # each run once: several traced records are several runs, never one

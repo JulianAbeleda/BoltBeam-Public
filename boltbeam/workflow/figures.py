@@ -3,12 +3,13 @@
 A figure's row is keyed by what it depends on that a run can read (the chip, the host's L3, a built mod, an engine on a
 model shape). resolve() gives a run its figure in one of three states, and the state is always said:
 
-    measured    a row's key is this run's: its value
-    borrowed    no such row: the nearest row of the same GPU vendor (a figure keyed by chip is never borrowed across
-                vendors: their memory, drivers and runtimes differ, the R9700's out-of-memory server on 2026-11-20 was an
-                RTX 5090 row borrowed) with the most key fields equal, its value widened against the run by a margin
-                from that row's own readings (one more reading's one-sided 95% bound, t x sd x sqrt(1 + 1/n)) and the
-                spread of the rows' values; a cost is charged more, a saving credited less
+    measured    a row's key is this run's (a chip under its aliases: a profile made on the RTX 5090 is nvidia_sm120): its value
+    borrowed    no such row: the nearest row of the same chip (a figure keyed by chip is never borrowed from another
+                chip, even of its vendor: the R9700's out-of-memory server on 2026-11-20 was an RTX 5090 row borrowed,
+                and an RTX 5080 has its own memory and runtime; tune per chip step 1) with the most key fields equal,
+                its value widened against the run by a margin from that row's own readings (one more reading's
+                one-sided 95% bound, t x sd x sqrt(1 + 1/n)) and the spread of the rows' values; a cost is charged
+                more, a saving credited less
     unmeasured  nothing to borrow honestly (the row has fewer than two readings, or the figure is a choice or a constant):
                 no value, so the formula that reads it keeps its default, and the command that measures it is named
 
@@ -34,19 +35,21 @@ def resolve(name:str, key:dict[str, Any], t:list[float] | tuple = ()) -> dict[st
   95%, by degrees of freedom (the margin's; none given: nothing is borrowed)."""
   from boltbeam.report.plain import words
   fig, w = table()["figures"][name], words()["machine_figures"]
+  from boltbeam.target.targets import target_matches, target_vendor
   here = ", ".join(f"{k} {key.get(k) if key.get(k) is not None else w['unread']}" for k in fig["key"])
-  hit = next((r for r in fig["rows"] if all(key.get(k) == v for k, v in r["key"].items())), None)
+  same = lambda k, v: target_matches(v, key.get(k)) if k == "chip" else key.get(k) == v  # noqa: E731  a chip is itself under its aliases
+  hit = next((r for r in fig["rows"] if all(same(k, v) for k, v in r["key"].items())), None)
   if hit:
     return {"name": name, "status": "measured", "value": hit["value"], "margin": 0.0, "row": hit, "says": None}
   rows = fig["rows"]
-  if "chip" in fig["key"]:  # never across vendors: a chip with no row of its own vendor is measured or not used
-    from boltbeam.target.targets import target_vendor
+  if "chip" in fig["key"]:  # never across chips: a chip with no row of its own is measured or not used, said with the command
     vendor = target_vendor(key.get("chip"))
-    rows = [r for r in rows if vendor and target_vendor(r["key"].get("chip")) == vendor]
+    rows = [r for r in rows if same("chip", r["key"].get("chip"))]
     if not rows:
+      word = "unread_chip" if not vendor else "other_chip" if any(target_vendor(r["key"].get("chip")) == vendor for r in fig["rows"]) else "other_vendor"
       return {"name": name, "status": "unmeasured", "value": None, "margin": None, "row": None,
-              "says": w["other_vendor" if vendor else "unread_chip"].format(what=fig["words"], here=here, how=fig["how_to_measure"],
-                                              rows=", ".join(sorted({str(r["key"].get("chip")) for r in fig["rows"]})))}
+              "says": w[word].format(what=fig["words"], here=here, how=fig["how_to_measure"],
+                                     rows=", ".join(sorted({str(r["key"].get("chip")) for r in fig["rows"]})))}
   near = max(rows, key=lambda r: sum(key.get(k) == v for k, v in r["key"].items()))
   got, n = near["readings"], len(near["readings"])
   told = {"what": fig["words"], "unit": fig["unit"], "here": here, "how": fig["how_to_measure"], "n": n, "value": near["value"],

@@ -91,6 +91,11 @@ reaches the model through the fork's route admission, which the A/B driver
 does not install yet. The kernel numbers are BoltBeam's own; the whole-model
 numbers are tinygrad runtime times, never a llama.cpp time.
 
+Run's search stage also takes owner tooling's engine paths: for an engine the
+per-role search does not serve, `search_stage.search_stage` runs the paths
+`workflow/pipeline.OWNER_SEARCH` registers, each only where its module is
+present (exp only; a build without them says the per-role skip).
+
 ## Import direction
 
 The two largest packages import one way: `workflow -> collectors`. A collector

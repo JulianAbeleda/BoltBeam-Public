@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import json
 import math
 import os
@@ -89,14 +90,41 @@ def _fetched_row(row:dict) -> TargetProfile:
   return _from_row({**row, "capabilities": {**(row.get("capabilities") or {}), "profile_source": FETCHED}})
 
 
+@functools.lru_cache(maxsize=1)
+def _shipped() -> dict[str, TargetProfile]:
+  return load_target_registry()
+
+
+def registry_claim(match:dict | None) -> str | None:
+  """The shipped registry row whose match rule a device's match facts satisfy (one exact row), or None: the chip a
+  profile made on that device is, so the row's measured figures stay that device's own (target_aliases)."""
+  hits = [tid for tid, t in _shipped().items() if match and t.capabilities.get("target_kind", "exact") == "exact"
+          and (rule := t.capabilities.get("match")) and all(match.get(k) == v for k, v in rule.items())]
+  return hits[0] if len(hits) == 1 else None
+
+
+def _aliased(row:dict) -> dict:
+  """A profile made on a device a shipped row claims names that row as its alias (one made before aliases were written
+  gets it here), so a figure keyed by the row's id is still measured, never borrowed, on the device that measured it."""
+  caps = row.get("capabilities") or {}
+  if "aliases" in caps or not (rid := registry_claim(caps.get("match"))) or rid == row.get("target_id"):
+    return row
+  return {**row, "capabilities": {**caps, "aliases": [rid]}}
+
+
+def canonical_target(name:str | None) -> str | None:
+  """The shipped id a target stands for: the registry row a profile made here aliases, else the target itself."""
+  return next((a for a in target_capability(name, "aliases") or () if a in _shipped()), name) if name else name
+
+
 def _load_all() -> dict[str, TargetProfile]:
   rows = load_target_registry()
   for tid, row in local_profiles().items():
-    rows.setdefault(tid, _from_row(row))  # ids never collide in practice: a local id is the hardware's (chip_profile_id)
+    rows.setdefault(tid, _from_row(_aliased(row)))  # ids never collide in practice: a local id is the hardware's (chip_profile_id)
   hosts = chips_dir() / FETCHED
   for host in sorted(hosts.iterdir()) if hosts.is_dir() else ():
     for tid, row in local_profiles(host).items():
-      rows.setdefault(tid, _fetched_row(row))  # reviewed, then made here, then fetched (first host by name)
+      rows.setdefault(tid, _fetched_row(_aliased(row)))  # reviewed, then made here, then fetched (first host by name)
   return rows
 
 
@@ -157,7 +185,7 @@ def save_local_profile(row:dict, *, measured_at:str) -> pathlib.Path:
   path = d / f"{row['target_id']}.json"
   path.write_text(json.dumps({"schema": SCHEMA_CHIP_PROFILE, "measured_at": measured_at, "target": row},
                              indent=1, sort_keys=True) + "\n")
-  TARGETS[row["target_id"]] = _from_row(row)
+  TARGETS[row["target_id"]] = _from_row(_aliased(row))
   return path
 
 
@@ -227,7 +255,7 @@ def target_aliases(name:str | None) -> frozenset[str]:
   than each consumer re-deriving it from a hand-typed pair.
   """
   if not name: return frozenset()
-  spellings = {name}
+  spellings = {name, *(target_capability(name, "aliases") or ())}  # a profile made on a device a shipped row claims is that row
   vendor, sep, arch = name.partition("_")
   if sep and vendor in _VENDORS: spellings.add(arch)
   else: spellings |= {f"{v}_{name}" for v in _VENDORS if f"{v}_{name}" in TARGETS}

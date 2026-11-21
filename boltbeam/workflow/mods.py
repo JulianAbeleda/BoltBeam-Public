@@ -621,7 +621,21 @@ def chip_of(target_id:str | None) -> str | None:
   compiler_arch (a registry row's, or a profile made on the machine), else the one its id spells (nvidia_sm120,
   amd_gfx1201); None when neither says (an Apple GPU, an unknown id): no mod's status on it is known."""
   from boltbeam.target.targets import compiler_arch
-  return compiler_arch(target_id)
+  return compiler_arch(target_id) or _scanned_arch(target_id)
+
+
+@functools.lru_cache(maxsize=8)
+def _scanned_arch(target_id:str | None) -> str | None:
+  """The architecture the hardware scan read for a GPU whose id is no row yet (an RTX 5080 before its autoscan: its own
+  id, not nvidia_sm120's, tune per chip step 1; NVIDIA only, the one vendor whose unclaimed cards got an id that spells no
+  architecture): a mod's chip row is keyed by architecture, so it still applies."""
+  if not target_id:
+    return None
+  try:
+    from boltbeam.target.hardware import hardware_profile
+    return next((d.get("architecture") for d in hardware_profile()["gpu"].get("devices") or [] if d.get("target_id") == target_id and d.get("vendor") == "nvidia"), None)
+  except Exception:  # noqa: BLE001  no scan: no architecture, as before
+    return None
 
 
 def chip_status(m:dict[str, Any], chip:str | None) -> dict[str, str] | None:

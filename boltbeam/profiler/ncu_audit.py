@@ -136,7 +136,7 @@ def audit(counters:Iterable[Mapping[str, Any]], dims:Mapping[str, tuple[int, int
                     "registers_per_thread": g["registers_per_thread"],
                     "shared_bytes": None if g.get("static_shared_bytes") is None else g["static_shared_bytes"] + g["dynamic_shared_bytes"],
                     "achieved_occupancy_pct": g["achieved_occupancy_pct"], "tensor_pipe_util_pct": g["tensor_pipe_util_pct"],
-                    "dram_tbps": round(g["dram_throughput_bytes_per_sec"] / 1e12, 3), "top_stall_reasons": g["top_stall_reasons"]}
+                    "dram_tbps": None if g["dram_throughput_bytes_per_sec"] is None else round(g["dram_throughput_bytes_per_sec"] / 1e12, 3), "top_stall_reasons": g["top_stall_reasons"]}
     gap = ours["total_us"] - ref["total_us"]
     buckets: dict[str, float] = {"aux_kernels": ours["aux_us"] - ref["aux_us"]}
     rows_share = 0.0
@@ -181,7 +181,8 @@ def audit(counters:Iterable[Mapping[str, Any]], dims:Mapping[str, tuple[int, int
 def markdown(doc:Mapping[str, Any]) -> str:
   lines = ["| role | M | ours us (GEMM+aux) | vLLM us | roofline us | ours grid/regs/occ/TP/DRAM | ref grid/regs/occ/TP/DRAM | ours top stalls | gap us | known buckets | UNEXPLAINED us |",
            "|---|---|---|---|---|---|---|---|---|---|---|"]
-  side = lambda s: f"{s['grid']} / {s['registers_per_thread']} / {s['achieved_occupancy_pct']:.0f}% / {s['tensor_pipe_util_pct']:.0f}% / {s['dram_tbps']}"
+  pct = lambda v: "-" if v is None else f"{v:.0f}%"
+  side = lambda s: f"{s['grid']} / {s['registers_per_thread']} / {pct(s['achieved_occupancy_pct'])} / {pct(s['tensor_pipe_util_pct'])} / {s['dram_tbps']}"
   for r in doc["rows"]:
     g = r["gap_vs_reference"]
     known = ", ".join(f"{k}={v}" for k, v in g["known"].items() if abs(v) >= 0.05)
