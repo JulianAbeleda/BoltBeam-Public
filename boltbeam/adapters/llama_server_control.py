@@ -246,4 +246,43 @@ def run_llama_server_control(*, executable:str | pathlib.Path, model:str | pathl
   return result
 
 
-__all__ = ["measure_fixed_depth_output", "own_argv", "run_llama_server_control", "serve", "serve_argv", "token_evidence"]
+def teacher_forced(tokens:Sequence[int], out:str | pathlib.Path, *, start:int, positions:int, stride:int, n_probs:int,
+                   base_url:str = "http://127.0.0.1:8080", post:Callable[[str, bytes, float], dict[str, Any]] | None = None,
+                   timeout_s:float = 3600.0, say:Callable[[str], None] = lambda _m: None) -> dict[str, Any]:
+  """Next-token distributions teacher-forced on tokens (the lossy gate's divergence rows, math/noninferior.blocks): one
+  completion of tokens[:start] fills the cache, then each request appends exactly stride tokens (one ubatch of stride rows:
+  a decode kernel's own shape at that depth, e.g. 4 for an MTP verify batch) with n_predict 1 and the top n_probs
+  pre-sampling probabilities (a full-vocabulary softmax of the logits; llama-server turns backend sampling off for such a
+  request). With n_predict 1 the sampled token is never cached, so the next request is a pure append; a reply whose
+  timings.prompt_n is not stride is a cache miss and is kept, marked, for the reader to drop. Writes one JSON line per
+  position to out: pos, ref (tokens[pos], the reference), top [[id, logprob]], prompt_n, ms."""
+  toks = [int(t) for t in tokens]
+  if start < 1 or stride < 1 or start + stride * positions >= len(toks):
+    raise ValueError(f"teacher forcing needs start >= 1 and start + stride x positions < {len(toks)} tokens")
+  def send(url:str, body:bytes, timeout:float) -> dict[str, Any]:
+    with urllib.request.urlopen(urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST"), timeout=timeout) as r:
+      return json.loads(r.read().decode())
+  post, url = post or send, base_url.rstrip("/") + "/completion"
+  head, tail = ",".join(map(str, toks[:start])), json.dumps({"n_predict": 1, "temperature": 0.0, "cache_prompt": True, "n_probs": n_probs,
+                                                               "post_sampling_probs": False})[1:]
+  t0 = time.perf_counter()
+  first = post(url, ('{"prompt":[' + head + '],' + tail).encode(), timeout_s)
+  rec = {"start": start, "stride": stride, "positions": positions, "n_probs": n_probs, "tokens": token_evidence(toks)["sha256"],
+         "prefix_s": time.perf_counter() - t0, "prefix_prompt_n": (first.get("timings") or {}).get("prompt_n"), "misses": 0}
+  say(f"prefix of {start} tokens in {rec['prefix_s']:.1f} s")
+  with open(out, "w") as f:
+    for j in range(positions):
+      end = start + stride * (j + 1)
+      head += "," + ",".join(map(str, toks[end - stride:end]))
+      t1 = time.perf_counter()
+      r = post(url, ('{"prompt":[' + head + '],' + tail).encode(), timeout_s)
+      top = [[int(x["id"]), float(x["logprob"])] for x in r["completion_probabilities"][0]["top_logprobs"]]
+      n = (r.get("timings") or {}).get("prompt_n")
+      rec["misses"] += n != stride
+      f.write(json.dumps({"pos": end, "ref": toks[end], "top": top, "prompt_n": n, "ms": (time.perf_counter() - t1) * 1e3}) + "\n")
+      if not (j + 1) & j:   # progress at each power of two
+        f.flush(); say(f"{j + 1}/{positions} positions, {rec['misses']} cache misses")
+  return rec
+
+
+__all__ = ["measure_fixed_depth_output", "own_argv", "run_llama_server_control", "serve", "serve_argv", "teacher_forced", "token_evidence"]

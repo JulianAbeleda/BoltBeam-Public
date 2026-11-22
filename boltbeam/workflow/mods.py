@@ -828,7 +828,7 @@ def run_env(build:dict[str, Any]) -> dict[str, str]:
   chip = build.get("chip") or chip_of(_this_chip())  # a build-only mod's switch only on a build made with the opt-in
   rows = [m for m in rows if applies_on(chip_status(m, chip), m.get("id") in (build.get("build_only") or []))]
   plan = pointer().get("plan_only") or {}  # set by a plan that spends what they free, never by default
-  out = {switch(m): on for m in rows if (on := run_on(m)) and f"{m.get('engine')}/{m.get('name')}" not in plan}
+  out = {switch(m): on for m in rows if (on := run_on(m)) and not {f"{m.get('engine')}/{m.get('name')}", m.get("id")} & set(plan)}  # engine/name, or one version's id
   hook = next((m for m in rows if m.get("name") and m["name"] == (pointer()["install_paths"].get(m.get("engine")) or {}).get("mod")), None)
   got = [p for p in [build.get("kernel_manifest")] if p and os.path.isfile(p)] or [p for p in build.get("kernel_manifests") or [] if os.path.isfile(p)]
   if hook and switch(hook) and len(got) == 1:  # the build's pick (kernel_manifest), else its one manifest
@@ -859,7 +859,7 @@ def rows(engine:str, got:dict[str, Any], only:list[str] | None = None) -> list[d
   for m in mods(engine):
     if m["id"] not in ids:
       continue
-    sw, on, plan = m.get("switch") or {}, run_on(m), f"{engine}/{m['name']}" in (pointer().get("plan_only") or {})
+    sw, on, plan = m.get("switch") or {}, run_on(m), bool({f"{engine}/{m['name']}", m["id"]} & set(pointer().get("plan_only") or {}))
     hooked = m["name"] == (pointer()["install_paths"].get(engine) or {}).get("mod")
     if m["id"] in held:
       why = w["chip_held"].format(why=held[m["id"]])
@@ -886,7 +886,8 @@ def rows(engine:str, got:dict[str, Any], only:list[str] | None = None) -> list[d
                 "about": w["about_module" if m.get("module") and title else "about_titled" if title else "about"].format(title=title, module=m.get("module"), files=", ".join(files) if len(files) <= 2 else f"{len(files)} files ({', '.join(files[:2])}, …)",
                                            added=m["lines"]["added"], removed=m["lines"]["removed"]),
                 "switch": f"{sw['name']}={on}" if on and not plan else sw.get("name"),
-                "switch_why": m.get("switch_null_why") if not sw else w["switch_plan"].format(switch=sw["name"], on=on) if plan
+                "switch_why": m.get("switch_null_why") if not sw else w["switch_held"].format(why=pointer()["plan_only"][m["id"]]) if m["id"] in (pointer().get("plan_only") or {})
+                              else w["switch_plan"].format(switch=sw["name"], on=on) if plan
                               else None if on else w["switch_manifest"] if hooked else
                               w["switch_default_on"] if sw.get("default") == "on" else w["switch_unset"].format(on=sw.get("on")),
                 "output": m["output"], "output_words": w["output"].get(m["output"], m["output"])})

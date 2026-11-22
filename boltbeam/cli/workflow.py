@@ -316,79 +316,16 @@ def cmd_runner_plan(args) -> int:
   _write(plan, args.out)
   return 0
 
-def _register_matched_control(sub) -> None:
-  p = sub.add_parser("matched-control", help="run a serial, identity-complete tinygrad/llama fixed-depth control")
-  p.add_argument("--model", required=True, help="GGUF model path")
-  p.add_argument("--tinygrad-root", required=True, help="clean tinygrad EXP checkout")
-  p.add_argument("--llama-root", required=True, help="clean llama.cpp checkout")
-  p.add_argument("--llama-bench", required=True, help="pinned llama-bench timing executable")
-  p.add_argument("--llama-server", required=True, help="pinned llama-server correctness-canary executable")
-  p.add_argument("--output-root", required=True, help="new output directory; must not already exist")
-  p.add_argument("--target-id", required=True)
-  p.add_argument("--depth", type=int, default=128)
-  p.add_argument("--warmups", type=int, default=2)
-  p.add_argument("--samples", type=int, default=5)
-  p.add_argument("--minimum-free-memory-percent", type=int, default=10)
-  p.add_argument("--run-id", default=None)
-  p.add_argument("--plan-only", action="store_true", help="capture preflight identities and print the plan without runtimes")
-  p.add_argument("--out", default=None, help="optional plan/summary JSON path")
-  p.set_defaults(fn=cmd_matched_control)
+RETIRED_HARNESS = ("retired 2026-11-21: it ran the tinygrad fork's decode_runtime_overhead.py harness, which left tinygrad-arkey "
+                   "with the kernel generator; time arkey with role-time, and llama.cpp with the session and replay A/Bs")
 
 
-
-def cmd_matched_control(args) -> int:
-  """Build or execute the fail-closed fixed-depth matched-control protocol."""
-  from boltbeam.control.matched_control import build_protocol, execute_protocol
-  try:
-    plan = build_protocol(model=args.model, tinygrad_root=args.tinygrad_root, llama_root=args.llama_root,
-                          llama_bench=args.llama_bench, llama_server=args.llama_server, output_root=args.output_root,
-                          target_id=args.target_id, depth=args.depth, warmups=args.warmups,
-                          samples=args.samples, minimum_free_memory_percent=args.minimum_free_memory_percent,
-                          run_id=args.run_id)
-    if args.plan_only:
-      _write(plan, args.out)
-      return 0 if plan["preflight"]["status"] == "ready" else 2
-    summary = execute_protocol(plan)
-  except (FileExistsError, FileNotFoundError, KeyError, OSError, RuntimeError, ValueError,
-          json.JSONDecodeError) as exc:
-    return _fail(f"matched-control: {exc}")
-  _write(summary, args.out)
-  return 0 if summary["status"] == "complete" else 2
-
-def _register_replay_ab(sub) -> None:
-  p = sub.add_parser("replay-ab", help="run paired serial METAL_HYBRID_REPLAY=0/1 fixed-depth rows")
-  p.add_argument("--model", required=True, help="Qwen3-8B GGUF model path")
-  p.add_argument("--tinygrad-root", required=True, help="clean tinygrad EXP checkout")
-  p.add_argument("--output-root", required=True, help="new output directory; must not already exist")
-  p.add_argument("--target-id", required=True)
-  p.add_argument("--depth", type=int, default=128)
-  p.add_argument("--warmups", type=int, default=2)
-  p.add_argument("--samples", type=int, default=5)
-  p.add_argument("--minimum-free-memory-percent", type=int, default=10)
-  p.add_argument("--run-id", default=None)
-  p.add_argument("--plan-only", action="store_true", help="capture identities and print the plan without runtimes")
-  p.add_argument("--out", default=None, help="optional plan/summary JSON path")
-  p.set_defaults(fn=cmd_replay_ab)
-
-
-
-def cmd_replay_ab(args) -> int:
-  """Build or execute the paired Metal hybrid-replay protocol."""
-  from boltbeam.control.replay_ab import build_protocol, execute_protocol
-  try:
-    plan = build_protocol(model=args.model, tinygrad_root=args.tinygrad_root, output_root=args.output_root,
-                          target_id=args.target_id, depth=args.depth, warmups=args.warmups,
-                          samples=args.samples, minimum_free_memory_percent=args.minimum_free_memory_percent,
-                          run_id=args.run_id)
-    if args.plan_only:
-      _write(plan, args.out)
-      return 0 if plan["preflight"]["status"] == "ready" else 2
-    summary = execute_protocol(plan)
-  except (FileExistsError, FileNotFoundError, KeyError, OSError, RuntimeError, ValueError,
-          json.JSONDecodeError) as exc:
-    return _fail(f"replay-ab: {exc}")
-  _write(summary, args.out)
-  return 0 if summary["status"] == "complete" and summary.get("verdict") != "INCONCLUSIVE" else 2
+def _register_retired_harnesses(sub) -> None:
+  """matched-control and replay-ab: kept as names that refuse in words (RETIRED_HARNESS)."""
+  for name in ("matched-control", "replay-ab"):
+    p = sub.add_parser(name, help=f"{RETIRED_HARNESS.split(':')[0]} (the tinygrad fixed-depth harness)", prefix_chars="\0", add_help=False)
+    p.add_argument("rest", nargs="*")   # no flag characters: every invocation, flags included, reaches the refusal
+    p.set_defaults(fn=lambda args, name=name: _fail(f"{name}: {RETIRED_HARNESS}"))
 
 
 def _register_session_ab(sub) -> None:
@@ -407,6 +344,9 @@ def _register_session_ab(sub) -> None:
   p.add_argument("--retries", type=int, default=2, help="reruns of an invalid arm before the run stops")
   p.add_argument("--turns", default=None, help="time only turns A-B (e.g. 40-59, a deep-turn screen; the history before A fills the cache untimed), or N: the first N")
   p.add_argument("--hook", default="", help="a shell command run once per arm after its turns, the server still up (a quality gate): SESSION_AB_URL, SESSION_AB_ARM, SESSION_AB_BLOCK, SESSION_AB_OUT")
+  p.add_argument("--lossy", action="append", default=[], help="NAME=FILE: arm NAME is declared lossy (FILE: {\"identity\": \"lossy\", \"lossy\": {evidence, quality, envelope}}, "
+                 "kernel_manifest_v2 $defs/lossy); without it an arm whose replies are not the base's is refused as a speed claim. Declared at the start "
+                 "(an input of the run: a finished run is not declared afterwards; --resume takes the same --lossy)")
   p.add_argument("--save-replies", action="store_true", help="also write every reply's text and token ids to OUT/replies/BLOCK-ARM-ATTEMPT.jsonl (the record itself keeps only the sha256)")
   p.add_argument("--resume", action="store_true", help="carry on with the record in --out (same inputs only)")
   p.add_argument("--analyze", action="store_true", help="print the table of the record in --out, run nothing")
@@ -431,7 +371,7 @@ def cmd_session_ab(args) -> int:
       record = sab.run(out=args.out, server_argv=args.server_argv, arms=args.arm, session=args.session, repeats=args.repeats,
                        engine=args.engine, history=args.history, lengths=args.lengths, gaps=args.gaps, wrap=args.wrap,
                        power_cap_w=args.power_cap, retries=args.retries, turns=args.turns, hook=args.hook, resume=args.resume, save_replies=args.save_replies,
-                       say=lambda m: print(m, file=sys.stderr, flush=True), files_read=files_read, trace_windows=args.trace_windows)
+                       say=lambda m: print(m, file=sys.stderr, flush=True), files_read=files_read, trace_windows=args.trace_windows, lossy=args.lossy)
     if record["inputs"].get("trace_windows"):
       sab._write(out / sab.FILE, record)
       print(json.dumps({"traces": record.get("traces"), "valid": [a["valid"] for a in record["arms"]]}))
@@ -833,8 +773,7 @@ def register(sub) -> None:
   _register_ingest_probe(sub)
   _register_ingest_timing(sub)
   _register_runner_plan(sub)
-  _register_matched_control(sub)
-  _register_replay_ab(sub)
+  _register_retired_harnesses(sub)
   _register_session_ab(sub)
   _register_load_probe(sub)
   _register_session_gate(sub)

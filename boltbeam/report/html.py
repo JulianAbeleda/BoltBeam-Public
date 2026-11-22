@@ -342,7 +342,7 @@ COMPARE_NOTE = "Times are from arkey's Metal runtime, not llama.cpp."
 
 
 def _compare_card(policy:dict[str, Any]) -> str:
-  """The per-role kernel comparison (boltbeam/search/role_compare.py), the same table step 5 shows."""
+  """The per-role kernel comparison (written by the per-role search, retired 2026-11-21), the same table step 5 shows."""
   routes = [r for r in policy.get("routes", []) or [] if isinstance(r, dict)]
   body = []
   for r in routes:

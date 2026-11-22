@@ -25,10 +25,12 @@ def offer(model:str, draft_bytes:int, *, facts:bool) -> dict[str, Any] | None:
 
 def measure(model:str, ks:list[int], *, backend:str, out:pathlib.Path, tokens:int = mtp.TOKENS, long_tokens:int = 2048,
             gpu_memory_utilization:float = GPU_SHARE, python:str | None = None, long_why:str = "asked (--long-tokens)",
-            grow:bool = False, head:str | None = None, build:str | None = None, admit=None) -> dict[str, Any]:
+            grow:bool = False, head:str | None = None, build:str | None = None, admit=None, extra:list[str] | None = None) -> dict[str, Any]:
   """collectors/mtp.sweep on vLLM. python (or build, Measure MTP's --build): the engine's python (default: the one
   vd.python() finds)."""
   python = python or build
+  if extra:
+    raise mtp.MtpRefused("vLLM's MTP driver starts its own engine from the checkpoint: extra server flags (--flags) are llama.cpp's here")
   if head:
     raise mtp.MtpRefused("vLLM's MTP head is the checkpoint's own: a head file (--draft) is llama.cpp's")
   py = python or vd.python()

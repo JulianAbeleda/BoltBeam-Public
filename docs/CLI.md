@@ -289,9 +289,10 @@ same refuted idea twice.
 
 ## 7. The search space, cut before the GPU runs
 
-The per-role kernel search (the screen's Compare, `python3 -m boltbeam.workflow.screen compare`) proposes the legal
-dimensions from the chip's declared facts (BubbleBeam), rejects what cannot fit or fill the chip and orders the rest
-(FutureSight), and only then spends GPU time on what survives (`boltbeam/search/role_compare.py`). The standalone
+BubbleBeam proposes the legal dimensions from the chip's declared facts and FutureSight rejects what cannot fit or
+fill the chip and orders the rest (`search/futuresight_adapter.py`). The per-role kernel search that spent GPU time on what
+survived (the screen's Compare) was retired on 2026-11-21 with the tinygrad fork's search provider; the search is the
+region search through the kernel generator's contract (docs/generator-boundary.md). The standalone
 campaign commands that once exposed each stage (`propose-semantic-dimensions`, `export-semantic-population`,
 `assess-semantic-population`, `semantic-campaign`, `search-full-kernel`, the `mr7-*`, `mr8-*`, `mr9-*`, `mr12-*` and
 `mr13-*` commands) are gone; their records stay in [semantic-campaign.md](semantic-campaign.md) and the MR documents.
@@ -309,7 +310,7 @@ chip, the run stages with live status, and the results with measured speed again
 |---|---|
 | this repo and a model file | `inspect`, `roofline-theoretical`, `emit-search`, `vocab`, `analyze`, `load`, `autoscan`, `boundary-plan` |
 | a profiler trace from any vendor | `import-ncu`, `import-hw-trace`, `compare-hw-trace`, `profiler-report`, `roofline`, `evaluate`, `ledger` |
-| the arkey fork and a GPU | `collect-hw-trace`, the screen's `compare` |
+| the arkey fork and a GPU | `role-time`, `collect-hw-trace --sampler metal-system-trace` |
 
 `python3 -m boltbeam.cli --help` lists every command; each one takes `--help` too.
 
@@ -318,8 +319,9 @@ chip, the run stages with live status, and the results with measured speed again
 Almost nothing. Every command loads and takes `--help` with no tinygrad anywhere on the machine, and
 BoltBeam never imports it on any path the command line reaches. Only one thing wants a real checkout:
 
-- `collect-hw-trace`, which drives a run and collects the trace. It runs the model, so it needs the
-  thing that runs models.
+- `role-time` and `collect-hw-trace` (metal-system-trace), which run the model, so they need the thing that runs
+  models. The other arkey samplers (rocprofv3, tinygrad-profile-events, tinygrad-native-pmc) ran the fork's bench
+  harnesses and were retired on 2026-11-21; they refuse in words.
 
 `analyze` writes commands that mention the checkout but does not read it. Without one it writes
 `$TINYGRAD_ROOT` and reports the three helper scripts as absent, which is true and says so.

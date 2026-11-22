@@ -43,12 +43,11 @@ NOT_RECORDED = "not recorded"
 LAYERS = ("bubblebeam", "futuresight", "measured", "promotion")
 LAYER_TITLE = {"bubblebeam": "BubbleBeam", "futuresight": "FutureSight", "measured": "Measured", "promotion": "Promotion"}
 AT_LIMIT = "at the limit, nothing to gain"
-NOT_SEARCHED = "not searched: run with the kernel search on"
-NOT_SEARCHED_ENGINE = "not searched: run with --provider arkey (the tinygrad fork, BOLTBEAM_TINYGRAD_ROOT)"
+NOT_SEARCHED = "not searched"  # the per-role search was retired 2026-11-21; the reason follows in parentheses
 TOP_REASONS = 2  # rejection reasons named per layer
 FIRST_ORDER = 3  # candidates named from FutureSight's measurement order
 
-# where each layer's facts live in a run; role_compare.compare_run writes the per-role files by stem
+# where each layer's facts live in a run; the per-role search (retired 2026-11-21) wrote the per-role files by stem
 POLICY, STATUS = "route_policy.json", f"{compare_record.FOLDER}/{compare_record.STATUS_FILE}"
 REQUEST, RESULT = compare_record.FOLDER + "/{stem}-search-request.json", compare_record.FOLDER + "/{stem}-search-result.json"
 NORM_ROLES = ("attn_norm", "ffn_norm", "output_norm", "norm")
@@ -309,8 +308,7 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
     return _layer("promotion", True, lines, {**facts, "plan": "nothing to emit"}, ptrs)
   if verdict == "not_searched":
     why = (status or {}).get("reason") or reason
-    hint = NOT_SEARCHED_ENGINE if (why or "").startswith(search_stage.ARKEY_ONLY) else NOT_SEARCHED
-    lines.append(hint + (f" ({why})" if why and why != reason else ""))  # the verdict line said it once
+    lines.append(NOT_SEARCHED + (f" ({why})" if why and why != reason else ""))  # the verdict line said it once
     return _layer("promotion", True, lines, {**facts, "plan": NOT_SEARCHED, "why_off": why}, ptrs + ([_ptr(STATUS, "reason")] if status else []))
   # applied or found, not applied: the plan, its gain, the emitter, the record, the check
   rows, kk = shape
@@ -327,7 +325,7 @@ def _promotion(role:str, quant:str, r:dict[str, Any], route:dict[str, Any] | Non
   won = str(c.get("plan") or "").split(":", 1)[0]  # plan_text names the winner's family first
   if space.get("family"): space = {**space, "family": won if won in families else space["family"]}
   emitter = ({"name": space["family"], "args": f"the winner's schedule ({c.get('plan')})",
-              "pins": "the emitter's own validate on this shape (the search compiled it)", "module": "extra/llm_research/semantic_kernel_lowering.py"}
+              "pins": "the emitter's own validate on this shape (the search compiled it)", "module": "the kernel generator"}
              if space.get("family") else _emitter(role, quant, rows, kk, str(target.get("target_id") or "")))
   if emitter:
     lines.append(f"emit with {emitter['name']}({emitter['args']}) from {emitter['module']}; shape pins: {emitter['pins']}")

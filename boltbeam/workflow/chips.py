@@ -65,7 +65,8 @@ def _nvidia_smi_facts(index:int = 0) -> dict[str, Any]:
 def _bridge_probes(row:vendors.Vendor, pci_bus_id:str | None) -> tuple[Measure, Measure]:
   """The read and matrix probes on a scanned discrete GPU, for any vendor with a kernel bridge: the bridge opened on
   the card at its PCI address (the bridge module's index_of: a runtime numbers GPUs in its own order), the shared read
-  probe (read_bandwidth) through it, and the row's own matrix probe (its compute module's measure_paths)."""
+  probe (read_bandwidth: the DRAM rate, then the working-set sweep the memory hierarchy is read from) through it, and
+  the row's own matrix probe (its compute module's measure_paths)."""
   from boltbeam.collectors import read_bandwidth
   if not pci_bus_id:
     raise RuntimeError(f"the scan did not report the GPU's PCI address, which the {row.backend} probes open it by")
@@ -73,7 +74,7 @@ def _bridge_probes(row:vendors.Vendor, pci_bus_id:str | None) -> tuple[Measure, 
   def read() -> dict[str, Any]:
     bridge = vendors.resolve(row.bridge)(index := index_of(pci_bus_id))
     try:
-      return read_bandwidth.measure_read_gbs(index, bridge=bridge)
+      return {**read_bandwidth.measure_read_gbs(index, bridge=bridge), "ws_sweep": read_bandwidth.measure_ws_sweep(index, bridge=bridge)}
     finally:
       bridge.close()
   return read, lambda: vendors.resolve(row.profile.compute).measure_paths(index_of(pci_bus_id))
@@ -137,6 +138,11 @@ def profile_row(device:dict[str, Any], read:dict[str, Any], matrix:dict[str, Any
                         "value_tflops": matrix["tflops"], "dtype": "fp16", "note": matrix["note"], "observed_at": today},
     },
   }
+  if read.get("ws_sweep"):   # the tiers' sizes from the scan (amd-smi's shared caches; else the runtime's L2), their rates measured
+    from boltbeam.memory import mem_hierarchy
+    shared = device.get("shared_caches") or ([{"level": 2, "bytes": scan["l2_cache_bytes"]}] if scan.get("l2_cache_bytes") else None)
+    caps["memory_hierarchy"] = mem_hierarchy.tiers_from_sweep(read["ws_sweep"], shared, system_snapshot_id=pid, tool="read_bandwidth.ws_sweep")
+    caps["fact_status"]["memory_hierarchy"] = "measurement" if caps["memory_hierarchy"]["truth_status"] == "measured" else "partial_measurement"
   if matrix.get("paths"):
     caps["fact_status"]["matrix_tflops"] = "measurement"
   if matrix.get("path_scan"):  # the matrix paths the installed compiler offered this target, kept to be read again

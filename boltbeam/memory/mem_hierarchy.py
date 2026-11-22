@@ -59,7 +59,30 @@ def _tier_names(count: int, declared: list[str] | None) -> list[str]:
   raise ValueError(f"cannot assign {count} hierarchy plateaus without separable_tiers")
 
 
-def classify_ws_sweep(samples: dict, *, system_snapshot_id: str, tool: str = "tinygrad_ws_sweep") -> dict:
+def tiers_from_sweep(samples: dict, shared_caches: list[dict] | None, *, system_snapshot_id: str, tool: str = "ws_sweep") -> dict:
+  """A chip profile's memory_hierarchy (what kernel_analysis.theoretical_roofline.registered_memory_tiers reads) from a
+  working-set sweep and the scan's shared caches ([{level, bytes}], every unit's: the first is the L2, the last the
+  last-level cache; one cache is both). A tier's capacity is the hardware's; its bandwidth the median of the sweep's
+  points inside it (L2: up to its size; the last level: past the L2, up to its size; DRAM: from twice the last size).
+  With no cache sizes in the scan the tiers are unknown (partial), never guessed from the curve. LDS: the sweep's own probe."""
+  rate = {int(p["bytes"]): statistics.median(p["sustained_gbs"]) for p in samples.get("points") or () if p.get("sustained_gbs")}
+  lds = (samples.get("lds_probe") or {}).get("sustained_gbs") or []
+  band = lambda lo, hi: [g for b, g in rate.items() if lo < b <= hi]   # noqa: E731
+  def tier(values, size=None):
+    t = {"bandwidth_gbs": round(statistics.median(values), 1), "bandwidth_status": "measured", "samples": len(values)} if values else {"bandwidth_status": "unknown"}
+    return {**t, "bytes": size, "capacity_status": "hardware"} if size else t
+  caches = sorted(shared_caches or (), key=lambda c: c["level"])
+  l2, last = (caches[0]["bytes"], caches[-1]["bytes"]) if caches else (None, None)
+  tiers = {"l2": tier(band(0, l2), l2) if caches else tier([]), "dram": tier(band(2 * last, float("inf")) if caches else []),
+           "last_level_cache": tier(band(l2, last) if last > l2 else band(0, l2), last) if caches else tier([])}
+  tiers["lds"] = tier([float(v) for v in lds])
+  complete = all(t.get("bandwidth_status") == "measured" for t in tiers.values())
+  return {"truth_status": "measured" if complete else "partial", "tiers": tiers,
+          "capacities": "the scan's shared caches" if caches else "unknown: no cache sizes in the scan",
+          "method": samples.get("method"), "system_snapshot_id": system_snapshot_id}
+
+
+def classify_ws_sweep(samples: dict, *, system_snapshot_id: str, tool: str = "ws_sweep") -> dict:
   """Normalize calibrated bands. Output is explicitly forbidden as candidate hit-rate evidence."""
   sample_snapshot = samples.get("system_snapshot_id")
   if sample_snapshot not in (None, system_snapshot_id):

@@ -36,6 +36,7 @@ from typing import Any
 
 from boltbeam.collectors import hip_compute as hc
 from boltbeam.collectors import path_scan
+from boltbeam.runtime import bounded_compile
 
 SCAN_VERSION = 1  # bump when the rules below change: cached records of an older rule are not reused
 CANDIDATE = re.compile(rb"__builtin_amdgcn_s?wmmac?_[a-z0-9_]+")
@@ -94,8 +95,8 @@ def _diagnose(hipcc:str, arch:str, calls:dict[str, str], scratch:pathlib.Path, t
          "".join(f"  {{ {calls[b]}; }}\n" for b in names) + "}\n")
   f = scratch / f"sig-{hashlib.sha256(src.encode()).hexdigest()[:16]}.hip"
   f.write_text(src)
-  proc = subprocess.run([hipcc, "-fsyntax-only", "-fno-crash-diagnostics", "-ferror-limit=0", "--cuda-device-only", "-nogpuinc", f"--offload-arch={arch}", "-x", "hip", str(f)],
-                        capture_output=True, text=True, timeout=600)
+  proc = bounded_compile.run([hipcc, "-fsyntax-only", "-fno-crash-diagnostics", "-ferror-limit=0", "--cuda-device-only", "-nogpuinc", f"--offload-arch={arch}", "-x", "hip", str(f)],
+                             timeout_s=600)
   first = 4 + len(_typedefs(types).splitlines())
   out: dict[str, str] = {}
   for line, msg in _DIAG.findall(proc.stderr):

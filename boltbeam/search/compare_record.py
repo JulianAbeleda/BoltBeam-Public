@@ -8,7 +8,7 @@ import datetime as _dt
 import hashlib, json, pathlib, subprocess
 from typing import Any
 
-from boltbeam.core.canonical import sha256_file  # noqa: F401  (role_compare reads it here)
+from boltbeam.core.canonical import sha256_file  # noqa: F401  (older callers read it here)
 
 FOLDER = "kernel_compare"
 STATUS_FILE = "search_status.json"

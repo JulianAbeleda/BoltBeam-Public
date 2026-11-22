@@ -26,9 +26,9 @@ distance from it, in two rankings (bytes known; bound unknown), and whether the 
                 depth). Else unknown. limit = bytes / the target's measured bandwidth; distance = time - limit.
     floor       launches x the cheapest mean duration of launches no other launch overlaps: an estimate and a lower
                 bound, never a limit; a row with no bytes ranks by time - floor, an upper bound of what it can give.
-    coverage    per depth: search_can_propose (for matmul and attention rows first the search stage's own rule for the engine,
-                search_stage.provider_refusal; then formats.refusal, role_proposal.LOGICAL_M, gemm-space's own space,
-                flash_space, decode_graph.json kinds), check (a reference), install_path (engine_patches.json).
+    coverage    per depth: search_can_propose (the region search covers the row: data/region.json has the engine's row, a
+                generator row with a generate action, and the kernel among the engine's graph-op kernels; then
+                formats.refusal, decode_graph.json kinds), check (a reference), install_path (engine_patches.json).
 
 Engine-blind: an engine is a key into data rows; nothing here names one or a kernel.
 Labels: measured (source), derived (formula, inputs), estimate (formula, test), unknown (test, no value)."""
@@ -124,8 +124,11 @@ def manifest_rows(manifest:dict[str, Any] | None) -> list[dict[str, Any]]:
   out = []
   for e in (manifest or {}).get("entries") or []:
     mm = [o for o in e["match"]["ops"] if o["op"].endswith("MUL_MAT")]
-    row = {"pattern": f"^{re.escape(e['kernel']['symbol'])}$", "manifest": e["id"], "why": f"the installed manifest's entry {e['id']}"}
-    if len(mm) == 1 and len(mm[0].get("src_ne") or []) == 2:
+    syms = [q["kernel"]["symbol"] for q in e["launches"] if "kernel" in q] if "launches" in e else [e["kernel"]["symbol"]]  # hook R5: one a launch
+    row = {"pattern": "^(" + "|".join(map(re.escape, syms)) + ")$", "manifest": e["id"], "why": f"the installed manifest's entry {e['id']}"}
+    if any(o["op"].endswith("FLASH_ATTN_EXT") for o in e["match"]["ops"]):
+      out.append({**row, "op": "attention", "family": "attention"})
+    elif len(mm) == 1 and len(mm[0].get("src_ne") or []) == 2:
       fmt = mm[0]["src_types"][0].upper()
       out.append({**row, "op": "matmul", "family": "dense_gemm", "act": mm[0]["src_types"][1].upper(), "n": [mm[0]["src_ne"][0][1]],
                   "format_families": [(formats.row(fmt) or {}).get("family")]})
@@ -258,31 +261,38 @@ def bytes_of(op:str, joined:tuple | None, sr:dict[str, Any] | None, launches:flo
                  "the shapes this kernel reads and writes (the engine's graph), not in the trace or the header")
 
 
+def region_covers(engine:str, name:str) -> str | None:
+  """Why the region search (the only search since 2026-11-21) does not cover a kernel of this engine, or None. From
+  data/region.json alone: the engine's row, a generator row with a generate action, the kernel among the engine's
+  graph-op kernels (engines.<E>.graph_ops.kernels)."""
+  path = DATA / "region.json"
+  if not path.is_file():
+    return "region search: not in this build (no data/region.json)"
+  rows = json.loads(path.read_text())
+  row = (rows.get("engines") or {}).get(engine)
+  if not row:
+    return f"region search: data/region.json has no engines row for {engine}"
+  if not any(g.get("generate") for g in (rows.get("region_generators") or {}).values()):
+    return "region search: no generator row with a generate action (data/region.json region_generators)"
+  kernels: set[str] = set()
+  for v in ((row.get("graph_ops") or {}).get("kernels") or {}).values():
+    kernels |= {v} if isinstance(v, str) else {k for ks in (v.values() if isinstance(v, dict) else [v]) for k in ([ks] if isinstance(ks, str) else ks)}
+  if not any(name == k or name.startswith(k + "<") for k in kernels):
+    return f"region search: {name} is no graph op's kernel in data/region.json engines.{engine}.graph_ops"
+  return None
+
+
 def coverage(op:str, name:str, joined:tuple | None, m:int, engine:str, ctx:dict[str, Any]) -> dict[str, Any]:
-  """search_can_propose (the search's own answers, first whether the search stage runs for this engine at all:
-  search_stage.provider_refusal), check (a reference) and install_path (data/engine_patches.json)."""
-  from boltbeam.search import fusion_space, gemm_strategy, search_stage
-  from boltbeam.search.role_proposal import LOGICAL_M
+  """search_can_propose (whether the region search covers the row: region_covers, for the engine that ran), check (a
+  reference) and install_path (data/engine_patches.json). m is the columns a launch takes (the row's pass)."""
+  from boltbeam.search import fusion_space
   cs = joined[0] if joined else []
-  fmts, miss, check = sorted({x["format"] for x in cs}), [], []
-  if op in MATMUL or op == "attention":  # the per-role search's rows: the search stage's own rule says whether it runs for this engine
-    miss += [f"per-role search: {why}"] if (why := search_stage.provider_refusal(ctx.get("provider", engine))) else []
+  fmts, check = sorted({x["format"] for x in cs}), []
+  miss = [why] if (why := region_covers(ctx.get("provider", engine), name)) else []
   if op in MATMUL:
     miss += [f"format: {r}" for f in fmts if (r := formats.refusal("search", f))] or ([] if fmts else ["format: unknown (not joined to the header)"])
     check += [f"reference: {r}" for f in fmts if (r := formats.refusal("reference", f))]
-    floats = bool(fmts) and op == "matmul" and all((formats.row(f) or {}).get("family") == "float" for f in fmts)
-    if m > LOGICAL_M and not floats:
-      miss.append(f"column count m={m}: role_proposal.LOGICAL_M is {LOGICAL_M}")
-    elif m > LOGICAL_M and (low := ctx.get("lowering")) is None:
-      miss.append(f"column count m={m}: whether gemm-space admits it is unknown (test: --lowering, the compiler's lowering facts)")
-    elif m > LOGICAL_M and not all(low.operand_bytes == formats.elem_bytes(f) and gemm_strategy.derive_space(ctx["machine"], low, gemm_strategy.Shape(m, x["n"], x["k"]))
-                                   for f in fmts for x in cs if x["format"] == f):
-      miss.append(f"column count m={m}: gemm-space admits no config for one of its shapes or operand formats")
-  elif op == "attention":
-    miss += [f"column count m={m}: flash_space proposes one query token"] if m > LOGICAL_M else []
-    miss += [f"KV format {ctx['kv_type']}: flash_space proposes on a 16-bit cache"] if not formats.half(ctx.get("kv_type")) else []
-    miss += ["sparse selection: flash_space proposes dense attention"] if ctx.get("selection") else []
-  else:
+  elif op != "attention":
     kinds = fusion_space.graph().get("kinds") or {}
     ops = kinds.get(kind := kind_of({"kernel": name})) or []
     miss += [f"graph node: no data/decode_graph.json node for kind '{kind}'"] if not ops else \
@@ -322,10 +332,7 @@ def ledger(captures:list[dict[str, Any]], *, main:dict[str, Any], draft:dict[str
     from boltbeam.roofline import routing_profile as rp
     kv["reached"] = {c: statistics.fmean(rp.reached(routing, c)) for c in sorted({k + 1, 1})}
   selection = selection or {}
-  ctx = {"kv_type": kv_type, "lowering": lowering, "provider": tb.engine_keys(engine)[0]}   # the engine that ran: a fork, not its root
-  if lowering is not None:
-    from boltbeam.search.gemm_strategy import GemmMachine
-    ctx["machine"] = GemmMachine.from_target(target["id"])
+  ctx = {"kv_type": kv_type, "provider": tb.engine_keys(engine)[0]}   # the engine that ran: a fork, not its root
   depths, rows = [], {}
   for c in captures:
     cap, depth = c["cap"], c.get("depth")

@@ -98,7 +98,8 @@ def spec_flags(head:pathlib.Path, k:int) -> list[str]:
   return ["-md", str(head.absolute()), "--spec-type", "draft-mtp", "--spec-draft-n-max", str(k)] if k else []
 
 
-def fit_context(model:str, head:str | None, *, k:int, need:int, out:pathlib.Path, build:str | None = None) -> tuple[int | None, str]:
+def fit_context(model:str, head:str | None, *, k:int, need:int, out:pathlib.Path, build:str | None = None,
+                extra:list[str] | None = None) -> tuple[int | None, str]:
   """The largest server context llama.cpp's own fit (common_fit_params, with the draft head and its context at draft
   count k, to its free-memory target) holds on this GPU's free memory now, and how it says so: a server started with the fit on
   (no -c, no -ngl) and stopped as soon as it has logged the fit, before the weights load. None: the model's own context
@@ -108,7 +109,7 @@ def fit_context(model:str, head:str | None, *, k:int, need:int, out:pathlib.Path
   hd, server = resolve(model, head, build)
   w = words()["llama_server"]
   argv = [sys.executable, str(lsd.DRIVER), "--server", server, "--model", str(pathlib.Path(model).absolute()), "--port", "0", "--ctx-size", "0",
-          "--flags", json.dumps(spec_flags(hd, k)), "--fit-probe", str(need + lsd.HEADROOM), "--log", str(out / f"llama-server-fit-k{k}.log"),
+          "--flags", json.dumps([*(extra or []), *spec_flags(hd, k)]), "--fit-probe", str(need + lsd.HEADROOM), "--log", str(out / f"llama-server-fit-k{k}.log"),
           "--deadline-s", str(FIT_DEADLINE_S), "--pgid-file", str(out / mtp.SERVER_GROUP.format(k="fit"))]
   out.mkdir(parents=True, exist_ok=True)
   try:
@@ -122,20 +123,22 @@ def fit_context(model:str, head:str | None, *, k:int, need:int, out:pathlib.Path
 
 def measure(model:str, ks:list[int], *, backend:str, out:pathlib.Path, tokens:int = mtp.TOKENS, long_tokens:int = 2048,
             long_why:str = "asked (--long-tokens)", grow:bool = False, head:str | None = None, build:str | None = None,
-            admit=None) -> dict[str, Any]:
+            admit=None, extra:list[str] | None = None) -> dict[str, Any]:
   """collectors/mtp.sweep on llama-server (admit: what the sweep asks before a grown k, screen.mtp_admit). head: the draft head (default: the one heads() finds); build: any program of
-  the build (resolve: the one resolver tune uses)."""
+  the build (resolve: the one resolver tune uses); extra: the served command's other flags (tune's --flags, e.g. the split
+  mode), on every server before the draft flags, so the measured k is the one that runs; kept on the record."""
   hd, server = resolve(model, head, build)
   prompts = mtp.prompt_set()
   deadline, ends = deadline_s(prompts), json.dumps(end_ids(model))
 
   def run_k(k:int) -> list[dict[str, Any]]:
-    flags = [*cs.all_layers(None), "--metrics", *spec_flags(hd, k)]
+    flags = [*cs.all_layers(None), "--metrics", *(extra or []), *spec_flags(hd, k)]
     argv = [sys.executable, str(lsd.DRIVER), "--server", server, "--model", str(pathlib.Path(model).absolute()), "--port", "0",
             "--ctx-size", str(prompts["room"] + long_tokens + tokens + lsd.HEADROOM), "--flags", json.dumps(flags),
             "--mtp-prompts", prompts["path"], "--k", str(k), "--tokens", str(tokens), "--long-tokens", str(long_tokens),
             "--long-corpus", str(mtp.LONG), "--log", str(out / f"llama-server-k{k}.log"),
             "--end-ids", ends, "--deadline-s", str(deadline), "--pgid-file", str(out / mtp.SERVER_GROUP.format(k=k))]
     return ec.run_driver(argv, log=out / f"mtp-k{k}.log", timeout_s=deadline + DRIVER_GRACE_S)  # the driver's own deadline first: it stops its server
-  return mtp.sweep(run_k, ks, model=model, backend=backend, out=out, tokens=tokens, long_tokens=long_tokens, long_why=long_why, grow=grow,
+  record = mtp.sweep(run_k, ks, model=model, backend=backend, out=out, tokens=tokens, long_tokens=long_tokens, long_why=long_why, grow=grow,
                    decode_speed="(predicted_n - 1) / predicted_ms, llama-server's own timings: no prefill", admit=admit)
+  return record | {"extra_flags": list(extra or [])}

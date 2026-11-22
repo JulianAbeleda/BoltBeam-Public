@@ -4,7 +4,7 @@
   "mods_repo": {
     "default_path": "~/arkey_ie_mods",
     "env": "BOLTBEAM_IE_MODS",
-    "pin": "faf3a33627c5804333e4e6dd5a572323f2ea80f6",
+    "pin": "f7a83c46317d702747248fa9d891d2dd395f408e",
     "pin_env": "BOLTBEAM_IE_MODS_PIN",
     "pin_why": "the floor and the offline default, not the only choice: `boltbeam mods` reads the newest commit on the repo's default branch past the pin whose index schema BoltBeam reads and whose requires.boltbeam it meets (workflow/mods.resolve), the pin when that fails; --pin or $BOLTBEAM_IE_MODS_PIN reads exactly one commit",
     "url": "https://github.com/JulianAbeleda/arkey_ie_mods",
@@ -39,9 +39,12 @@
   "uses_why": "by engine/name (the mod in any version); every mod with a switch is also read by results.engine_mods, context_audit.output_label and tune.output_of",
   "plan_only": {
     "llama.cpp/rs-one-copy": "costs +0.12 ms a decode step [0.04, 0.19] (session-ab, switch on vs off); it pays only when the plan spends the memory it frees (the expert residency placement with the hot draft), so a run on a modded build leaves it off and tune's spend fit names it (LLAMA_RS_ONE_COPY=1) when its plan uses the freed MiB",
-    "llama.cpp/kv-stream": "costs -8.6 tok/s warm decode [-17.8, +0.6] at 128k where everything fits without it (session-ab, 3 pairs, N 65,536 vs off); it pays only where the memory it frees buys expert residency (256k: 220.0 vs 184.4 tok/s), so a run on a modded build leaves it off and tune's spend fit names it (LLAMA_KV_STREAM=N) when its plan uses the freed MiB"
+    "llama.cpp/kv-stream": "costs -8.6 tok/s warm decode [-17.8, +0.6] at 128k where everything fits without it (session-ab, 3 pairs, N 65,536 vs off); it pays only where the memory it frees buys expert residency (256k: 220.0 vs 184.4 tok/s), so a run on a modded build leaves it off and tune's spend fit names it (LLAMA_KV_STREAM=N) when its plan uses the freed MiB",
+    "llama.cpp/rbudget-backend": "keeps -bs on under a thinking budget; its gain (+13.8 tok/s warm decode at 256k, replies identical) was measured on one chip and model shape only, so a run on a modded build leaves it off and tune's LLAMA_RBUDGET_BACKEND row sets it where that measurement holds (with -bs under the cap) and states it elsewhere",
+    "llama.cpp/graph-cpy-kernel": "lets CUDA graphs update in place (rebuilds 0.280 -> 0.012 a decode step at 256k, replies identical) but no speed gain has resolved (+0.3 tok/s [-2.8, +3.5], 3 pairs), so a run on a modded build leaves it off and tune's GGML_CUDA_GRAPH_CPY_KERNEL row states it with its evidence",
+    "llama.cpp/1.0.0/sparse-split": "1.0.0 is frozen: its sm_120 evidence row (sparse-chain-20261119, measured) lets the build carry the mod, but a run on a 1.0.0 modded build leaves its switch off as it was before the pin moved to 617b227; b12521's sparse-split is unaffected (this key names the 1.0.0 mod only)"
   },
-  "plan_only_why": "mods whose switch a run on a modded build does not turn on by itself (workflow/mods.run_env): the spend fit names it when its plan pays for it (engine/name, as uses)",
+  "plan_only_why": "mods whose switch a run on a modded build does not turn on by itself (workflow/mods.run_env): tune names it where it pays, its spend fit when its plan pays for the memory it frees, or the mod's own row where its gain was measured (engine/name, as uses, for the mod in every version; engine/version/name for one version's mod)",
   "install_paths": {
     "why": "How a kernel the search finds gets into an engine's decode, per engine (the kernel ledger's install_path column reads this; an engine with no row has none). status proven: a run showed an outside kernel launched in place of the engine's own at no measured cost; the evidence names it. mod: the arkey_ie_mods mod (by name) whose switch turns it on; a run with it on reads untested until arkey_ie_mods has kernel rows a manifest entry maps to (context_audit.output_label).",
     "llama.cpp": {

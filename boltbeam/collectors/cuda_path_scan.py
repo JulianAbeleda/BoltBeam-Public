@@ -35,6 +35,7 @@ from typing import Any
 
 from boltbeam.collectors import cuda_compute as cc
 from boltbeam.collectors import path_scan
+from boltbeam.runtime import bounded_compile
 
 SCAN_VERSION = 3
 SHAPES = ("m16n8k4", "m16n8k8", "m16n8k16", "m16n8k32", "m16n8k64")
@@ -108,7 +109,7 @@ def valid(ptxas:str, version:str, sm:str, paths:list[cc.Path], scratch:pathlib.P
       body += [f".visible .entry c{i}() {{", "  .reg .b32 %r<64>;", "  " + _ptx_line(paths[i]), "  ret;", "}"]
     f = scratch / f"scan-{sm}-{hashlib.sha256(''.join(body).encode()).hexdigest()[:12]}.ptx"
     f.write_text(f".version {version}\n.target {sm}\n.address_size 64\n" + "\n".join(body) + "\n")
-    proc = subprocess.run([ptxas, f"-arch={sm}", "-o", os.devnull, str(f)], capture_output=True, text=True, timeout=600)
+    proc = bounded_compile.run([ptxas, f"-arch={sm}", "-o", os.devnull, str(f)], timeout_s=600)
     f.unlink()
     bad = {live[(int(n) - 4) // 5] for n in _LINE.findall(proc.stdout + proc.stderr) if 4 <= int(n) < 4 + 5 * len(live)}
     if not proc.returncode:

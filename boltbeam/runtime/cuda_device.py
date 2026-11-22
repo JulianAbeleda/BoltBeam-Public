@@ -29,6 +29,8 @@ import subprocess
 import tempfile
 from typing import Any
 
+from boltbeam.runtime import bounded_compile
+
 CLOCK = "CUDA events (cuEventElapsedTime) around one launch"
 NVCC_ENV = "BOLTBEAM_NVCC"
 _CU_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK = 0
@@ -87,7 +89,7 @@ def build_cubin(nvcc:str, source:str, macros:dict[str, str] | None = None, *, ca
     src.write_text(source)
     argv = [nvcc, "-cubin", "-O3", f"-arch={arch}", "-std=c++17", *(flags or []), *[f"-D{k}={v}" for k, v in macros.items()],
             *[f"-I{i}" for i in includes or []], "-o", str(cubin), str(src)]
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=1200)
+    proc = bounded_compile.run(argv)  # heap and time capped: a candidate's source cannot take the machine
     if proc.returncode != 0:
       raise RuntimeError(f"nvcc failed: {(proc.stderr or proc.stdout).strip()[-600:]}")
   return cubin.read_bytes()

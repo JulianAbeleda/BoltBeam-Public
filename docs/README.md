@@ -30,7 +30,6 @@ Each describes one part of the tool and is kept current with it.
 - [mr7-evidence-pipeline.md](mr7-evidence-pipeline.md): the MR7 evidence pipeline
 - [mr9-semantic-search.md](mr9-semantic-search.md): MR9 semantic search
 - [mr13-closure-manifest.md](mr13-closure-manifest.md): the MR13 closure manifest
-- [tinygrad-decode-authority-adapter.md](tinygrad-decode-authority-adapter.md): the tinygrad decode authority adapter
 - [cuda-build-limits.md](cuda-build-limits.md): bounded CUDA builds (tools/prebuild_cuda.py, tools/run_bounded.py)
 
 ## Working on BoltBeam

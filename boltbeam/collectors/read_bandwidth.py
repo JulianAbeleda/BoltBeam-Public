@@ -53,10 +53,42 @@ extern "C" __global__ void readsum(const int4* __restrict__ a, unsigned long lon
 }
 CHUNK(readchunk4, int, v)
 CHUNK(readchunk16, int4, v.x ^ v.y ^ v.z ^ v.w)
+// the working-set sweep: the first n4 16-byte words read `passes` times in one launch, so a set that fits a cache is
+// read from it (one launch's fixed cost spread over many reads); and the same reads from shared memory (LDS)
+// a power-of-two set of n4 words: every thread of the whole grid reads in every pass (a set smaller than the grid is read
+// by all of it, wrapped by the mask), at an index rotated by the pass, so no load repeats across passes or can be hoisted
+extern "C" __global__ void readpasses(const int4* __restrict__ a, unsigned long long n4, unsigned int passes, float* out) {
+  int acc = 0;
+  const unsigned long long step = (unsigned long long)gridDim.x * blockDim.x, span = n4 > step ? n4 : step, mask = n4 - 1;
+  for (unsigned int p = 0; p < passes; p++)
+    for (unsigned long long i = blockIdx.x * (unsigned long long)blockDim.x + threadIdx.x; i < span; i += step) {
+      int4 v = a[(i + p * 131ull) & mask]; acc ^= v.x ^ v.y ^ v.z ^ v.w;
+    }
+  if (acc == 0x7fffffff) out[blockIdx.x] = (float)acc;
+}
+extern "C" __global__ void ldsread(const int4* __restrict__ a, unsigned int passes, float* out) {
+  __shared__ int4 s[1024];
+  for (int k = threadIdx.x; k < 1024; k += blockDim.x) s[k] = a[k];   // values the compiler cannot see
+  __syncthreads();
+  int acc = 0;
+  for (unsigned int p = 0; p < passes; p++) { int4 v = s[(threadIdx.x + p * 33u) & 1023u]; acc ^= v.x ^ v.y ^ v.z ^ v.w; }
+  if (acc == 0x7fffffff) out[blockIdx.x] = (float)acc;
+}
 """
 READ_SHAPES = ((256, 4), (256, 8), (256, 16), (512, 4), (512, 8), (1024, 2), (1024, 4))  # threads, blocks per SM
 # threads, bytes per block, load bytes: one block per chunk, the grid covers the buffer (a launch shape, not a model rule)
 CHUNK_SHAPES = ((128, 1024, 16), (128, 4096, 4), (128, 4096, 16), (256, 4096, 4), (256, 16384, 16), (512, 65536, 16))
+# the working-set sweep (a launch shape and a ladder, not a chip fact): power-of-two sets from 1 MiB to 1 GiB, each read in
+# one launch until about SWEEP_LAUNCH_BYTES have been read; the LDS read LDS_LAUNCH_BYTES a launch. The grid's words (threads
+# x blocks x 16 bytes) stay at or under the smallest set, so every thread reads words of its own: a set no unit shares is read
+# from the shared caches (L2, a last level), never from a unit's own first-level caches, which no roofline tier is
+SWEEP_BYTES = tuple(1 << k for k in range(20, 31))
+SWEEP_LAUNCH_BYTES = 1 << 31
+LDS_LAUNCH_BYTES = 1 << 34
+SWEEP_SHAPE = (256, 4)  # threads, blocks per unit
+SWEEP_METHOD = ("BoltBeam read_bandwidth ws_sweep: native {api} reads of the first N bytes of one buffer, passes in one launch until "
+                "about {launch} MiB were read, N a power of two from 1 MiB to 1 GiB (every thread its own words), best of {reps} a size, the launch's fixed cost (an empty "
+                "launch) removed; LDS: each block reading its shared memory the same way")
 METHOD = ("BoltBeam read_bandwidth: native {api} read-only kernels over {gib} GiB, a grid-stride loop of 16-byte loads and one "
           "block per contiguous chunk, best of {reps} per launch shape, the launch's fixed cost (the best "
           "shape over half the buffer) removed")
@@ -154,6 +186,32 @@ def measure_read_gbs(device:int, *, bridge, gib:int = 1, reps:int = 10, sustain_
   result.update(schema=f"boltbeam.{api.lower()}_read_bandwidth.v1", method=METHOD.format(api=api, gib=gib, reps=reps) +
                 f"; then the best shape back to back for {sustain_s:.0f} s (sustained)")
   return result
+
+
+def measure_ws_sweep(device:int, *, bridge, reps:int = 5) -> dict[str, Any]:
+  """The read rate at each working-set size (boltbeam.ws_sweep_samples.v1, what memory/mem_hierarchy.classify_ws_sweep
+  reads): a set a cache holds is read from it, so the curve's plateaus are the hierarchy's tiers; and the LDS rate."""
+  lib = bridge.library(CUDA_SRC)
+  pso = {k: bridge.pipeline(lib, k)["pso"] for k in ("readpasses", "ldsread")}
+  units, (threads, per_unit) = parallel_units(bridge.facts()), SWEEP_SHAPE
+  grid, block = (per_unit * units, 1, 1), (threads, 1, 1)
+  a, out = bridge.buffer(length=max(SWEEP_BYTES)), bridge.buffer(length=per_unit * units * 4)
+  run = lambda name, args: list(samples(lambda: bridge.dispatch(pso[name], args, grid, block), warmups=1, count=reps))  # noqa: E731
+  fixed_us = min(run("readpasses", [a, struct.pack("<Q", 0), struct.pack("<I", 1), out]))   # an empty launch: its fixed cost
+  points = []
+  if grid[0] * threads * 16 > min(SWEEP_BYTES):   # units shared words: the smallest set would be read from their own caches
+    raise RuntimeError(f"{units} units of {per_unit} x {threads} threads read more than the smallest set ({min(SWEEP_BYTES)} bytes) a pass")
+  for size in SWEEP_BYTES:
+    read = size
+    passes = max(1, SWEEP_LAUNCH_BYTES // read)
+    got = run("readpasses", [a, struct.pack("<Q", size // 16), struct.pack("<I", passes), out])
+    points.append({"bytes": size, "mode": "bandwidth", "traffic": "read", "passes": passes,
+                   "sustained_gbs": [round(read * passes / max(us - fixed_us, 1e-3) / 1e3, 1) for us in got]})
+  lds_passes = LDS_LAUNCH_BYTES // (grid[0] * threads * 16)
+  lds = [round(grid[0] * threads * 16 * lds_passes / max(us - fixed_us, 1e-3) / 1e3, 1) for us in run("ldsread", [a, struct.pack("<I", lds_passes), out])]
+  return {"schema": "boltbeam.ws_sweep_samples.v1", "device": device, "name": bridge.name, "points": points,
+          "lds_probe": {"sustained_gbs": lds, "passes": lds_passes}, "launch_fixed_us": round(fixed_us, 2),
+          "method": SWEEP_METHOD.format(api=bridge.API, launch=SWEEP_LAUNCH_BYTES >> 20, reps=reps)}
 
 
 def main(argv:list[str] | None = None) -> int:

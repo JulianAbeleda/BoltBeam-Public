@@ -49,7 +49,7 @@ def cmd_gemm_calibrate(args) -> int:
 def register(sub) -> None:
   p = sub.add_parser("gemm-space", help="the tile-GEMM strategy space derived from the target's facts + the compiler's lowering facts, for one shape")
   p.add_argument("--target", required=True)
-  p.add_argument("--lowering", required=True, help="boltbeam.gemm_lowering_facts.v1 JSON (tinygrad: extra/llm_research/gemm_lowering_facts.py)")
+  p.add_argument("--lowering", required=True, help="boltbeam.gemm_lowering_facts.v1 JSON (made by the kernel generator)")
   p.add_argument("--m", type=int, required=True); p.add_argument("--n", type=int, required=True); p.add_argument("--k", type=int, required=True)
   p.add_argument("--top", type=int, default=8)
   p.add_argument("--out", default=None); p.set_defaults(fn=cmd_gemm_space)

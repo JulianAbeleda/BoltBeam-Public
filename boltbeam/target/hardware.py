@@ -110,10 +110,22 @@ def _known(value:Any) -> Any:
 _AMD_SMI_UNITS = {"B": 1, "KB": 1 << 10, "MB": 1 << 20, "GB": 1 << 30}
 
 
+def _shared_caches(info, units:int | None) -> list[dict[str, int]]:
+  """The data caches every compute unit shares, by level ([{level, bytes}], amd-smi static --cache): the hierarchy's L2 and
+  last-level cache (an Infinity Cache is level 3). A unit's own caches (L0/L1) are no roofline tier."""
+  out = []
+  for c in info if isinstance(info, list) else []:
+    size = c.get("total_cache_size") or c.get("cache_size") or {}
+    scale, value = _AMD_SMI_UNITS.get(size.get("unit")), _as_int(str(size.get("value")))
+    if "DATA_CACHE" in (c.get("cache_properties") or ()) and units and c.get("max_num_cu_shared") == units and scale and value:
+      out.append({"level": int(c.get("cache_level") or 0), "bytes": value * scale})
+  return sorted(out, key=lambda c: c["level"])
+
+
 def _probe_amd(amd_smi:str, run_command) -> tuple[list[dict[str, Any]], str | None]:
   """Every AMD GPU from one `amd-smi static` call: name, gfx target, compute units, VRAM, PCI address, driver.
   The gfx target the driver reports is the architecture; nothing is inferred from the name."""
-  argv = (amd_smi, "static", "--asic", "--vram", "--bus", "--driver", "--json")
+  argv = (amd_smi, "static", "--asic", "--vram", "--bus", "--driver", "--cache", "--json")
   code, stdout, stderr = run_command(argv)
   if code != 0:
     return [], (stderr.strip() or f"amd-smi exited with status {code}")
@@ -143,6 +155,7 @@ def _probe_amd(amd_smi:str, run_command) -> tuple[list[dict[str, Any]], str | No
       "target_id": target_id,
       "target_registered": target_id in TARGETS if target_id else False,
       "driver_version": _known(driver.get("version")),
+      "shared_caches": _shared_caches(row.get("cache_info"), device["compute_units"]),
       "match": match_facts(device),
       "profile": _profile(device, matched),
     })

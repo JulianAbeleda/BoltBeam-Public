@@ -61,7 +61,9 @@ GGML_LIBRARY_ENV = "BOLTBEAM_GGML_METAL"  # a ggml Metal library or ggml-metal.m
 
 def _reference(quant:str, rows:int, cols:int, weights:bytes, x:list[float], words:str | None = None) -> Check:
   """The check against the pure-Python dot on `x`: the vector as the kernel reads it (f32 on Metal, the dequantized
-  q8_1 vector on CUDA and HIP), said in `words`."""
+  q8_1 vector on CUDA and HIP), said in `words`. Screening only (kernel_timer.SCREENING): the kernel timed here is the
+  engine's own, so there is nothing to hold it to but itself; the check catches a wrong binding or argument layout
+  before its time is taken, and no install rests on it."""
   from boltbeam.collectors import gemv_reference
   return Check(indices=gemv_reference.check_rows(rows), reference=lambda r: gemv_reference.reference_row(weights, quant, r, cols, x),
                rel_tol=gemv_reference.TOLERANCE, **({"words": words} if words else {}))

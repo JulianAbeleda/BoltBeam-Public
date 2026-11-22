@@ -80,15 +80,10 @@ when the run holds no measurement yet; the facts are still printed, so a screen 
                                                k=0: tok/s per prompt and their spread, acceptance
     role-time --run DIR [--provider P]         time every role inside a real decode with the run's provider
                                                (collectors/providers.py); feeds `results.loss`
-    compare-ready --run DIR [--tinygrad-root R]  can this machine compare kernels for the run: the missing piece
-                                               (fork, venv, numpy, model, backend) and the one command that fixes it
-    compare  --run DIR [--tinygrad-root R]     compare kernels per role on Metal (boltbeam/search/role_compare.py):
-                                               `compare roles: N`, then `role ROLE QUANT: search|ab|done STATUS`,
-                                               then `compare done: DIR` or `compare failed: REASON`. It writes the
-                                               statuses into route_policy.json and refreshes the report.
-                                               Run (pipeline --analyze) runs the same search as its "search" stage
-                                               after per-role time, with `stage search: progress P/Q` per role;
-                                               --no-search skips it. Other engines and chips skip it with a reason
+    compare-ready --run DIR                    whether step 5 can compare kernels per role: no (retired 2026-11-21)
+    compare  --run DIR                         the per-role kernel comparison: retired 2026-11-21, refused in words.
+                                               Run's "search" stage runs the region search (the kernel generator's
+                                               contract) where it applies, else skips with a reason
                                                (kernel_compare/search_status.json, results loss.search).
 
 Nothing here computes a new kind of fact. The ceiling is `model_roofline` exactly as `roofline-theoretical`
@@ -116,7 +111,6 @@ from boltbeam.core.canonical import pretty_json
 from boltbeam.profile.loaders import profile_from_model
 from boltbeam.quantization import speed_up
 from boltbeam.report import plain, speed_up_plain
-from boltbeam.search import tinygrad_fork
 from boltbeam.target.targets import adopt_run_chip, get_target
 from boltbeam.target import gpu as tgpu
 from boltbeam.trace import replay_trace as rt
@@ -132,22 +126,18 @@ from boltbeam.vocab import SCHEMA_TUI as SCHEMA
 from boltbeam.workflow.text_report import summary_text, why_no_roles
 
 def compare_ready(run:pathlib.Path, root:pathlib.Path | None = None) -> dict[str, Any]:
-  """Whether step 5 can compare kernels for this run on this machine: on a supported backend, with the fork, its venv and
-  the model. Kept out of `results`, whose pinned JSON must not depend on the machine."""
-  manifest, policy = load_manifest(run), optional(run, "route_policy.json")
+  """Whether step 5 can time roles here (the fork, its venv, numpy, the model: role-time) and compare kernels per role
+  (no: retired 2026-11-21, said in words). Kept out of `results`, whose pinned JSON must not depend on the machine."""
+  from boltbeam.search import tinygrad_fork
+  from boltbeam.search.search_stage import RETIRED
+  manifest = load_manifest(run)
   out = {"schema": SCHEMA, "kind": "compare_ready", "id": run.name}
-  backend = str((policy.get("target") or {}).get("backend") or "")
   try:  # the runtime role times come from, named once (arkey_role_time.runtime_name)
     out["runtime"] = arkey_role_time.runtime_name(get_target(manifest.get("target_id")))
   except SystemExit:
     out["runtime"] = None
-  ready = tinygrad_fork.readiness(root, model=manifest.get("model_path"))
-  if tinygrad_fork.runtime_row(backend) is None:
-    # a fast seam: the search runtime table is the cheap answer; the stage asks the provider and the GPU itself
-    return out | ready | {"applies": False,
-                          "compare_message": f"Comparing kernels per role has no runtime row for {backend or 'an unknown backend'} "
-                                             "(boltbeam/data/search_runtime.json)."}
-  return out | ready | {"applies": True, "compare_message": None}
+  return out | tinygrad_fork.readiness(root, model=manifest.get("model_path")) | {
+    "applies": False, "compare_message": f"Comparing kernels per role: {RETIRED}."}
 
 def compare_runs(a:pathlib.Path, b:pathlib.Path, bands:dict[str, Any] | None = None) -> dict[str, Any]:
   """Two runs head to head (report/plain.head_to_head): their headline figures side by side and what differs, for any
@@ -294,7 +284,8 @@ def mtp_sized(model:pathlib.Path, head:str | None) -> tuple[dict[str, Any], int]
 
 
 def mtp_long(model:pathlib.Path, long_tokens:int | None, context:int | None, tokens:int, engine:str = "vllm",
-             head:str | None = None, fit_in:pathlib.Path | None = None, k_top:int = draft_count.K_MAX, build:str | None = None) -> tuple[int, str]:
+             head:str | None = None, fit_in:pathlib.Path | None = None, k_top:int = draft_count.K_MAX, build:str | None = None,
+             extra:list[str] | None = None) -> tuple[int, str]:
   """The long depth's document tokens and why. --long-tokens as asked; --context N: the document tokens that keep the
   prompt room (the chat template and the task), the document and the measured tokens within N, refused past the model's position limit or the KV that fits
   (quantization/speed_up.long_context at the engine's GPU share and reserve, mtp_sized); neither: Speed up's long
@@ -320,7 +311,7 @@ def mtp_long(model:pathlib.Path, long_tokens:int | None, context:int | None, tok
     raise mtp.MtpRefused(f"{engine} has no MTP measurement in its engine row (data/engine_adapters.json)")
   fit = None
   if fit_in is not None and hasattr(m, "fit_context"):
-    got, said = m.fit_context(str(model), head, k=k_top, need=context or room + tokens + 1, out=fit_in, build=build)
+    got, said = m.fit_context(str(model), head, k=k_top, need=context or room + tokens + 1, out=fit_in, build=build, extra=extra)
     fit = (got and got - tokens, said)  # the decode context: the server's less the measured tokens, as the model limit is cut
   lc = speed_up.long_context(cfg, weights, int(total * m.GPU_SHARE), tokens=tokens, reserve=getattr(m, "RESERVE", speed_up.RESERVE_BYTES), engine_fit=fit)
   if context:
@@ -332,7 +323,7 @@ def mtp_long(model:pathlib.Path, long_tokens:int | None, context:int | None, tok
   return lc["context"] - room, f"Speed up's long context, {lc['context']} tokens: {lc['why']}"
 
 
-def mtp_admit(model:pathlib.Path, head:str | None, engine:str, build:str | None, out:pathlib.Path, need:int):
+def mtp_admit(model:pathlib.Path, head:str | None, engine:str, build:str | None, out:pathlib.Path, need:int, extra:list[str] | None = None):
   """What the sweep asks before it grows past the asked draft counts (fitted at the largest of them): the engine's own fit
   at the new k, at the context the measurement runs (need). None: the engine has no fit, nothing to ask. The callable
   returns None (it fits) or why it does not, and the sweep stops there, said."""
@@ -341,7 +332,7 @@ def mtp_admit(model:pathlib.Path, head:str | None, engine:str, build:str | None,
     return None
   def admit(k:int) -> str | None:
     try:
-      m.fit_context(str(model), head, k=k, need=need, out=out, build=build)
+      m.fit_context(str(model), head, k=k, need=need, out=out, build=build, extra=extra)
     except Exception as exc:  # noqa: BLE001  a fit that fails stops the growth, said; the measured ks are kept
       return str(exc) if isinstance(exc, mtp.MtpRefused) else f"its fit failed: {type(exc).__name__}: {exc}"
     return None
@@ -747,6 +738,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
   p.add_argument("--tokens", type=int, default=mtp.TOKENS, help="tokens generated per prompt and depth")
   p.add_argument("--long-tokens", type=int, help="the long depth's real-text document tokens (data/mtp_long_corpus.json); 0: short only (default: derived, mtp_long)")
   p.add_argument("--context", type=int, help="measure the long depth at this context (tune's asked context)")
+  p.add_argument("--flags", help="the served command's other engine flags (as tune's --flags), on every measured server: measure the setup that is served")
   p.add_argument("--facts-root", action="append", default=[], help="a runs folder: the measurement is cached in the newest "
                  "machine facts there, where the recommended setup reads it")
   p = sub.add_parser("speedup-offer", help="Speed up for this model: enabled or why not, the copy's size and time, no GPU (quantization/speed_up.offer)")
@@ -860,19 +852,20 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
         head = args.draft or (mtp.offer(args.engine, str(model), 1, facts=True) or {}).get("head")
         ks = [int(k) for k in args.ks.split(",") if k.strip()]
         out_dir = pathlib.Path(args.out).expanduser()
+        extra = args.flags.split() if args.flags else None
         long_tokens, why = mtp_long(model, args.long_tokens, args.context, args.tokens, args.engine, head,
-                                    fit_in=out_dir, k_top=max(ks or [1]), build=args.build)
+                                    fit_in=out_dir, k_top=max(ks or [1]), build=args.build, extra=extra)
         record = mtp.measure(args.engine, str(model), ks, backend=_target_arg(args.target).backend,
                            out=out_dir, tokens=args.tokens, long_tokens=long_tokens, long_why=why, grow=True,
-                           head=head, build=args.build, admit=mtp_admit(model, head, args.engine, args.build, out_dir,
-                                                                        mtp.prompt_set()["room"] + long_tokens + args.tokens))
+                           head=head, build=args.build, extra=extra, admit=mtp_admit(model, head, args.engine, args.build, out_dir,
+                                                                        mtp.prompt_set()["room"] + long_tokens + args.tokens, extra))
       except mtp.MtpRefused as exc:  # refused before or between engines: free the GPU or fix the request, then rerun
         sys.stdout.write(pretty_json({"schema": SCHEMA, "kind": "refused", "error": str(exc), "retry": "after the cause is fixed"}))
         return 2
       except RuntimeError as exc:  # an engine failed; its log is in --out
         sys.stdout.write(pretty_json({"schema": SCHEMA, "kind": "error", "error": str(exc), "logs": str(args.out)}))
         return 1
-      out = {k: record.get(k) for k in ("schema", "model", "prompts", "ks", "sweep", "long_why", "depths", "measured_at", "size_check")}
+      out = {k: record.get(k) for k in ("schema", "model", "prompts", "ks", "sweep", "long_why", "depths", "measured_at", "size_check", "extra_flags")}
       out["cached_in"] = str(found[0]) if found else "not cached: no machine facts for this chip under --facts-root"
       try:
         if found:
@@ -913,8 +906,7 @@ def main(argv:list[str] | None = None, prog:str = "python -m boltbeam.workflow.s
       out = gameplan.emit(run)  # Emit validates before writing and invalidates stale plans on failure
       output_run(run)  # the report links gameplan.md once it exists
     elif args.command == "compare-ready":
-      out = compare_ready(pathlib.Path(args.run).expanduser(),
-                          pipeline.tinygrad_root(args))
+      out = compare_ready(pathlib.Path(args.run).expanduser(), pipeline.tinygrad_root(args))
     elif args.command == "machine":
       run = pathlib.Path(args.run).expanduser()
       out = pipeline.machine(run, remeasure=args.remeasure, provider=providers.run_provider(run),

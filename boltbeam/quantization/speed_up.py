@@ -26,6 +26,7 @@ import sys
 from typing import Any
 
 from boltbeam.core.refused import Refused
+from boltbeam.math import noninferior as _ni
 from boltbeam.quantization import head_writers
 
 TABLE = pathlib.Path(__file__).resolve().parents[1] / "data" / "speed_up.json"
@@ -271,12 +272,8 @@ def agreement(figures:dict[str, Any], texts:list[str]) -> dict[str, Any]:
 
 
 def z(confidence:float | None = None, df:int | None = None) -> float:
-  """The one-sided quantile at confidence (threshold.confidence): normal, or Student t with df degrees of freedom by the
-  Cornish-Fisher series in 1/df (Abramowitz and Stegun 26.7.5; 1.8946 at df 7, 0.95)."""
-  x = statistics.NormalDist().inv_cdf(table()["threshold"]["confidence"] if confidence is None else confidence)
-  g = [(x**3 + x) / 4, (5 * x**5 + 16 * x**3 + 3 * x) / 96, (3 * x**7 + 19 * x**5 + 17 * x**3 - 15 * x) / 384,
-       (79 * x**9 + 776 * x**7 + 1482 * x**5 - 1920 * x**3 - 945 * x) / 92160]
-  return x + sum(c / df ** (i + 1) for i, c in enumerate(g)) if df else x
+  """The one-sided quantile at confidence (threshold.confidence): math/noninferior.z."""
+  return _ni.z(table()["threshold"]["confidence"] if confidence is None else confidence, df)
 
 
 def min_documents(confidence:float | None = None) -> int:
@@ -312,55 +309,12 @@ def bar(figures:dict[str, Any], floor:dict[str, Any] | None = None) -> dict[str,
           "se": se, "z": t, "df": k - 1, "confidence": conf, "allowed": t * se, "needs": 1 - d_floor - t * se, "worst": doc, "se_method": "the document bootstrap, paired"}
 
 
-def paired(a:list[dict], b:list[dict]) -> dict[str, Any]:
-  """Two arms of a paired eval (rows id, correct, finish): b items only a got right, c only b; refused unless both arms
-  answered the same items, each once, every row whole."""
-  for rows in (a, b):
-    if not rows or any(not isinstance(r, dict) or not isinstance(r.get("correct"), bool) or "id" not in r or "finish" not in r for r in rows):
-      raise Refused("an eval arm is empty or has a row without id, a true/false correct and finish")
-    if len({r["id"] for r in rows}) != len(rows):
-      raise Refused("an eval arm answers an item twice")
-  x, y = ({r["id"]: r for r in rows} for rows in (a, b))
-  if x.keys() != y.keys():
-    raise Refused(f"the two eval arms did not answer the same items: {len(x.keys() ^ y.keys())} are in one arm only")
-  return {"n": len(x), "b": sum(x[i]["correct"] > y[i]["correct"] for i in x), "c": sum(y[i]["correct"] > x[i]["correct"] for i in x),
-          "truncated": [sum(r["finish"] == "length" for r in rows) for rows in (a, b)]}
+paired = _ni.paired   # math/noninferior: two arms of a paired eval
 
 
 def noninferior(original:list[dict], copy:list[dict], noise:list[dict], tolerance:str | float | None = None, how:str = "on its noise run") -> dict[str, Any]:
-  """Stage 2: the copy's paired eval loss against the engine's own eval noise (noise: the original run again under the
-  engine's declared change, perturbation(), or as it was when none is declared), on the same items. The two pairs share
-  the original, so L_copy - L_noise is exactly D = mean(noise_i - copy_i), each item 1 right, 0 wrong. The standard
-  non-inferiority rule against the tolerance, computed exactly per item: u_i = (noise_i - copy_i) - t_i, t_i = |noise_i -
-  orig_i| for "psi0" (so mean(u) = D - psi0, the allowance measured on the same items and its correlation with D carried
-  in u's own SE), t_i = the share for a fixed tolerance (0: shown no worse than the noise run). fail: mean(u) - z SE_u > 0
-  (proven worse than allowed); pass: mean(u) + z SE_u <= 0; else inconclusive, with the n at which an equal copy passes at
-  threshold.eval.power, (z_a + z_b)^2 var(u) / allowance^2, as a hint. SE_u = sqrt(var(u) / n). tolerance
-  (threshold.eval.tolerance): "psi0", the engine's own gross churn, the share of answers its noise run changes against
-  the original (refused when 0: nothing to measure the copy against); 0; or a fixed share. Truncation (finish=length)
-  over threshold.eval.max_truncation in any arm: inconclusive, BoltBeam's eval budget rule. A "run N more" hint re-rolls
-  all three arms if they are rerun: repeating the whole eval until it passes inflates the error rate, so run the noise
-  arm once and add the new items to all three arms together."""
-  th = table()["threshold"]
-  ev, conf, tol = th["eval"], th["confidence"], th["eval"]["tolerance"] if tolerance is None else tolerance
-  p, p0, d = paired(original, copy), paired(original, noise), paired(noise, copy)
-  n, churn, za = d["n"], (p0["b"] + p0["c"]) / d["n"], z(conf)
-  if tol == "psi0" and not churn:
-    raise Refused("this engine shows no eval noise: its run of the original again changed no answer, so there is nothing to measure the copy "
-                  "against; declare a perturbation for it (threshold.noise.engines)")
-  o, c, y = ({r["id"]: int(r["correct"]) for r in rows} for rows in (original, copy, noise))
-  u = [y[i] - c[i] - (abs(y[i] - o[i]) if tol == "psi0" else float(tol)) for i in o]
-  allow, loss, mean = churn if tol == "psi0" else float(tol), (d["b"] - d["c"]) / n, sum(u) / n
-  var = sum((x - mean) ** 2 for x in u) / n
-  se, cut = math.sqrt(var / n), max(x / n for x in p["truncated"] + p0["truncated"])
-  need = math.ceil((za + z(ev["power"])) ** 2 * var / allow ** 2) if allow else None
-  verdict = ("inconclusive" if cut > ev["max_truncation"] else "fail" if mean - za * se > 0 else "pass" if mean + za * se <= 0 else "inconclusive")
-  said = (f"the engine's own churn, {allow * 100:.1f} points on this model (answers it changes against itself {how})" if tol == "psi0" else
-          "none: a pass is shown no worse than the noise run" if not allow else f"a fixed {allow * 100:.1f} points")
-  return {"verdict": verdict, "n": n, "copy": p, "noise": p0, "against_noise": d, "loss": loss, "margin": mean, "se": se, "z": za, "churn": churn, "tolerance": tol,
-          "allowed": allow, "allowed_said": said, "n_needed": need, "power": ev["power"], "confidence": conf,
-          "why": (f"truncation {cut:.1%} is over {ev['max_truncation']:.0%}" if cut > ev["max_truncation"] else None if verdict != "inconclusive" else
-                  f"underpowered: run {need - n} more items, added to all three arms (rerunning the whole eval until it passes inflates the error rate)" if need and need > n else "its loss is neither shown within the allowance nor shown beyond it")}
+  """Stage 2 (math/noninferior.noninferior, the rule and its words) at this table's threshold."""
+  return _ni.noninferior(original, copy, noise, table()["threshold"], tolerance, how)
 
 
 def model_files(src:pathlib.Path) -> list[pathlib.Path]:

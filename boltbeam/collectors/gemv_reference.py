@@ -128,6 +128,54 @@ def dequant_iq4_xs_block(blk:bytes) -> list[float]:
   return out
 
 
+# --- the fields an integer-dot kernel reads (MMVQ: collectors/region_reference.mmvq), vectorized over blocks -------------
+# blocks: uint8 [..., block bytes] -> {"d" (and "dmin"): the block's half scales as f32 [...], "q": its integer values
+# [..., elements] in element order, "sc" (and "m"): each element's integer group scale [..., elements] (absent: none)}
+
+def _np_half(blocks, at:int):
+  import numpy as np
+  return np.ascontiguousarray(blocks[..., at:at + 2]).view("<f2")[..., 0].astype(np.float32)
+
+
+def fields_q8_0(blocks) -> dict[str, Any]:
+  import numpy as np
+  return {"d": _np_half(blocks, 0), "q": np.ascontiguousarray(blocks[..., 2:34]).view(np.int8).astype(np.int64)}
+
+
+def fields_iq4_nl(blocks) -> dict[str, Any]:
+  import numpy as np
+  qs, kv = blocks[..., 2:18], np.array(KVALUES_IQ4NL, np.int64)
+  return {"d": _np_half(blocks, 0), "q": np.concatenate([kv[qs & 0xF], kv[qs >> 4]], axis=-1)}
+
+
+def fields_iq4_xs(blocks) -> dict[str, Any]:
+  import numpy as np
+  sh = blocks[..., 2].astype(np.int64) | (blocks[..., 3].astype(np.int64) << 8)
+  sub = np.stack([((blocks[..., 4 + ib // 2].astype(np.int64) >> 4 * (ib % 2)) & 0xF) | (((sh >> 2 * ib) & 3) << 4) for ib in range(8)], axis=-1) - 32
+  qs, kv = blocks[..., 8:136].reshape(*blocks.shape[:-1], 8, 16), np.array(KVALUES_IQ4NL, np.int64)
+  return {"d": _np_half(blocks, 0), "q": np.concatenate([kv[qs & 0xF], kv[qs >> 4]], axis=-1).reshape(*blocks.shape[:-1], 256), "sc": np.repeat(sub, 32, axis=-1)}
+
+
+def fields_q4_k(blocks) -> dict[str, Any]:
+  import numpy as np
+  sm = np.array([[_scale_min_k4(j, bytes(b[4:16])) for j in range(8)] for b in blocks.reshape(-1, blocks.shape[-1])], np.int64).reshape(*blocks.shape[:-1], 8, 2)
+  qs = blocks[..., 16:144].reshape(*blocks.shape[:-1], 4, 32).astype(np.int64)   # pair j: low nibbles sub-block 2j, high 2j + 1
+  q = np.stack([qs & 0xF, qs >> 4], axis=-2).reshape(*blocks.shape[:-1], 256)
+  return {"d": _np_half(blocks, 0), "dmin": _np_half(blocks, 2), "q": q, "sc": np.repeat(sm[..., 0], 32, axis=-1), "m": np.repeat(sm[..., 1], 32, axis=-1)}
+
+
+def fields_q6_k(blocks) -> dict[str, Any]:
+  import numpy as np
+  lead = blocks.shape[:-1]
+  ql = blocks[..., 0:128].reshape(*lead, 2, 2, 32).astype(np.int64)   # half h, ql's second 32 bytes, l
+  qh = blocks[..., 128:192].reshape(*lead, 2, 32).astype(np.int64)
+  q = np.empty((*lead, 2, 4, 32), np.int64)                            # element 128 h + 32 quarter + l
+  for quarter in range(4):
+    q[..., quarter, :] = ((ql[..., quarter % 2, :] >> 4 * (quarter // 2)) & 0xF) | (((qh >> 2 * quarter) & 3) << 4)
+  sc = np.ascontiguousarray(blocks[..., 192:208]).view(np.int8).astype(np.int64)
+  return {"d": _np_half(blocks, 208), "q": q.reshape(*lead, 256) - 32, "sc": np.repeat(sc, 16, axis=-1)}
+
+
 # The codebook formats' tables in ggml-common.h: name -> entry count. Read from the engine source, never copied here.
 GGML_TABLES = {"iq3s_grid": "512", "iq2xxs_grid": "256", "iq2xs_grid": "512", "ksigns_iq2xs": "128", "iq1s_grid": "NGRID_IQ1S"}
 GGML_TABLE_SIZES = {"NGRID_IQ1S": 2048}

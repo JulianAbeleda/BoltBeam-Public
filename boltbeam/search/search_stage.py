@@ -1,7 +1,10 @@
-"""The kernel search as a stage of Run, and what the screens show per role: whether the search exists for this
-engine and chip (the provider's own capability and BoltBeam's own detection of the GPU, never a list of backend
-names), the stage's status file, the stage itself (the per-role comparison where it exists, else a skip with its
-reason), and each role's best_found and verdict from its route_policy.json compare record.
+"""The kernel search as a stage of Run, and what the screens show per role: the stage's status file, the stage itself
+(the engine paths owner tooling registers, else a skip with its reason), and each
+role's best_found and verdict from its route_policy.json compare record (records written before 2026-11-21 still read).
+
+The per-role search (search/role_compare and the flash search, asking the tinygrad fork's search provider) was retired on
+2026-11-21: that provider left tinygrad-arkey with the kernel generator, and the generator is reached only through its
+contract (search/generator_repo).
 """
 from __future__ import annotations
 
@@ -10,53 +13,17 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from boltbeam.role_key import role_label
-from boltbeam.search import compare_record, role_compare, tinygrad_fork
+from boltbeam.search import compare_record
 
 STATUS_SCHEMA = "boltbeam.kernel_search_status.v1"
+ARKEY_ONLY = "the kernel search runs in arkey only"  # an older run's skip reason; Emit reads it
+RETIRED = ("the per-role kernel search was retired 2026-11-21 (its provider left tinygrad-arkey with the kernel generator); "
+           "the kernel generator's contract is the only search")
 
 
-def detect(backend:str | None) -> str | None:
-  """BoltBeam's own detection: can its bridge open a GPU of this backend here? None when it can, else why not."""
-  from boltbeam.collectors import kernel_timer
-  try:
-    bridge = kernel_timer.bridge_for(str(backend))
-  except Exception as exc:  # no driver, no device, no compiler: BoltBeam could not check the provider's claims here
-    return f"BoltBeam cannot open a {backend} GPU on this machine to check the provider: {exc}"
-  close = getattr(bridge, "close", None)
-  if close: close()
-  return None
-
-
-ARKEY_ONLY = "the kernel search runs in arkey only"  # search_applies' answer for another engine; Emit reads it
-
-
-def provider_refusal(provider:str) -> str | None:
-  """Why Run's per-role search does not exist for this engine at all (no GPU, no fork asked): search_applies' and the ledger's one rule."""
-  return None if provider == "arkey" else f"{ARKEY_ONLY}; this run used {provider}"
-
-
-def search_applies(backend:str | None, provider:str, *, root:pathlib.Path | None = None,
-                   capability_fn:Callable[[pathlib.Path, list[str]], dict[str, Any]] | None = None,
-                   detect_fn:Callable[[str | None], str | None] | None = None) -> str | None:
-  """Why Run's kernel search does not exist for this engine and chip, or None when it does. Two answers decide it:
-  the provider's own capability (the devices it can run, asked with its capability action) and BoltBeam's own
-  detection of the GPU (its bridge opens one), never a list of backend names. Without the fork checked out the
-  provider cannot be asked; readiness() names the fix for that."""
-  if why := provider_refusal(provider):
-    return why
-  row = tinygrad_fork.runtime_row(backend)
-  if row is None:
-    return f"the search runtime table (data/search_runtime.json) has no row for {backend or 'an unknown backend'}"
-  if why := (detect_fn or detect)(backend):
-    return why
-  root = pathlib.Path(root) if root else tinygrad_fork.default_fork_root()
-  if capability_fn is None and not (root / tinygrad_fork.PROVIDER).is_file():
-    return None
-  try:
-    reply = (capability_fn or tinygrad_fork.capability)(root, list(row["tinygrad_devices"]))
-  except Exception as exc:
-    return f"the provider could not say which devices it runs: {exc}"
-  return tinygrad_fork.pick_device(backend, reply)[1]
+def search_applies(backend:str | None = None, provider:str | None = None) -> str:
+  """Why Run's per-role search does not run here: retired (RETIRED), for every engine. The engine paths still run."""
+  return RETIRED
 
 
 def write_status(run:pathlib.Path, status:str, reason:str | None = None, seconds:float | None = None) -> None:
@@ -78,47 +45,25 @@ def skip(run:pathlib.Path, reason:str, say:Callable[[str], None] = print) -> dic
   return {"status": "skipped", "reason": reason}
 
 
-def search_stage(run:pathlib.Path, *, backend:str | None, provider:str, root:pathlib.Path | None = None,
+def search_stage(run:pathlib.Path, *, backend:str | None = None, provider:str, root:pathlib.Path | None = None,
                  say:Callable[[str], None] = print, step:Callable[[int, int], None] | None = None,
-                 compare:Callable[..., dict[str, Any]] | None = None, paths:Sequence[Any] = ()) -> dict[str, Any]:
-  """Run's "Search faster kernels" stage: the per-role search where it exists; for an engine it does not serve, each
-  of paths in turn (engine paths: owner tooling that workflow/pipeline.OWNER_SEARCH registers only where its module is
-  present, none on main; each a module with stage(run, engine=, say=) -> {status, reason}); else a skip with its
-  reason. A search that cannot start (no fork, a dirty fork) is a skip too: the run still ends with its results."""
+                 paths:Sequence[Any] = ()) -> dict[str, Any]:
+  """Run's "Search faster kernels" stage: each of paths in turn (engine paths: owner tooling that
+  workflow/pipeline.OWNER_SEARCH registers only where its module is present, none on main; each a module with
+  stage(run, engine=, say=) -> {status, reason}); else a skip with the reasons."""
   import time
-  why = search_applies(backend, provider, root=root)
-  if why and why.startswith(ARKEY_ONLY):
-    for path in paths:
-      began = time.monotonic()
-      got = path.stage(pathlib.Path(run), engine=provider, say=say)
-      if got["status"] == "searched":
-        seconds = round(time.monotonic() - began, 1)
-        write_status(run, "searched", None, seconds)
-        return {"status": "searched", "reason": None, "seconds": seconds}
-      why = f"{why}; {got['reason']}"   # the per-role search's words first: Emit matches them
-  if why:
-    write_status(run, "skipped", why)
-    say(f"search skipped: {why}")
-    return {"status": "skipped", "reason": why}
-  root = pathlib.Path(root) if root else tinygrad_fork.default_fork_root()
-  if compare is None:
-    ready = tinygrad_fork.readiness(root, str((json.loads((run / "run_manifest.json").read_text())).get("model_path") or ""))
-    why = (f"{ready['message']} Fix: {ready['fix']}" if ready.get("fix") else ready["message"]) if not ready["ready"] \
-      else tinygrad_fork.clean_refusal(root)
-    if why:
-      write_status(run, "skipped", why)
-      say(f"search skipped: {why}")
-      return {"status": "skipped", "reason": why}
-  began = time.monotonic()
-  try:
-    (compare or role_compare.compare_run)(run, root=root, say=say, ab_only_if_faster=True, step=step)
-  except role_compare.ProviderRefused as exc:  # BoltBeam refused the provider's device: nothing it would say is taken
-    write_status(run, "skipped", f"provider refused: {exc}")
-    say(f"search skipped: provider refused: {exc}")
-    return {"status": "skipped", "reason": f"provider refused: {exc}"}
-  seconds = round(time.monotonic() - began, 1)
-  write_status(run, "searched", None, seconds)
-  return {"status": "searched", "reason": None, "seconds": seconds}
+  why = RETIRED
+  for path in paths:
+    began = time.monotonic()
+    got = path.stage(pathlib.Path(run), engine=provider, say=say)
+    if got["status"] == "searched":
+      seconds = round(time.monotonic() - began, 1)
+      write_status(run, "searched", None, seconds)
+      return {"status": "searched", "reason": None, "seconds": seconds}
+    why = f"{why}; {got['reason']}"
+  write_status(run, "skipped", why)
+  say(f"search skipped: {why}")
+  return {"status": "skipped", "reason": why}
 
 
 def _speedup(kernel:Mapping[str, Any] | None) -> float | None:

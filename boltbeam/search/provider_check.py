@@ -8,7 +8,13 @@ Three claims come back from the provider, and each is checked here with BoltBeam
   correctness       the kernel the provider compiled, compiled again by BoltBeam's bridge from the source the provider
                     returned, run on the model's own weight bytes, its output checked against BoltBeam's reference
                     (gemv_reference.reference_row) with the activation as the kernel reads it (fp16, the same rule as the
-                    q8_1 vector of the CUDA engine adapter)
+                    q8_1 vector of the CUDA engine adapter): SCREENING only (kernel_timer.SCREENING, 1e-3 of the CPU)
+  identity          the gate (search/identity, held()): each candidate's output bytes against the engine's own result,
+                    the model's own kernel (the row the decode installs) run on the same bytes, bit for bit, or within
+                    the envelope of a lossy declaration whose evidence names that candidate's source sha256. No engine
+                    result (the model's kernel not rebuilt or not measured): fail closed, nothing reproduced. A fused
+                    or flash kernel (retime_labeled, flash_space) has no engine result here (no engine kernel computes
+                    that chain on these bytes): its verdict is labelled SCREENING and nothing installs it
   timing            that kernel timed by BoltBeam's kernel timer (collectors/kernel_timer.py: one loop, a read sweep
                     of the last-level cache before each sample, the dispatch floor beside it)
 
@@ -20,6 +26,8 @@ never promotes it.
 """
 from __future__ import annotations
 
+import hashlib
+import math
 import struct
 from collections.abc import Mapping
 from typing import Any
@@ -109,7 +117,7 @@ def spec_from_record(record:Mapping[str, Any], *, quant:str, rows:int, cols:int,
                 out_format=out_format)
   return KernelSpec(label=label, adapter="provider kernel, rebuilt by BoltBeam", source=str(record["source"]),
                     kernel=str(record["function"]), args=args, grid=tuple(int(v) for v in grid), block=tuple(int(v) for v in block),
-                    bytes_read=len(weights) + len(x_bytes), check=check, record={"function": record["function"]})
+                    bytes_read=len(weights) + len(x_bytes), check=check, record={"function": record["function"]}, keep_output=True)
 
 
 def retime(bridge, flusher, floor_us:float | None, record:Mapping[str, Any], *, quant:str, rows:int, cols:int,
@@ -128,7 +136,40 @@ def retime(bridge, flusher, floor_us:float | None, record:Mapping[str, Any], *, 
   med = got["median_us"]
   return {"status": "measured", "us": med, "us_less_floor": kernel_timer.less_floor_us(med, floor_us), "min_us": got["min_us"],
           "spread_pct": got["spread_pct"], "samples": len(got["samples"]), "correctness": got["correctness"],
-          "timing": {**got["timing"], "dispatch_floor_us": floor_us}, "timed_by": f"BoltBeam's kernel timer: {label}"}
+          "timing": {**got["timing"], "dispatch_floor_us": floor_us}, "timed_by": f"BoltBeam's kernel timer: {label}",
+          "output": got.get("output"), "out_format": spec.check.out_format if spec.check else None,
+          "source_sha256": hashlib.sha256(str(record["source"]).encode()).hexdigest()}
+
+
+def held(candidates:list[dict[str, Any]], engine:str | None, decl:Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+  """The identity gate on a role's candidates (module docstring, identity), in place: each reproduced candidate's output
+  (its boltbeam.output, taken off and kept as its sha256) against the output of the candidate whose hash is engine (the
+  model's own kernel), bit for bit, or within decl's envelope when decl (search/identity.read_file or declared) names
+  that candidate's source sha256. A candidate that differs, or any when there is no engine result, is not reproduced."""
+  from boltbeam.search import identity as idn
+  outs = {c["candidate_hash"]: (c.get("boltbeam") or {}).pop("output", None) for c in candidates}
+  for c in candidates:
+    if (out := outs[c["candidate_hash"]]) is not None:
+      c["boltbeam"]["output_sha256"] = hashlib.sha256(out).hexdigest()
+  base = next((c for c in candidates if c["candidate_hash"] == engine), None)
+  want = outs.get(engine) if base is not None and (base.get("boltbeam") or {}).get("status") == "measured" else None   # its time may be noisy; its bytes are its bytes
+  for c in candidates:
+    if c.get("verdict") != REPRODUCED:
+      continue
+    mine, got = c["boltbeam"], outs[c["candidate_hash"]]
+    if want is None or got is None:
+      c.update(verdict=NOT_REPRODUCED, identity={"rule": "no engine result"}, reason=(
+        "no engine result to hold it to: the model's own kernel (rebuilt from the source the provider gave for the row the decode installs) "
+        "was not run correct on these bytes, so only the CPU "
+        "check (screening only) stands, and nothing is promoted on it" if want is None else "BoltBeam kept no output of it to compare"))
+      continue
+    d = decl if decl and decl.get("identity") == idn.LOSSY and decl.get("kernel_sha256") == mine.get("source_sha256") else None
+    read = idn.read({"out": (mine.get("out_format"), want, got)})
+    c["identity"] = {**read, "worst": {m: {k: w if math.isfinite(w) else "inf" for k, w in v.items()} for m, v in read["worst"].items()},
+                     "declared": idn.label(d)}   # strict JSON: an inf is said as "inf"
+    if why := idn.device(read, d):
+      c.update(verdict=NOT_REPRODUCED, reason=f"not the engine's own result: {why}", identity_refused=True)   # another result, not an unknown time: never a winner
+  return candidates
 
 
 def judge(provider_ns:float | None, mine:Mapping[str, Any], band:float | None) -> dict[str, Any]:
@@ -190,5 +231,5 @@ def retime_labeled(bridge, flusher, floor_us:float | None, record:Mapping[str, A
           "timing": {**got["timing"], "dispatch_floor_us": floor_us}, "timed_by": f"BoltBeam's kernel timer: {label}"}
 
 
-__all__ = ["NOT_REPRODUCED", "REPRODUCED", "bridge_facts", "half_round", "identity", "judge", "retime", "retime_labeled",
+__all__ = ["NOT_REPRODUCED", "REPRODUCED", "bridge_facts", "half_round", "held", "identity", "judge", "retime", "retime_labeled",
            "spec_from_record"]

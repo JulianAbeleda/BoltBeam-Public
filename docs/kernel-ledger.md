@@ -31,11 +31,11 @@ boltbeam kernel-ledger CAP@10013 CAP@102621 --model main.json --draft draft.json
   - **Bound unknown.** No bytes are known, so the ranking value is time − launch floor. The floor is the cheapest lone launch, so this value is an upper bound on what the row can give.
   - The family roll-up and the missing-piece sums keep the two apart. A row with no bound is never sorted as 0.
 - **Coverage, computed per depth**
-  - `search_can_propose`: whether the search can make a candidate for the row, from the search's own answers.
-    - `formats.refusal("search")` for the formats.
-    - `role_proposal.LOGICAL_M` for the column count.
-    - gemm-space's own space for float matmuls, which needs `--lowering`.
-    - `flash_space` for attention, which proposes dense single-query attention on a 16-bit cache.
+  - `search_can_propose`: whether the region search (the only search since 2026-11-21) covers the row
+    (`kernel_ledger.region_covers`, from `data/region.json` alone).
+    - The engine that ran has an `engines` row, a generator row has a `generate` action, and the row's kernel is one of
+      the engine's graph-op kernels (`engines.<E>.graph_ops.kernels`).
+    - `formats.refusal("search")` for matmul formats.
     - `data/decode_graph.json` `kinds` for the other kernels, with `fusion_space.REFERENCE_OPS`.
   - `check`: whether a reference exists for the row's formats.
   - `install_path`: from `data/engine_patches.json` `install_paths`. For llama.cpp this is the external-kernel hook proven in ext-kernel-hook-20261115.

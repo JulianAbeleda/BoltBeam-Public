@@ -20,7 +20,6 @@ from boltbeam.search.futuresight_evidence import bind_futuresight_evidence, row_
 from boltbeam.search.semantic.semantic_candidate_plan import semantic_workload_facts
 from boltbeam.search.semantic.semantic_identity import validate_exact_semantic_workload
 from boltbeam.search.semantic.semantic_population_export import POPULATION_SCHEMA
-from boltbeam.search.semantic_campaign_cli import REQUEST_FIELDS
 from boltbeam.search.spec import FullKernelCandidate
 from boltbeam.search.target_fact_keys import MAX_LOCAL_MEMORY, MAX_THREADS, RESERVED_LOCAL_MEMORY
 from boltbeam.target.targets import get_target
@@ -31,6 +30,9 @@ from boltbeam.target.targets import get_target
 TARGET_FACT_KEYS = ("compiler_transforms", "generic_control_plan_kind", MAX_LOCAL_MEMORY, MAX_THREADS,
                     RESERVED_LOCAL_MEMORY, "single_subgroup_families", "supported_plan_kinds")
 
+# The exact field set of a semantic campaign request (propose_request produces it).
+REQUEST_FIELDS = frozenset({"semantic_workload", "schedule", "dimensions", "legal_coupled_rows", "rejected_coupled_rows", "futuresight_evidence",
+                            "compiler_facts", "resolved_target", "gguf_path", "execution", "request_id", "run_id", "timestamp", "budget"})
 # A proposal spec is a campaign request before BubbleBeam runs: axis choices and coupled rows in,
 # dimensions and legal/rejected rows out. compiler_facts are not an input; this adapter builds them.
 _PROPOSED_FIELDS = frozenset({"dimensions", "legal_coupled_rows", "rejected_coupled_rows", "futuresight_evidence", "compiler_facts"})

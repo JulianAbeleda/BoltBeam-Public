@@ -59,42 +59,14 @@ is the APOD cycle (Assess, Parallelize, Optimize, Deploy) of NVIDIA's CUDA C++ B
 (https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/), guided by the roofline: the audit's floors say where
 the time is, and the ranked queue says what to do next.
 
-The audit names the rows that lose time; the search stage works on them, one
-role at a time (`search/role_compare.py`):
+The audit names the rows that lose time; the search stage works on them. The search is the region search through
+the kernel generator's contract (docs/region-search.md, docs/generator-boundary.md): Run's search stage
+(`search_stage.search_stage`) runs the paths `workflow/pipeline.OWNER_SEARCH` registers, each only where its module is
+present (exp only; a build without them says the skip).
 
-```text
-propose    role_space.py, bubblebeam.py   the role's finite space from what the decode binds through on this device;
-           futuresight.py                 BubbleBeam proposes values legal for the chip's facts, FutureSight rejects
-                                          the illegal ones statically, both recorded
-search     tinygrad_fork.py               the provider (the tinygrad fork) runs the space; its times only order it
-check      provider_check.py              the provider is not trusted: its device identity against BoltBeam's own
-           role_check.py                  reading; every candidate rebuilt from the source it returned, run on the
-                                          role's own weight bytes, checked against BoltBeam's reference, timed with
-                                          BoltBeam's kernel timer; not rebuilt, incorrect or noisy = not reproduced,
-                                          never promoted
-validate   role_decision.py               the winner against the default in a matched whole-model decode A/B
-                                          (runtime/tinygrad_decode_ab.py), with a binding check that the plan
-                                          reached the calls it claims
-decide     role_decision.py               the evaluator's CandidateDecision (correctness, binding, speed tier, and
-                                          its rollback to the default plan), appended to the route ledger; the
-                                          route's status written into route_policy.json
-```
-
-Fusions (several adjacent decode-graph nodes in one launch) run the same path
-(`search/fusion_compare.py`), each judged on the in-model time of the rows it
-replaces. A kernel that wins its own timing but loses the whole-model A/B is
-recorded with that result and not promoted.
-
-Scope today: the whole-model A/B installs tinygrad Opt-sequence plans only. An
-emitter plan is searched and checked, then stops as "decided by binding": it
-reaches the model through the fork's route admission, which the A/B driver
-does not install yet. The kernel numbers are BoltBeam's own; the whole-model
-numbers are tinygrad runtime times, never a llama.cpp time.
-
-Run's search stage also takes owner tooling's engine paths: for an engine the
-per-role search does not serve, `search_stage.search_stage` runs the paths
-`workflow/pipeline.OWNER_SEARCH` registers, each only where its module is
-present (exp only; a build without them says the per-role skip).
+The per-role search (`search/role_compare.py`, its flash and fusion compares, and the tinygrad full-kernel adapter)
+asked the tinygrad fork's search provider. That provider left tinygrad-arkey with the kernel generator, and the
+per-role search was retired on 2026-11-21. Records it wrote still read (`search_stage.role_verdict`).
 
 ## Import direction
 

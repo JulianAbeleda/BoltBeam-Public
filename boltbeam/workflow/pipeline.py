@@ -21,7 +21,7 @@ from boltbeam.collectors import capture_scope, engine_families, prefill as pf, r
 from boltbeam.collectors.attribution import NotSplitByRole
 from boltbeam.collectors.llama_bench_decode import CannotMeasure
 from boltbeam.collectors.toolchain import driver_version, record
-from boltbeam.search import role_compare, search_stage, tinygrad_fork
+from boltbeam.search import search_stage, tinygrad_fork
 from boltbeam.target import gpu as tgpu, vendors
 from boltbeam.target.targets import get_target, keep_run_chip
 from boltbeam.vocab import Workload
@@ -397,7 +397,7 @@ def pipeline(args, out=sys.stdout) -> int:
       backend = get_target(args.target).backend
       steps.append(("search", lambda: search_stage.search_stage(pathlib.Path(args.run), backend=backend,
                                                                 provider=plan["provider"], root=root, say=say,
-                                                                step=progress.report, paths=owner_search())))
+                                                                paths=owner_search())))
     steps.append(("output", lambda: output_run(args.run)))
   ids = progress.step_ids([key for key, _ in steps])
   flags = [counted(sid) for sid in ids]
@@ -640,17 +640,9 @@ def role_time(args, out=sys.stdout) -> int:
 
 
 def compare(args, out=sys.stdout) -> int:
-  """Compare kernels per role for one run, one line per step, then refresh the report."""
-  say = _say_to(out)
-  run = pathlib.Path(args.run).expanduser()
-  root = tinygrad_root(args)
-  try:
-    role_compare.compare_run(run, root=root, say=say)
-    output_run(run)
-  except Exception as exc:  # application boundary: the reason is the fact the reader needs
-    say(f"compare failed: {exc}")
-    return 1
-  return 0
+  """The per-role kernel comparison: retired 2026-11-21 (search_stage.RETIRED), refused in words."""
+  _say_to(out)(f"compare failed: {search_stage.RETIRED}")   # the seam reads "compare failed: "
+  return 1
 
 # tinygrad's device name per backend that tinygrad's per-GPU read probe runs on (target/vendors.py)
 DEVICE_PREFIX = {v.backend: v.tinygrad_device for v in vendors.VENDORS.values() if v.tinygrad_per_gpu}

@@ -409,8 +409,13 @@ def _holds(expr:str | None, f:dict[str, Any], allowed:set[str]) -> bool:
 
 
 def term_names(k:dict[str, Any]) -> set[str]:
-  """The names a row's terms give (t.<name>), for its formula, sweep and reason to read."""
-  return {f"t.{n}" for n in k.get("terms") or {}}
+  """The names a row's terms give (t.<name>), for its formula, sweep and reason to read; and measured_here (here())."""
+  return {f"t.{n}" for n in k.get("terms") or {}} | ({"measured_here"} if k.get("measured_when") else set())
+
+
+def here(k:dict[str, Any], f:dict[str, Any], allowed:set[str]) -> dict[str, bool]:
+  """measured_here, read by a row's formula and bitwise rule: its one measured_when clause holds over known facts."""
+  return {"measured_here": _holds(w, f, allowed | set(names_in(w)))} if (w := k.get("measured_when")) else {}  # a fact not given: Missing, False
 
 
 def terms(k:dict[str, Any], f:dict[str, Any], allowed:set[str]) -> dict[str, Any]:
@@ -515,7 +520,7 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
       inputs = names_in(k["formula"])
       prov.update(formula=k["formula"], inputs={n: {"value": _shown(f.get(n)), "source": f["sources"].get(n)} for n in inputs})
       try:
-        value = evaluate(k["formula"], f, ok)
+        value = evaluate(k["formula"], {**f, **here(k, f, ok)}, ok)
         source = "derived" if value is not None else "default"  # a formula that keeps the default derived nothing
         reason = text(k["reason"] if value is not None else k.get("reason_default") or k["reason"])
       except Missing as m:
@@ -523,7 +528,7 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
         if k.get("reason_missing"):
           reason = text(k["reason_missing"])
     if k.get("measured") and _holds(k.get("measured_when"), f, ok):  # measured numbers only where their setup is this one
-      reason += ("" if reason.endswith(".") else ".") + " Measured: " + say(k["measured"], f)
+      reason += ("" if reason.endswith(".") else ".") + " Measured: " + say(case(k["measured"], f, ok), f)
     got = measured.get(k["name"])
     if got and got.get("fit"):  # the memory fit chose it with the other rows that take GPU memory (default: None)
       value, source, reason = got["value"], got["source"], got["says"]
@@ -550,7 +555,7 @@ def derive(f:dict[str, Any], features:dict[str, Any], engine:str, tab:dict[str, 
       f |= after_load(f, engine, tab)
     shown = str(value) if value is not None else default
     if isinstance(row["bitwise"], str):  # whether outputs stay bitwise identical can hang on the value (only at the default, say)
-      row["bitwise"] = bool(evaluate(row["bitwise"], {**f, "value": value}, allowed))
+      row["bitwise"] = _bitwise(k, value, f, allowed)
     row["output"] = output_of(k, value, f, allowed)["output"]
     rows.append({**row, "status": "set" if value is not None and shown != default else "default", "value": shown, "source": source,
                  "reason": reason, "provenance": prov})
@@ -673,7 +678,7 @@ def session_margin(mem:dict[str, Any] | None, fall:dict[str, Any] | None = None)
 
 
 def _bitwise(k:dict[str, Any], value:Any, f:dict[str, Any], allowed:set[str]) -> bool:
-  return bool(evaluate(b, {**f, "value": value}, allowed)) if isinstance(b := k.get("bitwise", True), str) else bool(b)
+  return bool(evaluate(b, {**f, **here(k, f, allowed), "value": value}, allowed | term_names(k))) if isinstance(b := k.get("bitwise", True), str) else bool(b)
 
 
 def gated(k:dict[str, Any], f:dict[str, Any] | None) -> dict[str, str] | None:

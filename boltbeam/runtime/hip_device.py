@@ -28,6 +28,7 @@ import tempfile
 from functools import lru_cache
 from typing import Any
 
+from boltbeam.runtime import bounded_compile
 from boltbeam.runtime.cuda_device import demangle, elf_symbols, kernel_candidates, kernel_name, match_symbol
 from boltbeam.target import toolkits
 
@@ -128,7 +129,7 @@ def build_code_object(hipcc:str, source:str, macros:dict[str, str] | None = None
     src.write_text("#include <hip/hip_runtime.h>\n" + source)
     argv = [hipcc, *GENCO, "-O3", "-fno-crash-diagnostics", f"--offload-arch={arch}", "-std=c++17", *[f"-D{k}={v}" for k, v in macros.items()],
             *[f"-I{i}" for i in includes or []], "-o", str(out), str(src)]
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=1200)
+    proc = bounded_compile.run(argv)  # heap and time capped: a candidate's source cannot take the machine
     if proc.returncode != 0:
       raise RuntimeError(f"hipcc failed: {(proc.stderr or proc.stdout).strip()[-600:]}")
   return out.read_bytes()

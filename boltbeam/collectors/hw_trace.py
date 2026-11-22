@@ -13,23 +13,10 @@ from boltbeam.collectors.engine_families import provider_name
 from boltbeam.core.canonical import pretty_json
 
 
-# tinygrad backends that submit via /dev/kfd directly, bypassing the ROCr HSA/HIP runtime that
-# rocprofv3 (the backend-csv sampler) instruments. rocprofv3 captures 0 kernels for these.
-ROCPROFV3_BLIND_DEVICES = frozenset({"AMD"})
-
-_ROCPROFV3_BLIND_MSG = (
-  "rocprofv3/backend-csv cannot trace tinygrad with DEV={dev}: the AMD backend submits via "
-  "/dev/kfd and bypasses the ROCr HSA/HIP runtime that rocprofv3 instruments (0 kernels captured). "
-  "Use --sampler tinygrad-profile-events for per-kernel timing, or the native tinygrad PMC path "
-  "(extra/qk/prefill/prefill_boltbeam_trace.py --hw-trace) for counters. To force rocprofv3 anyway, pass "
-  "--env DEV=HIP."
-)
-
-
-def _rocprofv3_blind_device(cfg:Any) -> str | None:
-  """Return the offending DEV if this cfg's backend is rocprofv3-blind, else None."""
-  dev = str(getattr(cfg, "env", {}).get("DEV", "")).upper()
-  return dev if dev in ROCPROFV3_BLIND_DEVICES else None
+# The tinygrad fork's bench harnesses (bench.py, prefill_boltbeam_trace.py) left tinygrad-arkey with the kernel generator.
+RETIRED_ARKEY = ("retired 2026-11-21: the arkey hardware-trace samplers (rocprofv3, tinygrad-profile-events, tinygrad-native-pmc) ran "
+                 "the tinygrad fork's bench harnesses, which left tinygrad-arkey with the kernel generator; arkey's role times "
+                 "come from role-time (collectors/arkey_role_time), and metal-system-trace still runs")
 
 
 def _write(obj:dict[str, Any], out:pathlib.Path) -> None:
@@ -58,6 +45,8 @@ def _default_sampler(provider:str, target_id:str) -> str:
 def collect_hw_trace(args:argparse.Namespace) -> tuple[dict[str, Any], dict[str, Any], pathlib.Path, pathlib.Path]:
   target_id, args.provider = _target_id(args), provider_name(args.provider)  # old callers may still say tinygrad
   sampler = normalize_collector_id(getattr(args, "sampler", None) or _default_sampler(args.provider, target_id))
+  if args.provider == "arkey" and sampler != "metal-system-trace":
+    raise ValueError(RETIRED_ARKEY)   # before the GPU health check: nothing runs
   capability = resolve_profiler_capability(normalize_provider_id(args.provider), target_id, collector_id=sampler)
   if getattr(args, "backend_tool", None) is None: args.backend_tool = capability.tool
   health_mode = getattr(args, "gpu_health", "warn")
@@ -73,41 +62,6 @@ def collect_hw_trace(args:argparse.Namespace) -> tuple[dict[str, Any], dict[str,
     args.provider_id = args.provider_id or "llama.cpp/boltbeam"
     cfg = _resolve(args)
     timing = capture_llama_rocprof(cfg)
-    out = cfg.out
-  elif args.provider == "arkey":
-    from boltbeam.collectors.tinygrad_rocprof import _resolve, capture_tinygrad_rocprof
-    args.rocprofv3 = args.backend_tool
-    if sampler == "rocprofv3":
-      args.provider_id = args.provider_id or "tinygrad/boltbeam"
-    elif sampler == "tinygrad-profile-events":
-      args.provider_id = args.provider_id or "tinygrad/profile-events"
-      if getattr(args, "backend_id", None) == "amd_kernel_csv":
-        args.backend_id = "tinygrad_profile_events"
-    elif sampler == "tinygrad-native-pmc":
-      args.provider_id = args.provider_id or "tinygrad/native-pmc"
-      if getattr(args, "backend_id", None) == "amd_kernel_csv":
-        args.backend_id = "tinygrad_native_pmc"
-    else:
-      raise ValueError(f"unknown tinygrad sampler {sampler!r}")
-    cfg = _resolve(args)
-    if sampler == "tinygrad-profile-events":
-      from boltbeam.collectors.tinygrad_profile_events import capture_tinygrad_profile_events
-      timing = capture_tinygrad_profile_events(cfg)
-    elif sampler == "tinygrad-native-pmc":
-      from boltbeam.collectors.tinygrad_native_pmc import capture_tinygrad_native_pmc
-      timing = capture_tinygrad_native_pmc(cfg)
-    else:
-      # Preflight: fail fast before a ~60s wasted run if rocprofv3 can't see this backend.
-      if (dev := _rocprofv3_blind_device(cfg)):
-        raise ValueError(_ROCPROFV3_BLIND_MSG.format(dev=dev))
-      try:
-        timing = capture_tinygrad_rocprof(cfg)
-      except FileNotFoundError as exc:
-        # Backstop: if the run still produced no kernel CSV on a blind backend, diagnose it
-        # rather than surfacing the raw "expected kernel stats not found".
-        if (dev := _rocprofv3_blind_device(cfg)):
-          raise ValueError(_ROCPROFV3_BLIND_MSG.format(dev=dev)) from exc
-        raise
     out = cfg.out
   else:
     raise ValueError(f"unknown provider {args.provider!r}")

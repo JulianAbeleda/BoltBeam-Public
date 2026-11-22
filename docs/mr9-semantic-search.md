@@ -1,7 +1,8 @@
 # MR9 semantic search
 
 A record: the `mr8-population-selection` and `mr9-semantic-search` commands were removed on 2026-11-09 (41c211e3:
-nothing called them). The semantic search runs in the screen's Compare (`python3 -m boltbeam.workflow.screen compare`).
+nothing called them). The semantic search ran in the screen's Compare until 2026-11-21, when it was retired with the
+tinygrad fork's search provider (docs/generator-boundary.md).
 
 MR9 executes the complete population already selected by MR8. The MR8 handoff
 retains each canonical Tinygrad campaign request, so the operator does not

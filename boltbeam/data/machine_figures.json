@@ -185,6 +185,21 @@
      "date": "2026-11-13",
      "run": "boltbeam-runs/replay-h2h-20261113 run 9; flash-night-20261112 run 5c",
      "evidence": "k=2 -> 3 loaded 114 MiB more (31,387 -> 31,501 MiB, q8_0 KV, -bs, whole-MiB readings) and about 112 MiB per k on a full card"
+    },
+    {
+     "key": {
+      "chip": "amd_radeon_ai_pro_r9700_32g"
+     },
+     "value": 112,
+     "readings": [
+      111.8,
+      111.8
+     ],
+     "machine": "the AMD box, 2x Radeon AI PRO R9700 (32 GiB each), TR PRO 9955WX",
+     "date": "2026-11-20",
+     "run": "~/storage/boltbeam-runs/r9700-figures-20261120 draft2-k3-r1/r2, draft2-k4-r1/r2",
+     "evidence": "Flash-Next IQ3_S over both cards with its MTP head, -np 1, -c 32,768, q8_0 KV: k=3 -> 4 lowered free at ready 58.0 MiB on card 0 (5,479.1 -> 5,421.1) and 53.8 on card 1 (2,963.8 -> 2,910.0), the same in both repeats (load-probe's per-card readings); the sum is the figure",
+     "build": "llama.cpp 5193ef1d (build 12372), HIP"
     }
    ]
   },

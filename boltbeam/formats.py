@@ -104,8 +104,9 @@ def supports(component:str, fmt:Any, kind:str = "weights") -> bool: return refus
 
 
 @functools.lru_cache(maxsize=None)
-def dequant(fmt:str):  # BoltBeam's own per-block dequant for a format (its row's dequant reference), or None
-  return getattr(importlib.import_module(ref.split(":")[0]), ref.split(":")[1]) if (ref := (row(fmt) or {}).get("dequant")) else None
+def dequant(fmt:str, kind:str = "dequant"):  # BoltBeam's own per-block dequant for a format (its row's dequant reference), or None;
+  # kind "fields": its integer fields reader (the values, scale and sub-scales an integer-dot kernel reads), or None
+  return getattr(importlib.import_module(ref.split(":")[0]), ref.split(":")[1]) if (ref := (row(fmt) or {}).get(kind)) else None
 
 
 # The config.json quant_method values the weights rows declare.

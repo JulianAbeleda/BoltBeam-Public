@@ -32,50 +32,7 @@
     },
     {
       "provider_id": "tinygrad",
-      "provider_support": ["tinygrad"],
-      "collector_id": "tinygrad-native-pmc",
-      "tool": "tinygrad-native-pmc",
-      "tool_version": "1.0",
-      "operation": "capture",
-      "selection_priority": 150,
-      "target_support": ["amd_gfx1100"],
-      "supported_scopes": ["kernel"],
-      "requires_replay": false,
-      "requires_root_or_privilege": false,
-      "supports_dispatch_timing": true,
-      "supports_kernel_resources": true,
-      "supports_dynamic_counters": true,
-      "supports_memory_copy": true,
-      "supports_allocations": true,
-      "supports_source_correlation": true,
-      "supports_disassembly": false,
-      "supports_thread_trace": false,
-      "supported_metrics": [
-        "wall_us",
-        "dram_bw_gbs",
-        "occupancy_pct",
-        "tensor_core_util_pct",
-        "valu_busy_pct",
-        "wait_or_stall_pct",
-        "vector_load_bits",
-        "mfma_or_mma_instruction_count",
-        "lds_or_shared_conflict_pct"
-      ],
-      "unsupported_metrics": [
-        "source_source_map",
-        "binary_level_scheduler_stalls",
-        "graph_trace_stability"
-      ],
-      "known_blind_spots": [
-        "tinygrad graph-captured GEMMs currently bypass eager PMC emission."
-      ],
-      "calibration_notes": [
-        "PMC counters need per-target calibration for percentage conversion."
-      ]
-    },
-    {
-      "provider_id": "tinygrad",
-      "provider_support": ["llama.cpp", "tinygrad"],
+      "provider_support": ["llama.cpp"],
       "collector_id": "rocprofv3",
       "tool": "rocprofv3",
       "tool_version": "1.0",

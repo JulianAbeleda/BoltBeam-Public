@@ -57,6 +57,12 @@
     "evidence": "b12521 kernels.patch:+550-553",
     "off_shape": "n/a"
    },
+   "graph-cpy-kernel": {
+    "needs": "True",
+    "why": "any CUDA graph that captures a same-type strided copy (F32, F16, BF16, I32); its switch is left off by a run on the build (engine_patches.json plan_only) and tune's GGML_CUDA_GRAPH_CPY_KERNEL row states it",
+    "evidence": "b12521 kernels.patch at 617b227:+133-147 (cpy.cu: the switch, read once, and the capture test)",
+    "off_shape": "n/a"
+   },
    "graph-slots": {
     "needs": "draft",
     "why": "it keeps graphs for the draft context only",
@@ -169,6 +175,12 @@
     "evidence": "b12521 host.patch:+180-193 (the draft-mtp drafter's hint), +434,+481 (prefetch_inputs: a no-op unless the architecture overrides it)",
     "off_shape": "silent"
    },
+   "rbudget-backend": {
+    "needs": "True",
+    "why": "any request with a reasoning budget and backend sampling (-bs); its switch is left off by a run on the build (engine_patches.json plan_only) and tune's LLAMA_RBUDGET_BACKEND row sets it where it was measured",
+    "evidence": "b12521 host.patch at 617b227:+176-215 (common/sampling.cpp and reasoning-budget.cpp: the switch keeps backend sampling under a budget, the forced token)",
+    "off_shape": "n/a"
+   },
    "rs-one-copy": {
     "needs": "recurrent and draft and arch == 'qwen4exp'",
     "why": "it keeps one recurrent state plane under a draft's rollback, and only one architecture declares support (a name gate in the mod)",
@@ -273,6 +285,15 @@
        "tokenize-incr",
        "topk-fused"
       ]
+     },
+     {
+      "level": "measured",
+      "evidence": "RTX 5090: kv-stream (1.0.0 mod 21) boltbeam-runs/kv-stream-20261118: home identity v6 at 128k (N 32,768) replies 30/30 switch on and 30/30 with its check mode (byte and attention-output checks, no abort), 3 pairs at 256k replies 59/59 in all 6 runs, the measured tree = the shipped patch; sparse-split (1.0.0 mod 22) boltbeam-runs/sparse-chain-20261119: the kv100 tree (1.0.0 + 01-21) + 22, its check mode 77/77 replies and 158,000 compactions word-identical, confirm 3 pairs at 256k replies 57/57 x6, warm decode +11.8 tok/s [+5.1, +18.5]",
+      "at": "7c5bbc0",
+      "mods": [
+       "kv-stream",
+       "sparse-split"
+      ]
      }
     ]
    },
@@ -316,6 +337,15 @@
        "ple-prefetch-step",
        "sparse-split",
        "topk-rowhist"
+      ]
+     },
+     {
+      "level": "measured",
+      "evidence": "RTX 5090: rbudget-backend boltbeam-runs/eng-night-20261121 (force-b64 8/8 forced answers equal, ab-rb-256k 3 pairs at 256k replies 57/57 x6, warm decode +13.8 tok/s [+13.3, +14.2]) and the 0.3.33 release session (docs/release-0333-20261121.md: 57/57, 0 backend-sampling refusals); graph-cpy-kernel boltbeam-runs/graph-fix-20261121 (ident128 30/30 switch on and with every kv and kernels check mode, time256k 3 pairs replies 57/57 x6, graph rebuilds 0.280 -> 0.012 a decode step, warm decode +0.3 tok/s [-2.8, +3.5]: no gain resolved) and graph-rebase-20261121 (both switches on, 30/30). No check mode of their own (rule exception); both left off by a run on the build (plan_only): tune's rows decide",
+      "at": "617b227",
+      "mods": [
+       "graph-cpy-kernel",
+       "rbudget-backend"
       ]
      }
     ],

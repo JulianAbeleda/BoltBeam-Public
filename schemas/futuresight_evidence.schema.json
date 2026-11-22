@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "FutureSight static evidence (semantic-campaign --futuresight-evidence)",
-  "description": "Accepted by bind_futuresight_evidence and run_semantic_search_campaign. assess-semantic-population always writes all five fields.",
+  "description": "Accepted by bind_futuresight_evidence. assess-semantic-population always writes all five fields.",
   "type": "object",
   "required": ["assessments", "rejections"],
   "additionalProperties": false,

@@ -31,7 +31,8 @@ from boltbeam import formats
 GRAPH_TABLE = pathlib.Path(__file__).resolve().parents[1] / "data" / "decode_graph.json"
 # What each graph op computes is the table's `fusion` rows: neutral ops applied in turn. This module computes them in
 # tolerance mode: each op's formula in fp64 pure Python (any weight format; no numpy; FORMULAS), compared within
-# math/numerics.TOLERANCE on the GPU's output.
+# math/numerics.TOLERANCE on the GPU's output. Screening only (kernel_timer.SCREENING): it is not
+# the engine's own result, so a fused kernel checked here orders and reports and never installs (search/identity).
 OP_TABLE, LOG2E = GRAPH_TABLE, 1.4426950408889634
 # (value so far, the node's later reads, its fusion row) -> value; a binary op takes the next read; matmul: Reference.at
 FORMULAS = {"matmul": None, "silu": lambda a, _r, _row: a / (1.0 + 2.0 ** (-a * LOG2E)) if a > -80 else 0.0,

@@ -8,7 +8,6 @@ from typing import Any
 from boltbeam.runtime.execution_bridge import parse_operand_execution_request, parse_operand_execution_result
 from boltbeam.target import vendors
 from boltbeam.target.targets import TARGETS
-from boltbeam.target.tinygrad_root import resolve_tinygrad_root
 from boltbeam.profiler.trace_profile import resolve_trace_execution_profile
 from boltbeam.profiler.capabilities import normalize_provider_id
 
@@ -158,20 +157,11 @@ def _provider_row(raw:str) -> dict[str, Any]:
 def _provider_commands(manifest:dict[str, Any], providers:list[dict[str, Any]], trace_profiles:list[dict[str, Any]],
                        run:pathlib.Path, bundle:pathlib.Path) -> list[dict[str, Any]]:
   rows: list[dict[str, Any]] = []
-  operand_request_path = run / "operand_path_request.json"
-  operand_request = parse_operand_execution_request(read_json(operand_request_path)) if operand_request_path.exists() else None
   for provider, trace_profile in zip(providers, trace_profiles):
     pid = normalize_provider_id(provider["provider_id"])  # an arkey hint reads as its recorded id tinygrad
-    if trace_profile.get("status") != "ready":
-      if pid == "tinygrad" and operand_request is not None:
-        rows.append(_tinygrad_operand_path_command(manifest, provider, run))
-      continue
-    if pid in {"llama", "llama.cpp", "llama-cpp"}:
+    # tinygrad has no rows: its trace harnesses and search provider left tinygrad-arkey with the kernel generator (retired 2026-11-21)
+    if trace_profile.get("status") == "ready" and pid in {"llama", "llama.cpp", "llama-cpp"}:
       rows.extend(_llama_trace_commands(manifest, provider, trace_profile, run, bundle))
-    elif pid == "tinygrad":
-      rows.extend(_tinygrad_trace_commands(manifest, provider, trace_profile, run, bundle))
-      if operand_request is not None:
-        rows.append(_tinygrad_operand_path_command(manifest, provider, run))
   return rows
 
 
@@ -226,98 +216,6 @@ def _first_context(run:pathlib.Path, default:int = 512) -> int:
     except Exception:
       pass
   return default
-
-
-def _tinygrad_trace_commands(manifest:dict[str, Any], provider:dict[str, Any], trace_profile:dict[str, Any],
-                             run:pathlib.Path, bundle:pathlib.Path) -> list[dict[str, Any]]:
-  tinygrad_root = resolve_tinygrad_root(provider.get("configured_path"))
-  model = manifest.get("model_path") or "<model.gguf>"
-  ctx = _first_context(run)
-  trace_dir = bundle / "tinygrad_hw_trace"
-  trace_path = run / "hw_trace.json"
-  timing_trace_path = run / "timing_trace.json"
-  profile_path = run / "timing_profile.json"
-  compare_path = run / "hw_trace_compare_vs_llama.json"
-  substrate_path = run / "substrate_compare_vs_llama.json"
-  target_id = manifest.get("target_id")
-  runtime = _tinygrad_target_runtime(target_id)
-  collector_cmd = [
-    "boltbeam", "collect-hw-trace",
-    "--provider", "arkey",
-    "--run", str(run),
-    "--model", str(model),
-    "--context", str(ctx),
-    "--sampler", trace_profile["collector"]["collector_id"],
-    "--tinygrad-root", str(tinygrad_root),
-    "--trace-dir", str(trace_dir),
-    "--out", str(trace_path),
-    "--timing-out", str(timing_trace_path),
-  ]
-  if target_id:
-    collector_cmd.extend(["--target-id", str(target_id)])
-  for key, value in runtime["env"].items():
-    collector_cmd.extend(["--env", f"{key}={value}"])
-  target = TARGETS.get(str(target_id)) if target_id else None
-  if target is not None and target.memory_bandwidth_gbs is not None:
-    collector_cmd.extend(["--peak-gbs", str(target.memory_bandwidth_gbs)])
-  return [
-    {
-      "id": "tinygrad_boltbeam_trace",
-      "purpose": "run the BoltBeam tinygrad collector and emit boltbeam.hw_trace.v1",
-      "command": collector_cmd,
-      "command_shell": " ".join(collector_cmd),
-      "expected_artifact": str(trace_path),
-      "expected_artifacts": [str(timing_trace_path), str(trace_path)],
-      "aux_artifact_dir": str(trace_dir),
-    },
-    {
-      "id": "tinygrad_prefill_ingest",
-      "purpose": "classify the tinygrad prefill timing trace in this staged run",
-      "command": [
-        "boltbeam", "ingest-timing", str(trace_path), "--run", str(run),
-      ],
-      "expected_artifact": str(profile_path),
-    },
-    {
-      "id": "tinygrad_compare_vs_llama",
-      "purpose": "compare tinygrad against an already-captured llama hardware trace when available",
-      "command": [
-        "boltbeam", "compare-hw-trace", "--baseline", str(run / "llama_hw_trace.json"),
-        "--candidate", str(trace_path), "--context", str(ctx), "--out", str(compare_path),
-      ],
-      "expected_artifact": str(compare_path),
-      "optional": True,
-    },
-    {
-      "id": "tinygrad_substrate_compare_vs_llama",
-      "purpose": "compare hot packed-prefill GEMM substrate against an already-captured llama trace when available",
-      "command": [
-        "boltbeam", "compare-substrate", "--baseline", str(run / "llama_hw_trace.json"),
-        "--candidate", str(trace_path), "--context", str(ctx), "--out", str(substrate_path),
-      ],
-      "expected_artifact": str(substrate_path),
-      "optional": True,
-    },
-  ]
-
-
-def _tinygrad_operand_path_command(manifest:dict[str, Any], provider:dict[str, Any], run:pathlib.Path) -> dict[str, Any]:
-  tinygrad_root = resolve_tinygrad_root(provider.get("configured_path"))
-  request_path = run / "operand_path_request.json"
-  result_path = run / "operand_path_result.json"
-  env = {"PYTHONPATH": str(tinygrad_root), **_tinygrad_target_runtime(manifest.get("target_id"))["env"]}
-  return {
-    "id": "tinygrad_operand_path_execution",
-    "purpose": "canonical tinygrad search-provider boundary for a future execution-bridge adapter",
-    "command": ["python3", "extra/llm_research/search_provider.py", "--backend", "METAL"],
-    "cwd": str(tinygrad_root),
-    "env": env,
-    "stdin_artifact": str(request_path),
-    "expected_artifact": str(result_path),
-    "stdout_artifact": str(result_path),
-    "status": "blocked_contract_migration",
-    "blocked_reason": "execution_bridge.request.v1 is not a tinygrad.search_provider.v1 envelope",
-  }
 
 
 def _llama_trace_commands(manifest:dict[str, Any], provider:dict[str, Any], trace_profile:dict[str, Any],

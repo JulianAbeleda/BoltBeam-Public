@@ -132,10 +132,14 @@ def samples(launch:Callable[[], float], *, warmups:int = WARMUPS, count:int = SA
   return out
 
 
+SCREENING = ("screening only: a CPU reference within a tolerance, not the engine's own result bit for bit (search/identity); it never "
+             "decides an install")  # every Check's label: the identity gate is the engine's own result, read on the device
+
+
 @dataclass
 class Check:
   """What the first launch's output must match: reference(i) is the expected value of output element i, for the
-  given indices, within rel_tol of the largest expected magnitude. Output elements are float32 ("f"), or half
+  given indices, within rel_tol of the largest expected magnitude: SCREENING, never the identity gate. Output elements are float32 ("f"), or half
   ("e") for a kernel that stores fp16."""
   indices: list[int]
   reference: Callable[[int], float]
@@ -274,7 +278,7 @@ def time_spec(bridge, spec:KernelSpec, flush:Flusher | None = None, *, warmups:i
       err = max(abs(got[i] - ref[i]) for i in spec.check.indices) / scale
       passed = math.isfinite(err) and err <= spec.check.rel_tol  # NaN compares False both ways: fail closed
       result["correctness"] = {"checked_rows": list(spec.check.indices), "reference": spec.check.words, "max_rel_err": err,
-                               "tolerance": spec.check.rel_tol, "passed": passed}
+                               "tolerance": spec.check.rel_tol, "passed": passed, "rule": SCREENING}
       if not all(math.isfinite(v) for v in ref.values()):
         result["correctness"]["reason"] = "the reference is not finite: the input bytes hold inf or NaN scales"
       elif not math.isfinite(err):

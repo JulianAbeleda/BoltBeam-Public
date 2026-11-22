@@ -2,7 +2,11 @@
 
 Everything is read from the record collectors/session_ab.py wrote; nothing here measures.
 
-  identity        each arm's replies against the base arm's first valid run, turn by turn (sha256): "59/59"
+  identity        each arm's replies against the base arm's first valid run, turn by turn (sha256): "59/59". A
+                  comparison is a speed claim only for the same work: a run of either arm whose replies are not N/N
+                  the base's is refused, unless that arm is declared lossy (session-ab --lossy NAME=FILE: search/identity,
+                  its evidence read, hashed and judged at the start; every run of the arm must have run the kernel
+                  the evidence names: ran()), and then the declaration and its evidence stand next to the deltas
   conditions      the arms' start conditions (GPU temperature, load, other programs' CPU, the clock time) compared
                   arm against base with Welch's test (95%, Bonferroni over conditions and arms) beyond each sensor's
                   step, and the power limit exactly; a
@@ -23,6 +27,7 @@ import statistics
 from typing import Any
 
 from boltbeam.math.stats import mean_ci, outlier_bound, welch_differs
+from boltbeam.search import identity as idn
 
 METRICS = (("prefill_ms", "prefill ms"), ("ttft_ms", "TTFT ms"), ("pre_server_ms", "pre-server ms"),
            ("decode_tok_s", "decode tok/s"))
@@ -130,6 +135,14 @@ def loop_bound(ref:list[dict[str, Any]], t:dict[str, Any]) -> float:
   return max(long_)
 
 
+def ran(run:dict[str, Any]) -> set[str]:
+  """What an arm's run ran, by sha256: its build, the files its switches name, the kernels of the lists among them
+  (collectors/session_ab.named_files). A lossy arm's evidence must name one of them that the other arm did not run (a
+  shared build or model file ties nothing: search/identity)."""
+  return {x for x in [(run.get("binary") or {}).get("sha256"), *(run.get("files") or {}).values(),
+                      *(v for lst in (run.get("kernels") or {}).values() for v in lst.values())] if isinstance(x, str)}
+
+
 def analyze(record:dict[str, Any]) -> dict[str, Any]:
   """The record's comparisons: every arm against the first (the base), on the valid runs."""
   names = [a["name"] for a in record["inputs"]["arms"]]
@@ -159,6 +172,17 @@ def analyze(record:dict[str, Any]) -> dict[str, Any]:
                            "conditions": {"base": [arm_conditions(a) for a in by[base]], "arm": [arm_conditions(a) for a in by[n]]}}
     if not pairs:
       cmp["refused"] = (cmp["refused"] or []) + [_words("no_pairs")]
+    decl = {a["name"]: a.get("lossy") for a in record["inputs"]["arms"]}
+    for who in dict.fromkeys((base, n)):   # the identity gate: replies not the base's are another workload, not a speed delta
+      off = [f"#{a['block'] + 1} {sum(ref_sha.get(t['i']) == t['sha256'] for t in a['turns'])}/{len(ref)}" for a in by[who]
+             if len(a["turns"]) != len(ref) or any(ref_sha.get(t["i"]) != t["sha256"] for t in a["turns"])]
+      if off and not decl.get(who):
+        cmp["refused"] = (cmp["refused"] or []) + [_words("not_identical", arm=who, runs=", ".join(off), base=base)]
+      other = set().union(*(ran(a) for a in by[base])) if who != base else set().union(*(ran(a) for a in by[n]))   # what the other arm ran too
+      if decl.get(who) and (loose := [f"#{a['block'] + 1}" for a in by[who] if decl[who].get("kernel_sha256") not in ran(a) - other]):   # its evidence ran this arm's own kernel
+        cmp["refused"] = (cmp["refused"] or []) + [_words("lossy_not_tied", arm=who, runs=", ".join(loose), kernel=str(decl[who].get("kernel_sha256"))[:12])]
+    if lossy := {who: idn.label(decl[who]) + f" (declared in {decl[who]['file']})" for who in (base, n) if decl.get(who)}:
+      cmp["lossy"] = lossy
     if cmp["refused"]:
       out["comparisons"].append(cmp)
       continue
@@ -230,6 +254,7 @@ def lines(record:dict[str, Any], an:dict[str, Any]) -> list[str]:
       out.append(_words("refused", arm=cmp["arm"], base=an["base"], why="; ".join(cmp["refused"])))
       continue
     out.append(_words("cmp_head", arm=cmp["arm"], base=an["base"], pairs=cmp["pairs"]))
+    out += [f"  {who}: {said}" for who, said in (cmp.get("lossy") or {}).items()]   # a declared-lossy arm's deltas are not the same work's: said beside them
     out.append(f"  {'band':<10}" + "".join(f"{lab:>34}" for _, lab in METRICS))
     for clean in (False, True):
       if clean:

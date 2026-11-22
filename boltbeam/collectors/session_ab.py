@@ -32,6 +32,7 @@ import time
 from typing import Any, Callable
 
 from boltbeam.core.shell import split_command
+from boltbeam.search import identity
 from boltbeam.vocab import SCHEMA_SESSION_AB
 
 FILE = "session_ab.json"
@@ -364,9 +365,10 @@ KERNEL_LISTS = ("boltbeam.kernel_manifest.v1", "boltbeam.kernel_manifest.v2")  #
 def named_files(switches:dict[str, str | None]) -> tuple[dict[str, str], dict[str, dict[str, str | None]]]:
   """The files the arm's switches name, hashed at its start ({absolute path: sha256}; a relative path is the server's,
   which runs in this process's folder, so it is resolved against it), and of those that are BoltBeam kernel lists, each
-  entry's kernel file beside the list hashed ({list: {entry id: sha256, or None when the file is missing}}): the kernel
-  an engine that loads the entry runs."""
+  entry's kernel file beside the list hashed ({list: {entry id: sha256, or None when the file is missing}}; a launches
+  entry's: identity.sequence of its launches' files): the kernel an engine that loads the entry runs."""
   from boltbeam.collectors.replay import _sha256
+  from boltbeam.search.identity import sequence
   files, lists = {}, {}
   for v in switches.values():
     p = pathlib.Path(v).expanduser() if v else None
@@ -379,8 +381,12 @@ def named_files(switches:dict[str, str | None]) -> tuple[dict[str, str], dict[st
     except (OSError, ValueError):
       continue
     if isinstance(doc, dict) and doc.get("schema") in KERNEL_LISTS:
-      lists[str(p)] = {e["id"]: (_sha256(p.parent / e["kernel"]["file"]) if (p.parent / e["kernel"]["file"]).is_file() else None)
-                       for e in doc.get("entries") or [] if isinstance(e, dict) and isinstance((e.get("kernel") or {}).get("file"), str)}
+      lists[str(p)] = {}
+      for e in doc.get("entries") or []:   # a launches entry (hook R5): every launch's file, the sequence of their sha256s
+        ks = [q.get("kernel") or {} for q in e.get("launches") or [] if "kv_stream" not in q] if isinstance(e, dict) and "launches" in e else [(e.get("kernel") or {}) if isinstance(e, dict) else {}]
+        if ks and all(isinstance(k.get("file"), str) for k in ks):
+          got = [_sha256(p.parent / k["file"]) if (p.parent / k["file"]).is_file() else None for k in ks]
+          lists[str(p)][e["id"]] = None if None in got else sequence(got) if "launches" in e else got[0]
   return files, lists
 
 
@@ -598,10 +604,13 @@ def _machine() -> tuple[Any, str | None]:
 def run(*, out:str, server_argv:str, arms:list[str], session:str, repeats:int, engine:str, history:str = "own",
         lengths:str | None = None, gaps:str | None = None, wrap:str = "", power_cap_w:float | None = None,
         retries:int = 2, turns:str | None = None, resume:bool = False, hook:str = "", save_replies:bool = False, say:Callable[[str], None] = print, trace_windows:str | None = None,
+        lossy:list[str] | tuple[str, ...] = (),
         machine:Callable[[], tuple[Any, str | None]] = _machine, gate_fn=gate,
         files_read:Callable[[str, list[list[str]]], dict[str, Any]] | None = None) -> dict[str, Any]:
   """Every arm of the plan, valid ones kept, invalid ones run again (at most `retries` times each); the record.
-  files_read(engine, argvs): the facts the caller's spend rows read from the files the arms name (workflow/spend.files_read)."""
+  files_read(engine, argvs): the facts the caller's spend rows read from the files the arms name (workflow/spend.files_read).
+  lossy: NAME=FILE, an arm declared lossy (search/identity.read_file: its evidence read and hashed now); an arm whose
+  replies are not the base's is refused as a speed claim unless declared so (workflow/session_ab.analyze)."""
   from boltbeam.collectors.replay import engine as engine_of
   if history not in HISTORY:
     raise Refused(_words("bad_history", history=history, ok=", ".join(HISTORY)))
@@ -609,6 +618,14 @@ def run(*, out:str, server_argv:str, arms:list[str], session:str, repeats:int, e
   names = [a["name"] for a in parsed]
   if len(set(names)) != len(names) or len(names) < (1 if trace_windows else 2) or repeats < 1 or (trace_windows and len(names) * repeats > 1):
     raise Refused(_words("bad_trace_plan" if trace_windows else "bad_plan"))
+  for spec in lossy:
+    name, _, path = spec.partition("=")
+    if name not in names or not path:
+      raise Refused(_words("bad_lossy", text=spec))
+    try:
+      parsed[names.index(name)]["lossy"] = identity.read_file(path)
+    except (OSError, ValueError) as e:   # identity.NotIdentical among them: a declaration with no evidence is no declaration
+      raise Refused(_words("lossy_refused", arm=name, why=e)) from e
   sess, sess_id = read_session(session, history)
   n = len(sess["turns"])
   span = parse_span(turns, n)

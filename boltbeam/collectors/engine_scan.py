@@ -201,7 +201,7 @@ def fork_candidates(home:pathlib.Path, checkout:pathlib.Path | None) -> list[pat
 
 def _fork(home:pathlib.Path, checkout:pathlib.Path | None) -> dict[str, str] | None:
   from boltbeam.search import tinygrad_fork
-  forks = [p for p in fork_candidates(home, checkout) if _is_file(p / tinygrad_fork.PROVIDER)]
+  forks = [p for p in fork_candidates(home, checkout) if _is_file(p / tinygrad_fork.ENGINE)]
   ready = next((p for p in forks if tinygrad_fork.readiness(p)["ready"]), None)
   pick = ready or (forks[0] if forks else None)
   return _scan_hit(pick) if pick else None

@@ -1,8 +1,8 @@
 # Semantic campaign
 
-The two-phase finite exact GGUF campaign runs in-process in the screen's Compare
-(`python3 -m boltbeam.workflow.screen compare`, `boltbeam/search/role_compare.py`). Its four steps were standalone
-commands until 2026-11-09 (41c211e3 removed them: nothing called them); this page keeps their record:
+A record. The two-phase finite exact GGUF campaign ran in-process in the screen's Compare (`role_compare.py`) until
+2026-11-21, when it was retired with the tinygrad fork's search provider (docs/generator-boundary.md). Its four steps were
+standalone commands until 2026-11-09 (41c211e3 removed them: nothing called them); this page keeps their record:
 
 1. `propose-semantic-dimensions spec.json --describe describe.json --out request.json` (BubbleBeam)
 2. `export-semantic-population request.json --out population.json`
@@ -12,9 +12,9 @@ commands until 2026-11-09 (41c211e3 removed them: nothing called them); this pag
 Step 4 without `--futuresight-evidence` runs the population unordered and unfiltered. The provider serves the
 device the candidates' target names (METAL, NV, CUDA, AMD); no `--backend` is needed.
 
-## Run's kernel search is this pipeline
+## Run's kernel search was this pipeline (until 2026-11-21)
 
-Run's search stage (`boltbeam/search/search_stage.py`, the per-role comparison in `role_compare.py`) runs these four steps per role, for the role's recorded
+Run's search stage (`boltbeam/search/search_stage.py`, the per-role comparison in `role_compare.py`) ran these four steps per role, for the role's recorded
 tensor and shape on the run's target, then checks the provider's claims itself (`boltbeam/search/provider_check.py`):
 the device identity against BoltBeam's own bridge, and every measured kernel rebuilt from the source the provider
 returned, checked against BoltBeam's reference on the model's bytes and timed by the kernel timer. Every decision
